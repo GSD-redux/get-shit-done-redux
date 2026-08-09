@@ -93,8 +93,10 @@ describe('#3177: execute-phase.md states Claude Code dispatch truthfully', () =>
       'the bullet must state that dispatch is backgrounded by default',
     );
     assert.match(
-      bullet, /run_in_background/,
-      'the bullet must name the `run_in_background` opt-out that makes the call blocking',
+      bullet, /verify completion/,
+      'the bullet must point at completion verification. This workflow deliberately backgrounds '
+      + 'its executors (the multi-plan path prescribes run_in_background: true), so the blocking '
+      + 'opt-out is not the guidance here — confirming completion is.',
     );
     assert.ok(
       bullet.includes('Agent(subagent_type="gsd-executor"'),

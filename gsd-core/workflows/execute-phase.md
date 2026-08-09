@@ -19,7 +19,7 @@ Orchestrator coordinates, not executes. Each subagent loads the full execute-pla
 
 <runtime_compatibility>
 **Subagent spawning is runtime-specific:**
-- **Claude Code:** Uses `Agent(subagent_type="gsd-executor", ...)` — **backgrounded by default** (matrix `dispatch.background: true`); `run_in_background: false` blocks. Spawn if the tool exists; confirm completion via the fallback rule below.
+- **Claude Code:** Uses `Agent(subagent_type="gsd-executor", ...)` — backgrounded by default; verify completion
 - **Copilot:** Subagent spawning does not reliably return completion signals. **Default to
   sequential inline execution**: read and follow execute-plan.md directly for each plan
   instead of spawning parallel agents. Only attempt parallel spawning if the user
@@ -852,8 +852,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
 
-   **This fallback applies automatically to all runtimes.** Claude Code's Agent() is
-   backgrounded by default, so a completion signal may arrive late or not at all.
+   **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
+   default: the completion signal may never arrive. Verify, never wait.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
