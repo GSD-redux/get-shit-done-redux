@@ -1229,7 +1229,7 @@ If `section_manifest` is `null` or `"partial-wave"` is in its `included` list: r
 EXECUTE_POST_HOOKS_JSON=${EXECUTE_POST_HOOKS_JSON:-$(gsd_run loop render-hooks execute:post --raw)}
 ```
 
-Dispatch each `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md. For `code-review`:
+Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md. `ref.skill == "code-review"`:
 
 If no active code-review step hook exists: display "Code review skipped (code-review capability inactive)" and proceed to gate dispatch.
 
