@@ -55,7 +55,7 @@
  * checks, and keeps this already-slow suite bounded.
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -65,6 +65,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { cleanup } = require('./helpers.cjs');
 const { runMinimalInstall, installerEnv } = require('./helpers/install-shared.cjs');
 const { buildOverlayRepo } = require('./helpers/overlay-repo.cjs');
+const { ensureHooksDist } = require('./helpers/hooks-dist.cjs');
 
 const { buildCatalog, readResource, shouldCompose } = require('../gsd-core/bin/lib/mcp-catalog.cjs');
 
@@ -73,6 +74,16 @@ const MARKER_TOKEN = 'gsd:section';
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+// hooks/dist/ is gitignored and only produced by `npm run build:hooks`. This
+// suite's real spawned install (runMinimalInstall) and overlay builds
+// (buildOverlayRepo, which hard-links every leaf under REPO_ROOT including
+// hooks/dist/) both need it populated. In CI the scoped/windows jobs do not
+// run build:hooks first, so — absent this guard — the suite only passes when
+// some OTHER suite happened to build hooks/dist first (see #2704 Failure B).
+before(() => {
+  ensureHooksDist();
+});
 
 /** Recursively collect `.md` file paths under `absDir`, relative to `REPO_ROOT`, POSIX-normalized. */
 function collectMarkdownFiles(absDir, out = []) {

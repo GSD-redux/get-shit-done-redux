@@ -1425,6 +1425,35 @@ test('both real H1 spellings are compared', (t) => {
   );
 });
 
+/**
+ * Some status tokens carry obligations beyond "the H1 bracket must agree
+ * with the Status field" — e.g. `Superseded` also requires a successor
+ * named as a markdown link, symmetrically recorded on both sides (see
+ * gen-adr-index.cjs's dedicated Superseded check). The bracket-parity test
+ * below wants to exercise ONLY bracket-vs-Status agreement, so whatever
+ * status a fixture DECLARES must independently satisfy that status's own
+ * obligations — otherwise the corpus fails for an unrelated, pre-existing
+ * reason and the test reports the wrong defect (exactly what happened here:
+ * a bare "Superseded" Status field with no successor tripped the
+ * "names no successor" check before bracket comparison ever mattered).
+ *
+ * Keyed by status token, not hardcoded into the test body, so a FUTURE
+ * token with its own obligation is forced through this same seam instead of
+ * silently reusing the bare-token fixture and reporting a misleading
+ * failure.
+ */
+function statusObligations(token) {
+  if (token === 'Superseded') {
+    return {
+      statusField: 'Superseded by [ADR-900](900-beta.md)',
+      companions: {
+        '900-beta.md': adr('Beta', ['**Status:** Accepted', '**Supersedes:** [ADR-0001](0001-alpha.md)']),
+      },
+    };
+  }
+  return { statusField: token, companions: {} };
+}
+
 test('parity: every status in the vocabulary is recognized as a bracket', (t) => {
   // DEFECT.GENERATIVE-FIX guard: this iterates the REAL exported STATUSES
   // array instead of a hand-copied literal, so a 6th status added to the
@@ -1432,13 +1461,23 @@ test('parity: every status in the vocabulary is recognized as a bracket', (t) =>
   // someone remembers to update a parallel hardcoded list here.
   assert.ok(Array.isArray(STATUSES) && STATUSES.length > 0, 'STATUSES must be a real exported, non-empty array');
   for (const token of STATUSES) {
-    const agreeing = makeRepo(t, { '0001-alpha.md': adr(`Title one [${token}]`, [`**Status:** ${token}`]) });
+    const own = statusObligations(token);
+    const agreeing = makeRepo(t, {
+      '0001-alpha.md': adr(`Title one [${token}]`, [`**Status:** ${own.statusField}`]),
+      ...own.companions,
+    });
     assert.equal(run(agreeing, ['--write']).status, 0, `token "${token}": --write must succeed`);
     const agreeingCheck = run(agreeing, ['--check']);
     assert.equal(agreeingCheck.status, 0, `token "${token}": an agreeing bracket must pass: ${agreeingCheck.stderr}`);
 
     const other = STATUSES.find((s) => s !== token);
-    const contradicting = makeRepo(t, { '0001-alpha.md': adr(`Title one [${token}]`, [`**Status:** ${other}`]) });
+    // The contradicting fixture DECLARES `other` in the Status field, so it
+    // is `other`'s obligations (not `token`'s) that the corpus must satisfy.
+    const otherObligations = statusObligations(other);
+    const contradicting = makeRepo(t, {
+      '0001-alpha.md': adr(`Title one [${token}]`, [`**Status:** ${otherObligations.statusField}`]),
+      ...otherObligations.companions,
+    });
     assert.equal(run(contradicting, ['--write']).status, 0, `token "${token}" vs "${other}": --write must succeed even with violations`);
     const { status: contradictingStatus, report: contradictingReport } = runJson(contradicting, ['--check']);
     assert.equal(contradictingStatus, 1, `token "${token}" vs "${other}": a contradicting bracket must fail`);
