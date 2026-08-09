@@ -73,6 +73,7 @@
       "files": [
         "state-acquirestatelock-non-eexist.test.cjs",
         "state-command-cutover.test.cjs",
+        "state-field-drift.test.cjs",
         "state-prune.test.cjs",
         "state-rebuild-cli.test.cjs",
         "state-rebuild.test.cjs",
