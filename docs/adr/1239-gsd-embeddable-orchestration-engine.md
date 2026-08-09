@@ -144,6 +144,21 @@ A closed, first-party vocabulary with a member no host can claim is an invitatio
 
 **Status:** delivered in #2481 — axis vocabulary, descriptor values, validator parity, fail-closed negotiation, the degradation row, and the consuming review-lane wiring all land together. `effortSurface` is a wired axis, not a declared-but-unconsumed one; it is the first negotiated axis whose consumer is an invocation-time argument rather than an install-time artifact.
 
+## Amendment (2026-08-09): the Codex install-time ADR now exists — [ADR-2313](2313-codex-passive-model-posture.md)
+
+Recorded as a dated section rather than by editing the `effortSurface` amendment above, since ADRs here are append-only.
+
+That amendment's **"Boundary against #2313"** paragraph describes the Codex passive-model posture as "a separate ADR, **not yet written**". It is now written: **[ADR-2313](2313-codex-passive-model-posture.md)**, opened as Phase 0 of epic [#2313](https://github.com/open-gsd/gsd-core/issues/2313) under sub-issue [#3240](https://github.com/open-gsd/gsd-core/issues/3240). The boundary itself is unchanged and is restated from the other side in ADR-2313's own scope section: **ADR-2313 owns the static / install-time channel** (what GSD writes into `~/.codex/agents/<agent>.toml`, how it validates what is already there, how it repairs it); **this ADR's `effortSurface` amendment owns the invocation-time channel** and does not change install-time emission.
+
+Two things ADR-2313 settles that this ADR asserted but the tree contradicted:
+
+- **`modelMode: passive` for Codex is now honored by the installer.** This ADR classifies Codex as `passive` — "instruction-injection only; no tier routing" (interface point 3), "passive (session-only)" (appendix). `bin/install.js` nonetheless embedded a per-tier Codex model via the #2517 runtime resolver, which 400s on a ChatGPT-account Codex that does not expose the pinned model (#2310 / #2311). ADR-2313 removes that embedding on the default path, so the descriptor and the emitted artifact agree.
+- **`model_reasoning_effort` in the generated `.toml` is coupled to a pinned model** (#838), and therefore disappears along with the default pin. An install-time effort value with no accompanying model is partial routing — model following the Codex UI, effort following GSD — and ADR-2313 rules it out. This does **not** touch the `argv` invocation-time effort surface this ADR's amendment governs; a Codex agent still receives `-c model_reasoning_effort=` at invocation time exactly as before.
+
+**Correction to the Codex-binding section.** That section cites `golden-install-parity/codex.json` as the gate holding Codex install/uninstall to byte parity. That fixture family and `tests/golden-install-parity.test.cjs` were **deleted** by [ADR-2719](2719-emitted-artifact-attribution.md) Phase 4 ([#2724](https://github.com/open-gsd/gsd-core/issues/2724)) and are no longer in the tree; the live gate is the differential attribution check (`tests/emitted-attribution.test.cjs`) plus the committed `tests/fixtures/install-tree/*.json` family ADR-2719 §7 retains. Recorded here rather than by editing that section. Anyone reasoning about what an emitted-`.toml` change trips should read ADR-2719, not the retired fixture name.
+
+**Numbering note.** ADR-2313 is prefixed with the **epic** number, not #2310. #2310 is the closed bug issue whose emission *guard* shipped separately in PR #2312; `CONTRIBUTING.md` § "Proposing an ADR or PRD" makes the approved issue's number the filename prefix. Earlier text on #2313 referring to "ADR-2310" predates that ruling.
+
 ## Host-capability profiles (negotiation baselines)
 
 - **Programmatic-CLI** (Claude Code, pi, OpenCode): imperative; full dispatch; host hook bus; MCP; `slash` surface. The richest target — minimal degradation.

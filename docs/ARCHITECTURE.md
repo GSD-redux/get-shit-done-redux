@@ -792,6 +792,8 @@ remove or rewrite anything.
 
 The plan drift guard (`plan_review.source_grounding`) — which verifies symbol references in generated plans against live source before execution — is specified in [ADR 22](adr/22-plan-drift-guard.md).
 
+The same switch gates a second, cross-artifact axis: a fact-drift pass that compares the *same* fact as stated in `ROADMAP.md`, `PLAN.md`, `STATE.md` and `CONTEXT.md` and reports contradictions (a phase status, a success criterion, a requirement ID, a glossary term) with both locations and the authoritative side named. Where the source-grounding axis grounds a plan against code, this one grounds the planning artifacts against each other. It keys on contradicting knowledge rather than similar-looking text, and is advisory only — it never sets `hardBlock` and never contributes to the convergence counts.
+
 ### Platform Handling
 
 - **Windows:** `windowsHide` on child processes, EPERM/EACCES protection on protected directories, path separator normalization

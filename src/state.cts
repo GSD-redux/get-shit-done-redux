@@ -52,6 +52,7 @@ import {
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
+  stateCurrentPositionSlice,
 } from './state-document.cjs';
 import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
@@ -1367,12 +1368,14 @@ function matchSessionSection(body: string): string | null {
  * excludes unrelated headings. Built on the same `collectSection` seam as
  * matchSessionSection, so it inherits that seam's CRLF tolerance (#2444 fix).
  * Returns the section body, or null (caller falls back to full-body search).
+ *
+ * The scoping logic now lives in state-document.cjs's `stateCurrentPositionSlice`
+ * (the module that owns STATE.md field extraction) — this is a thin alias kept
+ * for call-site stability. Two copies of this scope would be exactly the kind
+ * of generative-fix divergence the repo's parity rule exists to prevent.
  */
 function matchCurrentPositionSection(body: string): string | null {
-  const isCurrentPosition = (h: HeadingToken): boolean =>
-    (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
-  const section = collectSection(body, isCurrentPosition, { levelBounded: true });
-  return section ? section.body : null;
+  return stateCurrentPositionSlice(body);
 }
 
 /**

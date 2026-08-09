@@ -209,8 +209,66 @@ signature is a stable, key-order-independent encoding, so any later add or chang
 to a surface — including an env or cwd change — deactivates the capability until
 the user re-consents, while a harmless key reorder does not.
 
-For non-executable surfaces (skills, agents, workflow files), the disclosure
-note explains what they do but consent is lighter — they do not execute code.
+For everything else the bundle carries, the disclosure note explains what the
+artifact does and consent is lighter. But "everything else" is not one class, and
+treating it as one was a mistake this document made until ADR-2363 — see the next
+section.
+
+### Instruction surfaces: the agent is the interpreter
+
+A capability's `SKILL.md` bodies are copied verbatim into your runtime skills
+directory, where they become agent-invocable instructions. They are **not**
+content-scanned — see
+[ADR-2363](../adr/2363-capability-instruction-surface-trust.md) for why scanning
+them was considered and rejected.
+
+This document used to group skills with inert assets as "non-executable surfaces"
+whose consent is lighter *because they do not execute code*. That reasoning was
+wrong, and the correction matters more than the wording: a skill body does not
+execute code, it **instructs the thing that does**. The consent path was chosen on
+a property ("does not execute code") that is true and not the relevant one.
+
+So there are three classes, not two:
+
+| Class | Members | What consent covers |
+|---|---|---|
+| **Executable surface** | hooks, command modules, MCP servers, reviewer lanes | Code that will run. Disclosed, consent-bound, signature-bound. |
+| **Instruction surface** | skills, agents | Instructions that will reach the agent. Reach bounded only by what the agent will do when told. |
+| **Inert artifact** | everything else in the bundle | Note only. |
+
+Both `skills` and `agents` are classified as instruction surfaces, but only
+`skills` are disclosed today. A third-party capability's declared `agents[]`
+are never staged into the agent's instruction context — the staging path that
+unions third-party skills into a runtime's skills directory has no equivalent
+for agents — so naming them at the consent prompt would claim a surface that
+does not exist. This is not a claim that agents are safe or inert: they are
+still classified as an instruction surface, they are simply not staged for
+third-party capabilities today, which is why they are not itemized below.
+
+**Itemized at the prompt.** [#3248](https://github.com/open-gsd/gsd-core/issues/3248)
+made the pre-install consent summary name each contributed skill in its own
+section. A capability whose only contribution is skills — which used to
+disclose nothing at all beyond the bundle's integrity — is included: you see its
+skills listed before you consent to install it. The listing names the surface;
+it does not assert anything about what the surface contains.
+
+Installing a capability that ships skills grants it **instruction reach**. That is
+a real grant, and it is the same bargain this document already describes for code:
+the barrier is consent, integrity and reversibility, not inspection. Naming the
+instruction surface tells you a capability ships agent instructions; it tells you
+nothing about whether they are benign — exactly as the integrity SHA tells you
+nothing about whether the pinned bundle is safe.
+
+Two things worth stating so you do not infer them:
+
+- **First-party skills are equally unscanned.** Their assurance is provenance —
+  they are the shipped package — not content inspection. There is no content
+  control on either side.
+- **Naming the instruction surface did not disturb any consent you have
+  already given.** No re-consent prompt follows from it. ADR-2363 D4 keeps
+  instruction surfaces out of the v1 disclosure signature precisely so that
+  disclosing the boundary honestly does not fire a spurious re-consent prompt
+  on every skill-bearing capability you have installed.
 
 ### Integrity pinning
 
@@ -359,6 +417,13 @@ These three things together mean: you know what you installed, you got what you
 were shown, and you can undo it completely. They do not guarantee the content
 is safe. The trust model is transparent about this.
 
+The three pillars are stated above in terms of code, because code execution is the
+sharpest case. They apply unchanged to **instructions**: you consent to the
+instruction surfaces a capability declares, the bundle you consented to is the
+bundle whose skill bodies were installed, and removing the capability removes its
+instructions from the agent's context. What there is no sandbox for is not only
+`require()`'d code — it is also the prose that tells the agent what to do.
+
 ---
 
 ## Trade-offs: the roads not taken
@@ -417,6 +482,7 @@ the code at all.
 ## Related documents
 
 - [ADR-1244 D5 — Trust model](../adr/1244-capability-ecosystem.md#d5--trust-model-artifact-parity-is-full-trust-posture-is-tiered)
+- [ADR-2363 — Instruction surfaces](../adr/2363-capability-instruction-surface-trust.md) — why skill bodies are trusted and unscanned, and why content scanning was rejected
 - [Capability matrix](../reference/capability-matrix.md) — the generated catalogue of all capabilities
 - [PRD-1244 §6 — Out of scope](../prd/1244-capability-ecosystem.md#6-scope-160) — why sandboxing is explicitly out of scope
 - [ADR-857](../adr/857-capability-system.md) — the 12 loop extension points; D7 and D8 extended by ADR-1244
