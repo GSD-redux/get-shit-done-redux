@@ -21,15 +21,20 @@
  * the signature — the loader has no config resolver and must compute the same signature as the
  * lifecycle (constraint 2, `.gsd/phase/chore-2796-reviewer-trust-disclosure/40-design.md`).
  *
- * ADR-2363 D5 (#3248): a capability's declared `skills`/`agents` are INSTRUCTION surfaces — their
- * bodies are copied verbatim into the user's agent instruction context, so their reach is bounded
- * only by what the agent will do when told. They are disclosed BY NAME and never content-scanned
- * (D2 — Kerckhoffs: a shipped rule set is readable by the adversary who installs it). Unlike the
- * four executable classes they never set `hasExecutable` (D3) and never enter `disclosureSignature`
- * (D4): folding them in would perturb the stored signature of every already-consented skill-bearing
+ * ADR-2363 D5 (#3248): a capability's declared `skills` are INSTRUCTION surfaces — their bodies are
+ * copied verbatim into the user's agent instruction context, so their reach is bounded only by what
+ * the agent will do when told. They are disclosed BY NAME and never content-scanned (D2 —
+ * Kerckhoffs: a shipped rule set is readable by the adversary who installs it). Unlike the four
+ * executable classes they never set `hasExecutable` (D3) and never enter `disclosureSignature` (D4):
+ * folding them in would perturb the stored signature of every already-consented skill-bearing
  * capability and fire a spurious re-consent on its next upgrade — the harm ADR-2782 D4 rule 5
  * already forbids. Any future signature binding arrives as a versioned v2, never an in-place
- * re-encoding of v1.
+ * re-encoding of v1. ADR-2363 D3's class table names "skills, agents", but third-party `agents[]`
+ * are deliberately EXCLUDED here: `stageAgentsForRuntimeWithConverter` (`src/install-profiles.cts`)
+ * takes only a source directory, with no registry-aware third-party staging path the way
+ * `readInstalledCapabilitySkill` gives skills — so a declared agent is never actually staged into
+ * the instruction context, and disclosing it would name a surface that does not exist. Agents stay
+ * unimplemented pending a maintainer decision.
  *
  * Exports:
  *   RESERVED_NAMESPACES               — id prefixes third parties may not claim
@@ -244,8 +249,12 @@ interface ReviewerLaneSurface {
  * by ADR-2363 D2 (Kerckhoffs — a shipped rule set is readable by the adversary who installs it).
  */
 interface InstructionSurface {
-  /** Which declaration array the name came from. */
-  kind: 'skill' | 'agent';
+  /**
+   * Which declaration array the name came from — still a discriminator even with one member: a
+   * future addition (see `INSTRUCTION_SURFACE_FIELDS`) is why this stays a field rather than being
+   * dropped now.
+   */
+  kind: 'skill';
   /** The declared stem/name, VERBATIM — never normalized, truncated, or deduped. */
   name: string;
 }
@@ -264,11 +273,11 @@ interface Disclosure {
    */
   reviewerLanes: ReviewerLaneSurface[];
   /**
-   * ADR-2363 D5 (#3248): the skills and agents this capability contributes to the agent's
-   * instruction context. A FIFTH disclosed class that is deliberately NOT executable: it never
-   * contributes to `hasExecutable` (D3) and never enters `disclosureSignature` (D4 — folding it in
-   * would perturb the stored signature of every already-consented skill-bearing capability and fire
-   * a spurious re-consent on its next upgrade, which ADR-2782 D4 rule 5 forbids).
+   * ADR-2363 D5 (#3248): the skills this capability contributes to the agent's instruction context
+   * (agents are excluded — see the module header). A FIFTH disclosed class that is deliberately NOT
+   * executable: it never contributes to `hasExecutable` (D3) and never enters `disclosureSignature`
+   * (D4 — folding it in would perturb the stored signature of every already-consented skill-bearing
+   * capability and fire a spurious re-consent on its next upgrade, which ADR-2782 D4 rule 5 forbids).
    */
   instructionSurfaces: InstructionSurface[];
   /** True when the capability ships ANY executable surface (=> consent required). */
@@ -725,13 +734,17 @@ function collectReviewerLaneSurfaces(
 }
 
 /**
- * The manifest fields whose declared names become instruction surfaces, in DISCLOSURE ORDER
- * (skills before agents). Ordered data rather than two hand-rolled loops so a future third member
- * of the class is one row, not a third copy of the same filter.
+ * The manifest fields whose declared names become instruction surfaces. Ordered data rather than a
+ * hand-rolled loop per field, so a future second member of the class is one row, not a second copy
+ * of the same filter. Deliberately a ONE-row table today: third-party `agents[]` are never staged
+ * into the instruction context — `stageAgentsForRuntimeWithConverter` (`src/install-profiles.cts`)
+ * takes only a source directory, with no registry-aware staging path the way
+ * `readInstalledCapabilitySkill` gives skills — so disclosing them would name a surface that does
+ * not exist. ADR-2363 D3's class table says "skills, agents"; the agents half is therefore
+ * deliberately unimplemented pending a maintainer decision.
  */
 const INSTRUCTION_SURFACE_FIELDS: ReadonlyArray<{ field: string; kind: InstructionSurface['kind'] }> = [
   { field: 'skills', kind: 'skill' },
-  { field: 'agents', kind: 'agent' },
 ];
 
 /**
@@ -778,10 +791,11 @@ function collectInstructionSurfaces(manifest: CapabilityManifest): InstructionSu
  *   - `reviewer`: { slug, transport, invoke, ... }  — an external reviewer lane (ADR-2782 D5, #2796)
  *
  * plus ONE non-executable class (ADR-2363 D5, #3248):
- *   - `skills` / `agents`: string[] of owned stems — INSTRUCTION surfaces, whose bodies land in the
- *     agent's instruction context. Disclosed by name; they never set `hasExecutable` (D3) and never
- *     enter `disclosureSignature` (D4). Stems are registry names, so they are never existence-checked
- *     against `stagedDir` and never appear in `missingArtifacts`.
+ *   - `skills`: string[] of owned stems — INSTRUCTION surfaces, whose bodies land in the agent's
+ *     instruction context. Disclosed by name; they never set `hasExecutable` (D3) and never enter
+ *     `disclosureSignature` (D4). Stems are registry names, so they are never existence-checked
+ *     against `stagedDir` and never appear in `missingArtifacts`. `agents` is excluded — see the
+ *     module header.
  *
  * `mcpServers` is not a first-party capability.json field today, but a third-party manifest may
  * declare it, so the trust gate discloses it whenever present (honest disclosure over the
@@ -1219,6 +1233,51 @@ function truncateEnvValue(v: string): string {
 }
 
 /**
+ * Characters that must never reach the consent prompt unescaped. `summarizeDisclosure`'s lines are
+ * joined with `\n` and written RAW to stderr on the needs-consent path, and every value in them is
+ * attacker-controlled manifest data. A raw newline forges a line indistinguishable from genuine
+ * disclosure text; a raw ESC lets a value rewrite or clear lines already printed; a bidi override
+ * visually reorders one. C0, DEL, C1, the bidi/isolate controls, and the line/paragraph separators
+ * are all escaped to a visible `\uXXXX`, so the value stays identifiable and cannot forge output.
+ */
+const UNSAFE_PROMPT_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** Max characters of any single manifest-supplied value rendered into the consent prompt. */
+const PROMPT_VALUE_MAX = 200;
+
+/**
+ * Render one manifest-supplied value safely into a consent-prompt line: escape every character that
+ * could forge or rewrite output, then bound the length so one oversized value cannot flood the
+ * prompt and push the rest off screen. Escaping is IDENTITY for ordinary names, so this changes no
+ * existing rendered output for any well-formed manifest — only the disclosure OBJECT is verbatim;
+ * the rendered LINE is always escaped.
+ */
+function renderValueForPrompt(v: unknown): string {
+  // `String(v)` on an arbitrary `unknown` risks Object's default `[object Object]` stringification
+  // (@typescript-eslint/no-base-to-string) for a non-primitive; every call site here passes a string
+  // in practice, but the parameter stays `unknown` for the same total-collector discipline as
+  // `renderArgForHuman`, so a non-primitive is JSON-stringified instead of coerced.
+  let s: string;
+  if (typeof v === 'string') {
+    s = v;
+  } else if (v === null || v === undefined) {
+    s = '';
+  } else if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') {
+    s = String(v);
+  } else {
+    try {
+      s = JSON.stringify(v) ?? '';
+    } catch {
+      s = '';
+    }
+  }
+  const escaped = s.replace(UNSAFE_PROMPT_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return escaped.length > PROMPT_VALUE_MAX
+    ? `${escaped.slice(0, PROMPT_VALUE_MAX)}… (${escaped.length} chars)`
+    : escaped;
+}
+
+/**
  * Render the instruction-surface section of a consent summary (ADR-2363 D3/D5, #3248).
  *
  * Extracted as its own exported function for two reasons. It is called from BOTH branches of
@@ -1233,6 +1292,11 @@ function truncateEnvValue(v: string): string {
  * TOTAL for a partial disclosure object: the CLI edge calls `summarizeDisclosure(res.disclosure || {})`
  * (`capability-command-router.cjs`), so a bare `{}` — carrying no `instructionSurfaces` at all —
  * reaches this function whenever a lifecycle result has no disclosure.
+ *
+ * #3248: every manifest-supplied value rendered here (`kind`, `name`) goes through
+ * `renderValueForPrompt` first — the CLI edge writes these lines RAW to stderr on the needs-consent
+ * path, and an unescaped name could forge a line or rewrite output already printed (see that
+ * function's comment).
  */
 function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
   const declared = (disclosure as Partial<Disclosure> | null | undefined)?.instructionSurfaces;
@@ -1242,7 +1306,10 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
     `  instruction surfaces (${surfaces.length}): installed into your agent's instruction context`,
   ];
   for (const s of surfaces) {
-    lines.push(`    - ${s?.kind || '(kind?)'}: ${s?.name || '(name?)'}`);
+    // #3248: kind/name are manifest-supplied — escape+bound before rendering (see `renderValueForPrompt`).
+    const kind = s?.kind ? renderValueForPrompt(s.kind) : '(kind?)';
+    const name = s?.name ? renderValueForPrompt(s.name) : '(name?)';
+    lines.push(`    - ${kind}: ${name}`);
   }
   // ADR-2363 D1/D2, and Kerckhoffs: say plainly that nothing inspected these bodies. A summary that
   // named the surface while implying review would be worse than silence — a "looks checked" line
@@ -1254,6 +1321,16 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
 /**
  * Render a disclosure as consent-prompt lines. Returned as an array so the CLI/runtime edge can
  * format it; the lib never writes to stdout.
+ *
+ * #3248: every manifest-supplied value interpolated into a line (hook event/script, command
+ * family/module/router, MCP name/transport/url/command/argv/header-keys/env-keys+values/cwd,
+ * reviewer-lane slug/hostConfigKey/resolvedHost/binary/rawArgs/handler, missingArtifacts entries)
+ * goes through `renderValueForPrompt` first, which escapes forging/rewriting control characters and
+ * bounds the length. These lines are joined with `\n` and written RAW to stderr on the
+ * needs-consent path (`capability-command-router.cjs`), so an unescaped value could forge a line or
+ * rewrite/clear output already printed — defeating the informed-consent guarantee this function
+ * exists to provide. GSD-authored literals (fallback placeholders, headings, `<redacted>`) are never
+ * escaped — only manifest-supplied data is.
  */
 function summarizeDisclosure(disclosure: Disclosure): string[] {
   const lines: string[] = [];
@@ -1274,7 +1351,8 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
   if (disclosure.hooks.length > 0) {
     lines.push(`  hooks (${disclosure.hooks.length}): run as runtime hook commands`);
     for (const h of disclosure.hooks) {
-      lines.push(`    - ${h.event || '(event?)'} -> ${h.script}`);
+      const event = h.event ? renderValueForPrompt(h.event) : '(event?)';
+      lines.push(`    - ${event} -> ${renderValueForPrompt(h.script)}`);
     }
   }
   if (disclosure.commandModules.length > 0) {
@@ -1283,8 +1361,9 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
     );
     for (const m of disclosure.commandModules) {
       // TRUST2-3 (#1459): show the router (which exported fn runs) so the user consents to the exact entry point.
-      const routerSuffix = m.router ? ` [router: ${m.router}]` : '';
-      lines.push(`    - ${m.family || '(family?)'} -> ${m.module}${routerSuffix}`);
+      const routerSuffix = m.router ? ` [router: ${renderValueForPrompt(m.router)}]` : '';
+      const family = m.family ? renderValueForPrompt(m.family) : '(family?)';
+      lines.push(`    - ${family} -> ${renderValueForPrompt(m.module)}${routerSuffix}`);
     }
   }
   if (disclosure.mcpServers.length > 0) {
@@ -1293,26 +1372,36 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       // TRUST2-2 (#1459): a non-stdio (http/sse) server connects to a URL; disclose the endpoint, not
       // a (nonexistent) command. A stdio server discloses command + args as before.
       const isRemote = (s.transport === 'http' || s.transport === 'sse') || (!s.command && !!s.url);
+      const name = renderValueForPrompt(s.name);
       if (isRemote) {
-        const t = s.transport || 'http';
-        lines.push(`    - ${s.name} -> [${t}] ${s.url || '(no url declared)'}`);
+        const t = s.transport ? renderValueForPrompt(s.transport) : 'http';
+        const url = s.url ? renderValueForPrompt(s.url) : '(no url declared)';
+        lines.push(`    - ${name} -> [${t}] ${url}`);
         // Header VALUES are redacted in the human summary (they may carry secrets); only the KEY set
         // is shown. The full values ARE in the signature, so a value change forces re-consent.
         const hdrKeys = s.headers ? Object.keys(s.headers) : [];
         if (hdrKeys.length > 0) {
-          lines.push(`        headers: ${hdrKeys.map((k) => `${k}=<redacted>`).join(', ')}`);
+          lines.push(`        headers: ${hdrKeys.map((k) => `${renderValueForPrompt(k)}=<redacted>`).join(', ')}`);
         }
       } else {
-        const cmd = [s.command, ...s.argv].filter(Boolean).join(' ');
-        lines.push(`    - ${s.name} -> ${cmd || '(no command declared)'}`);
+        // Command + args are each escaped individually (not the joined string) so a value that
+        // embeds a newline cannot forge a line even when it lands mid-argv.
+        const cmd = [s.command, ...s.argv].filter(Boolean).map(renderValueForPrompt).join(' ');
+        lines.push(`    - ${name} -> ${cmd || '(no command declared)'}`);
       }
       // TRUST-2 (#1459): env can change WHAT runs without touching the command, so show each env key
-      // and its (truncated) value — the user is consenting to this exact environment.
+      // and its (truncated) value — the user is consenting to this exact environment. Truncate first
+      // (keeps the prompt readable at the existing 60-char bound), then escape the result (#3248) so
+      // the truncated value can still not forge or rewrite output.
       const envKeys = s.env ? Object.keys(s.env) : [];
       if (envKeys.length > 0) {
-        lines.push(`        env: ${envKeys.map((k) => `${k}=${truncateEnvValue(s.env[k])}`).join(', ')}`);
+        lines.push(
+          `        env: ${envKeys
+            .map((k) => `${renderValueForPrompt(k)}=${renderValueForPrompt(truncateEnvValue(s.env[k]))}`)
+            .join(', ')}`,
+        );
       }
-      if (s.cwd) lines.push(`        cwd: ${s.cwd}`);
+      if (s.cwd) lines.push(`        cwd: ${renderValueForPrompt(s.cwd)}`);
     }
   }
   if (disclosure.reviewerLanes.length > 0) {
@@ -1327,19 +1416,25 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       // declared)" for a lane that in fact egresses to a live remote host —
       // understating the disclosure precisely when it matters. Disclosure runs
       // BEFORE validation, so a non-canonical transport does reach this code.
+      const slug = l.slug ? renderValueForPrompt(l.slug) : '(slug?)';
       if (l.transport === 'openai-http' || (!l.binary && l.hostConfigKey)) {
         const localTag = l.isLocalDestination ? ' [local]' : '';
-        lines.push(`    - ${l.slug || '(slug?)'} -> [openai-http] ${l.hostConfigKey || '(hostConfigKey?)'} => ${l.resolvedHost}${localTag}`);
+        const hostConfigKey = l.hostConfigKey ? renderValueForPrompt(l.hostConfigKey) : '(hostConfigKey?)';
+        lines.push(`    - ${slug} -> [openai-http] ${hostConfigKey} => ${renderValueForPrompt(l.resolvedHost)}${localTag}`);
       } else {
         // Render the RAW declared args, not the string-filtered view. The raw
         // array is what the host receives and what the consent signature binds,
         // so a non-string member that is invisible here is a surface the user
         // consented to without being shown — the opposite of the disclosure's
-        // whole purpose.
-        const cmd = [l.binary, ...l.rawArgs.map(renderArgForHuman)].filter(Boolean).join(' ');
-        lines.push(`    - ${l.slug || '(slug?)'} -> ${cmd || '(no binary declared)'}`);
+        // whole purpose. `renderArgForHuman` stringifies a non-string member; that
+        // string is equally attacker-controlled, so it is escaped too (#3248).
+        const cmd = [l.binary, ...l.rawArgs.map(renderArgForHuman)]
+          .filter(Boolean)
+          .map(renderValueForPrompt)
+          .join(' ');
+        lines.push(`    - ${slug} -> ${cmd || '(no binary declared)'}`);
       }
-      if (l.handler) lines.push(`        handler: ${l.handler}`);
+      if (l.handler) lines.push(`        handler: ${renderValueForPrompt(l.handler)}`);
       lines.push(`        sends: ${l.egressPayloadClasses.join(', ')}`);
     }
   }
@@ -1347,7 +1442,7 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
   if (disclosure.missingArtifacts.length > 0) {
     lines.push('  WARNING — declared artifacts not found in the staged bundle:');
     for (const a of disclosure.missingArtifacts) {
-      lines.push(`    - ${a}`);
+      lines.push(`    - ${renderValueForPrompt(a)}`);
     }
   }
   return lines;
@@ -1375,6 +1470,9 @@ export = {
   // ADR-2363 D3/D5 (#3248): the instruction-surface section of the consent summary, exported so
   // callers/tests can assert on it directly — see `summarizeInstructionSurfaces`'s own JSDoc.
   summarizeInstructionSurfaces,
+  // #3248: the consent-prompt escaping/bounding helper, exported so tests can assert directly that
+  // control characters (newline, ESC, bidi overrides, etc.) never reach a rendered prompt line.
+  renderValueForPrompt,
   // #1459: the consent-binding signature (single source of truth for loader + lifecycle consent).
   disclosureSignature,
   signatureForManifest,

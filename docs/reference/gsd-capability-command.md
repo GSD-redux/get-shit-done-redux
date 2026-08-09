@@ -37,7 +37,7 @@ gsd capability install <spec> [--integrity sha512-<hash>] [--scope global|projec
 
 **Behaviour**
 
-Resolves `<spec>` to a versioned, staged capability bundle. The pipeline is: fetch → verify integrity or SHA pin → check `engines.gsd` against the installed GSD version → disclose executable surfaces (hooks, command modules, MCP servers) and instruction surfaces (skills, agents) → obtain consent (a declarative capability needs none; an executable one requires `--yes` — disclosed instruction surfaces do not by themselves trigger this requirement) → validate the incoming manifest against the trust invariants → extract to the scope root → write the ledger entry atomically.
+Resolves `<spec>` to a versioned, staged capability bundle. The pipeline is: fetch → verify integrity or SHA pin → check `engines.gsd` against the installed GSD version → disclose executable surfaces (hooks, command modules, MCP servers) and instruction surfaces (skills) → obtain consent (a declarative capability needs none; an executable one requires `--yes` — disclosed instruction surfaces do not by themselves trigger this requirement) → validate the incoming manifest against the trust invariants → extract to the scope root → write the ledger entry atomically.
 
 An overlay whose `id` uses a reserved first-party prefix (`gsd-`, `gsd-core-`, `anthropic-`) is rejected before extraction. Install never executes capability code; staging is copy-only. A declined install (executable surface, no `--yes`) writes **nothing** — no bundle, no ledger entry, no shared-file edits.
 
@@ -304,9 +304,11 @@ An empty (or missing) ledger reports nothing: `--json` emits `[]`; the table not
 
 ---
 
-### Instruction surfaces (skills, agents)
+### Instruction surfaces (skills)
 
-A capability's declared `skills` and `agents` stems are **instruction surfaces**: each stem's body — `SKILL.md` or the agent definition — is copied verbatim into the runtime's instruction context, where it reaches the agent directly. `install` and `update` list every such stem by name in the disclosure printed before the pipeline proceeds, alongside the executable-surface disclosure.
+A capability's declared `skills` stems are **instruction surfaces**: each stem's body — its `SKILL.md` — is copied verbatim into the runtime's instruction context, where it reaches the agent directly. `install` and `update` list every such stem by name in the disclosure printed before the pipeline proceeds, alongside the executable-surface disclosure.
+
+ADR-2363 D3 classifies `agents` as an instruction surface too, but a third-party capability's declared `agents[]` are not disclosed here: they are never staged into the agent's instruction context — the staging path that unions third-party skills into a runtime's skills directory has no equivalent for agents — so naming them would name a surface that does not exist. This is not a claim that agents are safe or inert, only that they are not currently staged for third-party capabilities.
 
 An instruction surface is disclosed but is **not** an executable surface: naming it does not set `hasExecutable` and it does not enter the `disclosureSignature`, so adding, removing, or changing skills between versions does not by itself require `--yes` or force re-consent on `update`. See [ADR-2363](../adr/2363-capability-instruction-surface-trust.md) D3 (the instruction-surface classification) and D4 (why it is excluded from the disclosure signature).
 

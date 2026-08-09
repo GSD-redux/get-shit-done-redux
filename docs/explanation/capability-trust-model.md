@@ -236,9 +236,18 @@ So there are three classes, not two:
 | **Instruction surface** | skills, agents | Instructions that will reach the agent. Reach bounded only by what the agent will do when told. |
 | **Inert artifact** | everything else in the bundle | Note only. |
 
+Both `skills` and `agents` are classified as instruction surfaces, but only
+`skills` are disclosed today. A third-party capability's declared `agents[]`
+are never staged into the agent's instruction context — the staging path that
+unions third-party skills into a runtime's skills directory has no equivalent
+for agents — so naming them at the consent prompt would claim a surface that
+does not exist. This is not a claim that agents are safe or inert: they are
+still classified as an instruction surface, they are simply not staged for
+third-party capabilities today, which is why they are not itemized below.
+
 **Itemized at the prompt.** [#3248](https://github.com/open-gsd/gsd-core/issues/3248)
-made the pre-install consent summary name each contributed skill and agent in
-its own section. A capability whose only contribution is skills — which used to
+made the pre-install consent summary name each contributed skill in its own
+section. A capability whose only contribution is skills — which used to
 disclose nothing at all beyond the bundle's integrity — is included: you see its
 skills listed before you consent to install it. The listing names the surface;
 it does not assert anything about what the surface contains.
