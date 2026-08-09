@@ -42,7 +42,9 @@ function fixture(overrides) {
 // install-scope's global-configHome resolution has nothing to resolve for a
 // runtime with no config directory, so it is excluded from the "every
 // runtime" sweep below rather than assumed to resolve like every other
-// registered runtime.
+// registered runtime. The excluded case itself is asserted directly by
+// 'rejects a runtime with no config home' below (design row 13) — it is
+// covered, not dropped.
 const NON_INSTALLABLE_RUNTIMES = new Set(['vscode']);
 const INSTALL_SCOPE_RUNTIME_IDS = Object.keys(registry.runtimes)
   .filter((id) => !NON_INSTALLABLE_RUNTIMES.has(id));
@@ -140,6 +142,23 @@ describe('resolveScope', () => {
     assert.throws(
       () => resolveScope(fixture({ id: 'global', runtime: 'no-such-runtime' })),
       (err) => err instanceof TypeError && err.message.includes('no-such-runtime'),
+    );
+  });
+
+  // Design row 13: a runtime whose descriptor has `configHome.kind ===
+  // 'none'` — vscode is the only one — has no installable config directory
+  // to resolve at all. Same contract as row 9 (unknown runtime): TypeError
+  // naming the runtime, one catch shape for callers.
+  test('rejects a runtime with no config home', () => {
+    assert.throws(
+      () => resolveScope(fixture({ id: 'global', runtime: 'vscode' })),
+      (err) => err instanceof TypeError
+        && err.message === "resolveScope: runtime 'vscode' has no installable config directory (configHome.kind === 'none')",
+    );
+    assert.throws(
+      () => resolveScope(fixture({ id: 'local', runtime: 'vscode' })),
+      (err) => err instanceof TypeError
+        && err.message === "resolveScope: runtime 'vscode' has no installable config directory (configHome.kind === 'none')",
     );
   });
 

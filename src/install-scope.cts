@@ -307,6 +307,14 @@ export function resolveScope(input: ResolveScopeInput): ResolvedScope {
  * Throws the same `TypeError`, with the same message shape, as
  * `resolveScope` throws for an `id` outside `'global' | 'local'` — both call
  * `validateScopeId` above, so the two error contracts cannot diverge.
+ *
+ * Deliberately throws, rather than returning `false`, for an out-of-union
+ * value — unlike the inline `scope === 'global'` comparison it replaced,
+ * which silently returned `false` for anything unrecognized. The
+ * alternative is silently treating an unknown scope as "not global" and
+ * writing artifacts to the wrong place, which is worse than failing loud.
+ * A caller holding an optional `scope` (e.g. a raw `Layout.scope`) must
+ * default it before calling this — see `surface.cts` for the pattern.
  */
 export function isGlobalScope(scope: InstallScope): boolean {
   return validateScopeId(scope, 'isGlobalScope') === 'global';
