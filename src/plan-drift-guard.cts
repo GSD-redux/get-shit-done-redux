@@ -148,3 +148,109 @@ export function classifyDriftSeverity({
       return { severity: 'INFO', hardBlock: false };
   }
 }
+
+// ─── #1956 cross-artifact phase-status drift ────────────────────────────────
+
+/** Verdict from comparing one phase's status across STATE.md and ROADMAP.md. */
+export type PhaseStatusVerdict = 'consistent' | 'lag' | 'drifted' | 'uncheckable';
+
+/** Result of comparePhaseStatus. */
+export interface PhaseStatusResult {
+  verdict: PhaseStatusVerdict;
+  stateRank: number | null;
+  roadmapRank: number | null;
+}
+
+/**
+ * Frozen map from lowercased phase-status text to a shared ordinal rank,
+ * covering the union of the STATE.md "Current Position" vocabulary
+ * (gsd-core/templates/state.md) and the ROADMAP.md "## Progress" table
+ * Status column vocabulary (gsd-core/templates/roadmap.md).
+ *
+ * The two vocabularies overlap on 'in progress', which is rank 1 in both —
+ * no conflict.
+ */
+const PHASE_STATUS_RANKS: Readonly<Record<string, number>> = Object.freeze({
+  // STATE.md "Current Position" vocabulary
+  'ready to plan':    0,
+  'planning':         0,
+  'ready to execute': 1,
+  'in progress':      1,
+  'phase complete':   2,
+  // ROADMAP.md "## Progress" table Status column vocabulary
+  'not started':      0,
+  'complete':         2,
+} as const);
+
+/** Rank at which a status asserts work is DONE (terminal, not comparative). */
+const TERMINAL_RANK = 2;
+
+/**
+ * Resolve a raw phase-status string to its shared ordinal rank, or null when
+ * the value is missing/empty/unrecognized. Case-insensitive, trims
+ * surrounding whitespace.
+ *
+ * @param value - raw status text from STATE.md or ROADMAP.md
+ * @returns the resolved rank, or null if unresolvable
+ */
+function resolvePhaseStatusRank(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '') return null;
+  if (!Object.prototype.hasOwnProperty.call(PHASE_STATUS_RANKS, normalized)) return null;
+  return PHASE_STATUS_RANKS[normalized];
+}
+
+/**
+ * Compare a phase's status as reported by STATE.md against the same phase's
+ * status as reported by ROADMAP.md's "## Progress" table, and classify the
+ * result.
+ *
+ * Unlike classifyDriftSeverity, this never throws for an unrecognized
+ * status: the inputs are user document text (prose a human or agent typed
+ * into STATE.md/ROADMAP.md), not config, so an unrecognized value is data —
+ * surfaced as 'uncheckable' — not a programming error.
+ *
+ * Rank 2 ('phase complete' / 'Complete') is TERMINAL: it asserts the work is
+ * DONE. If exactly one side reports rank 2 and the other does not, that is
+ * always 'drifted', regardless of numeric distance — a document claiming
+ * "done" while another claims "still going" is a direct contradiction, not
+ * mere lag. This is the issue's canonical example: complete in STATE.md but
+ * in progress in ROADMAP.md.
+ *
+ * Otherwise, ranks are compared numerically: equal → 'consistent';
+ * off-by-one → 'lag'; off-by-two-or-more → 'drifted'.
+ *
+ * @param opts.stateStatus   - raw Status value from STATE.md's Current Position
+ * @param opts.roadmapStatus - raw Status cell from ROADMAP.md's Progress table
+ * @returns { verdict, stateRank, roadmapRank }
+ */
+export function comparePhaseStatus({
+  stateStatus,
+  roadmapStatus,
+}: {
+  stateStatus: string | null | undefined;
+  roadmapStatus: string | null | undefined;
+}): PhaseStatusResult {
+  const stateRank = resolvePhaseStatusRank(stateStatus);
+  const roadmapRank = resolvePhaseStatusRank(roadmapStatus);
+
+  if (stateRank === null || roadmapRank === null) {
+    return { verdict: 'uncheckable', stateRank, roadmapRank };
+  }
+
+  const stateIsTerminal = stateRank === TERMINAL_RANK;
+  const roadmapIsTerminal = roadmapRank === TERMINAL_RANK;
+  if (stateIsTerminal !== roadmapIsTerminal) {
+    return { verdict: 'drifted', stateRank, roadmapRank };
+  }
+
+  const diff = Math.abs(stateRank - roadmapRank);
+  if (diff === 0) {
+    return { verdict: 'consistent', stateRank, roadmapRank };
+  }
+  if (diff === 1) {
+    return { verdict: 'lag', stateRank, roadmapRank };
+  }
+  return { verdict: 'drifted', stateRank, roadmapRank };
+}

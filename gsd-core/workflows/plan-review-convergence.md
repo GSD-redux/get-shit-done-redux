@@ -260,20 +260,38 @@ Run this pass whenever the source-grounding pass ran — it is the second axis o
 
 **Key on knowledge, not on similar text.** DRY is about a single authoritative representation of a piece of *knowledge*. Two passages that merely read alike, or that restate one fact at different levels of detail, are NOT drift. Only a contradiction is.
 
-1. **Pair up the facts.** For each row below, collect the fact as each side states it. The authority column names the source of truth, so a finding can say which side to keep:
+1. **Phase status — decided by the seam, not by judgment.** Do not eyeball this axis:
 
-   | Fact class | Artifact pair | Authority |
-   |---|---|---|
-   | Success criteria / must-have truths | ROADMAP.md Success Criteria ↔ PLAN.md `must_haves.truths` | ROADMAP.md |
-   | Requirement IDs | ROADMAP.md `**Requirements:**` ↔ PLAN.md task requirement refs | ROADMAP.md |
-   | Phase status | STATE.md status ↔ ROADMAP.md phase state | STATE.md |
-   | Glossary / domain term | CONTEXT.md `Decisions` ↔ PLAN.md usage of the term | CONTEXT.md |
+   ```bash
+   DRIFT=$(gsd_run drift-guard phase-status --phase "${PHASE}")
+   # $DRIFT is JSON: {"verdict":"consistent|lag|drifted|uncheckable","stateStatus":…,"roadmapStatus":…}
+   ```
 
-2. **Judge each pair.** FLAG only when ALL THREE hold — both sides name the *same* fact (same phase, same requirement ID, same success criterion, or the same defined term); the two representations *contradict*, one asserting what the other denies, rather than differing in wording or in level of detail; and the pair is one of the four authority pairs above.
+   - `drifted` — STATE.md and ROADMAP.md contradict each other. Report it; the authority is STATE.md.
+   - `lag` — one lifecycle step apart between non-terminal statuses. NOT a finding.
+   - `consistent` — nothing to report.
+   - `uncheckable` — a document was absent or carried a status outside both vocabularies. Record it in the coverage block; never read it as consistent.
 
-3. **Record.** Emit each finding into `REVIEWS.md` beside the source-grounding coverage block, quoting both locations and naming the divergence and the authority, so the author can collapse the two copies to a single source of truth.
+   Completeness is terminal: when exactly one side says the phase is complete, the verdict is `drifted` and never `lag`, however few steps apart the two words look.
 
-**Do NOT flag:** a wording-only difference that asserts the same thing; a fact that appears in one artifact only — single-source is the target state, not a finding; a PLAN that ADDS a truth beyond the roadmap Success Criteria, which is sanctioned (plans may add, never subtract); a STATE.md and ROADMAP.md status that differ by a single lifecycle step in either direction — STATE.md is written at planning time independently of ROADMAP.md, so it can lead as readily as trail, and neither is drift; anything under CONTEXT.md's `Claude's Discretion` or `Deferred Ideas`, which are non-authoritative by design.
+2. **Pair up the remaining facts by judgment.** The authority column names the source of truth, so a finding can say which side to keep:
+
+   | Fact class | Artifact pair | Authority | Decided by |
+   |---|---|---|---|
+   | Success criteria / must-have truths | ROADMAP.md Success Criteria ↔ PLAN.md `must_haves.truths` | ROADMAP.md | judgment |
+   | Requirement IDs | ROADMAP.md `**Requirements:**` ↔ PLAN.md task requirement refs | ROADMAP.md | judgment |
+   | Phase status | STATE.md status ↔ ROADMAP.md phase state | STATE.md | step 1 (deterministic) |
+   | Glossary / domain term | CONTEXT.md `Decisions` ↔ PLAN.md usage of the term | CONTEXT.md | judgment |
+
+3. **Judge each judgment pair.** FLAG only when ALL THREE hold:
+
+   1. both sides name the *same* fact — same requirement ID, same success criterion, or the same defined term; and
+   2. the two representations *contradict*, one asserting what the other denies, rather than differing in wording or in level of detail; and
+   3. the pair is one of the judgment pairs above.
+
+4. **Record.** Emit each finding into `REVIEWS.md` beside the source-grounding coverage block, quoting both locations and naming the divergence and the authority, so the author can collapse the two copies to a single source of truth.
+
+**Do NOT flag:** a wording-only difference that asserts the same thing; a fact that appears in one artifact only — single-source is the target state, not a finding; a PLAN that ADDS a truth beyond the roadmap Success Criteria, which is sanctioned (plans may add, never subtract); a `lag` verdict from step 1 — two non-terminal statuses a single lifecycle step apart, in either direction, since STATE.md is written at planning time independently of ROADMAP.md and can lead as readily as trail (a disagreement about *completion* is never lag, and step 1 already reports it as `drifted`); anything under CONTEXT.md's `Claude's Discretion` or `Deferred Ideas`, which are non-authoritative by design.
 
 **Report once, not twice — these belong to `gsd-plan-checker`:** a PLAN that omits a roadmap Success Criterion is scope reduction (Dimension 7b); a requirement ID the ROADMAP never defines is requirement coverage (Dimension 1); two PLAN.md files in one phase disagreeing is cross-plan data contracts (Dimension 9).
 

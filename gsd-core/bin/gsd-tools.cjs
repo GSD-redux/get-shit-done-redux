@@ -80,6 +80,7 @@
  *   drift-guard severity --status <S>    Classify a symbol verdict into { severity, hardBlock }
  *     [--authority <A>]                  Status: VERIFIED|MISSING|AMBIGUOUS|UNCHECKABLE
  *                                        Authority: grep|intel|treesitter|lsp|scip (default: config-resolved)
+ *   drift-guard phase-status [--phase N]     Compare STATE.md vs ROADMAP.md phase status
  *
  * Validation:
  *   validate consistency               Check phase numbering, disk/roadmap sync
@@ -305,7 +306,7 @@ const { routeCheckCommand } = require('./lib/check-command-router.cjs');
 const { routeTaskCommand } = require('./lib/task-command-router.cjs');
 const { parseNamedArgs, parseMultiwordArg } = require('./lib/command-arg-projection.cjs');
 const { cmdGitBaseBranch } = require('./lib/git-base-branch.cjs');
-const { getEffectiveAuthority, classifyDriftSeverity } = require('./lib/plan-drift-guard.cjs');
+const { getEffectiveAuthority, classifyDriftSeverity, comparePhaseStatus } = require('./lib/plan-drift-guard.cjs');
 
 // ─── Bridge collapsed (Phase 4) ────────────────────────────────────────────────
 // Non-family commands now run through their CJS handlers directly. Keep the
@@ -3283,8 +3284,122 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             return;
           }
 
+          if (subcommand === 'phase-status') {
+            // #1956: deterministic STATE.md-vs-ROADMAP.md phase-status drift.
+            const { planningDir } = require('./lib/planning-workspace.cjs');
+            const { stateExtractField, stateCurrentPositionSlice } = require('./lib/state-document.cjs');
+            const { findTableWithColumns } = require('./lib/markdown-table.cjs');
+            const { phaseKeyFromProse } = require('./lib/phase-id.cjs');
+            // STATE.md's YAML frontmatter carries its own lowercase `status:`
+            // scalar ahead of the body's `## Current Position` prose "Status:"
+            // line; stateExtractField's non-scoped regex would otherwise match
+            // that frontmatter line first (it comes first in the file) and
+            // silently report the wrong value. Strip frontmatter so extraction
+            // is scoped to the body.
+            const { stripFrontmatter } = require('./lib/frontmatter.cjs');
+
+            const phaseIdx = args.indexOf('--phase');
+            const phaseArg = (phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--'))
+              ? args[phaseIdx + 1]
+              : undefined;
+
+            const dir = planningDir(cwd);
+            const statePath = path.join(dir, 'STATE.md');
+            const roadmapPath = path.join(dir, 'ROADMAP.md');
+
+            let stateContent = null;
+            try {
+              stateContent = fs.readFileSync(statePath, 'utf-8');
+            } catch {
+              // missing_state below
+            }
+            if (stateContent === null) {
+              const phase = phaseArg !== undefined ? phaseKeyFromProse(phaseArg) : null;
+              output({
+                verdict: 'uncheckable',
+                reason: 'missing_state',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            let roadmapContent = null;
+            try {
+              roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+            } catch {
+              // missing_roadmap below
+            }
+
+            const stateBody = stripFrontmatter(stateContent);
+            // #1956 fix: scope extraction to `## Current Position` (or `###`
+            // in the bootstrap template) so a historical `Phase:` / `Status:`
+            // line in an archive section (e.g. `## Session Continuity
+            // Archive`) can't shadow the real one — same #2956 scope state.cts
+            // uses for current_phase, via the shared owner in
+            // state-document.cjs. Falls back to the whole body when no
+            // Current Position heading is found, so a STATE.md without one
+            // still resolves rather than going uncheckable.
+            const currentPositionBody = stateCurrentPositionSlice(stateBody) ?? stateBody;
+
+            // Resolve the target phase: --phase if given, else whatever
+            // STATE.md's Current Position reports as current.
+            const phase = phaseArg !== undefined
+              ? phaseKeyFromProse(phaseArg)
+              : phaseKeyFromProse(stateExtractField(currentPositionBody, 'Phase'));
+
+            if (roadmapContent === null) {
+              output({
+                verdict: 'uncheckable',
+                reason: 'missing_roadmap',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            const stateStatus = stateExtractField(currentPositionBody, 'Status');
+
+            const table = findTableWithColumns(roadmapContent, ['Phase', 'Plans Complete', 'Status', 'Completed']);
+            const matchedRow = table
+              ? table.rows.find((row) => phaseKeyFromProse(row.Phase) === phase && phase !== null)
+              : undefined;
+
+            if (!matchedRow) {
+              const result = comparePhaseStatus({ stateStatus, roadmapStatus: null });
+              output({
+                verdict: 'uncheckable',
+                reason: 'phase_not_in_roadmap',
+                phase,
+                stateStatus,
+                roadmapStatus: null,
+                stateRank: result.stateRank,
+                roadmapRank: result.roadmapRank,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            const roadmapStatus = matchedRow.Status;
+            const result = comparePhaseStatus({ stateStatus, roadmapStatus });
+            output({
+              verdict: result.verdict,
+              phase,
+              stateStatus,
+              roadmapStatus,
+              stateRank: result.stateRank,
+              roadmapRank: result.roadmapRank,
+              authority: 'STATE.md',
+            }, raw);
+            return;
+          }
+
           error(
-            `Unknown drift-guard subcommand: ${subcommand || '(none)'}. Available: authority, severity`,
+            `Unknown drift-guard subcommand: ${subcommand || '(none)'}. Available: authority, severity, phase-status`,
             ERROR_REASON.SDK_UNKNOWN_COMMAND,
           );
   }

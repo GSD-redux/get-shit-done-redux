@@ -25,6 +25,7 @@ const {
   AUTHORITY_RUNGS,
   getEffectiveAuthority,
   classifyDriftSeverity,
+  comparePhaseStatus,
 } = require('../gsd-core/bin/lib/plan-drift-guard.cjs');
 
 // ── 1. AUTHORITY_RUNGS sanity ────────────────────────────────────────────────
@@ -324,5 +325,148 @@ describe('plan-review-convergence.md uses gsd_run drift-guard seam', () => {
       /gsd_run drift-guard severity[^\n]*--authority/,
       'plan-review-convergence.md severity invocation must pass --authority so the resolved authority is forwarded to classifyDriftSeverity',
     );
+  });
+});
+
+// ── 6. comparePhaseStatus unit tests (#1956) ────────────────────────────────
+
+describe('comparePhaseStatus', () => {
+  test('equal ranks (STATE vocabulary vs ROADMAP vocabulary) → consistent', () => {
+    const result = comparePhaseStatus({ stateStatus: 'In progress', roadmapStatus: 'In Progress' });
+    assert.equal(result.verdict, 'consistent');
+    assert.equal(result.stateRank, result.roadmapRank);
+  });
+
+  test('Phase complete vs In Progress → drifted, NOT lag (the issue\'s canonical case)', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Phase complete', roadmapStatus: 'In Progress' });
+    assert.equal(result.verdict, 'drifted');
+    assert.notEqual(result.verdict, 'lag', 'a completion disagreement must never be classified as lag, even though the ranks are only 1 apart');
+  });
+
+  test('Phase complete vs Not started → drifted', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Phase complete', roadmapStatus: 'Not started' });
+    assert.equal(result.verdict, 'drifted');
+  });
+
+  test('Ready to plan vs In Progress → lag', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Ready to plan', roadmapStatus: 'In Progress' });
+    assert.equal(result.verdict, 'lag');
+  });
+
+  test('unknown status on either side → uncheckable, and the other side\'s rank still resolves', () => {
+    const stateUnknown = comparePhaseStatus({ stateStatus: 'Frobnicating', roadmapStatus: 'In Progress' });
+    assert.equal(stateUnknown.verdict, 'uncheckable');
+    assert.equal(stateUnknown.stateRank, null);
+    assert.equal(stateUnknown.roadmapRank, 1, 'the resolvable side must still be diagnosable even when the other is unknown');
+
+    const roadmapUnknown = comparePhaseStatus({ stateStatus: 'Phase complete', roadmapStatus: 'Frobnicating' });
+    assert.equal(roadmapUnknown.verdict, 'uncheckable');
+    assert.equal(roadmapUnknown.roadmapRank, null);
+    assert.equal(roadmapUnknown.stateRank, 2, 'the resolvable side must still be diagnosable even when the other is unknown');
+  });
+
+  test('null / undefined / empty-string on either side → uncheckable', () => {
+    assert.equal(comparePhaseStatus({ stateStatus: null, roadmapStatus: 'In Progress' }).verdict, 'uncheckable');
+    assert.equal(comparePhaseStatus({ stateStatus: undefined, roadmapStatus: 'In Progress' }).verdict, 'uncheckable');
+    assert.equal(comparePhaseStatus({ stateStatus: '', roadmapStatus: 'In Progress' }).verdict, 'uncheckable');
+    assert.equal(comparePhaseStatus({ stateStatus: 'In Progress', roadmapStatus: null }).verdict, 'uncheckable');
+    assert.equal(comparePhaseStatus({ stateStatus: 'In Progress', roadmapStatus: undefined }).verdict, 'uncheckable');
+    assert.equal(comparePhaseStatus({ stateStatus: 'In Progress', roadmapStatus: '' }).verdict, 'uncheckable');
+  });
+
+  test('case and surrounding whitespace are ignored', () => {
+    const result = comparePhaseStatus({ stateStatus: '  PHASE COMPLETE  ', roadmapStatus: 'Phase complete' });
+    assert.equal(result.verdict, 'consistent');
+    assert.equal(result.stateRank, 2);
+    assert.equal(result.roadmapRank, 2);
+  });
+
+  test('does not throw for unrecognized input (unlike classifyDriftSeverity)', () => {
+    assert.doesNotThrow(() => comparePhaseStatus({ stateStatus: 'garbage', roadmapStatus: 'nonsense' }));
+    assert.doesNotThrow(() => comparePhaseStatus({ stateStatus: undefined, roadmapStatus: undefined }));
+  });
+});
+
+// ── 7. #1956 acceptance — drifted phase status across STATE/ROADMAP, via the real CLI ──
+
+describe('#1956 acceptance — a drifted phase status across STATE/ROADMAP yields a finding', () => {
+  let tmpDir;
+  let planningDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1956-acceptance-'));
+    planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const PHASE = 3;
+  const PHASE_NAME = 'Convergence';
+
+  // Writes .planning/STATE.md carrying frontmatter + a `## Current Position`
+  // section, matching gsd-core/templates/state.md.
+  function writeState(stateStatus) {
+    const content = `---
+gsd_state_version: '1.0'
+status: planning
+---
+
+# Project State
+
+## Current Position
+
+Phase: ${PHASE} of 8 (${PHASE_NAME})
+Plan: 1 of 1 in current phase
+Status: ${stateStatus}
+Last activity: 2026-08-09 — test fixture
+
+Progress: [░░░░░░░░░░] 0%
+`;
+    fs.writeFileSync(path.join(planningDir, 'STATE.md'), content);
+  }
+
+  // Writes .planning/ROADMAP.md carrying a `## Progress` section with the
+  // table shape gsd-core/templates/roadmap.md declares.
+  function writeRoadmap(roadmapStatus) {
+    const content = `# Roadmap: Test Project
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| ${PHASE}. ${PHASE_NAME} | 0/1 | ${roadmapStatus} | - |
+`;
+    fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), content);
+  }
+
+  test('an intentionally-drifted phase status yields a finding', () => {
+    writeState('Phase complete');
+    writeRoadmap('In Progress');
+    const res = runGsdTools(['drift-guard', 'phase-status', '--phase', String(PHASE)], tmpDir);
+    assert.ok(res.success, `Expected success, got: ${res.error}`);
+    const result = JSON.parse(res.output);
+    assert.equal(result.verdict, 'drifted');
+    assert.equal(result.authority, 'STATE.md', 'the finding must name STATE.md as authority so the reviewer knows which side to keep');
+  });
+
+  test('consistent artifacts do not', () => {
+    writeState('Phase complete');
+    writeRoadmap('Complete');
+    const res = runGsdTools(['drift-guard', 'phase-status', '--phase', String(PHASE)], tmpDir);
+    assert.ok(res.success, `Expected success, got: ${res.error}`);
+    const result = JSON.parse(res.output);
+    assert.equal(result.verdict, 'consistent');
+  });
+
+  test('a missing ROADMAP.md is uncheckable, not consistent', () => {
+    writeState('Phase complete');
+    const res = runGsdTools(['drift-guard', 'phase-status', '--phase', String(PHASE)], tmpDir);
+    assert.ok(res.success, `Expected success, got: ${res.error}`);
+    const result = JSON.parse(res.output);
+    assert.equal(result.verdict, 'uncheckable');
+    assert.ok(result.reason && result.reason.length > 0, 'a skipped axis must be observable via a non-empty reason');
   });
 });

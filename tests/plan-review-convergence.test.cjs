@@ -1566,6 +1566,18 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
     return matches ? matches.length : 0;
   }
 
+  /**
+   * Conjunction clauses — the indented sub-list under step 3's "FLAG only when
+   * ALL THREE hold". Counted separately from the STEPS above because they are
+   * different things: `countOrderedItems` measures the pass's procedure, this
+   * measures the trigger gate's arity. Asserting one while claiming the other
+   * is how a weakened gate slips through a green suite.
+   */
+  function countConjunctionItems(span) {
+    const matches = span.match(/^ {3}\d+\. /gm);
+    return matches ? matches.length : 0;
+  }
+
   describe('the pass exists and extends the drift guard in place', () => {
     test('defines a cross-artifact fact-drift pass', () => {
       const heading = WORKFLOW.match(/^### Cross-artifact fact-drift pass(.*)$/m);
@@ -1645,9 +1657,19 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
   });
 
   describe('the trigger gate is a three-way conjunction', () => {
-    test('the trigger gate enumerates exactly three conditions', () => {
+    test('the pass runs four procedure steps', () => {
       assert.strictEqual(
         countOrderedItems(driftSpan()),
+        4,
+        'the fact-drift pass must run four steps (deterministic phase-status, pair up judgment ' +
+        'facts, judge them, record). This counts the PROCEDURE; the trigger gate arity is ' +
+        'counted separately.'
+      );
+    });
+
+    test('the trigger gate enumerates exactly three conditions', () => {
+      assert.strictEqual(
+        countConjunctionItems(driftSpan()),
         3,
         'the fact-drift pass must gate on exactly three AND-ed conditions (same fact named on ' +
         'both sides, the two representations contradict, and the pair is one of the declared ' +
@@ -1662,13 +1684,25 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
       // limit-1 / limit / limit+1 through the SAME function the guard uses, in
       // both LF and CRLF form, so a future edit cannot neuter it.
       const item = (n) => `${n}. condition ${n}`;
+      const indentedItem = (n) => `   ${n}. condition ${n}`;
       for (const eol of ['\n', '\r\n']) {
         const spanOf = (count) =>
           ['### Cross-artifact fact-drift pass', ...Array.from({ length: count }, (_, i) => item(i + 1))]
             .join(eol);
+        const indentedSpanOf = (count) =>
+          ['### Cross-artifact fact-drift pass', ...Array.from({ length: count }, (_, i) => indentedItem(i + 1))]
+            .join(eol);
         assert.strictEqual(countOrderedItems(spanOf(2)), 2, `2 items must count as 2 (eol=${JSON.stringify(eol)})`);
         assert.strictEqual(countOrderedItems(spanOf(3)), 3, `3 items must count as 3 (eol=${JSON.stringify(eol)})`);
         assert.strictEqual(countOrderedItems(spanOf(4)), 4, `4 items must count as 4 (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countConjunctionItems(indentedSpanOf(2)), 2, `2 indented items must count as 2 (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countConjunctionItems(indentedSpanOf(3)), 3, `3 indented items must count as 3 (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countConjunctionItems(indentedSpanOf(4)), 4, `4 indented items must count as 4 (eol=${JSON.stringify(eol)})`);
+        // The two counters must not see each other's items — a column-0-only
+        // span has no conjunction items, and an indented-only span has no
+        // procedure items.
+        assert.strictEqual(countOrderedItems(indentedSpanOf(3)), 0, `indented-only span must count 0 procedure items (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countConjunctionItems(spanOf(3)), 0, `column-0-only span must count 0 conjunction items (eol=${JSON.stringify(eol)})`);
       }
     });
   });
@@ -1707,6 +1741,19 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
         'the fact-drift pass must write to REVIEWS.md, matching the source-grounding pass — ' +
         'not to the review agent\'s return message'
       );
+    });
+
+    test('the phase-status axis is delegated to the deterministic seam', () => {
+      const span = driftSpan();
+      assert.match(
+        span,
+        /gsd_run drift-guard phase-status/,
+        'the phase-status axis must be decided by the drift-guard seam, not by model judgment — ' +
+        'issue #1956 requires a drifted STATE/ROADMAP pair to yield a finding deterministically'
+      );
+      for (const verdict of [/\bdrifted\b/, /\blag\b/, /\buncheckable\b/]) {
+        assert.match(span, verdict, `the pass must say how it treats the ${verdict} verdict`);
+      }
     });
   });
 
@@ -1752,6 +1799,18 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
       for (const dimension of [/Dimension 1\b/, /Dimension 7b\b/, /Dimension 9\b/]) {
         assert.match(span, dimension, `the pass must defer the overlapping axis to ${dimension}`);
       }
+    });
+
+    test('a completion disagreement is never exempted as lag', () => {
+      // The issue's canonical example is "complete in STATE.md but in progress
+      // in ROADMAP.md" — one lifecycle step apart, and exactly the case it wants
+      // FLAGGED. An exemption phrased purely as "one step apart" would exempt it.
+      const span = driftSpan();
+      assert.match(
+        span,
+        /completion[^.]*never lag|never lag|Completeness is terminal/i,
+        'the pass must state that a disagreement about completion is never lag'
+      );
     });
   });
 
