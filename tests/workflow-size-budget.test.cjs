@@ -89,11 +89,16 @@ const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 // only as the outer bound where the correct response is lazy extraction, never
 // a raise. Each sits above its tier's current high-water mark with real
 // headroom (vs the old GRACE=3000 hug):
-//   XL      96 KiB — high-water plan-phase.md 92,965 → ~5.2 KB headroom
-//   LARGE   60 KiB — high-water docs-update.md 54,600 → ~6.6 KB headroom
-//   DEFAULT 40 KiB — high-water settings-advanced.md 39,160 → ~1.8 KB headroom
+//   XL      96 KiB — high-water execute-phase.md 93,400 → ~4.8 KB headroom
+//   LARGE   60 KiB — high-water docs-update.md 55,468 → ~5.8 KB headroom
+//   DEFAULT 40 KiB — high-water verify-phase.md 40,931 → 29 BYTES headroom
 // (DEFAULT is deliberately the tightest: a single-purpose workflow approaching
-// 40 KiB is the strongest extraction signal of the three.)
+// 40 KiB is the strongest extraction signal of the three. verify-phase.md is
+// effectively AT the red line — the next edit to it must be preceded by a lazy
+// extraction, not absorbed. Measured 2026-08-09 via measureWorkflows(); the
+// previous note here named settings-advanced.md at 39,160 with ~1.8 KB of
+// headroom, which was stale on both the file and the number and invited an
+// edit that would have crossed the cap.)
 const XL_CAP = 98304;       // 96 KiB
 const LARGE_CAP = 61440;    // 60 KiB
 const DEFAULT_CAP = 40960;  // 40 KiB
