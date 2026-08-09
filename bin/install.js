@@ -623,6 +623,22 @@ function _hostIntegrationDispatch(runtime) {
 }
 
 /**
+ * #2870: shared install()/uninstall() scope resolution. Routes `id` through
+ * the Install Scope Module (src/install-scope.cts) and degrades to `null` on
+ * failure (unknown/non-installable runtime, broken registry bundle) instead
+ * of throwing, so each call site's own plain-id fallback keeps working
+ * exactly as it did before this migration. Both call sites previously carried
+ * their own copy of this try/catch; this is the one shared copy.
+ */
+function _resolveScopeSafe(id, runtime) {
+  try {
+    return resolveScope({ id, runtime });
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
  * Resolve the ACTUAL on-disk skills-install directory for a runtime, honoring a
  * skills-kind `home` override (ADR-1239 upgrade 3 / #2088: e.g. Codex skills ->
  * $HOME/.agents/skills instead of the runtime's configDir). Descriptor-driven
@@ -8214,18 +8230,8 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // runtime, broken bundle) so this function's scope-id uses — which never
   // depended on registry availability before this migration — keep working
   // exactly as they did pre-migration.
-  let _uninstallScopeId;
-  if (isGlobal) {
-    _uninstallScopeId = 'global';
-  } else {
-    _uninstallScopeId = 'local';
-  }
-  let _resolvedUninstallScope = null;
-  try {
-    _resolvedUninstallScope = resolveScope({ id: _uninstallScopeId, runtime });
-  } catch (_) {
-    _resolvedUninstallScope = null;
-  }
+  const _uninstallScopeId = isGlobal ? 'global' : 'local';
+  const _resolvedUninstallScope = _resolveScopeSafe(_uninstallScopeId, runtime);
   const scope = _resolvedUninstallScope ? _resolvedUninstallScope.id : _uninstallScopeId;
   // ADR-1239 / #2086: drive uninstall through the public Host-Integration Interface.
   // Fail-open to the engine directly if the composed-registry adapter can't load.
@@ -10197,18 +10203,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // availability before this migration — keep working exactly as they did
   // pre-migration. `_installScope` (the full resolved value, not just the
   // id) additionally backs the settingsFileByScope routing below.
-  let _installScopeId;
-  if (isGlobal) {
-    _installScopeId = 'global';
-  } else {
-    _installScopeId = 'local';
-  }
-  let _installScope = null;
-  try {
-    _installScope = resolveScope({ id: _installScopeId, runtime });
-  } catch (_) {
-    _installScope = null;
-  }
+  const _installScopeId = isGlobal ? 'global' : 'local';
+  const _installScope = _resolveScopeSafe(_installScopeId, runtime);
 
   // Reusable helper to copy hooks/lib/ (git-cmd.js + gsd-graphify-rebuild.sh).
   // Defined early so it is visible to both the main and Codex code paths.

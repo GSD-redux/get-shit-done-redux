@@ -58,7 +58,7 @@ describe('resolveScope', () => {
 
   // Row 2
   test('resolves claude local settings file', () => {
-    const result = resolveScope(fixture({ id: 'local', runtime: 'claude' }));
+    const result = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project' }));
     assert.strictEqual(result.settingsFile, 'settings.local.json');
   });
 
@@ -73,7 +73,7 @@ describe('resolveScope', () => {
     assert.ok(INSTALL_SCOPE_RUNTIME_IDS.length > 0, 'registry must contain at least one installable runtime');
     for (const runtime of INSTALL_SCOPE_RUNTIME_IDS) {
       for (const id of ['global', 'local']) {
-        const result = resolveScope(fixture({ id, runtime }));
+        const result = resolveScope(fixture({ id, runtime, cwd: '/fake/project' }));
         assert.strictEqual(typeof result.configHome, 'string', `${runtime}/${id}: configHome must be a string`);
         assert.ok(result.configHome.length > 0, `${runtime}/${id}: configHome must be non-empty`);
         assert.ok(
@@ -92,7 +92,7 @@ describe('resolveScope', () => {
 
   // Row 6
   test('local scope requires a consent record', () => {
-    const result = resolveScope(fixture({ id: 'local', runtime: 'claude' }));
+    const result = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project' }));
     assert.strictEqual(result.consentRequired, true);
   });
 
@@ -100,7 +100,7 @@ describe('resolveScope', () => {
   // phase; Phase 2 may re-base the literal values).
   test('global outranks local in hostPrecedenceRank', () => {
     const globalScope = resolveScope(fixture({ id: 'global', runtime: 'claude' }));
-    const localScope = resolveScope(fixture({ id: 'local', runtime: 'claude' }));
+    const localScope = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project' }));
     assert.ok(
       globalScope.hostPrecedenceRank > localScope.hostPrecedenceRank,
       `expected global rank (${globalScope.hostPrecedenceRank}) > local rank (${localScope.hostPrecedenceRank})`,
@@ -226,7 +226,7 @@ describe('resolveScope', () => {
   // Row 19
   test('install-plan imports the shared InstallScope type', () => {
     const globalScope = resolveScope(fixture({ id: 'global', runtime: 'claude' }));
-    const localScope = resolveScope(fixture({ id: 'local', runtime: 'claude' }));
+    const localScope = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project' }));
     for (const scope of [globalScope, localScope]) {
       const result = createRuntimeArtifactInstallPlan({
         layout: {
