@@ -409,8 +409,13 @@ const isSentinelPhase = (num: string, bracketId?: string): boolean => {
 };
 
 // #2761 M1: missing-detail identity is milestone-qualified under bracket.
-// Prefer the canonical qualified-key owner; hyphenated or otherwise refused
-// shapes retain a folded composite so distinct occurrences never collapse.
+// Prefer the canonical qualified-key owner, which case-folds accepted ids, so
+// `[gsd.02] 01` and `[GSD.02] 01` are one occurrence. It is intentionally not
+// padding-tolerant: the milestone grammar has one canonical spelling (pad2
+// below 100, no leading zero above), so `[GSD.2]` is malformed rather than an
+// alternate spelling of `[GSD.02]`. Hyphenated tokens and other shapes the
+// qualified-key owner refuses retain a folded composite, keeping distinct
+// bracket/token pairs from collapsing onto one missing-detail verdict.
 const occurrenceKey = (num: string, bracketId?: string): string => {
   if (!bracketId) return num;
   const qualified = num.includes('-')
