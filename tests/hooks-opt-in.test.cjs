@@ -20,10 +20,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawnSync } = require('child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
 const isWindows = process.platform === 'win32';
+// 15000: a single bash hook script under test, not an install or a build.
+const HOOK_TIMEOUT_MS = 15000;
 
 // Ensure the running node binary is on PATH so bash hooks can call `node`
 // (Claude Code shell sessions do not have `node` on PATH).
@@ -33,8 +35,16 @@ const hookEnv = {
 };
 
 // Wrapper that always injects hookEnv so bash hooks can find `node`.
+// Preserves the legacy spawnSync-shaped return (`status`, `stdout`, `stderr`,
+// `signal`) that every call site in this file asserts against.
 function spawnHook(hookPath, options) {
-  return spawnSync('bash', [hookPath], { ...options, env: hookEnv });
+  const r = runHook(hookPath, [], {
+    ...options,
+    interpreter: 'bash',
+    env: hookEnv,
+    timeoutMs: HOOK_TIMEOUT_MS,
+  });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr, signal: r.signal };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

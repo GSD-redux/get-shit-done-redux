@@ -6,8 +6,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'scripts', 'gen-registry.cjs');
 const { renderMarkdown } = require(path.join(__dirname, '..', 'scripts', 'registry-schema.cjs'));
@@ -127,7 +129,8 @@ function withReviewerFixture(capabilityEntries, reviewerEntries, fn) {
 }
 
 function runGen(cwd, args = []) {
-  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { cwd, encoding: 'utf8' });
+  const r = runNode([SCRIPT_PATH, ...args], { cwd, timeoutMs: PROBE_TIMEOUT_MS });
+  return toLegacyResult(r);
 }
 
 describe('gen-registry CLI (subprocess)', () => {

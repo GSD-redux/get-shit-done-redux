@@ -2,10 +2,10 @@ const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const { createFixture, seedPhase, seedWorkstream, writeState } = require('./fixtures/index.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const created = [];
 afterEach(() => {
@@ -72,10 +72,10 @@ describe('fixture builder module', () => {
     const dir = createFixture({ git: true });
     created.push(dir);
 
-    const isWorkTree = execSync('git rev-parse --is-inside-work-tree', { cwd: dir, encoding: 'utf8' }).trim();
+    const isWorkTree = gitOrThrow(['rev-parse', '--is-inside-work-tree'], { cwd: dir }).trim();
     assert.strictEqual(isWorkTree, 'true', 'fixture should be a git worktree');
 
-    const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    const head = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
     assert.ok(head.length > 0, 'fixture should include initial commit');
 
     assert.ok(

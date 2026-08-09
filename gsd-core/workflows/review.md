@@ -24,6 +24,7 @@ command -v opencode >/dev/null 2>&1 && echo "opencode:available" || echo "openco
 command -v qwen >/dev/null 2>&1 && echo "qwen:available" || echo "qwen:missing"
 command -v cursor-agent >/dev/null 2>&1 && echo "cursor:available" || echo "cursor:missing"
 command -v agy >/dev/null 2>&1 && echo "antigravity:available" || echo "antigravity:missing"
+command -v kimi >/dev/null 2>&1 && echo "kimi-code:available" || echo "kimi-code:missing"
 
 # Check local model servers (OpenAI-compatible HTTP API — no CLI binary required)
 OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
@@ -75,6 +76,7 @@ Parse flags from `$ARGUMENTS`:
 - `--qwen` → include Qwen Code
 - `--cursor` → include Cursor
 - `--agy` or `--antigravity` → include Antigravity CLI
+- `--kimi-code` → include Kimi CLI
 - `--ollama` → include Ollama (local server, OpenAI-compatible)
 - `--lm-studio` → include LM Studio (local server, OpenAI-compatible)
 - `--llama-cpp` → include llama.cpp (local server, OpenAI-compatible)

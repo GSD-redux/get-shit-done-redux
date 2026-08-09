@@ -1969,8 +1969,8 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
-  const { execFileSync } = require('node:child_process');
   const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+  const { gitOrThrow } = require('./helpers/git-fixture.cjs');
   const { cleanup } = require('./helpers.cjs');
   const statusline = require('../hooks/gsd-statusline.js');
   const { parseGitStatus, buildGitSegment, readGitStatus, composeStatusline } = statusline;
@@ -2077,8 +2077,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   describe('readGitStatus + parseGitStatus against a real repo', () => {
     function makeGitRepo() {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-seg-'));
-      const run = (args) => execFileSync('git', ['-C', dir, ...args], {
-        encoding: 'utf8',
+      const run = (args) => gitOrThrow(['-C', dir, ...args], {
         env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
       });
       run(['init', '-q', '-b', 'main']);
@@ -2203,7 +2202,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
     test('flag=true renders the branch segment', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-seg-e2e-'));
       try {
-        execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main']);
+        gitOrThrow(['-C', dir, 'init', '-q', '-b', 'main']);
         fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
         fs.writeFileSync(
           path.join(dir, '.planning', 'config.json'),
@@ -2219,7 +2218,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
     test('default (flag absent) has no git segment', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-seg-e2e-'));
       try {
-        execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main']);
+        gitOrThrow(['-C', dir, 'init', '-q', '-b', 'main']);
         fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
         const out = runHook(dir);
         assert.ok(!out.includes('│ main'), `expected no git segment; got: ${out}`);

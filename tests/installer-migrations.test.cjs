@@ -1685,6 +1685,14 @@ test('shipped installer-migration checksums are locked to a committed baseline (
     // Migration 008: retire Cursor's duplicate commands/ surface (#2644).
     '2026-07-29-cursor-retire-commands-surface':
       'sha256:d0b2b812a3f752650f2518b48280f74a5937c80ec8412bac493382dfa3db083f',
+    // Migration 009 (NEW, added here per this test's own sanctioned "adding a new
+    // migration" case — not a shipped-body edit): retire pi's reserved hooks/
+    // directory now that the shared hook bundle installs at gsd-hooks/ instead
+    // (#3023). pi warns on hooks/'s mere existence regardless of contents, so an
+    // upgraded install must have both the legacy files AND the emptied directory
+    // itself retired via the new remove-empty-dir action.
+    '2026-08-07-pi-retire-reserved-hooks-dir':
+      'sha256:34264415b00e15e5a1691eae3db9bd24dca11e5c04d78358420a7a8adf115f9e',
   };
 
   const { DEFAULT_MIGRATIONS_DIR, migrationChecksum: computeChecksum } = require('../gsd-core/bin/lib/installer-migrations.cjs');
@@ -1798,6 +1806,186 @@ test('reconciles a drifted applied-migration checksum into install state on appl
 
 
 // ---------------------------------------------------------------------------
+// remove-empty-dir action type (introduced with migration 009, #3023)
+//
+// Deliberately WEAKER than a recursive removal primitive: fs.rmdirSync only,
+// never fs.rmSync / {recursive:true} / {force:true}. A non-empty directory is
+// left in place as a successful no-op, not an error.
+// ---------------------------------------------------------------------------
+{
+  const { test, mock } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  const {
+    applyInstallerMigrationPlan,
+    evaluateRemoveEmptyDir,
+  } = require('../gsd-core/bin/lib/installer-migrations.cjs');
+  const { cleanup, createTempDir } = require('./helpers.cjs');
+
+  test('evaluateRemoveEmptyDir removes a genuinely empty directory', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+    const target = path.join(configDir, 'hooks');
+    fs.mkdirSync(target);
+
+    assert.equal(evaluateRemoveEmptyDir(configDir, target), 'removed');
+    assert.equal(fs.existsSync(target), false);
+  });
+
+  test('evaluateRemoveEmptyDir leaves a non-empty directory in place (planned-but-skipped, not an error)', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+    const target = path.join(configDir, 'hooks');
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'still-here.js'), '// user file\n', 'utf8');
+
+    assert.equal(evaluateRemoveEmptyDir(configDir, target), 'skipped-not-empty');
+    assert.equal(fs.existsSync(target), true);
+    assert.equal(fs.existsSync(path.join(target, 'still-here.js')), true);
+  });
+
+  test('evaluateRemoveEmptyDir refuses a symlinked directory (never follows it)', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+    const realElsewhere = createTempDir('gsd-remove-empty-dir-elsewhere-');
+    t.after(() => cleanup(realElsewhere));
+    const linkPath = path.join(configDir, 'hooks');
+    fs.symlinkSync(realElsewhere, linkPath, 'dir');
+
+    assert.equal(evaluateRemoveEmptyDir(configDir, linkPath), 'left-in-place');
+    assert.equal(fs.lstatSync(linkPath).isSymbolicLink(), true, 'the symlink itself must survive untouched');
+    assert.equal(fs.existsSync(realElsewhere), true, 'the real target directory must never be removed through the link');
+  });
+
+  test('evaluateRemoveEmptyDir refuses a target outside configDir', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+    const outside = createTempDir('gsd-remove-empty-dir-outside-');
+    t.after(() => cleanup(outside));
+
+    assert.equal(evaluateRemoveEmptyDir(configDir, outside), 'left-in-place');
+    assert.equal(fs.existsSync(outside), true);
+  });
+
+  test('evaluateRemoveEmptyDir refuses to remove configDir itself', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+
+    assert.equal(evaluateRemoveEmptyDir(configDir, configDir), 'left-in-place');
+    assert.equal(fs.existsSync(configDir), true);
+  });
+
+  test('evaluateRemoveEmptyDir treats an already-absent directory as a clean no-op', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    t.after(() => cleanup(configDir));
+    const target = path.join(configDir, 'hooks');
+    assert.equal(fs.existsSync(target), false);
+
+    let outcome;
+    assert.doesNotThrow(() => { outcome = evaluateRemoveEmptyDir(configDir, target); });
+    assert.equal(outcome, 'missing');
+  });
+
+  test('evaluateRemoveEmptyDir degrades an EACCES from rmdirSync without throwing', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-');
+    const target = path.join(configDir, 'hooks');
+    fs.mkdirSync(target);
+
+    mock.method(fs, 'rmdirSync', () => {
+      const err = new Error('EACCES: permission denied');
+      err.code = 'EACCES';
+      throw err;
+    });
+    // Registered BEFORE the cleanup hook below — node:test runs `t.after`
+    // callbacks in REGISTRATION order, so this guarantees fs.rmdirSync is
+    // restored before cleanup() ever runs. That ordering is load-bearing on
+    // Node 22 (not Node 24): Node 22's recursive `fs.rmSync` still falls
+    // through to the JS rimraf implementation (internal/fs/rimraf.js), which
+    // calls the PUBLIC `fs.rmdirSync` this test mocks; Node 24's native
+    // recursive-rm implementation never touches it. With cleanup's `t.after`
+    // registered FIRST (as it was), cleanup() ran while the mock was still
+    // active on Node 22 — `fs.rmSync` threw the injected EACCES, that
+    // exception aborted the test's remaining `after` hooks before
+    // `mock.restoreAll()` could run, and the still-mocked `fs.rmdirSync` then
+    // poisoned `cleanup()` for every later test in this file for the rest of
+    // the Node 22 process (the node22-only "failed running afterEach/after
+    // hook" cascade across the Codex/migration-008/T3 tests below). Verified
+    // by reproducing both orderings against `node:22` and `node:24` directly.
+    t.after(() => mock.restoreAll());
+    t.after(() => cleanup(configDir));
+
+    let outcome;
+    assert.doesNotThrow(() => { outcome = evaluateRemoveEmptyDir(configDir, target); });
+    assert.equal(outcome, 'left-in-place');
+    assert.equal(fs.existsSync(target), true, 'directory must survive a failed rmdirSync');
+  });
+
+  test('applyInstallerMigrationPlan wires remove-empty-dir through to journal + disk removal', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-apply-');
+    t.after(() => cleanup(configDir));
+    const target = path.join(configDir, 'hooks');
+    fs.mkdirSync(target);
+
+    const result = applyInstallerMigrationPlan({
+      configDir,
+      plan: {
+        blocked: [],
+        actions: [{
+          migrationId: '2026-08-07-pi-retire-reserved-hooks-dir',
+          migrationChecksum: 'sha256:test',
+          type: 'remove-empty-dir',
+          relPath: 'hooks',
+          reason: 'retired reserved directory',
+          classification: 'managed-pristine',
+          originalHash: null,
+          currentHash: null,
+        }],
+      },
+      now: () => '2026-08-07T00:00:00.000Z',
+    });
+
+    assert.equal(fs.existsSync(target), false);
+    const journal = JSON.parse(fs.readFileSync(path.join(configDir, result.journalRelPath), 'utf8'));
+    assert.equal(journal.actions.length, 1);
+    assert.equal(journal.actions[0].status, 'removed');
+    assert.equal(journal.actions[0].type, 'remove-empty-dir');
+  });
+
+  test('applyInstallerMigrationPlan leaves a non-empty remove-empty-dir target on disk and journals it', (t) => {
+    const configDir = createTempDir('gsd-remove-empty-dir-apply-');
+    t.after(() => cleanup(configDir));
+    const target = path.join(configDir, 'hooks');
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'user-file.js'), '// preserved\n', 'utf8');
+
+    const result = applyInstallerMigrationPlan({
+      configDir,
+      plan: {
+        blocked: [],
+        actions: [{
+          migrationId: '2026-08-07-pi-retire-reserved-hooks-dir',
+          migrationChecksum: 'sha256:test',
+          type: 'remove-empty-dir',
+          relPath: 'hooks',
+          reason: 'retired reserved directory',
+          classification: 'managed-pristine',
+          originalHash: null,
+          currentHash: null,
+        }],
+      },
+      now: () => '2026-08-07T00:00:01.000Z',
+    });
+
+    assert.equal(fs.existsSync(target), true);
+    assert.equal(fs.existsSync(path.join(target, 'user-file.js')), true);
+    const journal = JSON.parse(fs.readFileSync(path.join(configDir, result.journalRelPath), 'utf8'));
+    assert.equal(journal.actions[0].status, 'skipped-not-empty');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Cursor duplicate commands-surface retirement (#2644)
 // ---------------------------------------------------------------------------
 
@@ -1894,7 +2082,8 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const installModule = require('../bin/install.js');
 const { readInstallState } = require('../gsd-core/bin/lib/installer-migrations.cjs');
@@ -1902,6 +2091,11 @@ const { install, parseTomlToObject, reconcileCodexHooksJsonEvent } = installModu
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything, even
+// run in beforeEach on a fresh worktree. See tests/helpers/timeouts.cjs for
+// the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const previousCodexHome = process.env.CODEX_HOME;
@@ -1959,7 +2153,10 @@ describe('#3357 — Codex install removes legacy GSD hooks.json entries', { conc
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-3357-');
     codexHome = path.join(tmpRoot, '.codex');

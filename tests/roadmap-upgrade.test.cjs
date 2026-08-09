@@ -4,7 +4,7 @@ const { test, describe, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const { computeMigrationPlan, applyMigration } = require('../gsd-core/bin/lib/roadmap-upgrade.cjs');
@@ -18,13 +18,13 @@ function makeGitignoredPlanningProject() {
   const dir = createTempDir('m3-rollback-');
   fs.writeFileSync(path.join(dir, '.gitignore'), '.planning/\n');
   fs.writeFileSync(path.join(dir, 'README.md'), '# tracked\n');
-  const git = (c) => execSync(c, { cwd: dir, stdio: 'pipe' });
-  git('git init');
-  git('git config user.email t@t.t');
-  git('git config user.name t');
-  git('git config commit.gpgsign false');
-  git('git add -A');
-  git('git commit -m initial');
+  const git = (argv) => gitOrThrow(argv, { cwd: dir });
+  git(['init']);
+  git(['config', 'user.email', 't@t.t']);
+  git(['config', 'user.name', 't']);
+  git(['config', 'commit.gpgsign', 'false']);
+  git(['add', '-A']);
+  git(['commit', '-m', 'initial']);
 
   // .planning created AFTER the commit → untracked + gitignored.
   const planning = path.join(dir, '.planning');

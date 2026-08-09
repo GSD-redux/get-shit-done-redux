@@ -2921,9 +2921,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
-
 const { runGsdTools, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const WORKFLOW_PATH = path.join(
   __dirname,
@@ -2946,13 +2945,13 @@ function createOuterRepoWithSubdir(prefix = 'bug-3491-') {
   // short-name (RUNNER~1) and the runtime resolves to the long form.
   // realpathSync.native handles both; then normalize separators for compare.
   const outerReal = fs.realpathSync.native(outer);
-  execSync('git init', { cwd: outerReal, stdio: 'pipe' });
-  execSync('git config user.email "test@test.com"', { cwd: outerReal, stdio: 'pipe' });
-  execSync('git config user.name "Test"', { cwd: outerReal, stdio: 'pipe' });
-  execSync('git config commit.gpgsign false', { cwd: outerReal, stdio: 'pipe' });
+  gitOrThrow(['init'], { cwd: outerReal });
+  gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: outerReal });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: outerReal });
+  gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: outerReal });
   fs.writeFileSync(path.join(outerReal, 'README.md'), '# outer\n');
-  execSync('git add -A', { cwd: outerReal, stdio: 'pipe' });
-  execSync('git commit -m "initial"', { cwd: outerReal, stdio: 'pipe' });
+  gitOrThrow(['add', '-A'], { cwd: outerReal });
+  gitOrThrow(['commit', '-m', 'initial'], { cwd: outerReal });
 
   const subdir = path.join(outerReal, 'workstreams', 'my-project');
   fs.mkdirSync(subdir, { recursive: true });

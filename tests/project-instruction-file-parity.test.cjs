@@ -25,7 +25,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const RUNTIME_NAME_POLICY_PATH = path.join(
@@ -66,11 +68,13 @@ function queryInstructionFile(runtime) {
     '--runtime',
     runtime,
   ];
-  return execFileSync('node', args, {
+  const r = runNode(args, {
     cwd: ROOT,
-    encoding: 'utf8',
     env: { ...process.env, GSD_RUNTIME: '' },
-  }).trim();
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  throwIfFailed(r, `node ${args.join(' ')}`);
+  return r.stdout.trim();
 }
 
 describe('bug #1529: getProjectInstructionFile ↔ gsd-tools query parity', () => {
@@ -89,7 +93,8 @@ describe('bug #1529: getProjectInstructionFile ↔ gsd-tools query parity', () =
 });
 
 describe('bug #1529: new-project.md workflow uses the shared policy query', () => {
-  // allow-test-rule: structural drift guard for #1529 — the workflow's bash block MUST invoke the
+  // allow-test-rule: structural-regression-guard (#1529)
+  // the workflow's bash block MUST invoke the
   // shared `gsd_run query project-instruction-file` query rather than a hardcoded
   // codex-only `if/else` branch; there is no typed IR for "this bash block calls a
   // specific gsd-tools query instead of a hardcoded mapping".

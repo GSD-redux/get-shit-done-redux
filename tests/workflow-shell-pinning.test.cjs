@@ -56,8 +56,10 @@ function listWorkflowFiles() {
     .map((e) => path.join(WORKFLOWS_DIR, e));
 
   // Filter to files that have at least one Windows hosted-runner reference.
-  // allow-test-rule: file-scope prefilter, not a test assertion — we need to
-  // detect whether a workflow file targets Windows runners at all. The pwsh
+  // allow-test-rule: source-text-is-the-product
+  // Reads the shipped .github/workflows/*.yml — the deployed text GitHub
+  // Actions executes — to detect whether a workflow targets Windows runners
+  // at all. The pwsh
   // stderr-swallow class is windows-only, so files that never mention
   // windows-hosted labels are out of scope. Exposing a typed IR from production
   // code is not appropriate here because the source-of-truth is the YAML

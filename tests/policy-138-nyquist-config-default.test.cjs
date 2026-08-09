@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product — asserts GSD workflow/template markdown prose, the executable contract (#138, #2117)
+// allow-test-rule: source-text-is-the-product — asserts GSD workflow/template markdown prose, the executable contract (#138, #2117)
 'use strict';
 
 // Policy regression test for issue #138:

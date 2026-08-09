@@ -1,4 +1,5 @@
-// allow-test-rule: runtime-contract-is-the-product — docs/AGENTS.md section layout + docs/INVENTORY.md table ARE the classification surface being validated
+// allow-test-rule: source-text-is-the-product
+// docs/AGENTS.md section layout + docs/INVENTORY.md table ARE the classification surface being validated
 'use strict';
 
 /**

@@ -1,0 +1,47 @@
+{
+  "$comment": "ADR-3180 Decision 4(e) ratchet, owned by Phase 8 (#3218). See scripts/lint-planning-prompt-drift.cjs. SHRINK-ONLY: entries are removed as sites migrate to the gsd-core CLI; new or changed entries fail lint:ci. `count` is the number of byte-identical (file, text) occurrences acknowledged at this site — a run producing fewer fails as a partial migration, more fails as an unacknowledged new copy.",
+  "entries": [
+    {
+      "file": "gsd-core/workflows/execute-plan.md",
+      "text": "(ls -1 .planning/phases/[current-phase-dir]/*-PLAN.md 2>/dev/null || true) | wc -l",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 1
+    },
+    {
+      "file": "gsd-core/workflows/execute-plan.md",
+      "text": "(ls -1 .planning/phases/[current-phase-dir]/*-SUMMARY.md 2>/dev/null || true) | wc -l",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 1
+    },
+    {
+      "file": "gsd-core/workflows/plan-phase.md",
+      "text": "DISK_PLANS=$(ls \"${PHASE_DIR}\"/*-PLAN.md 2>/dev/null | wc -l | tr -d ' ')",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 2
+    },
+    {
+      "file": "gsd-core/workflows/plan-review-convergence.md",
+      "text": "PLAN_COUNT=$(ls ${phase_dir}/${padded_phase}-*-PLAN.md 2>/dev/null | wc -l)",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 1
+    },
+    {
+      "file": "gsd-core/workflows/progress.md",
+      "text": "(ls -1 .planning/phases/[current-phase-dir]/*-PLAN.md 2>/dev/null || true) | wc -l",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 1
+    },
+    {
+      "file": "gsd-core/workflows/progress.md",
+      "text": "(ls -1 .planning/phases/[current-phase-dir]/*-SUMMARY.md 2>/dev/null || true) | wc -l",
+      "derivation": "plan-count",
+      "owner_issue": "#3218",
+      "count": 1
+    }
+  ]
+}

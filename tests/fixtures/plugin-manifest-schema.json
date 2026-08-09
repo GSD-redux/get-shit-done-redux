@@ -11,8 +11,7 @@
     "repository",
     "homepage",
     "license",
-    "commands",
-    "hooks"
+    "commands"
   ],
   "additionalProperties": true,
   "properties": {

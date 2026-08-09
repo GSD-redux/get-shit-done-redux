@@ -1,4 +1,4 @@
-// allow-test-rule: AC2 requires asserting no `runtime === 'opencode'` string-equality branch remains in bin/install.js/src — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2087)
+// allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'opencode'` string-equality branch remains in bin/install.js/src — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2087)
 'use strict';
 
 /**

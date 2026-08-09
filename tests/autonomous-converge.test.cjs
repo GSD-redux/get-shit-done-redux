@@ -8,7 +8,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const cp = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const COMMAND_PATH = path.join(REPO_ROOT, 'commands', 'gsd', 'autonomous.md');
@@ -156,10 +158,9 @@ describe('autonomous --converge flag (#711)', () => {
 
     // Behavioral coverage: prove the roster the workflow derives from actually
     // yields the flags this test used to hardcode, so the derivation is not vacuous.
-    const laneFlags = cp
-      .execFileSync(process.execPath, [TOOLS, 'review-lane', 'flags'], { encoding: 'utf8' })
-      .split('\n')
-      .filter(Boolean);
+    const laneFlagsResult = runNode([TOOLS, 'review-lane', 'flags'], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(laneFlagsResult, `node ${TOOLS} review-lane flags`);
+    const laneFlags = laneFlagsResult.stdout.split('\n').filter(Boolean);
     for (const flag of formerlyHardcodedLaneFlags) {
       assert.ok(laneFlags.includes(flag), `review-lane flags should include ${flag}`);
     }

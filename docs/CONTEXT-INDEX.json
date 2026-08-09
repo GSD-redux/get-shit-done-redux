@@ -1,14 +1,15 @@
 {
   "schemaVersion": 1,
-  "count": 415,
+  "count": 426,
   "classes": {
     "ARCH": 1,
     "CI": 2,
-    "CONFIG": 1,
-    "DEFECT": 167,
+    "CONFIG": 5,
+    "DEFECT": 168,
     "EXEC": 8,
     "GSD-RESEARCH": 6,
     "LEARNING": 1,
+    "LIVE-CONFIG": 6,
     "META": 4,
     "PLANNING": 3,
     "PR": 2,
@@ -38,6 +39,26 @@
       "id": "CI.GATE.issue-link-required",
       "klass": "CI",
       "value": "hard-fail if PR body lacks closes/fixes/resolves #<issue>"
+    },
+    {
+      "id": "CONFIG.LOCATION.SEAM.in-process-scrub",
+      "klass": "CONFIG",
+      "value": "TEST_ENV_BASE reaches CHILD env only; a test calling install() IN-PROCESS must additionally use helpers.scrubConfigLocationEnv() in beforeEach + its restorer in afterEach — HOME/USERPROFILE sandboxing is NOT sufficient because getGlobalConfigDir is env-FIRST"
+    },
+    {
+      "id": "CONFIG.LOCATION.SEAM.kimi-two-homes",
+      "klass": "CONFIG",
+      "value": "kimi declares TWO config-location vars: KIMI_CONFIG_DIR (registry, generic Agent-Skills root via resolveKimiGlobalDir) and KIMI_SHARE_DIR (KIMI_HOOKS_TOML_DESCRIPTOR, kimi's OWN native config.toml carrying GSD's [[hooks]] block via resolveKimiHooksTomlDir); a registry-only derivation covers the first and silently misses the second"
+    },
+    {
+      "id": "CONFIG.LOCATION.SEAM.scrub-set",
+      "klass": "CONFIG",
+      "value": "tests/helpers.cjs CONFIG_LOCATION_ENV_KEYS is DERIVED from five sources rather than maintained as one hand-written list (source 4 IS a literal residue list, for vars that fit no other rung — what is never hand-listed is the SET): capability-registry runtimes[].runtime.configHome.env AND [].configHome.skillsHome.env + runtime-homes NON_REGISTRY_CONFIG_HOME_DESCRIPTORS[].env AND [].skillsHome.env (a descriptor is a descriptor — BOTH descriptor rungs walk skillsHome, which resolves independently via resolveSkillsBaseFromDescriptor) + runtime-homes GSD_LOCATION_ENV_KEYS + a residue list (GROK_AGENTS_HOME, GSD_RUNTIME, GSD_PROJECT, GSD_WORKSTREAM) + WRITE_ESCAPE_PERMISSION_ENV_KEYS (GSD_ALLOW_SYMLINKED_DEST — a permission, not a location: it names no path but disarms the symlink-escape guard, so blanking it makes the guard STRICTER, never looser); adding a config-location var means making it ENUMERABLE at one of those sources, not appending a literal"
+    },
+    {
+      "id": "CONFIG.LOCATION.SEAM.two-families",
+      "klass": "CONFIG",
+      "value": "runtime configHomes (where a third-party runtime keeps config, registry- or descriptor-declared) and GSD's OWN location vars (GSD_HOME -> $GSD_HOME/.gsd store, GSD_AGENTS_DIR -> getAgentsDir priority 1) are DISTINCT families; no registry derivation reaches the second, and treating a miss there as a registry gap is what produced review round 2"
     },
     {
       "id": "CONFIG.SEAM.loadConfig-context",
@@ -333,6 +354,11 @@
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.write-bypass",
       "klass": "DEFECT",
       "value": "security_reminder_hook can block Write on substring match (e.g. a literal child-process call-expression token); workaround is heredoc to /tmp then mv into place, or use Edit instead — Edit hooks are more lenient than Write hooks"
+    },
+    {
+      "id": "DEFECT.HOST-RESERVED-DIR-NAME",
+      "klass": "DEFECT",
+      "value": "a host runtime reserves a directory NAME that GSD also writes verbatim, so the mere presence of GSD's directory trips the host's own reserved-name detection regardless of contents; example: pi (#3023) treats GSD's shared-hooks bundle dir hooks/ as its own deprecated extension location and printed a startup warning purely because checkDeprecatedExtensionDirs() in packages/coding-agent/src/migrations.ts gates on a bare existsSync(hooksDir) with no readdir/emptiness check (unlike its tools/ sibling); fix-forward=make the shared-hooks directory name descriptor-driven (hostBehaviors.sharedHooksDirName, default hooks) and override it per-runtime when a name collision is detected (pi sets gsd-hooks), with adapters probing the new name then falling back to the legacy name for dev/half-upgraded trees"
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.detect",
@@ -953,6 +979,36 @@
       "id": "LEARNING.prompt-budget.boundary-gap",
       "klass": "LEARNING",
       "value": "PR #3708 commit 2df566ed reserved NOTE_RESERVE_TOKENS in pressure-threshold AND in minSet pre-check; both buggy paths only fire when baseTokens ∈ (effectiveBudget - NOTE_RESERVE_TOKENS, effectiveBudget]; original test suite used budgets far from that band so neither path was exercised; fix bde1ae8f confines NOTE_RESERVE accounting to post-trim assembly path only; future budget/limit code MUST add boundary fixtures per RULESET.TESTS.boundary-coverage.fixtures"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.ci-blind",
+      "klass": "LIVE-CONFIG",
+      "value": "the AMBIENT-ENV half stays CI-blind — CI never has these vars set, so green CI is not evidence for it; what strict mode catches in CI is the suite's own default-root leaks (HOME/USERPROFILE-derived), the guard remains the only loud signal for ambient-var escapes"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.module",
+      "klass": "LIVE-CONFIG",
+      "value": "scripts/live-config-guard.cjs (deliberately NOT scripts/lib/, which the installer copies to users wholesale while uninstall removes only an allowlist; excluded from the npm tarball via package.json files[] together with its whole require chain run-tests.cjs/affected-tests-lib.cjs/run-affected-tests.cjs — a partial exclusion trips the #2858 shipped-requires-only-shipped gate); exports [resolveLiveConfigRoots, resolveExtraWatchTargets, snapshotLiveConfig, diffLiveConfig, formatViolations, newestMtime]; driven by scripts/run-tests.cjs pre/post suite"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.non-root-targets",
+      "klass": "LIVE-CONFIG",
+      "value": "resolveExtraWatchTargets covers THREE live write surfaces that are not runtime config ROOTS (skills bases are a DELIBERATE non-target — the config-root layout misfires beneath them, so they need their own layout): $GSD_HOME/.gsd watched WHOLESALE (exclusively GSD-owned, so the shared-root trap does not apply) plus ONE config.toml per NON_REGISTRY_CONFIG_HOME_DESCRIPTORS entry, each watched as a SINGLE FILE (those roots belong to their products) — today three targets, since #2755 split Kimi CLI (~/.kimi, KIMI_SHARE_DIR) from Kimi Code (~/.kimi-code, KIMI_CODE_HOME); the targets are DERIVED by iterating that array, never by calling a named resolver, so a further descriptor is picked up without editing the guard PROVIDED it owns the same NON_REGISTRY_OWNED_FILE ('config.toml') — one that owns a different filename needs a per-descriptor mapping, the named residual the guard states at its own definition. SECOND RESIDUAL: config.toml is not all GSD writes into those roots — installSharedHooksBundle also populates <root>/hooks/, which is UNWATCHED; closing it is a layout decision, like skills bases; passed to snapshotLiveConfig explicitly so a fixture-root caller cannot pull the real ~/.gsd into its snapshot"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.scope",
+      "klass": "LIVE-CONFIG",
+      "value": "ownership-based, never whole-root: GSD_OWNED_ENTRIES top-level footprint + children whose name startsWith GSD_ARTIFACT_PREFIX ('gsd-') under GSD_PREFIXED_PARENTS (dirs shared with the host agent); watching a shared root wholesale false-positives on the host's own writes and a guard that cries wolf gets disabled"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.severity",
+      "klass": "LIVE-CONFIG",
+      "value": "reports by default locally; CI wires GSD_STRICT_LIVE_CONFIG_GUARD=1 on Linux/macOS lanes (test.yml, all three test jobs) so a suite-produced leak FAILS those runs; Windows lanes stay report-only pending the documented pre-existing USERPROFILE sweep (~190 test sites sandbox HOME alone) — promote once that lands; skipped by GSD_SKIP_LIVE_CONFIG_GUARD=1"
+    },
+    {
+      "id": "LIVE-CONFIG.GUARD.SEAM.truncation",
+      "klass": "LIVE-CONFIG",
+      "value": "MAX_ENTRIES/MAX_DEPTH bound the walk; a bound hit sets truncated and diffLiveConfig emits kind:'unverified' — a truncated scan MUST NOT read as clean; boundary covered at {limit-1,limit,limit+1} via newestMtime's injected budget plus fast-check monotonicity, per RULESET.TESTS.boundary-coverage + RULESET.TESTS.property-based-testing"
     },
     {
       "id": "META.RULE.brief-must-cite-doc",

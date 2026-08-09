@@ -47,8 +47,10 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
 
@@ -82,12 +84,13 @@ function runHook(payload, cwd, extraEnv = {}) {
   // `USERPROFILE` too so that redirection actually takes effect on Windows
   // instead of silently leaking the real CI runner's profile directory.
   if ('HOME' in extraEnv) env.USERPROFILE = extraEnv.HOME;
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  const r = runHookSeam(HOOK_PATH, [], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    encoding: 'utf8',
     cwd,
     env,
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
+  return toLegacyResult(r);
 }
 
 function agentPayload(overrides = {}) {

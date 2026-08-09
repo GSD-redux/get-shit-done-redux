@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "paths": {
+    "skills/gsd-ns-workflow/skills/autonomous/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled).",
+    "skills/gsd-ns-workflow/skills/execute-phase/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled).",
+    "skills/gsd-ns-workflow/skills/plan-phase/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled).",
+    "skills/gsd/gsd-ns-workflow/skills/autonomous/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled).",
+    "skills/gsd/gsd-ns-workflow/skills/execute-phase/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled).",
+    "skills/gsd/gsd-ns-workflow/skills/plan-phase/SKILL.md": "#3039: normalizeClaudeSkillEffort now clamps max/xhigh to high \u2014 every emitted SKILL.md that carried effort: max now carries effort: high (max rejected by Anthropic when thinking disabled)."
+  }
+}

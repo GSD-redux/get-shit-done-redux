@@ -1,6 +1,8 @@
 'use strict';
 
-// allow-test-rule: reads workflow YAML source as the security artifact under test #1190
+// allow-test-rule: source-text-is-the-product (#1190)
+// Reads the shipped .github/workflows YAML — the deployed text GitHub
+// Actions executes — as the security artifact under test.
 
 /**
  * ADR-230 regression guard: PR target-branch policy.

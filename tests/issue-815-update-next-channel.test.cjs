@@ -1,5 +1,7 @@
 'use strict';
-// allow-test-rule: reads product workflow/command markdown to verify the --next RC channel contract — not a source-grep test
+// allow-test-rule: source-text-is-the-product
+// Reads product workflow/command markdown to verify the --next RC channel
+// contract.
 
 // Issue #815: `/gsd-update --next` (alias `--rc`) must thread the @next dist-tag
 // through the whole update flow (version check + install) while leaving the
@@ -102,7 +104,9 @@ describe('update.md — no bare ~.claude path references (#2470)', () => {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3130-update-npx-robust-invocation (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
-// allow-test-rule: reads product workflow markdown (update.md) to verify structural invocation contract — not a source-grep test (see #3130)
+// allow-test-rule: source-text-is-the-product (see #3130)
+// Reads product workflow markdown (update.md) to verify structural
+// invocation contract.
 
 // Regression guard for bug #3130.
 //

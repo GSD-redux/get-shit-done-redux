@@ -16,9 +16,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
 
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const {
   BUILD_SCRIPT,
   runMinimalInstall,
@@ -30,7 +32,8 @@ const {
 // idempotently before the shared real-install fixture, mirroring
 // tests/golden-install-tree.test.cjs.
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Shared real-install fixture (B1, B2, B7) ─────────────────────────────────

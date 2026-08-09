@@ -244,9 +244,10 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const COMMANDS_DIR = path.join(__dirname, '../commands/gsd');
 const LINT_SCRIPT = path.join(__dirname, '../scripts/lint-descriptions.cjs');
@@ -380,11 +381,11 @@ describe('lint-descriptions.cjs', () => {
     const tmpFile = path.join(tmpDir, 'long-desc.md');
     fs.writeFileSync(tmpFile, content, 'utf-8');
 
-    const result = spawnSync(process.execPath, [LINT_SCRIPT, tmpFile], {
-      encoding: 'utf-8',
+    const result = runNode([LINT_SCRIPT, tmpFile], {
+      timeoutMs: PROBE_TIMEOUT_MS,
     });
 
-    assert.notStrictEqual(result.status, 0, [
+    assert.notStrictEqual(result.exitCode, 0, [
       'lint-descriptions.cjs should exit non-zero for description > 100 chars',
       'stdout: ' + result.stdout,
       'stderr: ' + result.stderr,
@@ -405,11 +406,11 @@ describe('lint-descriptions.cjs', () => {
     const tmpFile = path.join(tmpDir, 'short-desc.md');
     fs.writeFileSync(tmpFile, content, 'utf-8');
 
-    const result = spawnSync(process.execPath, [LINT_SCRIPT, tmpFile], {
-      encoding: 'utf-8',
+    const result = runNode([LINT_SCRIPT, tmpFile], {
+      timeoutMs: PROBE_TIMEOUT_MS,
     });
 
-    assert.strictEqual(result.status, 0, [
+    assert.strictEqual(result.exitCode, 0, [
       'lint-descriptions.cjs should exit 0 for description <= 100 chars',
       'stdout: ' + result.stdout,
       'stderr: ' + result.stderr,

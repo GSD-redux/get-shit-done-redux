@@ -13,9 +13,10 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 describe('commit --files: missing files must not stage deletions (#2014)', () => {
   let tmpDir;
@@ -24,8 +25,8 @@ describe('commit --files: missing files must not stage deletions (#2014)', () =>
     tmpDir = createTempGitProject();
     // Commit STATE.md so it exists in git history
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State\n\nInitial state.\n');
-    execSync('git add .planning/STATE.md', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add STATE.md"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'add STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     // Delete STATE.md from disk -- now missing but tracked in git
     fs.unlinkSync(path.join(tmpDir, '.planning', 'STATE.md'));
   });
@@ -46,7 +47,7 @@ describe('commit --files: missing files must not stage deletions (#2014)', () =>
     // git diff HEAD~1 HEAD --name-status shows what changed between commits.
     let diffOutput = '';
     try {
-      diffOutput = execSync('git diff HEAD~1 HEAD --name-status', { cwd: tmpDir, encoding: 'utf-8' });
+      diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-status'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     } catch (e) {
       // If nothing to commit, there is no HEAD~1 -- that's also acceptable
       return;
@@ -70,7 +71,7 @@ describe('commit --files: missing files must not stage deletions (#2014)', () =>
     assert.strictEqual(parsed.committed, true, 'should have committed when file exists');
 
     // Verify ROADMAP.md was added in the commit
-    const diffOutput = execSync('git diff HEAD~1 HEAD --name-status', { cwd: tmpDir, encoding: 'utf-8' });
+    const diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-status'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     assert.ok(
       diffOutput.includes('A\t.planning/ROADMAP.md'),
       'ROADMAP.md should appear as added in the commit'
@@ -89,7 +90,7 @@ describe('commit --files: missing files must not stage deletions (#2014)', () =>
     // The commit must not include a deletion of STATE.md
     let diffOutput = '';
     try {
-      diffOutput = execSync('git diff HEAD~1 HEAD --name-status', { cwd: tmpDir, encoding: 'utf-8' });
+      diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-status'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     } catch (e) {
       return; // nothing committed is fine
     }

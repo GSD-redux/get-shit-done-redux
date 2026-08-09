@@ -6,8 +6,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'changeset', 'cli.cjs');
@@ -24,21 +26,20 @@ function writeFragment(name, type, pr, body) {
 }
 
 function runRender(args = []) {
-  const r = cp.spawnSync(
-    process.execPath,
+  const r = runNode(
     [SCRIPT, 'render', '--repo', tmp, ...args, '--json'],
-    { encoding: 'utf8' },
+    { timeoutMs: PROBE_TIMEOUT_MS },
   );
   return {
-    status: r.status,
+    status: r.exitCode,
     report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
     stderr: r.stderr || '',
   };
 }
 
 function runRenderRaw(args = []) {
-  const r = cp.spawnSync(process.execPath, [SCRIPT, 'render', '--repo', tmp, ...args], { encoding: 'utf8' });
-  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+  const r = runNode([SCRIPT, 'render', '--repo', tmp, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+  return toLegacyResult(r);
 }
 
 before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-changeset-')); });
@@ -82,15 +83,15 @@ function runExtract(args = [], changelogText = null) {
   if (changelogText !== null) {
     fs.writeFileSync(changelogFile, changelogText);
   }
-  const r = cp.spawnSync(
-    process.execPath,
+  const r = runNode(
     [SCRIPT, 'extract', '--changelog', changelogFile, ...args],
-    { encoding: 'utf8' },
+    { timeoutMs: PROBE_TIMEOUT_MS },
   );
+  // Composes toLegacyResult with the site-specific parsed-JSON `json` field
+  // rather than folding it into the shared helper — see git-fixture.cjs's
+  // toLegacyResult JSDoc.
   return {
-    status: r.status,
-    stdout: r.stdout || '',
-    stderr: r.stderr || '',
+    ...toLegacyResult(r),
     json: (() => {
       try { return JSON.parse(r.stdout); } catch { return null; }
     })(),
@@ -327,7 +328,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   });
 
   // F1: workflows/update.md must reference the extract subcommand invocation.
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the user-facing instruction was wired; there is no behavioural runtime to invoke.
   test('F1: workflows/update.md contains concrete extract subcommand invocation', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');
@@ -359,7 +361,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   // NOT the old broken path ($GSD_DIR/gsd-core/scripts/changeset/cli.cjs).
   // The installer copies scripts/changeset/ into <configDir>/scripts/changeset/,
   // so the runtime path is $GSD_DIR/scripts/changeset/cli.cjs (#935).
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the runtime install path contract; there is no behavioural runtime to invoke.
   test('F2: update.md CLI path is $GSD_DIR/scripts/changeset/cli.cjs (not gsd-core/scripts/…) (#935)', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');
@@ -377,7 +380,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   });
 
   // F3: update.md must guard against the CLI being missing (not pure silent-swallow)
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the guard is present; there is no behavioural runtime to invoke.
   test('F3: update.md has an explicit guard when changeset CLI is missing (#935)', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');
@@ -447,13 +451,12 @@ describe('changeset cli #690 regression: CHANGELOG.md has 1.3.0 and 1.3.1 entrie
   });
 
   test('extract 1.2.0->1.3.1 against repo CHANGELOG returns both 1.3.x releases (regression #690)', () => {
-    const r = cp.spawnSync(
-      process.execPath,
+    const r = runNode(
       [SCRIPT, 'extract', '--from', '1.2.0', '--to', '1.3.1', '--changelog', CHANGELOG_PATH, '--json'],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
     const json = (() => { try { return JSON.parse(r.stdout); } catch { return null; } })();
-    assert.equal(r.status, 0, `expected exit 0 but got ${r.status}; stderr=${r.stderr}; stdout=${r.stdout}`);
+    assert.equal(r.exitCode, 0, `expected exit 0 but got ${r.exitCode}; stderr=${r.stderr}; stdout=${r.stdout}`);
     assert.ok(json, 'stdout must be valid JSON');
     const versions = (json.releases || []).map((rel) => rel.version);
     assert.ok(versions.includes('1.3.0'), `releases array must include 1.3.0; got: ${JSON.stringify(versions)}`);
@@ -468,16 +471,11 @@ describe('changeset cli #690 regression: CHANGELOG.md has 1.3.0 and 1.3.1 entrie
 function runVerify(args, changelogText) {
   const changelogFile = path.join(tmp, 'CHANGELOG-verify-test.md');
   fs.writeFileSync(changelogFile, changelogText);
-  const r = cp.spawnSync(
-    process.execPath,
+  const r = runNode(
     [SCRIPT, 'verify', '--changelog', changelogFile, ...args],
-    { encoding: 'utf8' },
+    { timeoutMs: PROBE_TIMEOUT_MS },
   );
-  return {
-    status: r.status,
-    stdout: r.stdout || '',
-    stderr: r.stderr || '',
-  };
+  return toLegacyResult(r);
 }
 
 describe('changeset cli verify subcommand (not yet implemented — TDD red step)', () => {
@@ -600,12 +598,11 @@ describe('changeset cli verify subcommand (not yet implemented — TDD red step)
     ].join('\n');
     const changelogFile = path.join(tmp, 'CHANGELOG-verify-test.md');
     fs.writeFileSync(changelogFile, FIXTURE_DATED);
-    const r = cp.spawnSync(
-      process.execPath,
+    const r = runNode(
       [SCRIPT, 'verify', '--version', '1.3.1', '--json', '--changelog', changelogFile],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
-    assert.equal(r.status, 0, `expected exit 0; stderr=${r.stderr}`);
+    assert.equal(r.exitCode, 0, `expected exit 0; stderr=${r.stderr}`);
     const json = (() => { try { return JSON.parse(r.stdout); } catch { return null; } })();
     assert.ok(json, 'stdout must be valid JSON');
     assert.strictEqual(json.ok, true, 'json.ok must be true');
@@ -627,13 +624,12 @@ describe('changeset cli verify subcommand (not yet implemented — TDD red step)
 describe('changeset cli render --allow-empty', () => {
   // Helper: run render for a specific test-local tmp directory.
   function runRenderIn(dir, args = []) {
-    const r = cp.spawnSync(
-      process.execPath,
+    const r = runNode(
       [SCRIPT, 'render', '--repo', dir, ...args, '--json'],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
     return {
-      status: r.status,
+      status: r.exitCode,
       report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
       stderr: r.stderr || '',
     };
@@ -641,12 +637,11 @@ describe('changeset cli render --allow-empty', () => {
 
   function runVerifyIn(dir, version) {
     const changelogPath = path.join(dir, 'CHANGELOG.md');
-    const r = cp.spawnSync(
-      process.execPath,
+    const r = runNode(
       [SCRIPT, 'verify', '--version', version, '--changelog', changelogPath],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
-    return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+    return toLegacyResult(r);
   }
 
   // Test 1: --allow-empty with zero fragments writes a dated heading +

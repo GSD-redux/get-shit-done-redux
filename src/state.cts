@@ -19,7 +19,14 @@ import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone } = roadmapParserMod;
+// #3185 moved this file's two PRE-EXISTING `getMilestonePhaseFilter` call
+// sites onto `listMilestonePhaseDirs`. The destructure is retained because
+// #612's bracket-only `cmdStateSync` filter (below) is a THIRD site #3185
+// never saw: it needs a PREDICATE over a readdir it performs itself (the
+// retired-phase exclusion runs first), and it must stay pass-all on the legacy
+// convention — `listMilestonePhaseDirs` would scope legacy sync too, which is
+// the one thing that gate exists to prevent.
+const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -30,6 +37,12 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLocatorMod = require('./phase-locator.cjs');
+const { listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateTransitionMod = require('./state-transition.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
@@ -46,11 +59,13 @@ import {
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
+  stateCurrentPositionSlice,
 } from './state-document.cjs';
 import { tokenizeHeadings, collectSection, replaceSection, stripFencedCode } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -335,7 +350,8 @@ const STOP_H2_ONLY = (lv: number): boolean => lv === 2;
 
 function cmdStateLoad(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const planDir = planningPaths(cwd).planning;
+  const paths = planningPaths(cwd);
+  const planDir = paths.planning;
 
   const stateRaw = platformReadSync(path.join(planDir, 'STATE.md')) || '';
 
@@ -351,10 +367,12 @@ function cmdStateLoad(cwd: string, raw: boolean): void {
     config_exists: configExists,
     // #2376: absolute (anchored on cwd), not orchestrator-cwd-relative — a
     // spawned subagent's own cwd may differ from the orchestrator's.
-    // debug.md has no init.* call of its own; it reads this field from
-    // `state load` to build debug_file_path for its gsd-debug-session-manager
-    // spawns instead of hardcoding '.planning/debug/{slug}.md'.
-    debug_dir: toPosixPath(path.join(planDir, 'debug')),
+    // #3149: debug.md now has its own `init.debug` entry point and reads this
+    // field from there, not from `state load`. This stays on the state.load
+    // bundle regardless: it is a shipped query surface with its own test anchor
+    // (tests/state.test.cjs), so narrowing it would break unseen consumers for
+    // no gain (Hyrum's Law). Both emit the SAME `planningPaths(cwd).debug`.
+    debug_dir: toPosixPath(paths.debug),
   };
 
   // For --raw, output a condensed key=value format
@@ -467,7 +485,7 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
     // and the resync-progress decision stay in this adapter.
     let results: { updated: string[]; failed: string[] } = { updated: [], failed: [] };
     readModifyWriteStateMd(statePath, (content) => {
-      const result = transitionCore(content, { kind: 'patch', patches }, { clock: realClock, progressProvider: () => null });
+      const result = transitionCore(content, { kind: 'patch', patches }, { clock: realClock });
       results = (result.data as { updated: string[]; failed: string[] }) ?? results;
       return result.content;
     }, cwd, { resync: shouldResync });
@@ -505,7 +523,7 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
       const result = transitionCore(
         content,
         { kind: 'update', field: field as string, value: value as string },
-        { clock: realClock, progressProvider: () => null },
+        { clock: realClock },
       );
       updated = (result.data as { updated: boolean } | undefined)?.updated === true;
       return result.content;
@@ -556,7 +574,6 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const intent: StateTransitionIntent = { kind: 'advancePlan' };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null,
     sourcePath: statePath,
   };
 
@@ -743,11 +760,14 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   let totalPlans = 0;
   let totalSummaries = 0;
 
-  if (fs.existsSync(phasesDir)) {
-    const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
-    const phaseDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-      .filter(e => e.isDirectory()).map(e => e.name)
-      .filter(isDirInMilestone);
+  {
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter (which also never
+    // excluded sentinels, unlike the owner). The owner already handles an
+    // absent phasesDir as a real empty, so the fs.existsSync guard folds
+    // into it.
+    const phaseDirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
     for (const dir of phaseDirs) {
       const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
@@ -755,7 +775,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     }
   }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round(totalSummaries / totalPlans * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
@@ -1355,12 +1375,14 @@ function matchSessionSection(body: string): string | null {
  * excludes unrelated headings. Built on the same `collectSection` seam as
  * matchSessionSection, so it inherits that seam's CRLF tolerance (#2444 fix).
  * Returns the section body, or null (caller falls back to full-body search).
+ *
+ * The scoping logic now lives in state-document.cjs's `stateCurrentPositionSlice`
+ * (the module that owns STATE.md field extraction) — this is a thin alias kept
+ * for call-site stability. Two copies of this scope would be exactly the kind
+ * of generative-fix divergence the repo's parity rule exists to prevent.
  */
 function matchCurrentPositionSection(body: string): string | null {
-  const isCurrentPosition = (h: HeadingToken): boolean =>
-    (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
-  const section = collectSection(body, isCurrentPosition, { levelBounded: true });
-  return section ? section.body : null;
+  return stateCurrentPositionSlice(body);
 }
 
 /**
@@ -1390,6 +1412,13 @@ function preferNewerLastActivity(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
   if (derDate < exDate) {
     derivedFm['last_activity'] = exRaw;
+    if (existingFm['last_activity_desc'] !== undefined) {
+      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
+    }
+  } else if (derDate === exDate) {
+    // #3052: same-date — frontmatter is authoritative for this date, so
+    // preserve its last_activity_desc rather than letting the derived body
+    // prose (which may be stale) overwrite it.
     if (existingFm['last_activity_desc'] !== undefined) {
       derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
     }
@@ -1576,13 +1605,17 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
  * the `vN` of the milestone string instead (READING-B parity). Gated, and only
  * consulted after the legacy rule has already failed, so no non-bracket repo
  * changes answer.
+ *
+ * #3184 (ADR-3180): the LEGACY rule is NOT spelled here — it is
+ * `isMilestoneBoundedInRoadmap`, roadmap-parser's single owner of "is this
+ * version bounded to a versioned ROADMAP heading". This function was one of
+ * the two `state.cts` re-derivations #3184 consolidated; it survives that
+ * consolidation only as a bracket EXTENSION composed on top of the owner, and
+ * carries no heading-grammar literal of its own. A non-bracket convention
+ * returns the owner's answer verbatim.
  */
 function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: string | null): boolean {
-  const versionedHeading = new RegExp(
-    `^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(String(milestone).trim())}`,
-    'mi',
-  );
-  if (versionedHeading.test(roadmapRaw)) return true;
+  if (isMilestoneBoundedInRoadmap(roadmapRaw, String(milestone).trim())) return true;
   if (convention !== 'bracket') return false;
   const vMatch = String(milestone).trim().match(/^v(\d+)/i);
   const milestoneInt = vMatch ? parseInt(vMatch[1], 10) : NaN;
@@ -1694,21 +1727,38 @@ function extractRetiredPhaseNumbers(scope: string, convention?: string | null): 
  *   this path is explicitly out of scope (round-3's own minimal-fix
  *   precedent: legacy stays byte-identical).
  *
- * `includeUnconditional999Check` preserves a PRE-EXISTING asymmetry between
- * the two call sites that this refactor must NOT silently unify:
- * `buildStateFrontmatter`'s copy always excluded a bare `/^999\b/` token
- * (composing with the bracket-sentinel-by-milestone-id rule below); before
- * this fix, `cmdStateSync`'s copy never did — a deliberate, documented
- * divergence ("that pre-existing asymmetry is out of scope and changing it
- * would move legacy totals"). Threaded through as an explicit parameter, per
- * call site, so sharing the implementation cannot silently move either
- * total as a side effect.
+ * `includeUnconditionalSentinelCheck` preserves a PRE-EXISTING asymmetry
+ * between the two call sites that this refactor must NOT silently unify:
+ * `buildStateFrontmatter`'s copy always excluded a bare sentinel token
+ * (composing with the bracket-sentinel-by-milestone-id rule below);
+ * `cmdStateSync`'s copy never did — a deliberate, documented divergence
+ * ("that pre-existing asymmetry is out of scope and changing it would move
+ * legacy totals"). Threaded through as an explicit parameter, per call site,
+ * so sharing the implementation cannot silently move either total as a side
+ * effect.
+ *
+ * THE TWO LEGS APPLY DIFFERENT SENTINEL PREDICATES, deliberately:
+ *
+ * - LEGACY uses the canonical `isSentinelPhaseId` (SENTINEL_RANGES [0, 999]).
+ *   #3185 replaced this leg's local `/^999\b/` literal — which admitted Phase
+ *   0 into the denominator — with the owner's predicate. That is upstream's
+ *   answer for the legacy read and is adopted verbatim.
+ *
+ * - BRACKET keeps `/^0\b/` for the bare-0 carve-out rather than folding into
+ *   `isSentinelPhaseId`, because the two genuinely disagree on the #2554
+ *   decimal ids: `isSentinelPhaseId('00.1')` is TRUE (its leading-int rule
+ *   reads milestone 0) while `/^0\b/.test('00.1')` is FALSE. `00.1` is a real
+ *   phase, not a sentinel, and the bracket leg is this branch's new read — it
+ *   must not inherit a false positive the legacy leg has always carried. The
+ *   bracket milestone's own sentinel check one line above already routes
+ *   through the canonical owner, so the bracket reading is not re-derived;
+ *   only this bare-token carve-out is local, and only for {0}.
  */
 function countRoadmapPhaseHeadings(
   scope: string,
   convention: string | null | undefined,
   retiredPhaseNums: Set<string>,
-  includeUnconditional999Check: boolean,
+  includeUnconditionalSentinelCheck: boolean,
 ): number {
   let count = 0;
   if (convention === 'bracket') {
@@ -1731,7 +1781,7 @@ function countRoadmapPhaseHeadings(
       // #612: under bracket the token rule composes with the bracket-id
       // check as the engine's {0, 999} sentinel set.
       if (bracketId && /^0\b/.test(token)) continue;
-      if (includeUnconditional999Check && /^999\b/.test(token)) continue;
+      if (includeUnconditionalSentinelCheck && /^999\b/.test(token)) continue;
       // #1514: retired/folded phases are struck through in the ROADMAP;
       // exclude them from the denominator (they can never be completed).
       if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
@@ -1739,13 +1789,16 @@ function countRoadmapPhaseHeadings(
     }
     return count;
   }
-  // LEGACY: byte-identical to the pre-round-4 raw exec loop — untouched.
+  // LEGACY: the pre-round-4 raw exec loop, with #3185's one change — the
+  // sentinel exclusion is the canonical predicate, not a local 999-only literal.
   const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
   let m: RegExpExecArray | null;
   while ((m = phaseHeadingPattern.exec(scope)) !== null) {
     const token = m[1];
     if (!/\d/.test(token)) continue;
-    if (includeUnconditional999Check && /^999\b/.test(token)) continue;
+    // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was
+    // a local 999-only literal that admitted Phase 0.
+    if (includeUnconditionalSentinelCheck && isSentinelPhaseId(token)) continue;
     if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
     count++;
   }
@@ -1757,7 +1810,7 @@ function countRoadmapPhaseHeadings(
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
  */
-function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Record<string, unknown> {
+function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null): Record<string, unknown> {
   // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
   // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
   // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -1792,14 +1845,46 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
 
   let milestone: string | null = null;
   let milestoneName: string | null = null;
+  // #1761 regression fix (#3216): the milestone STATE.md actually ASSERTS,
+  // independent of whether getMilestoneInfo's identity scope is COMPLETE.
+  // Needed below by the disk-scan block's `isMilestoneBoundedInRoadmap` guard
+  // — that check answers "is the ASSERTED version bounded to a versioned
+  // ROADMAP heading", a different question from "is the identity trustworthy
+  // enough to persist" (`milestone` above). Conflating the two regressed
+  // #1761: when a real STATE `milestone:` value has no matching ROADMAP
+  // heading, `info.scope` is never COMPLETE (rightly — there's no curated
+  // name to persist), but the version was still genuinely asserted and the
+  // bounded check must still run on it, or the guard silently no-ops and
+  // `state json` reports a conflated whole-document total_phases/percent.
+  let assertedMilestoneVersion: string | null = null;
   if (cwd) {
     // DEAD catch removed (#2245 audit): getMilestoneInfo has its own outer
     // try/catch (roadmap-parser.cts) that already swallows every internal
-    // failure and always returns a MilestoneInfo — it never throws, so this
+    // failure and always returns a ScopedResult — it never throws, so this
     // wrapper could never be triggered.
+    // #3216 (ADR-3180 §7.2 rule 6): this is the #3197 disk-write path. Rule 6
+    // draws the line at the FIELD, not the scope as a whole — "a version known
+    // but no name resolvable is TRUNCATED carrying {version, name: null} — the
+    // version is a real answer, the name is a non-answer, and collapsing the
+    // two is the failure this contract exists to prevent." So `milestone`
+    // (the version) is written whenever COMPLETE or TRUNCATED — both carry a
+    // genuine version per rule 6 — while `milestoneName` is written only on
+    // COMPLETE, since TRUNCATED's name is by definition unresolved and must
+    // never be fabricated. UNSCOPED/UNREADABLE have no real version either
+    // way, so both stay null there. This mirrors cmdCommit (src/commands.cts),
+    // which accepts COMPLETE or TRUNCATED for the same reason (the version is
+    // real), and deliberately diverges from archivePhaseDirectories
+    // (src/milestone.cts), which demands COMPLETE only because it uses the
+    // value as a filesystem path component and a TRUNCATED version is not
+    // safe to use there.
     const info = getMilestoneInfo(cwd);
-    milestone = info.version;
-    milestoneName = info.name;
+    assertedMilestoneVersion = info.value ? info.value.version : null;
+    if ((info.scope === SCOPE.COMPLETE || info.scope === SCOPE.TRUNCATED) && info.value) {
+      milestone = info.value.version;
+    }
+    if (info.scope === SCOPE.COMPLETE && info.value) {
+      milestoneName = info.value.name;
+    }
   }
 
   let totalPhases: number | null = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;
@@ -1839,10 +1924,24 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             }
           } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
-          const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
-          const allMatchingDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-            .filter(e => e.isDirectory()).map(e => e.name)
-            .filter(isDirInMilestone);
+          // #3017: scope the milestone filter to the STORED milestone when available,
+          // so a state.* write doesn't auto-derive (and mis-bind) to a different
+          // milestone's heading and clobber the stored value + progress counts.
+          // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+          // CURRENT (stored) milestone" — routed through the canonical owner
+          // instead of a hand-rolled readdirSync + isDirInMilestone filter
+          // (which also never excluded sentinels, unlike the owner).
+          // #612: this file resolves the convention ONCE (`phaseConvention`,
+          // above) and THREADS it — never re-reads config per call site, and
+          // never lets a callee auto-detect a different answer than the
+          // counters below computed on (ADR-2121). `listMilestonePhaseDirs`
+          // would otherwise lazily resolve its own, which is correct but is a
+          // second read that can disagree with this one.
+          const allMatchingDirs = listMilestonePhaseDirs(phasesDir, {
+            cwd,
+            versionOverride: storedMilestone ?? null,
+            phaseIdConvention: phaseConvention,
+          }).value;
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
@@ -1855,9 +1954,21 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             // neither the denominator nor the numerator (mirrors the heading
             // exclusion below). Project-code-aware via phaseKeyFromDir.
             if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir, phaseConvention))) continue;
-            // phase-id-owner: dir-name dedup grouping; diverges from extractPhaseToken/phaseKeyFromDir on project-code-prefixed and multi-segment milestone dirs. Kept local.
-            const m = dir.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
-            const key = m ? m[1].toLowerCase() : dir;
+            // #3185: dedup grouping routed through the canonical phaseKeyFromDir
+            // (src/phase-id.cts) instead of a local leading-digits regex that
+            // diverged from extractPhaseToken/phaseKeyFromDir on
+            // project-code-prefixed dirs (whole dirname fell through as the key,
+            // so a `PROJ-05`/`PROJ-05-slug` pair never deduped) and on
+            // multi-segment milestone dirs. Same key surface used two lines
+            // #612: `phaseConvention` threaded, matching the retiredPhaseNums
+            // exclusion two lines above so both filters key on the same surface.
+            // The bracket key is milestone-STRIPPED (`GSD.02-01-one` -> `01`),
+            // which is the correct notion of "same phase" ONLY because
+            // `allMatchingDirs` above is already scoped to one milestone — the
+            // un-threaded key carries the dir's slug (`GSD.02-1-ONE`) and so
+            // would never dedup the `GSD.02-01-one` / `GSD.02-01-one-alt` pair
+            // #2445 exists to collapse.
+            const key = phaseKeyFromDir(dir, phaseConvention);
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
@@ -1888,9 +1999,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
           // total_phases (#549). #612 round-4: shared with cmdStateSync's
           // identical-purpose counter via countRoadmapPhaseHeadings (above
           // extractRetiredPhaseNumbers) — see that function's own comment for
-          // the fence-aware bracket strategy and the preserved legacy
-          // 999-token asymmetry (this call site passes
-          // includeUnconditional999Check=true, this file's pre-existing
+          // the fence-aware bracket strategy and the preserved sentinel-check
+          // asymmetry (this call site passes
+          // includeUnconditionalSentinelCheck=true, this file's pre-existing
           // read-path behaviour).
           const roadmapPhaseCount = roadmapScope !== null
             ? countRoadmapPhaseHeadings(roadmapScope, phaseConvention, retiredPhaseNums, true)
@@ -1905,8 +2016,25 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             // phase-dir count only, and mark unbounded so percent is skipped
             // downstream (mirrors the sync write-path guard).
             let milestoneBounded = true;
-            if (milestone && roadmapRaw !== null) {
-              milestoneBounded = isMilestoneBounded(roadmapRaw, String(milestone), phaseConvention);
+            // #3216 fix (#1761 regression): use `assertedMilestoneVersion` —
+            // the version STATE.md actually asserts — not the scope-gated
+            // `milestone`. `milestone` is null on any non-COMPLETE identity
+            // scope (deliberately, so a non-trustworthy identity never
+            // persists), but a real asserted version with no matching
+            // ROADMAP heading is EXACTLY the unbounded case this guard exists
+            // to catch; gating on `milestone` skipped the guard entirely and
+            // let the whole-document roadmapPhaseCount conflate sibling
+            // milestones again.
+            if (assertedMilestoneVersion && roadmapRaw !== null) {
+              // #3184: the LEGACY leg is the single owner (roadmap-parser's
+              // isMilestoneBoundedInRoadmap) rather than a hand-rolled,
+              // unbounded-substring re-derivation — the prior inline regex had
+              // no boundary assertion after the version token, so `v2.0`
+              // matched inside `v2.0.1` (#2562-class defect, design row 17).
+              // #612 composes the bracket leg ON TOP of that owner (see
+              // isMilestoneBounded); a non-bracket convention never reaches it,
+              // so this call is the owner's answer verbatim.
+              milestoneBounded = isMilestoneBounded(roadmapRaw, String(assertedMilestoneVersion).trim(), phaseConvention);
             }
             // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
             // at all — only Phase headings) from a MILESTONED-but-unbounded one
@@ -1914,10 +2042,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             // On a flat roadmap the whole-doc count is correct (no sibling milestones to
             // conflate); on a sectioned-but-unbounded one it conflates siblings (#1761),
             // so fall back to phaseDirs.length.
-            const hasMilestoneSectioning = roadmapRaw !== null
-              && /^#{2,3}\s+(?!Phase\s+\S)/mi.test(roadmapRaw);
+            // #3184: routed through the single owner (roadmap-parser.cjs) —
+            // deliberately weaker than isMilestoneBoundedInRoadmap above (no
+            // version-token requirement); see hasMilestoneSectioning's own
+            // doc comment for why that distinction is load-bearing.
+            const roadmapHasMilestoneSectioning = roadmapRaw !== null
+              && hasMilestoneSectioning(roadmapRaw);
             const safeToUseRoadmapCount = milestoneBounded
-              || (roadmapPhaseCount > 0 && !hasMilestoneSectioning);
+              || (roadmapPhaseCount > 0 && !roadmapHasMilestoneSectioning);
             return {
               totalPhases: safeToUseRoadmapCount
                 ? Math.max(phaseDirs.length, roadmapPhaseCount)
@@ -1997,7 +2129,11 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
     cwd ? planningPaths(cwd).state : undefined,
   ) as Record<string, unknown>;
   const body = stripFrontmatter(content);
-  const derivedFm = buildStateFrontmatter(body, cwd);
+  // #3017: pass the stored milestone from the existing frontmatter so
+  // buildStateFrontmatter scopes its disk scan to the correct milestone
+  // instead of auto-deriving (and potentially mis-binding).
+  const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone);
 
   // Preserve existing frontmatter status when body-derived status is 'unknown'.
   // This prevents a missing Status: field in the body from overwriting a
@@ -2570,7 +2706,6 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null, // beginPhase doesn't consult disk progress; syncStateFrontmatter's scan is authoritative
     sourcePath: statePath,
   };
 
@@ -2848,7 +2983,6 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null,
     sourcePath: statePath,
   };
 
@@ -2886,7 +3020,7 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
   // milestoneSwitch rebuilds frontmatter directly and must not run the
   // steady-state syncStateFrontmatter post-sync.
   const intent: StateTransitionIntent = { kind: 'milestoneSwitch', version, name: resolvedName };
-  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null, sourcePath: statePath };
+  const deps: StateTransitionDeps = { clock: realClock, sourcePath: statePath };
 
   const lockPath = acquireStateLock(statePath);
   try {
@@ -3103,7 +3237,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   // (defined just above extractRetiredPhaseNumbers) so both report
   // consistent totals off the SAME implementation, not two independently
   // maintained copies (#3242 Bug B).
-  // #612 round-5 (Major 2): `includeUnconditional999Check` is now
+  // #612 round-5 (Major 2): `includeUnconditionalSentinelCheck` is now
   // `syncConvention === 'bracket'`, not a literal `false` — under bracket,
   // READING-B puts the sentinel in the bracket, so `/^999\b/` on the bare
   // token is the ONLY thing excluding a `### [GSD.02] 999:` icebox heading,
@@ -3137,6 +3271,10 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const versionStr = typeof fmVersion === 'string' && fmVersion.trim() ? fmVersion.trim() : null;
   let milestoneBounded = true;
   if (versionStr !== null && syncRoadmapRaw !== null) {
+    // #3184: the LEGACY leg is the single owner (roadmap-parser.cjs) instead
+    // of a hand-rolled, unbounded-substring re-derivation — see the identical
+    // fix in buildStateFrontmatter above. #612 composes the bracket leg on top
+    // of that owner inside isMilestoneBounded.
     milestoneBounded = isMilestoneBounded(syncRoadmapRaw, versionStr, syncConvention);
   }
   let percent: number | null = null;
@@ -3150,7 +3288,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const syncResult = transitionCore(
     modified,
     { kind: 'sync', totalPlansInPhase: highestIncompletePhase ? highestIncompletePhaseplanCount : null, percent },
-    { clock: realClock, progressProvider: () => null },
+    { clock: realClock },
   );
   modified = syncResult.content;
   const coreChanges = (syncResult.data as { changes?: string[] } | undefined)?.changes ?? [];
@@ -3226,7 +3364,7 @@ function cmdStatePrune(cwd: string, options: StatePruneOptions, raw: boolean): v
   // This adapter owns currentPhase derivation (#1760 `Phase`/`Current Phase`
   // fallback above), dry-run, and STATE-ARCHIVE.md writes.
   const runPruneCore = (content: string): { newContent: string; archivedSections: PrunedSection[] } => {
-    const result = transitionCore(content, { kind: 'prune', cutoff }, { clock: realClock, progressProvider: () => null });
+    const result = transitionCore(content, { kind: 'prune', cutoff }, { clock: realClock });
     return {
       newContent: result.content,
       archivedSections: ((result.data as { archivedSections?: PrunedSection[] } | undefined)?.archivedSections) ?? [],
@@ -3322,6 +3460,11 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     try {
       const phasesDir = path.join(planningPaths(cwd).planning, 'phases');
       if (!fs.existsSync(phasesDir) || !fs.statSync(phasesDir).isDirectory()) return { ok: true, phases: [] };
+      // #3185: deliberately NOT listMilestonePhaseDirs. `state rebuild` is a
+      // RECONCILIATION pass against ground truth -- it must see every phase
+      // directory on disk so an orphan STATE.md row for a phase that no longer
+      // exists (or sits outside the current window) is dropped. Scoping this
+      // would make the rebuild silently preserve stale rows.
       const entries = fs.readdirSync(phasesDir);
       const records: PhaseInventoryRecord[] = [];
       for (const entry of entries) {
@@ -3332,9 +3475,21 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
         // Directory-name convention: `<NN>-<slug>` (e.g. `03-test-phase`).
         const m = entry.match(/^(\d+)-(.+)$/);
         if (!m) continue;
-        const files = fs.readdirSync(full);
-        const planCount = files.filter(f => /-PLAN\.md$/i.test(f)).length;
-        const summaryCount = files.filter(f => /-SUMMARY\.md$/i.test(f)).length;
+        // #3183 (lint-plan-count-drift / ADR-3180 Decision 2): source
+        // planCount/summaryCount from the single owner (scanPhasePlans)
+        // instead of a local root-only `-PLAN.md`/`-SUMMARY.md` readdirSync
+        // filter — picks up bare PLAN.md/SUMMARY.md and nested plans/. A
+        // non-COMPLETE scope (TRUNCATED: nested plans/ unreadable;
+        // UNREADABLE: `full` itself unreadable) is not a trustworthy count —
+        // throw so it surfaces via the outer catch as a real scan failure
+        // (`ok:false`), mirroring the #3057 B1 contract documented above for
+        // the sibling `fs.readdirSync(phasesDir)` failure mode, rather than
+        // silently reporting an undercount.
+        const scan = scanPhasePlans(full);
+        if (scan.scope !== SCOPE.COMPLETE) {
+          throw new Error(`could not fully scan plan directory (scope ${scan.scope}): ${full}`);
+        }
+        const { planCount, summaryCount } = scan;
         records.push({ number: m[1], name: m[2], planCount, summaryCount });
       }
       return { ok: true, phases: records };
@@ -3344,7 +3499,6 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
   };
 
   const deps: StateTransitionDeps = {
-    progressProvider: () => null,
     clock: realClock,
     phaseInventoryProvider,
     // Without this, `state rebuild --dry-run` reported a truncated STATE.md anonymously: the

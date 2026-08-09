@@ -22,11 +22,17 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-write-guard.js');
+
+// 5000ms: this hook does a handful of sync fs reads/stat calls on a small
+// fixture file and exits — a hang here would stall every fast-check sample
+// (40+ per run), so the bound is kept low rather than reused from a slower
+// class of call.
+const HOOK_TIMEOUT_MS = 5000;
 
 // Mirror the hook's published contract (hooks/gsd-write-guard.js).
 const SHRINK_RATIO = 0.4;
@@ -53,16 +59,16 @@ function guardVerdict(oldLines, newLines) {
   fs.writeFileSync(roadmapPath, lines(oldLines));
   const env = { ...process.env };
   delete env.GSD_ALLOW_PLANNING_SHRINK;
-  const r = spawnSync(process.execPath, [HOOK_PATH], {
+  const r = runHook(HOOK_PATH, [], {
     input: JSON.stringify({
       hook_event_name: 'PreToolUse',
       tool_name: 'Write',
       tool_input: { file_path: roadmapPath, content: lines(newLines) },
     }),
-    encoding: 'utf8',
     env,
+    timeoutMs: HOOK_TIMEOUT_MS,
   });
-  return r.status === 2 ? 'blocked' : 'passed';
+  return r.exitCode === 2 ? 'blocked' : 'passed';
 }
 
 describe('gsd-write-guard.js: SHRINK_RATIO/FLOOR_LINES budget contract (property)', () => {

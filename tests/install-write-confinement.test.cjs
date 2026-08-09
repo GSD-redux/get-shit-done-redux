@@ -2592,17 +2592,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const DRIFT_LINT = path.join(ROOT, 'scripts', 'lint-shell-command-projection-drift.cjs');
 
 function runLint(targetFile) {
-  return spawnSync(process.execPath, [DRIFT_LINT, targetFile], {
+  const result = runNode([DRIFT_LINT, targetFile], {
     cwd: ROOT,
-    encoding: 'utf8',
+    timeoutMs: 15000,
   });
+  result.status = result.exitCode;
+  return result;
 }
 
 // (The buildWindowsShimTriple parity test was removed with the gsd-sdk shim,

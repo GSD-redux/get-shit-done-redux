@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "next.md": "#3184 (epic #3180 Phase 2): Route 0 (resume_incomplete_phase) grows by one branch that reads the new `scope` field `roadmap analyze` emits. Before this, Route 0 treated a well-formed `{phases: []}` as a clean scan and fell through to routing as though the incomplete-phase invariant (#160) had been checked and passed — the silent disarm #3165 reports, where a milestone window truncated by a closed-milestone heading yields an empty phase list with exit 0 and no error. The added `elif [ \"$ROADMAP_SCOPE\" != \"complete\" ]` arm routes that case into the SAME warn-and-fall-through branch the existing `roadmap.analyze failed` arm already uses, so a non-answer is no longer indistinguishable from a genuinely empty scan. The growth is the new arm's three warning lines, its explanatory comment, the `ROADMAP_SCOPE` assignment, and one success-criteria bullet. Adding this to the workflow rather than only to the CLI is deliberate: a spec review of this phase found that emitting `scope` without a consumer left #3165's actual symptom reproducing, so the field would have been a diagnostic nobody reads."
+  }
+}

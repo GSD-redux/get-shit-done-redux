@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('node:os');
-const { execFileSync } = require('child_process');
+const { gitOrThrow } = require('./git-fixture.cjs');
 
 function enableGraphify(planningDir) {
   const configPath = path.join(planningDir, 'config.json');
@@ -39,11 +39,11 @@ function writeSnapshotJson(planningDir, data) {
 }
 
 function gitHead(cwd) {
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8' }).trim();
+  return gitOrThrow(['rev-parse', 'HEAD'], { cwd }).trim();
 }
 
 function commitEmpty(cwd, message) {
-  execFileSync('git', ['commit', '--allow-empty', '-m', message], { cwd, stdio: 'pipe' });
+  gitOrThrow(['commit', '--allow-empty', '-m', message], { cwd });
 }
 
 // Helper for auto-update status tests: builds a temp git project with
@@ -51,12 +51,12 @@ function commitEmpty(cwd, message) {
 // autoUpdateValue === null means no status file is written.
 function makeStatusProject(autoUpdateValue) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3347-status-'));
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: tmpDir });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmpDir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir });
+  gitOrThrow(['init', '-q', '-b', 'main'], { cwd: tmpDir });
+  gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: tmpDir });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: tmpDir });
   fs.writeFileSync(path.join(tmpDir, 'README.md'), '# t\n');
-  execFileSync('git', ['add', '.'], { cwd: tmpDir });
-  execFileSync('git', ['commit', '-qm', 'init'], { cwd: tmpDir });
+  gitOrThrow(['add', '.'], { cwd: tmpDir });
+  gitOrThrow(['commit', '-qm', 'init'], { cwd: tmpDir });
   fs.mkdirSync(path.join(tmpDir, '.planning/graphs'), { recursive: true });
   fs.writeFileSync(
     path.join(tmpDir, '.planning/config.json'),

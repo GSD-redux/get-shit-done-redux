@@ -432,6 +432,37 @@ const PROVENANCE_RULES = [
     },
   },
   {
+    // #3023: pi renames the shared hooks bundle's staged directory from the
+    // default `hooks/` to `gsd-hooks/` (hostBehaviors.sharedHooksDirName,
+    // bin/install.js's resolveSharedHooksDirName). Same family as `hooks-built`
+    // above (built from hooks/ via scripts/build-hooks.js), staged under a
+    // different root for exactly one runtime — a dedicated, `runtimes`-scoped
+    // rule keeps that pi-only rename from ever being able to shadow another
+    // host's `(rel, runtime)` pair, rather than folding 'gsd-hooks' into the
+    // shared HOOKS_ROOTS list `hooks-built`/`commonjs-marker` both key off.
+    // `package.json` (the CommonJS marker) is excluded here and owned by the
+    // dedicated `pi-shared-hooks-commonjs-marker` rule below, mirroring how
+    // `hooks-built` excludes it in favor of the shared `commonjs-marker` rule.
+    id: 'pi-shared-hooks-built',
+    kind: 'derived',
+    runtimes: new Set(['pi']),
+    roots: ['gsd-hooks'],
+    pattern: /^(?!package\.json$).+$/,
+    sources: (m) => [`hooks/${m[0]}`],
+  },
+  {
+    // Companion to `pi-shared-hooks-built`: the CommonJS-mode marker written
+    // into pi's renamed `gsd-hooks/` root by the same installSharedHooksBundle
+    // call the generic `commonjs-marker` rule attributes for the `hooks/`
+    // family. Kept as its own pi-scoped rule for the same reason as above.
+    id: 'pi-shared-hooks-commonjs-marker',
+    kind: 'code-derived',
+    runtimes: new Set(['pi']),
+    roots: ['gsd-hooks'],
+    pattern: /^package\.json$/,
+    sources: () => [COMMONJS_MARKER_SRC, INSTALLER_SRC],
+  },
+  {
     id: 'copilot-hook-registration',
     kind: 'code-derived',
     roots: ['hooks'],

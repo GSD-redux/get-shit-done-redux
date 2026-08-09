@@ -76,13 +76,21 @@ describe('debug session management implementation', () => {
       path.join(process.cwd(), 'gsd-core/workflows/debug.md'),
       'utf8'
     );
+    // #3149: tdd_mode now arrives on the `init.debug` bundle rather than a
+    // `config-get` call in this workflow, so the old literal-call assertion no
+    // longer describes reality. The invariant it protected is unchanged and is
+    // asserted at its new home: `cmdInitDebug` resolves `config.workflow`'s
+    // `tdd_mode`, never a bare top-level key — proven behaviorally in
+    // tests/init-debug.test.cjs ('honors workflow.tdd_mode, ignores a bare
+    // top-level tdd_mode'). What must remain true HERE is only that this
+    // workflow never reintroduces a bare-key read of its own.
     assert.ok(
       !content.includes('config-get tdd_mode'),
       'debug.md must not use bare "tdd_mode" key — use "workflow.tdd_mode" to match every other consumer'
     );
     assert.ok(
-      content.includes('config-get workflow.tdd_mode'),
-      'debug.md must read tdd_mode via the "workflow.tdd_mode" key'
+      content.includes('tdd_mode'),
+      'debug.md must still consume tdd_mode (now from the init.debug bundle)'
     );
   });
 

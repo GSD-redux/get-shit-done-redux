@@ -17,8 +17,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const CHECK_UPDATE_PATH = path.join(__dirname, '..', 'hooks', 'gsd-check-update.js');
 
@@ -101,9 +103,9 @@ describe('detectConfigDir runtime behavior (#1860)', () => {
       "process.stdout.write(result);",
     ].join('\n');
 
-    const result = execFileSync(process.execPath, ['-e', testScript], {
-      encoding: 'utf8',
-    });
+    const nodeResult = runNode(['-e', testScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(nodeResult, `node -e <detectConfigDir harness>`);
+    const result = nodeResult.stdout;
 
     const expectedDir = path.join(tmpHome, '.claude');
     assert.strictEqual(
@@ -137,9 +139,9 @@ describe('detectConfigDir runtime behavior (#1860)', () => {
       "process.stdout.write(result);",
     ].join('\n');
 
-    const result = execFileSync(process.execPath, ['-e', testScript], {
-      encoding: 'utf8',
-    });
+    const nodeResult = runNode(['-e', testScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(nodeResult, `node -e <detectConfigDir harness>`);
+    const result = nodeResult.stdout;
 
     const expectedDir = path.join(tmpHome, '.config', 'opencode');
     assert.strictEqual(

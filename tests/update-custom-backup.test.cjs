@@ -539,6 +539,137 @@ describe('detect-custom-files — skills/ directory missing from GSD_MANAGED_DIR
   });
 }
 
+// #3023 adversarial-review finding — detect-custom-files was blind to a
+// runtime-renamed shared-hook bundle (GSD_PREFIX_MANAGED_DIRS hardcoded
+// 'hooks'; a pi install's bundle lives at 'gsd-hooks/', so the whole
+// directory — and any user file inside it — was invisible to the scan and
+// therefore never backed up before the next clean-install wipe).
+describe('detect-custom-files — renamed shared-hooks bundle (#3023 finding 1)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-3023-hooks-detect-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeRuntimeMarker(configDir, runtimeId) {
+    const dir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.gsd-runtime'), runtimeId);
+  }
+
+  // Regression test — fails before the fix: with 'hooks' hardcoded, absDir
+  // resolves to <configDir>/hooks, which does not exist for a pi install, so
+  // the scan never even looks inside gsd-hooks/.
+  test('pi-shaped install: a user-added gsd-prefixed file under gsd-hooks/ is reported as custom', () => {
+    writeManifest(tmpDir, {
+      'gsd-hooks/gsd-context-monitor.js': '// real GSD hook\n',
+    });
+    writeRuntimeMarker(tmpDir, 'pi');
+
+    fs.writeFileSync(
+      path.join(tmpDir, 'gsd-hooks', 'gsd-my-own-hook.js'),
+      '// user-added hook, not shipped by GSD\n',
+    );
+
+    const result = runGsdTools(['detect-custom-files', '--config-dir', tmpDir], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const json = JSON.parse(result.output);
+    assert.ok(
+      json.custom_files.includes('gsd-hooks/gsd-my-own-hook.js'),
+      `expected gsd-hooks/gsd-my-own-hook.js to be reported as custom; got: ${JSON.stringify(json.custom_files)}`
+    );
+  });
+
+  test('pi-shaped install: the same file is NOT reported as custom once it is tracked in the manifest', () => {
+    writeManifest(tmpDir, {
+      'gsd-hooks/gsd-context-monitor.js': '// real GSD hook\n',
+      'gsd-hooks/gsd-my-own-hook.js': '// now shipped/tracked\n',
+    });
+    writeRuntimeMarker(tmpDir, 'pi');
+
+    const result = runGsdTools(['detect-custom-files', '--config-dir', tmpDir], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const json = JSON.parse(result.output);
+    assert.ok(
+      !json.custom_files.includes('gsd-hooks/gsd-my-own-hook.js'),
+      `manifest-tracked file must not be reported as custom; got: ${JSON.stringify(json.custom_files)}`
+    );
+  });
+
+  test('claude-shaped install: behavior at hooks/ is byte-identical to before the fix', () => {
+    writeManifest(tmpDir, {
+      'hooks/gsd-context-monitor.js': '// real GSD hook\n',
+    });
+    writeRuntimeMarker(tmpDir, 'claude');
+
+    fs.writeFileSync(
+      path.join(tmpDir, 'hooks', 'gsd-my-own-hook.js'),
+      '// user-added hook, not shipped by GSD\n',
+    );
+
+    const result = runGsdTools(['detect-custom-files', '--config-dir', tmpDir], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const json = JSON.parse(result.output);
+    assert.ok(
+      json.custom_files.includes('hooks/gsd-my-own-hook.js'),
+      `expected hooks/gsd-my-own-hook.js to still be reported as custom; got: ${JSON.stringify(json.custom_files)}`
+    );
+  });
+
+  test('runtime undeterminable (no .gsd-runtime marker): the fallback still finds a user file under gsd-hooks/', () => {
+    writeManifest(tmpDir, {
+      'agents/gsd-executor.md': '# GSD Executor\n',
+    });
+    // Deliberately no .gsd-runtime marker written — simulates an install
+    // predating #2297, or an unreadable/corrupt registry lookup.
+
+    fs.mkdirSync(path.join(tmpDir, 'gsd-hooks'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'gsd-hooks', 'gsd-my-own-hook.js'),
+      '// user-added hook, not shipped by GSD\n',
+    );
+
+    const result = runGsdTools(['detect-custom-files', '--config-dir', tmpDir], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const json = JSON.parse(result.output);
+    assert.ok(
+      json.custom_files.includes('gsd-hooks/gsd-my-own-hook.js'),
+      `expected the fallback scan to find gsd-hooks/gsd-my-own-hook.js; got: ${JSON.stringify(json.custom_files)}`
+    );
+  });
+
+  test('agents/ and skills/ scanning is unaffected by the hooks-dir resolution change', () => {
+    writeManifest(tmpDir, {
+      'agents/gsd-executor.md': '# GSD Executor\n',
+      'skills/gsd-planner/SKILL.md': '# GSD Planner Skill\n',
+      'hooks/gsd-context-monitor.js': '// real GSD hook\n',
+    });
+    writeRuntimeMarker(tmpDir, 'claude');
+
+    fs.writeFileSync(path.join(tmpDir, 'agents', 'gsd-my-custom-agent.md'), '# My Agent\n');
+    fs.mkdirSync(path.join(tmpDir, 'skills', 'gsd-my-custom-skill'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'skills', 'gsd-my-custom-skill', 'SKILL.md'), '# My Skill\n');
+
+    const result = runGsdTools(['detect-custom-files', '--config-dir', tmpDir], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const json = JSON.parse(result.output);
+    assert.ok(json.custom_files.includes('agents/gsd-my-custom-agent.md'));
+    assert.ok(json.custom_files.includes('skills/gsd-my-custom-skill/SKILL.md'));
+    assert.ok(!json.custom_files.includes('agents/gsd-executor.md'));
+    assert.ok(!json.custom_files.includes('skills/gsd-planner/SKILL.md'));
+    assert.ok(!json.custom_files.includes('hooks/gsd-context-monitor.js'));
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-3050-update-backup-eacces-nonfatal.test.cjs — consolidation epic #1969 (B4 #1973)
 // ────────────────────────────────────────────────────────────────────────

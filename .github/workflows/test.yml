@@ -116,21 +116,35 @@ jobs:
     needs: changes
     if: needs.changes.outputs.product_changed == 'true'
     runs-on: ${{ matrix.os }}
-    # #2952: this lane is sharded three ways (see the matrix below), so the
-    # budget covers ONE shard, not the whole unit suite. Measured on run
-    # 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s. Shard 1 is the long
-    # pole because the unsharded aux suites (integration/security/install/slow)
-    # ride along on it — that is deliberate; they total ~1m35s and sharding them
-    # would cost more than it saves.
+    # #2952: the `scope: full` lane is sharded three ways (see the matrix
+    # below), so the budget covers ONE shard, not the whole unit suite.
+    # Measured on run 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s. Shard
+    # 1 is the long pole because the unsharded aux suites
+    # (integration/security/install/slow) ride along on it — that is
+    # deliberate; they total ~1m35s and sharding them would cost more than it
+    # saves.
     #
     # 15 is ~1.9x the slowest measured shard. Before sharding this same lane ran
     # 15m20s against a 15-minute cap and was killed mid-run, which is the whole
     # of #2952 — the number is unchanged, the work behind it is a third the size.
+    #
+    # The `scope: windows` lane is sharded three ways for the same reason
+    # (see #3057): on PR #3094 it reached 15m05s against this same cap and was
+    # CANCELLED, four shas in a row — a change to tests/helpers.cjs scoped in
+    # the install-heavy suites and pushed the single Windows lane over the top.
+    # Per #869, a timeout bump only moves that cliff; sharding removes it. The
+    # cap stays at 15 unchanged: each shard now does roughly a third of the
+    # work, so headroom improves rather than needing a raise.
     # tests/ci-test-job-timeout-budget.test.cjs holds every lane here to a
     # headroom factor over its own measured cost.
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: a live-config leak fails the run on Linux/macOS lanes. Windows
+      # stays report-only: the guard's first run found PRE-EXISTING USERPROFILE
+      # leaks there (~190 test sites sandbox HOME alone), a documented separate
+      # class — promote once that sweep lands (see live-config-guard.cjs SEVERITY).
+      GSD_STRICT_LIVE_CONFIG_GUARD: ${{ matrix.os != 'windows-latest' && '1' || '' }}
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -158,6 +172,13 @@ jobs:
           # gave the `test-full` lane, which measures 0.0% spread across 3 bins on
           # the current table. The aux suites (integration/security/install/slow)
           # total ~1m35s and are not worth sharding; they run on shard 1 only.
+          #
+          # #3057: the `scope: windows` lane is now sharded three ways too, the
+          # same fix applied to the same cliff (#869's stated durable follow-up).
+          # It hit exactly 15m05s and was CANCELLED on PR #3094, four shas
+          # straight, after a change to tests/helpers.cjs scoped in the
+          # install-heavy suites. Its shards use the same `--shard i/n`
+          # flag on scripts/run-tests.cjs, applied AFTER scope selection.
           - os: ubuntu-latest
             node-version: 22
             scope: targeted
@@ -176,6 +197,15 @@ jobs:
           - os: windows-latest
             node-version: 24
             scope: windows
+            shard: 1/3
+          - os: windows-latest
+            node-version: 24
+            scope: windows
+            shard: 2/3
+          - os: windows-latest
+            node-version: 24
+            scope: windows
+            shard: 3/3
 
     steps:
       # Windows lane on checkout v5.0.1 (drops includeIf; no auth flake, uses Node 24 natively).
@@ -255,7 +285,7 @@ jobs:
 
       - name: Run scoped tests
         if: matrix.scope != 'full'
-        run: node scripts/run-tests.cjs --files-from .ci-selected-tests.txt
+        run: node scripts/run-tests.cjs --files-from .ci-selected-tests.txt${{ matrix.shard && format(' --shard {0}', matrix.shard) || '' }}
 
       # #2952: each shard runs its slice of the unit suite under c8 but renders
       # NO report and enforces NO gate — it only leaves raw V8 dumps in
@@ -308,6 +338,8 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: ubuntu-only lane — strict unconditionally (see the `test` job note).
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
       # #2854: same pin as the other rebase-merged lanes. This lane runs a targeted
       # list that can include the emitted gate, and the invariant is easier to keep
       # with no exceptions: if a job merges a pinned base, the gate uses that base.
@@ -385,6 +417,8 @@ jobs:
     timeout-minutes: 30
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: strict on Linux/macOS, report-only on Windows (see the `test` job note).
+      GSD_STRICT_LIVE_CONFIG_GUARD: ${{ matrix.os != 'windows-latest' && '1' || '' }}
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -585,6 +619,10 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # `npm run test:qa` is `run-tests.cjs --suite qa`, so this lane runs the
+      # live-config guard like every other suite lane. ubuntu-only, so strict
+      # unconditionally — the Windows carve-out does not apply here.
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:

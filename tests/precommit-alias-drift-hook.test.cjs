@@ -4,7 +4,8 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -31,16 +32,20 @@ describe('.githooks/pre-commit alias drift guard', () => {
 
     const marker = path.join(tmpDir, 'npm-called.txt');
 
-    execFileSync('bash', [HOOK_PATH], {
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        GIT_OVERRIDE: mockGit,
-        NPM_OVERRIDE: mockNpm,
-        GSD_TEST_NPM_MARKER: marker,
-      },
-      stdio: 'pipe',
-    });
+    throwIfFailed(
+      runHook(HOOK_PATH, [], {
+        interpreter: 'bash',
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          GIT_OVERRIDE: mockGit,
+          NPM_OVERRIDE: mockNpm,
+          GSD_TEST_NPM_MARKER: marker,
+        },
+        timeoutMs: 15000,
+      }),
+      `bash ${HOOK_PATH}`,
+    );
 
     assert.ok(fs.existsSync(marker), 'expected npm run check:alias-drift to be invoked');
   });
@@ -54,16 +59,20 @@ describe('.githooks/pre-commit alias drift guard', () => {
 
     const marker = path.join(tmpDir, 'npm-called.txt');
 
-    execFileSync('bash', [HOOK_PATH], {
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        GIT_OVERRIDE: mockGit,
-        NPM_OVERRIDE: mockNpm,
-        GSD_TEST_NPM_MARKER: marker,
-      },
-      stdio: 'pipe',
-    });
+    throwIfFailed(
+      runHook(HOOK_PATH, [], {
+        interpreter: 'bash',
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          GIT_OVERRIDE: mockGit,
+          NPM_OVERRIDE: mockNpm,
+          GSD_TEST_NPM_MARKER: marker,
+        },
+        timeoutMs: 15000,
+      }),
+      `bash ${HOOK_PATH}`,
+    );
 
     assert.ok(!fs.existsSync(marker), 'expected npm check to be skipped for unrelated staged files');
   });

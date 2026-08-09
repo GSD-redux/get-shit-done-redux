@@ -1860,15 +1860,18 @@ describe('#2584 orchestratorExec — validator', () => {
 // consumer's only entry point — execute-phase branches on exactly this output.
 // ---------------------------------------------------------------------------
 describe('#2627 dispatch-isolation CLI route', () => {
-  const { execFileSync } = require('node:child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 
   function query(runtimeId, extraArgs = []) {
-    return execFileSync(
-      process.execPath,
+    const r = runNode(
       [GSD_TOOLS, 'query', 'dispatch-isolation', ...extraArgs],
-      { cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, GSD_RUNTIME: runtimeId } },
+      { cwd: REPO_ROOT, env: { ...process.env, GSD_RUNTIME: runtimeId }, timeoutMs: PROBE_TIMEOUT_MS },
     );
+    throwIfFailed(r, `gsd-tools query dispatch-isolation ${extraArgs.join(' ')}`);
+    return r.stdout;
   }
   const queryJson = (runtimeId, extraArgs = []) => JSON.parse(query(runtimeId, ['--json', ...extraArgs]));
 

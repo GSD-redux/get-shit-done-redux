@@ -43,7 +43,8 @@ const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const {
   profileOf,
@@ -60,9 +61,12 @@ const DESC = path.join(__dirname, '..', 'capabilities', 'copilot', 'capability.j
 const COPILOT_CAP = JSON.parse(fs.readFileSync(DESC, 'utf8'));
 const COPILOT_AXES = COPILOT_CAP.runtime.hostIntegration;
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 test('Copilot classifies as the declarative-cli reference profile (profileOf)', () => {

@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — the rendered reference doc's worked-example
+// allow-test-rule: source-text-is-the-product (see #644) — the rendered reference doc's worked-example
 // vocab surface is the runtime contract; this pins its bijection to the source-of-truth fixtures (docs-parity).
 //
 // RED-first parity contract: the portable reference doc (gsd-core/references/prohibition-probe.md) keeps

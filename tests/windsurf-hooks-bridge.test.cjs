@@ -44,8 +44,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -76,10 +76,10 @@ function runHook(scriptPath, payload, opts = {}) {
 }
 
 function initGitRepo(dir) {
-  execFileSync('git', ['init', '-q', '.'], { cwd: dir, stdio: 'pipe' });
-  execFileSync('git', ['config', 'user.email', 'gsd-test@example.com'], { cwd: dir, stdio: 'pipe' });
-  execFileSync('git', ['config', 'user.name', 'gsd-test'], { cwd: dir, stdio: 'pipe' });
-  execFileSync('git', ['commit', '--allow-empty', '-q', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['init', '-q', '.'], { cwd: dir });
+  gitOrThrow(['config', 'user.email', 'gsd-test@example.com'], { cwd: dir });
+  gitOrThrow(['config', 'user.name', 'gsd-test'], { cwd: dir });
+  gitOrThrow(['commit', '--allow-empty', '-q', '-m', 'init'], { cwd: dir });
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const cp = require('node:child_process');
 
 const { evaluateLint, LINT_REASON, DEFAULT_BASE: CHANGESET_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'lint.cjs'));
 const { DEFAULT_BASE: DOCS_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'lint-docs-required.cjs'));
@@ -14,6 +13,9 @@ const { DEFAULT_BASE: DOCS_DEFAULT_BASE } = require(path.join(__dirname, '..', '
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'changeset', 'lint.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Build a minimal temp git repo shaped like a PR branch:
@@ -26,7 +28,7 @@ const { cleanup } = require('./helpers.cjs');
  * @returns {string} path to the temp repo (same as tmpDir)
  */
 function buildTempRepo(tmpDir, prFiles, baseFiles = []) {
-  const git = (...args) => cp.execFileSync('git', args, { cwd: tmpDir, encoding: 'utf8' });
+  const git = (...args) => gitOrThrow(args, { cwd: tmpDir });
 
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 'test@example.com');
@@ -72,18 +74,17 @@ function buildTempRepo(tmpDir, prFiles, baseFiles = []) {
  * @returns {{ status: number, report: object }}
  */
 function runLint(repoDir) {
-  const result = cp.spawnSync(
-    process.execPath,
+  const result = runNode(
     [LINT_SCRIPT, '--json'],
     {
       cwd: repoDir,
       env: { ...process.env, GITHUB_BASE_REF: 'main', GITHUB_EVENT_PATH: '' },
-      encoding: 'utf8',
+      timeoutMs: PROBE_TIMEOUT_MS,
     },
   );
   let report = {};
   try { report = JSON.parse(result.stdout); } catch { /* leave as empty object */ }
-  return { status: result.status, report };
+  return { status: result.exitCode, report };
 }
 
 // evaluateLint is a pure function over file lists + label list — no fs, no git.

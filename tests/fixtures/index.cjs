@@ -1,7 +1,7 @@
-const { execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { gitOrThrow } = require('../helpers/git-fixture.cjs');
 
 /**
  * Create a temp test fixture directory with canonical planning layout.
@@ -36,16 +36,16 @@ function createFixture(options = {}) {
   }
 
   if (git) {
-    execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git config commit.gpgsign false', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['init'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd: tmpDir });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: tmpDir });
+    gitOrThrow(['add', '-A'], { cwd: tmpDir });
     // `--allow-empty`: a fixture with `git: true, planning: false,
     // projectDoc: false` (e.g. a "greenfield" starting world) stages nothing,
     // so a plain `git commit` would fail with "nothing to commit" and the
     // caller would never get a usable repo (there'd be no HEAD at all).
-    execSync('git commit --allow-empty -m "initial commit"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['commit', '--allow-empty', '-m', 'initial commit'], { cwd: tmpDir });
   }
 
   return tmpDir;

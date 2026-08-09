@@ -34,6 +34,19 @@
  *     would silently drop the #969 kill-discrimination retry for the exact
  *     case it exists to catch. KILLED is reported as its own outcome so the
  *     `runGsdTools` adapter can retry it exactly like TIMED_OUT.
+ *   - `status !== null` with a populated `result.error` -> EXITED, evidence
+ *     over classification, checked before any error-code branch below. At
+ *     the exact timeout boundary, spawnSync can report `error.code ===
+ *     'ETIMEDOUT'` (the timer fired) on a result that ALSO carries
+ *     `status: 0` (the child finished on its own first) — verified
+ *     empirically via `tests/process-seam.test.cjs`'s at-the-bound case.
+ *     `status` is only ever populated by a real exit, so it outranks an
+ *     attached error: a process that returned a real exit code did not time
+ *     out in any sense the caller cares about, and reporting TIMED_OUT while
+ *     passing that exit code through as `exitCode` would be an incoherent
+ *     shape. This also means every branch below may assume `status ===
+ *     null`, which is exactly the assumption the BUFFER_OVERFLOW vs
+ *     TIMED_OUT ordering (next) already relies on.
  *   - `result.error.code` is a buffer-overflow code (`ENOBUFS` on this
  *     runtime, or the `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` code documented
  *     for the async exec()/execFile() family, accepted defensively in case
@@ -99,6 +112,11 @@ function toSeamResult(result) {
   let outcome;
   if (!error) {
     outcome = signal === null ? OUTCOME.EXITED : OUTCOME.KILLED;
+  } else if (status !== null) {
+    // Evidence over classification: `status` is only ever populated by a
+    // real exit, so it outranks an attached `error` — see the header
+    // comment's at-the-timeout-boundary case.
+    outcome = OUTCOME.EXITED;
   } else if (BUFFER_OVERFLOW_CODES.has(errorCode)) {
     outcome = OUTCOME.BUFFER_OVERFLOW;
   } else if (errorCode === 'ETIMEDOUT' || signal !== null) {
@@ -223,4 +241,4 @@ function runHook(target, args = [], options = {}) {
   return spawnSeam(interpreter, [target, ...args], spawnOptions);
 }
 
-module.exports = { runNode, runGit, runHook, OUTCOME };
+module.exports = { runNode, runGit, runHook, OUTCOME, toSeamResult };

@@ -800,34 +800,42 @@ describe('#612 PR-2: the disk-side filter scopes bracket dirs — all five numbe
     assert.deepEqual(readProgress(), [3, 2, 3, 2, 67]);
   });
 
-  test('CHARACTERIZATION: the M-NN twin of shape 1 counts ONE plan, not three', () => {
+  test('CHARACTERIZATION: the M-NN twin of shape 1 no longer collapses — three plans, not one', () => {
     // Holds the oracle substitution honest. The two "equals its flat-legacy
     // twin" tests above compare bracket against FLAT legacy; nothing else in the
     // suite pins the M-NN spelling, so the changeset's claim that the M-NN
     // divergence is pre-existing and untouched would go stale silently the first
     // time a sibling slice widens the de-dup key.
     //
-    // buildStateFrontmatter's #2445 de-dup key captures only a directory's
-    // LEADING integer (state.cts, under its own `phase-id-owner:` sanction), so
-    // `02-01-one`, `02-02-two` and `02-03-three` all key to `2` and two of the
-    // three are dropped before they are ever counted. Measured identical on the
-    // true base build (d04592de), on the pre-fix HEAD, and here.
+    // UPDATED at the origin/next merge — this test fired exactly as it was
+    // designed to. It used to pin ONE plan: buildStateFrontmatter's #2445
+    // de-dup key captured only a directory's LEADING integer, so `02-01-one`,
+    // `02-02-two` and `02-03-three` all keyed to `2` and two of the three were
+    // dropped before they were ever counted (measured identical on the base
+    // build d04592de and on the pre-merge HEAD). Upstream #3185 (ADR-3180
+    // Decision 1) replaced that local leading-digits regex with the canonical
+    // `phaseKeyFromDir`, which keys them `02-01`/`02-02`/`02-03` — three
+    // distinct phases, three plans. The superseded comment's own words: "If the
+    // de-dup key is ever widened, total_plans goes to 3 and this fails — which
+    // is the whole point."
     //
-    // The full reading measured on the base build is [3,0,1,0,0], but the two
-    // numerator fields depend on WHICH directory wins, and the winner is the one
-    // with the newest mtime among three created inside a single test — a tie on
-    // a coarser-granularity filesystem than this was measured on would flip
-    // completed_phases/completed_plans/percent without any behaviour changing.
-    // So the pin is the two survivor-INDEPENDENT numbers: total_phases still
-    // comes from the ROADMAP (3), and exactly one directory survives the de-dup,
-    // carrying exactly one plan. If the de-dup key is ever widened, total_plans
-    // goes to 3 and this fails — which is the whole point.
+    // Nothing on THIS branch moved it: the key is the same canonical call
+    // upstream makes, with only #612's already-resolved convention threaded in.
+    // The M-NN spelling now reads the same as its flat-legacy twin below, which
+    // is the direction #3185 intended.
     writeProject(ONE_MILESTONE_MNN, undefined, ONE_MNN_DIRS);
     const mnn = readProgress();
     assert.equal(mnn[0], 3, 'M-NN: total_phases still tracks the ROADMAP');
-    assert.equal(mnn[2], 1, 'M-NN: one plan counted, from the single de-duped dir');
-    // …and the flat-legacy twin of the same repo does NOT collapse, which is why
-    // it, not this, is the parity oracle for the bracket assertions above.
+    assert.equal(mnn[2], 3, 'M-NN: all three dirs survive the de-dup after #3185');
+    // …and the flat-legacy twin reads the same, which is why it is the parity
+    // oracle for the bracket assertions above. Measured in a FRESH project:
+    // `writeProject` only ADDS phase directories, and now that the M-NN dirs no
+    // longer collapse to one key (#3185) the two fixtures' directories would
+    // otherwise stack into a six-phase repo. The stacking was invisible before
+    // only because the M-NN survivor and a legacy dir happened to share the
+    // leading-integer key the old de-dup used.
+    cleanup(tmpDir);
+    tmpDir = createTempProject('adr-612-fivenum-mnn-twin-');
     writeProject(ONE_MILESTONE_LEGACY, undefined, ONE_LEGACY_DIRS);
     assert.deepEqual(readProgress(), [3, 2, 3, 2, 67]);
   });
@@ -2558,7 +2566,23 @@ describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the br
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['00-bootstrap', true], ['01-one', true]]);
-    assert.equal(readTotal(), 3);
+    // UPDATED at the origin/next merge — 3 before it, 2 after, and the move is
+    // upstream's, not this branch's. #3185 (ADR-3180 Decision 1) replaced
+    // buildStateFrontmatter's LEGACY heading counter's local `/^999\b/` literal
+    // with the canonical `isSentinelPhaseId`, whose leading-int rule reads
+    // `Phase 00` as sentinel milestone 0 and drops it from the denominator.
+    // The control's claim is unchanged in substance: this document is
+    // unaffected BY THE BRACKET BRANCH — countRoadmapPhaseHeadings' bracket leg
+    // never runs here, and its bare-token rules are untouched.
+    //
+    // NOTE for review: bracket and legacy now DISAGREE on this document (the
+    // RED case above reads 3 under `bracket`, this reads 2 under legacy),
+    // because the bracket leg's `/^0\b/` carve-out is `bracketId`-gated and a
+    // legacy-shaped heading in a bracket repo carries no bracket id. That is a
+    // direct consequence of upstream moving the legacy leg, not of a decision
+    // taken here; the round-6 Blocker 1 fix this control belongs to is
+    // unaffected either way.
+    assert.equal(readTotal(), 2);
   });
 
   test('RED (G3d, mixed mid-migration): bracket headings PLUS one legacy `### Phase 00:` — 3/2/67, not 2/2/100', () => {
@@ -2895,7 +2919,11 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['0-bootstrap', true], ['01-one', true]]);
-    assert.equal(readTotal(), 3);
+    // UPDATED at the origin/next merge — see the G3L control above for the full
+    // reason. #3185 moved the LEGACY heading counter onto `isSentinelPhaseId`,
+    // which drops `Phase 0` from the denominator; the bracket leg this test
+    // controls for is untouched.
+    assert.equal(readTotal(), 2);
   });
 
   test('RED (T05): a legacy `### Phase 0.5:` heading in a bracket repo — same defect, second spelling — 3/2/67, not 2/2/100', () => {
@@ -2932,7 +2960,13 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['0.5-bootstrap', true], ['01-one', true]]);
-    assert.equal(readTotal(), 3);
+    // UPDATED at the origin/next merge — see the G3L control above. #3185's
+    // `isSentinelPhaseId` also drops `Phase 0.5` here: its `/^0*(\d+)/` rule
+    // backtracks to the bare `0` and reads sentinel milestone 0. (Upstream's own
+    // roadmap-parser comment names this exact hazard for the #2554 decimal ids —
+    // which is why the BRACKET leg keeps the narrower `/^0\b/` that does not
+    // match `0.5`, and why this document reads 3 under `bracket` and 2 here.)
+    assert.equal(readTotal(), 2);
   });
 
   test('PIN (B0, bracket-spelled `0` token — Minor 1, NOT fixed this round): counter/filter disagreement is base-parity, deliberately unchanged', () => {

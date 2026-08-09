@@ -16,30 +16,34 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
+const { runGit } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const RELEASE_WORKFLOW = path.join(__dirname, '..', '.github', 'workflows', 'release.yml');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // ─── git helpers ────────────────────────────────────────────────────────────
 
+// Migrated from a hand-rolled throw-on-non-zero over spawnSync's `-C cwd`
+// argv form to gitOrThrow's `{ cwd }` option — same external behavior (throws
+// on non-zero exit, returns trimmed stdout on success), no caller reads the
+// old custom error message so the throw-shape swap is safe.
 function git(cwd, ...args) {
-  const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-  if (r.status !== 0) {
-    throw new Error(`git ${args.join(' ')} failed (status ${r.status}) in ${cwd}:\n${r.stderr || r.stdout}`);
-  }
-  return r.stdout.trim();
+  return gitOrThrow(args, { cwd, timeoutMs: GIT_TIMEOUT_MS }).trim();
 }
 
 function makeRepo(dir) {
   fs.mkdirSync(dir, { recursive: true });
-  spawnSync('git', ['init', dir], { encoding: 'utf8' });
+  gitOrThrow(['init', dir], { timeoutMs: GIT_TIMEOUT_MS });
   git(dir, 'config', 'user.email', 'test@test');
   git(dir, 'config', 'user.name', 'Test');
   git(dir, 'config', 'commit.gpgsign', 'false');
   // Ensure the default branch is 'main' regardless of the system's
   // init.defaultBranch setting (older Git defaults to 'master').
-  spawnSync('git', ['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/main'], { encoding: 'utf8' });
+  gitOrThrow(['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   return dir;
 }
 
@@ -110,8 +114,8 @@ describe('#2913 — cherry-pick empty-vs-conflict discrimination (real git)', ()
     git(repo, 'checkout', 'next');
 
     // Attempt the cherry-pick — it exits non-zero (empty).
-    const r = spawnSync('git', ['-C', repo, 'cherry-pick', '-x', choreSha], { encoding: 'utf8' });
-    assert.notStrictEqual(r.status, 0, 'cherry-pick of an already-applied commit must exit non-zero');
+    const r = runGit(['cherry-pick', '-x', choreSha], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    assert.notStrictEqual(r.exitCode, 0, 'cherry-pick of an already-applied commit must exit non-zero');
 
     // Apply the discrimination logic.
     const result = discriminateCherryPick(repo);
@@ -130,9 +134,9 @@ describe('#2913 — cherry-pick empty-vs-conflict discrimination (real git)', ()
     git(repo, 'checkout', '-b', 'throwaway2');
     const realSha = commitFile(repo, 'other.txt', 'real change\n', 'fix: a real fix');
     git(repo, 'checkout', 'next');
-    const realPick = spawnSync('git', ['-C', repo, 'cherry-pick', '-x', realSha], { encoding: 'utf8' });
-    assert.strictEqual(realPick.status, 0,
-      `after --skip, the sequencer must be clean so the next cherry-pick succeeds; got status ${realPick.status}:\n${realPick.stderr || realPick.stdout}`);
+    const realPick = runGit(['cherry-pick', '-x', realSha], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    assert.strictEqual(realPick.exitCode, 0,
+      `after --skip, the sequencer must be clean so the next cherry-pick succeeds; got status ${realPick.exitCode}:\n${realPick.stderr || realPick.stdout}`);
   });
 
   test('a genuine cherry-pick conflict is detected as conflict and aborted', () => {
@@ -149,8 +153,8 @@ describe('#2913 — cherry-pick empty-vs-conflict discrimination (real git)', ()
     commitFile(repo, 'file.txt', 'main version\n', 'fix: change to main version');
 
     // Attempt to cherry-pick the next commit — it conflicts (same line, different content).
-    const r = spawnSync('git', ['-C', repo, 'cherry-pick', '-x', conflictingSha], { encoding: 'utf8' });
-    assert.notStrictEqual(r.status, 0, 'cherry-pick of a conflicting commit must exit non-zero');
+    const r = runGit(['cherry-pick', '-x', conflictingSha], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    assert.notStrictEqual(r.exitCode, 0, 'cherry-pick of a conflicting commit must exit non-zero');
 
     // Apply the discrimination logic.
     const result = discriminateCherryPick(repo);

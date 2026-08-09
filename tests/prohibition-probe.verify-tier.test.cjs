@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — the verify-time disposition of a test-tier
+// allow-test-rule: source-text-is-the-product (see #644) — the verify-time disposition of a test-tier
 // prohibition is the deployed safety contract; this pins its fail-closed default to the code.
 //
 // RED-first SAFETY HALF of ADR-550 Decision 5(d) [maintainer decision 2026-06-12 "B-with-guard"].

@@ -1,5 +1,5 @@
 // allow-test-rule: structural-regression-guard see #2517
-// allow-test-rule: runtime-contract-is-the-product see #2684
+// allow-test-rule: source-text-is-the-product see #2684
 // Guards the omit-when-inherit fix: workflow orchestrators must instruct the agent to
 // OMIT the model= param from Agent() calls when the *_model var is "inherit" or empty.
 // Without it, model="" is passed verbatim and 404s on non-Claude runtimes

@@ -1,4 +1,5 @@
-// allow-test-rule: <runtime-contract-is-the-product> research agent .md content is the governed surface
+// allow-test-rule: source-text-is-the-product
+// research agent .md content is the governed surface
 // The 7 researcher agent .md files are the deployed AI agent definitions — their
 // frontmatter and @-includes ARE what the runtime loads. Asserting on their content
 // is asserting on the deployed contract, not the test author's source code.

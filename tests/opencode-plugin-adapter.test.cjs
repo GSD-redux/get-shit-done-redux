@@ -381,15 +381,21 @@ test('plugin implements the full declared opencode extension-event surface (Clau
 // ---------------------------------------------------------------------------
 
 test('installer copies plugin as .js, records it in the manifest, and removes it on uninstall', (t) => {
-  const { spawnSync } = require('node:child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
   const installer = path.join(__dirname, '..', 'bin', 'install.js');
   const cfg = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-oc-install-')));
   t.after(() => cleanup(cfg));
 
-  const run = (args) =>
-    spawnSync(process.execPath, [installer, '--opencode', '--global', '--config-dir', cfg, ...args], {
-      encoding: 'utf8',
+  const run = (args) => {
+    const result = runNode([installer, '--opencode', '--global', '--config-dir', cfg, ...args], {
+      timeoutMs: 120000,
+      // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+      // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+      env: require('./helpers.cjs').installSpawnEnv(),
     });
+    result.status = result.exitCode;
+    return result;
+  };
 
   // Install
   const install = run([]);

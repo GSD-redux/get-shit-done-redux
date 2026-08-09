@@ -8,6 +8,9 @@
  */
 
 import { splitTableRow } from './markdown-table.cjs';
+import { clampPercentFromFraction } from './phase-lifecycle.cjs';
+import { collectSection } from './markdown-sectionizer.cjs';
+import type { HeadingToken } from './markdown-sectionizer.cjs';
 
 // Internal helpers
 function escapeRegex(str: string): string {
@@ -231,6 +234,38 @@ export function stateExtractField(content: string, fieldName: string): string | 
   return null;
 }
 
+/**
+ * Match the "Current Position" section body from a STATE.md body. #2956: this
+ * is the Phase analogue of state.cts's matchSessionSection. `Phase` canonically
+ * lives under `## Current Position` (gsd-core/templates/state.md), so — like
+ * Stopped At / Paused At under `## Session` — it must be extracted from THAT
+ * section, not from the first `Phase:` / `**Phase:**` line anywhere in the
+ * body. Without the scope, a historical `Phase:` line in an archive section
+ * silently shadows the real one on every read/write, and because callers use
+ * this for routing (state.cts's current_phase) and for drift detection
+ * (gsd-tools.cjs's `drift-guard phase-status` CLI seam), a stale match either
+ * routes work to the wrong phase or fabricates a drift finding.
+ *
+ * Level-flexible: the canonical template uses an h2 `## Current Position`, the
+ * bootstrap template an h3 `### Current Position` (templates/state.md). Both
+ * must match — mirroring how matchSessionSection recognises `## Session` and
+ * `## Session Continuity`. Exact 'current position' text match (case-
+ * insensitive) excludes unrelated headings. Built on the `collectSection`
+ * seam, so it inherits that seam's CRLF tolerance (#2444 fix).
+ *
+ * This is the single owner of the scope — state.cts's private
+ * `matchCurrentPositionSection` delegates here rather than duplicating the
+ * logic, so the two consumers cannot drift apart.
+ *
+ * Returns the section body, or null (caller falls back to full-body search).
+ */
+export function stateCurrentPositionSlice(body: string): string | null {
+  const isCurrentPosition = (h: HeadingToken): boolean =>
+    (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
+  const section = collectSection(body, isCurrentPosition, { levelBounded: true });
+  return section ? section.body : null;
+}
+
 export function stateReplaceField(content: string, fieldName: string, newValue: string): string | null {
   const escaped = escapeRegex(fieldName);
   // Bold inline format: **FieldName:** value
@@ -305,7 +340,7 @@ export function computeProgressPercent(
   // cannot track through intermediate boolean variables).
   const planFraction = hasPlanData ? (completedPlans ?? 0) / (totalPlans ?? 1) : 1;
   const phaseFraction = hasPhaseData ? (completedPhases ?? 0) / (totalPhases ?? 1) : 1;
-  return Math.min(100, Math.round(Math.min(planFraction, phaseFraction) * 100));
+  return clampPercentFromFraction(Math.min(planFraction, phaseFraction));
 }
 
 export function shouldPreserveExistingProgress(existingProgress: unknown, derivedProgress: unknown): boolean {

@@ -399,21 +399,20 @@ describe('parsePredicates: ID/value grammar boundaries (C)', () => {
     assert.equal(r.predicates.length, 0, 'a doubled dot (empty segment) must be rejected, not silently accepted');
   });
 
-  test('idGrammarValidationIsLinearTimeAgainstManyConsecutiveDots', () => {
+  test('idGrammarValidationRejectsManyConsecutiveDots', () => {
     // DEFECT.CONTEXT-PREDICATES-ID-REDOS (MAJOR review finding): the old
     // `ID_RE`'s `(?:\.[A-Za-z0-9_.-]+)*` group was exponential in the number
     // of consecutive dots (measured: ~565ms for 40 dots). The structural
-    // per-segment validator is linear. A generous wall-clock bound is used
-    // only as a smoke check; the load-bearing assertion is that the result
-    // is a clean rejection (an id-shaped line with 60 consecutive dots has
-    // an empty segment at every step and must not parse).
+    // per-segment validator is linear. No elapsed-time bound is asserted:
+    // the load-bearing assertion is that the result is a clean rejection
+    // (an id-shaped line with 60 consecutive dots has an empty segment at
+    // every step and must not parse). An exponential regression would not
+    // finish at all, not merely exceed a threshold — so a clean rejection
+    // is itself the discriminator.
     const dots = '.'.repeat(60);
     const md = `\`A${dots}x=value\``;
-    const start = Date.now();
     const r = parsePredicates(md);
-    const elapsedMs = Date.now() - start;
     assert.equal(r.predicates.length, 0, 'an id with 60 consecutive dots has empty segments and must cleanly reject');
-    assert.ok(elapsedMs < 1000, `expected well under 1s (linear time), got ${elapsedMs}ms — possible ReDoS regression`);
   });
 });
 

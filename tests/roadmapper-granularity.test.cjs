@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product agent .md instruction surface see #1205
+// allow-test-rule: source-text-is-the-product agent .md instruction surface see #1205
 // agents/gsd-roadmapper.md is the deployed agent — the Granularity Calibration table
 // AND the phase_id_convention instructions ARE the deployed behavior. Asserting on
 // their prose asserts what runs in production (#163, #1205).

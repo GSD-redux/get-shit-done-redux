@@ -20,7 +20,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const BUILT_SCRIPT = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'spec-section.cjs');
 const ss = require(BUILT_SCRIPT);
@@ -131,7 +133,7 @@ describe('spec-section: countSectionDataRows / specSectionStatus', () => {
 describe('spec-section: CLI', () => {
   test('prints JSON status and exits 0 for a valid key', () => {
     const p = writeTmp('cli.md', PROHIB_SUFFIX_SPEC);
-    const r = spawnSync(process.execPath, [BUILT_SCRIPT, p, 'prohibitions'], { encoding: 'utf8' });
+    const r = toLegacyResult(runNode([BUILT_SCRIPT, p, 'prohibitions'], { timeoutMs: PROBE_TIMEOUT_MS }));
     assert.equal(r.status, 0);
     const out = JSON.parse(r.stdout);
     assert.equal(out.supplied, true);
@@ -140,7 +142,7 @@ describe('spec-section: CLI', () => {
 
   test('exits 2 on a bad key', () => {
     const p = writeTmp('cli2.md', PROHIB_SUFFIX_SPEC);
-    const r = spawnSync(process.execPath, [BUILT_SCRIPT, p, 'bogus'], { encoding: 'utf8' });
+    const r = toLegacyResult(runNode([BUILT_SCRIPT, p, 'bogus'], { timeoutMs: PROBE_TIMEOUT_MS }));
     assert.equal(r.status, 2);
   });
 });

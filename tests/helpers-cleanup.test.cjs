@@ -10,7 +10,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const { cleanup, createTempDir } = require('./helpers.cjs');
+const os = require('os');
+
+const { cleanup, createTempDir, tmpRootCandidates } = require('./helpers.cjs');
 
 // ─── Test 1: Real-FS happy path ──────────────────────────────────────────────
 
@@ -98,3 +100,162 @@ test('cleanup does not throw when cwd is inside the target dir, and removes the 
 
   assert.strictEqual(fs.existsSync(dir), false, 'temp dir should not exist after cleanup');
 });
+
+// ─── Test 4: out-of-tmpdir refusal ───────────────────────────────────────────
+
+test('cleanup throws and does not chdir or delete when target is outside os.tmpdir()', () => {
+  // __dirname (this repo's tests/ directory) must never be deleted. Whether
+  // it is actually outside os.tmpdir() is environment-dependent: on Linux
+  // os.tmpdir() is /tmp, and a CI container that checks the repo out under
+  // /tmp would put __dirname INSIDE tmpdir, in which case a correctly-working
+  // cleanup() would not refuse it -- it would delete this directory. The
+  // precondition assertion below verifies the "outside tmpdir" assumption
+  // before cleanup() is ever called, so that situation fails loudly and
+  // safely instead of destructively. No scratch directory is created, so
+  // there is nothing to tear down.
+  const outsideDir = __dirname;
+  const knownFile = path.join(outsideDir, 'helpers-cleanup.test.cjs');
+
+  // Use cleanup()'s own tmpRootCandidates() as the single source of truth
+  // for "is this path inside tmpdir" instead of a hand-mirrored predicate.
+  // The old copy here checked only path.resolve(os.tmpdir()), one of
+  // SEVERAL root spellings cleanup() actually accepts (it also accepts the
+  // realpath'd and native-realpath'd forms) — a repo checked out under a
+  // root this precondition didn't know about would compute "outside, safe"
+  // while cleanup() computed "inside, delete", turning this refusal test
+  // into the very destructive scenario it exists to prevent. Importing the
+  // real function removes that drift class entirely.
+  const resolvedOutsideDir = path.resolve(outsideDir);
+  const roots = tmpRootCandidates();
+  const isWindows = process.platform === 'win32';
+  const outsideDirForCompare = isWindows ? resolvedOutsideDir.toLowerCase() : resolvedOutsideDir;
+  const isInsideTmpdir = roots.some((root) => {
+    const rootForCompare = isWindows ? root.toLowerCase() : root;
+    return (
+      outsideDirForCompare === rootForCompare ||
+      outsideDirForCompare.startsWith(`${rootForCompare}${path.sep}`)
+    );
+  });
+  assert.strictEqual(
+    isInsideTmpdir,
+    false,
+    `this test cannot run safely when the repo lives under any tmpdir root ` +
+      `cleanup() accepts: outsideDir (${resolvedOutsideDir}) is inside one of ${JSON.stringify(roots)}`
+  );
+
+  const cwdBefore = process.cwd();
+
+  assert.throws(
+    () => cleanup(outsideDir),
+    (err) => err instanceof Error && err.message.includes(outsideDir),
+    'cleanup must throw an Error whose message names the offending path'
+  );
+
+  assert.strictEqual(
+    process.cwd(),
+    cwdBefore,
+    'cleanup must refuse before chdir, so cwd is unchanged'
+  );
+  assert.strictEqual(fs.existsSync(outsideDir), true, 'target directory must still exist after refusal');
+  assert.strictEqual(
+    fs.existsSync(knownFile),
+    true,
+    'a known file inside the target must still exist, proving the dir was not emptied'
+  );
+});
+
+// ─── Test 5: control — a real os.tmpdir()-rooted path still cleans up ───────
+
+test('cleanup still removes a real os.tmpdir()-rooted directory (control)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cleanup-control-'));
+
+  cleanup(dir);
+
+  assert.strictEqual(fs.existsSync(dir), false, 'os.tmpdir()-rooted directory should be removed');
+});
+
+// ─── Test 6b: accepted-roots set always accepts a freshly-minted tmpdir ─────
+
+test('cleanup accepts a freshly-created os.tmpdir()-rooted dir on any platform (accepted-roots invariant)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cleanup-roots-'));
+  t.after(() => {
+    if (fs.existsSync(dir)) cleanup(dir);
+  });
+
+  assert.doesNotThrow(
+    () => cleanup(dir),
+    'cleanup must accept a directory created directly under os.tmpdir(), regardless of platform-specific canonical spelling (8.3 short/long names, /var symlink, drive-letter case)'
+  );
+  assert.strictEqual(fs.existsSync(dir), false, 'temp dir should be removed, not refused');
+});
+
+// ─── Test 6: realpath'd os.tmpdir() form is not refused (regression) ────────
+
+test('cleanup accepts a realpath()d temp dir even when it differs from the raw path (macOS /var -> /private/var)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cleanup-realpath-'));
+  const realPath = fs.realpathSync(dir);
+
+  if (realPath !== dir) {
+    // macOS (and any other symlinked-tmpdir platform): the realpath'd form
+    // diverges from the raw mkdtempSync() path. This is exactly the shape a
+    // caller gets from fs.realpathSync() or from process.cwd() after
+    // chdir-ing into a realpath'd dir — assert the guard does NOT refuse it.
+    cleanup(realPath);
+    assert.strictEqual(fs.existsSync(realPath), false, 'realpath()d form should be removed, not refused');
+    assert.strictEqual(fs.existsSync(dir), false, 'raw path should also be gone (same directory)');
+  } else {
+    // Linux and any platform with no tmpdir symlink indirection: realpath()
+    // equals the raw path, so this branch exercises the ordinary path and
+    // keeps the test meaningful (non-vacuous) on both platforms.
+    t.after(() => {
+      if (fs.existsSync(dir)) cleanup(dir);
+    });
+    cleanup(dir);
+    assert.strictEqual(fs.existsSync(dir), false, 'temp dir should be removed');
+  }
+});
+
+// ─── Test 7: tmpRootCandidates() shape invariants (platform-independent) ────
+//
+// Test 6 above is coverage-identical to Test 5's control on any platform
+// where fs.realpathSync(tmpdir) does not diverge from the raw path (Linux,
+// notably — the platform the remote matrix actually runs on), so it cannot
+// verify the macOS-specific fix there. These assertions hold the exported
+// tmpRootCandidates() to a contract that is meaningful on every platform.
+
+test('tmpRootCandidates() returns a well-formed, deduplicated list of absolute paths', () => {
+  const roots = tmpRootCandidates();
+
+  assert.ok(Array.isArray(roots) && roots.length > 0, 'must return a non-empty array');
+
+  for (const root of roots) {
+    assert.strictEqual(path.isAbsolute(root), true, `root must be absolute: ${root}`);
+  }
+
+  const isWindows = process.platform === 'win32';
+  const keys = roots.map((r) => (isWindows ? r.toLowerCase() : r));
+  const uniqueKeys = new Set(keys);
+  assert.strictEqual(uniqueKeys.size, keys.length, `roots must be deduplicated: ${JSON.stringify(roots)}`);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cleanup-roots-contract-'));
+  try {
+    const resolvedDir = path.resolve(dir);
+    const dirForCompare = isWindows ? resolvedDir.toLowerCase() : resolvedDir;
+    const isUnderSomeRoot = roots.some((root) => {
+      const rootForCompare = isWindows ? root.toLowerCase() : root;
+      return (
+        dirForCompare === rootForCompare ||
+        dirForCompare.startsWith(`${rootForCompare}${path.sep}`)
+      );
+    });
+    assert.strictEqual(
+      isUnderSomeRoot,
+      true,
+      `a freshly mkdtempSync'd dir under os.tmpdir() must be under at least one returned root: ` +
+        `${resolvedDir} vs ${JSON.stringify(roots)}`
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+

@@ -15,6 +15,9 @@ const { countMatchedSummaries } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatterMod = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatterMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 
 // Excluded derivative files
 const PLAN_OUTLINE_RE = /-OUTLINE\.md$/i;
@@ -94,13 +97,58 @@ function isNestedSummaryFile(fileName: string): boolean {
   return /^SUMMARY-\d+.*\.md$/i.test(fileName) || /-SUMMARY-\d+.*\.md$/i.test(fileName);
 }
 
+/**
+ * Strict canonical-naming predicate over a `scanPhasePlans` `planFiles`/
+ * `allPlanFiles` ENTRY (root form bare, nested form `plans/`-prefixed, exactly
+ * as those arrays store them) — root `<phase>-<NN>-PLAN.md`/bare `PLAN.md`,
+ * or nested `plans/PLAN-<NN>....md`/`plans/<x>-PLAN-<NN>....md` — WITHOUT
+ * `isRootPlanFile`'s loose `/\.md$/i && /PLAN/i` fallback.
+ *
+ * The `plans/` prefix check is load-bearing, not cosmetic: `isNestedPlanFile`
+ * matches ANY basename containing `-PLAN-<digits>...md` with no anchor
+ * requiring an actual `plans/` directory — that shape is exactly the #2893
+ * reporter's non-canonical example, `01-PLAN-01-foundation.md`. Applying
+ * `isNestedPlanFile` directly to a bare root-level name would therefore
+ * misclassify that exact offender as canonical. Only entries scanPhasePlans
+ * itself produced with the `plans/` prefix (i.e. read from the real nested
+ * subdirectory) are eligible for the nested check.
+ *
+ * #2893/#3183: `isRootPlanFile`'s loose fallback is deliberately permissive
+ * for live-plan COUNTING (a lowercase `plan.md` still counts toward
+ * completion — see plan-count-single-owner.test.cjs's pinned case-sensitivity
+ * asymmetry). But the #2893 "non-canonical filename" diagnostic (phase.cts's
+ * `describeNonCanonicalPlans`, used by find-phase/phase-plan-index/phases
+ * list --type plans) exists specifically to CATCH a plan-shaped file that
+ * does NOT match the canonical contract and warn instead of silently
+ * scheduling it. Feeding that diagnostic (and the `plans`/`files` lists those
+ * commands return) the loose `allPlanFiles`/`planFiles` set defeats the
+ * diagnostic entirely, since the loose fallback already recognizes the
+ * non-canonical file as "matched". This predicate is the STRICT filter those
+ * three call sites intersect against so the diagnostic (and what counts as a
+ * schedulable plan for those commands specifically) stays canonical-only,
+ * while scanPhasePlans's own planCount/summaryCount/completed stay on the
+ * loose, permissive rule.
+ */
+function isCanonicalPlanFile(fileEntry: string): boolean {
+  if (fileEntry.startsWith('plans/')) return isNestedPlanFile(fileEntry.slice('plans/'.length));
+  return fileEntry.endsWith('-PLAN.md') || fileEntry === 'PLAN.md';
+}
+
 interface PhaseScanResult {
   planCount: number;
   summaryCount: number;
   completed: boolean;
   hasNestedPlans: boolean;
+  // Callers asking "which plans are OUTSTANDING" (live-completion tracking,
+  // pairing, wave scheduling) use planFiles — it is post status:superseded
+  // exclusion. Callers asking "what plan files physically exist on disk"
+  // (e.g. numbering-gap detection) use allPlanFiles — it is EVERY plan file
+  // found, root + nested, BEFORE the superseded exclusion. One owner, two
+  // questions.
   planFiles: string[];
+  allPlanFiles: string[];
   summaryFiles: string[];
+  scope: planningScopeMod.Scope;
 }
 
 function scanPhasePlans(phaseDir: string): PhaseScanResult {
@@ -114,7 +162,9 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
       completed: false,
       hasNestedPlans: false,
       planFiles: [],
+      allPlanFiles: [],
       summaryFiles: [],
+      scope: SCOPE.UNREADABLE,
     };
   }
 
@@ -123,6 +173,7 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
   let nestedPlanFiles: string[] = [];
   let nestedSummaryFiles: string[] = [];
   let hasNestedPlans = false;
+  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
 
   const nestedDir = join(phaseDir, 'plans');
   if (existsSync(nestedDir)) {
@@ -131,7 +182,12 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
       nestedPlanFiles = nestedFiles.filter(isNestedPlanFile).map((file) => `plans/${file}`);
       nestedSummaryFiles = nestedFiles.filter(isNestedSummaryFile).map((file) => `plans/${file}`);
       hasNestedPlans = nestedPlanFiles.length > 0;
-    } catch { /* ignore unreadable nested layout */ }
+    } catch {
+      // #3183 (ADR-3180 Decision 2): the nested plans/ dir exists but could not
+      // be read — this scan cannot see plans it knows are there, so zero is
+      // NOT a reliable answer; mark TRUNCATED rather than COMPLETE.
+      scope = SCOPE.TRUNCATED;
+    }
   }
 
   const allPlanFiles = rootPlanFiles.concat(nestedPlanFiles);
@@ -166,7 +222,9 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
     completed: allPlanFiles.length > 0 && summaryCount >= planCount,
     hasNestedPlans,
     planFiles,
+    allPlanFiles,
     summaryFiles,
+    scope,
   };
 }
 
@@ -179,4 +237,5 @@ export = Object.assign(scanPhasePlans, {
   isNestedPlanFile,
   isRootSummaryFile,
   isNestedSummaryFile,
+  isCanonicalPlanFile,
 });

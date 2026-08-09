@@ -523,6 +523,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `phases-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools phases` |
 | `plan-dependency-graph.cjs` | Shared halt-propagation over a plan's `depends_on` DAG — the single topological-order + halt-propagation engine used by both `phase.cjs`'s wave-grouping and `phase-locator.cjs`'s phase-location primitive, so the two can never diverge on which plans a halted plan blocks (#2830) |
 | `plan-scan.cjs` | Canonical phase-plan scanner for detecting plan and summary files in flat and nested layouts (k014) |
+| `planning-scope.cjs` | Frozen `SCOPE` discriminator (`COMPLETE`/`TRUNCATED`/`UNSCOPED`/`UNREADABLE`) distinguishing a genuinely-empty derivation from one computed over a truncated or unscoped input, so callers can branch on the difference instead of reading a plausible zero (ADR-3180) |
 | `planning-workspace.cjs` | Planning path/workstream seam (`planningDir`, `planningPaths`, active-workstream routing, `.planning/.lock` orchestration) |
 | `project-root.cjs` | Resolves a project root from a starting directory using four heuristics (own `.planning/` guard, `sub_repos` config, `multiRepo` flag, `.git` heuristic) |
 | `profile-output.cjs` | Profile rendering, USER-PROFILE.md and dev-preferences.md generation |

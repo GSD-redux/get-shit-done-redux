@@ -319,7 +319,7 @@ Ideas that aren't ready for active planning go into the backlog using 999.x numb
 /gsd-capture --backlog "Mobile responsive"     # Creates 999.2-mobile-responsive/
 ```
 
-Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready.
+Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready. Backlog directories (and the `0-*` pre-milestone directory some projects carry) are excluded from `/gsd-progress`, `/gsd-stats`, and phase listings for the current milestone — they stay out of the active phase sequence for counting purposes too, not just for planning.
 
 **Review and promote** with `/gsd-review-backlog` — it shows all backlog items and lets you promote (move to active sequence), keep (leave in backlog), or remove (delete).
 
@@ -524,6 +524,13 @@ claude --dangerously-skip-permissions
 /gsd-pause-work --report         # Generate session summary
 ```
 
+> [!CAUTION]
+> **The permissions flag is optional.** It skips per-file confirmation while
+> GSD's sub-agents read and write files. Use it only in low-stakes or
+> throwaway contexts. To keep confirmations enabled, start with `claude` instead.
+> For real work, read the [security model](../explanation/security-model.md) first.
+
+
 ### New Project from Existing Document
 
 ```bash
@@ -552,6 +559,8 @@ claude --dangerously-skip-permissions
 ### Plan Drift Guard
 
 **Default-on.** The plan drift guard (`plan_review.source_grounding: true`) runs during plan review and verifies that every symbol your plans cite — decorators, classes, functions, CLI flags — actually exists in your source tree at review time. This catches hallucinated names before any execution agent runs.
+
+**Two axes, one switch.** The same guard also runs a cross-artifact fact-drift pass: when ROADMAP.md, PLAN.md, STATE.md and CONTEXT.md state the *same* fact in contradictory ways — a phase marked complete in one and in progress in the other, a success criterion the plan restates with a different outcome, a term used against its CONTEXT.md definition — you get an advisory finding in REVIEWS.md naming both locations and which one is authoritative. It keys on contradicting *knowledge*, not on similar-looking text, so a plan that simply restates a criterion in its own words is not flagged. The findings never block convergence.
 
 **What it catches:**
 

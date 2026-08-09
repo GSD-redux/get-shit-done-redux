@@ -722,10 +722,14 @@ describe('reviewer docs parity — the shipped repo', () => {
 });
 
 describe('review-lane flags — emitted shape', () => {
-  const cp = require('node:child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
-  const runFlags = (args = []) =>
-    cp.spawnSync(process.execPath, [TOOLS, 'review-lane', 'flags', ...args], { encoding: 'utf8' });
+  const runFlags = (args = []) => {
+    const r = runNode([TOOLS, 'review-lane', 'flags', ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+    return toLegacyResult(r);
+  };
 
   test('emitsEveryDeclaredFlagInDescriptorOrder', () => {
     const r = runFlags();
@@ -789,7 +793,7 @@ describe('review-lane flags — emitted shape', () => {
   });
 
   test('anUnknownSubcommandErrorsWithoutAStackTrace', () => {
-    const r = cp.spawnSync(process.execPath, [TOOLS, 'review-lane', 'bogus'], { encoding: 'utf8' });
+    const r = runNode([TOOLS, 'review-lane', 'bogus'], { timeoutMs: PROBE_TIMEOUT_MS });
     const combined = `${r.stdout || ''}${r.stderr || ''}`;
     assert.match(combined, /flags/);
     assert.ok(!combined.includes('at Object.'));

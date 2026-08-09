@@ -57,11 +57,11 @@ describe('#2351 run-with-timeout — exit-code contract', () => {
   });
 
   test('exits 124 when the wall-clock budget is exceeded (matches GNU timeout)', () => {
-    const start = Date.now();
     const r = runVerb(['1', '--', ...HANG]);
+    // exit 124 is itself the discriminator: a harness backstop kill surfaces
+    // as status === null (signal), never as 124 — so no elapsed-time
+    // assertion is needed or allowed here.
     assert.equal(r.status, 124, 'a timed-out command must exit 124');
-    // Sanity: the cap actually fired promptly, not the 30s harness backstop.
-    assert.ok(Date.now() - start < 15000, 'timeout should fire near the 1s budget');
   });
 
   test('exits 127 when the command is not found (matches GNU timeout)', () => {

@@ -119,16 +119,17 @@ if [ "$APPLICABLE" = "0" ]; then
 fi
 ```
 
-**Edge `--auto` resolution rules (reuse spec-phase 5.5 verbatim, D-06):** auto-`covered` where a
-defensible acceptance criterion can be written (→ a plain `must_haves.truths` string); else
-auto-`backstop` → author it as a **structured flat-scalar marker** `{ statement: <the check>,
+**Edge `--auto` resolution rules (reuse spec-phase 5.5 verbatim, D-06):** auto-`resolved`
+(verification: explicit) where a defensible acceptance criterion can be written (→ a plain
+`must_haves.truths` string); else auto-`resolved` (verification: backstop) → author it as a
+**structured flat-scalar marker** `{ statement: <the check>,
 verification: backstop }` in `must_haves.truths`, NOT a prose note (the verifier branches
 deterministically on the `verification: backstop` field; a parenthetical is unparseable — the #1110
 fragility; flat scalar `verification:` key, never a nested object, ADR-550 #1278). A `backstop` truth
 the verifier cannot confirm with explicit evidence abstains → `human_needed` (reason
 `insufficient_spec`), never a silent pass (#1154; `references/honest-verifier.md`). **Never
 auto-dismiss** (a wrong dismissal is the exact silent failure this eliminates). An `unclassified` row
-stays **`unresolved`** (#1110) — never auto-`backstop`ped — and is surfaced to the planner as a flagged
+stays **`unresolved`** (#1110) — never auto-resolved with backstop — and is surfaced to the planner as a flagged
 assumption. Pass `$COVERAGE` (+ the gate's `$SPECLESS_FALLBACK_DISABLED` note) into the gsd-planner
 prompt (Step 8). When `EDGE_ABSENT=0`, `$COVERAGE` is empty and this does not run.
 
@@ -159,8 +160,8 @@ assumption — never a silent drop.
 Author the fallback report into `must_haves` with the SAME lift the SPEC path uses — only the source
 changes (the fallback report, not the SPEC):
 
-- **Edges →** every `covered` edge's acceptance criterion → `must_haves.truths` as a plain string;
-  every `backstop` edge → `must_haves.truths` as a structured `{ statement, verification: backstop }`
+- **Edges →** every resolved (verification: explicit) edge's acceptance criterion → `must_haves.truths` as a plain string;
+  every resolved (verification: backstop) edge → `must_haves.truths` as a structured `{ statement, verification: backstop }`
   marker (NOT prose; #1110/#1278), which abstains → `human_needed` at verify time when unconfirmed
   (#1154); every `unresolved`/`unclassified` row → an explicit flagged assumption (never a silent drop).
 - **Prohibitions →** every kept prohibition → the `must_haves.prohibitions:` sibling block (NOT

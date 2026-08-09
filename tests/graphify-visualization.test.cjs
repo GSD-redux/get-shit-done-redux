@@ -8,7 +8,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('node:os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { BUILD_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
 
 const {
@@ -490,7 +492,8 @@ describe('regressions', () => {
   // Regression for #3579: Gap 1 — build-hooks.js packages every top-level hooks/*.sh
   describe('#3579 Gap 1: build-hooks.js packages every top-level hooks/*.sh into dist', () => {
     before(() => {
-      execFileSync(process.execPath, [BUILD_SCRIPT_3579], { encoding: 'utf-8', stdio: 'pipe' });
+      const r = runNode([BUILD_SCRIPT_3579], { timeoutMs: BUILD_TIMEOUT_MS });
+      throwIfFailed(r, `node ${BUILD_SCRIPT_3579}`);
     });
 
     test('every top-level hooks/*.sh is emitted to hooks/dist/ by the build', () => {
@@ -532,17 +535,18 @@ describe('regressions', () => {
     let installStdout;
 
     before(() => {
-      execFileSync(process.execPath, [BUILD_SCRIPT_3579], { encoding: 'utf-8', stdio: 'pipe' });
+      const r1 = runNode([BUILD_SCRIPT_3579], { timeoutMs: BUILD_TIMEOUT_MS });
+      throwIfFailed(r1, `node ${BUILD_SCRIPT_3579}`);
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3579-install-'));
-      installStdout = execFileSync(
-        process.execPath,
+      const r2 = runNode(
         [INSTALL_SCRIPT_3579, '--claude', '--global', '--yes', '--no-sdk'],
         {
-          encoding: 'utf-8',
-          stdio: 'pipe',
           env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir },
+          timeoutMs: INSTALL_TIMEOUT_MS,
         }
       );
+      throwIfFailed(r2, `node ${INSTALL_SCRIPT_3579}`);
+      installStdout = r2.stdout;
     });
 
     after(() => {
@@ -608,7 +612,9 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
@@ -623,8 +629,9 @@ const GRAPHIFY_MD = path.join(__dirname, '..', 'commands', 'gsd', 'graphify.md')
  * Returns the bash source text (without the fence lines themselves).
  *
  * readFileNormalized() strips \r\n -> \n before the match below runs — the
- * extracted block is later spawned via spawnSync('bash', ...) in runBlock(),
- * so an un-normalized read on a Windows checkout would break bash mid-script
+ * extracted block is later spawned via runHook('-c', ..., {interpreter:
+ * 'bash'}) in runBlock(), so an un-normalized read on a Windows checkout
+ * would break bash mid-script
  * (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
  */
 function extractStep3Block() {
@@ -703,15 +710,19 @@ function populateSandbox(includeHtml) {
  * Execute the extracted Step 3 block in the sandbox.
  */
 function runBlock(block) {
-  return spawnSync('bash', ['-c', block], {
+  // The extracted block is a shell chain (&&, [ -f ] guards, ||) — it stays
+  // a `bash -c` invocation rather than being decomposed into argv.
+  const r = runHook('-c', [block], {
+    interpreter: 'bash',
     cwd: sandbox,
     env: {
       ...process.env,
       PATH: fakeBin + ':' + process.env.PATH,
       HOME: fakeHome,
     },
-    encoding: 'utf8',
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
+  return toLegacyResult(r);
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────

@@ -57,3 +57,39 @@ description, introduction version, explicit install scopes, destructive status,
 and a plan function. Destructive or config-rewrite actions must include
 ownership evidence, and runtime config rewrites must cite the runtime
 configuration contract registry.
+
+## Amendment (2026-08-07): Non-recursive empty-directory removal primitive
+
+Migration 003's docblock records, as an intentional consequence of this ADR,
+that the framework has no *recursive* directory-removal primitive: every
+action targets a single file by `relPath`, and an emptied directory shell is
+left behind for the user (or a future migration) to clean up. #3023 exposed a
+case where that is not enough: pi reserves the directory NAME `hooks/` for its
+own deprecated-extension check, which warns on the path's mere existence
+regardless of contents. Leaving an emptied `hooks/` shell behind would keep
+the warning firing forever, defeating the retirement.
+
+We added `remove-empty-dir`, a new action type, rather than relaxing the
+"never remove directories" posture generally:
+
+- It calls `fs.rmdirSync` only — never `fs.rmSync`, `{ recursive: true }`, or
+  `{ force: true }`. A non-empty directory fails the underlying syscall and is
+  treated as a successful no-op (`skipped-not-empty`), not swept.
+- Emptiness is re-checked immediately before the call, not trusted from
+  planning time, so a file that survived an earlier action in the same run (a
+  failed removal, or a legitimately preserved unknown file) keeps the
+  directory alive.
+- The target must not be a symlink, and its realpath must resolve strictly
+  inside — and never equal — the config directory's own realpath.
+- Any unexpected failure degrades to `left-in-place`, matching every sibling
+  action type's non-throwing posture.
+
+**Recursive directory removal remains deliberately absent.** This primitive
+only retires a directory NODE once every file inside it has already been
+individually classified and actioned by other, ordinary file-level actions in
+the same migration — it is not a shortcut for sweeping a subtree in one step,
+and a migration author who wants that should still enumerate files
+individually per migration 003's and 009's pattern.
+
+See `docs/installer-migrations.md#action-types` (`remove-empty-dir`) and
+`src/installer-migrations/009-pi-retire-reserved-hooks-dir.cts`.

@@ -1,7 +1,10 @@
-// allow-test-rule: run-tests.cjs is a CLI test harness whose only IR is its
-// stable stderr line `run-tests: suite="X" files=N: name1 name2 ...` plus its
-// exit code. No typed IR is exposable from a shell script; the printed line
-// IS the contract this test pins. See docs/TESTING-SUITES.md and issue #3597.
+// allow-test-rule: pending-migration-to-typed-ir [#3090]
+// run-tests.cjs is a CLI test harness with no --json/structured output mode;
+// these tests regex/substring-match its human-readable stderr (usage errors,
+// the `run-tests: suite="X" files=N: name1 name2 ...` selection line) instead
+// of a frozen typed IR. Adding a structured output mode is a production
+// change out of scope here. See docs/TESTING-SUITES.md and issue #3597.
+// Tracked under #3090.
 //
 // Tests for scripts/run-tests.cjs --suite filtering (issue #3597).
 //
@@ -14,13 +17,22 @@
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { createTempDir, cleanup, CONFIG_LOCATION_ENV_KEYS } = require('./helpers.cjs');
 
 const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
+
+// The harness under test enforces its OWN per-chunk timeout internally
+// (RUN_TESTS_CHUNK_TIMEOUT_MS, default 600000ms; this file's slowest explicit
+// override below is 30000ms). This outer bound must stay comfortably above
+// whatever the harness itself is configured to wait for a hung chunk, plus
+// `node --test` child-process startup overhead — otherwise this seam would
+// kill the harness before its own timeout diagnostic fires.
+const HARNESS_TIMEOUT_MS = 120000;
 
 // Minimal valid node:test file. Each fixture file passes when executed.
 const PASS_BODY = `'use strict';
@@ -41,11 +53,15 @@ function runHarness(testDir, args = [], extraEnv = {}) {
   // doesn't refuse to run with "recursive run() skipping running files".
   const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, [HARNESS, ...args], {
+  const r = runNode([HARNESS, ...args], {
     cwd: path.join(__dirname, '..'),
     env,
-    encoding: 'utf8',
+    timeoutMs: HARNESS_TIMEOUT_MS,
   });
+  // toLegacyResult() alone drops `signal` (several assertions below embed it
+  // in their failure message) — compose it back on top, per git-fixture.cjs's
+  // documented "extra field" composition pattern.
+  return { ...toLegacyResult(r), signal: r.signal };
 }
 
 describe('run-tests.cjs harness (issue #3597)', () => {
@@ -1396,10 +1412,17 @@ describe('bug #969 B — runGsdTools kill-signal discrimination', () => {
    * We test the identical logic paths using a tiny timeout.
    */
   function runGsdToolsWithTimeout(args, cwd, env, timeoutMs) {
+    // The session-identity subset stays a local literal on purpose: this helper
+    // mirrors the production one to prove its CONTRACT, so it must not simply
+    // re-import what it is testing. The config-LOCATION keys are the exception —
+    // they are a safety scrub rather than part of the contract under test, and a
+    // hand-copied list of them is the #2665 drift this change exists to end. So
+    // spread the canonical derived set (tests/helpers.cjs) and keep the rest local.
     const TEST_ENV_BASE = {
       GSD_SESSION_KEY: '',
       CODEX_THREAD_ID: '',
       CLAUDE_SESSION_ID: '',
+      ...Object.fromEntries(CONFIG_LOCATION_ENV_KEYS.map((k) => [k, ''])),
     };
     try {
       let result;

@@ -18,7 +18,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const cp = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { runGsdTools, parseFrontmatter } = require('./helpers.cjs');
 
 // Track temp files for cleanup
@@ -735,11 +737,12 @@ describe('frontmatter get — truncated vs absent frontmatter (#1882)', () => {
   const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
   function runCapturingStderr(file) {
-    const r = cp.spawnSync(process.execPath, [TOOLS, 'frontmatter', 'get', file, '--raw'], {
-      encoding: 'utf8',
+    const r = runNode([TOOLS, 'frontmatter', 'get', file, '--raw'], {
       env: { ...process.env, GSD_TEST_MODE: '1' },
+      timeoutMs: PROBE_TIMEOUT_MS,
     });
-    return { status: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
+    const legacy = toLegacyResult(r);
+    return { status: legacy.status, stdout: legacy.stdout.trim(), stderr: legacy.stderr.trim() };
   }
 
   // This is the wired keystone for #1882: the diagnostic is only "delivered" if it reaches

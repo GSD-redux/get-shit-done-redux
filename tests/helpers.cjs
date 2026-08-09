@@ -10,22 +10,177 @@ const { createFixture } = require('./fixtures/index.cjs');
 const processSeam = require('./helpers/process-seam.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
-const TEST_ENV_BASE = {
-  GSD_SESSION_KEY: '',
-  CODEX_THREAD_ID: '',
-  CLAUDE_SESSION_ID: '',
-  CLAUDE_CODE_SSE_PORT: '',
-  OPENCODE_SESSION_ID: '',
-  GEMINI_SESSION_ID: '',
-  CURSOR_SESSION_ID: '',
-  WINDSURF_SESSION_ID: '',
-  TERM_SESSION_ID: '',
-  WT_SESSION: '',
-  TMUX_PANE: '',
-  ZELLIJ_SESSION_NAME: '',
-  TTY: '',
-  SSH_TTY: '',
-};
+
+// Session-IDENTITY vars. Blanked so a child cannot inherit the developer's
+// terminal/agent session and key shared state off it.
+const SESSION_IDENTITY_ENV_KEYS = [
+  'GSD_SESSION_KEY',
+  'CODEX_THREAD_ID',
+  'CLAUDE_SESSION_ID',
+  'CLAUDE_CODE_SSE_PORT',
+  'OPENCODE_SESSION_ID',
+  'GEMINI_SESSION_ID',
+  'CURSOR_SESSION_ID',
+  'WINDSURF_SESSION_ID',
+  'TERM_SESSION_ID',
+  'WT_SESSION',
+  'TMUX_PANE',
+  'ZELLIJ_SESSION_NAME',
+  'TTY',
+  'SSH_TTY',
+];
+
+// LAZY, and memoized. These live in the BUILT runtime lib, so requiring them at
+// module scope made an unbuilt tree throw during `require('./helpers.cjs')` —
+// before a single test() had registered — which turns one missing
+// `npm run build:lib` into a whole-suite crash with no actionable message, in the
+// file ~370 test files import. `npm test` builds via its pretest hook, so the
+// shape that hits this is a direct `node --test` invocation.
+//
+// Deferring the require means only the tests that actually need the derived scrub
+// set pay for the build, and they fail with a message that names the remedy.
+let _builtLib = null;
+function builtLib() {
+  if (_builtLib) return _builtLib;
+  try {
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const {
+      NON_REGISTRY_CONFIG_HOME_DESCRIPTORS,
+      GSD_LOCATION_ENV_KEYS,
+    } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    _builtLib = { runtimes, NON_REGISTRY_CONFIG_HOME_DESCRIPTORS, GSD_LOCATION_ENV_KEYS };
+  } catch (cause) {
+    throw new Error(
+      'tests/helpers.cjs derives the config-location scrub set from the built runtime '
+        + 'lib (gsd-core/bin/lib), which is not present. Run `npm run build:lib` first — '
+        + '`npm test` does this for you via its pretest script.',
+      { cause },
+    );
+  }
+  return _builtLib;
+}
+
+// Config-location vars that are neither in the registry nor descriptor-shaped,
+// each with its reader:
+//   GROK_AGENTS_HOME — hardcoded `grok` branch in getGlobalConfigDir (src/runtime-homes.cts)
+//   GSD_RUNTIME      — selects WHICH runtime home resolves (src/model-resolver.cts)
+//   GSD_PROJECT      — planningDir() project segment (src/planning-workspace.cts)
+//   GSD_WORKSTREAM   — planningDir() workstream segment (src/planning-workspace.cts)
+//
+// #2665 round 3: this list shrinks as sources become enumerable, and that direction
+// is the point. KIMI_SHARE_DIR was NOT added here — it now derives from
+// NON_REGISTRY_CONFIG_HOME_DESCRIPTORS, because hand-adding each var a reviewer
+// names is precisely what reopened this bug three times.
+const NON_REGISTRY_CONFIG_LOCATION_ENV_KEYS = [
+  'GROK_AGENTS_HOME',
+  'GSD_RUNTIME',
+  'GSD_PROJECT',
+  'GSD_WORKSTREAM',
+];
+
+// Write-escape PERMISSIONS — deliberately its own family, and deliberately NOT
+// folded into any of the four rungs below.
+//
+// #2665 round 5: GSD_ALLOW_SYMLINKED_DEST is boolean and names no path, so it is
+// not a config-location var by any honest reading. But install-engine.cts reads it
+// env-first (`:214`) and threads it as `allowOptInFollow` into the symlink-escape
+// guard at four call sites, each gating a write (`:361/:367`, `:416/:424`,
+// `:785/:790`, `:927/:932`). That guard is what stops a write leaving the install
+// root, so an ambient `=1` disarms it for the whole suite — the #2665 hazard
+// exactly, arriving through a permission rather than a path.
+//
+// Blanking is fail-safe in the only direction that matters: '' is neither '1' nor
+// 'true', so a blanked value makes the guard STRICTER, never looser. That asymmetry
+// is why this can be scrubbed wholesale without reasoning about each call site.
+const WRITE_ESCAPE_PERMISSION_ENV_KEYS = ['GSD_ALLOW_SYMLINKED_DEST'];
+
+// Config-LOCATION vars — distinct in kind from the session-identity vars above:
+// these decide WHERE a child writes, so leaving one ambient lets a test that
+// sandboxes HOME still escape into the developer's real config dir.
+//
+// #2665: this list is DERIVED, not hand-maintained. A hand-written list is
+// exactly what reopened this bug twice — it can only ever be as complete as the
+// author's recall, and every resolver in `runtime-homes.cts` is env-FIRST, so a
+// key missing here is a live escape hatch rather than a cosmetic gap. Sourcing
+// it from the same registry the resolver reads makes the scrub list structurally
+// incapable of being narrower than the surface it guards: adding a capability
+// that declares a new configHome env var extends this set in the same commit.
+let _configLocationEnvKeys = null;
+function configLocationEnvKeys() {
+  if (_configLocationEnvKeys) return _configLocationEnvKeys;
+  const { runtimes, NON_REGISTRY_CONFIG_HOME_DESCRIPTORS, GSD_LOCATION_ENV_KEYS } = builtLib();
+  _configLocationEnvKeys = [
+  ...new Set([
+    // 1. Every runtime descriptor the capability registry carries — including
+    //    the nested skillsHome descriptor, which resolves independently of
+    //    configHome (resolveSkillsBaseFromDescriptor) and can carry its own
+    //    env array. Inert today (only kilo declares skillsHome, with env: []),
+    //    but walking configHome.env alone is the identical gap-shape this PR
+    //    closed twice already, one field over. (#2665 round 4)
+    ...Object.values(runtimes).flatMap((r) => r?.runtime?.configHome?.env ?? []),
+    ...Object.values(runtimes).flatMap(
+      (r) => r?.runtime?.configHome?.skillsHome?.env ?? [],
+    ),
+    // 2. Descriptor-shaped config homes resolved OUTSIDE the registry (kimi's
+    //    native config.toml home via KIMI_SHARE_DIR). Derived, not hand-listed.
+    //    Same skillsHome walk as rung 1 — a descriptor is a descriptor.
+    ...NON_REGISTRY_CONFIG_HOME_DESCRIPTORS.flatMap((d) => [
+      ...(d?.env ?? []),
+      ...(d?.skillsHome?.env ?? []),
+    ]),
+    // 3. GSD's OWN location vars — a different family: they decide where GSD keeps
+    //    user-owned state ($GSD_HOME/.gsd/), not where a runtime keeps its config.
+    ...GSD_LOCATION_ENV_KEYS,
+    // 4. The residue that is neither registry-carried nor descriptor-shaped.
+    ...NON_REGISTRY_CONFIG_LOCATION_ENV_KEYS,
+    // 5. Write-escape permissions — NOT locations. Same mechanism because the
+    //    hazard is identical (ambient env lets a suite write outside the sandbox);
+    //    named separately above so the list does not misdescribe what they are.
+    ...WRITE_ESCAPE_PERMISSION_ENV_KEYS,
+  ]),
+  ].sort();
+  return _configLocationEnvKeys;
+}
+
+let _testEnvBase = null;
+function testEnvBase() {
+  if (_testEnvBase) return _testEnvBase;
+  _testEnvBase = Object.fromEntries(
+    [...SESSION_IDENTITY_ENV_KEYS, ...configLocationEnvKeys()].map((k) => [k, '']),
+  );
+  return _testEnvBase;
+}
+
+/**
+ * Save + clear every config-LOCATION env var on THIS process; returns a restorer.
+ *
+ * #2665: TEST_ENV_BASE only reaches CHILD processes. A test that calls the real
+ * installer IN-PROCESS — `install(true, 'claude')` — resolves through the same
+ * env-first `getGlobalConfigDir`, so an ambient CLAUDE_CONFIG_DIR beats a
+ * sandboxed `process.env.HOME` and a complete global install (agents/, commands/,
+ * skills/, gsd-core/, manifest, settings) lands in the developer's live config
+ * dir. No child-env scrub can reach that call; only clearing the parent's env can.
+ *
+ * Pair with a HOME sandbox, not instead of one: HOME covers the home-derived
+ * fallback, this covers the env-first branch that overrides it.
+ *
+ * @returns {() => void} restorer — call in afterEach to put the env back exactly
+ *   as it was (deleting keys that were previously unset, rather than setting '').
+ */
+function scrubConfigLocationEnv() {
+  const saved = {};
+  const keys = configLocationEnvKeys();
+  for (const key of keys) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  return function restoreConfigLocationEnv() {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  };
+}
 
 /**
  * Run gsd-tools command.
@@ -39,7 +194,7 @@ const TEST_ENV_BASE = {
  */
 function runGsdTools(args, cwd = process.cwd(), env = {}) {
   // Resolve argv once so both the first attempt and the retry use the same vector.
-  const childEnv = { ...process.env, ...TEST_ENV_BASE, ...env };
+  const childEnv = { ...process.env, ...testEnvBase(), ...env };
   const argv = Array.isArray(args)
     ? args
     : (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
@@ -206,11 +361,123 @@ function createTempGitProject(prefix = 'gsd-test-') {
   return createFixture({ prefix, planning: true, git: true, projectDoc: true });
 }
 
+// The OS temp root has several canonical spellings, and a path a caller
+// legitimately passes to cleanup() may arrive in any of them: macOS resolves
+// os.tmpdir() under /var/folders/... but /var is a symlink to /private/var;
+// Windows CI runners report os.tmpdir() in the 8.3 SHORT form
+// (C:\Users\RUNNER~1\AppData\Local\Temp) while the caller's path is the
+// expanded LONG form, and fs.realpathSync() does not reliably expand 8.3
+// short names there — only fs.realpathSync.native() does; drive-letter and
+// path casing can also differ (C:\ vs c:\). This function collects the full
+// set of accepted temp roots — os.tmpdir()'s several spellings are one part
+// of that set, not the whole of it (see below). Each probe is wrapped in its
+// own try/catch — none of them may throw and crash cleanup(), they just
+// contribute nothing if unavailable.
+// Memoization cache for tmpRootCandidates(), keyed on the LIVE os.tmpdir()
+// value (not hoisted to a plain module-level constant) — two test files in
+// this suite mutate TMPDIR/TEMP/TMP mid-run and restore them afterward, so
+// caching on the current os.tmpdir() read is what keeps a stale cache from
+// leaking across that override instead of a one-time computation baked in
+// at module load.
+let _tmpRootCandidatesCacheKey;
+let _tmpRootCandidatesCache;
+
+function tmpRootCandidates() {
+  const cacheKey = os.tmpdir();
+  if (cacheKey === _tmpRootCandidatesCacheKey && _tmpRootCandidatesCache) {
+    return _tmpRootCandidatesCache;
+  }
+  const deduped = _computeTmpRootCandidates();
+  _tmpRootCandidatesCacheKey = cacheKey;
+  _tmpRootCandidatesCache = Object.freeze(deduped);
+  return _tmpRootCandidatesCache;
+}
+
+function _computeTmpRootCandidates() {
+  const roots = [];
+  try {
+    roots.push(path.resolve(os.tmpdir()));
+  } catch (_) { /* os.tmpdir() unavailable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync(os.tmpdir()));
+  } catch (_) { /* temp root unreadable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync.native(os.tmpdir()));
+  } catch (_) { /* native realpath unavailable/unreadable — skip this variant */ }
+  const isWindows = process.platform === 'win32';
+  // os.tmpdir() alone is too narrow: it honors $TMPDIR, but some tests
+  // (e.g. tests/config-schema.property.test.cjs's getWritableTmp()) create
+  // fixtures directly under the conventional system temp roots instead of
+  // through $TMPDIR — on macOS that is /private/tmp, which can differ from
+  // os.tmpdir()'s /var/folders/.../T. Probe the well-known non-Windows temp
+  // roots too, each independently and only if it actually exists on this
+  // host, so the accepted set stays a bounded, explicit list rather than an
+  // open-ended patch list. macOS additionally exposes /tmp as a symlink to
+  // /private/tmp, so both the unprefixed and /private-prefixed spellings —
+  // and each one's realpath — are collected.
+  if (!isWindows) {
+    for (const candidate of ['/tmp', '/private/tmp']) {
+      try {
+        if (fs.existsSync(candidate)) {
+          roots.push(path.resolve(candidate));
+          try {
+            roots.push(fs.realpathSync(candidate));
+          } catch (_) { /* exists but unreadable via realpath — skip this variant */ }
+        }
+      } catch (_) { /* existsSync itself should not throw, but fail closed if it does */ }
+    }
+  }
+  const seen = new Set();
+  const deduped = [];
+  for (const root of roots) {
+    const key = isWindows ? root.toLowerCase() : root;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(root);
+  }
+  return deduped;
+}
+
 function cleanup(tmpDir) {
   if (typeof tmpDir !== 'string' || tmpDir.length === 0) return;
   const target = path.resolve(tmpDir);
   const cwd = path.resolve(process.cwd());
-  const tmpRoot = path.resolve(os.tmpdir());
+  // The temp-root check below was previously done only inside the catch block,
+  // so it classified a transient Windows error but was never consulted by the
+  // destructive rmSync call itself — a wrong `target` would still chdir out of
+  // its own tree and get force-deleted. Hoisted above both the chdir and the
+  // rmSync so an out-of-temp-root path is refused before either can run.
+  // Comparison is case-insensitive on Windows (drive-letter and path casing
+  // vary there) and case-sensitive everywhere else; the error message below
+  // always prints the original-case target.
+  const isWindows = process.platform === 'win32';
+  const tmpRoots = tmpRootCandidates();
+  function isUnderRoots(p) {
+    const pForCompare = isWindows ? p.toLowerCase() : p;
+    return tmpRoots.some((root) => {
+      const rootForCompare = isWindows ? root.toLowerCase() : root;
+      if (pForCompare === rootForCompare) return true;
+      // A root that is itself a filesystem root (`/`, or `C:\` reachable via
+      // TMPDIR=/) already ends with path.sep — appending a second one would
+      // build `//`, which only the literal string `/` satisfies, refusing
+      // every real descendant. Only append the separator when it is not
+      // already there.
+      const prefix = rootForCompare.endsWith(path.sep)
+        ? rootForCompare
+        : `${rootForCompare}${path.sep}`;
+      return pForCompare.startsWith(prefix);
+    });
+  }
+  if (!isUnderRoots(target)) {
+    throw new Error(
+      `cleanup() refused to remove a path outside the known temp roots ` +
+      `(${tmpRoots.join(', ')}): ${target}`
+    );
+  }
+  // No symlink-escape check here: fs.rmSync does not follow a top-level
+  // symlink — it unlinks the link itself and leaves the target intact — so
+  // there is no live hazard for the root-membership check above to guard
+  // against. That check is the one closing an actual defect.
   if (cwd === target || cwd.startsWith(`${target}${path.sep}`)) {
     // Windows cannot remove a directory that is the current working directory.
     process.chdir(path.dirname(target));
@@ -225,9 +492,9 @@ function cleanup(tmpDir) {
   } catch (error) {
     // After retries, Windows can still briefly hold temp dirs open after a timed-out
     // child exits. Ignore that teardown-only flake for temp roots, but rethrow everything else.
-    const isTmpPath = target === tmpRoot || target.startsWith(`${tmpRoot}${path.sep}`);
+    // By this point target is guaranteed under a temp root: the guard clauses above throw
+    // for any other path, so this swallow doesn't need to re-test that.
     const isTransientWinErr = process.platform === 'win32'
-      && isTmpPath
       && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error && error.code);
     if (!isTransientWinErr) throw error;
   }
@@ -492,14 +759,21 @@ function runNpm(args, options = {}) {
   const defaults = {
     encoding: 'utf-8',
     shell: isWindows,
-    timeout: 180000,
     env: isolatedEnv,
   };
   // Merge options; if caller passes their own env, merge it on top of isolatedEnv
   // so the isolation is preserved unless the caller explicitly overrides HOME.
-  const { env: callerEnv, ...otherOptions } = options;
+  // `timeout` is destructured with a default (not left inside `defaults`) so an
+  // explicit `timeout: undefined` in `options` — an own key, not an omission —
+  // cannot silently erase the bound via the spread below; a destructure default
+  // only applies on `undefined`, whereas `{ ...defaults, ...otherOptions }`
+  // would let that own key win and fall through to no bound at all. 180000ms:
+  // npm install/pack against an isolated HOME; this is the pre-existing value,
+  // preserved.
+  const NPM_TIMEOUT_MS = 180000;
+  const { env: callerEnv, timeout = NPM_TIMEOUT_MS, ...otherOptions } = options;
   const mergedEnv = callerEnv ? { ...isolatedEnv, ...callerEnv } : isolatedEnv;
-  return execFileSync(npmCmd, args, { ...defaults, ...otherOptions, env: mergedEnv }).trim();
+  return execFileSync(npmCmd, args, { ...defaults, ...otherOptions, timeout, env: mergedEnv }).trim();
 }
 
 /**
@@ -637,4 +911,57 @@ function clearSessionEnv() {
   for (const k of SESSION_ENV_KEYS) delete process.env[k];
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };
+/**
+ * #3156: env for a RAW installer spawn — one that bypasses runGsdTools and so
+ * never receives TEST_ENV_BASE on its own.
+ *
+ * Blanking config-LOCATION vars is necessary but NOT sufficient here.
+ * bin/install.js writes GSD's own user-owned store through os.homedir()
+ * DIRECTLY (writeNonClaudeDefaults -> <home>/.gsd/defaults.json, #2834), and
+ * os.homedir() consults no GSD variable at all — so nothing in
+ * CONFIG_LOCATION_ENV_KEYS can reach it, and blanking GSD_HOME does not reach
+ * it either, because a blank GSD_HOME falls back to exactly that homedir().
+ * Only a sandboxed HOME/USERPROFILE contains it.
+ *
+ * HOME stays deliberately OUT of TEST_ENV_BASE — blanking it would break far
+ * more than it fixed — so it is sandboxed per spawn instead, which is the
+ * discipline the suite already applies by hand elsewhere. USERPROFILE is set
+ * with it because os.homedir() reads that one on Windows.
+ *
+ * The sandbox home is per-process and removed on exit, so a caller gets
+ * containment without having to own a lifecycle.
+ *
+ * SCOPE, stated because it is a real residual rather than an oversight: this is
+ * one home per test-FILE process, not one per spawn. Two installer spawns in the
+ * same file therefore share `.gsd` state, so a prior non-Claude install can be
+ * observed by a later spawn. That is strictly better than the status quo it
+ * replaces -- which shared the developer's REAL home, and all of its state --
+ * and it closes the leak this helper exists for; it does not claim isolation
+ * BETWEEN spawns. A test needing that passes its own { HOME, USERPROFILE }.
+ */
+let installSpawnHomeDir = null;
+function installSpawnHome() {
+  if (installSpawnHomeDir === null) {
+    installSpawnHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-install-home-'));
+    process.on('exit', () => {
+      try { fs.rmSync(installSpawnHomeDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    });
+  }
+  return installSpawnHomeDir;
+}
+
+function installSpawnEnv(overrides = {}) {
+  const home = installSpawnHome();
+  return { ...process.env, ...testEnvBase(), HOME: home, USERPROFILE: home, ...overrides };
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome };
+
+// Lazy, for the reason builtLib() is lazy: reading either of these is what
+// forces the built-lib require, so a test file that needs neither can still
+// import this helper on an unbuilt tree. Enumerable, so destructuring and
+// Object.keys() behave exactly as they did when these were plain properties.
+Object.defineProperties(module.exports, {
+  TEST_ENV_BASE: { enumerable: true, get: testEnvBase },
+  CONFIG_LOCATION_ENV_KEYS: { enumerable: true, get: configLocationEnvKeys },
+});

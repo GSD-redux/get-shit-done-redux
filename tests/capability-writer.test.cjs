@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 
@@ -299,31 +299,30 @@ describe('capability-writer: setCapabilityState', () => {
       fs.writeFileSync(path.join(planningDir, 'config.json'), '{}');
 
       const gsdToolsBin = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
-      const nodeExe = process.execPath;
 
       // Test: capability set ui --off (--config-dir rcd) exits 0
-      const offResult = spawnSync(nodeExe, [gsdToolsBin, 'capability', 'set', 'ui', '--off', '--config-dir', rcd], {
-        encoding: 'utf8',
+      const offResult = runNode([gsdToolsBin, 'capability', 'set', 'ui', '--off', '--config-dir', rcd], {
         cwd,
+        timeoutMs: 15000,
       });
-      assert.equal(offResult.status, 0,
-        `capability set ui --off should exit 0, got ${String(offResult.status)}. stderr: ${offResult.stderr}`);
+      assert.equal(offResult.exitCode, 0,
+        `capability set ui --off should exit 0, got ${String(offResult.exitCode)}. stderr: ${offResult.stderr}`);
 
       // Test: capability set ui --on (--config-dir rcd) exits 0
-      const onResult = spawnSync(nodeExe, [gsdToolsBin, 'capability', 'set', 'ui', '--on', '--config-dir', rcd], {
-        encoding: 'utf8',
+      const onResult = runNode([gsdToolsBin, 'capability', 'set', 'ui', '--on', '--config-dir', rcd], {
         cwd,
+        timeoutMs: 15000,
       });
-      assert.equal(onResult.status, 0,
-        `capability set ui --on should exit 0, got ${String(onResult.status)}. stderr: ${onResult.stderr}`);
+      assert.equal(onResult.exitCode, 0,
+        `capability set ui --on should exit 0, got ${String(onResult.exitCode)}. stderr: ${onResult.stderr}`);
 
       // Test: unknown id exits non-zero
-      const unknownResult = spawnSync(nodeExe, [gsdToolsBin, 'capability', 'set', 'does-not-exist', '--off', '--config-dir', rcd], {
-        encoding: 'utf8',
+      const unknownResult = runNode([gsdToolsBin, 'capability', 'set', 'does-not-exist', '--off', '--config-dir', rcd], {
         cwd,
+        timeoutMs: 15000,
       });
-      assert.notEqual(unknownResult.status, 0,
-        `capability set does-not-exist --off should exit non-zero, got ${String(unknownResult.status)}`);
+      assert.notEqual(unknownResult.exitCode, 0,
+        `capability set does-not-exist --off should exit non-zero, got ${String(unknownResult.exitCode)}`);
     } finally {
       cleanup(rcd);
       cleanup(cwd);
@@ -495,16 +494,14 @@ describe('capability-writer: setCapabilityState', () => {
       fs.writeFileSync(path.join(planningDir, 'config.json'), '{}');
 
       const gsdToolsBin = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
-      const nodeExe = process.execPath;
 
-      const conflictResult = spawnSync(
-        nodeExe,
+      const conflictResult = runNode(
         [gsdToolsBin, 'capability', 'set', 'ui', '--on', '--off', '--config-dir', rcd],
-        { encoding: 'utf8', cwd },
+        { cwd, timeoutMs: 15000 },
       );
       assert.notEqual(
-        conflictResult.status, 0,
-        `capability set ui --on --off should exit non-zero, got ${String(conflictResult.status)}. stderr: ${conflictResult.stderr}`,
+        conflictResult.exitCode, 0,
+        `capability set ui --on --off should exit non-zero, got ${String(conflictResult.exitCode)}. stderr: ${conflictResult.stderr}`,
       );
     } finally {
       cleanup(rcd);

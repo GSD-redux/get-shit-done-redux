@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..');
 const identity = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'package-identity.cjs'));
 const pkg = require(path.join(ROOT, 'package.json'));
 const { MANAGED_HOOKS } = require(path.join(ROOT, 'hooks', 'managed-hooks-registry.cjs'));
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
 
 const PLUGIN_JSON_PATH = path.join(ROOT, '.claude-plugin', 'plugin.json');
 const HOOKS_JSON_PATH  = path.join(ROOT, 'hooks', 'hooks.json');
@@ -92,11 +92,12 @@ describe('A: .claude-plugin/plugin.json', () => {
     assert.ok(mdFiles.length > 0, `commands dir must contain at least one .md file`);
   });
 
-  test('hooks field is "./hooks/hooks.json" and that file exists', (t) => {
+  test('#3029: hooks field is ABSENT — Claude Code auto-loads hooks/hooks.json (explicit declaration caused duplicate-rejection)', (t) => {
     if (!manifest) { t.skip('manifest could not be parsed'); return; }
-    assert.equal(manifest.hooks, './hooks/hooks.json', 'hooks must be "./hooks/hooks.json"');
-    const resolvedHooks = path.resolve(path.dirname(PLUGIN_JSON_PATH), '..', manifest.hooks);
-    assert.ok(fs.existsSync(resolvedHooks), `resolved hooks file must exist: ${resolvedHooks}`);
+    assert.ok(!manifest.hooks, 'plugin.json must NOT declare hooks — Claude Code auto-loads hooks/hooks.json; an explicit declaration causes a duplicate-rejection that silently disables all hooks (#3029)');
+    // The auto-loaded hooks file must still exist on disk.
+    const resolvedHooks = path.resolve(path.dirname(PLUGIN_JSON_PATH), '..', 'hooks', 'hooks.json');
+    assert.ok(fs.existsSync(resolvedHooks), `hooks/hooks.json must exist for auto-loading: ${resolvedHooks}`);
   });
 
   test('no "$schema" key (intentionally omitted)', (t) => {
@@ -358,9 +359,36 @@ describe('C: plugin.json schema validation', () => {
 
   // ── C2: Opportunistic CLI integration (skipped when claude not on PATH) ──────
 
+  // #2665: the `claude` CLI is a THIRD-PARTY binary that bootstraps its own
+  // config (.claude.json plus a backups/ dir) into whatever CLAUDE_CONFIG_DIR
+  // names. Two things follow, and only the first is obvious:
+  //
+  //   1. Inheriting the developer's ambient CLAUDE_CONFIG_DIR makes even a bare
+  //      `--version` probe write into their live config dir. That alone kept
+  //      `CLAUDE_CONFIG_DIR=<dir> npm run test:unit; find <dir> -type f` from
+  //      returning empty after every GSD-side leak was closed.
+  //   2. BLANKING it (TEST_ENV_BASE's '' convention) is not enough here. GSD's
+  //      own resolvers treat '' as falsy and fall back to the home dir, but this
+  //      binary is not ours and gives no such guarantee -- blanking it produced a
+  //      stray backups/ directory in the REPO ROOT.
+  //
+  // So point it at a real throwaway dir rather than at nothing.
+  const claudeCliHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2665-claude-cli-'));
+  const claudeCliEnv = () => ({
+    ...process.env,
+    ...TEST_ENV_BASE,
+    HOME: claudeCliHome,
+    USERPROFILE: claudeCliHome,
+    CLAUDE_CONFIG_DIR: path.join(claudeCliHome, '.claude'),
+  });
+
   const claudeAvailable = (() => {
     try {
-      const result = spawnSync('claude', ['--version'], { encoding: 'utf-8', timeout: 5000 });
+      const result = spawnSync('claude', ['--version'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        env: claudeCliEnv(),
+      });
       return result.status === 0;
     } catch (_) {
       return false;
@@ -383,6 +411,7 @@ describe('C: plugin.json schema validation', () => {
           cwd: ROOT,
           encoding: 'utf-8',
           timeout: 15000,
+          env: claudeCliEnv(),
         });
         assert.equal(
           result.status,

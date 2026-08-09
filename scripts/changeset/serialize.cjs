@@ -26,7 +26,11 @@ function serializeChangelog(ir) {
     lines.push(`### ${section.type}`);
     lines.push('');
     for (const b of section.bullets) {
-      lines.push(`- ${b.body} (#${b.pr})`);
+      // #3001: indent continuation lines so parseChangelog's continuation-fold
+      // (/^\s+/) picks them up instead of terminating the bullet at the first
+      // blank line. A multi-paragraph body round-trips with content preserved.
+      const body = b.body.replace(/\n/g, '\n  ');
+      lines.push(`- ${body} (#${b.pr})`);
     }
     lines.push('');
   }

@@ -43,9 +43,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 
 const { createTempGitProject, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+
+// 5000ms: git plumbing (add/commit/status/rev-parse/rev-list/diff) on a small
+// mkdtemp fixture repo — well over any observed duration for that class of call.
+const GIT_TIMEOUT_MS = 5000;
 
 const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
 
@@ -117,11 +122,11 @@ cmdCommit(${JSON.stringify(cwd)}, 'docs: map existing codebase', ${JSON.stringif
 }
 
 function headCount(cwd) {
-  return Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf-8' }).trim());
+  return Number(gitOrThrow(['rev-list', '--count', 'HEAD'], { cwd, timeoutMs: GIT_TIMEOUT_MS }).trim());
 }
 
 function committedFiles(cwd) {
-  return execFileSync('git', ['diff', 'HEAD~1', 'HEAD', '--name-only'], { cwd, encoding: 'utf-8' })
+  return gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], { cwd, timeoutMs: GIT_TIMEOUT_MS })
     .trim().split('\n').filter(Boolean).sort();
 }
 
@@ -183,11 +188,11 @@ describe('#2608: commit-to-subrepo fails closed when git add fails', () => {
     subDir = path.join(rootDir, 'backend');
     fs.mkdirSync(subDir, { recursive: true });
     for (const [cmd, args] of [['init', []], ['config', ['user.email', 'test@example.com']], ['config', ['user.name', 'Test']]]) {
-      execFileSync('git', [cmd, ...args], { cwd: subDir, stdio: 'pipe' });
+      gitOrThrow([cmd, ...args], { cwd: subDir, timeoutMs: GIT_TIMEOUT_MS });
     }
     fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
-    execFileSync('git', ['add', 'seed.js'], { cwd: subDir, stdio: 'pipe' });
-    execFileSync('git', ['commit', '-m', 'seed'], { cwd: subDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'seed.js'], { cwd: subDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: subDir, timeoutMs: GIT_TIMEOUT_MS });
     fs.writeFileSync(path.join(subDir, 'a.js'), '// a\n');
     fs.writeFileSync(path.join(subDir, 'b.js'), '// b\n');
   });
@@ -211,7 +216,7 @@ describe('#2608: commit-to-subrepo fails closed when git add fails', () => {
       "git's original stderr must be preserved");
     assert.equal(headCount(subDir), before, 'no partial sub-repo commit may be created');
 
-    const status = execFileSync('git', ['status', '--porcelain'], { cwd: subDir, encoding: 'utf-8' });
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: subDir, timeoutMs: GIT_TIMEOUT_MS });
     assert.deepEqual(status.split('\n').filter((l) => /^A[ \t]/.test(l)), [],
       `the sub-repo index must be rolled back, status:\n${status}`);
   });
@@ -397,7 +402,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
   test('successful staging still commits exactly the declared scope', () => {
     const before = headCount(tmpDir);
     fs.writeFileSync(path.join(tmpDir, 'unrelated-wip.txt'), 'wip\n');
-    execFileSync('git', ['add', 'unrelated-wip.txt'], { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'unrelated-wip.txt'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     const { result } = commitWithFailingAdd({
       cwd: tmpDir,
@@ -443,7 +448,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
       failFor: ['.planning/CONCERNS.md'],
     });
 
-    const status = execFileSync('git', ['status', '--porcelain'], { cwd: tmpDir, encoding: 'utf-8' });
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     const stagedAdds = status.split('\n').filter((l) => /^A[ \t]/.test(l));
     assert.deepEqual(stagedAdds, [],
       `no path may remain staged after a staging failure, status:\n${status}`);
@@ -453,7 +458,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
     // Boundary: the reset must touch only what THIS call staged. Unstaging a
     // path the caller staged themselves would destroy their work.
     fs.writeFileSync(path.join(tmpDir, 'caller-staged.txt'), 'mine\n');
-    execFileSync('git', ['add', 'caller-staged.txt'], { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'caller-staged.txt'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     commitWithFailingAdd({
       cwd: tmpDir,
@@ -461,7 +466,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
       failFor: ['.planning/CONCERNS.md'],
     });
 
-    const status = execFileSync('git', ['status', '--porcelain'], { cwd: tmpDir, encoding: 'utf-8' });
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     assert.match(status, /^A[ \t]+caller-staged\.txt$/m,
       `the caller's own staged file must survive the rollback, status:\n${status}`);
   });
@@ -486,7 +491,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
   test('a failed default-mode git add blocks --amend too', () => {
     // --amend has no carve-out: amending on top of a failed staging would
     // rewrite the tip without the changes the caller asked for.
-    const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const before = gitOrThrow(['rev-parse', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
     const { result, gitCalls } = commitWithFailingAdd({
       cwd: tmpDir,
       files: undefined,
@@ -497,7 +502,7 @@ describe('#2608: commit --files fails closed when git add fails', () => {
     assert.equal(result.reason, 'staging_failed');
     assert.ok(!gitCalls.some((a) => a[0] === 'commit'), 'git commit --amend must not run');
     assert.equal(
-      execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim(),
+      gitOrThrow(['rev-parse', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim(),
       before,
       'HEAD must not be rewritten when staging failed',
     );

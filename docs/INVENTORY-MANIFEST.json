@@ -416,6 +416,7 @@
       "plan-dependency-graph.cjs",
       "plan-drift-guard.cjs",
       "plan-scan.cjs",
+      "planning-scope.cjs",
       "planning-workspace.cjs",
       "probe-core.cjs",
       "profile-output.cjs",

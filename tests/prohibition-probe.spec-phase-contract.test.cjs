@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — spec-phase.md Step 5.6 is the deployed workflow
+// allow-test-rule: source-text-is-the-product (see #644) — spec-phase.md Step 5.6 is the deployed workflow
 // runtime contract under assertion (the workflow PROSE is the product; ADR-550 D5 forbids a JS engine here).
 //
 // RED-first PROSE-PRESENCE contract for the prohibition probe's Step 5.6 (ADR-550 D1 DIVERGENCE,

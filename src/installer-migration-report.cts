@@ -135,6 +135,7 @@ function installerMigrationActionLabel(action: MigrationAction | null | undefine
   if (action.type === 'record-baseline') return 'recorded';
   if (action.type === 'baseline-preserve-user') return 'preserved';
   if (action.type === 'preserve-user') return 'preserved';
+  if (action.type === 'remove-empty-dir') return 'removed';
   if (action.type === 'prompt-user') return 'blocked';
   return 'skipped';
 }

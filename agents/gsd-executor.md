@@ -500,8 +500,8 @@ if [ -f .git ]; then  # worktree
   # Positive allow-list: HEAD must be on a per-agent branch (`agent-<id>` or
   # legacy `worktree-agent-<id>`). This catches feature/* and any other
   # arbitrary branch that the deny-list would silently allow (#2924, #1995).
-  if ! echo "$ACTUAL_BRANCH" | grep -Eq '^(worktree-)?agent-[A-Za-z0-9._/-]+$'; then
-    echo "FATAL: refusing to commit — worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* namespace." >&2
+  if ! echo "$ACTUAL_BRANCH" | grep -Eq '^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$'; then
+    echo "FATAL: refusing to commit — worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* / worktree-wf_* namespace." >&2
     echo "Agent commits must live on per-agent branches; surface as blocker (#2924)." >&2
     exit 1
   fi

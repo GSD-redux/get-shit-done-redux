@@ -198,6 +198,34 @@ previous manifest. The user gets a clear report and can inspect the backup.
 
 Use when a feature retires a managed file that users may have patched.
 
+### remove-empty-dir
+
+Remove a directory node, but ONLY via `fs.rmdirSync` — never a recursive
+removal (`fs.rmSync`, `{ recursive: true }`, `{ force: true }`). The executor
+re-checks emptiness immediately before the call: a directory that still holds
+any entry is left in place as a successful, non-error outcome
+(`skipped-not-empty`), not swept. This is deliberately WEAKER than a recursive
+directory-removal primitive, which the framework intentionally does not
+provide (see migration 003's docblock and the 2026-08-07 amendment to
+`docs/adr/0008-installer-migration-module.md`) — it exists only to retire a
+directory NODE once every file inside it has already been individually proven
+GSD-managed (or preserved as user-owned) by other actions in the same
+migration, never to sweep a subtree in one step.
+
+Additional guards beyond emptiness: the target must not be a symlink (never
+followed, never removed through); the target's realpath must resolve strictly
+inside the config directory's realpath and must never equal the config
+directory itself; and any unexpected failure (`EACCES`, `EBUSY`, a race that
+removes the target between the check and the call) degrades to
+`left-in-place` rather than throwing, matching every sibling action type.
+
+Authoring guardrail: every `remove-empty-dir` action must include
+`ownershipEvidence`, the same bar as `remove-managed`.
+
+Use when a host runtime reserves a directory NAME for its own purposes (e.g.
+pi's `hooks/`, #3023) such that leaving an emptied shell behind is not enough
+— the directory's mere existence, not its contents, is what a host inspects.
+
 ### move-managed
 
 Move a managed path to a new managed path. If the source was locally modified,
@@ -506,6 +534,7 @@ Each row corresponds to one migration record in `src/installer-migrations/`.
 | `2026-07-20-pi-extension-cjs-to-js` | `006-pi-extension-cjs-to-js.cts` | 1.7.1 | global, local | Yes | Removes the stale `extensions/gsd.cjs` left by pre-#2470 pi installs. pi's extension auto-discovery (`isExtensionFile()`) accepts only `.ts`/`.js`, so the `.cjs` file was never loaded and `/gsd` never registered; #2470 renamed the installed artifact to `extensions/gsd.js`, orphaning the old path. Locally modified copies are backed up rather than deleted; an unmanifested `gsd.cjs` is preserved as a user file. pi only. |
 | `2026-07-28-retire-config-root-commonjs-marker` | `007-retire-config-root-commonjs-marker.cts` | 1.8.0 | global, local | Yes | Removes `<configRoot>/package.json` when it is exactly the `{"type":"commonjs"}` marker pre-#2544 installs wrote there. #2544 moved that marker into the directories GSD fills (`hooks/`, and the native plugin dir), so an upgraded install would otherwise keep both and stay pinned to CommonJS at a config root GSD no longer writes. Ownership is proven by exact content match, not the manifest (the marker was never manifest-recorded) — a `package.json` with any other content is left untouched, with no backup-and-remove branch. All runtimes; kimi's root marker lives outside `configDir` and is retired by the installer instead. |
 | `2026-07-29-cursor-retire-commands-surface` | `008-cursor-retire-commands-surface.cts` | 1.8.1 | global, local | Yes | Removes manifest-managed `commands/gsd-*.md` files from Cursor installs. Cursor already exposes the corresponding skills in the slash menu and to contextual model invocation, so the command copies produced duplicate entries (#2644). Modified files are backed up; unmanifested files are preserved. |
+| `2026-08-07-pi-retire-reserved-hooks-dir` | `009-pi-retire-reserved-hooks-dir.cts` | 1.9.2 | global, local | Yes | Removes manifest-managed files under pi's legacy `hooks/` directory and, once empty, the directory itself (and `hooks/lib/`), now that the shared hook bundle installs at `gsd-hooks/` instead. pi's `checkDeprecatedExtensionDirs()` warns on `hooks/`'s mere existence, not its contents, so an emptied shell would keep warning forever without the new `remove-empty-dir` action (#3023). Modified files are backed up; unmanifested files are preserved and keep the directory alive. pi only. |
 
 ## Prior Art
 

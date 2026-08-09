@@ -1,4 +1,5 @@
-// allow-test-rule: runtime-contract-is-the-product — INVENTORY.md heading format is the shipped doc surface being locked
+// allow-test-rule: source-text-is-the-product
+// INVENTORY.md heading format is the shipped doc surface being locked
 'use strict';
 
 /**

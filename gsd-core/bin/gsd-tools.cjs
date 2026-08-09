@@ -80,6 +80,7 @@
  *   drift-guard severity --status <S>    Classify a symbol verdict into { severity, hardBlock }
  *     [--authority <A>]                  Status: VERIFIED|MISSING|AMBIGUOUS|UNCHECKABLE
  *                                        Authority: grep|intel|treesitter|lsp|scip (default: config-resolved)
+ *   drift-guard phase-status [--phase N]     Compare STATE.md vs ROADMAP.md phase status
  *
  * Validation:
  *   validate consistency               Check phase numbering, disk/roadmap sync
@@ -264,6 +265,9 @@ const { resolveActiveWorkstream, applyResolvedWorkstreamEnv } = require('./lib/a
 const state = require('./lib/state.cjs');
 const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
+// #3024: resolve skills root for the sync-skills workflow (install.js is not
+// shipped in installed trees; gsd-tools IS shipped, so the workflow calls this).
+const { getGlobalSkillsBase, isRegisteredRuntimeId } = require('./lib/runtime-homes.cjs');
 // #1561 — assumption-delta advisory checkpoint detector (pure function).
 const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
@@ -302,7 +306,7 @@ const { routeCheckCommand } = require('./lib/check-command-router.cjs');
 const { routeTaskCommand } = require('./lib/task-command-router.cjs');
 const { parseNamedArgs, parseMultiwordArg } = require('./lib/command-arg-projection.cjs');
 const { cmdGitBaseBranch } = require('./lib/git-base-branch.cjs');
-const { getEffectiveAuthority, classifyDriftSeverity } = require('./lib/plan-drift-guard.cjs');
+const { getEffectiveAuthority, classifyDriftSeverity, comparePhaseStatus } = require('./lib/plan-drift-guard.cjs');
 
 // ─── Bridge collapsed (Phase 4) ────────────────────────────────────────────────
 // Non-family commands now run through their CJS handlers directly. Keep the
@@ -1044,6 +1048,37 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           commands.cmdCurrentTimestamp(args[1] || 'full', raw);
   }
 
+  function routeSkillsRoot({ args, raw, error }) {
+    // #3024: resolve the global skills base directory for a runtime.
+    // The sync-skills workflow previously shelled out to install.js --skills-root,
+    // but install.js is not shipped in installed trees. gsd-tools IS shipped, so
+    // the workflow now calls `gsd-tools query skills-root <runtime>` instead.
+    const runtime = args[1];
+    if (!runtime) {
+      error('Usage: gsd-tools query skills-root <runtime>');
+    }
+    // Defect B (#3024): validate the runtime id against the shipped capability
+    // registry's canonical runtime set BEFORE resolving anything.
+    // getGlobalSkillsBase falls through getGlobalConfigDir's unknown-runtime
+    // branch to claude's skills root for ANY id it doesn't recognize, so an
+    // unknown, empty/whitespace-only, path-traversal, or shell-metacharacter
+    // runtime arg would otherwise silently resolve to claude's path instead of
+    // failing loudly. isRegisteredRuntimeId does an own-property lookup (not a
+    // bare index), rejecting `__proto__`/`constructor`/`prototype` runtime
+    // ids, and is the SAME validator install.js's `--skills-root` entry point
+    // calls, so the two shipped entry points can never diverge on which
+    // runtime ids they accept.
+    if (!isRegisteredRuntimeId(runtime)) {
+      error(`Unknown runtime "${runtime}" — must be a registered runtime id`);
+    }
+    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const skillsRoot = getGlobalSkillsBase(trimmedRuntime);
+    if (skillsRoot === null) {
+      error(`No skills root found for runtime "${trimmedRuntime}"`);
+    }
+    output({ skills_root: skillsRoot }, raw, skillsRoot);
+  }
+
   function routeProjectInstructionFile({ args, cwd, raw, error }) {
     // #1529: pure runtime→filename projection. Backs the
           // `gsd_run query project-instruction-file --runtime <r>` call in
@@ -1156,6 +1191,22 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
     };
     const sub = args[1];
+    // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
+    // to the `sub !== 'invoke'` usage-error branch far below (after loading the
+    // capability registry AND building a per-lane plan for every lane — which itself
+    // spawns one child `query resolve-execution` process per lane via `effortFor`,
+    // up to 12 subprocess spawns for the default lane set) before ever reporting the
+    // error. That made an invalid subcommand slow instead of instant, and under bench
+    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
+    // spawn timeout and be killed before writing anything to stderr — the CI-observed
+    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // `plan`/`invoke` are the only subs that need the expensive plan-building path
+    // below; `sections`/`flags` return earlier still. Anything else errors here, before
+    // any of that work starts.
+    if (!['plan', 'invoke', 'sections', 'flags'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
     const runDir = flag('--run-dir') || '.';
     const repoRoot = flag('--repo-root') || cwd;
 
@@ -1330,7 +1381,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
     const deps = {
       spawn: (binary, argv, opts) => {
-        const r = cp.spawnSync(binary, argv, {
+        // #3086: on Windows, reviewer CLIs (gemini, codex, etc.) are installed
+        // as .cmd shims. spawnSync with a bare name + shell:false fails with
+        // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
+        // gate used in runWithTimeout: detect .cmd/.bat and mediate through
+        // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        const isWin = process.platform === 'win32';
+        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(binary));
+        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : binary;
+        const spawnArgv = winShim ? ['/d', '/s', '/c', binary, ...argv] : argv;
+        const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
           timeout: opts.timeoutMs,
@@ -2212,6 +2272,86 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           teamsStatus.cmdTeamsStatus(cwd, { active: args.includes('--active') });
   }
 
+  // #3023 follow-up (adversarial review finding): the shared hook bundle's
+  // directory name is runtime-descriptor-driven (bin/install.js
+  // `hostBehaviors.sharedHooksDirName`; default 'hooks', pi renames it to
+  // 'gsd-hooks'). A hardcoded 'hooks' literal in GSD_PREFIX_MANAGED_DIRS left
+  // this scan blind to a renamed bundle: `fs.existsSync(configDir/hooks)` is
+  // false for a pi install, so the ENTIRE gsd-hooks/ tree — including any
+  // user-added file inside it — was invisible to detect-custom-files and
+  // therefore never backed up before the next clean-install wipe (silent
+  // data loss).
+  //
+  // Resolution order, mirroring bin/install.js's own resolveSharedHooksDirName:
+  //   1. Read the per-install runtime marker written by the installer at
+  //      <configDir>/gsd-core/.gsd-runtime (#2297).
+  //   2. Look up that runtime's `hostBehaviors.sharedHooksDirName` in the
+  //      SHIPPED capability registry (./lib/capability-registry.cjs — a data
+  //      module in the same installed tree as this file). Deliberately NOT
+  //      `require('bin/install.js')`: that file is never shipped into an
+  //      installed tree (the #3024/#2071 bug class), so only the shipped data
+  //      module is read here.
+  //
+  // Asymmetric fallback: when the runtime or its descriptor cannot be
+  // determined (an install predating the marker, an unreadable/corrupt
+  // registry, or an unrecognized runtime id) this does NOT guess a single
+  // name — it returns every known candidate name instead. Over-scanning is
+  // safe here: a candidate directory that does not exist is silently skipped
+  // by the caller's `fs.existsSync` guard, and a file already tracked in the
+  // manifest is never reported as custom. Under-scanning is the actual bug
+  // being fixed: it would make a user's file vanish on the next wipe without
+  // ever being backed up.
+  function resolveSharedHooksDirCandidates(configDir) {
+    const DEFAULT_NAME = 'hooks';
+    // A resolved name is joined onto configDir and read back — reject
+    // anything that isn't a plain, separator-free segment so a corrupt
+    // registry value can never walk the scan outside the config root.
+    const isSafeSegment = (name) =>
+      typeof name === 'string' &&
+      name.trim() !== '' &&
+      name.trim() === name &&
+      name !== '.' &&
+      name !== '..' &&
+      !name.includes('/') &&
+      !name.includes('\\');
+
+    let registry = null;
+    try {
+      registry = require('./lib/capability-registry.cjs');
+    } catch {
+      registry = null;
+    }
+
+    const knownNames = new Set([DEFAULT_NAME]);
+    if (registry && registry.runtimes && typeof registry.runtimes === 'object') {
+      for (const desc of Object.values(registry.runtimes)) {
+        const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+          desc.runtime.hostBehaviors.sharedHooksDirName;
+        if (isSafeSegment(name)) knownNames.add(name);
+      }
+    }
+
+    let runtimeId = null;
+    try {
+      const markerPath = path.join(configDir, 'gsd-core', '.gsd-runtime');
+      const raw = fs.readFileSync(markerPath, 'utf8').trim();
+      runtimeId = raw || null;
+    } catch {
+      runtimeId = null;
+    }
+
+    if (runtimeId && registry && registry.runtimes && registry.runtimes[runtimeId]) {
+      const desc = registry.runtimes[runtimeId];
+      const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+        desc.runtime.hostBehaviors.sharedHooksDirName;
+      return [isSafeSegment(name) ? name : DEFAULT_NAME];
+    }
+
+    // Runtime undeterminable: scan every known candidate (see asymmetric
+    // fallback comment above).
+    return Array.from(knownNames);
+  }
+
   async function routeDetectCustomFiles({ args, cwd, raw, error }) {
     const configDirIdx = args.indexOf('--config-dir');
           const configDir = configDirIdx !== -1 ? args[configDirIdx + 1] : null;
@@ -2252,7 +2392,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           ];
           const GSD_PREFIX_MANAGED_DIRS = [
             'agents',
-            'hooks',
+            ...resolveSharedHooksDirCandidates(resolvedConfigDir),
             'skills',
           ];
 
@@ -3144,8 +3284,146 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             return;
           }
 
+          if (subcommand === 'phase-status') {
+            // #1956: deterministic STATE.md-vs-ROADMAP.md phase-status drift.
+            const { planningDir } = require('./lib/planning-workspace.cjs');
+            const { stateExtractField, stateCurrentPositionSlice } = require('./lib/state-document.cjs');
+            const { findRoadmapProgressTable } = require('./lib/roadmap-parser.cjs');
+            const { phaseKeyFromProse } = require('./lib/phase-id.cjs');
+            // STATE.md's YAML frontmatter carries its own lowercase `status:`
+            // scalar ahead of the body's `## Current Position` prose "Status:"
+            // line; stateExtractField's non-scoped regex would otherwise match
+            // that frontmatter line first (it comes first in the file) and
+            // silently report the wrong value. Strip frontmatter so extraction
+            // is scoped to the body.
+            const { stripFrontmatter } = require('./lib/frontmatter.cjs');
+
+            const phaseIdx = args.indexOf('--phase');
+            const phaseArg = (phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--'))
+              ? args[phaseIdx + 1]
+              : undefined;
+
+            const dir = planningDir(cwd);
+            const statePath = path.join(dir, 'STATE.md');
+            const roadmapPath = path.join(dir, 'ROADMAP.md');
+
+            let stateContent = null;
+            try {
+              stateContent = fs.readFileSync(statePath, 'utf-8');
+            } catch {
+              // missing_state below
+            }
+            if (stateContent === null) {
+              const phase = phaseArg !== undefined ? phaseKeyFromProse(phaseArg) : null;
+              output({
+                verdict: 'uncheckable',
+                reason: 'missing_state',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            let roadmapContent = null;
+            try {
+              roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+            } catch {
+              // missing_roadmap below
+            }
+
+            const stateBody = stripFrontmatter(stateContent);
+            // #1956 fix: scope extraction to `## Current Position` (or `###`
+            // in the bootstrap template) so a historical `Phase:` / `Status:`
+            // line in an archive section (e.g. `## Session Continuity
+            // Archive`) can't shadow the real one — same #2956 scope state.cts
+            // uses for current_phase, via the shared owner in
+            // state-document.cjs.
+            //
+            // Deliberately NO whole-body fallback here. `state.cts`'s WRITE
+            // path falls back to the whole body when no Current Position
+            // heading is found (legacy behavior it must preserve for
+            // backward-compatible writes) — but that fallback is wrong for a
+            // READ that feeds a drift finding: a STATE.md with no Current
+            // Position heading is exactly the shape that let a stray historical
+            // `Status:` line elsewhere in the body shadow the real value and
+            // fabricate a 'drifted' verdict. A guess is worse than an
+            // abstention for a drift detector, so an absent Current Position
+            // section reports 'uncheckable' instead of guessing from the whole
+            // document.
+            const currentPositionBody = stateCurrentPositionSlice(stateBody);
+            if (currentPositionBody === null) {
+              const phase = phaseArg !== undefined ? phaseKeyFromProse(phaseArg) : null;
+              output({
+                verdict: 'uncheckable',
+                reason: 'no_current_position',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            // Resolve the target phase: --phase if given, else whatever
+            // STATE.md's Current Position reports as current.
+            const phase = phaseArg !== undefined
+              ? phaseKeyFromProse(phaseArg)
+              : phaseKeyFromProse(stateExtractField(currentPositionBody, 'Phase'));
+
+            if (roadmapContent === null) {
+              output({
+                verdict: 'uncheckable',
+                reason: 'missing_roadmap',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            const stateStatus = stateExtractField(currentPositionBody, 'Status');
+
+            // #1956/#2012: scoped to `## Progress` first (decoy-avoidance) —
+            // see findRoadmapProgressTable's doc comment (roadmap-parser.cts).
+            const table = findRoadmapProgressTable(roadmapContent);
+            const matchedRow = table
+              ? table.rows.find((row) => phaseKeyFromProse(row.Phase) === phase && phase !== null)
+              : undefined;
+
+            if (!matchedRow) {
+              const result = comparePhaseStatus({ stateStatus, roadmapStatus: null });
+              output({
+                verdict: 'uncheckable',
+                reason: 'phase_not_in_roadmap',
+                phase,
+                stateStatus,
+                roadmapStatus: null,
+                stateRank: result.stateRank,
+                roadmapRank: result.roadmapRank,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
+
+            const roadmapStatus = matchedRow.Status;
+            const result = comparePhaseStatus({ stateStatus, roadmapStatus });
+            output({
+              verdict: result.verdict,
+              phase,
+              stateStatus,
+              roadmapStatus,
+              stateRank: result.stateRank,
+              roadmapRank: result.roadmapRank,
+              authority: 'STATE.md',
+            }, raw);
+            return;
+          }
+
           error(
-            `Unknown drift-guard subcommand: ${subcommand || '(none)'}. Available: authority, severity`,
+            `Unknown drift-guard subcommand: ${subcommand || '(none)'}. Available: authority, severity, phase-status`,
             ERROR_REASON.SDK_UNKNOWN_COMMAND,
           );
   }
@@ -3256,6 +3534,7 @@ const HOST_COMMAND_ROUTERS = {
     'user-story': routeUserStory,
     'drift-guard': routeDriftGuard,
     'windows': routeWindows,
+    'skills-root': routeSkillsRoot,
 };
 
 // Returns true when consumed (suppress "Unknown command"), false to fall
@@ -3472,7 +3751,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
-  'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
   '  --raw              Emit raw output without post-processing\n' +

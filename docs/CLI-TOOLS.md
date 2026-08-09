@@ -140,7 +140,31 @@ node gsd-tools.cjs phase-plan-index <phase>
 
 # List phases with filtering
 node gsd-tools.cjs phases list [--type planned|executed|all] [--phase N] [--include-archived]
+
+# Archive (or, with --force, permanently delete) every current phase directory —
+# used by /gsd-new-milestone before roadmapping the next cycle
+node gsd-tools.cjs phases clear [--confirm] [--force] [--archive-version <version>]
 ```
+
+### Milestone-scoped phase listing (`phases list`)
+
+The bare `phases list` (no `--phase`, no `--include-archived`) is scoped to the
+current milestone's `ROADMAP.md` window **and** filtered through the canonical
+sentinel predicate: `999.*` backlog directories and `0-*` pre-milestone
+directories are not listed as current-milestone phases. `--phase <N>` (a direct
+lookup) and `--include-archived` (an archive listing) are deliberately **not**
+scoped or sentinel-filtered — they answer "does this phase exist" and "what has
+ever existed here," not "what belongs to this milestone," so they still see
+sentinel and out-of-window directories.
+
+### `phases clear` and sentinel directories
+
+`phases clear` moves (or, with `--force` and no prior archive, permanently
+deletes) every phase directory under `.planning/phases/` except sentinels. It
+now excludes both `999.*` (backlog) and `0-*` (pre-milestone) directories via
+the same canonical sentinel predicate `phases list` uses — previously its own
+regex excluded `999` but not `0`, so a `0-*` directory could be destroyed on
+this irreversible path.
 
 ### Phase SUMMARY artifact check
 
@@ -183,6 +207,71 @@ node gsd-tools.cjs roadmap analyze
 # Update progress table row from disk
 node gsd-tools.cjs roadmap update-plan-progress <N>
 ```
+
+### Milestone window scope (`roadmap analyze`)
+
+`roadmap analyze` scopes its phase list to the current milestone's section of
+`ROADMAP.md`. Its JSON output carries a `scope` field describing how much of the
+intended input that scoping actually saw:
+
+| `scope` | Meaning |
+|---|---|
+| `complete` | The window was computed over the whole intended input. `phase_count: 0` here is a **real** answer — a freshly-declared milestone genuinely has no phases yet. |
+| `truncated` | The milestone's heading was found, but its window closed before reaching the document's phase region — typically because a closed-milestone heading sits between the active milestone and its `### Phase N:` sections. `phase_count: 0` here is a **non**-answer. |
+| `unscoped` | No milestone version could be resolved (or its section is absent) on a ROADMAP that does use versioned milestones, so the result is not milestone-scoped. |
+| `unreadable` | `ROADMAP.md` could not be read. |
+
+Before this field existed, all four cases produced the same well-formed
+`phase_count: 0` with no error, so a consumer could not tell a genuinely empty
+milestone from a scoping failure. Branch on `scope`, not on `phase_count` alone.
+
+A ROADMAP with no versioned milestone headings at all (the free-form legacy
+shape) reports `complete`: the whole document *is* the milestone there. Note
+this answer is specific to *windowing* — see the next section for why milestone
+*identity* answers the same document differently.
+
+### Milestone identity (which milestone, and what it is called)
+
+Milestone identity — the version and name behind `STATE.md`'s `milestone:`
+field, `roadmap analyze`'s `milestones[]` array, and the milestone shown by
+`query progress`, `stats`, `init manager`, `validate health` and
+`workstream create` — is resolved by one implementation:
+
+- `STATE.md`'s `milestone:` field selects the version when present. The ROADMAP
+  heuristics are the fallback, not the primary.
+- The heading is located by the same canonical locator that computes the
+  milestone window, so a `### Phase N: …` heading is **never** read as the
+  milestone heading — even when it mentions a version. Previously a ROADMAP
+  whose phase heading preceded its milestone heading could write a wrong
+  `milestone:` to disk.
+- The **name** is the heading text after that heading's own version token, with
+  one leading delimiter (`—`, `–`, `:`, `-`) and any trailing `✅`/`📋`/`🚧`
+  marker removed. Parentheses are ordinary characters: a milestone named
+  `v3.3 — Portability (Windows)` keeps its full name rather than being cut at
+  the `(`.
+- When identity **cannot** be determined it is reported as absent rather than
+  defaulted. A free-form legacy ROADMAP with no version anywhere is `unscoped`
+  with no identity — unlike windowing above, there is no version token to
+  report, and inventing one would be indistinguishable from a real answer.
+
+Two consumers act on that distinction rather than just displaying it:
+`state sync` / `state record-session` write `null` instead of a fabricated
+`milestone:`/name, and `phases clear` falls back to its dated archive label
+(`archived-<YYYYMMDD>`) instead of filing phase history under a fabricated
+`milestones/<version>-phases/` directory.
+
+### `milestone complete` refuses an untrustworthy window
+
+`milestone complete` archives `ROADMAP.md`/`REQUIREMENTS.md` and **moves phase
+directories** — a one-way door. When the milestone window's `scope` is
+`truncated` — the milestone heading was found but its section closes before
+reaching any phase entries, even though the ROADMAP has phase entries
+elsewhere — phase scoping cannot be trusted, and the command now refuses
+rather than falling back to an over-inclusive filter that would archive every
+phase directory in the project. `unreadable` (no ROADMAP.md at all) and
+`unscoped` (no section for this version) are pre-existing, legitimately
+handled states and are not refused here. Pass `--force` to override, the same
+affordance the unstarted-phase guard uses.
 
 ---
 
@@ -552,6 +641,8 @@ node gsd-tools.cjs requirements mark-complete <ids>
 
 **Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
+**Sentinel directories are never archived.** The phase-directory move performed when `--no-archive-phases` is absent is now filtered through the same canonical sentinel predicate as `phases list` and `phases clear`: `999.*` (backlog) and `0-*` (pre-milestone) directories are left in place rather than moved into `.planning/milestones/<version>-phases/`. Previously this path was scoped only by the milestone window, with no sentinel filter, so a sentinel directory sitting inside the window could be archived along with the milestone's real phases.
+
 ---
 
 ## Agent Skills
@@ -637,7 +728,15 @@ node gsd-tools.cjs progress [json|table|bar]
 
 # Progress as typed JSON surface (#455)
 node gsd-tools.cjs progress --json
+```
 
+Both `stats` and `progress` are scoped to the current milestone's `ROADMAP.md`
+window and sentinel-filtered: `999.*` backlog directories and `0-*`
+pre-milestone directories are not counted as current-milestone phases, and the
+aggregate completion percentage no longer reads `100` while phases from the
+active window are still outstanding.
+
+```bash
 # Complete a todo
 node gsd-tools.cjs todo complete <filename>
 

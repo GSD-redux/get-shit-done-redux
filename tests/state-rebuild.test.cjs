@@ -30,7 +30,6 @@ const fixedClock = Object.freeze({
   nowIso: () => '2026-06-29T12:00:00.000Z',
 });
 
-const noProgress = () => null;
 // #3057 B1: `phaseInventoryProvider` returns a discriminated result, never a
 // bare array-or-null — `{ ok: true, phases: [] }` is the genuinely-empty
 // benign case ("nothing to reconcile"), distinct from `{ ok: false, reason }`
@@ -39,7 +38,6 @@ const noProgress = () => null;
 const noPhases = () => ({ ok: true, phases: [] });
 
 const baseDeps = Object.freeze({
-  progressProvider: noProgress,
   clock: fixedClock,
   phaseInventoryProvider: noPhases,
 });

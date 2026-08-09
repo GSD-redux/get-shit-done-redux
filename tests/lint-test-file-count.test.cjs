@@ -10,7 +10,8 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-test-file-count.cjs');
@@ -30,13 +31,12 @@ function makeFiles(prefix, names) {
 }
 
 function runCliJson(extraArgs = []) {
-  const result = spawnSync(
-    process.execPath,
+  const result = runNode(
     [LINT_SCRIPT, '--json', ...extraArgs],
-    { encoding: 'utf8' }
+    { timeoutMs: PROBE_TIMEOUT_MS }
   );
   const parsed = JSON.parse(result.stdout);
-  return { status: result.status, data: parsed };
+  return { status: result.exitCode, data: parsed };
 }
 
 // ---------------------------------------------------------------------------
@@ -302,8 +302,8 @@ describe('testEffectivePrefix', () => {
 
 describe('CLI --json', () => {
   test('script parses without syntax errors', () => {
-    const result = spawnSync(process.execPath, ['--check', LINT_SCRIPT], { encoding: 'utf8' });
-    assert.strictEqual(result.status, 0, result.stderr);
+    const result = runNode(['--check', LINT_SCRIPT], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(result.exitCode, 0, result.stderr);
   });
 
   test('exits 0 against real repo (allowlist covers all current violations)', () => {

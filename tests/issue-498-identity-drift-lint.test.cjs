@@ -76,7 +76,9 @@ describe('Issue #498: the live repo passes the drift lint', () => {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-170-workflow-fallback-install-hint (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
-// allow-test-rule: workflow markdown is shipped product text; this test validates fallback hint literals across all workflow files (see #170)
+// allow-test-rule: source-text-is-the-product (see #170)
+// Workflow markdown is shipped product text; this test validates fallback
+// hint literals across all workflow files.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

@@ -15,11 +15,20 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 
+// `npm` is not process.execPath, git, or a bash script/hook, so this does not
+// route through tests/helpers/process-seam.cjs (whose runNode/runGit/runHook
+// primitives cover exactly those three shapes and forward no `shell` option)
+// — `npm` needs `shell: true` on Windows (npm.cmd), which the seam has no
+// surface for. Bounding this directly with an explicit `timeout` is the
+// documented alternative in eslint-rules/no-unbounded-spawn.cjs.
+const NPM_LS_TIMEOUT_MS = 30000;
+
 function npmLs(pkg) {
   // `npm ls <pkg> --json --all` lists every installed copy with its version. Collect
   // the version of every node whose key is `pkg` (not the parent packages).
   const out = execFileSync('npm', ['ls', pkg, '--json', '--all'], {
     cwd: ROOT, encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: NPM_LS_TIMEOUT_MS,
   });
   const versions = [];
   const walk = (node) => {

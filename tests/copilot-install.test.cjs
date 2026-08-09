@@ -1111,21 +1111,22 @@ describe('Copilot lifecycle hook config (#786)', () => {
     });
 
     test('executing the bash hook body produces valid sessionStart JSON', { skip: process.platform === 'win32' }, () => {
-      const { execFileSync } = require('child_process');
       const [entry] = buildCopilotHookConfig().hooks.sessionStart;
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-hook-exec-'));
       try {
         // No .planning/STATE.md → absent branch
-        const outAbsent = execFileSync('bash', ['-c', entry.bash], { cwd: tmp, encoding: 'utf8' });
-        const parsedAbsent = JSON.parse(outAbsent);
+        const rAbsent = runHook('-c', [entry.bash], { interpreter: 'bash', cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS });
+        throwIfFailed(rAbsent, 'bash -c <sessionStart hook body> (absent branch)');
+        const parsedAbsent = JSON.parse(rAbsent.stdout);
         assert.ok(typeof parsedAbsent.additionalContext === 'string', 'absent branch yields additionalContext string');
         assert.ok(/gsd-new-project/.test(parsedAbsent.additionalContext), 'absent branch suggests gsd-new-project');
 
         // With .planning/STATE.md → present branch
         fs.mkdirSync(path.join(tmp, '.planning'), { recursive: true });
         fs.writeFileSync(path.join(tmp, '.planning', 'STATE.md'), '# state\n');
-        const outPresent = execFileSync('bash', ['-c', entry.bash], { cwd: tmp, encoding: 'utf8' });
-        const parsedPresent = JSON.parse(outPresent);
+        const rPresent = runHook('-c', [entry.bash], { interpreter: 'bash', cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS });
+        throwIfFailed(rPresent, 'bash -c <sessionStart hook body> (present branch)');
+        const parsedPresent = JSON.parse(rPresent.stdout);
         assert.ok(/STATE\.md present/.test(parsedPresent.additionalContext), 'present branch references STATE.md');
       } finally {
         cleanup(tmp);
@@ -1347,8 +1348,9 @@ describe('Copilot manifest and patches fixes', () => {
 // E2E Integration Tests — Copilot Install & Uninstall
 // ============================================================================
 
-const { execFileSync } = require('child_process');
 const crypto = require('crypto');
+const { runNode, runHook } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_PATH = path.join(__dirname, '..', 'bin', 'install.js');
 const EXPECTED_SKILLS = fs.readdirSync(path.join(__dirname, '..', 'commands', 'gsd'))
@@ -1356,26 +1358,37 @@ const EXPECTED_SKILLS = fs.readdirSync(path.join(__dirname, '..', 'commands', 'g
 // Source-roster count (gsd-*.md basenames) — shared helper.
 const EXPECTED_AGENTS = listAgentFiles().length;
 
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 function runCopilotInstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath, [INSTALL_PATH, '--copilot', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--copilot', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --copilot --local --no-sdk`);
+  return r.stdout;
 }
 
 function runCopilotUninstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath, [INSTALL_PATH, '--copilot', '--local', '--uninstall', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--copilot', '--local', '--uninstall', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --copilot --local --uninstall --no-sdk`);
+  return r.stdout;
 }
 
 describe('E2E: Copilot full install verification', () => {
@@ -1666,27 +1679,31 @@ describe('E2E: Copilot uninstall verification', () => {
 // ─── E2E: Copilot global scope (#786) ──────────────────────────────────────────
 
 function runCopilotInstallGlobal(cwd, configDir) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath,
-    [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--no-sdk'], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
+  const r = runNode(
+    [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--no-sdk'],
+    { cwd, env, timeoutMs: INSTALL_TIMEOUT_MS },
+  );
+  throwIfFailed(r, `node ${INSTALL_PATH} --copilot --global --config-dir ${configDir} --no-sdk`);
+  return r.stdout;
 }
 
 function runCopilotUninstallGlobal(cwd, configDir) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath,
-    [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--uninstall', '--no-sdk'], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
+  const r = runNode(
+    [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--uninstall', '--no-sdk'],
+    { cwd, env, timeoutMs: INSTALL_TIMEOUT_MS },
+  );
+  throwIfFailed(r, `node ${INSTALL_PATH} --copilot --global --config-dir ${configDir} --uninstall --no-sdk`);
+  return r.stdout;
 }
 
 describe('E2E: Copilot global install (#786)', () => {
@@ -1729,25 +1746,33 @@ describe('E2E: Copilot global install (#786)', () => {
 // ─── Claude uninstall: user file preservation (#1423) ─────────────────────────
 
 function runClaudeInstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --no-sdk`);
+  return r.stdout;
 }
 
 function runClaudeUninstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
-  return execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--uninstall', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--uninstall', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --uninstall --no-sdk`);
+  return r.stdout;
 }
 
 describe('Claude uninstall preserves user-generated files (#1423)', () => {

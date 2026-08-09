@@ -501,8 +501,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
@@ -521,12 +523,12 @@ const { readCmdNames } = require(path.join(REPO_ROOT, 'scripts', 'fix-slash-comm
 function runClaudeLocalInstall(cwd) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --no-sdk`);
 }
 
 /**
@@ -750,8 +752,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
@@ -770,12 +774,12 @@ const { readCmdNames } = require(path.join(REPO_ROOT, 'scripts', 'fix-slash-comm
 function runClaudeLocalInstall(cwd) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --no-sdk`);
 }
 
 /**

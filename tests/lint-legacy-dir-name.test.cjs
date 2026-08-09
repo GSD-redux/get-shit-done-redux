@@ -9,11 +9,11 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-legacy-dir-name.cjs');
 
@@ -26,13 +26,21 @@ const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-legacy-dir-n
 // suite already uses for the sibling check-npm-integrity.cjs script
 // invocation in tests/npm-integrity-gate.test.cjs (also a small-fixture,
 // single-subprocess CLI script).
+//
+// NOT sourced from `tests/helpers/timeouts.cjs`'s `BUILD_TIMEOUT_MS` even
+// though the literal happens to coincide (both 30000): that shared constant
+// is scoped to hooks bundling via `scripts/build-hooks.js` — a heavier,
+// different class of work than this lint/guard script's single small-fixture
+// git-and-regex pass. Aliasing onto BUILD_TIMEOUT_MS would tie this value's
+// meaning to hook-bundling duration, which is not what bounds this call
+// (#3147 pre-PR review finding).
 const GUARD_TIMEOUT_MS = 30_000;
 
 function createTempRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-legacy-test-'));
-  execFileSync('git', ['init', '--initial-branch=main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  gitOrThrow(['init', '--initial-branch=main'], { cwd: dir });
+  gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: dir });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir });
   return dir;
 }
 
@@ -43,7 +51,7 @@ function writeFile(dir, relPath, content) {
 }
 
 function gitAdd(dir, relPath) {
-  execFileSync('git', ['add', relPath], { cwd: dir });
+  gitOrThrow(['add', relPath], { cwd: dir });
 }
 
 function cleanup(dir) {

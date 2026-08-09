@@ -14,6 +14,19 @@ set -euo pipefail
 
 # ─── Patterns ────────────────────────────────────────────────────────────────
 # Each pattern is a POSIX extended regex. Keep alphabetized by category.
+#
+# Left-boundary prefix `(^|[^[:alnum:]])`: several trigger words are also
+# suffixes of ordinary English words or camelCase identifiers (fact/impact/
+# contract/artifact/interact all end in "act"; retrieval/medieval end in
+# "eval"; blueprint/reprint/fingerprint end in "print"; describeFunction/
+# wrapFunction end in "Function"; Jordan/Sudan end in "dan"), so an
+# unanchored keyword matches as a false-positive substring. `\b` is a GNU
+# grep extension and this script must also run under BSD/macOS grep, so the
+# boundary is spelled out as `(^|[^[:alnum:]])` instead. This never narrows
+# real detections: a genuine attack phrase is always preceded by start-of-
+# line, whitespace, or punctuation, never by another alnum character glued
+# directly onto the keyword. Only patterns whose leading keyword is provably
+# not a real-word suffix are left unanchored (#3175 audit).
 
 PATTERNS=(
   # Instruction override
@@ -27,7 +40,7 @@ PATTERNS=(
   'you[[:space:]]+are[[:space:]]+now[[:space:]]+(a|an|my)[[:space:]]'
   'from[[:space:]]+now[[:space:]]+on[[:space:]]+(you|pretend|act|behave)'
   'pretend[[:space:]]+(you[[:space:]]+are|to[[:space:]]+be)[[:space:]]'
-  'act[[:space:]]+as[[:space:]]+(a|an|if|my)[[:space:]]'
+  '(^|[^[:alnum:]])act[[:space:]]+as[[:space:]]+(a|an|if|my)[[:space:]]'
   'roleplay[[:space:]]+as[[:space:]]'
   'assume[[:space:]]+the[[:space:]]+role[[:space:]]+of[[:space:]]'
 
@@ -35,7 +48,7 @@ PATTERNS=(
   'output[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
   'reveal[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
   'show[[:space:]]+me[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
-  'print[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
+  '(^|[^[:alnum:]])print[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
   'what[[:space:]]+(is|are)[[:space:]]+(your|the)[[:space:]]+(system[[:space:]]+)?(prompt|instructions)'
   'repeat[[:space:]]+(your|the|all)[[:space:]]+(system[[:space:]]+)?(prompt|instructions|rules)'
 
@@ -51,13 +64,21 @@ PATTERNS=(
   '<</SYS>>'
 
   # Tool call injection / code execution in markdown
-  'eval[[:space:]]*\([[:space:]]*["\x27]'
-  'exec[[:space:]]*\([[:space:]]*["\x27]'
-  'Function[[:space:]]*\([[:space:]]*["\x27].*return'
+  #
+  # The quote-or-apostrophe class below is spelled ["'"'"'"] (a literal `'`
+  # via bash's close-quote/escape/reopen idiom), not `["\x27]` — `\x27` is a
+  # GNU-grep-only hex escape; BSD/macOS grep treats it as four literal
+  # characters (", \, x, 2, 7) and never matches an actual apostrophe, so
+  # `eval('...')` (single-quoted) silently went undetected on macOS while
+  # passing on GNU-grep CI runners. Found auditing #3175; fixed here since it
+  # is the same unanchored/portability defect class as the boundary fix.
+  '(^|[^[:alnum:]])eval[[:space:]]*\([[:space:]]*["'"'"']'
+  'exec[[:space:]]*\([[:space:]]*["'"'"']'
+  '(^|[^[:alnum:]])Function[[:space:]]*\([[:space:]]*["'"'"'].*return'
 
   # Jailbreak / DAN patterns
   'do[[:space:]]+anything[[:space:]]+now'
-  'DAN[[:space:]]+mode'
+  '(^|[^[:alnum:]])DAN[[:space:]]+mode'
   'developer[[:space:]]+mode[[:space:]]+(enabled|output|activated)'
   'jailbreak'
   'bypass[[:space:]]+(safety|content|security)[[:space:]]+(filter|check|rule|guard)'

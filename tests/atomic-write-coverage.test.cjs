@@ -1,3 +1,9 @@
+// allow-test-rule: structural-regression-guard (#1972)
+// Reads milestone.cjs/phase.cjs/frontmatter.cjs source and parses for bare
+// fs.writeFileSync call sites — a specific code pattern that must not exist
+// to prevent partial-write corruption. Behavioral tests cannot distinguish
+// platformWriteSync from a bare fs.writeFileSync; only source inspection can.
+
 /**
  * Structural regression guard for atomic write usage (#1972).
  *

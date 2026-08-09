@@ -86,8 +86,8 @@ test('a clean corpus generates an index and --check passes', (t) => {
   const readme = fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8');
   assert.match(readme, /\[ADR-0001\]\(0001-alpha\.md\)/, 'zero-padded id must render as written, not ADR-1');
   assert.match(readme, /\[ADR-900\]\(900-beta\.md\)/);
-  assert.match(readme, /Active decisions \(1\)/);
-  assert.match(readme, /Proposed \(1\)/);
+  assert.match(readme, /### Active decisions\b/);
+  assert.match(readme, /### Proposed\b/);
 });
 
 test('--check fails when an ADR is added but the index is not regenerated', (t) => {
@@ -126,7 +126,7 @@ test('the table header form is parsed as legitimately as the bullet form', (t) =
   });
   const res = run(root, ['--write']);
   assert.equal(res.status, 0, `table-form header must parse: ${res.stderr}`);
-  assert.match(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'), /Active decisions \(1\)/);
+  assert.match(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'), /### Active decisions\b/);
 });
 
 test('Superseded must name its successor as a file link, not a bare id', (t) => {
@@ -178,7 +178,7 @@ test('subsumption is symmetry-checked but does NOT mark the target superseded', 
   });
   assert.equal(run(root, ['--write']).status, 0);
   const readme = fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8');
-  assert.match(readme, /Active decisions \(2\)/, 'a subsumed ADR stays Active');
+  assert.match(readme, /### Active decisions\b/, 'a subsumed ADR stays Active');
   // The subsumer is surfaced in the "Read first" column so EoS is discoverable
   // from the component ADR.
   assert.match(readme, /\| \[ADR-0001\]\(0001-alpha\.md\) \|[^|]*\| Accepted \| \[ADR-900\]\(900-eos\.md\) \|/);
@@ -353,7 +353,7 @@ test('--write still emits the index while reporting outstanding violations', (t)
   const res = run(root, ['--write']);
   assert.equal(res.status, 0, '--write proceeds');
   assert.match(res.stderr, /lifecycle violation\(s\) remain/);
-  assert.match(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'), /Active decisions \(2\)/);
+  assert.match(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'), /### Active decisions\b/);
 });
 
 test('an ADR title cannot hijack the README splice with an index marker', (t) => {
@@ -403,7 +403,7 @@ test('a backslash-pipe in a title cannot break out of its table cell', (t) => {
   // Any unescaped pipe from the title would add a 6th boundary and shift the cells.
   const unescaped = [...row.matchAll(/(?<!\\)\|/g)].length;
   assert.equal(unescaped, 5, `title pipes must stay escaped; row was: ${row}`);
-  assert.match(readme, /Proposed \(1\)/, 'the forged cell must not land the ADR in Active');
+  assert.match(readme, /### Proposed\b/, 'the forged cell must not land the ADR in Active');
 });
 
 test('a pipe in a title cannot break out of its table cell', (t) => {
@@ -413,7 +413,7 @@ test('a pipe in a title cannot break out of its table cell', (t) => {
   assert.equal(run(root, ['--write']).status, 0);
   const readme = fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8');
   assert.match(readme, /Alpha \\\| Accepted \\\| fake/, 'pipes must be escaped');
-  assert.match(readme, /Proposed \(1\)/, 'the forged cell must not land the ADR in Active');
+  assert.match(readme, /### Proposed\b/, 'the forged cell must not land the ADR in Active');
 });
 
 test('a file that does not match the naming convention is reported, not crashed on', (t) => {
@@ -435,6 +435,209 @@ test('the real repo corpus is clean and its index is current', () => {
   // The gate must hold against docs/adr/ as committed, not only fixtures.
   const res = run(REPO_ROOT, ['--check']);
   assert.equal(res.status, 0, `docs/adr/ must satisfy its own gate:\n${res.stderr}`);
+});
+
+// --- insert-only invariant (#3251) ------------------------------------------
+//
+// The generated region is a shared, committed artifact rewritten by every
+// ADR-adding PR. Two PRs that add different ADRs touch different table rows
+// and merge cleanly — but if adding an ADR ever MODIFIES an existing line
+// (not just appends new ones), two such PRs collide on that line and one
+// lands with a locally-green, CI-red `--check` (exactly what happened when
+// PR #3251's ADR-2313 and #3249's concurrently-landed ADR-3247 both rewrote
+// the same count line). The property that makes concurrent PRs merge is
+// stronger than "no count string is present": it is that render(N) is a
+// strict line-subsequence of render(N+1) for every N. These tests lock that
+// property directly, rather than the one symptom (a specific count format)
+// that happened to trigger #3251.
+
+/** Slice the generated region (inclusive of both markers) out of a README, as lines. */
+function indexRegionLines(readme) {
+  const start = readme.indexOf(START);
+  const end = readme.indexOf(END);
+  assert.ok(start !== -1 && end !== -1, 'README must carry both index markers');
+  return readme.slice(start, end + END.length).split(/\r?\n/);
+}
+
+/**
+ * Assert `before` is a strict line-subsequence of `after`: every line of
+ * `before`, in order, is also found in `after` in order. That is precisely
+ * "adding an ADR only INSERTS lines; it never MODIFIES an existing one" —
+ * the property that lets two ADR-adding PRs merge without colliding.
+ *
+ * On failure, names the first `before` line that could not be matched (and
+ * its index) rather than a bare boolean — `assert.ok(isSubsequence)` gives a
+ * debugging dead end when a corpus of dozens of lines fails.
+ */
+function assertInsertOnly(before, after, message) {
+  let j = 0;
+  for (let i = 0; i < before.length; i++) {
+    while (j < after.length && after[j] !== before[i]) j++;
+    if (j >= after.length) {
+      assert.fail(
+        `${message}: "before" line ${i} was not found, in order, in "after" — ` +
+          `it was modified rather than merely followed by an insertion.\n` +
+          `  missing line (before[${i}]): ${JSON.stringify(before[i])}`,
+      );
+    }
+    j++; // consume the match so later lines cannot re-match the same slot
+  }
+}
+
+/** Render the region for a corpus, then write one more file and re-render. */
+function renderBeforeAfter(t, baseFiles, addName, addBody) {
+  const root = makeRepo(t, baseFiles);
+  assert.equal(run(root, ['--write']).status, 0);
+  const before = indexRegionLines(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'));
+
+  fs.writeFileSync(path.join(root, 'docs', 'adr', addName), addBody);
+  assert.equal(run(root, ['--write']).status, 0);
+  const after = indexRegionLines(fs.readFileSync(path.join(root, 'docs', 'adr', 'README.md'), 'utf8'));
+
+  return { before, after };
+}
+
+test('adding an ADR only inserts lines (append position)', (t) => {
+  // Highest id: the new row lands at the bottom of an already-populated
+  // table. Pre-fix, `### Active decisions (2)` -> `(3)` and the footer
+  // `_2 ADRs...` -> `_3 ADRs...` both MODIFY an existing line, so this case
+  // fails the subsequence check against the pre-fix generator.
+  const { before, after } = renderBeforeAfter(
+    t,
+    {
+      '100-alpha.md': adr('Alpha', ['**Status:** Accepted']),
+      '200-beta.md': adr('Beta', ['**Status:** Accepted']),
+    },
+    '300-gamma.md',
+    adr('Gamma', ['**Status:** Accepted']),
+  );
+  assertInsertOnly(before, after, 'appending the highest-id ADR');
+});
+
+test('adding a lowest-id or middle-id ADR is still insert-only', (t) => {
+  // Table-driven per the matrix's boundary cases #2 (lowest — the riskiest
+  // insertion point, at the very top of the table) and #3 (middle). Same
+  // pre-fix failure mode as the append case: the group-heading count and the
+  // footer count both change on every insertion, regardless of where the row
+  // lands.
+  const cases = [
+    { label: 'lowest id (top of the table)', id: '050' },
+    { label: 'middle id (between existing rows)', id: '150' },
+  ];
+  for (const { label, id } of cases) {
+    const { before, after } = renderBeforeAfter(
+      t,
+      {
+        '100-alpha.md': adr('Alpha', ['**Status:** Accepted']),
+        '300-gamma.md': adr('Gamma', ['**Status:** Accepted']),
+      },
+      `${id}-beta.md`,
+      adr('Beta', ['**Status:** Accepted']),
+    );
+    assertInsertOnly(before, after, `adding ADR-${id} (${label})`);
+  }
+});
+
+test('the first ADR in an empty corpus inserts a whole group block', (t) => {
+  // limit-1 -> limit: before has NO group blocks at all (every group's row
+  // count is 0, so `renderIndex` emits only the markers and the footer).
+  // Pre-fix, the footer itself carries the only count (`_0 ADRs...` ->
+  // `_1 ADRs...`), which is a MODIFIED line, not an insertion — so this case
+  // fails against the pre-fix generator even though no group heading exists
+  // yet to change.
+  const { before, after } = renderBeforeAfter(t, {}, '100-alpha.md', adr('Alpha', ['**Status:** Accepted']));
+  assertInsertOnly(before, after, 'first ADR in an empty corpus');
+});
+
+test('adding the first ADR of a new status group leaves other groups untouched', (t) => {
+  const { before, after } = renderBeforeAfter(
+    t,
+    { '100-alpha.md': adr('Alpha', ['**Status:** Accepted']) },
+    '200-beta.md',
+    adr('Beta', ['**Status:** Proposed']),
+  );
+  assertInsertOnly(before, after, 'adding the first Proposed ADR alongside an Accepted-only corpus');
+
+  // Stronger than insert-only: the whole Active decisions block (heading
+  // through its own trailing blank line) must be byte-identical, since the
+  // new Proposed section is inserted strictly after it, never inside it.
+  // Pre-fix, `### Active decisions (1)` would itself be a line INSIDE this
+  // block that survives unchanged here (the Proposed group is what's new,
+  // not Active's row count) — the real pre-fix failure for this case is the
+  // footer's total count, which sits after both blocks.
+  const footerIdx = before.findIndex((l) => l.startsWith('_Generated by'));
+  assert.notEqual(footerIdx, -1, 'before render must carry the footer line');
+  assert.deepEqual(
+    after.slice(0, footerIdx),
+    before.slice(0, footerIdx),
+    'the Active decisions block must be byte-identical after adding a Proposed ADR',
+  );
+});
+
+test('superseding an ADR may edit its row, but never a count line', (t) => {
+  // The one case in the matrix flagged as a possible exception to strict
+  // insert-only: a new Superseded ADR naming an existing Accepted ADR as its
+  // successor. Empirically (tracing parseAdr/renderIndex) it is NOT actually
+  // an exception here: every row's cells are derived solely from that ADR's
+  // OWN header text, so adding a file that talks ABOUT Alpha cannot alter
+  // Alpha's already-computed row — only Alpha's own header, which this test
+  // never edits, could do that. Assert what the matrix requires at minimum
+  // (no count-bearing line, in either render) and, since it costs nothing
+  // and happens to hold, the full insert-only property too — this is a
+  // strictly stronger, still-true claim, not a weakened one.
+  //
+  // Pre-fix failing line: `_1 ADRs. Generated by ...` -> `_2 ADRs. ...`. The
+  // new ADR joins the Superseded group, so Active's own heading count stays
+  // `(1)`; it is the footer total that is MODIFIED and breaks the
+  // subsequence walk. Non-vacuous.
+  const { before, after } = renderBeforeAfter(
+    t,
+    { '100-alpha.md': adr('Alpha', ['**Status:** Accepted']) },
+    '200-beta.md',
+    adr('Beta', ['**Status:** Superseded by [ADR-100](100-alpha.md)']),
+  );
+  const countBearing = /^### .+\(\d+\)\s*$/;
+  const footerCount = /^_\d+ ADRs\./;
+  for (const region of [before, after]) {
+    for (const line of region) {
+      assert.ok(!countBearing.test(line), `no group heading may carry a count: ${JSON.stringify(line)}`);
+      assert.ok(!footerCount.test(line), `no footer line may carry a count: ${JSON.stringify(line)}`);
+    }
+  }
+  assertInsertOnly(before, after, 'adding a Superseded ADR that names the Accepted ADR as successor');
+});
+
+test('insert-only holds for titles carrying markdown/HTML hazards', (t) => {
+  // Pipe, angle brackets, and backslash are all reachable through an H1
+  // title and are exactly what `cellText` exists to neutralize (#: pipe
+  // would split the table cell, angle brackets could forge an HTML/marker
+  // sequence, backslash is markdown's escape char and must be escaped
+  // first). A literal newline is deliberately NOT included here: the title
+  // is always extracted from a single physical H1 line
+  // (`lines.find(l => /^#\s/.test(l))`), so a raw `\n` cannot survive into
+  // the title text at all — asserting `cellText`'s newline handling would be
+  // vacuous at this call site (there is no path from a corpus file to a
+  // multi-line title).
+  //
+  // Pre-fix failing lines: BOTH `### Active decisions (1)` -> `(2)` and
+  // `_1 ADRs. ...` -> `_2 ADRs. ...`. The hazardous title affects only the
+  // NEW row's cell text, so what actually breaks the subsequence walk
+  // pre-fix is the same pair of count lines as the plain cases — the title
+  // hazard rides along to prove escaping does not itself introduce a
+  // modified line. Non-vacuous.
+  const { before, after } = renderBeforeAfter(
+    t,
+    { '100-alpha.md': adr('Alpha', ['**Status:** Accepted']) },
+    '200-beta.md',
+    adr('Beta \\| <script>x</script> \\', ['**Status:** Accepted']),
+  );
+  assertInsertOnly(before, after, 'adding an ADR whose title carries |, <, >, and \\');
+
+  const row = after.find((l) => l.includes('200-beta.md'));
+  assert.ok(row, 'the hostile-title ADR must still have a row');
+  const cells = [...row.matchAll(/(?<!\\)\|/g)].length;
+  assert.equal(cells, 5, `hazardous title must not add or remove a cell boundary; row was: ${row}`);
+  assert.ok(!row.includes('<script>'), 'angle brackets must be escaped, not emitted raw');
 });
 
 // --- regressions -----------------------------------------------------------

@@ -161,6 +161,7 @@ function checkGraphifyVersion(): VersionResult {
   }
 
   // Strategy 2: fall back to python3 importlib.metadata
+  let pyPackageConfirmed = false;
   if (!versionStr) {
     const pyResult = execTool('python3', [
       '-c',
@@ -168,8 +169,19 @@ function checkGraphifyVersion(): VersionResult {
     ], { timeout: 5000 });
 
     if (!pyResult.error && pyResult.exitCode === 0 && pyResult.stdout) {
-      versionStr = pyResult.stdout;
+      versionStr = pyResult.stdout.trim();
+      pyPackageConfirmed = true; // importlib.metadata confirmed the package
     }
+  } else {
+    // #3020: verify the `graphify` binary on PATH is actually the graphifyy
+    // package — a foreign binary that happens to print a version-like string
+    // must not silently report compatible. If importlib.metadata cannot confirm
+    // the package, emit an identity warning even if the version looks right.
+    const pyVerify = execTool('python3', [
+      '-c',
+      'from importlib.metadata import version; print(version("graphifyy"))',
+    ], { timeout: 5000 });
+    pyPackageConfirmed = !pyVerify.error && pyVerify.exitCode === 0 && !!pyVerify.stdout;
   }
 
   if (!versionStr) {
@@ -182,10 +194,22 @@ function checkGraphifyVersion(): VersionResult {
     return { version: versionStr, compatible: null, warning: 'Could not parse version: ' + versionStr };
   }
 
-  const compatible = parts[0] === 0 && parts[1] >= 4;
-  const warning = compatible ? null : 'graphify version ' + versionStr + ' is outside tested range >=0.4.0,<1.0';
+  const versionInRange = parts[0] === 0 && parts[1] >= 4;
 
-  return { version: versionStr, compatible, warning };
+  // #3020: if the `graphify` binary answered --version but the Python package
+  // graphifyy could not be confirmed, the tool identity is unverified — emit
+  // a warning naming the mismatch regardless of version-range compatibility.
+  if (!pyPackageConfirmed) {
+    return {
+      version: versionStr,
+      compatible: false,
+      warning: 'graphify version ' + versionStr + ' detected but the graphifyy Python package could not be confirmed — the `graphify` binary on PATH may be a different tool. Verify with: pip show graphifyy',
+    };
+  }
+
+  const warning = versionInRange ? null : 'graphify version ' + versionStr + ' is outside tested range >=0.4.0,<1.0';
+
+  return { version: versionStr, compatible: versionInRange, warning };
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────

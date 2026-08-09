@@ -21,19 +21,32 @@
  *     can satisfy gsd_run for Codex shim-only installs.
  */
 
-// allow-test-rule: structural parity/drift guard — asserts literal presence/absence of the canonical gsd_run launcher and the retired $GSD_SDK / `/gsd-tools` tokens across workflow markdown; there is no typed IR for "this source file does not contain substring X".
+// allow-test-rule: structural-regression-guard
+// structural parity/drift guard — asserts literal presence/absence of the canonical gsd_run launcher and the retired $GSD_SDK / `/gsd-tools` tokens across workflow markdown; there is no typed IR for "this source file does not contain substring X".
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
+
+/**
+ * Run a bash script FILE via the process seam, preserving the throw-on-
+ * nonzero-exit semantics of the execFileSync('bash', [path], ...) idiom
+ * this replaces.
+ */
+function runBashFile(scriptPath, options = {}) {
+  const r = runHookSeam(scriptPath, [], { interpreter: 'bash', ...options });
+  throwIfFailed(r, `bash ${scriptPath}`);
+  return r.stdout;
+}
 
 /**
  * Read the canonical preamble from the snippet file (all lines, no trailing newline).
@@ -292,7 +305,7 @@ describe('runtime-launcher-parity (#373)', () => {
       const scriptPath = path.join(base, 'test-space.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const stdout = execFileSync('bash', [scriptPath], { encoding: 'utf8' });
+      const stdout = runBashFile(scriptPath);
       assert.ok(
         stdout.includes('STUB:query,state.json'),
         `Expected stdout to contain "STUB:query,state.json" but got: ${stdout.trim()}`,
@@ -333,18 +346,12 @@ describe('runtime-launcher-parity (#373)', () => {
         });
       const isolatedPath = [noToolsBin, ...systemPaths].join(path.delimiter);
 
-      let threw = false;
-      let stderrOutput = '';
-      try {
-        execFileSync('bash', [scriptPath], {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, PATH: isolatedPath, HOME: base },
-        });
-      } catch (err) {
-        threw = true;
-        stderrOutput = err.stderr || '';
-      }
+      const r = runHookSeam(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...process.env, PATH: isolatedPath, HOME: base },
+      });
+      const threw = r.exitCode !== 0;
+      const stderrOutput = r.stderr || '';
 
       assert.ok(threw, 'Expected the script to exit non-zero when gsd-tools.cjs is missing and gsd-tools is not on PATH');
       assert.ok(
@@ -382,8 +389,7 @@ describe('runtime-launcher-parity (#373)', () => {
       const scriptPath = path.join(base, 'test-pathfb.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: `${pathBinDir}${path.delimiter}${process.env.PATH || ''}` },
       });
 
@@ -534,8 +540,7 @@ describe('runtime-launcher-parity (#373)', () => {
         systemPaths.unshift(nodeShimDir);
       }
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome },
       });
 
@@ -613,9 +618,10 @@ describe('runtime-launcher-parity — standalone executable (#381)', () => {
         `console.log('GSD_TOOLS_STUB:' + process.argv.slice(2).join(' '))`,
       );
 
-      const stdout = execFileSync('sh', [path.join(binDir, 'gsd_run'), 'query', 'x'], {
-        encoding: 'utf8',
-      });
+      const gsdRunPath = path.join(binDir, 'gsd_run');
+      const r = runHookSeam(gsdRunPath, ['query', 'x'], { interpreter: 'sh' });
+      throwIfFailed(r, `sh ${gsdRunPath} query x`);
+      const stdout = r.stdout;
       assert.ok(
         stdout.includes('GSD_TOOLS_STUB:query x'),
         `Expected stdout to contain "GSD_TOOLS_STUB:query x", got: ${stdout.trim()}`,
@@ -649,8 +655,7 @@ describe('runtime-launcher-parity — standalone executable (#381)', () => {
       const preambleScript = path.join(baseParent, 'run-preamble.sh');
       fs.writeFileSync(preambleScript, snippet);
 
-      execFileSync('bash', [preambleScript], {
-        encoding: 'utf8',
+      runBashFile(preambleScript, {
         env: {
           RUNTIME_DIR: base,
           CLAUDE_ENV_FILE: envFile,
@@ -684,13 +689,15 @@ describe('runtime-launcher-parity — standalone executable (#381)', () => {
         // Simulate a LATER fresh block that SOURCES the env file to get gsd_run on PATH.
         // The later shell does NOT have the bin dir on PATH beforehand — it only gets it
         // by sourcing the env file.  We use a minimal PATH (no temp bin dir pre-injected).
-        const stdout = execFileSync('bash', ['-c', '. "$CLAUDE_ENV_FILE"; gsd_run hello'], {
-          encoding: 'utf8',
+        const inlineResult = runHookSeam('-c', ['. "$CLAUDE_ENV_FILE"; gsd_run hello'], {
+          interpreter: 'bash',
           env: {
             CLAUDE_ENV_FILE: envFile,
             PATH: process.env.PATH,
           },
         });
+        throwIfFailed(inlineResult, 'bash -c <source env file; gsd_run hello>');
+        const stdout = inlineResult.stdout;
         assert.ok(
           stdout.includes('GSD_RUN_STUB:hello'),
           `Expected stdout to contain "GSD_RUN_STUB:hello" after sourcing env file, got: ${stdout.trim()}`,
@@ -790,7 +797,8 @@ describe('runtime-launcher-parity — agents (#1041)', () => {
  *     When all three miss, exit non-zero.
  */
 
-// allow-test-rule: structural/behavioral regression for the ~/.claude fallback arm in (see #211)
+// allow-test-rule: structural-regression-guard (see #211)
+// structural/behavioral regression for the ~/.claude fallback arm in
 // the gsd_run launcher snippet -- asserts literal substring presence and exercises the
 // bash resolution path via execFileSync; there is no typed IR for "snippet contains arm X".
 
@@ -799,13 +807,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
 // Representative propagated workflow file (has a gsd_run call):
 const REPRESENTATIVE_FILE = path.join(WORKFLOWS_DIR, 'add-backlog.md');
+
+/**
+ * Run a bash script FILE via the process seam, preserving the throw-on-
+ * nonzero-exit semantics of the execFileSync('bash', [path], ...) idiom
+ * this replaces.
+ */
+function runBashFile(scriptPath, options = {}) {
+  const r = runHookSeam(scriptPath, [], { interpreter: 'bash', ...options });
+  throwIfFailed(r, `bash ${scriptPath}`);
+  return r.stdout;
+}
 
 const CLAUDE_HOME_PROBE = '.claude/gsd-core/bin/';
 
@@ -864,7 +884,9 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       // Filter out directories that contain a gsd-tools executable. If node lives
       // in the same directory as gsd-tools, create a dedicated shim dir with a
       // symlink to node only (no gsd-tools there).
-      const nodeBin = execFileSync('which', ['node'], { encoding: 'utf8' }).trim();
+      const nodeBinResult = runHookSeam('node', [], { interpreter: 'which' });
+      throwIfFailed(nodeBinResult, 'which node');
+      const nodeBin = nodeBinResult.stdout.trim();
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
         .filter((p) => {
@@ -887,8 +909,7 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
         systemPaths.unshift(nodeShimDir);
       }
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome },
       });
 
@@ -941,18 +962,12 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
         });
       const isolatedPath = [noToolsBin, ...systemPaths].join(path.delimiter);
 
-      let threw = false;
-      let stderrOutput = '';
-      try {
-        execFileSync('bash', [scriptPath], {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
-        });
-      } catch (err) {
-        threw = true;
-        stderrOutput = err.stderr || '';
-      }
+      const r = runHookSeam(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
+      });
+      const threw = r.exitCode !== 0;
+      const stderrOutput = r.stderr || '';
 
       assert.ok(threw, 'Expected non-zero exit when all three resolution arms miss');
       assert.ok(
@@ -998,7 +1013,8 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  *     (sync-runtime-launcher.cjs was re-run after editing the snippet).
  */
 
-// allow-test-rule: structural/behavioral regression for non-Claude runtime-home (see #891)
+// allow-test-rule: structural-regression-guard (see #891)
+// structural/behavioral regression for non-Claude runtime-home
 // fallback arms in the gsd_run launcher snippet -- asserts literal substring
 // presence for each runtime-home probe and exercises the bash resolution paths
 // via execFileSync; there is no typed IR for "snippet contains arm X".
@@ -1008,11 +1024,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
+
+/**
+ * Run a bash script FILE via the process seam, preserving the throw-on-
+ * nonzero-exit semantics of the execFileSync('bash', [path], ...) idiom
+ * this replaces.
+ */
+function runBashFile(scriptPath, options = {}) {
+  const r = runHookSeam(scriptPath, [], { interpreter: 'bash', ...options });
+  throwIfFailed(r, `bash ${scriptPath}`);
+  return r.stdout;
+}
 
 // Every non-Claude runtime home probe the snippet must contain.
 // Key: runtime name (for diagnostics). Value: the substring that must appear
@@ -1288,8 +1316,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       const scriptPath = path.join(fakeRuntime, 'test-hermes-home.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: isolatedPath, HOME: fakeHome, HERMES_HOME: fakeHermesHome },
       });
 
@@ -1338,8 +1365,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       const scriptPath = path.join(fakeRuntime, 'test-hermes-default.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
       });
 
@@ -1433,7 +1459,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { readFileNormalized } = require('./helpers.cjs');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'next.md');
@@ -1516,15 +1543,17 @@ function runResolver({ cwd, runtimeDir, pathDir }) {
   // suite is guarded to POSIX (matches the host suite's own bash -c guard).
   if (process.platform === 'win32') return '';
 
-  return execFileSync('bash', ['-c', script], {
+  const r = runHookSeam('-c', [script], {
+    interpreter: 'bash',
     cwd,
     env: {
       ...process.env,
       PATH: `${pathDir}${path.delimiter}${process.env.PATH || ''}`,
       RUNTIME_DIR: runtimeDir || '',
     },
-    encoding: 'utf8',
   });
+  throwIfFailed(r, 'bash -c <runtime resolver snippet>');
+  return r.stdout;
 }
 
 function writeExecutable(file, content) {
@@ -1606,7 +1635,8 @@ describe('bug-3668: workflow SDK resolver supports installed user projects', { s
  * (C) Precedence: repo-local .claude/ wins over $HOME/.claude/ when both exist.
  */
 
-// allow-test-rule: structural/behavioral regression for the repo-local .claude/ install (see #444)
+// allow-test-rule: structural-regression-guard (see #444)
+// structural/behavioral regression for the repo-local .claude/ install
 // arm in the gsd_run launcher snippet -- asserts literal substring presence and exercises
 // the bash resolution path via execFileSync; there is no typed IR for "snippet contains arm X".
 
@@ -1615,11 +1645,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
+
+/**
+ * Run a bash script FILE via the process seam, preserving the throw-on-
+ * nonzero-exit semantics of the execFileSync('bash', [path], ...) idiom
+ * this replaces.
+ */
+function runBashFile(scriptPath, options = {}) {
+  const r = runHookSeam(scriptPath, [], { interpreter: 'bash', ...options });
+  throwIfFailed(r, `bash ${scriptPath}`);
+  return r.stdout;
+}
 
 // The probe string that must appear in the snippet for the new repo-local check.
 // The snippet uses _GSD_RUNTIME_ROOT as the intermediate variable.
@@ -1728,8 +1770,7 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
       // Keep node in PATH (needed to run the .cjs stub); remove gsd-tools
       const isolatedPath = makeIsolatedPath([noToolsBin]);
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
       });
 
@@ -1792,8 +1833,7 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
 
       const isolatedPath = makeIsolatedPath([noToolsBin]);
 
-      const stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
+      const stdout = runBashFile(scriptPath, {
         env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
       });
 

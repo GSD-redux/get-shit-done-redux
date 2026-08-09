@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product #2615 — the host-integration matrix
+// allow-test-rule: source-text-is-the-product #2615 — the host-integration matrix
 // IS the cited source of truth for every descriptor axis (ADR-1239); asserting that a
 // shipped axis value appears there, and matches, is a contract assertion.
 

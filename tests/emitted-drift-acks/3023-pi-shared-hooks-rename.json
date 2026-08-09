@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-hooks/gsd-agent-isolation-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-agent-isolation-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-check-update.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-check-update.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-config-reload.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-config-reload.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-context-monitor.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-context-monitor.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-post-tool.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-post-tool.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-pre-tool.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-pre-tool.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-session-start.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-session-start.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-stop.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-stop.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-subagent-start.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-subagent-start.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-cursor-subagent-stop.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-cursor-subagent-stop.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-ensure-canonical-path.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-ensure-canonical-path.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-graphify-update.sh": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-graphify-update.sh — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-phase-boundary.sh": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-phase-boundary.sh — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-prompt-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-prompt-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-read-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-read-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-session-state.sh": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-session-state.sh — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-statusline.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-statusline.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-update-banner.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-update-banner.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-validate-commit.sh": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-validate-commit.sh — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-windsurf-pre-command.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-windsurf-pre-command.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-windsurf-pre-write.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-windsurf-pre-write.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-workflow-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-workflow-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-worktree-path-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-worktree-path-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/gsd-write-guard.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/gsd-write-guard.js — only the emitted install path moved."
+    },
+    "gsd-hooks/lib/cursor-workspace.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/lib/cursor-workspace.js — only the emitted install path moved."
+    },
+    "gsd-hooks/lib/git-cmd.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/lib/git-cmd.js — only the emitted install path moved."
+    },
+    "gsd-hooks/lib/gsd-graphify-rebuild.sh": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/lib/gsd-graphify-rebuild.sh — only the emitted install path moved."
+    },
+    "gsd-hooks/lib/isolation-sentinel.js": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/lib/isolation-sentinel.js — only the emitted install path moved."
+    },
+    "gsd-hooks/managed-hooks-registry.cjs": {
+      "reason": "#3023: pi reserves its own hooks/ directory, so the installer now stages the shared hook bundle under gsd-hooks/ for the pi runtime instead of hooks/. This file's bytes are unchanged from hooks/managed-hooks-registry.cjs — only the emitted install path moved."
+    },
+    "hooks/gsd-agent-isolation-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-agent-isolation-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-check-update.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-check-update.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-config-reload.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-config-reload.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-context-monitor.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-context-monitor.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-post-tool.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-post-tool.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-pre-tool.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-pre-tool.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-session-start.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-session-start.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-stop.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-stop.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-subagent-start.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-subagent-start.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-cursor-subagent-stop.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-cursor-subagent-stop.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-ensure-canonical-path.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-ensure-canonical-path.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-graphify-update.sh": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-graphify-update.sh for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-phase-boundary.sh": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-phase-boundary.sh for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-prompt-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-prompt-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-read-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-read-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-session-state.sh": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-session-state.sh for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-statusline.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-statusline.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-update-banner.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-update-banner.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-validate-commit.sh": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-validate-commit.sh for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-windsurf-pre-command.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-windsurf-pre-command.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-windsurf-pre-write.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-windsurf-pre-write.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-workflow-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-workflow-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-worktree-path-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-worktree-path-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/gsd-write-guard.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/gsd-write-guard.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/lib/cursor-workspace.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/lib/cursor-workspace.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/lib/git-cmd.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/lib/git-cmd.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/lib/gsd-graphify-rebuild.sh": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/lib/gsd-graphify-rebuild.sh for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/lib/isolation-sentinel.js": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/lib/isolation-sentinel.js for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    },
+    "hooks/managed-hooks-registry.cjs": {
+      "reason": "#3023: pi no longer emits this file under hooks/ (its reserved directory); the installer now stages the same unchanged bytes under gsd-hooks/managed-hooks-registry.cjs for the pi runtime, so this path disappears from pi's manifest without its source changing."
+    }
+  }
+}

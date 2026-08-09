@@ -30,6 +30,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -37,9 +38,7 @@ const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs')
 // Inline — NOT modifying tests/helpers.cjs per task rules.
 
 function gitSync(args, cwd) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
-  return r.stdout.trim();
+  return gitOrThrow(args, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } }).trim();
 }
 
 function initGitRepo(dir) {

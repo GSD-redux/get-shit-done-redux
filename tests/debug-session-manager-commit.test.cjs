@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product see #2568
+// allow-test-rule: source-text-is-the-product see #2568
 // agents/gsd-debug-session-manager.md is executed instruction text: the orchestrator
 // follows it verbatim, so WHERE the commit step sits relative to the terminal vs
 // non-terminal summary shapes IS the contract. The commit_docs gate it relies on is

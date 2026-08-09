@@ -634,7 +634,7 @@ describe('SECURE: threat-model-anchored behaviour', () => {
 });
 
 // ─── 8. Regression: security config variables resolved before use (#1625) ────
-// allow-test-rule: runtime-contract-is-the-product — secure-phase.md prose is the executed contract (#1625)
+// allow-test-rule: source-text-is-the-product — secure-phase.md prose is the executed contract (#1625)
 
 describe('SECURE: security config variables resolved before use (#1625)', () => {
   const wfPath = path.join(WORKFLOWS_DIR, 'secure-phase.md');
@@ -718,7 +718,9 @@ describe('SECURE: security config variables resolved before use (#1625)', () => 
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3120-secure-phase-empty-register (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
-// allow-test-rule: reads product workflow markdown (secure-phase.md) to verify structural guard contract — not a source-grep test (see #3120)
+// allow-test-rule: source-text-is-the-product (see #3120)
+// Reads product workflow markdown (secure-phase.md) to verify structural
+// guard contract.
 
 // Regression guard for bug #3120.
 //

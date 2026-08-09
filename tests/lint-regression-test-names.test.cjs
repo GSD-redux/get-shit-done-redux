@@ -7,10 +7,12 @@
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'lint-regression-test-names.cjs');
@@ -25,17 +27,19 @@ function runLint({ files, allowlist, args = [] }) {
   for (const f of files) fs.writeFileSync(path.join(testsDir, f), '');
   const allowlistPath = path.join(testsDir, 'allowlist.json');
   fs.writeFileSync(allowlistPath, JSON.stringify(allowlist));
-  const r = spawnSync(process.execPath, [SCRIPT, ...args], {
+  const result = runNode([SCRIPT, ...args], {
     cwd: ROOT,
-    encoding: 'utf8',
+    timeoutMs: PROBE_TIMEOUT_MS,
     env: {
       ...process.env,
       GSD_LINT_REGRESSION_TESTS_DIR: testsDir,
       GSD_LINT_REGRESSION_ALLOWLIST: allowlistPath,
     },
   });
-  r.allowlistPath = allowlistPath;
-  return r;
+  // Composes toLegacyResult with the site-specific allowlistPath rather than
+  // folding it into the shared helper — see git-fixture.cjs's toLegacyResult
+  // JSDoc.
+  return { ...toLegacyResult(result), allowlistPath };
 }
 
 describe('lint-regression-test-names', () => {
@@ -92,8 +96,8 @@ describe('lint-regression-test-names', () => {
   });
 
   test('repo baseline passes (real tests/ dir against real allowlist)', () => {
-    const r = spawnSync(process.execPath, [SCRIPT], { cwd: ROOT, encoding: 'utf8' });
-    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const r = runNode([SCRIPT], { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(r.exitCode, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
   });
 
   test('novel-offender failure names the --update drift-repair path', () => {

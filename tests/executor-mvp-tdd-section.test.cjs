@@ -105,7 +105,9 @@ describe('gsd-executor — state.* calls use the named-only router form (#1863 r
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3097-3099-executor-worktree-path-safety (consolidation epic #1969 B7 #1976)", () => {
 'use strict';
-// allow-test-rule: reads markdown product files (gsd-executor.md, worktree-path-safety.md) to verify structural protocol — not source-grep (see #3097)
+// allow-test-rule: source-text-is-the-product (see #3097)
+// Reads markdown product files (gsd-executor.md, worktree-path-safety.md) to
+// verify structural protocol.
 
 // Regression guards for bug #3097 and #3099.
 //

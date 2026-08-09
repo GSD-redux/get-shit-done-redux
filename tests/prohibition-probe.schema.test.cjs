@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — the must_haves.prohibitions: block is the
+// allow-test-rule: source-text-is-the-product (see #644) — the must_haves.prohibitions: block is the
 // runtime plan-contract surface; this pins its parse/round-trip/projection bijection to the code.
 //
 // RED-first schema contract for the `must_haves.prohibitions:` SIBLING block (ADR-550 Decision 3 —

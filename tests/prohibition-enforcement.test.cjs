@@ -332,7 +332,9 @@ describe('prohibition-enforcement: deterministic test-tier producer (#1259 / ADR
 
   test('routeProhibitionEnforcement parses a JSON request file and emits a structured result', (t) => {
     const fs = require('node:fs');
-    const { execFileSync } = require('node:child_process');
+    const { runNode } = require('./helpers/process-seam.cjs');
+    const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+    const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
     // Write a request file; the route reads it and runs the node-test descriptor's default runner
     // (its target does not exist, so it fail-closes deterministically — we assert the JSON SHAPE,
     // not a green verdict). We invoke the built CLI surface in a child process so output()
@@ -351,8 +353,9 @@ describe('prohibition-enforcement: deterministic test-tier producer (#1259 / ADR
       ".routeProhibitionEnforcement(['check','prohibition-enforcement'," + JSON.stringify(reqPath) + "], false);\n");
     t.after(() => cleanup(dir));
 
-    const captured = execFileSync('node', [runnerPath], { encoding: 'utf-8' });
-    const parsed = JSON.parse(captured);
+    const r = runNode([runnerPath], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(r, `node ${runnerPath}`);
+    const parsed = JSON.parse(r.stdout);
     assert.equal(typeof parsed, 'object', 'route emits a JSON object');
     assert.equal(parsed.tier, 'test', 'tier is preserved through the CLI surface');
     assert.equal(parsed.located, true, 'the check descriptor was located');

@@ -47,6 +47,7 @@ interface InitModule {
   cmdInitDocsUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitTransition(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDebug(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -171,6 +172,10 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         init.cmdInitUpdate(cwd, raw, { next: namedArgs['next'], rc: namedArgs['rc'] });
       },
       transition: () => init.cmdInitTransition(cwd, raw, {}),
+      debug: () => {
+        const namedArgs = parseNamedArgs(args, [], ['diagnose']);
+        init.cmdInitDebug(cwd, raw, { diagnose: namedArgs['diagnose'] });
+      },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
       'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),

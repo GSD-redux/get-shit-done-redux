@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — the prohibition validators and the verify-time
+// allow-test-rule: source-text-is-the-product (see #644) — the prohibition validators and the verify-time
 // disposition are the deployed safety contract; this pins them against the CANONICAL fixture corpus
 // and the ADR-550 D4 "judgment is never silently green" invariant so the code can never drift from
 // its own documented intent again.

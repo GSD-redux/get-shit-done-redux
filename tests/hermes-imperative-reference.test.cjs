@@ -1,4 +1,4 @@
-// allow-test-rule: AC2 requires asserting no `runtime === 'hermes'` string-equality branch remains in bin/install.js — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2091)
+// allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'hermes'` string-equality branch remains in bin/install.js — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2091)
 'use strict';
 
 /**

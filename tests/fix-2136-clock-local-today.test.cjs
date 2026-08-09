@@ -21,13 +21,15 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
 const CLOCK_CJS = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'clock.cjs');
 const STATE_TRANSITION_CJS = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // 2020-06-15T02:00:00.000Z. Under America/Chicago (UTC−5 in June) this instant
 // is 2020-06-14 21:00 local — the local calendar day is 2020-06-14 while the UTC
@@ -40,10 +42,9 @@ const PINNED_MS = '1592186400000';
  * versions). GSD_TEST_MODE + GSD_NOW_MS pin realClock via the documented seam.
  */
 function clockInSubprocess(expr, env) {
-  return execFileSync(process.execPath, ['-e', expr], {
-    env,
-    encoding: 'utf8',
-  }).trim();
+  const result = runNode(['-e', expr], { env, timeoutMs: PROBE_TIMEOUT_MS });
+  throwIfFailed(result, `node -e ${expr}`);
+  return result.stdout.trim();
 }
 
 describe('#2136 realClock.localToday() — host-local calendar day', () => {
@@ -112,7 +113,7 @@ describe('#2136 last_activity is stamped from localToday, not today', () => {
     const result = transitionCore(
       input,
       { kind: 'sync', totalPlansInPhase: 5, percent: 60 },
-      { clock: splitClock, progressProvider: () => null },
+      { clock: splitClock },
     );
     assert.strictEqual(stateExtractField(result.content, 'Last Activity'), '2020-06-14',
       'Last Activity must use localToday() (2020-06-14), not today() (2020-06-15)');

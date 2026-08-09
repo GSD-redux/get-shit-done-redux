@@ -173,7 +173,8 @@ process.stdin.on('end', () => {
     // / error → not GSD-managed → no-op.
     const branchResult = git(['symbolic-ref', '--short', 'HEAD'], cwd);
     const branch = branchResult.status === 0 && branchResult.stdout ? branchResult.stdout.trim() : '';
-    if (!/^(worktree-)?agent-[A-Za-z0-9._/-]+$/.test(branch)) {
+    // #3021: accept worktree-wf_<runid>-<n> branches (Workflow backend's naming).
+    if (!/^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$/.test(branch)) {
       process.exit(0); // not a GSD-managed executor worktree — no-op
     }
 

@@ -59,6 +59,18 @@ const LANE_COSTS = [
     // whole unit suite. Run 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s.
     // Shard 1 is the long pole because the unsharded aux suites ride on it.
     // Before sharding the same lane cost 15m20s and blew a 15-minute cap.
+    //
+    // This one `timeout-minutes` also covers the `scope: windows` matrix
+    // entries — GitHub applies a single job-level budget across every matrix
+    // combination, not one per entry. That lane is now sharded three ways too
+    // (#3057), but no post-sharding per-shard measurement exists yet: its only
+    // recorded cost is the PRE-sharding whole-suite run that hit 15m05s and was
+    // CANCELLED on PR #3094. Each of its three shards should now cost roughly a
+    // third of that (~5m), which is already comfortably under the 8m/12m this
+    // entry requires — so no separate LANE_COSTS entry is added on a number
+    // that has not actually been measured. Replace this estimate with a real
+    // measured shard cost once one exists, the same discipline every other
+    // entry here follows.
     evidence: 'run 30677442953 — 7m12s slowest shard',
   },
   {

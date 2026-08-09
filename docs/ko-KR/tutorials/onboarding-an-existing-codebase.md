@@ -42,6 +42,13 @@ npx @opengsd/gsd-core@latest
 claude --dangerously-skip-permissions
 ```
 
+> [!CAUTION]
+> **The permissions flag is optional.** It skips per-file confirmation while
+> GSD's sub-agents read and write files. Use it only in low-stakes or
+> throwaway contexts. To keep confirmations enabled, start with `claude` instead.
+> For real work, read the [security model](../explanation/security-model.md) first.
+
+
 ---
 
 ## Step 3 — 브라운필드 온보딩 시작

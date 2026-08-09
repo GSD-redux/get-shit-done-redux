@@ -24,8 +24,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { SENTINEL_RELATIVE_PATH, readSentinel } = require('../hooks/lib/isolation-sentinel.js');
 const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
@@ -263,7 +263,7 @@ describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (C
 
 describe('#3045 MINOR — writer/reader sentinel path derivation now agrees for a linked worktree without its own .planning/', () => {
   function git(args, cwd) {
-    return execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
+    gitOrThrow(args, { cwd });
   }
 
   test('a sentinel written from a linked worktree (via --cwd) is found by readSentinel() called with that SAME worktree path', () => {

@@ -12,9 +12,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('node:os');
-const { execFileSync, spawnSync } = require('child_process');
 const { createTempProject, cleanup, runGsdTools, delay } = require('./helpers.cjs');
-const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
+const { runGit, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   graphifyStatus,
@@ -206,15 +207,15 @@ describe('auto-update', () => {
 
   function createTempGitRepo(opts = {}) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3347-'));
-    spawnSync('git', ['init', '-b', opts.defaultBranch || 'main'], {
-      cwd: tmpDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmpDir });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir });
+    // Original discarded the result unchecked (stdio: 'ignore', never a
+    // throw-native execFileSync) — bare runGit preserves that never-throws,
+    // ignored-result shape.
+    runGit(['init', '-b', opts.defaultBranch || 'main'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd: tmpDir });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# test\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: tmpDir });
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'ignore' });
+    gitOrThrow(['add', 'README.md'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'init'], { cwd: tmpDir });
 
     fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
     if (opts.config !== undefined) {
@@ -254,6 +255,9 @@ describe('auto-update', () => {
     // suite and the hook itself dispatches a detached graphify rebuild that
     // some tests wait on separately; the hook's own synchronous return (gate
     // checks + status-file write) is fast, so 30s stays generous headroom.
+    // Original invoked the hook with stdio: 'ignore' — the seam always
+    // captures stdout/stderr instead, but every call site of this wrapper
+    // below reads only `.status`; the captured output is simply unread.
     const r = seamRunHook(HOOK, [], {
       interpreter: 'bash',
       cwd: tmpDir,
@@ -305,7 +309,14 @@ describe('auto-update', () => {
       try {
         const pid = parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
         if (!Number.isFinite(pid) || pid <= 0) break;
-        execFileSync('kill', ['-0', String(pid)], { stdio: 'ignore' });
+        // `kill -0` on a live PID exits 0; on a dead PID (or missing `kill`)
+        // it exits non-zero — this loop only cares about that distinction,
+        // so it reads exitCode as data instead of preserving a throw.
+        // Original ran with stdio: 'ignore' — the seam always captures
+        // stdout/stderr instead, but only `probe.exitCode` is read below;
+        // the captured output is simply unread.
+        const probe = seamRunHook('-0', [String(pid)], { interpreter: 'kill', timeoutMs: PROBE_TIMEOUT_MS });
+        if (probe.exitCode !== 0) break; // PID dead → safe to clean up
       } catch {
         break; // PID dead → safe to clean up
       }
@@ -386,10 +397,7 @@ describe('auto-update', () => {
         config: { graphify: { enabled: true, auto_update: true } },
       });
       t.after(() => cleanupHookRepo(tmpDir));
-      execFileSync('git', ['checkout', '-b', 'worktree-agent-abc'], {
-        cwd: tmpDir,
-        stdio: 'ignore',
-      });
+      gitOrThrow(['checkout', '-b', 'worktree-agent-abc'], { cwd: tmpDir });
       const mockBin = makeMockGraphifyBin(tmpDir);
       const r = runHook(
         tmpDir,

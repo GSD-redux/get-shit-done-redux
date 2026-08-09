@@ -569,15 +569,15 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 const { createTempProject, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const { loadConfig } = require('../gsd-core/bin/lib/config-loader.cjs');
 
 function makeSubRepo(parent, name) {
   const dir = path.join(parent, name);
   fs.mkdirSync(dir, { recursive: true });
-  execFileSync('git', ['init'], { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['init'], { cwd: dir });
 }
 
 function readConfig(tmpDir) {
@@ -707,8 +707,6 @@ describe('bug #2638 — sub_repos canonical location', () => {
   __foldDescribe("folded:bug-3523-cjs-loadconfig-branching-strategy-warning (consolidation epic #1969 B6 #1975)", () => {
 'use strict';
 
-// allow-test-rule: validates runtime CLI stdout/stderr warning behavior, not source grep (see #3523)
-
 /**
  * Regression tests for #3523 — CJS loadConfig must not emit a false
  * "unknown config key(s)" warning for `branching_strategy` when that key
@@ -742,40 +740,24 @@ const { describe, test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
-
-const TEST_ENV_BASE = {
-  GSD_SESSION_KEY: '',
-  CODEX_THREAD_ID: '',
-  CLAUDE_SESSION_ID: '',
-  CLAUDE_CODE_SSE_PORT: '',
-  OPENCODE_SESSION_ID: '',
-  GEMINI_SESSION_ID: '',
-  CURSOR_SESSION_ID: '',
-  WINDSURF_SESSION_ID: '',
-  TERM_SESSION_ID: '',
-  WT_SESSION: '',
-  TMUX_PANE: '',
-  ZELLIJ_SESSION_NAME: '',
-  TTY: '',
-  SSH_TTY: '',
-};
+const { createTempProject, cleanup, TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Run gsd-tools and return { stdout, stderr, status }.
  * Always captures stderr even when exit code is 0.
  */
 function runWithStderr(args, cwd, env = {}) {
-  const result = spawnSync(process.execPath, [TOOLS_PATH, ...args], {
+  const result = runNode([TOOLS_PATH, ...args], {
     cwd,
-    encoding: 'utf-8',
     env: { ...process.env, ...TEST_ENV_BASE, ...env },
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
   return {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
-    status: result.status,
+    status: result.exitCode,
   };
 }
 
@@ -833,7 +815,7 @@ describe('bug-3523 — no warning for legacy top-level branching_strategy', () =
     );
 
     // After migration write-back, config-get should find git.branching_strategy.
-    const result = runWithStderr(['config-get', 'git.branching_strategy'], tmpDir);
+    const result = runWithStderr(['config-get', 'git.branching_strategy', '--raw'], tmpDir);
 
     assert.equal(
       result.status,
@@ -845,8 +827,9 @@ describe('bug-3523 — no warning for legacy top-level branching_strategy', () =
       '',
       `No error should fire when reading migrated branching_strategy (#3523) — got: ${result.stderr}`
     );
-    assert.ok(
-      result.stdout.includes('milestone'),
+    assert.equal(
+      result.stdout.trim(),
+      'milestone',
       `Expected git.branching_strategy to be 'milestone' but got: ${result.stdout}`
     );
   });
@@ -880,6 +863,11 @@ describe('bug-3523 — double-emission reduced to single-emission', () => {
 
     const result = runWithStderr(['resolve-model', 'planner'], tmpDir);
 
+    // allow-test-rule: pending-migration-to-typed-ir [#3090]
+    // Counts occurrences of a sentinel substring in the CLI's human-readable
+    // stderr warning text — no structured "warning count"/warning-list API is
+    // exposed yet; adding one is a production change out of scope here.
+    // Tracked under #3090.
     // Count how many times the sentinel key appears in warnings
     const warningLines = result.stderr
       .split('\n')

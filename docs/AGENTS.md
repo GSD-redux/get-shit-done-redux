@@ -237,15 +237,28 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | **Color** | Green |
 | **Produces** | PASS/FAIL verdict with specific feedback |
 
-**8 Verification Dimensions:**
-1. Requirement coverage
-2. Task atomicity
-3. Dependency ordering
-4. File scope
-5. Verification commands
-6. Context fit
-7. Gap detection
-8. Nyquist compliance (when enabled)
+**Verification Dimensions** — labels match the agent's own `## Dimension <N>` headings:
+
+| # | Dimension |
+|---|---|
+| 1 | Requirement coverage |
+| 2 | Task completeness |
+| 3 | Dependency correctness |
+| 3b | Undeclared / temporal coupling — advisory; flags same-wave plan pairs coupled through shared mutable state or execution order with no `depends_on` between them |
+| 4 | Key links planned |
+| 5 | Scope sanity |
+| 6 | Verification derivation |
+| 7 | Context compliance (when CONTEXT.md exists) |
+| 7b | Scope reduction detection |
+| 7c | Architectural tier compliance (when RESEARCH.md defines a responsibility map) |
+| 8 | Nyquist compliance (when enabled) |
+| 9 | Cross-plan data contracts |
+| 10 | CLAUDE.md compliance |
+| 11 | Research resolution |
+| 12 | Pattern compliance |
+
+Two further dimensions carry no number: **Verify Command Format Sanity** and
+**Numeric/Factual Claim Authority**.
 
 ---
 
@@ -306,6 +319,9 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - **Test quality audit** (v1.32): verifies that tests prove what they claim by checking for disabled/skipped tests on requirements, circular test patterns (system generating its own expected values), assertion strength (existence vs. value vs. behavioral), and expected value provenance. Blockers from test quality audit override an otherwise passing verification
 - Runs the full workspace test suite at most once per verification — proves a test *exists* by enumeration and that it *passes* via a single named test, never re-running the whole suite per must-have.
 - **Behavior-dependent calibration (#966):** a must-have that asserts a state transition or a cancellation/cleanup/ordering invariant is marked `⚠️ PRESENT_BEHAVIOR_UNVERIFIED` (not `VERIFIED`) when no test exercises it — excluded from the `verified_truths` score, counted in the `behavior_unverified` frontmatter field, and routed to human verification, so a clean `N/N` certifies behavioral evidence rather than mere symbol presence.
+- **Coincidental-reliance advisory (#1955):** a truth that reaches `✓ VERIFIED` is additionally asked *why* it holds. When the recorded evidence shows the truth holding for an incidental reason — `undeclared-precondition`, `incidental-ordering`, or `fixture-only` — the verdict is qualified as `✓ VERIFIED (coincidental-reliance)` and the truth is listed in the `coincidental_reliance_items` frontmatter field with what to harden. This is **advisory**: the base `✓ VERIFIED` token is unchanged, the truth still counts toward `verified_truths`, the overall `status` is unaffected, and no human-verification item is emitted — a passing phase still passes. It classifies evidence the verifier already gathered rather than asking it to rate its own confidence — but it is honestly an **endogenous** check, and `gsd-core/references/honest-verifier.md` records that endogenous gates are measurably weaker than the exogenous `backstop` tag it routes on. Advisory status is the consequence, not a coincidence: a miss costs exactly today's behaviour (a plain `✓ VERIFIED`) and a false positive costs one line of prose, never a failed phase, so a weaker mechanism is affordable here in a way it would not be on a pass/fail axis. Its precision is unmeasured. It complements the two existing axes: `PRESENT_BEHAVIOR_UNVERIFIED` is *no* behavioral evidence, `insufficient_spec` is an under-specified truth, and this is evidence that exists and passes for the wrong reason.
+
+  The advisory is carried by two surfaces. `agents/gsd-verifier.md` (Step 3, sub-step 5c) holds the detection rule for the subagent path. The non-subagent path, `gsd-core/workflows/verify-phase.md`, receives it through the eager `@`-import of `gsd-core/templates/verification-report.md`, whose `## Guidelines` carry the same instruction — `verify-phase.md` itself is deliberately **not** edited, because it sits 29 bytes under the DEFAULT tier hard cap in `tests/workflow-size-budget.test.cjs` and absorbing rubric prose there requires a lazy extraction first.
 
 ---
 

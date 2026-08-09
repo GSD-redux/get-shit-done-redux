@@ -473,13 +473,21 @@ GSD's hook-automation and native-MCP-registration integrations are not yet wired
 npx @opengsd/gsd-core@latest --pi --global
 ```
 
+**Override the install directory:**
+
+```bash
+PI_CODING_AGENT_DIR=~/.pi-alt/agent npx @opengsd/gsd-core@latest --pi --global
+```
+
+`PI_CODING_AGENT_DIR` is pi's own upstream override (`getAgentDir()` in pi's `config.ts`) for its global agent directory (`~/.pi/agent` by default) — GSD honors it so the install always lands where pi actually reads ([#3023](https://github.com/open-gsd/gsd-core/issues/3023)). pi also supports a `piConfig.configDir` field (`config.ts`'s `CONFIG_DIR_NAME`) that renames the `.pi` segment, but that field is read from pi's own installed `package.json`, not your project's — it is a white-label/rebranding hook for redistributed pi forks (it sits beside `piConfig.name`, which renames the app itself), not something an end user sets for their own project. GSD's pi descriptor does not target rebranded forks, so `PI_CODING_AGENT_DIR` remains the correct override for a stock pi install.
+
 [pi](https://pi.dev) is a bun-runtime programmatic CLI whose extensions implement pi's own `ExtensionAPI` (`registerCommand`/`registerTool`/`registerProvider`/`pi.on`) rather than a settings-file or slash-markdown surface. GSD ships a single native-extension file:
 
 - **Extension** → `~/.pi/agent/extensions/gsd.js` (global) or `.pi/extensions/gsd.js` (local)
 
 The `.js` suffix is load-bearing: pi auto-discovers extensions by scanning that directory and keeping only names ending in `.ts` or `.js`, and it skips anything else **silently** — no error, no log line. GSD shipped the file as `gsd.cjs` through 1.7.0, which pi therefore never loaded, so `/gsd` never appeared ([#2470](https://github.com/open-gsd/gsd-core/issues/2470)). Upgrading removes the stale `gsd.cjs`; if you had added a manual `extensions` entry in `~/.pi/agent/settings.json` as a workaround, you can drop it.
 
-The extension registers a `/gsd` command and a `gsd_invoke` tool that dispatch GSD commands via a bounded subprocess call to `gsd-core/bin/gsd-tools.cjs` (no fully-populated in-process command-routing hub exists — see the matrix's Stage 2 note). This is a **plugin-only install**: pi has no shared-settings hook surface (`hooksSurface: none`) and, unlike Claude/OpenCode/Kilo, no host-read markdown surface at all — pi's `/gsd` command is registered programmatically by the extension, not discovered from files, so GSD installs the extension plus its universal `gsd-core/` engine payload and the shared `hooks/`/`hooks/lib/` bundle (spawned by the extension itself, not by any config-file hook bus), and does **not** write any `commands/`, `agents/`, or `skills/` directory for pi. The extension bridges GSD's `session_start`/`before_agent_start`/`session_before_compact`/`tool_call` lifecycle events to those staged `hooks/` scripts as bounded, fail-open subprocesses, and steers pi's active model (`modelMode: active`) to a tier-resolved bare anthropic id via `pi.on('before_provider_request', ...)`. See the [`## pi`](../reference/host-integration-capability-matrix.md#pi) section of the host-integration capability matrix for the negotiated axes and citations.
+The extension registers a `/gsd` command and a `gsd_invoke` tool that dispatch GSD commands via a bounded subprocess call to `gsd-core/bin/gsd-tools.cjs` (no fully-populated in-process command-routing hub exists — see the matrix's Stage 2 note). This is a **plugin-only install**: pi has no shared-settings hook surface (`hooksSurface: none`) and, unlike Claude/OpenCode/Kilo, no host-read markdown surface at all — pi's `/gsd` command is registered programmatically by the extension, not discovered from files, so GSD installs the extension plus its universal `gsd-core/` engine payload and the shared `gsd-hooks/`/`gsd-hooks/lib/` bundle (spawned by the extension itself, not by any config-file hook bus), and does **not** write any `commands/`, `agents/`, or `skills/` directory for pi. The bundle lands under `gsd-hooks/` rather than the `hooks/` name every other runtime uses because pi reserves `hooks/` for its own deprecated extension directory and warns on startup whenever that directory merely exists ([#3023](https://github.com/open-gsd/gsd-core/issues/3023)). The extension bridges GSD's `session_start`/`before_agent_start`/`session_before_compact`/`tool_call` lifecycle events to those staged `gsd-hooks/` scripts as bounded, fail-open subprocesses, and steers pi's active model (`modelMode: active`) to a tier-resolved bare anthropic id via `pi.on('before_provider_request', ...)`. See the [`## pi`](../reference/host-integration-capability-matrix.md#pi) section of the host-integration capability matrix for the negotiated axes and citations.
 
 ---
 
@@ -538,7 +546,7 @@ If the command is not found after restart, verify the install directory matches 
 If the installer's global bin directory is not on your `PATH`, it prints a one-time warning with a copy-paste command for your shell. The suggestion list covers `zsh`, `bash`, and `fish` (plus PowerShell, cmd.exe, and Git Bash on Windows). For fish, run the line it prints:
 
 ```fish
-fish_add_path '/path/to/global/bin'
+fish_add_path -- '/path/to/global/bin'
 ```
 
 If the directory is already on your PATH but the installer still warns, open a new fish session (`exec fish`) to pick up the change.

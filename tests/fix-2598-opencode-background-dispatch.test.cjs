@@ -24,7 +24,7 @@
  * silently re-assert an unsupported capability.
  */
 
-// allow-test-rule: runtime-contract-is-the-product #2598 — the descriptor JSON and the
+// allow-test-rule: source-text-is-the-product #2598 — the descriptor JSON and the
 // host-integration matrix ARE the negotiated contract; asserting their values is behavioral.
 
 'use strict';

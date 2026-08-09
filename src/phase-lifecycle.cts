@@ -21,6 +21,9 @@
  */
 
 import { findTableWithColumns } from './markdown-table.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
+import phaseIdMod = require('./phase-id.cjs');
+const { isSentinelPhaseId } = phaseIdMod;
 
 /** Result of deriveProgressFromRoadmap. */
 export interface RoadmapProgress {
@@ -90,10 +93,11 @@ export function deriveProgressFromRoadmap(roadmapContent: string): RoadmapProgre
     const completed = allRows.filter((r) => /^complete$/i.test((r['Status'] ?? '').trim())).length;
     completedPhases = completed > 0 ? completed : null;
 
-    // Data rows only (exclude 999.x backlog phases). Mirrors init.cts /^999(?:\.|$)/ filter.
+    // Data rows only (exclude sentinel phases 0 and 999.x).
+    // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
     const dataRows = allRows.filter((r) => {
       const phase = (r['Phase'] ?? '').trim();
-      return /^\d/.test(phase) && !/^999\b/.test(phase);
+      return /^\d/.test(phase) && !isSentinelPhaseId(phase);
     });
     totalPhases = dataRows.length > 0 ? dataRows.length : null;
 
@@ -110,10 +114,31 @@ export function deriveProgressFromRoadmap(roadmapContent: string): RoadmapProgre
 }
 
 /**
+ * Compute progress percent clamped to 100 from an already-computed FRACTION.
+ *
+ * ADR-3180 Decision 7 (#3180): the completion-RATIO derivation has exactly one
+ * owner, and this is its kernel — the single place the `fraction -> integer
+ * percent` rounding and the 100 ceiling are expressed. `clampPercent` below is
+ * the count-shaped entry point and delegates here; a caller that already holds a
+ * fraction (rather than a completed/total pair) calls this directly instead of
+ * re-deriving `Math.min(100, Math.round(f * 100))` locally.
+ *
+ * Enforced by `scripts/lint-completion-ratio-drift.cjs`.
+ */
+export function clampPercentFromFraction(fraction: number): number {
+  return Math.min(100, Math.round(fraction * 100));
+}
+
+/**
  * Compute progress percent clamped to 100.
  * Root cause fix for issue #4 — see gen-phase-lifecycle.mjs for full documentation.
+ *
+ * A non-positive (or absent) denominator yields `0` — "nothing to complete" is
+ * reported as 0%, never as 100%. Every `.planning/` completion percentage in this
+ * codebase routes through here (ADR-3180 Decision 7); the `total > 0 ? ... : 0`
+ * ternary that used to precede each inline copy IS this function's first line.
  */
 export function clampPercent(completed: number, total: number): number {
   if (!total || total <= 0) return 0;
-  return Math.min(100, Math.round((completed / total) * 100));
+  return clampPercentFromFraction(completed / total);
 }

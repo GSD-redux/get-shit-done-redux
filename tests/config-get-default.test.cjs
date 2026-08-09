@@ -674,29 +674,22 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { createTempProject, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const SDK_CLI = path.join(REPO_ROOT, 'sdk', 'dist', 'cli.js');
 
 function runConfigSet(key, value, projectDir) {
   const argv = ['query', 'config-set', key, String(value), '--project-dir', projectDir];
-  let stdout = '';
-  let exitCode = 0;
-  try {
-    stdout = execFileSync(process.execPath, [SDK_CLI, ...argv], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, GSD_SESSION_KEY: '' },
-    });
-  } catch (err) {
-    exitCode = err.status ?? 1;
-    stdout = err.stdout?.toString() ?? '';
-  }
+  const result = runNode([SDK_CLI, ...argv], {
+    env: { ...process.env, GSD_SESSION_KEY: '' },
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
   let json = null;
-  try { json = JSON.parse(stdout.trim()); } catch { /* ok */ }
-  return { exitCode, json };
+  try { json = JSON.parse(result.stdout.trim()); } catch { /* ok */ }
+  return { exitCode: result.exitCode, json };
 }
 
 describe('bug-2798: context_window is a valid config key', () => {

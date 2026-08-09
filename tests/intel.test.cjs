@@ -4,7 +4,8 @@
  * Covers: query, status, diff, validate, snapshot, patch-meta,
  * extract-exports, enabled/disabled gating, and CLI routing via gsd-tools.
  */
-// allow-test-rule: source-text-is-the-product — readFileSync assertions target API-SURFACE.md, which is the generated product of intelApiSurface; asserting on its text content is the only way to verify correct generation.
+// allow-test-rule: source-text-is-the-product
+// readFileSync assertions target API-SURFACE.md, which is the generated product of intelApiSurface; asserting on its text content is the only way to verify correct generation.
 
 'use strict';
 
@@ -1107,8 +1108,8 @@ describe('intelApiSurface', () => {
 });
 
 describe('#1000 regression: gsd-intel-updater emits canonical intel filenames', () => {
-  // allow-test-rule: source-text-is-the-product — agents/gsd-intel-updater.md IS the
-  // system prompt the intel-updater agent runs under; asserting its filename references
+  // allow-test-rule: source-text-is-the-product
+  // agents/gsd-intel-updater.md IS the system prompt the intel-updater agent runs under; asserting its filename references
   // verifies the deployed agent surface contract matches the INTEL_FILES the CLI reads.
   const agentPromptPath = path.join(__dirname, '..', 'agents', 'gsd-intel-updater.md');
   const agentPrompt = fs.readFileSync(agentPromptPath, 'utf8');
@@ -1357,9 +1358,9 @@ describe('bug #2351: intel updater kilo layout support', () => {
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3290-intel-updater-layout-block (consolidation epic #1969 B7 #1976)", () => {
-// allow-test-rule: source-text-is-the-product — agents/gsd-intel-updater.md IS (see #3290)
-// the deployed agent instruction set. Asserting its text content tests the
-// deployed behaviour contract, not internal implementation.
+// allow-test-rule: source-text-is-the-product (see #3290)
+// agents/gsd-intel-updater.md IS the deployed agent instruction set. Asserting
+// its text content tests the deployed behaviour contract, not internal implementation.
 
 'use strict';
 

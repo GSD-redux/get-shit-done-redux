@@ -268,7 +268,6 @@ describe('execute-phase docs: user-facing wave flag', () => {
 
 describe('phase-plan-index: wave grouping behavior', () => {
   test('phase-plan-index groups plans by wave (DAG-bucketing: P002 depends on P001)', () => {
-    // allow-test-rule: behavioral — calls gsd-tools and asserts structured output
     const fs = require('fs');
     const path = require('path');
     const tmpDir = createTempProject();
@@ -334,7 +333,6 @@ describe('phase-plan-index: wave grouping behavior', () => {
   });
 
   test('phase-plan-index defaults missing wave frontmatter to wave 1', () => {
-    // allow-test-rule: behavioral — exercises gsd-tools wave-defaulting logic
     const fs = require('fs');
     const path = require('path');
     const tmpDir = createTempProject();
@@ -419,7 +417,6 @@ describe('use_worktrees config: cross-workflow structural coverage', () => {
   });
 
   test('config-set accepts workflow.use_worktrees', () => {
-    // allow-test-rule: behavioral — exercises config-set validation, not source text
     const tmpDir = createTempProject();
     try {
       const result = runGsdTools('config-set workflow.use_worktrees true', tmpDir);
@@ -802,7 +799,9 @@ describe('execute-phase: between-wave manifest reset (#1369, #3384)', () => {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3096-ai-integration-phase-parallel-race (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
-// allow-test-rule: reads product workflow markdown (ai-integration-phase.md) to verify structural ordering contract — not a source-grep test (see #3096)
+// allow-test-rule: source-text-is-the-product (see #3096)
+// Reads product workflow markdown (ai-integration-phase.md) to verify
+// structural ordering contract.
 
 // Regression guard for bug #3096.
 //

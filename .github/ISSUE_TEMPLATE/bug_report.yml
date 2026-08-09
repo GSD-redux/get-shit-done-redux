@@ -25,7 +25,7 @@ body:
     id: version
     attributes:
       label: GSD Version
-      description: "Run: `npm list -g @opengsd/gsd-core` or check `npx @opengsd/gsd-core --version`"
+      description: "Check the installed version: `cat ~/.claude/gsd-core/gsd-file-manifest.json` (look for `\"version\"`) or `npx @opengsd/gsd-core --version` (if installed via npm global)"
       placeholder: "e.g., 1.18.0"
     validations:
       required: true
@@ -221,7 +221,7 @@ body:
         Anything else — screenshots, screen recordings, related issues, or links.
 
         **Useful diagnostics to include (if applicable):**
-        - `npm list -g @opengsd/gsd-core` — confirms installed version
+        - `cat ~/.claude/gsd-core/gsd-file-manifest.json` — confirms installed version (the `version` field tracks what `/gsd-update` installs; `npm list -g` does NOT reflect runtime-home installs)
         - `ls -la ~/.claude/gsd-core/` — confirms installation files (Claude Code)
         - `cat ~/.claude/gsd-core/gsd-file-manifest.json` — file manifest for debugging install issues
         - `ls -la .planning/` — confirms planning directory state

@@ -15,9 +15,10 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 describe('commit --files: pathspec honors declared scope (#2112)', () => {
   let tmpDir;
@@ -33,7 +34,7 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
   test('commit --files does not absorb unrelated staged files', () => {
     // Developer stages a WIP file via git add (not via --files).
     fs.writeFileSync(path.join(tmpDir, 'src-wip.txt'), 'work in progress\n');
-    execSync('git add src-wip.txt', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'src-wip.txt'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // GSD writes and commits a planning artifact, naming ONLY that file.
     fs.writeFileSync(path.join(tmpDir, '.planning', 'PLAN.md'), '# Plan\n');
@@ -43,9 +44,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     );
 
     // The commit must contain ONLY .planning/PLAN.md.
-    const diffOutput = execSync('git diff HEAD~1 HEAD --name-only', {
+    const diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     }).trim();
     assert.strictEqual(
       diffOutput,
@@ -54,9 +55,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     );
 
     // The WIP file must still be staged, not committed.
-    const statusOutput = execSync('git status --porcelain', {
+    const statusOutput = gitOrThrow(['status', '--porcelain'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     }).trim();
     assert.ok(
       statusOutput.includes('A  src-wip.txt') || statusOutput.includes('A\tsrc-wip.txt'),
@@ -73,9 +74,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
       tmpDir,
     );
 
-    const diffOutput = execSync('git diff HEAD~1 HEAD --name-only', {
+    const diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     });
     const files = diffOutput.trim().split('\n').sort();
     assert.deepEqual(
@@ -88,18 +89,18 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
   test('commit without --files still commits the entire .planning/ index (default path)', () => {
     // Write a planning artifact and stage it.
     fs.writeFileSync(path.join(tmpDir, '.planning', 'PLAN.md'), '# Plan\n');
-    execSync('git add .planning/PLAN.md', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/PLAN.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // Also stage an unrelated file.
     fs.writeFileSync(path.join(tmpDir, 'extra.txt'), 'extra\n');
-    execSync('git add extra.txt', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'extra.txt'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     runGsdTools(['commit', 'docs: default commit'], tmpDir);
 
     // Default path (no --files) commits everything staged.
-    const diffOutput = execSync('git diff HEAD~1 HEAD --name-only', {
+    const diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     });
     const files = diffOutput.trim().split('\n').sort();
     assert.ok(
@@ -111,8 +112,8 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
   test('missing tracked file in --files is still not committed as deletion (#2014 guard)', () => {
     // Create and commit STATE.md, then remove it from disk.
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State\n');
-    execSync('git add .planning/STATE.md', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add STATE.md"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'add STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     fs.unlinkSync(path.join(tmpDir, '.planning', 'STATE.md'));
 
     // Also create a valid file to commit.
@@ -123,9 +124,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
       tmpDir,
     );
 
-    const diffOutput = execSync('git diff HEAD~1 HEAD --name-status', {
+    const diffOutput = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-status'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     });
     assert.ok(
       !diffOutput.includes('D\t.planning/STATE.md'),
@@ -140,13 +141,13 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
   test('commit --files with only missing files returns nothing_to_commit', () => {
     // Create and commit STATE.md, then remove it from disk.
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State\n');
-    execSync('git add .planning/STATE.md', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add STATE.md"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'add STATE.md'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
     fs.unlinkSync(path.join(tmpDir, '.planning', 'STATE.md'));
 
     // Stage an unrelated file so the index is non-empty.
     fs.writeFileSync(path.join(tmpDir, 'extra.txt'), 'extra\n');
-    execSync('git add extra.txt', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'extra.txt'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
     const result = runGsdTools(
       ['commit', 'docs: try', '--files', '.planning/STATE.md'],
@@ -164,9 +165,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     );
 
     // The unrelated staged file must still be staged, not committed.
-    const statusOutput = execSync('git status --porcelain', {
+    const statusOutput = gitOrThrow(['status', '--porcelain'], {
       cwd: tmpDir,
-      encoding: 'utf-8',
+      timeoutMs: GIT_TIMEOUT_MS,
     }).trim();
     assert.ok(
       statusOutput.includes('extra.txt'),
@@ -185,7 +186,7 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     assert.strictEqual(parsed.committed, true, `absolute path must commit, not nothing_to_commit: ${res.output}`);
 
     // The absolute path must land in the commit, normalized to repo-relative.
-    const diff = execSync('git diff HEAD~1 HEAD --name-only', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const diff = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
     assert.strictEqual(diff, '.planning/A.md', `absolute --files path must be committed (normalized to relative); got: ${diff}`);
   });
 
@@ -202,7 +203,7 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     const parsed = JSON.parse(res.output);
     assert.strictEqual(parsed.committed, true, `mixed list must commit: ${res.output}`);
 
-    const diff = execSync('git diff HEAD~1 HEAD --name-only', { cwd: tmpDir, encoding: 'utf-8' })
+    const diff = gitOrThrow(['diff', 'HEAD~1', 'HEAD', '--name-only'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS })
       .trim().split('\n').sort();
     assert.deepStrictEqual(
       diff,
@@ -243,10 +244,10 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     assert.match(parsed.error, /outside repository/, "git's own rejection message must be preserved (#2608)");
 
     // No new commit created (still at the single initial commit).
-    const logCount = execSync('git rev-list --count HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const logCount = gitOrThrow(['rev-list', '--count', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
     assert.strictEqual(logCount, '1', 'no new commit must be created for an out-of-repo path');
     // Index stays clean (git add failed → nothing staged).
-    const status = execSync('git status --porcelain', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
     assert.strictEqual(status, '', `index must be clean (no pollution): ${status}`);
   });
 });

@@ -21,7 +21,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { runMinimalInstall, installerEnv, INSTALL_SCRIPT } = require('./helpers/install-shared.cjs');
 const { cleanup } = require('./helpers.cjs');
@@ -169,8 +169,8 @@ test('augment --global: reinstalling does not duplicate or clobber the gsd MCP c
   const args = [INSTALL_SCRIPT, '--augment', '--global', '--config-dir', root];
   const env = installerEnv({ HOME: root, USERPROFILE: root });
 
-  const first = spawnSync(process.execPath, args, { encoding: 'utf8', env });
-  assert.strictEqual(first.status, 0, `first install failed: ${first.stderr}`);
+  const first = runNode(args, { env, timeoutMs: 120000 });
+  assert.strictEqual(first.exitCode, 0, `first install failed: ${first.stderr}`);
 
   const settingsPath = path.join(root, 'settings.json');
   const afterFirst = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
@@ -179,8 +179,8 @@ test('augment --global: reinstalling does not duplicate or clobber the gsd MCP c
   afterFirst.mcpServers.gsd.args.push('--custom-flag');
   fs.writeFileSync(settingsPath, JSON.stringify(afterFirst, null, 2) + '\n');
 
-  const second = spawnSync(process.execPath, args, { encoding: 'utf8', env });
-  assert.strictEqual(second.status, 0, `second install failed: ${second.stderr}`);
+  const second = runNode(args, { env, timeoutMs: 120000 });
+  assert.strictEqual(second.exitCode, 0, `second install failed: ${second.stderr}`);
 
   const afterSecond = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   assert.equal(Object.keys(afterSecond.mcpServers).length, 1, 'reinstall must not duplicate the gsd entry');
@@ -201,11 +201,11 @@ test('augment --global: installing preserves a pre-existing unrelated mcpServers
   }, null, 2));
 
   const args = [INSTALL_SCRIPT, '--augment', '--global', '--config-dir', root];
-  const result = spawnSync(process.execPath, args, {
-    encoding: 'utf8',
+  const result = runNode(args, {
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
-  assert.strictEqual(result.status, 0, `install failed: ${result.stderr}`);
+  assert.strictEqual(result.exitCode, 0, `install failed: ${result.stderr}`);
 
   const settings = JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'utf8'));
   assert.deepEqual(settings.mcpServers.other, { command: 'my-tool', args: ['--flag'] },
@@ -223,8 +223,8 @@ test('augment --global uninstall removes only the GSD-owned mcpServers.gsd entry
 
   const env = installerEnv({ HOME: root, USERPROFILE: root });
   const installArgs = [INSTALL_SCRIPT, '--augment', '--global', '--config-dir', root];
-  const installResult = spawnSync(process.execPath, installArgs, { encoding: 'utf8', env });
-  assert.strictEqual(installResult.status, 0, `install failed: ${installResult.stderr}`);
+  const installResult = runNode(installArgs, { env, timeoutMs: 120000 });
+  assert.strictEqual(installResult.exitCode, 0, `install failed: ${installResult.stderr}`);
 
   // Seed user-owned data alongside GSD's contributions, post-install.
   const settingsPath = path.join(root, 'settings.json');
@@ -233,8 +233,8 @@ test('augment --global uninstall removes only the GSD-owned mcpServers.gsd entry
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 
   const uninstallArgs = [INSTALL_SCRIPT, '--augment', '--global', '--config-dir', root, '--uninstall'];
-  const uninstallResult = spawnSync(process.execPath, uninstallArgs, { encoding: 'utf8', env });
-  assert.strictEqual(uninstallResult.status, 0, `uninstall failed: ${uninstallResult.stderr}`);
+  const uninstallResult = runNode(uninstallArgs, { env, timeoutMs: 120000 });
+  assert.strictEqual(uninstallResult.exitCode, 0, `uninstall failed: ${uninstallResult.stderr}`);
 
   const settingsAfter = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   assert.equal(settingsAfter.mcpServers && settingsAfter.mcpServers.gsd, undefined, 'gsd MCP entry removed');

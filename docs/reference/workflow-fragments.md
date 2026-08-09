@@ -159,6 +159,17 @@ own dedicated `cmdInit*` entry points (`cmdInitReview`,
 (`cmdInitDocsUpdate`, `cmdInitUpdate`, `cmdInitTransition`) plus an extension
 of the pre-existing `cmdInitNewMilestone`.
 
+An entry point can also land **ahead of** the atom it will unblock. `#3149`
+gives `debug` a dedicated `cmdInitDebug` (`init.debug`) with no vocabulary
+change at all: `/gsd-debug` previously made three separate `gsd_run`
+round-trips and had no `cmdInit*` of its own, so gate (2) could never be
+satisfied for any debug-scoped fact. Shipping the entry point first satisfies
+gate (2) on its own schedule and leaves gate (1) — a consuming section of at
+least 400 bytes — to the change that actually adds the section. `debug` has no
+`<!-- gsd:section -->` markers yet, so it contributes no key to
+`section-manifest.json` and `init.debug`'s `section_manifest` field degrades to
+`null` (read everything) until it does.
+
 ### Compound conditions are resolved in the fact, never the grammar
 
 `state:chunked-mode` looks, at the section-body level, like it should be a

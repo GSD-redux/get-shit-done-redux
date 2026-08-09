@@ -135,6 +135,27 @@ describe('#2858 — shipped scripts require only shipped paths', () => {
       .sort();
   });
 
+  test('#2665: the test-instrumentation chain does not ship', () => {
+    // These four are one closed require chain of test instrumentation
+    // (run-tests -> live-config-guard, affected-tests-lib -> run-tests,
+    // run-affected-tests -> affected-tests-lib). Excluding a strict subset
+    // re-trips the shipped-requires-only-shipped gate above on whichever links
+    // still ship, so the exclusion set and this assertion cover the chain.
+    const TEST_INSTRUMENTATION = [
+      'scripts/live-config-guard.cjs',
+      'scripts/run-tests.cjs',
+      'scripts/affected-tests-lib.cjs',
+      'scripts/run-affected-tests.cjs',
+    ];
+    for (const f of TEST_INSTRUMENTATION) {
+      assert.ok(
+        !shippedFiles.has(f),
+        `${f} is test instrumentation and must not ship — restore its ` +
+          "package.json files[] '!'-exclusion (and keep the whole chain excluded)",
+      );
+    }
+  });
+
   test('every shipped scripts/*.{cjs,js} is require-able from a shipped-only tree', () => {
     assert.ok(shippedScripts.length > 0, 'expected at least one shipped script');
 

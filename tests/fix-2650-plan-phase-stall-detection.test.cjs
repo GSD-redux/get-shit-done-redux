@@ -37,6 +37,9 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -407,8 +410,8 @@ describe('bug #2650 config schema — planner.stall_* keys mirror executor.stall
     fs.writeFileSync(path.join(tmp, '.planning/config.json'), '{}\n');
 
     const toolsPath = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
-    const interval = spawnSync(process.execPath, [toolsPath, 'config-get', 'planner.stall_detect_interval_minutes', '--raw'], { cwd: tmp, encoding: 'utf-8' });
-    const threshold = spawnSync(process.execPath, [toolsPath, 'config-get', 'planner.stall_threshold_minutes', '--raw'], { cwd: tmp, encoding: 'utf-8' });
+    const interval = toLegacyResult(runNode([toolsPath, 'config-get', 'planner.stall_detect_interval_minutes', '--raw'], { cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS }));
+    const threshold = toLegacyResult(runNode([toolsPath, 'config-get', 'planner.stall_threshold_minutes', '--raw'], { cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS }));
 
     assert.equal(interval.status, 0, interval.stderr);
     assert.equal(interval.stdout.trim(), '5');

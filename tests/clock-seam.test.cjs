@@ -1,5 +1,12 @@
 'use strict';
-// allow-test-rule: line 159 reads the STATE.md temp file written by readModifyWriteStateMd — this is a runtime output file assertion, not a source-grep; the API returns void so a file read-back is the only way to verify the transform was applied
+// allow-test-rule: pending-migration-to-typed-ir [#3090]
+// This file's assert.throws(fn, /regex/) sites (acquireStateLock /
+// readModifyWriteStateMd / withPlanningLock / acquireInstallMigrationLock
+// timeout and error-propagation checks) regex-match the human-readable
+// thrown Error#message — CONTRIBUTING's "Error / status / reason" BAD
+// pattern; the fix is a frozen-enum REASON code on the thrown error, which
+// requires a production change to those locking functions that is out of
+// scope for this test-only change. Tracked for correction under #3090.
 
 /**
  * Deterministic clock-seam tests for acquireStateLock / withPlanningLock (issue #453).
@@ -40,6 +47,7 @@ const stateMod = require('../gsd-core/bin/lib/state.cjs');
 const { acquireStateLock, releaseStateLock, readModifyWriteStateMd } = stateMod;
 const { withPlanningLock } = require('../gsd-core/bin/lib/planning-workspace.cjs');
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Fake-clock proof: acquireStateLock accepts and uses the clock seam
@@ -822,7 +830,7 @@ describe('readModifyWriteStateMd lock cleanup on error', () => {
     const clock = makeFakeClock(0);
     readModifyWriteStateMd(statePath, (c) => c + '\n**Patched:** yes\n', tmpDir, undefined, clock);
     const content = fs.readFileSync(statePath, 'utf-8');
-    assert.ok(content.includes('**Patched:** yes'), 'transform must be applied');
+    assert.strictEqual(stateExtractField(content, 'Patched'), 'yes', 'transform must be applied');
     assert.strictEqual(clock.sleepCalls.length, 0, 'no sleep when lock is immediately available');
   });
 });

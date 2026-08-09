@@ -210,7 +210,17 @@ describe('#2658: end-to-end --trae install never emits the malformed path (accep
   test('local install: no emitted .md/.js/.cjs file contains the malformed strings; the rules file is concrete', () => {
     const { configDir, root } = runMinimalInstall({ runtime: 'trae', scope: 'local' });
     try {
-      const files = walk(configDir).filter((f) => /\.(md|js|cjs)$/.test(f));
+      const files = walk(configDir)
+        .filter((f) => /\.(md|js|cjs)$/.test(f))
+        // gsd-core/CHANGELOG.md is excluded by exact relative path (not a blanket
+        // .md skip — the emitted agent/command/workflow markdown this gate exists
+        // to guard stays fully scanned). CHANGELOG.md legitimately QUOTES the
+        // malformed `.claude/.trae/rules` / `.trae/.trae/rules` strings while
+        // documenting the #2658 fix itself (#3006) — that historical-value
+        // citation is not a regression of the installer's actual output. Verified
+        // empirically: excluding only this one file drops the hit count to zero
+        // across all 620 other emitted files.
+        .filter((f) => f.split(path.sep).join('/').indexOf('gsd-core/CHANGELOG.md') === -1);
       assert.ok(files.length > 0, 'expected at least one emitted .md/.js/.cjs file');
       for (const file of files) {
         const content = fs.readFileSync(file, 'utf8');
