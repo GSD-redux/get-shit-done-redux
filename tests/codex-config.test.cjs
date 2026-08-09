@@ -23,6 +23,13 @@ const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 const fc = require('fast-check');
 const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs');
+// #3241 — the intended new home for CLAUDE_AGENT_ALIASES + isAnthropicFlavoredModel
+// (see .gsd/phase/feat-3241-codex-omit-model-by-default/40-design.md "The seam
+// decision"). Neither export exists on model-catalog.cjs yet; requiring the
+// module does not throw (it just has no such keys today), but calling
+// isAnthropicFlavoredModel does — see the new describe block below.
+const modelCatalog = require('../gsd-core/bin/lib/model-catalog.cjs');
+const modelResolver = require('../gsd-core/bin/lib/model-resolver.cjs');
 
 // #2153 follow-up: ensure hooks/dist/ exists before any install integration
 // test runs. The Codex install path copies hook files from hooks/dist/, which
@@ -628,6 +635,138 @@ tools: Read, Grep, Glob
     }), { numRuns: 400 });
   });
 
+  // ─── #3241: omit the Codex per-agent model by default (resolver-only path) ────
+  // Phase 1 removes the runtime-resolver auto-embed. These tests drive the
+  // shipping default shape — runtime set + model_profile:"balanced" (mocked
+  // here as a resolver object, matching the existing #2517/#838 tests above,
+  // e.g. L514-522) — with NO model_overrides, and assert the model line (and
+  // its coupled model_reasoning_effort, #838) are omitted.
+
+  test('omits model and model_reasoning_effort when only the runtime resolver would have supplied one (#3241)', () => {
+    // RED (pre-fix): today this resolver-only path still embeds the tier
+    // model (see L514-522's "runtime resolver pins Codex model" test, which
+    // asserts the opposite of this on purpose and is left untouched per the
+    // Phase 1 rollout plan). Both assertions below fail against the current
+    // tree: `model = "gpt-5.6-sol"` and `model_reasoning_effort = "high"`
+    // are both present in `result` today.
+    const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
+    const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+    assert.ok(!/^model = /m.test(result),
+      'a resolver-only tier model must not be embedded by default (#3241)');
+    assert.ok(!result.includes('model_reasoning_effort ='),
+      'reasoning effort must not survive an omitted resolver model (#838 coupling)');
+  });
+
+  test('resolver is null (inherit profile or no runtime configured) emits no model and no warning (#3241)', (t) => {
+    // Regression guard — PASSES today already: readGsdRuntimeProfileResolver
+    // already returns null for both "no runtime" and model_profile:"inherit"
+    // (bin/install.js:1632, :1635), and generateCodexAgentToml already omits
+    // the model when runtimeResolver is null. Nothing in Phase 1 touches this
+    // branch; this test exists to prove it keeps holding after the fix lands.
+    const origWrite = process.stderr.write;
+    const stderrChunks = [];
+    process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    t.after(() => { process.stderr.write = origWrite; });
+    const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, null);
+    assert.ok(!/^model = /m.test(result), 'no model when the resolver is null');
+    assert.strictEqual(stderrChunks.join(''), '', 'inherit/no-runtime users must never be warned — nothing was lost');
+  });
+
+  test('resolver present but resolve() yields nothing emits no model and no warning (#3241)', (t) => {
+    // Regression guard — PASSES today already: entry?.model is undefined when
+    // resolve() returns null, so pinnedModel stays null and no warning branch
+    // is reachable in current code. Nothing was lost, so nothing should warn,
+    // before or after the fix (negative-space row in 40-design.md).
+    const origWrite = process.stderr.write;
+    const stderrChunks = [];
+    process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    t.after(() => { process.stderr.write = origWrite; });
+    const runtimeResolver = { runtime: 'codex', resolve: () => null };
+    const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+    assert.ok(!/^model = /m.test(result), 'no model when resolve() yields nothing');
+    assert.strictEqual(stderrChunks.join(''), '', 'a resolver that would not have pinned anything must never warn');
+  });
+
+  test('empty-string and whitespace-only model_overrides are not pins and not warnings (#3241)', (t) => {
+    // '' — regression guard, PASSES today: '' is falsy, so the pin branch is
+    // never entered at all (no pin, no warning either old or new).
+    //
+    // '   ' (whitespace-only) — RED (pre-fix, live defect, fixed in this
+    // phase per maintainer direction): a whitespace-only override is a
+    // truthy JS string, is not Anthropic-flavored per `_isAnthropicFlavoredModel`,
+    // and is CURRENTLY pinned verbatim (`model = "   "`) with no guard —
+    // the same class of bug the #2310 guard exists to stop (a non-model
+    // value reaching the .toml and 400-ing the Codex agent). Must be
+    // silently dropped, matching how '' already behaves — NOT routed through
+    // `_warnCodexModelOverrideDropped` (that warning's "is not a valid Codex
+    // model (Anthropic alias/id)" text would misdescribe a blank field), so
+    // no warning of any kind is expected for it either.
+    const origWrite = process.stderr.write;
+    const stderrChunks = [];
+    process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    t.after(() => { process.stderr.write = origWrite; });
+    const emptyResult = generateCodexAgentToml('gsd-executor', sampleAgent, { 'gsd-executor': '' });
+    const whitespaceResult = generateCodexAgentToml('gsd-executor', sampleAgent, { 'gsd-executor': '   ' });
+    assert.ok(!/^model = /m.test(emptyResult), 'empty-string override must not be pinned');
+    assert.ok(!/^model = /m.test(whitespaceResult), 'whitespace-only override must not be pinned (#3241 fix)');
+    assert.strictEqual(stderrChunks.join(''), '', 'empty-string/whitespace overrides must never warn');
+  });
+
+  test('non-string model_overrides values are ignored without throwing (#3241)', () => {
+    // Regression guard — PASSES today already: none of these ever reach the
+    // string-pin branch (`typeof rawModelOverride === 'string'` gates it), so
+    // no value here is ever emitted as `model =`, and none of them throw.
+    // Some truthy non-string values (42, {}, true, []) DO hit the existing
+    // `_warnCodexModelOverrideDropped` warn branch today — that is pre-2310
+    // behavior this phase does not touch, so no assertion is made on warning
+    // presence/absence here, only "no pin" and "no crash" per the matrix.
+    const hostileValues = [42, {}, null, true, [], 0, NaN];
+    for (const value of hostileValues) {
+      assert.doesNotThrow(() => {
+        const result = generateCodexAgentToml('gsd-executor', sampleAgent, { 'gsd-executor': value });
+        assert.ok(!/^model = /m.test(result), `non-string override ${JSON.stringify(value)} must not be pinned`);
+      }, `non-string override ${JSON.stringify(value)} must not throw`);
+    }
+  });
+
+  // 50-test-matrix.md row 15 (oversized warning value truncated at 64 chars)
+  // is deliberately NOT covered here. Maintainer-confirmed pinned wording
+  // (see the describe block below) interpolates no user-controlled value —
+  // no agent name, no model string — so there is nothing in the message that
+  // could ever exhibit truncation. A test asserting truncation against a
+  // message with no interpolated value would be vacuous by construction.
+
+  test('light-tier service_tier/model_verbosity survive independent of whether a model is pinned (#3241, #774 decoupling guard)', () => {
+    // Regression guard — PASSES today already: the light-tier emission block
+    // (bin/install.js ~L4198-4203) reads AGENT_DEFAULT_TIERS unconditionally
+    // and never inspects pinnedModel/hasPinnedModel. This test exists to
+    // catch a FUTURE implementation that wrongly couples these fields to
+    // hasPinnedModel while implementing #3241 — if that coupling is ever
+    // introduced, this is the test that turns red. It is not expected to be
+    // red before the #3241 fix lands, and per 50-test-matrix.md's own
+    // "Red-before-green" note this is the row most likely to be accidentally
+    // vacuous — flagged explicitly here rather than mis-classified.
+    const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
+    const lightAgent = `---
+name: gsd-plan-checker
+description: Checks plans quickly
+tools: Read, Grep
+---
+
+<role>You check plans.</role>`;
+    const lightResult = generateCodexAgentToml('gsd-plan-checker', lightAgent, null, runtimeResolver);
+    assert.ok(lightResult.includes('service_tier = "flex"'), 'service_tier must not be coupled to whether a model is pinned');
+    assert.ok(lightResult.includes('model_verbosity = "low"'), 'model_verbosity must not be coupled to whether a model is pinned');
+
+    // Other direction: a non-light agent with no model at all must still gain
+    // neither field (duplicates the existing #774 coverage at L647-652
+    // intentionally — 50-test-matrix.md row 18 folds this into row 17 as the
+    // same independence guard, viewed from the opposite direction).
+    const standardResult = generateCodexAgentToml('gsd-executor', sampleAgent, null, null);
+    assert.ok(!standardResult.includes('service_tier'), 'standard-tier agent must not gain service_tier just because no model is pinned');
+    assert.ok(!standardResult.includes('model_verbosity'), 'standard-tier agent must not gain model_verbosity just because no model is pinned');
+  });
+
   // ─── #774: service_tier / model_verbosity for light-tier agents ───────────────
 
   test('emits service_tier="flex" and model_verbosity="low" for light-tier agents (#774)', () => {
@@ -694,6 +833,75 @@ description: Maps the codebase
     const parsed = parseTomlToObject(toml);
     assert.strictEqual(parsed.service_tier, 'flex', 'service_tier must parse to "flex"');
     assert.strictEqual(parsed.model_verbosity, 'low', 'model_verbosity must parse to "low"');
+  });
+});
+
+// ─── #3241: shared isAnthropicFlavoredModel / CLAUDE_AGENT_ALIASES surface ─────
+// Phase 2/3 need one predicate. 40-design.md's "seam decision" moves
+// CLAUDE_AGENT_ALIASES into model-catalog.cjs and defines isAnthropicFlavoredModel
+// beside it, re-exporting from model-resolver.cjs for back-compat. Neither exists
+// on model-catalog.cjs yet (verified: modelCatalog.isAnthropicFlavoredModel is
+// `undefined` today), so every test below is RED against the current tree.
+
+describe('#3241 isAnthropicFlavoredModel + CLAUDE_AGENT_ALIASES (model-catalog owns it)', () => {
+  const parityAgent = `---
+name: gsd-executor
+description: Executes plans
+tools: Read, Write
+---
+
+<role>You are an executor.</role>`;
+
+  test('predicate flags every Claude tier alias and case/namespace variant (#3241)', () => {
+    // RED (pre-fix): modelCatalog.isAnthropicFlavoredModel is undefined today,
+    // so `modelCatalog.isAnthropicFlavoredModel('opus')` throws
+    // "isAnthropicFlavoredModel is not a function" — this test fails on the
+    // very first call, before any assertion runs.
+    for (const alias of ['opus', 'sonnet', 'haiku', 'fable']) {
+      assert.strictEqual(modelCatalog.isAnthropicFlavoredModel(alias), true, `alias "${alias}" must be flagged`);
+    }
+    for (const id of ['claude-opus-4-5', 'anthropic/claude-x', 'us.anthropic.claude-x', 'CLAUDE-X']) {
+      assert.strictEqual(modelCatalog.isAnthropicFlavoredModel(id), true, `id "${id}" must be flagged (case/namespace variant)`);
+    }
+  });
+
+  test('predicate is false for real Codex ids and non-strings, without throwing (#3241)', () => {
+    // RED (pre-fix): same "not a function" throw as above — fails before any
+    // assertion is reached.
+    for (const value of ['gpt-5.6-sol', 'gpt-4', '', null, undefined, {}, 0]) {
+      assert.doesNotThrow(() => modelCatalog.isAnthropicFlavoredModel(value), `must not throw for ${JSON.stringify(value)}`);
+      assert.strictEqual(modelCatalog.isAnthropicFlavoredModel(value), false, `must be false for ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('the alias set has exactly one owner across both modules (#3241)', () => {
+    // RED (pre-fix): modelCatalog.CLAUDE_AGENT_ALIASES is undefined today
+    // (model-catalog.cjs exports no such key), so deepStrictEqual against
+    // modelResolver's real Set fails. Divergence guard per
+    // 50-test-matrix.md rows 22-23: without this, Phase 2/3 can silently
+    // fork the rule.
+    assert.deepStrictEqual(
+      modelCatalog.CLAUDE_AGENT_ALIASES,
+      modelResolver.CLAUDE_AGENT_ALIASES,
+      'model-catalog and model-resolver must share the exact same CLAUDE_AGENT_ALIASES contents'
+    );
+  });
+
+  test('installer Codex .toml emission agrees with the shared predicate (#3241)', () => {
+    // RED (pre-fix): modelCatalog.isAnthropicFlavoredModel is undefined, so
+    // the first loop iteration throws "not a function" before any
+    // generateCodexAgentToml call happens.
+    const probeValues = [...CLAUDE_AGENT_ALIASES, 'claude-sonnet-5', 'gpt-5.6-sol'];
+    for (const value of probeValues) {
+      const expectedFlavored = modelCatalog.isAnthropicFlavoredModel(value);
+      const result = generateCodexAgentToml('gsd-executor', parityAgent, { 'gsd-executor': value });
+      const modelLine = result.split(/\r?\n/).find((line) => /^model = /.test(line));
+      if (expectedFlavored) {
+        assert.strictEqual(modelLine, undefined, `"${value}" is Anthropic-flavored per the shared predicate — installer must omit it`);
+      } else {
+        assert.strictEqual(modelLine, `model = ${JSON.stringify(value)}`, `"${value}" is NOT Anthropic-flavored per the shared predicate — installer must emit it verbatim`);
+      }
+    }
   });
 });
 

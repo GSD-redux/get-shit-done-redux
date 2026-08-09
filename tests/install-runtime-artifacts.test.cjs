@@ -3843,6 +3843,98 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
   });
 });
 
+// ─── describe 4b: #3241 — deprecation warning when a resolver-sourced model is dropped ─
+//
+// Phase 1 (#3241) removes the automatic per-tier Codex model embed sourced from
+// readGsdRuntimeProfileResolver. These tests assert the observable side of that
+// removal at full-install granularity — a one-time deprecation warning on
+// stderr, never on stdout, emitted exactly once across an install even though
+// every Codex agent hits the same "resolver would have pinned a model" branch
+// simultaneously (the design's Rejected #2: "warn per agent").
+//
+// RED (pre-fix): no such warning exists anywhere in bin/install.js today, so
+// captured stderr is empty for this config shape and every assertion below
+// that looks for warning text fails.
+//
+// Pinned wording (maintainer-confirmed, so the implementer matches it):
+//   - single line, on stderr
+//   - begins "gsd: notice — " (deliberately distinct from the existing
+//     "gsd: warning — " dropped-override text — this is a notice about an
+//     intentional behavior change, not a malformed value)
+//   - contains the literal substring "model_overrides" (the recovery path)
+//   - contains the literal substring "session model" (what the agent gets
+//     instead)
+//   - names neither a specific agent nor a specific model — it is a
+//     whole-install condition, not a per-agent one
+// Tests assert on these substrings plus "exactly one matching line", not on
+// the full sentence, so the prose can improve without breaking the test.
+
+describe('#3241 Codex install: deprecation warning when a resolver-sourced model is dropped', () => {
+  let tmpDir;
+  let projectDir;
+  let codexHome;
+  let stderrChunks;
+  let stdoutChunks;
+  let origStderrWrite;
+  let origStdoutWrite;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3241-codex-warn-');
+    projectDir = path.join(tmpDir, 'project');
+    codexHome = path.join(projectDir, '.codex');
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+    // runtime:"codex" + default model_profile:"balanced", no model_overrides —
+    // the exact shipping shape (per 50-test-matrix.md's "Altitude" note) that
+    // resolves a tier model per-agent via readGsdRuntimeProfileResolver (#2517).
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'codex' }, null, 2)
+    );
+    stderrChunks = [];
+    stdoutChunks = [];
+    origStderrWrite = process.stderr.write;
+    origStdoutWrite = process.stdout.write;
+    process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    process.stdout.write = (chunk) => { stdoutChunks.push(String(chunk)); return true; };
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+    process.stdout.write = origStdoutWrite;
+    cleanup(tmpDir);
+  });
+
+  test('warns exactly once on stderr with the pinned notice wording, and never on stdout (#3241)', () => {
+    runGlobalInstall('codex', codexHome);
+    const stderr = stderrChunks.join('');
+    const stdout = stdoutChunks.join('');
+    const noticeLines = stderr.split(/\r?\n/).filter((line) => line.startsWith('gsd: notice — '));
+    assert.strictEqual(noticeLines.length, 1,
+      `expected exactly one matching notice line, got ${noticeLines.length}\nstderr:\n${stderr}`);
+    assert.match(noticeLines[0], /model_overrides/,
+      'the notice must name model_overrides as the recovery path');
+    assert.match(noticeLines[0], /session model/,
+      'the notice must name the session model as what the agent gets instead');
+    assert.doesNotMatch(stdout, /gsd: notice — /,
+      'stdout must never carry the notice text — stdout carries installer result data');
+  });
+
+  test('the deprecation notice fires exactly once per install across every Codex agent, not once per agent (#3241)', () => {
+    runGlobalInstall('codex', codexHome);
+    const stderr = stderrChunks.join('');
+    const installedTomls = fs.readdirSync(path.join(codexHome, 'agents'))
+      .filter((name) => name.endsWith('.toml'));
+    // Sanity check: this config shape must actually install more than one
+    // Codex agent — otherwise "exactly once, not once per agent" is untestable.
+    assert.ok(installedTomls.length > 1,
+      `sanity check: install must produce more than one Codex agent .toml, got ${installedTomls.length}`);
+    const noticeLines = stderr.split(/\r?\n/).filter((line) => line.startsWith('gsd: notice — '));
+    assert.strictEqual(noticeLines.length, 1,
+      `expected the notice exactly once across ${installedTomls.length} installed agents, saw ${noticeLines.length}\nstderr:\n${stderr}`);
+  });
+});
+
 // ─── describe 5b: Invalid effort tokens fall through (Codex adversarial finding #2) ─
 //
 // These tests FAIL before the fix: resolveInstallTimeEffort returns the raw
