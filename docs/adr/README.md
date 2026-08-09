@@ -111,6 +111,28 @@ Two consequences worth stating outright:
 - **Case matters, on every platform.** `[t](0001-Alpha.md)` pointing at `0001-alpha.md` fails even on macOS and Windows, because it 404s on github.com and reds the Linux CI lane. The failure names the entry it found so the fix is obvious.
 - **A link to a generated or ignored path fails.** Nothing here consults `.gitignore`; the question is only whether a reader following the link lands somewhere. Cite the hand-authored source rather than the build artifact.
 
+### If the gate rejects something you wrote
+
+Reproduce it locally first — it is the same command CI runs, and it names the file, the line, and the target:
+
+```bash
+node scripts/gen-adr-index.cjs --check
+```
+
+Then work from the `reason`:
+
+| What it says | What to do |
+|---|---|
+| `does not resolve — no such file or directory at …` | Fix the path. It is relative to `docs/adr/`, so a sibling ADR is just `900-slug.md`. If the target genuinely does not exist yet, drop the link rather than leaving it pointing nowhere. |
+| `…Did you mean X? — link targets are case-sensitive on github.com` | Match the on-disk name exactly. Your machine may open the file regardless; github.com and the Linux CI lane will not. |
+| `escapes the repository` | The path resolves outside the repo. Link something inside it, or use an absolute URL — those are out of scope and never checked. |
+| `is a symlink that escapes the repository` | An ADR file itself is a symlink pointing outside the repo. Commit a real file. |
+| `H1 status bracket […] contradicts the Status field (…)` | Update whichever of the two is stale so they agree. The `Status` field is authoritative; the bracket is a restatement for the reader. |
+
+**A link that is an example, not a destination, belongs in backticks.** The gate skips fenced blocks and inline code entirely, because markdown does not render a link there. That is the escape hatch for illustrative syntax — the table above is written that way, which is why it does not fail this check. An indented code block (four spaces) is *not* skipped; use backticks.
+
+To consume the result from a script rather than by eye, use `--json` (below) and branch on each violation's stable `reason` code.
+
 ### Ratifying a stale `Proposed`
 
 A stale `Proposed` is not cosmetic: it tells contributors and agents that live architecture is an unbuilt idea. Fix it — but on evidence, not vibes.
