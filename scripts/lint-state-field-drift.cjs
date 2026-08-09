@@ -35,14 +35,29 @@
  * number anywhere in this detection.
  *
  * The invariant instead: a NAMED FUNCTION that BOTH (a) contains a
- * "frontmatter scalar coercion ladder" line — `typeof <ident> === 'number'
- * || typeof <ident> === 'boolean'` (LADDER_RE; often, but not necessarily,
- * preceded by a `typeof <ident> === 'string'` branch — see the ternary shape
- * in `cmdStatePrune` below) — ANYWHERE in its own body, INCLUDING inside a
- * nested closure it defines, AND (b) calls `stateExtractField(` anywhere in
- * that same body, is re-deriving the fm-else-body fallback chain. EVERY
- * `stateExtractField(` call line inside such a function is reported, not
- * just the first.
+ * "frontmatter scalar coercion ladder" — the SAME operand compared via
+ * `typeof OPERAND === 'number'` and `typeof OPERAND === 'boolean'`
+ * (TYPEOF_TIER_CLAUSE_RE, order-independent, member/computed operands
+ * included, an optional `typeof OPERAND === 'string'` tier tolerated
+ * anywhere among them — see the ternary shape in `cmdStatePrune` below),
+ * within LADDER_WINDOW_LINES of each other — ANYWHERE in its own body,
+ * INCLUDING inside a nested closure it defines, AND (b) calls
+ * `stateExtractField(` anywhere in that same body, is re-deriving the
+ * fm-else-body fallback chain. EVERY `stateExtractField(` call line inside
+ * such a function is reported, not just the first.
+ *
+ * LADDER DETECTION, evasion-resistant shapes (see "LADDER DETECTION DETAIL"
+ * below for the full account, including the one shape still NOT caught):
+ *   - operand may be a bare identifier (`v`), a dotted member expression
+ *     (`fm.key`), or a computed access (`fm[key]`) — matched via
+ *     OPERAND_SOURCE and compared as captured TEXT, not a bare-identifier
+ *     backreference.
+ *   - the two required tiers ('number', 'boolean') may appear in EITHER
+ *     order; an optional third 'string' tier may sit anywhere among them.
+ *   - the two clauses may sit on the SAME line (the classic single-line
+ *     `||` chain) or on DIFFERENT lines within LADDER_WINDOW_LINES of each
+ *     other — including as two entirely separate `if` statements, not just
+ *     one expression wrapped across a line break.
  *
  * FUNCTION ATTRIBUTION. Two declaration shapes are recognised as opening a
  * new named function scope:
@@ -157,32 +172,106 @@
  * does not use `readRegexLiteralAt`; the reported fragment is simply the
  * trimmed source line, bounded to MAX_REGEX_LITERAL_LEN characters.
  *
- * KNOWN, ACCEPTED limits of this scan: a re-derivation whose ladder and
- * fallback call sit in two DIFFERENT named functions with no shared
- * enclosing scope (e.g. a ladder in one file-level helper, consumed by a
- * caller in another function that itself calls `stateExtractField(` for an
- * unrelated field) is not caught — this guard's unit is "one named
- * function's own body, including its nested closures", not the whole
- * call graph. That is left to code review, not this regex.
+ * LADDER DETECTION DETAIL (evasion history). An earlier version of this
+ * guard's ladder pattern was a single regex, `typeof (\w+) === 'number' \|\|
+ * typeof \1 === 'boolean'`, tested against ONE line. An isolated adversarial
+ * review found three live-shaped ways past it, all verified to produce ZERO
+ * violations against a real re-derivation:
+ *   (a) a member-expression or computed operand — `typeof fm.key ===
+ *       'number' || typeof fm.key === 'boolean'` — never matched, because
+ *       the bare-identifier backreference (`\w+` then `\1`) cannot match
+ *       `fm.key`/`fm[key]` at all.
+ *   (b) the tiers in the opposite order — `typeof v === 'boolean' ||
+ *       typeof v === 'number'` — never matched, because the pattern
+ *       hardcoded 'number' before 'boolean' with no alternative ordering.
+ *       This one is plausible from an ordinary code-review reformat, not
+ *       deliberate evasion.
+ *   (c) the ladder split across two lines, or written as two separate `if`
+ *       statements instead of one `||` chain — never matched, because
+ *       detection ran per-line with no tolerance for the pair spanning more
+ *       than one line.
+ * The fix: OPERAND_SOURCE (identifier / dotted member / computed access,
+ * compared as captured TEXT rather than a bare-identifier backreference),
+ * TYPEOF_TIER_CLAUSE_RE (one clause at a time, tier-order-independent,
+ * collected via a `Map<operand, Set<tier>>`), and a small bounded
+ * LADDER_WINDOW_LINES sliding window so the two required clauses need only
+ * sit within a few lines of each other, not on the identical line. All
+ * three evasion shapes above are now covered by
+ * `tests/state-field-drift.test.cjs` (D3c/D3d/D3e).
+ *
+ * KNOWN, ACCEPTED limits of this scan (honest, not exhaustive by
+ * construction — this is a bounded regex-based scan, not a parser):
+ *   - Cross-function: a re-derivation whose ladder and fallback call sit in
+ *     two DIFFERENT named functions with no shared enclosing scope (e.g. a
+ *     ladder in one file-level helper, consumed by a caller in another
+ *     function that itself calls `stateExtractField(` for an unrelated
+ *     field) is not caught — this guard's unit is "one named function's own
+ *     body, including its nested closures", not the whole call graph. That
+ *     is left to code review, not this regex. This co-occurrence check is
+ *     deliberately FUNCTION-SCOPED with NO line-distance window at all (see
+ *     the module-level "DETECTION" note above) — do not confuse this with
+ *     LADDER_WINDOW_LINES, which bounds a different, much tighter pairing
+ *     (the ladder's own two clauses, which are always part of the SAME
+ *     conditional expression by construction, not an arbitrary call
+ *     anywhere later in the function).
+ *   - Ladder clauses further apart than LADDER_WINDOW_LINES lines: a ladder
+ *     whose 'number' and 'boolean' clauses are more than
+ *     LADDER_WINDOW_LINES lines apart (e.g. separated by an unrelated
+ *     intervening block of code, not just the couple of lines a single
+ *     conditional or two adjacent `if`s span) is not caught. No such shape
+ *     has been observed in this codebase; if one appears, raise
+ *     LADDER_WINDOW_LINES rather than silently accepting the miss.
+ *   - Non-`typeof`-shaped coercion checks: a ladder rewritten through a
+ *     `switch (typeof v)`, a helper function abstracting the check (e.g.
+ *     `isNumberOrBoolean(v)`), or any comparison operator other than
+ *     `===` (e.g. `typeof v == 'number'`) is not recognised — the pattern
+ *     is `typeof OPERAND === 'TIER'` literally, not "any type-coercion
+ *     test with equivalent runtime behaviour."
+ *   - Nested computed access: `a[b[c]]` is not modelled as a single
+ *     operand — the computed-content class excludes `]`, so nested
+ *     brackets truncate the captured operand at the first `]` rather than
+ *     matching the whole expression. Not observed in this codebase's
+ *     ladders today.
+ *   - Whitespace-sensitive operand identity: `fm[key]` and `fm[ key ]` are
+ *     compared as distinct operand TEXT (no normalisation), so a ladder
+ *     whose two clauses format the same computed access differently could
+ *     under-detect. Not observed in this codebase's ladders today.
  */
 
 const path = require('node:path');
 const driftScan = require('./lib/drift-scan.cjs');
 const { MAX_REGEX_LITERAL_LEN, sanitizeForReport, scanTree } = driftScan;
 
-// The frontmatter scalar coercion ladder's number/boolean branch — the one
-// line common to every observed copy of this derivation. `\1` requires the
-// SAME identifier on both sides of `||` (via a backreference), so unrelated
-// `typeof a === 'number' || typeof b === 'boolean'` comparisons on two
-// different variables never match. No nested/overlapping quantifiers: each
-// `\s*` run is bounded by the next required literal token.
-// No trailing `\b` after `'boolean'`: the literal already ends on the
-// closing quote (a non-word character), so a `\b` there would require a
-// word/non-word transition between two non-word characters (`'` then `)` or
-// whitespace) — which never holds, and silently made this regex match
-// nothing at all when first written. The quoted literal is unambiguous on
-// its own; no boundary anchor is needed after it.
-const LADDER_RE = /\btypeof\s+([A-Za-z_$][\w$]*)\s*===\s*'number'\s*\|\|\s*typeof\s+\1\s*===\s*'boolean'/;
+// A ladder operand: a bare identifier (`v`), a dotted member expression
+// (`fm.key`, `fm.a.b`), or a computed/bracket access (`fm[key]`), repeated
+// via a single bounded alternation. No nested/overlapping quantifiers: the
+// bracket-content class (`[^\]\r\n]{1,80}`) is one bounded character class,
+// not a quantifier nested inside another quantifier, so there is nothing
+// for a backtracking engine to explore. The captured TEXT (not a bare-
+// identifier backreference) is what two clauses are compared against for
+// "same operand" — see TYPEOF_TIER_CLAUSE_RE below and buildFunctionInfo's
+// ladder-window accumulation.
+const OPERAND_SOURCE = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\r\n]{1,80}\])*`;
+
+// One ladder clause: `typeof OPERAND === 'TIER'`, TIER being one of the
+// three coercion tiers this derivation ever compares against. Run with the
+// `g` flag over a single line's `detect` text so every clause that line
+// carries is collected (a single-line `||` chain carries two or three; a
+// clause split onto its own line, or written as a standalone `if`, carries
+// one). No trailing `\b` after the closing quote: the quote itself is
+// already an unambiguous, non-word boundary — see the historical note this
+// replaced for why a trailing `\b` there silently matches nothing at all.
+const TYPEOF_TIER_CLAUSE_RE = new RegExp(String.raw`\btypeof\s+(${OPERAND_SOURCE})\s*===\s*'(number|boolean|string)'`, 'g');
+
+// A ladder is CONFIRMED when the SAME operand carries both a 'number' clause
+// and a 'boolean' clause (in either order; an additional 'string' clause
+// anywhere among them does not prevent this) within this many consecutive
+// lines of each other. Small and bounded, and DELIBERATELY NOT the same
+// concept as the ladder-to-`stateExtractField(` co-occurrence check, which
+// stays function-scoped with no window at all (see the module header's
+// "DETECTION" and "LADDER DETECTION DETAIL" notes for why these two
+// pairings are not interchangeable).
+const LADDER_WINDOW_LINES = 6;
 
 // The body-fallback call whose presence, inside a ladder-bearing function,
 // makes that function a re-derivation of the "frontmatter-else-body" grammar.
@@ -413,6 +502,18 @@ function buildFunctionInfo(lines) {
   // pattern requires `=>\s*\{` literally, so it only ever matches on a line
   // that already carries the brace.
   let pendingDeclName = null;
+  // LADDER WINDOW: a rolling buffer of every `typeof OPERAND === 'TIER'`
+  // clause seen in the last LADDER_WINDOW_LINES lines, oldest-first. On
+  // each line, new clauses from that line are appended, then entries older
+  // than the window are pruned from the front. A ladder is confirmed the
+  // moment the SAME operand has accumulated both a 'number' and a
+  // 'boolean' entry inside the buffer — order-independent, and regardless
+  // of whether the two clauses came from one `||` chain split across
+  // lines, one single-line chain, or two entirely separate `if`
+  // statements. See LADDER_WINDOW_LINES's own comment for why this is
+  // bounded small and is NOT the same concept as the (unbounded,
+  // function-scoped) ladder-to-`stateExtractField(` co-occurrence below.
+  const recentClauses = []; // { line, operand, tier }
   for (let i = 0; i < lines.length; i++) {
     const detectCode = detect[i];
     const braceCode = braces[i];
@@ -465,7 +566,38 @@ function buildFunctionInfo(lines) {
 
     innermostAt[i] = stack.length > 0 ? stack[stack.length - 1].name : null;
 
-    if (detectCode.trim() && LADDER_RE.test(detectCode)) {
+    if (detectCode.trim()) {
+      TYPEOF_TIER_CLAUSE_RE.lastIndex = 0;
+      let clauseMatch;
+      while ((clauseMatch = TYPEOF_TIER_CLAUSE_RE.exec(detectCode)) !== null) {
+        recentClauses.push({ line: i, operand: clauseMatch[1], tier: clauseMatch[2] });
+      }
+    }
+    // Prune clauses that have fallen outside the small bounded ladder window.
+    while (recentClauses.length > 0 && recentClauses[0].line <= i - LADDER_WINDOW_LINES) {
+      recentClauses.shift();
+    }
+
+    let ladderConfirmed = false;
+    if (recentClauses.length > 0) {
+      const tiersByOperand = new Map();
+      for (const clause of recentClauses) {
+        let tiers = tiersByOperand.get(clause.operand);
+        if (!tiers) {
+          tiers = new Set();
+          tiersByOperand.set(clause.operand, tiers);
+        }
+        tiers.add(clause.tier);
+      }
+      for (const tiers of tiersByOperand.values()) {
+        if (tiers.has('number') && tiers.has('boolean')) {
+          ladderConfirmed = true;
+          break;
+        }
+      }
+    }
+
+    if (ladderConfirmed) {
       // Transitive: every frame currently open (not just the innermost) is
       // ladder-bearing, because a nested closure's body is lexically part of
       // every one of its enclosing functions' own bodies.
@@ -540,7 +672,9 @@ module.exports = {
   findStateFieldDrift,
   buildFunctionInfo,
   scanRepo,
-  LADDER_RE,
+  OPERAND_SOURCE,
+  TYPEOF_TIER_CLAUSE_RE,
+  LADDER_WINDOW_LINES,
   STATE_EXTRACT_FIELD_CALL_RE,
   FUNCTION_DECL_RE,
   ARROW_CONST_RE,

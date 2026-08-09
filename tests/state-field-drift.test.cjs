@@ -108,6 +108,132 @@ describe('D3b — case-variant chain beside a ladder is drift', () => {
   });
 });
 
+// ─── D3c / D3d / D3e: evasion shapes found by isolated adversarial review ──
+// A previous version of LADDER_RE required a bare-identifier `\1`
+// backreference and hardcoded 'number' before 'boolean' on a single line.
+// All three fixtures below were verified to produce ZERO violations against
+// that version despite being real re-derivation shapes (ladder +
+// `stateExtractField(` in the same function).
+
+describe('D3c — member-expression / computed operand ladder is drift', () => {
+  test('a dotted member-expression operand (fm.key) is caught', () => {
+    const text = [
+      'function memberOperand(fm, body) {',
+      "  if (typeof fm.key === 'number' || typeof fm.key === 'boolean') {",
+      '    return String(fm.key);',
+      '  }',
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    const out = drift.findStateFieldDrift(text, OTHER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 5);
+  });
+
+  test('a computed-access operand (fm[key]) is caught', () => {
+    const text = [
+      'function computedOperand(fm, body, key) {',
+      "  if (typeof fm[key] === 'number' || typeof fm[key] === 'boolean') {",
+      '    return String(fm[key]);',
+      '  }',
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    const out = drift.findStateFieldDrift(text, OTHER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 5);
+  });
+
+  test('a control case: two DIFFERENT member operands never counts as one ladder', () => {
+    // fm.a and fm.b are different operands — this must never be mistaken
+    // for a coercion ladder over a single value.
+    const text = [
+      'function unrelatedOperands(fm, body) {',
+      "  if (typeof fm.a === 'number' || typeof fm.b === 'boolean') {",
+      '    return null;',
+      '  }',
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    assert.deepStrictEqual(drift.findStateFieldDrift(text, OTHER_RELPATH), []);
+  });
+});
+
+describe('D3d — either tier order is drift (order swap)', () => {
+  test("'boolean' before 'number' (the opposite of the historical example) is caught", () => {
+    const text = [
+      'function orderSwap(fm, body) {',
+      '  const v = fm.x;',
+      "  if (typeof v === 'boolean' || typeof v === 'number') {",
+      '    return String(v);',
+      '  }',
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    const out = drift.findStateFieldDrift(text, OTHER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 6);
+  });
+});
+
+describe('D3e — a ladder split across lines, or as two separate `if` statements, is drift', () => {
+  test('the same `||` expression wrapped across two lines is caught', () => {
+    const text = [
+      'function splitAcrossLines(fm, body) {',
+      '  const v = fm.x;',
+      "  if (typeof v === 'number' ||",
+      "      typeof v === 'boolean') {",
+      '    return String(v);',
+      '  }',
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    const out = drift.findStateFieldDrift(text, OTHER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 7);
+  });
+
+  test('two separate `if` statements (no `||` at all) are caught', () => {
+    const text = [
+      'function separateIfStatements(fm, body) {',
+      '  const v = fm.x;',
+      "  if (typeof v === 'number') { return String(v); }",
+      "  if (typeof v === 'boolean') { return String(v); }",
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    const out = drift.findStateFieldDrift(text, OTHER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 5);
+  });
+
+  test('two separate `if` statements FURTHER apart than LADDER_WINDOW_LINES are NOT caught (documented bound)', () => {
+    // Proves LADDER_WINDOW_LINES is a real, enforced bound, not decorative —
+    // mirrors D8's "distance is irrelevant" proof for the OTHER (unbounded)
+    // pairing in this same guard, but for the ladder-clause pairing this is
+    // intentionally the opposite: bounded, and the bound is real.
+    const filler = [];
+    for (let i = 0; i < drift.LADDER_WINDOW_LINES + 5; i++) filler.push(`  // filler line ${i}`);
+    const text = [
+      'function tooFarApart(fm, body) {',
+      '  const v = fm.x;',
+      "  if (typeof v === 'number') { return String(v); }",
+      ...filler,
+      "  if (typeof v === 'boolean') { return String(v); }",
+      "  return stateExtractField(body, 'x');",
+      '}',
+    ].join('\n');
+
+    assert.deepStrictEqual(drift.findStateFieldDrift(text, OTHER_RELPATH), []);
+  });
+});
+
 // ─── D4: nested frontmatter object read is not drift ───────────────────────
 
 describe('D4 — nested frontmatter read is not drift', () => {

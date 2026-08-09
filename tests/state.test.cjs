@@ -3523,6 +3523,53 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
       cleanup(dir);
     }
   });
+
+  test('B12: a thrown extractFrontmatter degrades scope to UNREADABLE (frontmatter-parse catch, distinct from B6\'s phases-dir-scan-failure catch)', (t) => {
+    // extractFrontmatter is documented never to throw (src/frontmatter.cts
+    // has no `throw` in its extraction path), so this catch is a defensive
+    // branch normally unreachable through any real STATE.md content. Drive
+    // it directly by mocking the frontmatter module's export — since
+    // src/state.cts destructures `extractFrontmatter` out of the frontmatter
+    // module at REQUIRE time (`const { extractFrontmatter } = frontmatter;`),
+    // mocking the already-cached `frontmatterLib.extractFrontmatter` has no
+    // effect on a state.cjs module instance that was required BEFORE the
+    // mock was installed (its local binding already captured the original
+    // function). Busting state.cjs's own require-cache entry and re-requiring
+    // it AFTER the mock is installed forces its destructuring to capture the
+    // mocked function instead — the top-level `stateLib` binding used by
+    // every other test in this file is untouched throughout (a fresh module
+    // instance is a distinct exports object).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const stateCjsPath = require.resolve('../gsd-core/bin/lib/state.cjs');
+    delete require.cache[stateCjsPath];
+    mock.method(frontmatterLib, 'extractFrontmatter', () => {
+      throw new Error('simulated frontmatter parse failure');
+    });
+    t.after(() => {
+      mock.restoreAll();
+      delete require.cache[stateCjsPath];
+    });
+    const freshStateLib = require(stateCjsPath);
+
+    const raw = captureStdout(() => freshStateLib.cmdStateValidate(tmpDir, false));
+    const output = JSON.parse(raw);
+    assert.strictEqual(output.valid, true, 'a frontmatter-parse failure must not crash or fabricate a warning');
+    assert.strictEqual(output.scope, SCOPE.UNREADABLE, 'a thrown extractFrontmatter must degrade scope, exactly like B6\'s phases-dir failure');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7683,6 +7730,55 @@ describe('bug #3489: state complete-phase must be idempotent', () => {
     const payload = JSON.parse(result.output);
     assert.notEqual(payload.idempotent, true, 'first completion must not be flagged idempotent');
     assert.ok(Array.isArray(payload.updated) && payload.updated.length > 0, 'expected non-empty updated list');
+  });
+
+  test('a thrown extractFrontmatter refuses complete-phase rather than risking a destructive rollback (#3489)', (t) => {
+    // The fail-closed refusal this exercises: if the frontmatter half of the
+    // chain cannot be consulted, `existingCurrentPhase` could read as null
+    // even though the project's true current phase lives only in that
+    // unreadable frontmatter, which would let the idempotency guard above
+    // fail OPEN and re-run an already-completed phase. cmdStateCompletePhase
+    // refuses outright instead. extractFrontmatter is documented never to
+    // throw for real STATE.md content, so this is driven directly by
+    // mocking the frontmatter module's export — see B12's identical
+    // require-cache-busting rationale in tests/state.test.cjs (state.cts
+    // destructures `extractFrontmatter` at require time, so mocking the
+    // already-required `frontmatterLib` export has no effect on the
+    // top-level `stateLib` binding; a fresh module instance, required AFTER
+    // the mock is installed, is needed to observe it).
+    const stateMd = [
+      '# State',
+      '',
+      '**Status:** in-progress',
+      '**Current Phase:** 03',
+      '**Last Activity:** 2026-05-13',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, stateMd, 'utf8');
+    const before = fs.readFileSync(statePath, 'utf8');
+
+    const stateCjsPath = require.resolve('../gsd-core/bin/lib/state.cjs');
+    delete require.cache[stateCjsPath];
+    mock.method(frontmatterLib, 'extractFrontmatter', () => {
+      throw new Error('simulated frontmatter parse failure');
+    });
+    t.after(() => {
+      mock.restoreAll();
+      delete require.cache[stateCjsPath];
+    });
+    const freshStateLib = require(stateCjsPath);
+
+    const raw = captureStdout(() => freshStateLib.cmdStateCompletePhase(tmpDir, false, '03'));
+    const output = JSON.parse(raw);
+    assert.match(
+      output.error || '',
+      /refusing to run complete-phase/i,
+      `expected the #3489 refuse-path error, got: ${raw}`,
+    );
+
+    const after = fs.readFileSync(statePath, 'utf8');
+    assert.equal(after, before, 'STATE.md must not be rewritten when frontmatter could not be read');
   });
 });
   });
