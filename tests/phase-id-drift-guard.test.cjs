@@ -280,6 +280,7 @@ describe('#2128 phase-id drift scanner: the live repo is clean', () => {
     // the scan to fail on it — the same end-to-end path `check:phase-id-drift`
     // takes, proving the rule is wired into scanRepo and not merely exported.
     const os = require('node:os');
+    const { cleanup } = require('./helpers.cjs');
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-id-drift-'));
     try {
       fs.mkdirSync(path.join(tmp, 'src'));
@@ -292,7 +293,7 @@ describe('#2128 phase-id drift scanner: the live repo is clean', () => {
       assert.equal(found[0].kind, 'bracket');
       assert.equal(found[0].file, path.join('src', 'planted.cts'));
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      cleanup(tmp);
     }
   });
 });
