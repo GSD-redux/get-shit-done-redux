@@ -83,6 +83,8 @@ gsd capability list
 
 Fix any validation errors before proceeding.
 
+Validation checks the manifest's *shape*. It does not read your skill bodies — nothing does. If your capability ships skills, re-read them before you publish: they are copied verbatim into every installing user's agent instruction surface and are never content-scanned. See [Ship skills — and know what you are shipping](develop-a-capability.md#ship-skills--and-know-what-you-are-shipping) for the author's side of that boundary, and [ADR-2363](../adr/2363-capability-instruction-surface-trust.md) for why it is drawn there.
+
 ---
 
 ## Choose a distribution channel
