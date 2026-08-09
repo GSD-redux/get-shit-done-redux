@@ -101,8 +101,10 @@ $ echo $?
 
 This is a **ratified contract**, not an accident — see
 [ADR-2980](adr/2980-payload-carried-error-is-a-degraded-result.md) for the decision and the blast
-radius that drove it. It applies to 42 call sites across `src/state.cts`, `src/verify.cts`,
-`src/frontmatter.cts`, `src/roadmap.cts`, `src/template.cts`, and `src/commands.cts`.
+radius that drove it. It applies to **60 call sites across nine modules** — `state`, `verify`,
+`workstream`, `frontmatter`, `commands`, `template`, `phase`, `roadmap`, and `gsd2-import`.
+(Issues #2966 and #2980 record this as "42 sites"; that figure counts only the sites where `error`
+happens to be the object's first key. See ADR-2980 for why the real number is 60.)
 
 ### Writing a correct caller
 
@@ -131,8 +133,9 @@ fi
 
 1. **`--json-errors` does nothing here.** It governs `error()` only. A degraded result is
    byte-identical with and without the flag, and still exits 0.
-2. **`--raw` does not give you bare text on this path.** 40 of the 42 sites pass no raw value, so
-   `--raw` still yields the JSON object.
+2. **`--raw` is not uniform on this path.** Most sites pass no raw value, so `--raw` still yields
+   the JSON object rather than bare text — but eleven sites do pass one and behave differently.
+   Do not infer either behavior from `--raw` alone; check the verb.
 3. **Not every degraded result is an absent artifact.** A missing required argument is reported the
    same way — `gsd-tools state add-blocker` with no `--text` returns `{"error":"text required"}` and
    exits 0. So is unusable input: `gsd-tools state advance-plan` against a STATE.md it cannot parse
@@ -145,7 +148,7 @@ fi
 ### Which one should new code use?
 
 Prefer the **fault** path, or a result with a named field. ADR-2980 ratifies an existing population;
-it is not a licence to add a 43rd `output({ error: … })` site. Where a verb needs to report a
+it is not a license to add a 61st `output({ error: … })` site. Where a verb needs to report a
 non-fatal condition in its payload, prefer the shape `state update-progress` already uses — a named
 field plus a reason, with no overloaded `error` key:
 
