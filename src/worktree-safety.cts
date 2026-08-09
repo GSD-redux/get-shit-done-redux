@@ -635,12 +635,28 @@ const SUMMARY_ARTIFACT_DIR = '.planning';
 const SUMMARY_ARTIFACT_SUFFIX = 'SUMMARY.md';
 
 /**
+ * Normalize one path for scope comparison. Applied to BOTH sides so a declared
+ * path and a git-reported path meet in the same shape: backslashes become
+ * slashes unconditionally (a backslash path is not a Windows-only input),
+ * a leading `./` and any trailing `/` are stripped. This is the single
+ * normalizer shared by the SUMMARY-artifact predicate and the scope advisory,
+ * so the two can never disagree about what `./a\b/` means.
+ */
+function normalizeScopePath(raw: string): string {
+  return String(raw || '')
+    .replace(/\\/g, '/')
+    .trim()
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+}
+
+/**
  * True when a worktree-relative path is a SUMMARY artifact. Input may use
  * either separator; normalization to POSIX is unconditional (backslash paths
  * reach Linux too).
  */
 function isSummaryArtifactRelPath(relPath: string): boolean {
-  const normalized = String(relPath || '').replace(/\\/g, '/').trim().replace(/^\.\//, '');
+  const normalized = normalizeScopePath(relPath);
   return normalized.startsWith(`${SUMMARY_ARTIFACT_DIR}/`)
     && normalized.endsWith(SUMMARY_ARTIFACT_SUFFIX);
 }
@@ -791,20 +807,6 @@ interface WaveCleanupWarning {
   branch: string;
   /** The offending path; null when the check itself could not run. */
   path: string | null;
-}
-
-/**
- * Normalize one path for scope comparison. Applied to BOTH sides so a declared
- * path and a git-reported path meet in the same shape: backslashes become
- * slashes unconditionally (a backslash path is not a Windows-only input),
- * a leading `./` and any trailing `/` are stripped.
- */
-function normalizeScopePath(raw: string): string {
-  return String(raw || '')
-    .replace(/\\/g, '/')
-    .trim()
-    .replace(/^\.\//, '')
-    .replace(/\/+$/, '');
 }
 
 /**

@@ -6564,6 +6564,45 @@ describe('#2596 scope conformance — planWaveScopeConformance (pure)', () => {
       WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED,
     ]);
   });
+
+  // CLAUDE.md → TEST RULES: a parser needs at least one property test.
+  // Both are deterministic — seed pinned, run count bounded — per the repo's
+  // "property tests must be reproducible" rule. The two segment alphabets are
+  // disjoint so the negative property can never accidentally build a path that
+  // IS covered, and neither alphabet contains `.planning`, so the SUMMARY
+  // exemption cannot mask a result.
+  test('property: any path beneath a declared literal directory is always in scope', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom('src', 'lib', 'core', 'deep'), { minLength: 1, maxLength: 4 }),
+        fc.array(fc.constantFrom('a', 'b', 'c', 'd.ts'), { minLength: 1, maxLength: 3 }),
+        (declaredSegments, tailSegments) => {
+          const declared = declaredSegments.join('/');
+          const changed = `${declared}/${tailSegments.join('/')}`;
+          return planWaveScopeConformance([changed], [declared], BR).length === 0;
+        },
+      ),
+      { numRuns: 250, seed: 2596 },
+    );
+  });
+
+  test('property: a path sharing no prefix with any declared path always warns exactly once', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom('src', 'lib', 'core'), { minLength: 1, maxLength: 3 }),
+        fc.array(fc.constantFrom('zeta', 'yankee', 'xray.ts'), { minLength: 1, maxLength: 3 }),
+        (declaredSegments, changedSegments) => {
+          const declared = declaredSegments.join('/');
+          const changed = changedSegments.join('/');
+          const warnings = planWaveScopeConformance([changed], [declared], BR);
+          return warnings.length === 1
+            && warnings[0].path === changed
+            && warnings[0].code === WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED;
+        },
+      ),
+      { numRuns: 250, seed: 2596 },
+    );
+  });
 });
 
 describe('#2596 SUMMARY-artifact predicate and its parity with the walker', () => {
@@ -7016,5 +7055,45 @@ describe('#2596 --files on the record-agent and create verbs', () => {
     }));
     assert.equal(result.ok, true);
     assert.deepEqual(JSON.parse(written).worktrees[0].files_modified, ['src/a.ts']);
+  });
+
+  // #2596 parity (CLAUDE.md → Generative Fix Divergence): `record-agent` and
+  // `create` each decide independently whether to write `files_modified`.
+  // Assert the two surfaces agree on every input class — including the blank
+  // cases where BOTH must omit the field — so a change to one that is not
+  // mirrored in the other fails here instead of shipping a backend-dependent
+  // advisory.
+  test('parity: record-agent and create agree on files_modified for every --files input', () => {
+    const createEntry = (extraArgs) => {
+      let written = null;
+      withExitCode2596(() => cmdWorktreeCreate('/repo/main', [...baseArgs, '--root', '/repo', ...extraArgs], {
+        readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+        writeFile: (_p, c) => { written = c; },
+        write: () => {},
+        writeErr: () => {},
+        execGit: () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+      }));
+      return written ? JSON.parse(written).worktrees[0] : null;
+    };
+
+    for (const extraArgs of [
+      ['--files', 'src/a.ts src/b.ts'],
+      ['--files', 'src/a.ts'],
+      ['--files', ''],
+      ['--files', '   \t  '],
+      ['--files'],
+      [],
+    ]) {
+      const fromRecord = recordAgent(extraArgs).entry;
+      const fromCreate = createEntry(extraArgs);
+      assert.equal(
+        has(fromRecord, 'files_modified'), has(fromCreate, 'files_modified'),
+        `record-agent and create disagree on WHETHER to write files_modified for ${JSON.stringify(extraArgs)}`,
+      );
+      assert.deepEqual(
+        fromRecord.files_modified, fromCreate.files_modified,
+        `record-agent and create disagree on the files_modified VALUE for ${JSON.stringify(extraArgs)}`,
+      );
+    }
   });
 });
