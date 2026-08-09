@@ -207,28 +207,38 @@ describe('changeset serialize: shipped CHANGELOG citation integrity (#2359)', ()
     return release.sections.flatMap((s) => s.bullets);
   }
 
+  // Asserts cardinality before returning, so a reworded or deleted entry fails
+  // with a readable message instead of a TypeError on an undefined bullet.
+  function locateBullet(version, marker, label) {
+    const matches = bulletsOf(version).filter((b) => marker.test(b.body));
+    assert.equal(matches.length, 1,
+      `expected exactly one ${label} bullet in the ${version} section, found ${matches.length}`);
+    return matches[0];
+  }
+
   test('the 1.4.0 Cursor commands-surface bullet cites PR 805', () => {
-    const [cursor] = bulletsOf('1.4.0').filter((b) => CURSOR_MARKER.test(b.body));
+    const cursor = locateBullet('1.4.0', CURSOR_MARKER, 'Cursor commands-surface');
     assert.equal(cursor.pr, 805,
       'the .cursor/commands/ surface shipped in PR #805 (feat(#785)), not #803 (the Cline PR)');
   });
 
   test('the adjacent 1.4.0 Cline bullet still cites PR 803', () => {
-    const [cline] = bulletsOf('1.4.0').filter((b) => CLINE_MARKER.test(b.body));
+    const cline = locateBullet('1.4.0', CLINE_MARKER, 'Cline hook-parity');
     assert.equal(cline.pr, 803,
       "the Cline entry's #803 is correct and must survive the Cursor correction");
   });
 
-  test('the 1.4.0 section carries exactly one Cursor commands-surface bullet', () => {
-    const matches = bulletsOf('1.4.0').filter((b) => CURSOR_MARKER.test(b.body));
-    assert.equal(matches.length, 1,
-      'the entry must be corrected in place — neither dropped nor duplicated');
+  test('both 1.4.0 entries survive the correction exactly once each', () => {
+    const bullets = bulletsOf('1.4.0');
+    assert.equal(bullets.filter((b) => CURSOR_MARKER.test(b.body)).length, 1,
+      'the Cursor entry must be corrected in place — neither dropped nor duplicated');
+    assert.equal(bullets.filter((b) => CLINE_MARKER.test(b.body)).length, 1,
+      'the Cline entry must be left alone — neither dropped nor duplicated');
   });
 
   test('the adjacent Cursor and Cline bullets do not cite the same PR', () => {
-    const bullets = bulletsOf('1.4.0');
-    const [cursor] = bullets.filter((b) => CURSOR_MARKER.test(b.body));
-    const [cline] = bullets.filter((b) => CLINE_MARKER.test(b.body));
+    const cursor = locateBullet('1.4.0', CURSOR_MARKER, 'Cursor commands-surface');
+    const cline = locateBullet('1.4.0', CLINE_MARKER, 'Cline hook-parity');
     assert.notEqual(cursor.pr, cline.pr,
       'two adjacent entries describing different runtimes cannot share one PR');
   });
