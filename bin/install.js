@@ -36,6 +36,11 @@ const {
   resolveKimiHooksTomlDir,
   isRegisteredRuntimeId,
 } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+// #2870: the Install Scope Module — turns a bare 'global' | 'local' scope id
+// plus a runtime into one resolved value (configHome, settingsFile,
+// consentRequired, hostPrecedenceRank) instead of the id being re-derived
+// and re-interpreted at each call site. See src/install-scope.cts.
+const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
 // conversion module's rewrite engine can consume it without importing
@@ -545,6 +550,17 @@ try {
 // hardcoded string-equality branch) so behavior degrades CLOSED (safe), never open.
 // The live descriptor (capabilities/claude/capability.json) remains the source of
 // truth; this mirrors only the privacy-load-bearing subset. (ADR-1239 / #2086)
+//
+// #2870: NOT routed through the Install Scope Module (resolveScope,
+// src/install-scope.cts) despite that module owning per-scope settings-file
+// resolution elsewhere in this file. resolveScope's own descriptor lookup
+// goes through the SAME capability registry require this floor exists to
+// survive the failure of (see getRegistry() in install-scope.cts) — so on
+// exactly the "registry failed to load" path this constant is for,
+// resolveScope would throw too. Routing through it here would trade a
+// graceful, documented degrade for a crash in the one case this floor was
+// added to prevent. This hardcoded literal is the correct, honest answer,
+// not an un-migrated leftover.
 const FALLBACK_HOST_BEHAVIORS = Object.freeze({
   claude: Object.freeze({
     settingsFileByScope: Object.freeze({ local: 'settings.local.json', global: 'settings.json' }),
@@ -8191,7 +8207,26 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   } catch {}
 
   // 1. Remove GSD commands/skills (layout-driven)
-  const scope = isGlobal ? 'global' : 'local';
+  // #2870: scope id resolved ONCE here and reused below (was two independent
+  // isGlobal-derived re-derivations). Routed through the Install Scope
+  // Module (src/install-scope.cts) when the capability registry is
+  // available; degrades to the plain id on failure (unknown/non-installable
+  // runtime, broken bundle) so this function's scope-id uses — which never
+  // depended on registry availability before this migration — keep working
+  // exactly as they did pre-migration.
+  let _uninstallScopeId;
+  if (isGlobal) {
+    _uninstallScopeId = 'global';
+  } else {
+    _uninstallScopeId = 'local';
+  }
+  let _resolvedUninstallScope = null;
+  try {
+    _resolvedUninstallScope = resolveScope({ id: _uninstallScopeId, runtime });
+  } catch (_) {
+    _resolvedUninstallScope = null;
+  }
+  const scope = _resolvedUninstallScope ? _resolvedUninstallScope.id : _uninstallScopeId;
   // ADR-1239 / #2086: drive uninstall through the public Host-Integration Interface.
   // Fail-open to the engine directly if the composed-registry adapter can't load.
   const _uninstallAdapter = _runtimeAdapter(runtime);
@@ -8551,7 +8586,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       fs.rmSync(legacyDir, { recursive: true });
       removedCount++;
       console.log(`  ${green}✓${reset} Removed legacy commands/gsd/`);
-      const _uninstallScope = isGlobal ? 'global' : 'local';
+      const _uninstallScope = scope;
       if (migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope)) {
         // Compute the actual path written so the log line is accurate per-runtime
         const _layout = resolveRuntimeArtifactLayout(runtime, targetDir, _uninstallScope);
@@ -10152,6 +10187,29 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     };
   }
 
+  // #2870: scope id resolved ONCE here and reused at every use below (was 10
+  // independent isGlobal-derived re-derivations). Placed AFTER the kimi
+  // local-deferred early return above so that return path does no extra
+  // work. Routed through the Install Scope Module (src/install-scope.cts)
+  // when the capability registry is available; degrades to the plain id on
+  // failure (unknown/non-installable runtime, broken bundle) so this
+  // function's plain scope-id uses — which never depended on registry
+  // availability before this migration — keep working exactly as they did
+  // pre-migration. `_installScope` (the full resolved value, not just the
+  // id) additionally backs the settingsFileByScope routing below.
+  let _installScopeId;
+  if (isGlobal) {
+    _installScopeId = 'global';
+  } else {
+    _installScopeId = 'local';
+  }
+  let _installScope = null;
+  try {
+    _installScope = resolveScope({ id: _installScopeId, runtime });
+  } catch (_) {
+    _installScope = null;
+  }
+
   // Reusable helper to copy hooks/lib/ (git-cmd.js + gsd-graphify-rebuild.sh).
   // Defined early so it is visible to both the main and Codex code paths.
   // `allowlist` (when non-empty) restricts copying to the named top-level entries,
@@ -10349,7 +10407,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   const codexPreInstallAgentContents = new Map();
   let codexPreInstallVersionBytes = null;
   if (_hostBehaviors(runtime).tomlConfigInstall && !isMinimalMode(_effectiveInstallMode)) {
-    const _preSkillsDir = _resolveSkillsRootDir(runtime, targetDir, isGlobal ? 'global' : 'local');
+    const _preSkillsDir = _resolveSkillsRootDir(runtime, targetDir, _installScopeId);
     if (fs.existsSync(_preSkillsDir)) {
       for (const entry of fs.readdirSync(_preSkillsDir, { withFileTypes: true })) {
         if (entry.isDirectory() && entry.name.startsWith('gsd-')) {
@@ -10405,7 +10463,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   const _codexPreConfigRollback = !_hostBehaviors(runtime).tomlConfigInstall || isMinimalMode(_effectiveInstallMode) ? null : () => {
     rollbackInstallerMigrations();
     // skills/gsd-* — pass 1: restore snapshot entries (may be absent if deleted mid-install).
-    const _earlySkillsDir = _resolveSkillsRootDir(runtime, targetDir, isGlobal ? 'global' : 'local');
+    const _earlySkillsDir = _resolveSkillsRootDir(runtime, targetDir, _installScopeId);
     for (const skillName of codexPreInstallSkillNames) {
       const skillDirPath = path.join(_earlySkillsDir, skillName);
       const fileMap = codexPreInstallSkillContents.get(skillName);
@@ -10503,7 +10561,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   installerMigrationResult = runInstallerMigrations({
     configDir: targetDir,
     runtime,
-    scope: isGlobal ? 'global' : 'local',
+    scope: _installScopeId,
     migrations: options.installerMigrations,
     baselineScan: true,
   });
@@ -10636,7 +10694,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
   if (_isSkillsRuntime) {
     // Layout-driven install for skills-based runtimes (full and minimal modes)
-    const scope = isGlobal ? 'global' : 'local';
+    const scope = _installScopeId;
     // ADR-1239 upgrade 3 / #2088: a kind may declare an alternate install `home`
     // (e.g. Codex skills -> $HOME/.agents/skills) instead of the runtime's normal
     // configDir. Resolve the ACTUAL on-disk skills root here, descriptor-driven
@@ -11566,7 +11624,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   }
 
   // Write file manifest for future modification detection
-  writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: isGlobal ? 'global' : 'local' });
+  writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
   console.log(`  ${green}✓${reset} Wrote file manifest (${MANIFEST_NAME})`);
 
   // Report any backed-up local patches
@@ -11717,7 +11775,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       //     (copyCommandsAsCodexSkills removes pre-existing gsd-* dirs before re-writing)
       //     are restored even when they are absent from disk at rollback time (#3245 CR).
       //   • Dirs that did not pre-exist: remove entirely.
-      const _rollbackSkillsDir = _resolveSkillsRootDir(runtime, targetDir, isGlobal ? 'global' : 'local');
+      const _rollbackSkillsDir = _resolveSkillsRootDir(runtime, targetDir, _installScopeId);
       // Pass 1 — restore snapshot entries (may be absent from disk if deleted mid-install).
       for (const skillName of codexPreInstallSkillNames) {
         const skillDirPath = path.join(_rollbackSkillsDir, skillName);
@@ -11832,7 +11890,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // Re-write the manifest now that .toml agent files exist on disk.
       // The initial writeManifest call (before Codex config generation) could
       // not include agents/gsd-*.toml because those files did not yet exist.
-      writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: isGlobal ? 'global' : 'local' });
+      writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     } else {
       console.log(`  ${dim}↳${reset} Skipping Codex agent config generation (minimal install)`);
     }
@@ -12120,7 +12178,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // manifest-tracked (verified) — uninstall removes them explicitly via
     // removeCursorHooksJson + its script list, and reconcile is idempotent.
     // The re-run is retained for parity with the settings.json install path.
-    writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: isGlobal ? 'global' : 'local' });
+    writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     persistActiveProfileMarker();
     return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
   }
@@ -12207,7 +12265,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // explicitly via removeWindsurfHooksJson, and reconcileWindsurfHooksJson
       // is idempotent on repeated installs, so manifest tracking isn't needed
       // for correctness here.
-      writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: isGlobal ? 'global' : 'local' });
+      writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     }
 
     persistActiveProfileMarker();
@@ -12221,7 +12279,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     writeClineArtifacts(targetDir, isGlobal);
     // Re-run the manifest pass: these artifacts are written *after* the earlier
     // writeManifest() call, so a second pass is needed to hash-track them.
-    writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: isGlobal ? 'global' : 'local' });
+    writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     persistActiveProfileMarker();
     return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
   }
@@ -12236,10 +12294,24 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // #338: local Claude installs write to settings.local.json (Claude Code's per-user/gitignored slot)
   // so engineer-specific absolute paths (Node binary, home dir) never land in the repo-shared
   // settings.json. Global installs and all other runtimes continue to use settings.json.
+  // #2870: the CURRENT scope's settings filename is sourced from the Install
+  // Scope Module (_installScope.settingsFile, resolveScope's per-scope field)
+  // instead of indexing _scopedSettings by hand. _scopedSettings itself is
+  // retained unchanged as the #338-privacy fail-safe path: _hostBehaviors
+  // already degrades to FALLBACK_HOST_BEHAVIORS (see that constant's comment
+  // above) when the registry fails to load, whereas resolveScope's registry
+  // lookup throws in that same scenario (_installScope is null when it did).
+  // Falling back to _scopedSettings[_installScopeId] there — and keeping the
+  // non-local-claude branch's expression untouched — means this is
+  // byte-identical to the pre-migration computation in every case, including
+  // the broken-registry fail-safe floor.
   const _scopedSettings = _hostBehaviors(runtime).settingsFileByScope || null;
-  const isLocalClaude = (!isGlobal && !!(_scopedSettings && _scopedSettings.local));
+  const _currentScopeSettingsFile = _installScope
+    ? _installScope.settingsFile
+    : (_scopedSettings ? (_scopedSettings[_installScopeId] ?? null) : null);
+  const isLocalClaude = (!isGlobal && !!_currentScopeSettingsFile);
   const settingsFileName = isLocalClaude
-    ? _scopedSettings.local
+    ? _currentScopeSettingsFile
     : ((_scopedSettings && _scopedSettings.global) || 'settings.json');
   // ADR-1239 Phase B write-confinement: the descriptor-sourced settings filename
   // must resolve under targetDir (this path also drives a recursive mkdirSync).

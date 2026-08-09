@@ -30,6 +30,11 @@ const conversionExports = runtimeArtifactConversion as Record<string, unknown> &
   readGsdCommandNames?: () => string[];
 };
 import { posixNormalize } from './shell-command-projection.cjs';
+// #2870: `isGlobalScope` centralizes the `scope === 'global'` boolean
+// projection both kind-builder closures below need at the converters'
+// positional `isGlobal` boundary (see its doc comment in install-scope.cts
+// for why the projection is centralized rather than eliminated).
+import { isGlobalScope } from './install-scope.cjs';
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -272,6 +277,11 @@ function convertedAgentsKind(
       // choose global-home vs workspace-relative paths; converters that only take
       // (content) ignore the extra positional arg. Mirrors skillsKind's scope
       // threading (#1173).
+      // #2870: `scope` is this function's own parameter (default `'global'`,
+      // so it is never undefined here), sourced upstream from the Install
+      // Scope Module's resolved id. `isGlobalScope` projects it to the
+      // boolean `stageAgentsForRuntimeWithConverter`'s positional API
+      // requires — see its doc comment in install-scope.cts.
       const converter = conversionExports[converterName] as (content: string, isGlobal?: boolean) => string;
       // ADR-1235 §1: when agentCtx is provided (by createRuntimeArtifactInstallPlan
       // for descriptor-driven runtimes), thread it through so stageAgentsForRuntimeWithConverter
@@ -280,7 +290,7 @@ function convertedAgentsKind(
         findAgentsSourceRoot(configDir),
         resolved,
         converter,
-        scope === 'global',
+        isGlobalScope(scope),
         agentCtx,
       );
     },
@@ -380,7 +390,11 @@ function skillsKind(
       const cmdNames = conversionExports.readGsdCommandNames
         ? conversionExports.readGsdCommandNames()
         : [];
-      const isGlobal = scope === 'global';
+      // #2870: same judgment as convertedAgentsKind above — `scope` is this
+      // function's own parameter (default `'global'`, so it is never
+      // undefined here); `isGlobalScope` projects it to the boolean
+      // `realConverter`'s positional `isGlobal` arg requires.
+      const isGlobal = isGlobalScope(scope);
       const wrappedConverter = (content: string, skillName: string): string =>
         realConverter(content, skillName, runtime, cmdNames, isGlobal);
       return stageSkillsForRuntimeAsSkills(findInstallSourceRoot(configDir), resolved, wrappedConverter, prefix, nested, capabilityRegistry);
@@ -540,7 +554,11 @@ function dispatchKindEntry(entry: ArtifactKindDescriptor, runtime: string, confi
       );
   }
 
-  if (scope === 'global' && typeof entry.home === 'string' && entry.home !== '') {
+  // scope is guaranteed 'local' | 'global' here: resolveRuntimeArtifactLayoutFromRegistry
+  // (the only caller of dispatchKindEntry) throws TypeError before this point if scope is
+  // anything else (see the `scope !== 'local' && scope !== 'global'` guard above its
+  // dispatchKindEntry call), so isGlobalScope's throw-on-invalid-input never fires here.
+  if (isGlobalScope(scope) && typeof entry.home === 'string' && entry.home !== '') {
     result.home = path.join(os.homedir(), entry.home);
   }
 

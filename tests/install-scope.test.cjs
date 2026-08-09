@@ -22,7 +22,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
+const { resolveScope, isGlobalScope } = require('../gsd-core/bin/lib/install-scope.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { createRuntimeArtifactInstallPlan } = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
 
@@ -234,5 +234,27 @@ describe('resolveScope', () => {
     assert.notStrictEqual(first.configHome, second.configHome);
     assert.strictEqual(first.configHome, path.join('/fake/project-a', '.claude'));
     assert.strictEqual(second.configHome, path.join('/fake/project-b', '.claude'));
+  });
+});
+
+describe('isGlobalScope', () => {
+  // #2870: the shared boolean projection that replaced four independent
+  // inline `scope === 'global'` re-derivations.
+  test('returns true only for global', () => {
+    assert.strictEqual(isGlobalScope('global'), true);
+  });
+
+  test('returns false for local', () => {
+    assert.strictEqual(isGlobalScope('local'), false);
+  });
+
+  // Parity assertion: isGlobalScope must throw the SAME TypeError contract
+  // resolveScope's invalid-id case (Row 9) throws, since both share
+  // install-scope.cts's one validator — never a second, divergent one.
+  test('throws TypeError for an invalid id, matching resolveScope\'s contract', () => {
+    assert.throws(
+      () => isGlobalScope('project'),
+      (err) => err instanceof TypeError && /global/i.test(err.message) && /local/i.test(err.message),
+    );
   });
 });

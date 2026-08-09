@@ -114,6 +114,21 @@ export interface ResolveScopeInput {
 
 const VALID_SCOPE_IDS: ReadonlySet<string> = new Set(['global', 'local']);
 
+/**
+ * Single owner of the `'global' | 'local'` membership check. `resolveScope`
+ * and `isGlobalScope` (below) both call this instead of each carrying its
+ * own copy of the rule — two surfaces reading one validator, not two
+ * validators that could silently diverge.
+ */
+function validateScopeId(id: unknown, caller: string): InstallScope {
+  if (typeof id !== 'string' || !VALID_SCOPE_IDS.has(id)) {
+    throw new TypeError(
+      `${caller}: id must be one of 'global' | 'local', got ${JSON.stringify(id)}`,
+    );
+  }
+  return id as InstallScope;
+}
+
 // Higher wins. Not exported as a public constant — only the resulting
 // `hostPrecedenceRank` field on `ResolvedScope` is public API, so a future
 // re-basing of the literal values (Phase 2, #2871) never requires touching
@@ -238,13 +253,7 @@ function resolveScopeConfigHome(
  *     catch blocks.
  */
 export function resolveScope(input: ResolveScopeInput): ResolvedScope {
-  const id: unknown = input?.id;
-  if (typeof id !== 'string' || !VALID_SCOPE_IDS.has(id)) {
-    throw new TypeError(
-      `resolveScope: id must be one of 'global' | 'local', got ${JSON.stringify(id)}`,
-    );
-  }
-  const scopeId = id as InstallScope;
+  const scopeId = validateScopeId(input?.id, 'resolveScope');
 
   const runtime = input.runtime;
   const registryEntry = typeof runtime === 'string'
@@ -281,4 +290,24 @@ export function resolveScope(input: ResolveScopeInput): ResolvedScope {
     consentRequired,
     hostPrecedenceRank,
   });
+}
+
+/**
+ * Project an `InstallScope` down to the boolean shape some downstream APIs
+ * still require. Four call sites (both kind-builder closures in
+ * `runtime-artifact-layout.cts`, plus one each in
+ * `runtime-artifact-install-plan.cts` and `surface.cts`) were each
+ * independently re-deriving this same `scope === 'global'` comparison — four
+ * copies of one rule that could silently drift apart (#2870). They exist
+ * because `runtime-artifact-conversion.cts`'s `_computePathPrefix` takes
+ * `isGlobal: boolean` at its API boundary, and that boundary is not changing
+ * here, so the boolean projection cannot be eliminated — only centralized to
+ * the one place below.
+ *
+ * Throws the same `TypeError`, with the same message shape, as
+ * `resolveScope` throws for an `id` outside `'global' | 'local'` — both call
+ * `validateScopeId` above, so the two error contracts cannot diverge.
+ */
+export function isGlobalScope(scope: InstallScope): boolean {
+  return validateScopeId(scope, 'isGlobalScope') === 'global';
 }
