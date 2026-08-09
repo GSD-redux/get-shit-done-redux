@@ -10913,7 +10913,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, installSpawnEnv } = require('./helpers.cjs');
+// #2652 round-7: new subprocesses go through the process seam, never a
+// hand-rolled spawnSync (CONTRIBUTING). The pre-existing `installAndRead`
+// spawn below is byte-identical to the base and left alone as out of scope.
+const { runNode: seamRunNode, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
+// Class-norm timeouts, not local literals (CONTRIBUTING: they live in
+// tests/helpers/timeouts.cjs). The install is the INSTALL class; the emitted
+// gate is a short CLI probe against a temp fixture, i.e. the PROBE class.
+const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const INSTALL = path.join(__dirname, '..', 'bin', 'install.js');
 
@@ -11024,22 +11032,24 @@ test('real install: cursor-emitted execute-phase.md resolves runtime=cursor (#15
 // shell variables the dispatch sites substitute. Nothing here is a fixture.
 // ---------------------------------------------------------------------------
 
-/** Is a POSIX shell available? (false on windows-latest, where these skip.) */
-function hasBash() {
-  const r = spawnSync('which', ['bash'], { encoding: 'utf8', timeout: 10000 });
-  return r.status === 0 && String(r.stdout).trim().length > 0;
-}
+// Skipped on Windows, where there is no bash. Checked by platform rather than
+// by shelling out to `which`, which is itself non-portable.
+const NO_BASH = process.platform === 'win32';
 
-test('real install: cursor negotiates --worktree through its own emitted gate and it lands in the emitted Agent() slot (#2652)', { skip: !hasBash() }, () => {
+test('real install: cursor negotiates --worktree through its own emitted gate and it lands in the emitted Agent() slot (#2652)', { skip: NO_BASH }, (t) => {
   const { readFileNormalized } = require('./helpers.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-inst-cursor-gate-'));
-  try {
-    const res = spawnSync(
-      process.execPath,
+  t.after(() => cleanup(dir));
+    // Through the process seam and the install isolation seam, never a
+    // hand-rolled spawnSync from raw process.env (CONTRIBUTING "Spawning a
+    // subprocess: use the process seam"): ambient GSD_HOME / runtime-location
+    // vars otherwise leak in and make capability discovery host-dependent.
+    const res = seamRunNode(
       [INSTALL, '--cursor', '--global', '--config-dir', dir],
-      { encoding: 'utf8', timeout: 120000, env: { ...process.env, HOME: dir, USERPROFILE: dir } },
+      { env: installSpawnEnv({ HOME: dir, USERPROFILE: dir }), timeoutMs: INSTALL_TIMEOUT_MS },
     );
-    assert.strictEqual(res.status, 0, `install --cursor failed: ${res.stderr || res.stdout}`);
+    assert.strictEqual(res.outcome, 'exited', `install --cursor did not complete: ${res.outcome}`);
+    assert.strictEqual(res.exitCode, 0, `install --cursor failed: ${res.stderr || res.stdout}`);
 
     const tools = path.join(dir, 'gsd-core', 'bin', 'gsd-tools.cjs');
     const gate = path.join(dir, 'gsd-core', 'references', 'dispatch-isolation-gate.md');
@@ -11069,7 +11079,7 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
     // A disposable project dir: `query dispatch-isolation` writes the #3045
     // sentinel into its cwd as an unconditional side effect.
     const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cursor-gate-proj-'));
-    try {
+    t.after(() => cleanup(proj));
       // Declare the runtime the way a real Cursor project does — through
       // `.planning/config.json`, which is the tier `resolveRuntime` actually
       // reads (GSD_RUNTIME > .planning/config.json > 'claude'). Injecting
@@ -11097,18 +11107,21 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
       const hermeticEnv = { ...process.env, HOME: dir, USERPROFILE: dir };
       delete hermeticEnv.GSD_RUNTIME;
 
-      const run = spawnSync('bash', ['-c', script], {
+      // Seam again — `runHook` documents `interpreter: 'bash'` for a shell
+      // script, so the gate is written to a file rather than passed as `-c`.
+      const gateScript = path.join(proj, 'run-gate.sh');
+      fs.writeFileSync(gateScript, script);
+      const run = seamRunHook(gateScript, [], {
+        interpreter: 'bash',
         cwd: proj,
-        encoding: 'utf8',
-        timeout: 60000,
         env: hermeticEnv,
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
-      if (run.error || run.signal) {
-        assert.fail(
-          `emitted cursor gate did not complete: ${run.error ? run.error.code || run.error.message : `killed by ${run.signal}`}`,
-        );
-      }
-      assert.strictEqual(run.status, 0, `emitted cursor gate exited ${run.status}: ${run.stderr}`);
+      assert.strictEqual(
+        run.outcome, 'exited',
+        `emitted cursor gate did not complete: outcome=${run.outcome} ${run.stderr || ''}`,
+      );
+      assert.strictEqual(run.exitCode, 0, `emitted cursor gate exited ${run.exitCode}: ${run.stderr}`);
 
       assert.match(
         run.stdout,
@@ -11183,12 +11196,6 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
           `${wf}: the rendered cursor dispatch carries Claude Code's own harness literal — the flag is descriptor data, never hardcoded:\n${rendered}`,
         );
       }
-    } finally {
-      cleanup(proj);
-    }
-  } finally {
-    cleanup(dir);
-  }
 });
 
 test('real install: claude-emitted execute-phase.md keeps claude default + worktrees on (#1521)', () => {

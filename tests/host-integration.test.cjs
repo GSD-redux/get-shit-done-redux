@@ -2251,7 +2251,11 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
 // value the workflow PUSHED THROUGH THE WRITE PATH.
 // ---------------------------------------------------------------------------
 describe('#2728 B1 — isolation degrades re-record through the single write path', () => {
-  const { spawnSync } = require('node:child_process');
+  const { runHook } = require('./helpers/process-seam.cjs');
+  // Class-norm timeout, not a local literal (CONTRIBUTING: class-norm
+  // timeouts live in tests/helpers/timeouts.cjs). This harness is a short
+  // shell probe against a gsd_run stub — exactly the PROBE class.
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const os = require('node:os');
 
   const WORKFLOWS = path.join(REPO_ROOT, 'gsd-core', 'workflows');
@@ -2302,18 +2306,20 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
       'printf "FINAL_LOCAL=%s\\n" "$ISOLATION"',
     ].join('\n');
 
-    // Bounded by construction (DEFECT.UNBOUNDED-SUBPROCESS): the harness is
-    // pure shell against a `gsd_run` stub — no git, no network, no real CLI —
-    // so it completes in milliseconds. 15s is the ceiling that turns a wedged
-    // shell into a named failure instead of a macOS-CI run that goes quiet.
-    const res = spawnSync('bash', ['-c', harness], { encoding: 'utf-8', timeout: 15000 });
-    if (res.error || res.signal) {
+    // Through the process seam, never a hand-rolled spawnSync (CONTRIBUTING
+    // "Spawning a subprocess: use the process seam"). `runHook` documents
+    // `interpreter: 'bash'` for running a shell script, so the harness is
+    // written to a file rather than passed as `-c`. Bounded by construction
+    // (DEFECT.UNBOUNDED-SUBPROCESS): pure shell against a `gsd_run` stub — no
+    // git, no network, no real CLI — so it completes in milliseconds.
+    const scriptPath = path.join(dir, 'degrade-harness.sh');
+    fs.writeFileSync(scriptPath, harness);
+    const res = runHook(scriptPath, [], { interpreter: 'bash', timeoutMs: PROBE_TIMEOUT_MS });
+    if (res.outcome !== 'exited') {
       cleanup(dir);
-      assert.fail(
-        `degrade block did not complete: ${res.error ? res.error.code || res.error.message : `killed by ${res.signal}`}`,
-      );
+      assert.fail(`degrade block did not complete: outcome=${res.outcome} ${res.stderr || ''}`);
     }
-    assert.equal(res.status, 0, `degrade block exited ${res.status}: ${res.stderr}`);
+    assert.equal(res.exitCode, 0, `degrade block exited ${res.exitCode}: ${res.stderr}`);
     assert.match(res.stdout, /FINAL_LOCAL=none/, 'the degrade must set $ISOLATION=none locally');
 
     const calls = fs.existsSync(log)
