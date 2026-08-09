@@ -1579,6 +1579,97 @@ const KNOWN_REVIEWER_FIELDS = new Set([
 ]);
 
 /**
+ * The closed `runtime.hostBehaviors` vocabulary (ADR-1016, closed via #2801).
+ *
+ * ADR-1016's core principle is that every per-runtime difference is a value over
+ * a closed primitive vocabulary, and that a host needing a new shape gets a
+ * reviewed first-party primitive rather than "an open escape hatch in the
+ * descriptor" (§Alternatives #2 rejects exactly that). `hostBehaviors` was the
+ * one hole left in that closure: 59 keys across 18 manifests, 39 of them set by
+ * a single capability, validated by nothing. It was described in the reference
+ * docs as a deliberate open seam sanctioned by ADR-1016 — ADR-1016 does not
+ * mention `hostBehaviors` at all, and its stated principle is the opposite.
+ *
+ * Adding a key here is deliberate and reviewed. That friction IS the decision
+ * (ADR-1016 §Consequences: "the closed vocabulary must grow (reviewed) when a
+ * genuinely new host shape appears — intentional friction, the trust boundary").
+ *
+ * WARNING, never error. Two reasons:
+ *   1. It matches the ADR-2782 D4.3 treatment of an unknown `reviewer` field, so
+ *      a manifest built against a newer GSD degrades visibly instead of failing
+ *      the build of a repo that merely reads it.
+ *   2. An error would hard-break an out-of-tree descriptor carrying a bespoke
+ *      key, with no deprecation window — the exact mistake #2801's own alias
+ *      removal spent a full release avoiding. Escalating to an error is a later
+ *      step and needs its own window.
+ *
+ * Kept in sorted order, and `tests/reviewer-manifest-body.test.cjs` asserts this
+ * set equals the keys the shipped manifests actually declare, so the list cannot
+ * silently rot away from reality (DEFECT.GENERATIVE-FIX).
+ */
+const KNOWN_HOST_BEHAVIORS = new Set([
+  'agentFileExtension',
+  'agentFrontmatterExtensions',
+  'agentManifestStyle',
+  'agentTomlFiles',
+  'attributionConfigResolver',
+  'attributionSource',
+  'authorsCanonicalWorkflow',
+  'brandingRewrites',
+  'cleanupSkillSidecars',
+  'clineRulesSurface',
+  'combinedFamilyInstall',
+  'commandBodyConverter',
+  'doneBannerStyle',
+  'flatCommandDir',
+  'frontmatterDialect',
+  'globalDirResolver',
+  'hookPathStyle',
+  'hooksJsonSurface',
+  'hyphenNameAgentBody',
+  'installsCommandBodiesForWorkflowDelegation',
+  'legacyCommandsGsdCleanup',
+  'legacyCommandsGsdInstallMigration',
+  'legacyCommandsGsdUninstall',
+  'legacyDevinSkillsCleanup',
+  'localCommandsViaRules',
+  'localInstallDeferred',
+  'localInstallStyle',
+  'localTargetIsProjectRoot',
+  'managedHookEvents',
+  'mcpCompanion',
+  'namedSubagentsSupported',
+  'nativeModelAliases',
+  'nativePlugin',
+  'noPathRewrite',
+  'ownsClaudePaths',
+  'permissionsSchema',
+  'pluginOnlyInstall',
+  'projectInstructionFile',
+  'reapplyCommand',
+  'reportCommandsDir',
+  'reportSkillsCount',
+  'retiredArtifacts',
+  'settingsFileByScope',
+  'sharedHooksDirName',
+  'skillFrontmatterVersion',
+  'skillPriorityFrontmatter',
+  'skillsGlobalOnboarding',
+  'skillsManifestPrefix',
+  'skipCodexSkillsManifest',
+  'skipHomePrefixSubstitution',
+  'skipSettingsUi',
+  'skipSharedHooksInstall',
+  'skipUpdateBannerCommand',
+  'soloStageMetadata',
+  'sourceMarkerFile',
+  'tomlConfigInstall',
+  'trackCategoryDescription',
+  'verificationStyle',
+  'writeCategoryDescription',
+]);
+
+/**
  * Frozen reason codes for the non-fatal reviewer diagnostics (ADR-2782 D4.3).
  *
  * The IR behind `collectReviewerWarnings`' rendered strings. Tests assert on
@@ -1596,6 +1687,8 @@ const REVIEWER_WARNING = Object.freeze({
   UNKNOWN_REVIEWER_FIELD: 'unknown_reviewer_field',
   /** A `runtime.hostBehaviors` key that was removed from the vocabulary. */
   REMOVED_HOST_BEHAVIOR: 'removed_host_behavior',
+  /** A `runtime.hostBehaviors` key outside the closed vocabulary. */
+  UNKNOWN_HOST_BEHAVIOR: 'unknown_host_behavior',
 });
 
 /** Dotted path of the field removed by ADR-2782 D9 / #2801. */
@@ -1751,7 +1844,7 @@ function collectReviewerWarningRecordFields(cap) {
   // is the same rule the unknown-`reviewer.*`-field loop below applies. Own-key
   // read, so a polluted prototype cannot manufacture this warning on every
   // otherwise-innocent manifest. This is ONE keyed removal notice, not general
-  // `hostBehaviors` validation — that bag stays deliberately open (ADR-1016).
+  // `hostBehaviors` validation — the closed vocabulary below handles that (#2801).
   const runtimeBody = cap.runtime;
   if (typeof runtimeBody === 'object' && runtimeBody !== null && !Array.isArray(runtimeBody)) {
     const hostBehaviors = runtimeBody.hostBehaviors;
@@ -1772,6 +1865,23 @@ function collectReviewerWarningRecordFields(cap) {
           '— ignored, and it contributes no reviewer lane. Declare a `reviewer` body instead; see ' +
           'docs/how-to/ship-a-reviewer-lane.md',
       });
+    }
+
+    // #2801 — the closed `hostBehaviors` vocabulary (ADR-1016). `reviewerCli` is
+    // excluded here: it already drew its own removal notice above, and a second,
+    // generic "unknown key" record for the same key would be noise, not signal.
+    if (typeof hostBehaviors === 'object' && hostBehaviors !== null && !Array.isArray(hostBehaviors)) {
+      for (const key of Object.keys(hostBehaviors)) {
+        if (isReservedName(key) || key === 'reviewerCli' || KNOWN_HOST_BEHAVIORS.has(key)) continue;
+        records.push({
+          code: REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR,
+          capId,
+          field: 'runtime.hostBehaviors.' + key,
+          message:
+            '⚠ capability "' + capId + '" runtime.hostBehaviors.' + key + ' is not a known host behavior ' +
+            'in this GSD version — ignored. Adding one is a reviewed first-party change (ADR-1016).',
+        });
+      }
     }
   }
 
@@ -3263,6 +3373,7 @@ module.exports = {
   VALID_EVIDENCE_CLASSES,
   VALID_LANE_HANDLERS,
   KNOWN_REVIEWER_FIELDS,
+  KNOWN_HOST_BEHAVIORS,
   validateReviewerBody,
   collectReviewerWarnings,
   collectReviewerWarningRecords,

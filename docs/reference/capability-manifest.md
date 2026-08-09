@@ -161,11 +161,13 @@ Runtime capabilities describe how GSD projects its artefacts onto one host CLI. 
 
 ### `hostBehaviors`
 
-`runtime.hostBehaviors` is an **open, unvalidated bag** of per-host behavior switches consumed directly by installer and runtime-adaptation code. Unlike every axis in the table above, it is **not covered by any schema**, and an unknown key inside it is neither rejected nor warned about — it is simply ignored by any code path that does not look for it by name.
+`runtime.hostBehaviors` is a **closed vocabulary** of per-host behavior switches consumed directly by installer and runtime-adaptation code. A key outside the vocabulary is **ignored, with a non-fatal warning** naming the capability and the key; it is never a validation error, so a manifest authored against a newer GSD degrades visibly instead of failing the build of a repo that merely reads it.
 
-There is exactly **one** exception, and it is a keyed removal notice rather than validation: a manifest still declaring the removed `reviewerCli` key gets a non-fatal warning (see below). Every other key keeps the no-warning behavior.
+Adding a key is a reviewed first-party change, which is [ADR-1016](../adr/1016-runtime-capability-descriptor.md)'s intended friction rather than an obstacle: the runtime descriptor expresses every per-host difference as a value over a closed vocabulary, and a host needing a new shape gets a named primitive rather than an open escape hatch.
 
-59 distinct keys are declared across the shipped runtime manifests; most are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
+> **History.** `hostBehaviors` went unvalidated until [#2801](https://github.com/open-gsd/gsd-core/issues/2801), and this page previously described it as a deliberate open seam sanctioned by ADR-1016. That attribution was wrong — ADR-1016 does not mention `hostBehaviors` at all. See the [ADR-1016 amendment](../adr/1016-runtime-capability-descriptor.md#amendment-2026-08-09-hostbehaviors-is-closed-2801).
+
+The vocabulary holds 59 keys; 39 of them are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
 
 | Key | Capabilities declaring it |
 |---|---|
@@ -183,7 +185,7 @@ There is exactly **one** exception, and it is a keyed removal notice rather than
 
 **If your out-of-tree manifest still sets it:** nothing crashes and nothing else about your capability changes — it simply contributes no reviewer lane, and the registry reports a non-fatal warning naming the capability. The warning reaches you at build time on stderr, and at install time through the overlay loader's diagnostics. To restore the lane, declare a `reviewer` body; [Ship a reviewer lane in your capability](../how-to/ship-a-reviewer-lane.md) is the migration path, and the field reference is below.
 
-See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime body is a closed 8-axis plus 4 install-surface vocabulary; `hostBehaviors` is the deliberate open seam beside it) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body, and D9 retires the `reviewerCli` alias).
+See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime descriptor is a closed vocabulary; its 2026-08-09 amendment closes `hostBehaviors` too) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body, and D9 retires the `reviewerCli` alias).
 
 For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016-runtime-capability-descriptor.md).
 

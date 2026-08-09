@@ -48,6 +48,7 @@ const {
   VALID_EVIDENCE_CLASSES,
   VALID_LANE_HANDLERS,
   KNOWN_REVIEWER_FIELDS,
+  KNOWN_HOST_BEHAVIORS,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
 
 const { loadAndValidate, buildRegistry } = require('../scripts/gen-capability-registry.cjs');
@@ -1728,17 +1729,17 @@ describe('J. Property-based (fast-check)', () => {
 // has no `reviewer` body, so a check placed after that guard would fire only for
 // capabilities that do not need it. K1 is the row that fails if it is misplaced.
 
-describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
-  /** A whole runtime manifest — the shape production passes to this function. */
-  function runtimeCapWithHostBehaviors(hostBehaviors, extra = {}) {
-    return {
-      id: 'legacy-cli',
-      role: 'runtime',
-      runtime: { hostBehaviors },
-      ...extra,
-    };
-  }
+/** A whole runtime manifest — the shape production passes to this function. */
+function runtimeCapWithHostBehaviors(hostBehaviors, extra = {}) {
+  return {
+    id: 'legacy-cli',
+    role: 'runtime',
+    runtime: { hostBehaviors },
+    ...extra,
+  };
+}
 
+describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
   /** Records for the removal notice only, keyed on the typed code. */
   function removalRecords(cap) {
     return collectReviewerWarningRecords(cap)
@@ -1750,7 +1751,7 @@ describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
     // this, a code can be added or renamed with no test noticing.
     assert.deepEqual(
       Object.keys(REVIEWER_WARNING).sort(),
-      ['REMOVED_HOST_BEHAVIOR', 'UNKNOWN_REVIEWER_FIELD'],
+      ['REMOVED_HOST_BEHAVIOR', 'UNKNOWN_HOST_BEHAVIOR', 'UNKNOWN_REVIEWER_FIELD'],
     );
     assert.equal(Object.isFrozen(REVIEWER_WARNING), true, 'the code enum must be frozen');
     assert.equal(REMOVED_REVIEWER_CLI_FIELD, 'runtime.hostBehaviors.reviewerCli');
@@ -1793,20 +1794,30 @@ describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
     }
   });
 
-  test('similarlyNamedHostBehaviorKeysDoNotWarn', () => {
-    // `hostBehaviors` stays an OPEN, UNVALIDATED bag for its other keys
-    // (ADR-1016's deliberate seam). This phase adds ONE keyed removal notice,
-    // not general hostBehaviors validation — so a near-miss name is silent.
+  test('similarlyNamedHostBehaviorKeysAreNotTheRemovedField', () => {
+    // Exact own-key match only: a near-miss name must never be reported as the
+    // removed `reviewerCli`. Since #2801 closed the vocabulary these names DO
+    // now draw an unknown-host-behavior notice, which is correct — they are not
+    // declared behaviors — but they must not draw the removal notice.
     const cap = runtimeCapWithHostBehaviors({
       reviewerCliPath: '/usr/bin/thing',
       reviewer_cli: true,
       reviewerCLI: true,
-      reviewer: true,
       reapplyCommand: 'x',
     });
+    const records = collectReviewerWarningRecords(cap);
     assert.deepEqual(
-      collectReviewerWarningRecords(cap), [],
+      records.filter((rec) => rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR), [],
       'only the exact own key `reviewerCli` is the removed field',
+    );
+    assert.deepEqual(
+      records.map((rec) => rec.field).sort(),
+      [
+        'runtime.hostBehaviors.reviewerCLI',
+        'runtime.hostBehaviors.reviewer_cli',
+        'runtime.hostBehaviors.reviewerCliPath',
+      ].sort(),
+      'the three undeclared names draw an unknown-host-behavior notice; the declared reapplyCommand does not',
     );
   });
 
@@ -1927,5 +1938,102 @@ describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
       assert.ok(Array.isArray(records), `${name}: records must always be an array`);
       assert.ok(Array.isArray(strings), `${name}: strings must always be an array`);
     }
+  });
+});
+
+// ─── L. Closed `hostBehaviors` vocabulary (ADR-1016, closed by #2801) ────────
+
+describe('L. Closed hostBehaviors vocabulary (#2801)', () => {
+  const ROOT = path.resolve(__dirname, '..');
+
+  /** Every hostBehaviors key the shipped manifests actually declare. */
+  function shippedHostBehaviorKeys() {
+    const keys = new Set();
+    const capsDir = path.join(ROOT, 'capabilities');
+    for (const dir of fs.readdirSync(capsDir, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const file = path.join(capsDir, dir.name, 'capability.json');
+      if (!fs.existsSync(file)) continue;
+      const cap = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const hb = cap && cap.runtime && cap.runtime.hostBehaviors;
+      if (hb && typeof hb === 'object' && !Array.isArray(hb)) {
+        for (const key of Object.keys(hb)) keys.add(key);
+      }
+    }
+    return keys;
+  }
+
+  test('vocabularyExactlyMatchesWhatTheShippedManifestsDeclare', () => {
+    // DEFECT.GENERATIVE-FIX: two surfaces, one truth. A key added to a manifest
+    // without being declared here would warn on every build; a key left here
+    // after its last manifest drops it is dead vocabulary. Both directions fail.
+    const shipped = shippedHostBehaviorKeys();
+    assert.deepEqual(
+      [...shipped].sort(), [...KNOWN_HOST_BEHAVIORS].sort(),
+      'the closed vocabulary and the shipped manifests must name the same keys',
+    );
+  });
+
+  test('noShippedCapabilityDrawsAHostBehaviorWarning', () => {
+    // The closure must be inert for everything that ships today. If this fails,
+    // closing the vocabulary broke a real capability rather than a hypothetical one.
+    const capsDir = path.join(ROOT, 'capabilities');
+    const offenders = [];
+    for (const dir of fs.readdirSync(capsDir, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const file = path.join(capsDir, dir.name, 'capability.json');
+      if (!fs.existsSync(file)) continue;
+      const cap = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const rec of collectReviewerWarningRecords(cap)) {
+        if (rec.code === REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR
+          || rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR) {
+          offenders.push(`${dir.name}: ${rec.field}`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [], `no shipped capability may draw a hostBehaviors notice, got: ${JSON.stringify(offenders)}`);
+  });
+
+  test('anUndeclaredHostBehaviorWarnsAndIsNotAnError', () => {
+    const cap = runtimeCapWithHostBehaviors({ someFutureSwitch: true });
+    const records = collectReviewerWarningRecords(cap);
+    assert.equal(records.length, 1, `expected one record, got: ${JSON.stringify(records)}`);
+    assert.equal(records[0].code, REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR);
+    assert.equal(records[0].field, 'runtime.hostBehaviors.someFutureSwitch');
+    // Forward-compat invariant: a warning, never a validation error.
+    assert.deepEqual(validateCapability({ ...cap, version: '1.0.0' }, cap.id).filter((e) => e.includes('someFutureSwitch')), []);
+  });
+
+  test('aDeclaredHostBehaviorIsSilentAtAnyValue', () => {
+    for (const value of [true, false, 'x', 0, null, {}, []]) {
+      const cap = runtimeCapWithHostBehaviors({ reapplyCommand: value });
+      assert.deepEqual(
+        collectReviewerWarningRecords(cap), [],
+        `a declared key must be silent regardless of value, got value ${JSON.stringify(value)}`,
+      );
+    }
+  });
+
+  test('theRemovedAliasDrawsItsOwnNoticeNotTheGenericOne', () => {
+    // reviewerCli is excluded from the unknown-key sweep on purpose: it has a
+    // migration pointer the generic notice does not carry, and two records for
+    // one key would be noise.
+    const records = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ reviewerCli: true }));
+    assert.equal(records.length, 1, `expected exactly one record, got: ${JSON.stringify(records)}`);
+    assert.equal(records[0].code, REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR);
+    assert.equal(records[0].replacement, 'reviewer');
+  });
+
+  test('reservedKeysInTheBagAreIgnoredNotWarned', () => {
+    const hostile = JSON.parse('{"__proto__": {"polluted": true}, "constructor": 1, "prototype": 2, "reapplyCommand": "x"}');
+    const cap = runtimeCapWithHostBehaviors(hostile);
+    let records;
+    try {
+      records = collectReviewerWarningRecords(cap);
+    } catch (err) {
+      assert.fail(`collectReviewerWarningRecords threw: ${err && err.message}`);
+    }
+    assert.deepEqual(records, [], 'reserved names are skipped, not reported as unknown behaviors');
+    assert.equal({}.polluted, undefined, 'Object.prototype must not be polluted');
   });
 });
