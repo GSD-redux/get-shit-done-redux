@@ -571,7 +571,10 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
     assert.strictEqual(entry.model, 'gpt-5.6-sol');
   });
 
-  test('generated Codex TOML embeds model = and model_reasoning_effort = lines', () => {
+  test('generated Codex TOML omits model = and model_reasoning_effort = lines when only the resolver would have supplied them (#3241)', () => {
+    // #3241 flips this: the runtime-resolver auto-embed (D1) was removed, so a
+    // resolver alone with no explicit model_overrides no longer pins a model,
+    // and #838's coupling means the reasoning-effort line is omitted too.
     writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
     const resolver = readGsdRuntimeProfileResolver(tmpDir);
     const toml = generateCodexAgentToml(
@@ -580,16 +583,21 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
       null,
       resolver
     );
-    assert.match(toml, /^model = "gpt-5\.6-sol"$/m);
-    assert.match(toml, /^model_reasoning_effort = "xhigh"$/m);
+    assert.doesNotMatch(toml, /^model = "gpt-5\.6-sol"$/m);
+    assert.doesNotMatch(toml, /^model_reasoning_effort = "xhigh"$/m);
   });
 
-  test('generated TOML always includes model_reasoning_effort even when model_profile_overrides sets reasoning_effort to empty (#443 unified)', () => {
+  test('generated TOML always includes model_reasoning_effort even when model_profile_overrides sets reasoning_effort to empty (#443 unified) (#3241: model now pinned via explicit model_overrides, not the resolver alone)', () => {
     // Under the unified effort design (#443), model_reasoning_effort in the Codex TOML
     // is driven by the unified effort resolver (resolveInstallTimeEffort / effortCfg),
     // NOT by model_profile_overrides.reasoning_effort. Setting reasoning_effort: '' in
-    // model_profile_overrides does NOT suppress the unified effort — the TOML always
-    // carries a valid model_reasoning_effort drawn from the agent's routing tier.
+    // model_profile_overrides does NOT suppress the unified effort when a model IS
+    // pinned — the TOML carries a valid model_reasoning_effort drawn from the agent's
+    // routing tier.
+    // #3241: the resolver alone no longer pins a model (D1), so this test now supplies
+    // an explicit model_overrides pin ('custom', a real-looking Codex id — row 4,
+    // "unchanged") to keep exercising the unrelated property under test: that
+    // model_profile_overrides.reasoning_effort is ignored by the unified resolver.
     // gsd-planner is a heavy-tier agent → unified default resolves to "xhigh".
     writeConfig(tmpDir, {
       runtime: 'codex',
@@ -600,12 +608,13 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
     const toml = generateCodexAgentToml(
       'gsd-planner',
       '---\nname: gsd-planner\n---\nBody.\n',
-      null,
+      { 'gsd-planner': 'custom' },
       resolver
     );
-    // Model override (from model_profile_overrides) is still respected.
+    // Explicit model_overrides pin is respected (#3241 row 4 — unchanged).
     assert.match(toml, /^model = "custom"$/m);
-    // Unified effort always fires — model_reasoning_effort is present and valid.
+    // Unified effort always fires when a model is pinned — model_reasoning_effort is
+    // present and valid, ignoring model_profile_overrides.reasoning_effort.
     assert.match(toml, /^model_reasoning_effort = "(minimal|low|medium|high|xhigh)"$/m);
     // gsd-planner is heavy-tier, so with no effortCfg the manifest tier default applies → xhigh.
     assert.match(toml, /^model_reasoning_effort = "xhigh"$/m);

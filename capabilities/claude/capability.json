@@ -101,8 +101,7 @@
       "skillsGlobalOnboarding": true,
       "legacyCommandsGsdInstallMigration": true,
       "legacyCommandsGsdUninstall": "global",
-      "hyphenNameAgentBody": true,
-      "reviewerCli": true
+      "hyphenNameAgentBody": true
     }
   },
   "reviewer": {

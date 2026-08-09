@@ -157,6 +157,29 @@ export const KNOWN_PROVIDERS: Set<string> = new Set(
     .map(([name]) => name)
 );
 
+// ─── #3241 — Anthropic-flavored model detection ──────────────────────────────
+//
+// Moved here from src/model-resolver.cts (the "seam decision" in
+// .gsd/phase/feat-3241-codex-omit-model-by-default/40-design.md): this leaf
+// module is the one common dependency both model-resolver and the (layering-
+// restricted) install-time Codex-posture checks can share without pulling
+// model-resolver's config-loader dependency chain into a "pure read/verify"
+// caller. model-resolver re-exports both names for back-compat.
+//
+// #2310 — True if `model` is an Anthropic-flavored value that must never appear as a
+// Codex agent `.toml` `model`. Two forms: (a) a bare Claude Agent-tool tier alias
+// (opus/sonnet/haiku/fable — CLAUDE_AGENT_ALIASES below); (b) any Claude model id in
+// any provider namespacing — `claude-*`, `anthropic/claude-*`, `us.anthropic.claude-*`
+// (the forms the catalog assigns to opencode/hermes/kilo, reachable on a Codex .toml
+// via the runtime-resolver path). No OpenAI/Codex model id contains "claude", so a
+// case-insensitive substring test is a safe, exhaustive guard for (b). Codex/ChatGPT
+// rejects all of these.
+export const CLAUDE_AGENT_ALIASES: Set<string> = new Set(['opus', 'sonnet', 'haiku', 'fable']);
+
+export function isAnthropicFlavoredModel(model: unknown): boolean {
+  return typeof model === 'string' && (CLAUDE_AGENT_ALIASES.has(model) || model.toLowerCase().includes('claude'));
+}
+
 export function nextTier(currentTier: string): string | null {
   const order = ['light', 'standard', 'heavy'];
   const idx = order.indexOf(String(currentTier));
