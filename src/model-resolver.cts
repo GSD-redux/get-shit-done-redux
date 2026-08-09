@@ -60,31 +60,19 @@ const { planningDir } = planningWorkspaceMod;
 // loudly here instead of silently omitting.
 const RUNTIMES_WITH_NATIVE_ALIASES: ReadonlySet<string> = new Set(['claude']);
 
-let _installMarkerCache: string | null | undefined;
-function readInstallRuntimeMarker(): string | null {
-  if (_installMarkerCache !== undefined) return _installMarkerCache;
-  try {
-    const markerPath = path.join(__dirname, '..', '..', '.gsd-runtime');
-    const raw = fs.readFileSync(markerPath, 'utf8').trim();
-    _installMarkerCache = raw || null;
-  } catch {
-    // No marker: dev/source tree, or an install predating #2297. Fall through to
-    // the 'claude' default (keeps tier aliases — never worse than the bug).
-    _installMarkerCache = null;
-  }
-  return _installMarkerCache;
-}
+// #2486: the marker read moved to runtime-slash.cts, the canonical runtime
+// resolver, so `resolveRuntime` can consult the same rung this module already
+// did. Re-exported below rather than re-implemented — two marker reads with two
+// caches is the DEFECT.GENERATIVE-FIX-DIVERGENCE shape.
+import {
+  readInstallRuntimeMarker,
+  _setInstallRuntimeMarkerForTests,
+  _resetInstallRuntimeMarkerCacheForTests,
+} from './runtime-slash.cjs';
 
 // Test seams for the install-marker rung (the dev/source tree has no marker, so
 // the file read always bottoms out at 'claude' — these let tests exercise the
 // third precedence rung and reset the module-level cache between cases).
-function _setInstallRuntimeMarkerForTests(value: string | null): void {
-  _installMarkerCache = value;
-}
-function _resetInstallRuntimeMarkerCacheForTests(): void {
-  _installMarkerCache = undefined;
-}
-
 // The runtime whose install is actually resolving, canonicalized so an alias or
 // case variant (e.g. "claude-code"/"Claude") cannot defeat the native-alias
 // check below (#2297 review). Precedence mirrors resolveRuntime()

@@ -1575,7 +1575,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeDispatchShouldFlatten({ args, cwd, raw, error }) {
     // #1708 / #853: typed query replacing the `RUNTIME === 'codex'` prose rule.
           //
-          // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+          // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+          // .gsd-runtime marker > 'claude'),
           // looks up registry.runtimes[id].runtime.hostIntegration.dispatch, and
           // calls shouldFlattenDispatch(dispatch) from host-integration.cjs.
           //
@@ -1629,7 +1630,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // #853) for exactly this reason — it replaced a `RUNTIME === 'codex'`
     // prose rule.
     //
-    // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+    // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+    // .gsd-runtime marker > 'claude'),
     // reads registry.runtimes[id].runtime.hostIntegration.dispatch.isolation,
     // and validates it against the closed vocabulary.
     //
@@ -1713,7 +1715,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   /**
    * Shared, side-effect-free resolution of the negotiated dispatch isolation:
-   * runtime (GSD_RUNTIME > config.runtime > 'claude') → declared
+   * runtime (GSD_RUNTIME > config.runtime > per-install .gsd-runtime marker >
+   * 'claude') → declared
    * `dispatch.isolation` → harness-flag / orchestrator-exec degrade rules.
    * Extracted (#2486) so `routeDispatchIsolation` (the #3045 recording
    * dispatch path) and `routeInspectDispatchIsolation` (the read-only
@@ -1727,6 +1730,12 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     let exec = null;
     let harnessFlag = null;
     try {
+      // `resolveRuntime` now carries the per-install `.gsd-runtime` marker rung
+      // (#2486) — GSD_RUNTIME > config.runtime > marker > 'claude'. Deliberately
+      // NOT `resolveActiveRuntime`/`loadConfig`: loadConfig normalizes and
+      // rewrites legacy keys back to disk, and this resolver backs the
+      // side-effect-free `inspect-dispatch-isolation` verb, which must never
+      // write. resolveRuntime reads config.json directly instead.
       const { resolveRuntime } = require('./lib/runtime-slash.cjs');
       runtimeId = resolveRuntime(cwd);
 

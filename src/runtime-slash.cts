@@ -76,7 +76,8 @@ export function formatGsdSlash(commandName: unknown, runtime: unknown): unknown 
 /**
  * Resolve the effective runtime for a project directory.
  *
- *   process.env.GSD_RUNTIME  >  config.runtime  >  'claude'
+ *   process.env.GSD_RUNTIME  >  config.runtime  >  per-install `.gsd-runtime`
+ *   marker  >  'claude'   (marker rung added #2486)
  *
  * Mirrors the precedence already used by profile-output.cjs and the rest of
  * the runtime resolution chain. Returns a lowercased string so downstream
@@ -109,7 +110,51 @@ export function resolveRuntime(projectDir: string | null | undefined): string {
       // runtime output formatting.
     }
   }
+  // #2486: the per-install marker rung. Without it, a real non-Claude install
+  // whose `.planning/config.json` carries no `runtime` key — which is EVERY
+  // config `config-new-project` writes — resolved to 'claude'. Every consumer
+  // then believed it was on Claude: the isolation gate reported
+  // `harness-worktree`, `/gsd:settings` recommended Worktrees and `/gsd:health`
+  // stayed quiet, which is the #2486 defect itself. The rung lives HERE, in the
+  // one canonical resolver, rather than in a single call site — a per-consumer
+  // fix forks precedence, so `dispatch-should-flatten` and `resolve-dispatch-type`
+  // would answer 'claude' while the isolation query answered 'cursor' for the
+  // same install. Marker read is a bare file read: no config normalization, no
+  // writes (see the loadConfig note above — that side effect is exactly what an
+  // inspection surface must not have).
+  const marker = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
+  if (marker) return marker;
   return 'claude';
+}
+
+// ── Per-install runtime marker (#2297, relocated here for #2486) ─────────────
+// `<install>/gsd-core/.gsd-runtime`, written at install time. Resolved relative
+// to this module's own directory (`<install>/gsd-core/bin/lib`), so it follows
+// the install it ships inside. Cached because it is read on hot resolution
+// paths and cannot change within a process.
+let _installMarkerCache: string | null | undefined;
+export function readInstallRuntimeMarker(): string | null {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', '..', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297. Fall through to
+    // the 'claude' default (keeps tier aliases — never worse than the bug).
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seams for the install-marker rung (the dev/source tree has no marker, so
+// the file read always bottoms out at 'claude' — these let tests exercise the
+// marker rung and reset the module-level cache between cases).
+export function _setInstallRuntimeMarkerForTests(value: string | null): void {
+  _installMarkerCache = value;
+}
+export function _resetInstallRuntimeMarkerCacheForTests(): void {
+  _installMarkerCache = undefined;
 }
 
 /**

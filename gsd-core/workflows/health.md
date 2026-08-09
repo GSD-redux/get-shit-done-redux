@@ -84,10 +84,18 @@ Parse JSON output:
 
 **Isolation/worktrees compatibility check (#2486):** the SDK is runtime-neutral, so this check runs here, using the same negotiation the execution-workflow guards use. It catches a config that carries an explicit `workflow.use_worktrees: true` on a runtime whose declared `dispatch.isolation` is `none` (e.g. inherited from a worktree-capable install sharing the repo) — a value `/gsd:execute-phase` and `/gsd:quick` fail closed on. The gate is the **declared capability, not the runtime name** (#2584), and the resolver fail-closes unknown/undeclared/`undocumented` values to `none`. Use `inspect-dispatch-isolation`, the **side-effect-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a read-only diagnostic must not be able to stamp a sentinel the isolation guards then enforce against real dispatches:
 
+The worktrees read deliberately carries no `--default`/fallback, exactly as `settings.md` does
+it: W024's claim is that the config **sets** the key to a non-false value, so an absent key
+(empty output) must stay distinguishable from an explicit `true`. A `|| echo "true"` fallback
+collapses that distinction and makes the check fire on a config that never set the key —
+correct only on an emit where `_stampNonClaudeRuntimeDefaults` happened to rewrite the line to
+`--default false`, and wrong on the un-stamped source/Claude emit. The `[ -n … ]` guard below
+removes that dependency on stamping entirely (#2486 review, Major 1).
+
 ```bash
 ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")
-USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
-if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then
+USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
+if [ "$ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
   echo "W024: config.json sets workflow.use_worktrees to a non-false value, but this runtime declares no executor-isolation primitive (dispatch.isolation: none) — /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or remove the key from .planning/config.json so the runtime default (false) applies."
 fi
 ```

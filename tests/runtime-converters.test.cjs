@@ -1325,6 +1325,22 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   const readWorkflow = (wf) =>
     fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
 
+  // Behavioral W024 coverage (#2486 Major 2) executes the shipped block, so it
+  // needs a subprocess and a CRLF-safe read. `readFileNormalized` normalizes at
+  // the READ boundary — a `\r?\n` fence regex alone leaves embedded CR inside
+  // the captured body, which bash then treats as part of the token
+  // (DEFECT.WINDOWS-CRLF-TEST-PORTABILITY).
+  //
+  // The subprocess goes through the process seam, never a hand-rolled
+  // spawnSync (CONTRIBUTING "Spawning a subprocess: use the process seam").
+  // `runHook` already documents `interpreter: 'bash'` for running a shell
+  // script, so the harness is written to a file rather than passed as `-c`.
+  const { runHook } = require('./helpers/process-seam.cjs');
+  const { readFileNormalized, createTempDir, cleanup: cleanupDir } = require('./helpers.cjs');
+  // Skipped on Windows, where there is no bash. Checked by platform rather than
+  // by shelling out to `which`, which is itself non-portable.
+  const NO_BASH = process.platform === 'win32';
+
   describe('#2486 regression: settings/health worktrees isolation branch', () => {
     // Review round 2 (#2584 Phase 3): isolation is a DECLARED CAPABILITY, not a
     // runtime name. cursor declares harness-worktree and codex/opencode/kimi/
@@ -1474,10 +1490,6 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     test('health.md source carries the W024 isolation/worktrees compatibility check', () => {
       const src = readWorkflow('health.md');
       assert.ok(
-        src.includes('if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then'),
-        'health.md: W024 must fire only when the declared isolation is none',
-      );
-      assert.ok(
         src.includes('W024:'),
         'health.md: missing the W024 diagnostic line',
       );
@@ -1485,6 +1497,93 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         src.includes('Status: DEGRADED'),
         'health.md: a config the execution workflows fail closed on must degrade the reported status',
       );
+      // #2486 review Major 1: W024's correctness must NOT depend on
+      // `_stampNonClaudeRuntimeDefaults` having rewritten the read. A
+      // `|| echo "true"` fallback makes an ABSENT key look like an explicit
+      // `true`, so the check fires on a config that never set it — correct only
+      // on a stamped emit, wrong on the un-stamped source/Claude emit. Pin the
+      // stamp-independent shape settings.md already uses.
+      assert.ok(
+        src.includes('USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)'),
+        'health.md: the W024 worktrees read must be bare — a --default/|| fallback collapses key-absent into explicit-true (#2486 Major 1)',
+      );
+      assert.ok(
+        !/workflow\.use_worktrees --raw 2>\/dev\/null \|\| echo/.test(src),
+        'health.md: the W024 read reintroduced a fallback, so it depends on install-time stamping again (#2486 Major 1)',
+      );
+      assert.ok(
+        src.includes('[ -n "$USE_WORKTREES" ]'),
+        'health.md: W024 must require the key to be PRESENT before warning that the config "sets" it',
+      );
+    });
+
+    // #2486 review Major 2: the coverage above is still text-matching. Execute
+    // the SHIPPED block so the predicate is proven by behavior — Major 1 would
+    // have been caught by any one of these cases.
+    test('W024 fires only on an explicit non-false key under isolation=none (behavioral, #2486 Major 2)', { skip: NO_BASH }, (t) => {
+      const scratch = createTempDir('gsd-w024-');
+      t.after(() => cleanupDir(scratch));
+      const src = readFileNormalized(
+        path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
+      );
+      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
+        .map(m => m[1])
+        .find(b => b.includes('W024:'));
+      assert.ok(block, 'health.md: no ```bash block containing the W024 diagnostic');
+
+      /** Run the shipped block with `gsd_run` stubbed to the given answers. */
+      const fire = (isolation, worktreesOut) => {
+        const harness = [
+          'set -u',
+          'gsd_run() {',
+          '  case "$*" in',
+          `    *inspect-dispatch-isolation*) printf '%s' ${JSON.stringify(isolation)} ;;`,
+          // Faithful to the real CLI: `config-get` EXITS NON-ZERO for an absent
+          // key, it does not print empty and succeed. A stub that succeeds here
+          // would let `|| echo "true"` be reintroduced and still pass — the
+          // fallback only triggers on failure (#2486 round-7 review, Major 4).
+          worktreesOut === ''
+            ? '    *"config-get workflow.use_worktrees"*) return 1 ;;'
+            : `    *"config-get workflow.use_worktrees"*) printf '%s' ${JSON.stringify(worktreesOut)} ;;`,
+          "    *) printf '' ;;",
+          '  esac; }',
+          block,
+        ].join('\n');
+        const scriptPath = path.join(scratch, `w024-${isolation}-${worktreesOut || 'absent'}.sh`);
+        fs.writeFileSync(scriptPath, harness);
+        const res = runHook(scriptPath, [], { interpreter: 'bash' });
+        assert.equal(
+          res.outcome, 'exited',
+          `W024 block did not complete cleanly: outcome=${res.outcome} ${res.stderr || ''}`,
+        );
+        assert.equal(res.exitCode, 0, `W024 block exited ${res.exitCode}: ${res.stderr}`);
+        return res.stdout.includes('W024:');
+      };
+
+      // The reviewer's exact repro: rt=qwen, source (un-stamped) emit, cfg={}.
+      // The key is absent, so `config-get` prints nothing. This FIRED before.
+      assert.equal(
+        fire('none', ''),
+        false,
+        'W024 fired on an ABSENT use_worktrees key — the warning claims the config "sets" a non-false value, and it does not (#2486 Major 1 repro)',
+      );
+      // The defect W024 actually exists for.
+      assert.equal(
+        fire('none', 'true'),
+        true,
+        'W024 stayed quiet on an explicit true under isolation=none — that is the config execute-phase/quick fail closed on',
+      );
+      assert.equal(
+        fire('none', 'false'), false, 'W024 fired on an explicit false — nothing to repair',
+      );
+      // A host that CAN isolate is never the subject of this warning.
+      for (const iso of ['harness-worktree', 'orchestrator-worktree']) {
+        assert.equal(
+          fire(iso, 'true'),
+          false,
+          `W024 fired on ${iso}, which declares an isolation primitive — the gate is the declared capability, not the runtime name (#2584)`,
+        );
+      }
     });
 
     test('W024 is documented consistently across health.md and both config references', () => {
