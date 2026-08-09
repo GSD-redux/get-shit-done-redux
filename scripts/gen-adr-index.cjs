@@ -23,6 +23,7 @@
  *   node scripts/gen-adr-index.cjs              # print the index to stdout
  *   node scripts/gen-adr-index.cjs --write      # rewrite the index in README.md
  *   node scripts/gen-adr-index.cjs --check      # exit 1 if stale or invalid
+ *   node scripts/gen-adr-index.cjs --json       # --check semantics; JSON report on stdout
  */
 
 const fs = require('node:fs');
@@ -53,6 +54,37 @@ const END_MARKER = '<!-- ADR-INDEX:END -->';
  * conflate the two: grep the naming rule in README.md, not this enum.
  */
 const STATUSES = ['Accepted', 'Proposed', 'Superseded', 'Legacy', 'Retired'];
+
+/**
+ * Stable reason codes for every lifecycle violation this gate can emit.
+ * Tests assert via `assert.equal(record.reason, REASON.X)` (or `.some(...)`
+ * over the `--json` `violations` array) rather than regex-matching stderr
+ * prose — see CONTRIBUTING.md "Prohibited: Raw Text Matching on Test
+ * Outputs" and the worked example in `bin/verify-reapply-patches.cjs`.
+ *
+ * Adding a reason is a deliberate three-part change: a new entry here, the
+ * emitting `add(...)` call site, and the corpus test that locks
+ * `Object.keys(REASON).sort()` — so a new violation class cannot ship
+ * without its own typed identity.
+ */
+const REASON = Object.freeze({
+  FILENAME_INVALID: 'filename_invalid',
+  STATUS_MISSING: 'status_missing',
+  STATUS_INVALID: 'status_invalid',
+  STATUS_BRACKET_MISMATCH: 'status_bracket_mismatch',
+  ID_MISMATCH: 'id_mismatch',
+  SUPERSEDED_NO_SUCCESSOR: 'superseded_no_successor',
+  SUPERSEDED_BARE_ID: 'superseded_bare_id',
+  RELATION_LINK_MISSING: 'relation_link_missing',
+  RELATION_BARE_ID_MISSING: 'relation_bare_id_missing',
+  RELATION_BARE_ID_UNLINKED: 'relation_bare_id_unlinked',
+  RELATION_ASYMMETRIC: 'relation_asymmetric',
+  LINK_UNRESOLVED: 'link_unresolved',
+  LINK_ESCAPES_REPO: 'link_escapes_repo',
+  LINK_ESCAPES_REPO_SYMLINK: 'link_escapes_repo_symlink',
+  DIRENT_UNREADABLE: 'dirent_unreadable',
+  DIRENT_ESCAPES_REPO_SYMLINK: 'dirent_escapes_repo_symlink',
+});
 
 /**
  * The H1 trailing-bracket vocabulary, derived from `STATUSES` — not a second
@@ -620,7 +652,7 @@ function validateLinks(add) {
     try {
       lst = fs.lstatSync(joined);
     } catch {
-      add(f, BROKEN_MSG);
+      add(f, BROKEN_MSG, { reason: REASON.DIRENT_UNREADABLE, line: null });
       continue;
     }
     if (!lst.isSymbolicLink()) {
@@ -632,14 +664,18 @@ function validateLinks(add) {
     try {
       real = fs.realpathSync(joined);
     } catch {
-      add(f, BROKEN_MSG);
+      add(f, BROKEN_MSG, { reason: REASON.DIRENT_UNREADABLE, line: null });
       continue;
     }
     if (escapesRoot(real, realRoot)) {
       // Distinct message from the broken-symlink one above, and — same
       // discipline as the link-target escape below — no path or hint from
       // outside the repo is ever included: only the in-repo dirent name.
-      add(f, 'is a symlink that escapes the repository and was excluded from the index. Point it at a file inside docs/adr/, or remove it.');
+      add(
+        f,
+        'is a symlink that escapes the repository and was excluded from the index. Point it at a file inside docs/adr/, or remove it.',
+        { reason: REASON.DIRENT_ESCAPES_REPO_SYMLINK, line: null },
+      );
       continue;
     }
     // Resolves inside the repo but is not a regular file (e.g. a symlink to
@@ -681,7 +717,12 @@ function validateLinks(add) {
       // Containment BEFORE any filesystem call: never `stat` outside ROOT.
       const rel = path.relative(ROOT, abs);
       if (escapesRoot(abs, ROOT)) {
-        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository. Link a path inside the repo.`);
+        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository. Link a path inside the repo.`, {
+          reason: REASON.LINK_ESCAPES_REPO,
+          file,
+          line,
+          target: rawTarget,
+        });
         continue;
       }
 
@@ -691,7 +732,12 @@ function validateLinks(add) {
         // outside the repository. Distinct message from the generic
         // "does not resolve" below, and — deliberately — no hint: the hint
         // itself would be the disclosure (see existsCaseExact's doc comment).
-        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository via a symlink. Link a path inside the repo.`);
+        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository via a symlink. Link a path inside the repo.`, {
+          reason: REASON.LINK_ESCAPES_REPO_SYMLINK,
+          file,
+          line,
+          target: rawTarget,
+        });
         continue;
       }
       if (!exists) {
@@ -700,6 +746,7 @@ function validateLinks(add) {
         add(
           `${file}:${line}`,
           `link "${rawTarget}" does not resolve — no such file or directory at ${relFromRoot}.${hintSuffix}`,
+          { reason: REASON.LINK_UNRESOLVED, file, line, target: rawTarget, resolved: relFromRoot },
         );
       }
     }
@@ -790,23 +837,43 @@ function buildCorpus() {
 
 function validate({ adrs, byFile, byId, nonConforming }) {
   const errors = [];
-  const add = (file, msg) => errors.push(`${file}: ${msg}`);
+  const violations = [];
+  // `record` carries the STRUCTURED half of every violation — `reason` plus
+  // whatever typed fields a `--json` consumer needs (line, target, resolved,
+  // expected/actual, status, …) — kept alongside, never instead of, the
+  // human `${file}: ${msg}` line: a large pre-existing test suite asserts on
+  // that string verbatim and is out of scope to migrate. `record` may supply
+  // its own `file` (spread AFTER the outer `file`) so link-violation records
+  // carry the plain filename as a field distinct from the human message's
+  // `<file>:<line>` prefix string.
+  const add = (file, msg, record) => {
+    errors.push(`${file}: ${msg}`);
+    violations.push({ file, ...record });
+  };
 
   for (const f of nonConforming) {
     add(
       f,
       'filename does not match the `<issue#>-<kebab-slug>.md` convention, so it cannot appear in the index. ' +
         'Rename it (see docs/adr/README.md "Naming Convention"), or move it out of docs/adr/ if it is not an ADR.',
+      { reason: REASON.FILENAME_INVALID, line: null },
     );
   }
 
   for (const a of adrs) {
     if (!a.statusToken) {
-      add(a.file, 'no `- **Status:** <Token>` field found in the header block.');
+      add(a.file, 'no `- **Status:** <Token>` field found in the header block.', {
+        reason: REASON.STATUS_MISSING,
+        line: null,
+      });
       continue;
     }
     if (!STATUSES.includes(a.statusToken)) {
-      add(a.file, `status "${a.statusToken}" is not one of ${STATUSES.join(' | ')} (full line: "${a.statusRaw}").`);
+      add(a.file, `status "${a.statusToken}" is not one of ${STATUSES.join(' | ')} (full line: "${a.statusRaw}").`, {
+        reason: REASON.STATUS_INVALID,
+        line: null,
+        status: a.statusToken,
+      });
     } else if (
       // Only compare when the status token is itself valid — an already-invalid
       // token gets its own report above, and piling a bracket-disagreement
@@ -818,10 +885,16 @@ function validate({ adrs, byFile, byId, nonConforming }) {
         a.file,
         `H1 status bracket [${a.bracketStatus}] contradicts the Status field (${a.statusToken}). ` +
           'Update the H1 bracket (or the Status field) so they agree — a stale bracket is the first thing a reader sees.',
+        { reason: REASON.STATUS_BRACKET_MISMATCH, line: null, expected: a.statusToken, actual: a.bracketStatus },
       );
     }
     if (a.declaredId && a.declaredId !== a.fileId) {
-      add(a.file, `H1 declares ADR-${a.declaredId} but the filename says ${a.fileId}. The id must match the filename.`);
+      add(a.file, `H1 declares ADR-${a.declaredId} but the filename says ${a.fileId}. The id must match the filename.`, {
+        reason: REASON.ID_MISMATCH,
+        line: null,
+        expected: a.fileId,
+        actual: a.declaredId,
+      });
     }
 
     // A Superseded ADR must point at its successor by FILE LINK.
@@ -829,13 +902,19 @@ function validate({ adrs, byFile, byId, nonConforming }) {
       const links = a.relations.supersedes.in.flatMap((r) => r.links);
       if (links.length === 0) {
         const bare = a.relations.supersedes.in.flatMap((r) => r.bare);
-        add(
-          a.file,
-          bare.length
-            ? `status is Superseded and mentions ADR-${bare.join('/')} but not as a markdown link to the file. ` +
-              'Bare ids are ambiguous (ADR-0010 and ADR-0011 each resolve to multiple files) — link the target file.'
-            : 'status is Superseded but names no successor. Write `Superseded by [ADR-N](N-slug.md)`.',
-        );
+        if (bare.length) {
+          add(
+            a.file,
+            `status is Superseded and mentions ADR-${bare.join('/')} but not as a markdown link to the file. ` +
+              'Bare ids are ambiguous (ADR-0010 and ADR-0011 each resolve to multiple files) — link the target file.',
+            { reason: REASON.SUPERSEDED_BARE_ID, line: null, bare },
+          );
+        } else {
+          add(a.file, 'status is Superseded but names no successor. Write `Superseded by [ADR-N](N-slug.md)`.', {
+            reason: REASON.SUPERSEDED_NO_SUCCESSOR,
+            line: null,
+          });
+        }
       }
     }
 
@@ -844,7 +923,14 @@ function validate({ adrs, byFile, byId, nonConforming }) {
       for (const dir of ['out', 'in']) {
         for (const rel of a.relations[kind][dir]) {
           for (const l of rel.links) {
-            if (!byFile.has(l)) add(a.file, `"${rel.field}" links "${l}", which does not exist in docs/adr/.`);
+            if (!byFile.has(l)) {
+              add(a.file, `"${rel.field}" links "${l}", which does not exist in docs/adr/.`, {
+                reason: REASON.RELATION_LINK_MISSING,
+                line: null,
+                field: rel.field,
+                target: l,
+              });
+            }
           }
           // The synthetic relation lifted out of the Status line is already covered by
           // the dedicated Superseded check above; reporting it again just duplicates.
@@ -861,13 +947,24 @@ function validate({ adrs, byFile, byId, nonConforming }) {
             if (linkedIds.has(b)) continue;
             const candidates = byId.get(b) || [];
             if (candidates.length === 0) {
-              add(a.file, `"${rel.field}" names ADR-${b}, which does not exist in docs/adr/. If it is an ISSUE number, write "#${b}" — not "ADR-${b}".`);
+              add(
+                a.file,
+                `"${rel.field}" names ADR-${b}, which does not exist in docs/adr/. If it is an ISSUE number, write "#${b}" — not "ADR-${b}".`,
+                { reason: REASON.RELATION_BARE_ID_MISSING, line: null, field: rel.field, target: b },
+              );
             } else {
               add(
                 a.file,
                 `"${rel.field}" names ADR-${b} without a file link` +
                   (candidates.length > 1 ? ` (ambiguous — resolves to ${candidates.length} files: ${candidates.map((c) => c.file).join(', ')})` : '') +
                   '. Link the target file so the relation is checkable.',
+                {
+                  reason: REASON.RELATION_BARE_ID_UNLINKED,
+                  line: null,
+                  field: rel.field,
+                  target: b,
+                  candidates: candidates.map((c) => c.file),
+                },
               );
             }
           }
@@ -909,6 +1006,7 @@ function validate({ adrs, byFile, byId, nonConforming }) {
             target,
             `${a.file} declares ${claim}, but this ADR does not record it. ` +
               `Add \`- **${needed}:** [ADR-${a.displayId}](${a.file})\` so a reader of THIS file learns the decision moved on.`,
+            { reason: REASON.RELATION_ASYMMETRIC, line: null, source: a.file, kind, neededField: needed },
           );
         }
       }
@@ -920,7 +1018,7 @@ function validate({ adrs, byFile, byId, nonConforming }) {
   // neither of which is in `adrs` (see `validateLinks`'s own doc comment).
   validateLinks(add);
 
-  return errors;
+  return { errors, violations };
 }
 
 const GROUPS = [
@@ -1036,13 +1134,52 @@ function spliceIntoReadme(readme, index) {
   return readme.slice(0, start) + index + readme.slice(end + END_MARKER.length);
 }
 
+/**
+ * Parse CLI flags from `argv` (already sliced to just the flags, i.e.
+ * `process.argv.slice(2)`). Supports `--write`, `--check`, `--json` in any
+ * order. FAIL-CLOSED on an unrecognized flag: silently falling through to
+ * the no-flags "print the index" behavior would mask a typo (e.g.
+ * `--jsno`) as a clean run instead of failing loudly, so any argument that
+ * is not one of the three recognized flags throws `ExitError(1, …)` naming
+ * the offender rather than being ignored.
+ */
+function parseArgs(argv) {
+  const opts = { write: false, check: false, json: false };
+  for (const arg of argv) {
+    if (arg === '--write') opts.write = true;
+    else if (arg === '--check') opts.check = true;
+    else if (arg === '--json') opts.json = true;
+    else throw new ExitError(1, `unknown flag: ${arg}\nRecognized flags: --write, --check, --json.`);
+  }
+  return opts;
+}
+
 function main() {
-  const [, , flag] = process.argv;
+  const { write, check, json } = parseArgs(process.argv.slice(2));
 
   const corpus = buildCorpus();
-  const errors = validate(corpus);
+  const { errors, violations } = validate(corpus);
+  const index = renderIndex(corpus);
 
-  if (errors.length > 0 && flag !== '--write') {
+  if (json) {
+    // `--json` implies `--check` semantics (`--check --json` is identical to
+    // `--json` alone) but emits a single JSON document to stdout instead of
+    // the human stderr report, and writes nothing to stderr at all. Unlike
+    // the human `--check` path below — which short-circuits on lifecycle
+    // violations and never even reads README.md to check staleness — the
+    // JSON report always computes BOTH facts (`violations` and
+    // `indexStale`) independently, since a consumer parsing the document
+    // needs the complete picture in one shot rather than one violation
+    // class masking the other.
+    const readme = fs.readFileSync(README_PATH, 'utf8');
+    const expected = spliceIntoReadme(readme, index);
+    const indexStale = expected !== readme;
+    const ok = violations.length === 0 && !indexStale;
+    process.stdout.write(JSON.stringify({ ok, adrCount: corpus.adrs.length, indexStale, violations }) + '\n');
+    return ok ? 0 : 1;
+  }
+
+  if (errors.length > 0 && !write) {
     process.stderr.write(
       `docs/adr/ has ${errors.length} lifecycle violation(s).\n` +
         'See docs/adr/README.md "Lifecycle rules" for the contract.\n\n',
@@ -1052,9 +1189,19 @@ function main() {
     throw new ExitError(1);
   }
 
-  const index = renderIndex(corpus);
-
-  if (flag === '--check') {
+  // `--write` takes precedence over a co-supplied `--check`: neither
+  // combination is part of this CLI's documented contract (the flags exist
+  // to be used one at a time, or as `--check --json`), so this is an
+  // arbitrary-but-safe tiebreak rather than a specified behavior.
+  if (write) {
+    const readme = fs.readFileSync(README_PATH, 'utf8');
+    fs.writeFileSync(README_PATH, spliceIntoReadme(readme, index));
+    process.stdout.write(`Wrote ADR index into ${README_PATH} (${corpus.adrs.length} ADRs).\n`);
+    if (errors.length > 0) {
+      process.stderr.write(`\n${errors.length} lifecycle violation(s) remain — --check will fail:\n\n`);
+      for (const e of errors) process.stderr.write(`  ✗ ${e}\n`);
+    }
+  } else if (check) {
     const readme = fs.readFileSync(README_PATH, 'utf8');
     const expected = spliceIntoReadme(readme, index);
     if (expected !== readme) {
@@ -1064,14 +1211,6 @@ function main() {
       throw new ExitError(1);
     }
     process.stdout.write(`docs/adr/README.md index is up to date (${corpus.adrs.length} ADRs).\n`);
-  } else if (flag === '--write') {
-    const readme = fs.readFileSync(README_PATH, 'utf8');
-    fs.writeFileSync(README_PATH, spliceIntoReadme(readme, index));
-    process.stdout.write(`Wrote ADR index into ${README_PATH} (${corpus.adrs.length} ADRs).\n`);
-    if (errors.length > 0) {
-      process.stderr.write(`\n${errors.length} lifecycle violation(s) remain — --check will fail:\n\n`);
-      for (const e of errors) process.stderr.write(`  ✗ ${e}\n`);
-    }
   } else {
     process.stdout.write(index + '\n');
   }
@@ -1082,4 +1221,4 @@ function main() {
 // effect of loading it.
 if (require.main === module) runMain(main);
 
-module.exports = { STATUSES, extractLinks, maskCode };
+module.exports = { STATUSES, REASON, extractLinks, maskCode };

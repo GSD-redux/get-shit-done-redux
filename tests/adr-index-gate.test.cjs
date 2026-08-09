@@ -69,6 +69,27 @@ function run(root, args = []) {
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
+/**
+ * Run the generator with `--json` and parse its stdout into the structured
+ * report (see gen-adr-index.cjs's `--json` doc comment for the shape). Per
+ * CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test Outputs" (and the
+ * `bin/verify-reapply-patches.cjs` worked example this PR follows), gate
+ * assertions bind to this typed report instead of regexing stderr prose.
+ * Asserts the parse succeeded with a useful message on failure — a crash
+ * that corrupts stdout (or leaves it empty) fails loudly here instead of
+ * throwing an opaque `JSON.parse` SyntaxError deep inside a test body.
+ */
+function runJson(root, args = []) {
+  const r = run(root, ['--json', ...args]);
+  let report;
+  try {
+    report = JSON.parse(r.stdout);
+  } catch (err) {
+    assert.fail(`--json did not emit parseable JSON on stdout (status ${r.status}): ${err.message}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  }
+  return { status: r.status, report };
+}
+
 const adr = (title, fields) => `# ${title}\n\n${fields.map((f) => `- ${f}`).join('\n')}\n\n## Context\n\nBody.\n`;
 
 test('a clean corpus generates an index and --check passes', (t) => {
@@ -780,10 +801,13 @@ describe('#2705: legacy ADR range single-sourced and accurate', () => {
 //
 // Failing-first: the production surface below does not exist yet.
 // scripts/gen-adr-index.cjs will gain:
-//   module.exports = { STATUSES, extractLinks, maskCode }
+//   module.exports = { STATUSES, REASON, extractLinks, maskCode }
 //   extractLinks(text) -> [{ line, target }]  (1-indexed line, RAW dest text)
 //   maskCode(text)     -> same-length string; code masked to ' ', newlines kept
 //   `if (require.main === module) runMain(main);` (today it runs unconditionally)
+//   `--json` -> { ok, adrCount, indexStale, violations: [{file, reason, ...}] }
+//   on stdout, gate-verdict tests below bind to this typed report via
+//   `runJson`, not stderr prose (REASON is the frozen enum of violation kinds).
 //
 // Two altitudes, per .gsd/phase/feat-2704-adr-gate-link-resolution/50-test-matrix.md:
 //   IR altitude        — require the real script from REPO_ROOT and assert on
@@ -807,6 +831,7 @@ describe('#2705: legacy ADR range single-sourced and accurate', () => {
 // replays deterministically regardless of this suite's global fc default.
 const {
   STATUSES,
+  REASON,
   extractLinks,
   maskCode,
 } = require(path.join(REPO_ROOT, SCRIPT_REL));
@@ -849,11 +874,14 @@ test('a dangling relative link fails and names file, line and target', (t) => {
     // 6 '', 7 'Body text.', 8 the link line, 9 trailing ''.
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['Body text.', 'See [Ghost](ghost.md) for context.']),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'a dangling relative link must fail --check');
-  assert.match(res.stderr, /0001-alpha\.md/, 'must name the source file');
-  assert.match(res.stderr, /:8\b/, 'must name the 1-indexed line number');
-  assert.match(res.stderr, /ghost\.md/, 'must name the unresolved target');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'a dangling relative link must fail --check');
+  assert.ok(
+    report.violations.some(
+      (v) => v.reason === REASON.LINK_UNRESOLVED && v.file === '0001-alpha.md' && v.line === 8 && v.target === 'ghost.md',
+    ),
+    `expected a link_unresolved violation for 0001-alpha.md:8 target ghost.md; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('a directory target counts as resolved', (t) => {
@@ -868,9 +896,12 @@ test('a directory target counts as resolved', (t) => {
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See the [PRD folder](../prd/) for background.']),
   });
   // No docs/prd/ created here — the directory target does not exist.
-  const res = run(missingRoot, ['--check']);
-  assert.equal(res.status, 1, 'a nonexistent directory target must fail');
-  assert.match(res.stderr, /prd/);
+  const { status, report } = runJson(missingRoot, ['--check']);
+  assert.equal(status, 1, 'a nonexistent directory target must fail');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === '../prd/'),
+    `expected a link_unresolved violation for target ../prd/; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('absolute destinations are out of scope', (t) => {
@@ -904,9 +935,12 @@ test('a fragment is stripped before resolution', (t) => {
   const missingRoot = makeRepo(t, {
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [Ghost](ghost.md#context) for detail.']),
   });
-  const res = run(missingRoot, ['--check']);
-  assert.equal(res.status, 1, 'the file does not exist, fragment or not');
-  assert.match(res.stderr, /ghost\.md/);
+  const { status, report } = runJson(missingRoot, ['--check']);
+  assert.equal(status, 1, 'the file does not exist, fragment or not');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === 'ghost.md#context'),
+    `expected a link_unresolved violation naming ghost.md; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('an empty destination is skipped', (t) => {
@@ -966,9 +1000,12 @@ test('a dangling image target fails', (t) => {
   const root = makeRepo(t, {
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['![diagram](missing.png)']),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'an image with a dangling target must fail like any link');
-  assert.match(res.stderr, /missing\.png/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'an image with a dangling target must fail like any link');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === 'missing.png'),
+    `expected a link_unresolved violation for missing.png; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('angle-bracket and titled destinations', (t) => {
@@ -997,11 +1034,19 @@ test('percent-encoded destinations decode', (t) => {
   });
   fs.mkdirSync(path.join(root, 'docs', 'adr', 'ref'), { recursive: true });
   fs.writeFileSync(path.join(root, 'docs', 'adr', 'ref', 'a b.md'), '# scratch\n');
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, `a%20b.md must decode and resolve; a%zz.md is malformed and must not resolve: ${res.stderr}`);
-  assert.doesNotMatch(res.stderr, /a%20b\.md/, 'the percent-encoded-but-valid target must not itself be reported');
-  assert.match(res.stderr, /a%zz\.md/, 'the malformed escape must be reported using its raw text');
-  assert.doesNotMatch(res.stderr, /TypeError|URIError/, 'a malformed percent-escape must not crash the process');
+  // A malformed percent-escape must not crash the process: `runJson` asserts
+  // the parse succeeded, which itself proves stdout carried a real JSON
+  // document rather than a stack trace from an uncaught TypeError/URIError.
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, `a%20b.md must decode and resolve; a%zz.md is malformed and must not resolve: ${JSON.stringify(report)}`);
+  assert.ok(
+    !report.violations.some((v) => v.target === 'ref/a%20b.md'),
+    'the percent-encoded-but-valid target must not itself be reported',
+  );
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === 'ref/a%zz.md'),
+    `the malformed escape must be reported using its raw text; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('a root-relative destination resolves against the repo root', (t) => {
@@ -1030,14 +1075,18 @@ test('a destination escaping the repository is rejected without touching the fil
   const root = makeRepo(t, {
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [Ghost](../../../../../etc/passwd) for context.']),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'a link escaping the repository root must fail');
-  assert.match(res.stderr, /escap/i, 'the message must name the escape, not a generic unresolved-target message');
-  assert.doesNotMatch(
-    res.stderr,
-    /does not resolve/i,
-    'a repo-escaping target must get its own message, not the generic "does not resolve" one — ' +
-      'proof the guard runs BEFORE any filesystem check on the escaped path',
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'a link escaping the repository root must fail');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_ESCAPES_REPO && v.target === '../../../../../etc/passwd'),
+    `expected a link_escapes_repo violation for the traversal target; got ${JSON.stringify(report.violations)}`,
+  );
+  // The escape-vs-unresolved discrimination is now two distinct reason
+  // codes, not two prose patterns — proof the escape guard runs BEFORE any
+  // generic resolution attempt.
+  assert.ok(
+    !report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED),
+    'a repo-escaping target must get link_escapes_repo, never the generic link_unresolved reason',
   );
 });
 
@@ -1058,9 +1107,9 @@ test('a repo-root path whose first segment starts with two dots is not an escape
     'fixture sanity check: the resolved relative path must literally start with two dots',
   );
   assert.equal(run(root, ['--write']).status, 0);
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 0, `a same-segment-prefix path must not be misclassified as escaping: ${res.stderr}`);
-  assert.doesNotMatch(res.stderr, /escapes the repository/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 0, `a same-segment-prefix path must not be misclassified as escaping: ${JSON.stringify(report)}`);
+  assert.ok(report.ok, 'a same-segment-prefix path must produce a clean report, not an escape violation');
 });
 
 test('resolution is case-exact', (t) => {
@@ -1071,9 +1120,12 @@ test('resolution is case-exact', (t) => {
   // Deliberately no platform guard: case-exactness must hold identically on
   // every OS, including case-insensitive filesystems (macOS default, Windows),
   // where a naive fs.existsSync(...) would silently resolve and hide this.
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'a case-mismatched target must fail on every platform, not just case-sensitive ones');
-  assert.match(res.stderr, /0001-ALPHA\.md/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'a case-mismatched target must fail on every platform, not just case-sensitive ones');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === '0001-ALPHA.md'),
+    `expected a link_unresolved violation for the case-mismatched target; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('every occurrence is reported, not just the first', (t) => {
@@ -1085,12 +1137,12 @@ test('every occurrence is reported, not just the first', (t) => {
       'Second: [Ghost again](ghost.md).',
     ]),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  const occurrences = (res.stderr.match(/ghost\.md/g) || []).length;
-  assert.ok(occurrences >= 2, `both dangling occurrences must be reported; stderr:\n${res.stderr}`);
-  assert.match(res.stderr, /:7\b/, 'first occurrence must report its own line');
-  assert.match(res.stderr, /:9\b/, 'second occurrence must report its own line');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  const ghostFindings = report.violations.filter((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === 'ghost.md');
+  assert.ok(ghostFindings.length >= 2, `both dangling occurrences must be reported; violations:\n${JSON.stringify(report.violations)}`);
+  assert.ok(ghostFindings.some((v) => v.line === 7), 'first occurrence must report its own line');
+  assert.ok(ghostFindings.some((v) => v.line === 9), 'second occurrence must report its own line');
 });
 
 test('only the unresolvable link on a mixed line is reported', (t) => {
@@ -1098,11 +1150,16 @@ test('only the unresolvable link on a mixed line is reported', (t) => {
     '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [Beta](900-beta.md) and [Ghost](ghost.md) together.']),
     '900-beta.md': adr('Beta', ['**Status:** Accepted']),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.doesNotMatch(res.stderr, /900-beta\.md/, 'the resolving link must not be reported');
-  assert.match(res.stderr, /ghost\.md/, 'the unresolvable link must be reported');
-  assert.match(res.stderr, /:7\b/, 'the shared line number must still be reported');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    !report.violations.some((v) => v.target === '900-beta.md'),
+    'the resolving link must not be reported',
+  );
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.target === 'ghost.md' && v.line === 7),
+    `the unresolvable link must be reported on its own line; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('CRLF input yields the same findings as LF', () => {
@@ -1120,10 +1177,12 @@ test('a dangling link in README.md is caught', (t) => {
     path.join(root, 'docs', 'adr', 'README.md'),
     ['# ADRs', '', 'See [the process doc](process.md) for how ADRs are written.', '', '## Index', '', START, END, ''].join('\n'),
   );
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'a dangling link in README.md must be caught');
-  assert.match(res.stderr, /README\.md/);
-  assert.match(res.stderr, /process\.md/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'a dangling link in README.md must be caught');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.file === 'README.md' && v.target === 'process.md'),
+    `expected a link_unresolved violation naming README.md's dangling link; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('a non-conforming filename is still link-checked', (t) => {
@@ -1131,11 +1190,16 @@ test('a non-conforming filename is still link-checked', (t) => {
     '0001-alpha.md': adr('Alpha', ['**Status:** Accepted']),
     'notes.md': ['# Scratch notes', '', 'Not an ADR, but see [Ghost](ghost.md) anyway.', ''].join('\n'),
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /notes\.md/);
-  assert.match(res.stderr, /does not match the .*convention/, 'the existing naming violation must still be reported');
-  assert.match(res.stderr, /ghost\.md/, 'the dangling link must ALSO be reported');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.FILENAME_INVALID && v.file === 'notes.md'),
+    `the existing naming violation must still be reported; got ${JSON.stringify(report.violations)}`,
+  );
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED && v.file === 'notes.md' && v.target === 'ghost.md'),
+    `the dangling link must ALSO be reported; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('the real corpus passes the new assertions', () => {
@@ -1267,11 +1331,18 @@ test('an agreeing H1 bracket passes and is still stripped from the title', (t) =
 
 test('an H1 bracket contradicting Status fails and names both', (t) => {
   const root = makeRepo(t, { '0001-alpha.md': adr('Title one [Proposed]', ['**Status:** Accepted']) });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /0001-alpha\.md/);
-  assert.match(res.stderr, /Proposed/);
-  assert.match(res.stderr, /Accepted/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    report.violations.some(
+      (v) =>
+        v.reason === REASON.STATUS_BRACKET_MISMATCH &&
+        v.file === '0001-alpha.md' &&
+        v.actual === 'Proposed' &&
+        v.expected === 'Accepted',
+    ),
+    `expected a status_bracket_mismatch violation naming both tokens; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('bracket comparison is case-insensitive', (t) => {
@@ -1304,18 +1375,30 @@ test('a non-status trailing bracket is title text, not a claim', (t) => {
 
 test('a missing Status field does not also report bracket disagreement', (t) => {
   const root = makeRepo(t, { '0001-alpha.md': '# Title one [Accepted]\n\nNo header fields.\n\n## Context\n\nBody.\n' });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /no `- \*\*Status:\*\* <Token>` field/);
-  assert.doesNotMatch(res.stderr, /bracket/i, 'a missing Status field must not ALSO get a bracket-disagreement message');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.STATUS_MISSING && v.file === '0001-alpha.md'),
+    `expected a status_missing violation; got ${JSON.stringify(report.violations)}`,
+  );
+  assert.ok(
+    !report.violations.some((v) => v.reason === REASON.STATUS_BRACKET_MISMATCH),
+    'a missing Status field must not ALSO get a status_bracket_mismatch violation',
+  );
 });
 
 test('an invalid Status token is not also reported as a bracket disagreement', (t) => {
   const root = makeRepo(t, { '0001-alpha.md': adr('Title one [Accepted]', ['**Status:** Draft']) });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /"Draft" is not one of/);
-  assert.doesNotMatch(res.stderr, /bracket/i, 'an invalid status token must not ALSO get a bracket-disagreement message');
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.STATUS_INVALID && v.status === 'Draft'),
+    `expected a status_invalid violation naming "Draft"; got ${JSON.stringify(report.violations)}`,
+  );
+  assert.ok(
+    !report.violations.some((v) => v.reason === REASON.STATUS_BRACKET_MISMATCH),
+    'an invalid status token must not ALSO get a status_bracket_mismatch violation',
+  );
 });
 
 test('an ADR with no H1 is skipped', (t) => {
@@ -1330,10 +1413,16 @@ test('both real H1 spellings are compared', (t) => {
     '1143-one.md': '# ADR-1143: Title one [Proposed]\n\n- **Status:** Accepted\n\n## Context\n\nBody.\n',
     '1606-two.md': '# ADR 1606: title two [Proposed]\n\n- **Status:** Accepted\n\n## Context\n\nBody.\n',
   });
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /1143-one\.md/);
-  assert.match(res.stderr, /1606-two\.md/);
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1);
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.STATUS_BRACKET_MISMATCH && v.file === '1143-one.md'),
+    `expected a status_bracket_mismatch violation for 1143-one.md; got ${JSON.stringify(report.violations)}`,
+  );
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.STATUS_BRACKET_MISMATCH && v.file === '1606-two.md'),
+    `expected a status_bracket_mismatch violation for 1606-two.md; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('parity: every status in the vocabulary is recognized as a bracket', (t) => {
@@ -1351,10 +1440,14 @@ test('parity: every status in the vocabulary is recognized as a bracket', (t) =>
     const other = STATUSES.find((s) => s !== token);
     const contradicting = makeRepo(t, { '0001-alpha.md': adr(`Title one [${token}]`, [`**Status:** ${other}`]) });
     assert.equal(run(contradicting, ['--write']).status, 0, `token "${token}" vs "${other}": --write must succeed even with violations`);
-    const contradictingCheck = run(contradicting, ['--check']);
-    assert.equal(contradictingCheck.status, 1, `token "${token}" vs "${other}": a contradicting bracket must fail`);
-    assert.match(contradictingCheck.stderr, new RegExp(token), `must name the H1 bracket token "${token}"`);
-    assert.match(contradictingCheck.stderr, new RegExp(other), `must name the Status token "${other}"`);
+    const { status: contradictingStatus, report: contradictingReport } = runJson(contradicting, ['--check']);
+    assert.equal(contradictingStatus, 1, `token "${token}" vs "${other}": a contradicting bracket must fail`);
+    assert.ok(
+      contradictingReport.violations.some(
+        (v) => v.reason === REASON.STATUS_BRACKET_MISMATCH && v.actual === token && v.expected === other,
+      ),
+      `token "${token}" vs "${other}": expected a status_bracket_mismatch violation with actual="${token}" expected="${other}"; got ${JSON.stringify(contradictingReport.violations)}`,
+    );
   }
 });
 
@@ -1426,13 +1519,15 @@ describe('symlink escape guard (F1/F2)', () => {
     });
     if (!trySymlink(t, outside, path.join(root, 'docs', 'adr', 'x'), 'dir')) return;
 
-    const res = run(root, ['--check']);
-    assert.equal(res.status, 1, 'a link traversing an out-of-repo symlink must fail --check');
-    assert.match(res.stderr, /escap/i, 'must report the escape, not treat it as an ordinary dangling link');
-    assert.doesNotMatch(
-      res.stderr,
-      /does not resolve/i,
-      'a symlink escape must get its own message, never the generic "does not resolve" one',
+    const { status, report } = runJson(root, ['--check']);
+    assert.equal(status, 1, 'a link traversing an out-of-repo symlink must fail --check');
+    assert.ok(
+      report.violations.some((v) => v.reason === REASON.LINK_ESCAPES_REPO_SYMLINK && v.target === 'x/secret.txt'),
+      `expected a link_escapes_repo_symlink violation, not an ordinary dangling link; got ${JSON.stringify(report.violations)}`,
+    );
+    assert.ok(
+      !report.violations.some((v) => v.reason === REASON.LINK_UNRESOLVED),
+      'a symlink escape must get its own reason code, never the generic link_unresolved one',
     );
   });
 
@@ -1449,10 +1544,20 @@ describe('symlink escape guard (F1/F2)', () => {
     });
     if (!trySymlink(t, outside, path.join(root, 'docs', 'adr', 'x'), 'dir')) return;
 
-    const res = run(root, ['--check']);
-    assert.equal(res.status, 1);
-    assert.doesNotMatch(res.stderr, /secret\.txt/i, 'the real external filename must never be echoed into CI logs');
-    assert.doesNotMatch(res.stderr, /Did you mean/, 'an escaping symlink must never carry a "Did you mean" hint');
+    const { status, report } = runJson(root, ['--check']);
+    assert.equal(status, 1);
+    // A stronger guarantee than the old stderr-prose check: no field of any
+    // violation record — not just a hand-picked message string — may carry
+    // the sentinel filename from OUTSIDE the repository. The ADR's own link
+    // target is deliberately case-DIFFERENT ('x/SECRET.TXT') from the real
+    // outside file ('secret.txt'), so this exact-case search cannot
+    // false-positive on the requested-target text, only on a genuine leak
+    // (e.g. a "Did you mean secret.txt?" hint built from the real listing).
+    assert.equal(
+      JSON.stringify(report).includes('secret.txt'),
+      false,
+      `the real external filename must never be echoed into the report: ${JSON.stringify(report)}`,
+    );
   });
 
   test('a symlink that stays inside the repository still resolves', (t) => {
@@ -1492,18 +1597,20 @@ describe('symlink escape guard (F1/F2)', () => {
       return;
     }
 
-    const res = run(root, ['--check']);
-    assert.equal(res.status, 1, 'an ADR file symlinked out of the repository must fail the gate');
-    assert.match(res.stderr, /0002-evil\.md/, 'must name the excluded file');
-    assert.match(res.stderr, /escap/i, 'must report the escape, distinct from the broken/unreadable message');
-    assert.doesNotMatch(
-      res.stderr,
-      /SENTINEL-OUTSIDE-CONTENT/,
+    const { status, report } = runJson(root, ['--check']);
+    assert.equal(status, 1, 'an ADR file symlinked out of the repository must fail the gate');
+    assert.ok(
+      report.violations.some((v) => v.reason === REASON.DIRENT_ESCAPES_REPO_SYMLINK && v.file === '0002-evil.md'),
+      `expected a dirent_escapes_repo_symlink violation naming 0002-evil.md, distinct from the broken/unreadable reason; got ${JSON.stringify(report.violations)}`,
+    );
+    assert.equal(
+      JSON.stringify(report).includes('SENTINEL-OUTSIDE-CONTENT'),
+      false,
       'must never read or echo content from the file outside the repository',
     );
-    assert.doesNotMatch(
-      res.stderr,
-      /sentinel-target\.md/,
+    assert.equal(
+      JSON.stringify(report).includes('sentinel-target.md'),
+      false,
       'must never echo a link target found only inside the unread outside file',
     );
   });
@@ -1537,11 +1644,16 @@ test('a broken symlink under docs/adr is reported, not a crash (F4)', (t) => {
     throw err;
   }
 
-  const res = run(root, ['--check']);
-  assert.equal(res.status, 1, 'a broken symlink under docs/adr must fail the gate, not crash it');
-  assert.match(res.stderr, /ghost\.md/, 'must name the unreadable file');
-  assert.doesNotMatch(res.stderr, /at .*\.cjs:\d+/, 'must never leak a raw stack trace (and its absolute host paths)');
-  assert.doesNotMatch(res.stderr, /TypeError|ENOENT/, 'must be a gate violation, not a surfaced fs error');
+  // runJson itself asserts stdout parses as JSON: a raw stack trace or a
+  // surfaced fs error (TypeError/ENOENT) would either corrupt stdout or
+  // leave it empty, so the parse succeeding is already proof this is a
+  // typed gate violation, not a crash — no separate stderr pattern needed.
+  const { status, report } = runJson(root, ['--check']);
+  assert.equal(status, 1, 'a broken symlink under docs/adr must fail the gate, not crash it');
+  assert.ok(
+    report.violations.some((v) => v.reason === REASON.DIRENT_UNREADABLE && v.file === 'ghost.md'),
+    `expected a dirent_unreadable violation naming ghost.md; got ${JSON.stringify(report.violations)}`,
+  );
 });
 
 test('masking an adversarial backtick line stays fast (F3)', () => {
@@ -1570,4 +1682,62 @@ test('masking an adversarial backtick line stays fast (F3)', () => {
     ['real.md'],
     'the link after the pathological backtick section must still be found',
   );
+});
+
+// ── --json structured output surface ────────────────────────────────────
+
+test('the REASON enum is locked', () => {
+  // Adding a violation class is a deliberate three-part change: a new entry
+  // here, its emitting `add(...)` call site, and this list growing to match
+  // — never a silent addition that a `--json` consumer discovers by surprise.
+  assert.deepEqual(Object.keys(REASON).sort(), [
+    'DIRENT_ESCAPES_REPO_SYMLINK',
+    'DIRENT_UNREADABLE',
+    'FILENAME_INVALID',
+    'ID_MISMATCH',
+    'LINK_ESCAPES_REPO',
+    'LINK_ESCAPES_REPO_SYMLINK',
+    'LINK_UNRESOLVED',
+    'RELATION_ASYMMETRIC',
+    'RELATION_BARE_ID_MISSING',
+    'RELATION_BARE_ID_UNLINKED',
+    'RELATION_LINK_MISSING',
+    'STATUS_BRACKET_MISMATCH',
+    'STATUS_INVALID',
+    'STATUS_MISSING',
+    'SUPERSEDED_BARE_ID',
+    'SUPERSEDED_NO_SUCCESSOR',
+  ]);
+});
+
+test('an unknown flag is rejected', (t) => {
+  const root = makeRepo(t, { '0001-alpha.md': adr('Alpha', ['**Status:** Accepted']) });
+  const res = run(root, ['--bogus']);
+  assert.equal(res.status, 1, 'an unrecognized flag must fail closed, not silently fall through');
+  assert.match(res.stderr, /unknown flag: --bogus/);
+  assert.equal(res.stdout, '', 'the index must NOT be printed when an unrecognized flag is supplied');
+});
+
+test('--json emits nothing on stderr and a parseable report on stdout', (t) => {
+  const clean = makeRepo(t, { '0001-alpha.md': adr('Alpha', ['**Status:** Accepted']) });
+  assert.equal(run(clean, ['--write']).status, 0);
+  const cleanRun = run(clean, ['--json']);
+  assert.equal(cleanRun.status, 0, `a clean corpus must exit 0 under --json: ${cleanRun.stderr}`);
+  assert.equal(cleanRun.stderr, '', '--json must write nothing to stderr on a clean corpus');
+  const cleanReport = JSON.parse(cleanRun.stdout);
+  assert.deepEqual(cleanReport, { ok: true, adrCount: 1, indexStale: false, violations: [] });
+
+  const violating = makeRepo(t, { '0001-alpha.md': adr('Alpha', ['**Status:** Draft']) });
+  const violatingRun = run(violating, ['--json']);
+  assert.equal(violatingRun.status, 1, `a violating corpus must exit 1 under --json: ${violatingRun.stdout}`);
+  assert.equal(violatingRun.stderr, '', '--json must write nothing to stderr on a violating corpus');
+  const violatingReport = JSON.parse(violatingRun.stdout);
+  assert.equal(violatingReport.ok, false);
+  assert.ok(violatingReport.violations.some((v) => v.reason === REASON.STATUS_INVALID && v.status === 'Draft'));
+
+  // `--check --json` is identical to `--json` alone.
+  const combined = run(violating, ['--check', '--json']);
+  assert.equal(combined.status, 1);
+  assert.equal(combined.stderr, '');
+  assert.deepEqual(JSON.parse(combined.stdout), violatingReport);
 });

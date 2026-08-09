@@ -137,9 +137,26 @@ A stale `Proposed` is not cosmetic: it tells contributors and agents that live a
 node scripts/gen-adr-index.cjs            # print the index
 node scripts/gen-adr-index.cjs --write    # regenerate it into this file
 node scripts/gen-adr-index.cjs --check    # CI: fail if stale or invalid
+node scripts/gen-adr-index.cjs --json     # same checks, machine-readable report
 ```
 
 After adding an ADR, or changing any ADR's status or relations, run `--write` and commit the result. `npm run lint:generated-sync` runs `--check` in CI, so a missing or stale row fails the build rather than rotting silently.
+
+`--json` runs the same validation as `--check` and writes a report to stdout instead of prose to stderr, with the same exit code. Each violation carries a stable `reason` code, so a tool consuming this never has to pattern-match an error message:
+
+```json
+{
+  "ok": false,
+  "adrCount": 76,
+  "indexStale": false,
+  "violations": [
+    { "file": "2704-example.md", "line": 41, "reason": "link_unresolved",
+      "target": "reference/x.md", "resolved": "docs/adr/reference/x.md" }
+  ]
+}
+```
+
+An unrecognized flag is rejected rather than ignored.
 
 This replaces a hand-maintained table that had drifted to **40 of 65 ADRs** — the entire capability family and EoS itself were missing from it, which is precisely why the ADRs a reader most needed were the ones they could not find.
 
