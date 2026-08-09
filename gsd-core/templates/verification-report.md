@@ -18,6 +18,10 @@ behavior_unverified_items: # Only if behavior_unverified > 0 — the truths abov
     test: "What to trigger"
     expected: "What state must hold afterward"
     why_human: "Why presence checks can't see it"
+coincidental_reliance_items: # Only if a ✓ VERIFIED truth holds incidentally — emitted regardless of overall status (survives gaps_found)
+  - truth: "Observable truth that holds incidentally"
+    reason: undeclared-precondition | incidental-ordering | fixture-only
+    harden: "Precondition/ordering to declare or enforce"
 ---
 
 # Phase {X}: {Name} Verification Report
@@ -35,7 +39,8 @@ behavior_unverified_items: # Only if behavior_unverified > 0 — the truths abov
 | 1 | {truth from must_haves} | ✓ VERIFIED | {what confirmed it} |
 | 2 | {truth from must_haves} | ✗ FAILED | {what's wrong} |
 | 3 | {truth from must_haves} | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | {present + wired; transition/invariant not exercised by a test — see Human Verification} |
-| 4 | {truth from must_haves} | ? UNCERTAIN | {why can't verify} |
+| 4 | {truth from must_haves} | ✓ VERIFIED (coincidental-reliance) | {holds, but incidentally — see coincidental_reliance_items} |
+| 5 | {truth from must_haves} | ? UNCERTAIN | {why can't verify} |
 
 **Score:** {N}/{M} truths verified ({P} present, behavior-unverified)
 
@@ -176,6 +181,7 @@ None — all verifiable items checked programmatically.
 **Per-truth states (Observable Truths `Status` column):**
 - `✓ VERIFIED` — supporting artifacts pass all checks; for a behavior-dependent truth, a behavioral test exercised the asserted behavior
 - `⚠️ PRESENT_BEHAVIOR_UNVERIFIED` — present + wired, but a state transition or cancellation/cleanup/ordering invariant was not exercised by any test. Counts toward `behavior_unverified`, routes to human verification, and is *excluded* from the verified score. Per-truth only — on its own the overall `status:` becomes `human_needed` (unless a higher-precedence `gaps_found` also applies); the item is preserved in `behavior_unverified_items` regardless.
+- `✓ VERIFIED (coincidental-reliance)` — an **advisory** qualifier on a truth that *is* verified but holds for an incidental reason rather than a guaranteed one (#1955): `undeclared-precondition` (state nothing in the phase's artifacts or a declared prerequisite guarantees), `incidental-ordering` (an order or side effect nothing in the code enforces), or `fixture-only` (the test's own setup establishes the precondition; the production path has no equivalent). The base `✓ VERIFIED` token is kept verbatim and leading, so it counts toward the verified score exactly as before — the advisory changes no score and no status, and never produces a human-verification item. Each flagged truth is listed in `coincidental_reliance_items` with the reason and what to harden. Not applied to a truth that never reached `✓ VERIFIED`, nor to a `PASSED (override)` truth.
 - `✗ FAILED` — artifact missing, stub, or unwired
 - `? UNCERTAIN` — can't verify programmatically
 
