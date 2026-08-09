@@ -84,6 +84,33 @@ Only an `Accepted` ADR is owed the back-link. A `Proposed` ADR's claim is **pros
 
 An H1 of `# ADR-0175: …` in a file named `218-*.md` is a rename that never finished. The id in the title must match the filename's prefix.
 
+### 5. A trailing H1 status bracket must agree with the `Status` field
+
+Many ADRs restate their status in the H1 — `# ADR-1610: … [Accepted]`. That bracket is the first thing a reader sees, and the index strips it when rendering the title, so a stale one used to be invisible to everyone but the reader it misled.
+
+If the H1 ends in a bracket holding a status token, it must name the **same** status as the `Status` field. Comparison is case-insensitive and against the parsed *token*, so `[Superseded]` agrees with `Status: Superseded by [ADR-0174](0174-retire-gsd-sdk-package-boundary.md) (2026-05-23)`.
+
+A trailing bracket that is **not** a status token — `[Draft]`, `[WIP]` — is treated as part of the title and left alone. If you want a bracket the gate ignores, do not spell it like a status.
+
+### 6. Every relative link resolves
+
+A link whose target does not exist on disk fails the check, naming the file, the line, and the unresolved target. This covers every markdown file in this directory, including this README and any file whose name breaks the convention above.
+
+| Written as | Treated as |
+|---|---|
+| `[t](900-beta.md)`, `[t](../prd/)` | resolved — a directory counts |
+| `[t](900-beta.md#section)` | the **file** is resolved; the `#fragment` is not checked |
+| `[t](https://…)`, `[t](mailto:…)`, `[t](//host/x)` | out of scope — absolute destinations are never fetched |
+| `[t](#lifecycle-rules)` | out of scope — a same-document anchor is not a file reference |
+| `[t](/docs/adr/x.md)` | resolved against the repository root, as GitHub does |
+| a link inside a ``` fence or `` `backticks` `` | **not a link** — markdown does not render one there, so it is never resolved |
+| `[text][ref]` reference-style, `<a href>`, bare autolinks | not supported; write an inline link |
+
+Two consequences worth stating outright:
+
+- **Case matters, on every platform.** `[t](0001-Alpha.md)` pointing at `0001-alpha.md` fails even on macOS and Windows, because it 404s on github.com and reds the Linux CI lane. The failure names the entry it found so the fix is obvious.
+- **A link to a generated or ignored path fails.** Nothing here consults `.gitignore`; the question is only whether a reader following the link lands somewhere. Cite the hand-authored source rather than the build artifact.
+
 ### Ratifying a stale `Proposed`
 
 A stale `Proposed` is not cosmetic: it tells contributors and agents that live architecture is an unbuilt idea. Fix it — but on evidence, not vibes.

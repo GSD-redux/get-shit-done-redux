@@ -650,61 +650,20 @@ test('insert-only holds for titles carrying markdown/HTML hazards', (t) => {
 // reverting the repair re-reds them.
 
 const ADR_DIR = path.join(REPO_ROOT, 'docs', 'adr');
-const STATUS_TOKENS = ['Accepted', 'Proposed', 'Superseded', 'Legacy', 'Retired'];
 
-function adrMarkdownFiles() {
-  return fs.readdirSync(ADR_DIR).filter((f) => f.endsWith('.md'));
-}
-
-test('every relative markdown link in docs/adr/ resolves to a file that exists', () => {
-  const dangling = [];
-  for (const file of adrMarkdownFiles()) {
-    const body = fs.readFileSync(path.join(ADR_DIR, file), 'utf8');
-    for (const match of body.matchAll(/\]\(([^)#:\s]+\.md)(?:#[^)]*)?\)/g)) {
-      const target = match[1];
-      if (!fs.existsSync(path.resolve(ADR_DIR, target))) {
-        dangling.push(`${file} -> ${target}`);
-      }
-    }
-  }
-  assert.deepEqual(
-    dangling,
-    [],
-    `dangling relative links in docs/adr/ (a link written as reference/x.md from inside docs/adr/ resolves to the nonexistent docs/adr/reference/):\n${dangling.join('\n')}`,
-  );
-});
-
-test('no ADR H1 status bracket contradicts its Status field', () => {
-  // The index generator strips a trailing "[Proposed]"-style bracket for
-  // display instead of comparing it, so a stale bracket is invisible to the
-  // gate while still being the first thing a reader sees.
-  const mismatches = [];
-  for (const file of adrMarkdownFiles()) {
-    if (file === 'README.md') continue;
-    const lines = fs.readFileSync(path.join(ADR_DIR, file), 'utf8').split(/\r?\n/);
-    const heading = lines.find((l) => /^#\s/.test(l)) || '';
-    const bracket = heading.match(/\[(Proposed|Accepted|Superseded|Legacy|Retired)\]\s*$/i);
-    if (!bracket) continue;
-    const statusLine = lines.find((l) => /^\s*[-*]?\s*\*\*Status/.test(l)) || '';
-    // Resolve by earliest position in the line, not by STATUS_TOKENS order: a
-    // Status field like "Superseded by ADR-X (was Accepted ...)" mentions two
-    // tokens, and array order would pick 'Accepted' and report a false mismatch
-    // against a correct [Superseded] bracket.
-    let token;
-    let tokenAt = Infinity;
-    for (const s of STATUS_TOKENS) {
-      const at = statusLine.search(new RegExp(`\\b${s}\\b`, 'i'));
-      if (at !== -1 && at < tokenAt) {
-        tokenAt = at;
-        token = s;
-      }
-    }
-    if (token && token.toLowerCase() !== bracket[1].toLowerCase()) {
-      mismatches.push(`${file}: H1 says [${bracket[1]}], Status field says ${token}`);
-    }
-  }
-  assert.deepEqual(mismatches, [], `H1 bracket contradicts Status:\n${mismatches.join('\n')}`);
-});
+// The two corpus-level checks that used to live here — "every relative
+// markdown link in docs/adr/ resolves" and "no ADR H1 status bracket
+// contradicts its Status field" — were themselves second implementations of
+// the rule scripts/gen-adr-index.cjs now enforces for real: exactly the
+// `DEFECT.GENERATIVE-FIX` shape (a check and its parallel copy, nothing
+// asserting agreement) this PR (#2704) exists to remove. The corpus
+// assertion is now made by `test('the real corpus passes the new
+// assertions')` below, which is strictly stronger — it runs the shipping
+// `--check` code path instead of a parallel regex copy that could silently
+// drift from it. One deliberate behavioral difference: the old link-check
+// test flagged a dangling `.md` link even inside a fenced code block, where
+// the real gate treats fenced (and inline) code as code — markdown does not
+// render a link there, so masking it out is correct, not a regression.
 
 test('the ADR path cited by src/plan-drift-guard.cts exists', () => {
   // This module is compiled into the published payload, so a wrong citation
@@ -1082,6 +1041,28 @@ test('a destination escaping the repository is rejected without touching the fil
   );
 });
 
+test('a repo-root path whose first segment starts with two dots is not an escape', (t) => {
+  // `path.relative(ROOT, abs).startsWith('..')` alone would ALSO match an
+  // in-repo path whose first segment merely begins with two dots — a
+  // legitimate root-level file named `..hidden.md`. docs/adr/ is two
+  // segments below ROOT, so '../..' walks docs/adr -> docs -> ROOT, landing
+  // squarely inside the repo: path.relative(ROOT, ROOT/'..hidden.md') is
+  // exactly '..hidden.md', which starts with '..' but does not escape.
+  const root = makeRepo(t, {
+    '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [Hidden](../../..hidden.md) for context.']),
+  });
+  fs.writeFileSync(path.join(root, '..hidden.md'), '# hidden\n');
+  assert.equal(
+    path.relative(root, path.join(root, '..hidden.md')),
+    '..hidden.md',
+    'fixture sanity check: the resolved relative path must literally start with two dots',
+  );
+  assert.equal(run(root, ['--write']).status, 0);
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 0, `a same-segment-prefix path must not be misclassified as escaping: ${res.stderr}`);
+  assert.doesNotMatch(res.stderr, /escapes the repository/);
+});
+
 test('resolution is case-exact', (t) => {
   const root = makeRepo(t, {
     '0001-alpha.md': adr('Alpha', ['**Status:** Accepted']),
@@ -1391,4 +1372,144 @@ test('the generated index is byte-identical to the pre-change output', (t) => {
   const readmeWithout = fs.readFileSync(path.join(withoutBracket, 'docs', 'adr', 'README.md'), 'utf8');
 
   assert.equal(readmeWith, readmeWithout, 'an agreeing H1 bracket must not change a single byte of the generated index');
+});
+
+// ─── Isolated adversarial security review, #2704 follow-up ─────────────────
+//
+// F1/F2 (BLOCKER, live PoC): `validateLinks` checks containment LEXICALLY
+// (`path.relative(ROOT, abs)`), which is correct as far as it goes. But
+// `existsCaseExact` then walks path segments via `readdirSync`, which
+// FOLLOWS symlinks at the OS level. A contributor can commit
+// `docs/adr/x -> /etc/somewhere-outside` plus an ADR linking
+// `[t](x/passwd)`: the lexical check sees `docs/adr/x/passwd` (looks
+// repo-internal), and the walk then lists the real external directory — and
+// a wrong-case probe echoes a real filename from OUTSIDE the repo into
+// PUBLIC CI LOGS on a fork PR via the "Did you mean X?" hint. Proven live by
+// the reviewer.
+//
+// F4 (MINOR): an unreadable `*.md` dirent (broken symlink) previously threw
+// `ENOENT` out of `markdownFilesInAdrDir`'s `statSync`, and `runMain` wrote
+// the raw `err.stack` — absolute host filesystem paths — to public fork-PR
+// CI logs.
+//
+// F3 (MAJOR): `maskInlineCodeSpans`'s correctness under adversarial input is
+// covered separately below; see that test's comment.
+
+describe('symlink escape guard (F1/F2)', () => {
+  /**
+   * fs.symlinkSync can fail with EPERM on a platform/host that forbids
+   * unprivileged symlink creation (notably Windows without Developer Mode or
+   * admin rights). `t.skip()` degrades cleanly there; a bare `return` would
+   * silently report a PASS in node:test and hide the gap this guard exists
+   * to close.
+   */
+  function trySymlink(t, target, linkPath, type) {
+    try {
+      fs.symlinkSync(target, linkPath, type);
+      return true;
+    } catch (err) {
+      if (err && err.code === 'EPERM') {
+        t.skip('cannot create symlinks on this platform (EPERM)');
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  test('a link traversing a symlink out of the repository is rejected', (t) => {
+    const outside = createTempDir('gsd-adr-index-outside-');
+    t.after(() => cleanup(outside));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'do not leak me\n');
+
+    const root = makeRepo(t, {
+      '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [t](x/secret.txt) for context.']),
+    });
+    if (!trySymlink(t, outside, path.join(root, 'docs', 'adr', 'x'), 'dir')) return;
+
+    const res = run(root, ['--check']);
+    assert.equal(res.status, 1, 'a link traversing an out-of-repo symlink must fail --check');
+    assert.match(res.stderr, /escap/i, 'must report the escape, not treat it as an ordinary dangling link');
+    assert.doesNotMatch(
+      res.stderr,
+      /does not resolve/i,
+      'a symlink escape must get its own message, never the generic "does not resolve" one',
+    );
+  });
+
+  test('a symlink out of the repository never leaks a filename hint', (t) => {
+    const outside = createTempDir('gsd-adr-index-outside-');
+    t.after(() => cleanup(outside));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'do not leak me\n');
+
+    const root = makeRepo(t, {
+      // Wrong case: on a naive implementation this would trigger a
+      // "Did you mean secret.txt?" hint built from the OUTSIDE directory's
+      // real listing — the disclosure this test guards against.
+      '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [t](x/SECRET.TXT) for context.']),
+    });
+    if (!trySymlink(t, outside, path.join(root, 'docs', 'adr', 'x'), 'dir')) return;
+
+    const res = run(root, ['--check']);
+    assert.equal(res.status, 1);
+    assert.doesNotMatch(res.stderr, /secret\.txt/i, 'the real external filename must never be echoed into CI logs');
+    assert.doesNotMatch(res.stderr, /Did you mean/, 'an escaping symlink must never carry a "Did you mean" hint');
+  });
+
+  test('a symlink that stays inside the repository still resolves', (t) => {
+    const root = makeRepo(t, {
+      '0001-alpha.md': adrBody('Alpha', ['**Status:** Accepted'], ['See [t](inside/target.md) for context.']),
+    });
+    const insideTarget = path.join(root, 'internal-target');
+    fs.mkdirSync(insideTarget, { recursive: true });
+    fs.writeFileSync(path.join(insideTarget, 'target.md'), '# scratch\n');
+    if (!trySymlink(t, insideTarget, path.join(root, 'docs', 'adr', 'inside'), 'dir')) return;
+
+    assert.equal(run(root, ['--write']).status, 0);
+    const res = run(root, ['--check']);
+    assert.equal(res.status, 0, `an in-repo symlink must not be misclassified as an escape: ${res.stderr}`);
+  });
+});
+
+test('a broken symlink under docs/adr is reported, not a crash (F4)', (t) => {
+  const root = makeRepo(t, { '0001-alpha.md': adr('Alpha', ['**Status:** Accepted']) });
+  try {
+    fs.symlinkSync(path.join(root, 'does-not-exist.md'), path.join(root, 'docs', 'adr', 'ghost.md'), 'file');
+  } catch (err) {
+    if (err && err.code === 'EPERM') { t.skip('cannot create symlinks on this platform (EPERM)'); return; }
+    throw err;
+  }
+
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 1, 'a broken symlink under docs/adr must fail the gate, not crash it');
+  assert.match(res.stderr, /ghost\.md/, 'must name the unreadable file');
+  assert.doesNotMatch(res.stderr, /at .*\.cjs:\d+/, 'must never leak a raw stack trace (and its absolute host paths)');
+  assert.doesNotMatch(res.stderr, /TypeError|ENOENT/, 'must be a gate violation, not a surfaced fs error');
+});
+
+test('masking an adversarial backtick line stays fast (F3)', () => {
+  // ~2000 backtick runs of strictly ascending length, none of which ever
+  // closes (every length is unique) — the exact shape that forced the old
+  // per-opener rescan implementation into near-quadratic time (measured
+  // 34ms/50KB -> 220ms/200KB -> 1.76s/800KB, unbounded). This test asserts
+  // correctness, not timing (this repo forbids wall-clock assertions in
+  // tests) — the linear rewrite's speed is verified separately, out of band.
+  const N = 2000;
+  let hostile = '';
+  for (let n = 1; n <= N; n += 1) hostile += '`'.repeat(n) + 'x';
+
+  const text = `Intro line.\n${hostile}\nSee [Real](real.md) after the pathological section.\n`;
+
+  let masked;
+  assert.doesNotThrow(() => { masked = maskCode(text); }, 'masking the adversarial line must not throw');
+  assert.equal(masked.length, text.length, 'masked output must be the same length as input');
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\n') assert.equal(masked[i], '\n', `newline at index ${i} must survive masking`);
+  }
+
+  const links = extractLinks(text);
+  assert.deepEqual(
+    links.map((l) => l.target),
+    ['real.md'],
+    'the link after the pathological backtick section must still be found',
+  );
 });
