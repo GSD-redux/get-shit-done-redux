@@ -183,6 +183,7 @@ These govern the system as it stands. Cite these.
 | [ADR-2782](2782-reviewer-lane-capability-surface.md) | Reviewer Lane — the cross-AI reviewer handoff becomes a declared capability surface | Accepted | — |
 | [ADR-2866](2866-install-surface-resolution.md) | Install-surface resolution — the install pipeline resolves `(runtime × scope × trigger)` as a value | Accepted | — |
 | [ADR-2966](2966-loop-qa-walk.md) | Test the five-step loop as a continuous walk, not isolated points | Accepted | — |
+| [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md) | A payload-carried `error` key is a degraded result, not a fault | Accepted | — |
 | [ADR-3180](3180-planning-semantic-model-single-owner.md) | Planning Semantic Model — Single Owner per Derivation | Accepted | — |
 | [ADR-3212](3212-lexical-seam-consolidation.md) | The Lexical Seam — Safe Pattern Construction, Line-Terminator Normalization, and Tokenizer-First Stateful Grammars | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |

@@ -56,6 +56,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Commands](COMMANDS.md) — every command with flags and examples
 - [Configuration](CONFIGURATION.md) — full config schema, model profiles, git branching strategies
 - [CLI tools](CLI-TOOLS.md) — `gsd-tools.cjs` programmatic API for workflows and agents
+- [JSON error mode](json-errors.md) — `gsd-tools` failure channels: faults (stderr, exit 1) vs degraded results (stdout, exit 0), and the reason-code taxonomy
 - [Features](FEATURES.md) — complete feature index
 - [Inventory](INVENTORY.md) — installed skills and surface map
 - [STATE.md schema](reference/state-md.md) — field-by-field reference for `.planning/STATE.md`
