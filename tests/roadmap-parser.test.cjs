@@ -358,6 +358,176 @@ describe('roadmap-parser: extractCurrentMilestone', () => {
     const payload = JSON.parse(result.output);
     assert.strictEqual(payload.phase_count, 2, `expected phase_count 2, got ${payload.phase_count} (phases dropped — #2947)`);
   });
+
+  // ─── #3235: the preamble strip's conditional wraps the REPLACE, not the pattern.
+  // The previous form selected between the strip regex and a `/$/` sentinel, making
+  // the do-not-strip branch an identity replacement (CodeQL js/identity-replacement,
+  // alert 53). These pin BOTH branches so the restructure cannot move behavior. ──────
+
+  test('#3235 — Phase Details heading is stripped even when preamble phase details are preserved', () => {
+    // The do-not-strip branch must leave `### Phase N:` blocks alone WITHOUT also
+    // disabling the unconditional `Phase Details` heading strip. Pulling that second
+    // replace inside the conditional would regress #730 invisibly: no existing #2947
+    // fixture carries a `Phase Details` heading, so the suite would stay green.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phase Details',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'do-not-strip branch preserves preamble phase details');
+    assert.ok(result.includes('Phase 2: Beta'), 'do-not-strip branch preserves every preamble phase detail');
+    assert.ok(!result.includes('## Phase Details'), 'the Phase Details heading strip is unconditional and must still run');
+  });
+
+  test('#3235 — preamble phase details are still stripped when the milestone section has its own', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Preamble',
+      '',
+      '### Phase 7: PreambleGhost',
+      '',
+      '**Goal:** should be stripped',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'selected milestone phases retained');
+    assert.ok(!result.includes('PreambleGhost'), 'preamble phase-detail heading stripped on the strip branch');
+    assert.ok(!result.includes('should be stripped'), 'the stripped heading takes its body with it');
+    assert.ok(result.includes('## Preamble'), 'a non-Phase preamble heading is untouched');
+  });
+
+  test('#3235 — preamble strip honors the #{2,4} heading-depth bounds', () => {
+    // Boundary coverage: limit-1 (h1) and limit+1 (h5) survive; h2 and h4 are stripped.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '# Phase 90: DepthOne',
+      '',
+      '## Phase 91: DepthTwo',
+      '',
+      '#### Phase 93: DepthFour',
+      '',
+      '##### Phase 94: DepthFive',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('DepthOne'), 'h1 is below the #{2,4} floor and survives');
+    assert.ok(!result.includes('DepthTwo'), 'h2 is at the floor and is stripped');
+    assert.ok(!result.includes('DepthFour'), 'h4 is at the ceiling and is stripped');
+    assert.ok(result.includes('DepthFive'), 'h5 is above the #{2,4} ceiling and survives');
+  });
+
+  test('#3235 — #1729 pre-colon tag tolerance survives in the hoisted strip', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Preamble',
+      '',
+      '### Phase 8 (deferred): TaggedGhost',
+      '',
+      '**Goal:** should be stripped',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(!result.includes('TaggedGhost'), '`### Phase 8 (deferred):` still matches the strip (#1729)');
+    assert.ok(result.includes('Phase 1: Alpha'), 'selected milestone phases retained');
+  });
+
+  test('#3235 — CRLF roadmap preserves preamble phases on the do-not-strip branch', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone**',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n').replace(/\n/g, '\r\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'CRLF preamble phases preserved');
+    assert.ok(result.includes('\r\n'), 'CRLF line endings preserved in the extracted section');
+  });
+
+  test('#3235 — roadmap with no preamble does not throw on either branch', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(typeof result === 'string', 'empty preamble returns a string without throwing');
+    assert.ok(result.includes('Phase 1: Alpha'), 'the milestone section still resolves');
+  });
 });
 
 // ─── replaceInCurrentMilestone ────────────────────────────────────────────────

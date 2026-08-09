@@ -632,10 +632,18 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // the selected milestone section actually contains its own — otherwise the
   // preamble phases ARE this milestone's phases and must be preserved.
   const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
-  const preamble = stripTaggedBlocks(beforeMilestones, 'details')
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    .replace(currentSectionHasPhaseDetails ? /^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim : /$/, '')
-    .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
+  const preambleBase = stripTaggedBlocks(beforeMilestones, 'details');
+  // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
+  // strip regex and a `/$/` sentinel, which made the do-not-strip branch an identity replacement
+  // (CodeQL js/identity-replacement, alert 53) -- correct, but it left both branches sharing one
+  // replacement argument, so changing `''` would silently give the no-op branch a real effect.
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  const preambleWithoutPhaseDetails = currentSectionHasPhaseDetails
+    ? preambleBase.replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+    : preambleBase;
+  // Unconditional in BOTH branches -- the #730 `Phase Details` heading strip is independent of
+  // whether the selected milestone section carries phase details of its own.
+  const preamble = preambleWithoutPhaseDetails.replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
   const value = detailsSection
     ? preamble + currentSection + '\n' + detailsSection
