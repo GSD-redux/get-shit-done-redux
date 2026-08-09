@@ -333,29 +333,67 @@ export function phaseStartCommit(
 }
 
 /**
+ * Reject characters/sequences that have no legitimate use in a git revision
+ * expression reaching this module (a ref name, SHA, or `<ref>~N` / `<ref>^N`
+ * / `<ref>@{...}` navigation) but that a hostile `--since` value could use to
+ * confuse either the shell-out or a downstream reader: whitespace, ASCII
+ * control characters, and the option-shaped `?`, `*`, `[`, `\` characters
+ * that `git check-ref-format` also disallows in ref *names*. A leading `-`
+ * is rejected outright — that is the actual option-injection vector `--end-
+ * of-options` (below) already neutralizes, so this is belt-and-suspenders
+ * for older git. `..` is rejected because `sinceRef` is a single revision
+ * that this function itself turns into a range (`sinceRef..HEAD`); a
+ * `sinceRef` that already contains `..` can only produce a malformed or
+ * misleading range. A trailing `.lock` is rejected per `check-ref-format`.
+ *
+ * Deliberately NOT rejected: `~`, `^`, `:`, `@`, `{`, `}` — `check-ref-
+ * format` disallows these in a bare ref *name*, but this value is a git
+ * *revision expression*, and rejecting them would break entirely ordinary
+ * user input such as `HEAD~1`, `HEAD^`, or `main@{yesterday}`. None of
+ * these characters can reintroduce option parsing once `--end-of-options`
+ * is in effect, so allowing them costs nothing security-wise.
+ */
+function isSafeRevisionRef(ref: string): boolean {
+  if (ref === '') return false;
+  if (ref.startsWith('-')) return false;
+  if (/[\x00-\x1f\x7f ?*[\\]/.test(ref)) return false;
+  if (ref.includes('..')) return false;
+  if (ref.endsWith('.lock')) return false;
+  return true;
+}
+
+/**
  * List files changed between `sinceRef` and `HEAD`, NUL-delimited and
- * quotepath-safe. Three load-bearing details (see the router contract):
+ * quotepath-safe. Load-bearing details (see the router contract):
  *   - `-z` and `-c core.quotepath=false` avoid git's lossy quote-and-escape
  *     round-trip for non-ASCII paths;
  *   - splitting on `NUL` (never `\n`) tolerates a filename containing a real
  *     newline (git permits it);
- *   - the ref is placed before a literal `--` so a ref/path beginning with
- *     `-` is never misread as a git option.
+ *   - `sinceRef` is validated by `isSafeRevisionRef` AND the revision-range
+ *     argument is preceded by `--end-of-options`. A trailing `--` alone does
+ *     NOT stop git from option-parsing an argument that appears BEFORE it —
+ *     it only stops PATHSPEC interpretation of arguments AFTER it — so
+ *     `--since '--output=/tmp/pwn'` would otherwise become the argument
+ *     `--output=/tmp/pwn..HEAD`, which git accepts as an option and uses to
+ *     redirect diff output to an attacker-chosen path. `--end-of-options`
+ *     (git >= 2.24) is the correct fix: everything after it is parsed as a
+ *     revision or path, never as an option, regardless of leading `-`.
  *
- * Bounded (`timeout: 15_000`), degrades to `null` when the underlying git
- * call fails (non-zero exit, timeout, or spawn error) — never throws. An
- * empty result set (no files changed between the two revisions) is a valid,
- * non-null answer: `[]`.
+ * Bounded (`timeout: 15_000`), degrades to `null` when `sinceRef` fails
+ * validation or the underlying git call fails (non-zero exit, timeout, or
+ * spawn error) — never throws. An empty result set (no files changed
+ * between the two revisions) is a valid, non-null answer: `[]`.
  */
 export function changedFilesSince(
   cwd: string,
   sinceRef: string,
   execGit?: ExecGitFn
 ): string[] | null {
+  if (!isSafeRevisionRef(sinceRef)) return null;
   const git: ExecGitFn = execGit ?? execGitSeam;
   try {
     const r = git(
-      ['-c', 'core.quotepath=false', 'diff', '--name-only', '-z', `${sinceRef}..HEAD`, '--'],
+      ['-c', 'core.quotepath=false', 'diff', '--name-only', '-z', '--end-of-options', `${sinceRef}..HEAD`, '--'],
       { cwd, timeout: 15_000 }
     );
     if (r.exitCode !== 0) return null;

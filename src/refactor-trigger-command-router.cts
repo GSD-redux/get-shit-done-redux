@@ -222,11 +222,31 @@ function resolvePhaseDirForArg(cwd: string, phaseArg: string): ResolvedPhase | n
  * Resolve `relFile` (a repo-relative path, typically from `git diff
  * --name-only`) against `cwd` and refuse a path that escapes the project
  * root. Returns the absolute path, or `null` when it escapes.
+ *
+ * Two layers: the string-level `startsWith` check is a cheap first gate but
+ * confines only the SYMLINK's own path, not its target — a symlink
+ * committed in the repo (e.g. `src/evil.cts -> /etc/passwd`) has an
+ * in-tree path that passes the string check, and `fs.readFileSync` on it
+ * would follow the link and read outside the root. `lstatSync` (which does
+ * NOT follow symlinks, unlike `statSync`) is the second gate: anything that
+ * is not a regular file — a symlink most of all — is refused outright.
+ * Refusing rather than resolving-and-re-confining is deliberate: it is
+ * simpler and strictly stricter (a symlink whose target legitimately lives
+ * inside the root is still refused, which is an acceptable false positive
+ * for this analyzer). An `lstatSync` failure (ENOENT on a broken symlink,
+ * EACCES, a race) is treated the same as "not a regular file" — never
+ * propagated — so callers can keep using their existing null-means-skip
+ * convention (`REASON.REFACTOR_FILE_UNREADABLE`) uniformly.
  */
 function resolveConfinedPath(cwd: string, relFile: string): string | null {
   const root = path.resolve(cwd);
   const resolved = path.resolve(root, relFile);
   if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+  try {
+    if (!fs.lstatSync(resolved).isFile()) return null;
+  } catch {
+    return null;
+  }
   return resolved;
 }
 

@@ -1256,13 +1256,11 @@ Code review found issues. Consider running:
 **Generic step hook dispatch contract (#1953).** The code-review branch above is bespoke because it reads `${PADDED}-REVIEW.md` afterwards. Every OTHER active entry in `EXECUTE_POST_HOOKS_JSON` where `kind == "step"` is dispatched here, in `activeHooks` array order. Before this existed, `execute:post` matched only `ref.skill == "code-review"`, so any other step registered at this point was declared and never run. Same contract as `ship.md`'s `ship:post` block:
 
 - Skip the entry already handled above (`ref.skill == "code-review"`).
-- If `ref.command` is set, run it via `gsd_run` with the phase number appended:
+- If `ref.command` is set, **validate it IN-CONTEXT before any shell use, before dispatching anything.** It originates in a capability manifest, which may be third-party. Check the value you read from `activeHooks` against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` yourself — **never** by pasting it into a shell command to be tested there, because a value carrying a quote, `;`, `` ` ``, `$(`, or a newline would terminate the assignment and run as its own statement before any shell-side check could execute. A value that fails the check is a malformed manifest: record a warning, skip that hook, and continue. Only once `ref.command` has passed that check do you run it via `gsd_run` with the phase number appended, as the post-validation step:
 
   ```bash
   gsd_run ${ref.command} --phase "${PHASE_NUMBER}" --raw
   ```
-
-  **Validate `ref.command` IN-CONTEXT before any shell use.** It originates in a capability manifest, which may be third-party. Check the value you read from `activeHooks` against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` yourself — **never** by pasting it into a shell command to be tested there, because a value carrying a quote, `;`, `` ` ``, `$(`, or a newline would terminate the assignment and run as its own statement before any shell-side check could execute. A value that fails the check is a malformed manifest: record a warning, skip that hook, and continue.
 - If `ref.skill` is set, dispatch `Skill(skill="gsd-${ref.skill}", args="${PHASE_NUMBER}")` (prepend `gsd-`).
 - If `ref.agent` is set, print the canonical liveness banner, then dispatch `Agent(subagent_type=ref.agent, ...)` following the same `resolve-model` + validation contract `ship.md` uses.
 
