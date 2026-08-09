@@ -104,7 +104,16 @@ function listTrackedSourceFiles({ execFile } = {}) {
   const run = execFile || require('child_process').execFileSync;
   let stdout;
   try {
-    stdout = run('git', ['ls-files'], {
+    // The test runner and CI execute inside a container where this repo is
+    // owned by a different UID than the running user; bare `git ls-files`
+    // then refuses with "detected dubious ownership" unless the path is in
+    // `safe.directory`, and this guard degrades to a `git_failed` violation
+    // — exactly where it must run to be a useful gate (#3059). `-c
+    // safe.directory=*` scopes the override to THIS invocation only (it
+    // never writes to any config file, global or local), and the wildcard
+    // is fine here because this command only ever enumerates tracked paths
+    // in the repo the guard is already executing inside.
+    stdout = run('git', ['-c', 'safe.directory=*', 'ls-files'], {
       cwd: ROOT,
       encoding: 'utf8',
       // 30s — `git ls-files` on this tree returns ~1175 paths in <1s; 30s is

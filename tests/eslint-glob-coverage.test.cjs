@@ -196,6 +196,24 @@ describe('eslint-glob-coverage: never a vacuous clean', () => {
   });
 });
 
+describe('eslint-glob-coverage: container safe.directory (#3059)', () => {
+  test('git invocation passes -c safe.directory=* before ls-files, so a container-owned repo ("dubious ownership") never degrades the guard to git_failed', () => {
+    let capturedArgs;
+    const result = listTrackedSourceFiles({
+      execFile: (cmd, args) => {
+        capturedArgs = args;
+        return 'scripts/a.cjs\n';
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      capturedArgs.slice(0, 3),
+      ['-c', 'safe.directory=*', 'ls-files'],
+      'the safe.directory override must precede the ls-files subcommand'
+    );
+  });
+});
+
 describe('eslint-glob-coverage: git failure handling', () => {
   test('an injected git failure reports git_failed without throwing', async () => {
     const result = await checkGlobCoverage({
