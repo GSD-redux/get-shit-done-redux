@@ -3432,9 +3432,12 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
     const output = JSON.parse(raw);
     // Per-file swallow (#2245 audit) is unchanged: the other verification
-    // file is still consulted, so its warning still fires, and the whole
+    // file is still consulted, so its drift still fires, and the whole
     // scan is NOT degraded to UNREADABLE just because one file 404s.
-    assert.ok(output.warnings.some((w) => /verif/i.test(w)));
+    // Asserted on the structured `drift` field (CONTRIBUTING.md's "Prohibited:
+    // Raw Text Matching on Test Outputs"), not a `warnings` prose regex —
+    // `drift.verification_status` is a typed record, not free-form text.
+    assert.deepStrictEqual(output.drift.verification_status, { state_status: 'Executing Phase 1', verification: 'passed' });
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
   });
 
@@ -3519,7 +3522,10 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
       }
       const output = JSON.parse(runGsdTools('state validate', dir).output);
       assert.strictEqual(output.valid, false, `n=${n} vs disk n+1 must be flagged`);
-      assert.ok(output.warnings.some((w) => /plan.*count|count.*mismatch/i.test(w)));
+      // Asserted on the structured `drift.plan_count` record rather than a
+      // `warnings` prose regex (CONTRIBUTING.md's "Prohibited: Raw Text
+      // Matching on Test Outputs") — `drift` is typed, `warnings` is free-form.
+      assert.deepStrictEqual(output.drift.plan_count, { state: n, disk: n + 1 });
       cleanup(dir);
     }
   });

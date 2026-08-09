@@ -1792,6 +1792,21 @@ node gsd-tools.cjs state planned-phase --phase 3 --plans 2
 
 ---
 
+### `state complete-phase [--phase N]`
+
+Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `Last Activity`, and `## Current Position` fields. `--phase` is optional; when omitted, the phase is resolved from STATE.md's `Current Phase`/`Phase` fields (frontmatter `current_phase` preferred, falling back to the body).
+
+**Idempotency guard (#3489):** if STATE.md's canonical current phase already names a phase distinct from the one being marked complete — including when that phase lives only in frontmatter `current_phase`, not the body — the command is a no-op (`idempotent: true`) rather than rolling STATE.md back to the requested phase's moment-of-completion. If the frontmatter cannot be parsed at all, the command refuses outright (`Unable to read STATE.md frontmatter; refusing to run complete-phase to avoid a destructive rollback`) instead of guessing.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** Updated `STATE.md` marking the resolved phase complete, or a no-op when the guard determines the phase was already superseded
+
+```bash
+node gsd-tools.cjs state complete-phase --phase 3
+```
+
+---
+
 ## Community Commands
 
 ### Community Hooks

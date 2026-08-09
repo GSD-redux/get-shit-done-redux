@@ -739,3 +739,75 @@ out, and an incomplete list is the same defect in miniature that this epic exist
 as a *named canonical function* — the only sanctioned exemption form. `locateMilestoneHeadings` was
 refactored into a version-filtered view over one shared grammar source so the two primitives cannot
 drift, with a parity test asserting the filtered enumeration equals the locator's selection.
+
+### Amendment 5 — Phase 5 (#3187) validation: the contract held; the guard nearly reported a zero it had not earned
+
+Decision 2's contract needed **no change** for its fifth consumer. `stateFieldValue` returns
+`{ value, scope }` over the frozen four-member `SCOPE`, and every case this phase hit was already
+one of them. `src/planning-scope.cts` is untouched, so Phase 5 carries no `.cts` six-gate ripple.
+
+**Declared deviation from Decision 1's owner surface.** Decision 1 names the owner as
+`stateExtractField` "carrying the #1760 fallback chain". Shipped instead: `stateExtractField` is
+left **byte-identical** and the chain is a *new* owner beside it. `stateExtractField` answers a
+narrower question — "what is field F in this body text" — which genuinely has no scope dimension,
+and it has **20 direct callers with a CRITICAL blast radius** (53 affected symbols, 5 process
+flows). Putting the scope on the primitive would have rewritten every one of those call sites to
+buy nothing. The thing that can fail to run is the *chain*, so the chain is what carries the scope.
+This is a signature deviation, not a contract change — the same class Amendment 3 declared for
+`listMilestonePhaseDirs`.
+
+**The copy count was a lower bound for the SIXTH consecutive time — 14, where the epic scoped 5.**
+Per Amendment 3's standing rule the guard was built and run **before** scope was fixed. Grouped by
+ladder-bearing function: `cmdStateSnapshot` 11, `cmdStatePrune` 2, `smart-entry.cts::fmScalar` 1.
+`find_symbol` separately reports 20 direct callers, which is the figure §7.7 already told Phase 5 to
+drive from rather than the epic's "five call sites".
+
+**The first guard would have lied, and the mechanism is worth recording because it is new.** A
+bounded-line-window detector was built first and found **7**. The other **7** —
+`state.cts:1484–1497` — sat further from `cmdStateSnapshot`'s ladder than its 15-line window
+reached. Migrating the visible 7 would have left a green guard with seven survivors: Decision 4(a)'s
+"a zero it did not earn", arrived at by a mechanism no prior phase met. Replaced with
+**function-scoped co-occurrence** — *a function that both reads a frontmatter scalar and calls the
+body extractor is re-deriving the chain* — which needs no threshold constant and cannot be reflowed
+around. **Generalized lesson: any numeric window in a drift guard is a Goodhart target; scope
+detection to a syntactic unit instead.** Two further evasions (a member/computed operand, a swapped
+tier order) were found by the isolated review and closed with their own tests; a guard is not
+trusted until a deliberate re-derivation is shown to fail it.
+
+**Decision 4(d) applied to this derivation, and it bit again.** The guard's first scan surface was
+`src/` — which is exactly the one-directory-wide allowlist 4(d) was written to forbid, repeated by a
+phase that had read 4(d). `gsd-core/workflows/smart-entry.md` instructs an agent to read `status`
+from "frontmatter `status:` or body `**Status:**`" — a prose expression of this chain. The surface
+is now scanned. That site carries a **permanent exemption with a written reason**, not a Decision
+4(e) ratchet: it is the `gsd-tools`-is-down fallback, so by construction it cannot call the owner,
+and a ratchet implies removable debt with an owning issue. **Not every unconsolidated site is
+debt** — 4(e) governs debt, and a documented impossibility is a different thing.
+
+**A seventh derivation family was found and deliberately NOT consolidated, on evidence.** Three
+`## Current Position` locators exist. `state.cts::matchCurrentPositionSection` genuinely delegates
+to `state-document.cts::stateCurrentPositionSlice`, so it is not a copy. But
+`state-transition.cts::locateCurrentPosition` / `sliceCurrentPositionSection` is independent, and
+both were run over eight adversarial bodies. Fence-awareness turned out to be **shared** (both reach
+`tokenizeHeadings`), so that concern was unfounded — but the two diverge in *both* directions:
+`locateCurrentPosition` misses `### Current Position` at h3, while `collectSection` applies
+`.trimEnd()` where the byte-exact mutation callers (`mutateCurrentPositionFirstTime` /
+`mutateCurrentPositionResume`) depend on the trailing newline for span reassembly. Folding would
+silently drop a newline from every Current Position body on every write. **This is Amendment 3's
+"0.x split" recurring: one owner governs who computes an answer, not how many questions share it.**
+Left for its own phase; `CONTEXT.md`'s claim that the read-path slice is "the one owner of that
+scope" is corrected to name the mutation-path locator.
+
+**Decision 3's Tier-2 table, re-derived for Phase 5:**
+
+| Command surface | Output change |
+|---|---|
+| `state validate` | gains `scope`. `valid` is **not** routed from it — Decision 2 rejected a boolean ok/degraded, and a legacy STATE.md with no `## Current Position` is `UNSCOPED`, a supported degrade, not an invalid document. It also stops resolving its phase from unstripped content, closing a #1255-class frontmatter shadowing where a frontmatter `status:` key won over the body field |
+| `state complete-phase` — **not predicted** | the #3489 idempotency guard now consults frontmatter `current_phase`, so a project whose phase lives only in frontmatter is no longer silently rolled back on a re-run; adds a refusal when frontmatter cannot be read |
+| `workstream` inventory — **not predicted** | `readStateProjection` resolves frontmatter-only `status`/`current_phase`/`last_activity` instead of reporting them absent |
+| `state snapshot`, `state prune`, `/gsd:next` signals | resolve fields through the one owner, so they can no longer disagree about the same STATE.md. `smart-entry`'s read stays deliberately **unscoped** under a written exemption — it asks a different question than `state.cts`'s #1776/#2956-scoped copies, and folding it would silently change routing |
+
+**What this phase does NOT close.** §7.7's rule says `state validate` "reports invalid for a
+genuinely invalid document" but never defines *genuinely invalid*. This phase does not invent that
+definition — it makes the derivation's scope visible so the question becomes answerable, and emits
+the drift warnings that were always intended but unreachable. Widening what counts as invalid stays
+undecided, per §7's own rule.

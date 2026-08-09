@@ -2880,6 +2880,39 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
  * collapse this epic removes, in the opposite direction (a legacy STATE.md
  * with no resolvable phase is a supported degrade, not an invalid document).
  */
+
+/**
+ * #1255/#3187: parse frontmatter and strip it from the body ONCE, shared by
+ * `cmdStateValidate` and `cmdStateCompletePhase` so both consult the identical
+ * fm/body precedence and degrade identically when the frontmatter half of the
+ * chain cannot be consulted. Extracted (code-review finding, epic #3180): the
+ * two call sites previously carried a byte-identical try/catch, comments
+ * included — an epic whose own thesis is "one canonical owner per
+ * derivation" must not ship a duplicated derivation in its own diff.
+ *
+ * Returns `scope: SCOPE.COMPLETE` unless the frontmatter parse itself threw,
+ * in which case `fm` degrades to `{}` and `scope` becomes `SCOPE.UNREADABLE`
+ * — callers that mutate `scope` further (e.g. `cmdStateValidate`'s later
+ * UNSCOPED/disk-scan degrades) start from this returned value rather than a
+ * fresh `SCOPE.COMPLETE`.
+ */
+function readStateFrontmatterScoped(content: string, statePath: string): { fm: Record<string, unknown>; body: string; scope: planningScopeMod.Scope } {
+  let fm: Record<string, unknown>;
+  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
+  try {
+    fm = extractFrontmatter(content, statePath);
+  } catch {
+    // extractFrontmatter is documented never to throw, but this mirrors the
+    // defensive try/catch already used around it elsewhere in this file
+    // (e.g. spliceFrontmatter) — a parse hiccup here means the frontmatter
+    // half of the chain could not be consulted; degrade visibly.
+    fm = {};
+    scope = SCOPE.UNREADABLE;
+  }
+  const body = stripFrontmatter(content);
+  return { fm, body, scope };
+}
+
 function cmdStateValidate(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
@@ -2898,24 +2931,13 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   }
   const warnings: string[] = [];
   const drift: Record<string, unknown> = {};
-  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
 
   // #1255/#3187: parse frontmatter and strip it from the body ONCE, so the
   // chain owner sees the same fm/body precedence every other migrated call
   // site sees. Pass statePath so a truncated STATE.md is named in the #1882
   // diagnostic rather than reported under a content digest.
-  let fm: Record<string, unknown>;
-  try {
-    fm = extractFrontmatter(content, statePath);
-  } catch {
-    // extractFrontmatter is documented never to throw, but this mirrors the
-    // defensive try/catch already used around it elsewhere in this file
-    // (e.g. spliceFrontmatter) — a parse hiccup here means the frontmatter
-    // half of the chain could not be consulted; degrade visibly.
-    fm = {};
-    scope = SCOPE.UNREADABLE;
-  }
-  const body = stripFrontmatter(content);
+  const { fm, body, scope: initialScope } = readStateFrontmatterScoped(content, statePath);
+  let scope: planningScopeMod.Scope = initialScope;
 
   const status = stateFieldValue(fm, body, 'status', 'Status').value || '';
   const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
@@ -3465,20 +3487,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   // the idempotency guard below consult the identical fm/body precedence —
   // the two sites cannot drift onto different chains, extending the #2125
   // "same canonical parser" guarantee one layer earlier.
-  let fm: Record<string, unknown>;
-  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
-  try {
-    fm = extractFrontmatter(content, statePath);
-  } catch {
-    // extractFrontmatter is documented never to throw, but this mirrors the
-    // defensive try/catch already used around it elsewhere (e.g.
-    // cmdStateValidate, spliceFrontmatter) — a parse hiccup here means the
-    // frontmatter half of the chain could not be consulted; degrade visibly
-    // rather than silently treating `fm` as `{}` (genuinely-absent).
-    fm = {};
-    scope = SCOPE.UNREADABLE;
-  }
-  const body = stripFrontmatter(content);
+  const { fm, body, scope } = readStateFrontmatterScoped(content, statePath);
 
   // #3187 Postel/visibility (design doc's sharpest case): this whole handler
   // is the DESTRUCTIVE path the #3489 idempotency guard below protects — it

@@ -23,6 +23,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const drift = require('../scripts/lint-state-field-drift.cjs');
 const { sanitizeForReport } = require('../scripts/lib/drift-scan.cjs');
@@ -552,5 +553,97 @@ describe('D9 — report output is sanitized', () => {
   test('ordinary ASCII filename/fragment text passes through unchanged', () => {
     const text = "src/state-document.cts:296 stateExtractField(body, 'x')";
     assert.strictEqual(sanitizeForReport(text), text);
+  });
+});
+
+// ─── D10: prompt-layer prose detection (ADR-3180 Decision 4(d)) ───────────
+// Widening the scan surface from `src/` alone to also cover the prompt-layer
+// markdown (`gsd-core/workflows`, `commands`, `agents`, `skills`) is unproven
+// unless (a) the surface is genuinely declared, and (b) a NEW prose
+// re-derivation added there is genuinely caught — not merely that the guard
+// happens to report zero because nothing was ever exercised against it.
+
+describe('D10a — the prompt layer is in the scan surface', () => {
+  test('SCAN_DIRS covers gsd-core/workflows, commands, agents, skills (in addition to src)', () => {
+    assert.ok(drift.SCAN_DIRS.includes('src'));
+    assert.ok(drift.SCAN_DIRS.includes('gsd-core/workflows'));
+    assert.ok(drift.SCAN_DIRS.includes('commands'));
+    assert.ok(drift.SCAN_DIRS.includes('agents'));
+    assert.ok(drift.SCAN_DIRS.includes('skills'));
+  });
+
+  test('SCAN_EXT covers markdown', () => {
+    assert.ok(drift.SCAN_EXT.has('.md'));
+  });
+});
+
+describe('D10b — a NEW prose re-derivation in a workflow file is flagged', () => {
+  const OTHER_WORKFLOW_RELPATH = path.join('gsd-core', 'workflows', 'unrelated-workflow.md');
+
+  test('a synthetic workflow line carrying the fm-key/body-bold tokens plus both words is caught', () => {
+    const text = [
+      '# Some Workflow',
+      '',
+      '1. Read STATE.md. Extract: `owner` (frontmatter `owner:` or body `**Owner:**`), and proceed.',
+      '',
+    ].join('\n');
+
+    const out = drift.findPromptFieldDrift(text, OTHER_WORKFLOW_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].line, 3);
+    assert.match(out[0].found, /frontmatter/);
+  });
+
+  test('control case: the backtick tokens alone, with no bold body token, are not flagged', () => {
+    const text = '1. Read STATE.md. Extract: `owner` (frontmatter `owner:` or plain body Owner field), and proceed.';
+    const out = drift.findPromptFieldDrift(text, OTHER_WORKFLOW_RELPATH);
+    assert.deepStrictEqual(out, []);
+  });
+
+  test('control case: both tokens present but the word "frontmatter" absent is not flagged', () => {
+    const text = '1. Extract: `owner` (config `owner:` or body `**Owner:**`).';
+    const out = drift.findPromptFieldDrift(text, OTHER_WORKFLOW_RELPATH);
+    assert.deepStrictEqual(out, []);
+  });
+
+  test('control case: both tokens and "frontmatter" present but the word "body" absent is not flagged', () => {
+    const text = '1. Extract: `owner` (frontmatter `owner:` or fallback `**Owner:**`).';
+    const out = drift.findPromptFieldDrift(text, OTHER_WORKFLOW_RELPATH);
+    assert.deepStrictEqual(out, []);
+  });
+});
+
+describe('D10c — the smart-entry.md gsd-tools-down fallback is a written, permanent exemption', () => {
+  const SMART_ENTRY_RELPATH = path.join('gsd-core', 'workflows', 'smart-entry.md');
+  const LIVE_LINE =
+    "- Read `.planning/STATE.md` (frontmatter + body) with the Read tool. Extract: `status` (frontmatter `status:` or body `**Status:**`), `Phase:` from the body, `total_phases`/`percent` from a nested `progress:` frontmatter object if present, and any `## Blockers` items.";
+
+  test('the real live line is caught when NOT under the exempted relPath (proves detection genuinely fires on this exact text — it is not silent by construction)', () => {
+    const out = drift.findPromptFieldDrift(LIVE_LINE, path.join('gsd-core', 'workflows', 'unrelated-workflow.md'));
+    assert.strictEqual(out.length, 1);
+  });
+
+  test('the SAME line under the real smart-entry.md relPath is exempted (silent), per the written PROMPT_LAYER_EXEMPTIONS reason', () => {
+    const out = drift.findPromptFieldDrift(LIVE_LINE, SMART_ENTRY_RELPATH);
+    assert.deepStrictEqual(out, []);
+    // The exemption carries a written reason (Decision 4(d)) — not a bare
+    // suppression — and is NOT a Decision 4(e) ratchet: this site cannot be
+    // migrated onto the owner by construction, so there is no removal issue
+    // to key it against.
+    const reasons = drift.PROMPT_LAYER_EXEMPTIONS.get(SMART_ENTRY_RELPATH);
+    assert.ok(reasons.has(LIVE_LINE.trim()));
+    assert.match(reasons.get(LIVE_LINE.trim()), /gsd-tools|cannot run|by construction/i);
+  });
+
+  test('the exemption is keyed on exact trimmed text, not merely the file — a DIFFERENT re-derivation in the SAME file is still caught', () => {
+    const text = '- Extract: `owner` (frontmatter `owner:` or body `**Owner:**`).';
+    const out = drift.findPromptFieldDrift(text, SMART_ENTRY_RELPATH);
+    assert.strictEqual(out.length, 1);
+  });
+
+  test('the real smart-entry.md file on disk scans clean end-to-end (the actual contract, not just the extracted fixture)', () => {
+    const content = fs.readFileSync(path.join(REPO_ROOT, 'gsd-core', 'workflows', 'smart-entry.md'), 'utf8');
+    const out = drift.findPromptFieldDrift(content, SMART_ENTRY_RELPATH);
+    assert.deepStrictEqual(out, []);
   });
 });

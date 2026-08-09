@@ -17,7 +17,12 @@
  * `lint-plan-count-drift.cjs` and its siblings established.
  *
  * Per ADR-3180 Decision 4(a) this guard discovers call sites by SCANNING THE
- * WHOLE `src/` TREE, not by consulting an allowlist of known files.
+ * WHOLE `src/` TREE, not by consulting an allowlist of known files. Per
+ * Decision 4(d) that surface is widened further still: `src/` alone is
+ * itself the forbidden allowlist, one directory wide, so this guard ALSO
+ * scans the prompt-layer markdown (`gsd-core/workflows`, `commands`,
+ * `agents`, `skills`) for a PROSE re-derivation of the same chain — see the
+ * "PROMPT-LAYER PROSE DETECTION" section below `findStateFieldDrift`.
  *
  * DETECTION: FUNCTION-SCOPED CO-OCCURRENCE, not a bounded line-window.
  * An earlier draft of this guard used a fixed line-distance window between
@@ -289,9 +294,21 @@ const FUNCTION_DECL_RE = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/;
 //     parameter list's closing paren, the latter at the arrow itself.
 const ARROW_CONST_RE = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*\([^)]*\)\s*(?::\s*[^=]+)?=>\s*\{/;
 
-// Authored TypeScript source only (the generated bin/lib/*.cjs mirror it).
-const SCAN_DIRS = ['src'];
-const SCAN_EXT = new Set(['.cts', '.ts', '.mts']);
+// ADR-3180 Decision 4(d): a guard's scan surface is every AUTHORED surface
+// that can EXPRESS the derivation, not `src/` — reading "whole-repo scan" as
+// "the whole `src/` tree" is itself the forbidden allowlist, one directory
+// wide. This derivation is expressed in TWO languages: TypeScript under
+// `src/` (the ladder + `stateExtractField(` shape PASS 1/2 above detect), and
+// PROSE in the workflow/command/agent/skill markdown that ships to every
+// runtime — `gsd-core/workflows/smart-entry.md`'s "Extract: `status`
+// (frontmatter `status:` or body `**Status:**`)" is exactly this chain,
+// hand-described rather than called. `SCAN_DIRS` therefore covers both;
+// `findPromptFieldDrift` (below `findStateFieldDrift`) is the markdown-side
+// detector, dispatched by extension in `scanRepo`'s `onFile`. Mirrors
+// `lint-planning-prompt-drift.cjs`'s own prompt-layer surface exactly
+// (`gsd-core/workflows`, `commands`, `agents`, `skills`).
+const SCAN_DIRS = ['src', 'gsd-core/workflows', 'commands', 'agents', 'skills'];
+const SCAN_EXT = new Set(['.cts', '.ts', '.mts', '.md']);
 
 // The designated owner (issue #3187 Phase 5, ADR-3180 §7.7).
 const OWNER_FILE = path.join('src', 'state-document.cts');
@@ -607,6 +624,95 @@ function buildFunctionInfo(lines) {
   return { ladderBearing, innermostAt, detect };
 }
 
+// ─── PROMPT-LAYER PROSE DETECTION (ADR-3180 Decision 4(d)) ─────────────────
+//
+// The SAME #1760 fallback chain — "prefer the frontmatter scalar, else fall
+// back to the body field" — expressed as MARKDOWN PROSE describing the
+// derivation to an agent, rather than TypeScript re-deriving it. Detection is
+// intentionally narrow, mirroring `lint-planning-prompt-drift.cjs`'s own
+// precedent: a markdown line is a prose re-derivation only when it carries
+// ALL FOUR, on the SAME line:
+//   (a) a backtick-quoted YAML-style frontmatter key token — a lowercase
+//       identifier immediately followed by a colon, inside backticks, e.g.
+//       `` `status:` ``. `FRONTMATTER_KEY_TOKEN_RE`.
+//   (b) a backtick-quoted Markdown BOLD body-field token, e.g.
+//       `` `**Status:**` ``. `BODY_BOLD_TOKEN_RE`.
+//   (c) the word "frontmatter" (case-insensitive, word-bounded) anywhere on
+//       the line.
+//   (d) the word "body" (case-insensitive, word-bounded) anywhere on the
+//       line.
+// (c) and (d) are what distinguish a line DESCRIBING an fm-then-body
+// PRECEDENCE from a line that merely happens to carry two backtick-quoted
+// tokens shaped like (a) and (b) for unrelated reasons — both words are
+// required so an incidental co-occurrence (e.g. a table row naming an
+// unrelated frontmatter key and, several columns over, an unrelated bold
+// body label) cannot false-positive on tokens alone.
+// All four regexes are small, bounded, single fixed character classes with
+// no nested/overlapping quantifiers — nothing for a backtracking engine to
+// explore (`npm run lint:ci` runs CodeQL js/redos over this repo, the same
+// discipline `findStateFieldDrift`'s own regexes document above).
+const FRONTMATTER_KEY_TOKEN_RE = /`[a-z][a-z0-9_]*:`/;
+const BODY_BOLD_TOKEN_RE = /`\*\*[^*`]{1,80}\*\*`/;
+const FRONTMATTER_WORD_RE = /\bfrontmatter\b/i;
+const BODY_WORD_RE = /\bbody\b/i;
+
+// Per ADR-3180 Decision 4(d)/(e): `gsd-core/workflows/smart-entry.md`'s
+// Fallback step 1 ("`gsd-tools` itself is broken") is a PERMANENT, by-
+// construction exemption — NOT debt with an owner, and therefore NOT
+// modelled as `lint-planning-prompt-drift.cjs`'s shrink-only ratchet
+// baseline (which exists specifically to acknowledge sites with a removal
+// issue, per Decision 4(e)). This site can never be migrated onto
+// `src/state-document.cjs`'s `stateFieldValue`: the surrounding step exists
+// PRECISELY for when the CLI itself cannot run (`Cannot find module ...` /
+// Node crash — probed one line above this one), so by construction it cannot
+// call the canonical owner it is standing in for. Fabricating a "removal
+// issue" for something that can never be removed would misrepresent it as
+// ratchetable debt it is not.
+//
+// Keyed on (file, TRIMMED source text) — never a line number, which churns
+// on any unrelated edit to the same file — mirroring the ratchet's own key
+// shape (`lint-planning-prompt-drift.cjs`) even though this exemption is not
+// itself a ratchet. `file` uses the SAME native-separator relPath shape as
+// `OWNER_FILE`/`FUNCTION_SCOPED_EXEMPTIONS` above (this guard does not
+// POSIX-normalize elsewhere, so this exemption does not either, for
+// consistency within the one file).
+const PROMPT_LAYER_EXEMPTIONS = new Map([
+  [
+    path.join('gsd-core', 'workflows', 'smart-entry.md'),
+    new Map([
+      [
+        "- Read `.planning/STATE.md` (frontmatter + body) with the Read tool. Extract: `status` (frontmatter `status:` or body `**Status:**`), `Phase:` from the body, `total_phases`/`percent` from a nested `progress:` frontmatter object if present, and any `## Blockers` items.",
+        'gsd-tools-down fallback (smart-entry.md Fallback step 1): runs only when gsd-tools itself cannot run, so it cannot call the canonical owner it substitutes for — permanent by construction, not removable debt.',
+      ],
+    ]),
+  ],
+]);
+
+/**
+ * Pure: find every prose re-derivation of the STATE.md field-extraction
+ * fallback chain in a markdown file's `text`. Returns `[{ line, found }]` for
+ * every UNEXEMPTED match — `relPath` (native-separator, matching
+ * `PROMPT_LAYER_EXEMPTIONS`'s keys) is consulted only for the exemption
+ * lookup, exactly as `findStateFieldDrift` consults it for
+ * `FUNCTION_SCOPED_EXEMPTIONS`.
+ */
+function findPromptFieldDrift(text, relPath) {
+  const out = [];
+  const lines = text.split('\n');
+  const exemptTexts = PROMPT_LAYER_EXEMPTIONS.get(relPath) || null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!FRONTMATTER_KEY_TOKEN_RE.test(line)) continue;
+    if (!BODY_BOLD_TOKEN_RE.test(line)) continue;
+    if (!FRONTMATTER_WORD_RE.test(line)) continue;
+    if (!BODY_WORD_RE.test(line)) continue;
+    const trimmed = line.trim();
+    if (exemptTexts && exemptTexts.has(trimmed)) continue;
+    out.push({ line: i + 1, found: trimmed.slice(0, MAX_REGEX_LITERAL_LEN) });
+  }
+  return out;
+}
+
 function findStateFieldDrift(text, relPath) {
   const out = [];
   const lines = text.split('\n');
@@ -628,8 +734,14 @@ function findStateFieldDrift(text, relPath) {
 }
 
 /**
- * Scan the authored source tree and return every unsanctioned re-derivation,
- * each annotated with the repo-relative file path.
+ * Scan the authored source tree (TypeScript under `src/`, prose in the
+ * prompt-layer markdown — ADR-3180 Decision 4(d)) and return every
+ * unsanctioned re-derivation, each annotated with the repo-relative file
+ * path. Dispatches by extension: `.md` files run the prose detector
+ * (`findPromptFieldDrift`), everything else (`.cts`/`.ts`/`.mts`) runs the
+ * code detector (`findStateFieldDrift`) — the two derivations are expressed
+ * in different languages and need different detection shapes over the same
+ * scan surface.
  */
 function scanRepo(root) {
   return scanTree({
@@ -639,9 +751,11 @@ function scanRepo(root) {
     onFile(rel, text) {
       // `rel` is already the REAL (canonical) path (scanTree resolves
       // symlinks before calling onFile), so this — and
-      // FUNCTION_SCOPED_EXEMPTIONS above, also keyed on `rel` — match
-      // consistently regardless of which symlink reached the file.
-      return findStateFieldDrift(text, rel).map((d) => ({ file: rel, ...d }));
+      // FUNCTION_SCOPED_EXEMPTIONS/PROMPT_LAYER_EXEMPTIONS above, also keyed
+      // on `rel` — match consistently regardless of which symlink reached
+      // the file.
+      const finder = path.extname(rel) === '.md' ? findPromptFieldDrift : findStateFieldDrift;
+      return finder(text, rel).map((d) => ({ file: rel, ...d }));
     },
   });
 }
@@ -670,6 +784,7 @@ if (require.main === module) main();
 
 module.exports = {
   findStateFieldDrift,
+  findPromptFieldDrift,
   buildFunctionInfo,
   scanRepo,
   OPERAND_SOURCE,
@@ -680,6 +795,11 @@ module.exports = {
   ARROW_CONST_RE,
   OWNER_FILE,
   FUNCTION_SCOPED_EXEMPTIONS,
+  FRONTMATTER_KEY_TOKEN_RE,
+  BODY_BOLD_TOKEN_RE,
+  PROMPT_LAYER_EXEMPTIONS,
+  SCAN_DIRS,
+  SCAN_EXT,
   scanCode,
   MAX_REGEX_LITERAL_LEN,
 };
