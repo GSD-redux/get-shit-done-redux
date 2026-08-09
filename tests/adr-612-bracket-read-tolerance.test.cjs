@@ -968,27 +968,65 @@ ${MALFORMED.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}`, 'bracket');
     }
   });
 
-  test('pathological bracket input terminates promptly (no catastrophic backtracking)', () => {
-    // Every widened pattern is built from BRACKET_ID_SRC, whose milestone field
-    // is a bounded alternation. Nested quantifiers over a long unclosed bracket
-    // are the classic ReDoS shape, so bound it rather than trust the reading.
-    const attacks = [
-      `### [${'A'.repeat(5000)} 01: x`,
-      `### [GSD.${'0'.repeat(5000)} 01: x`,
-      `### ${'['.repeat(2000)}GSD.02] 01: x`,
-      `### [GSD.${'9'.repeat(5000)}] ${'1'.repeat(5000)}: x`,
-      `### [${'A.02] ['.repeat(1000)}A.02] 01: x`,
-    ];
-    for (const doc of attacks) {
-      const started = process.hrtime.bigint();
-      assert.doesNotThrow(() => {
-        validate.buildRoadmapPhaseVariants(doc, 'bracket');
-        validate.buildNotStartedPhaseVariants(doc, 'bracket');
-        validate.isPhaseDirName(doc, 'bracket');
-        validate.phaseTokenFromDir(doc, 'bracket');
-      });
-      const ms = Number(process.hrtime.bigint() - started) / 1e6;
-      assert.ok(ms < 1000, `pathological input took ${ms.toFixed(1)}ms: ${doc.slice(0, 40)}…`);
+  // #2761 M2 (trek-e review): this measured `process.hrtime.bigint()` against a
+  // 1s ceiling — an assertion about the host machine, not the SUT, and a flake
+  // on a loaded CI runner (RULESET.TESTS.no-timing-assertion). The property it
+  // guarded is kept and stated ALGORITHMICALLY instead: every widened pattern
+  // is built from BRACKET_ID_SRC, whose milestone field is a bounded
+  // alternation, so the classic ReDoS shape (nested quantifiers over a long
+  // unclosed bracket) must be LINEAR in input length. Running each attack at 1x
+  // and 4x and requiring byte-identical results tests exactly that — a
+  // catastrophically backtracking matcher cannot complete the 4x leg under any
+  // ceiling, whereas a bounded one is indifferent to the scaling. The `timeout`
+  // option is a hang backstop, not an assertion.
+  // Each attack states the phases its reading must name, as a function of n.
+  // Four are malformed and must name none; the fifth is well-formed but
+  // oversized, and must name exactly its (n-digit) token — a reading that is
+  // linear in n BY CONSTRUCTION, which is the property under test.
+  const ATTACKS = [
+    ['unclosed bracket code', (n) => `### [${'A'.repeat(n)} 01: x`, () => []],
+    ['unclosed bracket numeric', (n) => `### [GSD.${'0'.repeat(n)} 01: x`, () => []],
+    ['nested open brackets', (n) => `### ${'['.repeat(Math.floor(n / 2.5))}GSD.02] 01: x`, () => []],
+    ['repeated bracket group', (n) => `### [${'A.02] ['.repeat(Math.floor(n / 5))}A.02] 01: x`, () => []],
+    ['oversized milestone + token', (n) => `### [GSD.${'9'.repeat(n)}] ${'1'.repeat(n)}: x`, (n) => ['1'.repeat(n)]],
+  ];
+  const readAll = (doc) => {
+    const r = validate.buildRoadmapPhaseVariants(doc, 'bracket');
+    return {
+      phases: [...r.roadmapPhases].sort(),
+      variantCount: r.roadmapPhaseVariants.size,
+      sentinels: [...r.sentinelPhases].sort(),
+      notStarted: [...validate.buildNotStartedPhaseVariants(doc, 'bracket')].sort(),
+      isDir: validate.isPhaseDirName(doc, 'bracket'),
+      token: validate.phaseTokenFromDir(doc, 'bracket'),
+    };
+  };
+
+  test('pathological bracket input reads correctly at 1x and 4x length', { timeout: 60_000 }, () => {
+    for (const [label, doc, expectedPhases] of ATTACKS) {
+      const readings = [5000, 20000].map((n) => [n, readAll(doc(n))]);
+      for (const [n, r] of readings) {
+        assert.deepEqual(r.phases, expectedPhases(n), `${label} @${n}: wrong phase set`);
+        assert.deepEqual(r.sentinels, [], `${label} @${n}: named a sentinel`);
+        assert.deepEqual(r.notStarted, [], `${label} @${n}: named a not-started phase`);
+        assert.equal(r.isDir, false, `${label} @${n}: a heading is not a phase directory`);
+        assert.equal(r.token, null, `${label} @${n}: a heading yields no directory token`);
+      }
+      // Scale invariance of the STRUCTURE: quadrupling the input may lengthen
+      // an extracted token (linear), but must not change how many things the
+      // reading names. A backtracking regression never reaches this line.
+      assert.equal(
+        readings[0][1].variantCount, readings[1][1].variantCount,
+        `${label}: quadrupling the input changed the variant cardinality`,
+      );
     }
+  });
+
+  test('control: the same readers DO extract a well-formed bracket heading', () => {
+    // Non-vacuity guard — "names no phase" above must mean "the input is
+    // malformed", not "these readers are inert".
+    assert.deepEqual(readAll('### [GSD.02] 01: Real work').phases, ['01']);
+    assert.equal(validate.isPhaseDirName('GSD.02-01-real-work', 'bracket'), true);
+    assert.equal(validate.phaseTokenFromDir('GSD.02-01-real-work', 'bracket'), '01');
   });
 });

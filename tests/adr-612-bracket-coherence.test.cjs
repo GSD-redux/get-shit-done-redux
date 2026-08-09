@@ -514,24 +514,34 @@ ${BROKEN_HEADINGS.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}
     assert.deepEqual(w021(), []);
   });
 
-  test('a pathological unclosed bracket does not stall validate health', () => {
-    writeProject({ roadmap: `# Roadmap
+  // #2761 M2 (trek-e review): this asserted a `Date.now()` delta against a 20s
+  // ceiling, which measures the host machine rather than the SUT and flakes on
+  // a loaded CI runner (RULESET.TESTS.no-timing-assertion). The property it
+  // guarded — the widened bracket patterns do not backtrack catastrophically —
+  // is KEPT, expressed as an ALGORITHMIC bound instead of a wall-clock one: the
+  // same attack runs at 1x and 4x the pathological length and must produce the
+  // SAME correct result. Catastrophic backtracking is superlinear in input
+  // size, so a regression cannot satisfy the 4x leg under any ceiling, while a
+  // bounded matcher is indifferent to the scaling. The `timeout` option is a
+  // hang backstop, not an assertion: it turns a runaway into a deterministic
+  // failure instead of a suite that never returns.
+  for (const width of [4000, 16000]) {
+    test(`a pathological unclosed bracket (${width} chars) validates correctly`, { timeout: 60_000 }, () => {
+      writeProject({ roadmap: `# Roadmap
 
 ## [GSD.02] v2.0 — Expansion
 
-### [${'A'.repeat(4000)} 05: Attack
+### [${'A'.repeat(width)} 05: Attack
 **Goal:** a
 
 ### [GSD.02] 05: Real work
 **Goal:** ok
 `, convention: 'bracket', phaseDirs: ['GSD.02-05-real-work'] });
-    const started = Date.now();
-    const r = runGsdTools(['validate', 'health'], tmpDir);
-    const ms = Date.now() - started;
-    assert.ok(r.success, `validate health failed: ${r.error}`);
-    assert.ok(ms < 20000, `validate health took ${ms}ms on a pathological bracket`);
-    assert.deepEqual(w021(), []);
-  });
+      const r = runGsdTools(['validate', 'health'], tmpDir);
+      assert.ok(r.success, `validate health failed: ${r.error}`);
+      assert.deepEqual(w021(), [], 'an unclosed bracket is not a phase heading at any width');
+    });
+  }
 });
 
 // ─── #2761 round-7 Minor 2: the W021 remediation hint must name no ────────
