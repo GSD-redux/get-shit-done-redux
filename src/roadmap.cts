@@ -14,7 +14,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -384,6 +384,32 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     return isSentinelPhaseId(num);
   };
 
+  // #2761 M1 (trek-e review): the OCCURRENCE key — what makes two entries the
+  // same phase. Under READING-B a phase's identity is its milestone-QUALIFIED
+  // id, because the sentinel lives in the BRACKET: `[GSD.999] 01` and
+  // `[GSD.02] 01` share a token and are not the same phase, and only one of
+  // them is an icebox item. Keying on the bare token gave the pair ONE
+  // classification between them, so `missing_phase_details` depended on which
+  // bullet the author happened to write first.
+  //
+  // Prefers the owner's `bracketQualifiedKey` (fold- and padding-insensitive,
+  // so `[gsd.2] 01` and `[GSD.02] 01` are one phase). Two shapes it refuses,
+  // both falling back to a fold-normalized composite that still separates
+  // distinct pairs: a token carrying its OWN hyphen — `[GSD.02] 02-01` splices
+  // to `GSD.02-02-01`, which the qualified-key grammar reads as milestone 02 /
+  // phase 02 with the trailing `-01` truncated, collapsing distinct headings
+  // onto one key (the same splice hazard `getMilestonePhaseFilter` guards with
+  // its own `!token.includes('-')`), and any id the grammar does not accept.
+  // With no bracket id the bare token IS the identity — the legacy path, whose
+  // keys and dedupe order are byte-identical to base.
+  const occurrenceKey = (num: string, bracketId?: string): string => {
+    if (!bracketId) return num;
+    const qualified = num.includes('-')
+      ? null
+      : bracketQualifiedKey(`${bracketId}-${num}`, 'bracket');
+    return qualified ?? `${foldBracketId(bracketId)}|${num}`;
+  };
+
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
   // #3185 exemption (documented reason, not a file allowlist — ADR-3180
   // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
@@ -398,10 +424,19 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     } catch { return []; }
   })();
 
+  // #2761 M1: the occurrence keys of the DETAIL headings, collected in the same
+  // loop and past the same sentinel `continue` as `phases` itself, so the two
+  // cannot disagree about which headings count. Keyed per occurrence rather
+  // than by bare token: `[GSD.02] 01`'s heading previously marked the token
+  // `01` present, which then satisfied `[GSD.03] 01` — a different phase, with
+  // no heading anywhere — and hid it from `missing_phase_details`.
+  const detailKeys = new Set<string>();
+
   while ((match = phasePattern.exec(content)) !== null) {
     const bracketId = G ? match[1] : undefined;
     const phaseNum = match[1 + G];
     if (isSentinelPhase(phaseNum, bracketId)) continue;
+    detailKeys.add(occurrenceKey(phaseNum, bracketId));
     const phaseName = match[2 + G].replace(/\(INSERTED\)/i, '').trim();
 
     // Extract goal from the section
@@ -525,16 +560,36 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // #3036: the token accepts non-numeric-leading ids (same widening as the detail-heading pattern above).
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   const checklistPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*\\*\\*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)`, 'gi');
-  const checklistPhases = new Map<string, string | undefined>();
+  // #2761 M1: an OCCURRENCE list keyed by `occurrenceKey`, not a token->bracket
+  // map. The map was first-wins on the bare token, so of two checklist entries
+  // sharing a token across brackets the FIRST one's bracket id classified BOTH:
+  // `- [ ] **[GSD.999] 01: Icebox**` written above `- [ ] **[GSD.02] 01: …**`
+  // made the real phase inherit the icebox's sentinel verdict and vanish from
+  // `missing_phase_details`; written below it, the same document reported it.
+  // Dedupe still happens — it is now per PHASE rather than per token, which is
+  // what makes the classification order-independent.
+  const checklistOccurrences: Array<{ token: string; bracketId?: string }> = [];
+  const seenChecklistKeys = new Set<string>();
   let checklistMatch: RegExpExecArray | null;
   while ((checklistMatch = checklistPattern.exec(content)) !== null) {
     const token = checklistMatch[1 + G];
-    if (!checklistPhases.has(token)) checklistPhases.set(token, G ? checklistMatch[1] : undefined);
+    const bracketId = G ? checklistMatch[1] : undefined;
+    const key = occurrenceKey(token, bracketId);
+    if (seenChecklistKeys.has(key)) continue;
+    seenChecklistKeys.add(key);
+    checklistOccurrences.push({ token, bracketId });
   }
-  const detailPhases = new Set(phases.map(p => p.number));
-  const missingDetails = [...checklistPhases.keys()].filter(
-    p => !detailPhases.has(p) && !isSentinelPhase(p, checklistPhases.get(p)),
-  );
+  // The EMITTED value stays the bare token, unchanged: `phases[].number` is a
+  // token under every convention, and `missing_phase_details` is read against
+  // it. Only the classification moved to the qualified key — so two different
+  // brackets' `01` both missing report `01` once, rather than one of them
+  // silently covering for the other.
+  const missingDetails = [...new Set(
+    checklistOccurrences
+      .filter(o => !detailKeys.has(occurrenceKey(o.token, o.bracketId))
+        && !isSentinelPhase(o.token, o.bracketId))
+      .map(o => o.token),
+  )];
 
   const result = {
     milestones,
