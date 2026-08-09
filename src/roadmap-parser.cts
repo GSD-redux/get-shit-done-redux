@@ -254,19 +254,109 @@ function hasVersionedMilestones(content: string): boolean {
   return /^#{1,3}\s+.*v\d+\.\d+/mi.test(content);
 }
 
+// This file's milestone-heading vocabulary: a version token (`v1.2`-style),
+// a ✅/🚧/📋 status marker, or the word "Milestone". Tested against a
+// non-Phase heading's own text by `hasMilestoneSectioning` below — this
+// module's sole owner of "is this heading a milestone heading".
+const MILESTONE_HEADING_SIGNAL_PATTERN = /v\d+\.\d+|✅|📋|🚧|\bMilestone\b/i;
+
 /**
- * #3184/#2828/#1761: does this ROADMAP use milestone SECTIONING at all — i.e.
- * does it carry any non-Phase heading at level 2-3? Deliberately weaker than
- * `hasVersionedMilestones`: this needs to distinguish a FLAT unmilestoned
- * roadmap (Phase headings only, where a whole-document phase count is
- * correct) from a MILESTONED-but-unbounded one (where that count conflates
- * sibling milestones, #1761) — that distinction is load-bearing and must not
- * be collapsed into the versioned-milestone check. Owned here so the
- * milestone heading vocabulary has one home; routes `state.cts`'s
- * `buildStateFrontmatter` #2828 guard instead of a third hand-rolled copy.
+ * #3184/#3204/#2828/#1761/#3185: could a WHOLE-DOCUMENT phase count conflate
+ * two different milestones? That is the only question `buildStateFrontmatter`
+ * (`state.cts`) asks its single caller of this predicate.
+ *
+ * Three prior models were tried, and all three tried to infer milestone-ness
+ * from POSITION — where a heading sits relative to other headings — and all
+ * three broke a real shape because position does not carry it:
+ *
+ * 1. "Is there ANY non-Phase level-2/3 heading" (pre-#3184). #3204: a FLAT
+ *    roadmap carrying one ordinary structural heading (`## Progress`) was
+ *    misclassified as milestone-sectioned, and `safeToUseRoadmapCount`
+ *    clobbered a correct ROADMAP-declared count down to the on-disk directory
+ *    count. Not-Phase-ness was never the right question.
+ * 2. "Do >=2 non-Phase headings EACH own a nested (STRICTLY DEEPER) Phase
+ *    heading" (#3184's rewrite). Two independent review findings broke this:
+ *    (a) #1761 regression — real sibling milestones are commonly at the SAME
+ *    level as their own Phase headings (`## v1.0` / `## Phase 1:` / `## v2.0`
+ *    / `## Phase 3:`), so "strictly deeper" never matches for either sibling
+ *    and the predicate answers false, letting the whole-document count
+ *    conflate them exactly as #1761 did. (b) #3204 reintroduced — the
+ *    bundled greenfield template itself (`gsd-core/templates/roadmap.md:149-171`:
+ *    `## Phases` -> `### 🚧 v1.1 — …` -> `#### Phase 5: …`) nests a Phase
+ *    heading arbitrarily deep under EVERY ancestor in the chain, so a
+ *    generic wrapper heading ("Phases") with no milestone meaning of its own
+ *    counted as its own candidate section and single-milestone documents
+ *    were misclassified as sectioned again.
+ * 3. "Immediate adjacency, at any level" (interim #3185 rewrite, never
+ *    shipped past this file's own working tree). Fixed both #3184 defects
+ *    above, but adjacency is STILL a positional signal, and #3185 reproduced
+ *    a THIRD shape it cannot see: a flat roadmap where `## Overview` happens
+ *    to sit immediately before `## Phase 1:` and, independently, `## Notes`
+ *    sits immediately before `## Phase 4:` later in the same document. Two
+ *    purely structural headings, zero milestone meaning, each "adjacent" to a
+ *    Phase heading by coincidence of document layout — ≥2 owners, so the
+ *    flat 6-phase roadmap was misclassified as sectioned and clobbered to the
+ *    2 on-disk phase directories. Same root defect as #3204's `## Progress`,
+ *    wearing a different heading shape.
+ *
+ * The model that actually holds for every shape above abandons position
+ * entirely and asks about the heading's own text: is it a MILESTONE HEADING —
+ * a non-Phase heading at level 1-3 carrying a milestone VOCABULARY signal
+ * (a version token, a ✅/🚧/📋 status marker, or the word "Milestone")?
+ * Sectioning is present iff there are >=2 such headings — one or zero cannot
+ * conflate siblings by construction, no matter where they sit. This resolves
+ * every prior failure:
+ * - #3204 / this file's `## Progress`: no signal — 0 milestone headings.
+ * - #3185 `## Overview` / `## Notes` interleaved with flat phases: neither
+ *   carries a signal — 0 milestone headings, regardless of adjacency.
+ * - #1761 same-level siblings (`## v1.0` / `## v2.0`): each carries a version
+ *   token — 2 milestone headings, sectioned, no level or adjacency test
+ *   needed.
+ * - #1761 unmarked prose siblings (`## Milestone 1: …` / `## Milestone 2: …`):
+ *   each carries the word "Milestone" — 2 milestone headings, sectioned.
+ * - Bundled template wrapper (`## Phases` -> `### 🚧 v1.1` -> `#### Phase 5:`):
+ *   `## Phases` carries no signal; `### 🚧 v1.1` carries a marker and a
+ *   version token but is only ONE heading — 1 milestone heading, not
+ *   sectioned.
+ *
+ * Deliberately NOT a denylist of heading names (fragile, unbounded) and NOT
+ * collapsed into `hasVersionedMilestones` (a non-versioned-but-marked or
+ * "Milestone"-named section still conflates siblings — see that function's
+ * own doc comment, which answers a narrower question: ANY version token
+ * anywhere, not "are there >=2 independently-signalled milestone headings").
+ * Routed through `tokenizeHeadings` (fence- and CRLF-aware, single owner of
+ * ATX heading tokenisation) rather than a second regex pass, so a heading
+ * inside a fenced code block is never tokenised in the first place and
+ * cannot flip this result. The Phase-heading test (`/^Phase\s+\S/i`) is the
+ * SAME literal reused by `computeMilestoneSectionEnd` / `locateMilestoneHeadings`
+ * above, not a fresh copy. `MILESTONE_HEADING_SIGNAL_PATTERN`'s version-token
+ * and marker alternatives mirror the literal fragments already used by
+ * `hasVersionedMilestones` (`v\d+\.\d+`) and `computeMilestoneSectionEnd`
+ * (`✅|📋|🚧`) rather than inventing a fourth independent copy of the same
+ * vocabulary; the "Milestone" word is the one signal none of those three
+ * needed and this predicate does.
+ *
+ * Honest limit: this is a NARROWER signal than any of the three position-based
+ * attempts — a heading is only a candidate if its OWN TEXT carries a version
+ * token, a status marker, or the word "Milestone". Two milestone sections that
+ * carry NONE of the three (e.g. `## First Chapter` / `## Second Chapter`, each
+ * with their own Phase headings, no version, no marker, no "Milestone" word)
+ * are not detected as sectioned, and the whole-document count is trusted even
+ * though it may still conflate them. No fixture in this repo's bundled
+ * template or the #3204/#1761/#3185 reports exercises that shape; it is
+ * recorded here rather than hidden.
  */
 function hasMilestoneSectioning(content: string): boolean {
-  return /^#{2,3}\s+(?!Phase\s+\S)/mi.test(content);
+  const isPhaseHeading = (text: string): boolean => /^Phase\s+\S/i.test(text);
+  let milestoneHeadingCount = 0;
+  for (const heading of tokenizeHeadings(content)) {
+    if (heading.level < 1 || heading.level > 3) continue;
+    if (isPhaseHeading(heading.text)) continue;
+    if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(heading.text)) continue;
+    milestoneHeadingCount++;
+    if (milestoneHeadingCount >= 2) return true;
+  }
+  return false;
 }
 
 /**
@@ -542,10 +632,18 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // the selected milestone section actually contains its own — otherwise the
   // preamble phases ARE this milestone's phases and must be preserved.
   const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
-  const preamble = stripTaggedBlocks(beforeMilestones, 'details')
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    .replace(currentSectionHasPhaseDetails ? /^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim : /$/, '')
-    .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
+  const preambleBase = stripTaggedBlocks(beforeMilestones, 'details');
+  // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
+  // strip regex and a `/$/` sentinel, which made the do-not-strip branch an identity replacement
+  // (CodeQL js/identity-replacement, alert 53) -- correct, but it left both branches sharing one
+  // replacement argument, so changing `''` would silently give the no-op branch a real effect.
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  const preambleWithoutPhaseDetails = currentSectionHasPhaseDetails
+    ? preambleBase.replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+    : preambleBase;
+  // Unconditional in BOTH branches -- the #730 `Phase Details` heading strip is independent of
+  // whether the selected milestone section carries phase details of its own.
+  const preamble = preambleWithoutPhaseDetails.replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
   const value = detailsSection
     ? preamble + currentSection + '\n' + detailsSection
