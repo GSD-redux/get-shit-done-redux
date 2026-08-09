@@ -385,7 +385,64 @@ describe('comparePhaseStatus', () => {
     assert.doesNotThrow(() => comparePhaseStatus({ stateStatus: 'garbage', roadmapStatus: 'nonsense' }));
     assert.doesNotThrow(() => comparePhaseStatus({ stateStatus: undefined, roadmapStatus: undefined }));
   });
+
+  // #1956 review fix: 'Deferred' was missing from PHASE_STATUS_RANKS despite
+  // gsd-core/templates/roadmap.md:133 declaring it as part of the full
+  // ROADMAP Status vocabulary (`Not started | In progress | Complete |
+  // Deferred`) — it silently always resolved 'uncheckable', losing real drift.
+  test('Deferred vs Not started → consistent (both agree no work has happened)', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Not started', roadmapStatus: 'Deferred' });
+    assert.equal(result.verdict, 'consistent');
+  });
+
+  test('Deferred vs In progress → drifted (declared stopped vs declared happening)', () => {
+    const result = comparePhaseStatus({ stateStatus: 'In progress', roadmapStatus: 'Deferred' });
+    assert.equal(result.verdict, 'drifted');
+  });
+
+  test('Deferred vs Phase complete → drifted (declared stopped vs declared done)', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Phase complete', roadmapStatus: 'Deferred' });
+    assert.equal(result.verdict, 'drifted');
+  });
+
+  test('deferred resolves a real (non-null) rank on either side', () => {
+    const result = comparePhaseStatus({ stateStatus: 'Not started', roadmapStatus: 'Deferred' });
+    assert.notEqual(result.roadmapRank, null, "'deferred' must not be uncheckable — it is a declared vocabulary value");
+    assert.equal(result.roadmapRank, 0);
+  });
 });
+
+// Shared ROADMAP.md "Progress" table fixture builder (#1956/#2012). Used by
+// BOTH the CLI acceptance tests below (via writeRoadmap, which writes it to
+// disk) and the findRoadmapProgressTable/deriveProgressFromRoadmap parity
+// test (section 8), so the CLI-level decoy fixture and the parity fixture
+// can never independently drift into slightly different shapes.
+//
+// `opts.decoy`, when true, prepends an earlier `## Archive Notes` section
+// carrying a table with the EXACT SAME four column headers
+// (`Phase | Plans Complete | Status | Completed`) as the real `## Progress`
+// table, with the same phase row reporting a DIFFERENT status ('Not
+// started') — the #2012 decoy shape a column-name-only lookup would pick up
+// first.
+function buildRoadmapProgressContent(phase, phaseName, roadmapStatus, opts = {}) {
+  const decoySection = opts.decoy
+    ? `## Archive Notes
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| ${phase}. ${phaseName} | 0/1 | Not started | - |
+
+`
+    : '';
+  return `# Roadmap: Test Project
+
+${decoySection}## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| ${phase}. ${phaseName} | 0/1 | ${roadmapStatus} | - |
+`;
+}
 
 // ── 7. #1956 acceptance — drifted phase status across STATE/ROADMAP, via the real CLI ──
 
@@ -429,17 +486,14 @@ Progress: [░░░░░░░░░░] 0%
   }
 
   // Writes .planning/ROADMAP.md carrying a `## Progress` section with the
-  // table shape gsd-core/templates/roadmap.md declares.
-  function writeRoadmap(roadmapStatus) {
-    const content = `# Roadmap: Test Project
-
-## Progress
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| ${PHASE}. ${PHASE_NAME} | 0/1 | ${roadmapStatus} | - |
-`;
-    fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), content);
+  // table shape gsd-core/templates/roadmap.md declares. `opts.decoy` prepends
+  // a same-headers decoy table under a different heading — see
+  // buildRoadmapProgressContent above.
+  function writeRoadmap(roadmapStatus, opts = {}) {
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      buildRoadmapProgressContent(PHASE, PHASE_NAME, roadmapStatus, opts),
+    );
   }
 
   test('an intentionally-drifted phase status yields a finding', () => {
@@ -468,5 +522,82 @@ Progress: [░░░░░░░░░░] 0%
     const result = JSON.parse(res.output);
     assert.equal(result.verdict, 'uncheckable');
     assert.ok(result.reason && result.reason.length > 0, 'a skipped axis must be observable via a non-empty reason');
+  });
+
+  // #1956 review Fix 1: the Progress-table lookup used to scan the WHOLE
+  // ROADMAP for the first table matching the column headers, so an earlier
+  // decoy table sharing those headers (e.g. an "Archive Notes" table) was
+  // picked up instead of the real `## Progress` table (#2012 decoy
+  // avoidance). The decoy's phase-3 row says 'Not started'; the real
+  // `## Progress` table's phase-3 row says 'Complete', agreeing with STATE.md's
+  // 'Phase complete' — the CLI must read the real table.
+  test('a decoy table with the same headers is not mistaken for ## Progress', () => {
+    writeState('Phase complete');
+    writeRoadmap('Complete', { decoy: true });
+    const res = runGsdTools(['drift-guard', 'phase-status', '--phase', String(PHASE)], tmpDir);
+    assert.ok(res.success, `Expected success, got: ${res.error}`);
+    const result = JSON.parse(res.output);
+    assert.equal(result.verdict, 'consistent');
+    assert.equal(result.roadmapStatus, 'Complete', 'must read the real ## Progress table\'s status, not the decoy\'s "Not started"');
+  });
+
+  // #1956 review Fix 2: `stateCurrentPositionSlice(stateBody) ?? stateBody`
+  // fell back to the whole STATE.md body when no `## Current Position`
+  // heading was found, reintroducing the #2956 archive-shadowing bug — a
+  // stray historical `Status:` line elsewhere in the body would be read as
+  // if it were the real current status, fabricating a drift finding. A
+  // STATE.md with NO Current Position heading, plus an earlier stray
+  // `Status: Ready to plan` line, must abstain instead of guessing.
+  test('a STATE.md with no ## Current Position heading is uncheckable, never a fabricated finding', () => {
+    const stateContent = `---
+gsd_state_version: '1.0'
+status: planning
+---
+
+# Project State
+
+Status: Ready to plan
+
+## Session
+
+Some unrelated notes with no Current Position section.
+`;
+    fs.writeFileSync(path.join(planningDir, 'STATE.md'), stateContent);
+    writeRoadmap('Complete');
+    const res = runGsdTools(['drift-guard', 'phase-status', '--phase', String(PHASE)], tmpDir);
+    assert.ok(res.success, `Expected success, got: ${res.error}`);
+    const result = JSON.parse(res.output);
+    assert.equal(result.verdict, 'uncheckable');
+    assert.equal(result.reason, 'no_current_position');
+    assert.notEqual(result.verdict, 'drifted', 'a shadowed/absent Current Position must never fabricate a drift finding');
+  });
+});
+
+// ── 8. #1956/#2012 parity — findRoadmapProgressTable vs deriveProgressFromRoadmap ──
+//
+// Two SEPARATE implementations locate "the" ROADMAP Progress table:
+// roadmap-parser.cts's findRoadmapProgressTable (collectSection-based, used
+// by the drift-guard CLI) and phase-lifecycle.cts's deriveProgressFromRoadmap
+// (its own regex-based `## Progress` scope, used by the phase-lifecycle SDK
+// handler — deliberately NOT refactored onto the shared owner; its blast
+// radius is large). The repo requires a parity assertion whenever a parser is
+// expressed twice, so this test feeds both the SAME decoy-bearing ROADMAP
+// fixture from section 7 and asserts they agree about which table is real.
+
+describe('#1956/#2012 parity — findRoadmapProgressTable vs deriveProgressFromRoadmap agree', () => {
+  const { findRoadmapProgressTable } = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+  const { deriveProgressFromRoadmap } = require('../gsd-core/bin/lib/phase-lifecycle.cjs');
+
+  test('both locators pick the real ## Progress table, not the decoy', () => {
+    const content = buildRoadmapProgressContent(3, 'Convergence', 'Complete', { decoy: true });
+
+    const table = findRoadmapProgressTable(content);
+    assert.ok(table, 'findRoadmapProgressTable must find the real Progress table');
+    const row = table.rows.find((r) => r.Phase.startsWith('3.'));
+    assert.ok(row, 'expected a phase 3 row in the located table');
+    assert.equal(row.Status, 'Complete', 'must read the real ## Progress table\'s phase-3 status, not the decoy\'s "Not started"');
+
+    const progress = deriveProgressFromRoadmap(content);
+    assert.equal(progress.completedPhases, 1, 'deriveProgressFromRoadmap must count the real ## Progress table\'s Complete row, not be fooled by the decoy');
   });
 });

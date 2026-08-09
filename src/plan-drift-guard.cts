@@ -164,11 +164,14 @@ export interface PhaseStatusResult {
 /**
  * Frozen map from lowercased phase-status text to a shared ordinal rank,
  * covering the union of the STATE.md "Current Position" vocabulary
- * (gsd-core/templates/state.md) and the ROADMAP.md "## Progress" table
- * Status column vocabulary (gsd-core/templates/roadmap.md).
+ * (gsd-core/templates/state.md) and the FULL ROADMAP.md "## Progress" table
+ * Status column vocabulary declared by gsd-core/templates/roadmap.md:133 —
+ * `Not started | In progress | Complete | Deferred`.
  *
  * The two vocabularies overlap on 'in progress', which is rank 1 in both —
- * no conflict.
+ * no conflict. 'deferred' is rank 0 (no work done) — see comparePhaseStatus's
+ * doc comment for how a deferred/non-rank-0 mismatch is classified; it is NOT
+ * simply numeric distance from rank 0 like an ordinary lag.
  */
 const PHASE_STATUS_RANKS: Readonly<Record<string, number>> = Object.freeze({
   // STATE.md "Current Position" vocabulary
@@ -180,10 +183,24 @@ const PHASE_STATUS_RANKS: Readonly<Record<string, number>> = Object.freeze({
   // ROADMAP.md "## Progress" table Status column vocabulary
   'not started':      0,
   'complete':         2,
+  'deferred':         0,
 } as const);
 
 /** Rank at which a status asserts work is DONE (terminal, not comparative). */
 const TERMINAL_RANK = 2;
+
+/**
+ * Normalize a raw phase-status string for lookup/comparison: trims
+ * surrounding whitespace and lowercases. Returns null for missing/empty
+ * values. Single owner of this normalization so `resolvePhaseStatusRank` and
+ * the 'deferred' declared-intent check in `comparePhaseStatus` cannot drift
+ * apart on what counts as "empty".
+ */
+function normalizePhaseStatusText(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '' ? null : normalized;
+}
 
 /**
  * Resolve a raw phase-status string to its shared ordinal rank, or null when
@@ -194,9 +211,8 @@ const TERMINAL_RANK = 2;
  * @returns the resolved rank, or null if unresolvable
  */
 function resolvePhaseStatusRank(value: string | null | undefined): number | null {
-  if (value === null || value === undefined) return null;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === '') return null;
+  const normalized = normalizePhaseStatusText(value);
+  if (normalized === null) return null;
   if (!Object.prototype.hasOwnProperty.call(PHASE_STATUS_RANKS, normalized)) return null;
   return PHASE_STATUS_RANKS[normalized];
 }
@@ -217,6 +233,18 @@ function resolvePhaseStatusRank(value: string | null | undefined): number | null
  * "done" while another claims "still going" is a direct contradiction, not
  * mere lag. This is the issue's canonical example: complete in STATE.md but
  * in progress in ROADMAP.md.
+ *
+ * 'Deferred' is a second declared-intent rank-0 status (gsd-core/templates/
+ * roadmap.md:133's full vocabulary: `Not started | In progress | Complete |
+ * Deferred`) that is NOT ordinary lag from rank 0: it is an explicit
+ * decision to STOP work, not merely "hasn't started yet". If exactly one
+ * side declares 'deferred' and the other side's rank is >= 1 (work is
+ * reported as in progress or complete), that is always 'drifted' — a phase
+ * declared deferred while the other document says work is happening is a
+ * direct contradiction, checked here (like the terminal-completeness rule
+ * above) BEFORE the numeric distance comparison. 'Deferred' against a
+ * rank-0 status on the other side (e.g. 'Not started') stays 'consistent' —
+ * both agree no work has happened.
  *
  * Otherwise, ranks are compared numerically: equal → 'consistent';
  * off-by-one → 'lag'; off-by-two-or-more → 'drifted'.
@@ -243,6 +271,15 @@ export function comparePhaseStatus({
   const roadmapIsTerminal = roadmapRank === TERMINAL_RANK;
   if (stateIsTerminal !== roadmapIsTerminal) {
     return { verdict: 'drifted', stateRank, roadmapRank };
+  }
+
+  const stateIsDeferred = normalizePhaseStatusText(stateStatus) === 'deferred';
+  const roadmapIsDeferred = normalizePhaseStatusText(roadmapStatus) === 'deferred';
+  if (stateIsDeferred !== roadmapIsDeferred) {
+    const otherRank = stateIsDeferred ? roadmapRank : stateRank;
+    if (otherRank >= 1) {
+      return { verdict: 'drifted', stateRank, roadmapRank };
+    }
   }
 
   const diff = Math.abs(stateRank - roadmapRank);

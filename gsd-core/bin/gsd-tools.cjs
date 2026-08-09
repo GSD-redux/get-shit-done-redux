@@ -3288,7 +3288,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // #1956: deterministic STATE.md-vs-ROADMAP.md phase-status drift.
             const { planningDir } = require('./lib/planning-workspace.cjs');
             const { stateExtractField, stateCurrentPositionSlice } = require('./lib/state-document.cjs');
-            const { findTableWithColumns } = require('./lib/markdown-table.cjs');
+            const { findRoadmapProgressTable } = require('./lib/roadmap-parser.cjs');
             const { phaseKeyFromProse } = require('./lib/phase-id.cjs');
             // STATE.md's YAML frontmatter carries its own lowercase `status:`
             // scalar ahead of the body's `## Current Position` prose "Status:"
@@ -3339,10 +3339,32 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // line in an archive section (e.g. `## Session Continuity
             // Archive`) can't shadow the real one — same #2956 scope state.cts
             // uses for current_phase, via the shared owner in
-            // state-document.cjs. Falls back to the whole body when no
-            // Current Position heading is found, so a STATE.md without one
-            // still resolves rather than going uncheckable.
-            const currentPositionBody = stateCurrentPositionSlice(stateBody) ?? stateBody;
+            // state-document.cjs.
+            //
+            // Deliberately NO whole-body fallback here. `state.cts`'s WRITE
+            // path falls back to the whole body when no Current Position
+            // heading is found (legacy behavior it must preserve for
+            // backward-compatible writes) — but that fallback is wrong for a
+            // READ that feeds a drift finding: a STATE.md with no Current
+            // Position heading is exactly the shape that let a stray historical
+            // `Status:` line elsewhere in the body shadow the real value and
+            // fabricate a 'drifted' verdict. A guess is worse than an
+            // abstention for a drift detector, so an absent Current Position
+            // section reports 'uncheckable' instead of guessing from the whole
+            // document.
+            const currentPositionBody = stateCurrentPositionSlice(stateBody);
+            if (currentPositionBody === null) {
+              const phase = phaseArg !== undefined ? phaseKeyFromProse(phaseArg) : null;
+              output({
+                verdict: 'uncheckable',
+                reason: 'no_current_position',
+                phase,
+                stateStatus: null,
+                roadmapStatus: null,
+                authority: 'STATE.md',
+              }, raw);
+              return;
+            }
 
             // Resolve the target phase: --phase if given, else whatever
             // STATE.md's Current Position reports as current.
@@ -3364,7 +3386,9 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
             const stateStatus = stateExtractField(currentPositionBody, 'Status');
 
-            const table = findTableWithColumns(roadmapContent, ['Phase', 'Plans Complete', 'Status', 'Completed']);
+            // #1956/#2012: scoped to `## Progress` first (decoy-avoidance) —
+            // see findRoadmapProgressTable's doc comment (roadmap-parser.cts).
+            const table = findRoadmapProgressTable(roadmapContent);
             const matchedRow = table
               ? table.rows.find((row) => phaseKeyFromProse(row.Phase) === phase && phase !== null)
               : undefined;
