@@ -147,12 +147,21 @@ If you target the wrong branch by accident, the `PR Target Validator`
 workflow will post a comment with the one-line fix (click "Edit" by the PR
 title and change the base branch — no need to recreate the PR).
 
-**Why this matters:** Under the old single-branch model, every PR required
-rebasing onto `main` because branch protection required "up-to-date before
-merging" and `main` moved on every merge. With `next` as the integration
-branch and that flag disabled on `next`, concurrent PRs can merge in any
-order as long as they don't conflict on the same lines. The rebase
-treadmill is gone for the 95% case.
+**Why this matters:** Under the old single-branch model, every PR rebased onto
+`main`, which moved on every merge. `next` moves far less often — only when
+another PR to `next` lands — so in practice you rebase much less.
+
+**But `next` does still require "up-to-date before merging".** Branch
+protection has `required_status_checks.strict = true`; check it yourself with
+`gh api repos/open-gsd/gsd-core/branches/next/protection --jq '.required_status_checks.strict'`.
+If another PR lands while yours is open, yours goes `BEHIND` and must be
+rebased before it can merge.
+
+Budget for that, because the rebase is not free here: **it changes your HEAD
+sha, which invalidates the sha-bound pass marker the push gate reads**, so a
+rebase means re-running the full remote verification and another CI cycle
+before the gate clears again. Rebase *last* — immediately before you push for
+review — rather than paying for a verification you are about to discard.
 
 ---
 
