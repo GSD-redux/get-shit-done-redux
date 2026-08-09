@@ -677,7 +677,24 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
 
   const WORKTREE_TIMEOUT_MS = 60_000;
   const BUILD_LIB_TIMEOUT_MS = 180_000;
-  const BUILD_TIMEOUT_MS = 300_000;
+  // 600s, the `local/no-unbounded-spawn` ceiling — deliberately the largest
+  // meaningful bound, because this step's cost is 19 sequential installer spawns
+  // and spawn latency is exactly what degrades under the suite's own concurrency.
+  //
+  // Measured for this step: ~22s idle in a container, ~142s with 8 CPU burners on
+  // 8 cores, and >300s under the real remote-runner suite (4 concurrent test files
+  // x 2 cells, all churning processes). The old 300s was sized on an idle machine
+  // for a step that never runs on one: under gsd-test the on-disk baseline cache is
+  // structurally absent — CI restores it via actions/cache keyed on
+  // github.event.pull_request.base.sha, a key that exists only inside GitHub
+  // Actions — so this slow path runs on EVERY remote verification.
+  //
+  // The real remedy is making the cache reachable from the remote runner so the
+  // in-job build stays the rare fallback ADR-2719 §5 describes. Until then this
+  // bound has to cover the step actually running, because the alternative is a
+  // propagation gate that reports red on every run for a reason that is not a
+  // propagation finding.
+  const BUILD_TIMEOUT_MS = 600_000;
 
   // Per-step timings, carried into the thrown error. A bare "spawnSync ETIMEDOUT"
   // names neither the step nor its elapsed time, which is exactly the information
