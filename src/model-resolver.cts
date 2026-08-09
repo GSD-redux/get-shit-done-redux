@@ -16,7 +16,8 @@
  *   - ./config-loader.cjs    (loadConfig)
  *   - ./configuration.cjs    (CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS)
  *   - ./model-profiles.cjs   (MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier)
- *   - ./model-catalog.cjs    (MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS)
+ *   - ./model-catalog.cjs    (MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS,
+ *                             CLAUDE_AGENT_ALIASES — re-exported below for back-compat, #3241)
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -30,7 +31,7 @@ import { CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS } from './configuration.cj
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier } = modelProfiles;
 
-import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS } from './model-catalog.cjs';
+import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS, CLAUDE_AGENT_ALIASES } from './model-catalog.cjs';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -179,7 +180,9 @@ const CLAUDE_POLICY_ID_TO_ALIAS: Record<string, string> = {
   ),
   'claude-fable-5': 'fable',
 };
-const CLAUDE_AGENT_ALIASES = new Set(['opus', 'sonnet', 'haiku', 'fable']);
+// CLAUDE_AGENT_ALIASES moved to ./model-catalog.cts (#3241) — imported above
+// and re-exported below for back-compat (bin/install.js:474,
+// tests/codex-config.test.cjs:24 depend on the name being on this module).
 
 // Dedupe stderr warnings so repeated agent resolutions don't spam (#1133).
 const _modelPolicyUnmappableWarned = new Set<string>();

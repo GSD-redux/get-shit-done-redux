@@ -3773,10 +3773,16 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
     fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
 
     // Write a project config with effort.agent_overrides overriding gsd-planner to 'low'.
-    // runtime:"codex" pins a Codex-native model, so emitting model_reasoning_effort
-    // remains valid under the #838 model/effort coupling rule.
+    // #3241: runtime:"codex" alone (with no model_overrides) no longer auto-pins a
+    // per-tier model — the resolver-only embed was removed (D1). These tests add an
+    // explicit model_overrides pin below so a real Codex model id survives (#3241
+    // row 4, "unchanged"), which keeps emitting model_reasoning_effort valid under
+    // the #838 model/effort coupling rule.
     const config = {
       runtime: 'codex',
+      model_overrides: {
+        'gsd-planner': 'gpt-5.6-sol',
+      },
       effort: {
         agent_overrides: {
           'gsd-planner': 'low',
@@ -3815,9 +3821,13 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
 
   test('Codex .toml clamps effort max → xhigh when agent_overrides.gsd-planner=max', () => {
     const projectDir = path.dirname(codexHome);
-    // Overwrite config with max override
+    // Overwrite config with max override. #3241: include an explicit
+    // model_overrides pin (D1 removed the resolver-only auto-embed).
     const config = {
       runtime: 'codex',
+      model_overrides: {
+        'gsd-planner': 'gpt-5.6-sol',
+      },
       effort: {
         agent_overrides: {
           'gsd-planner': 'max',
@@ -3920,7 +3930,16 @@ describe('#3241 Codex install: deprecation warning when a resolver-sourced model
       'stdout must never carry the notice text — stdout carries installer result data');
   });
 
-  test('the deprecation notice fires exactly once per install across every Codex agent, not once per agent (#3241)', () => {
+  test('the deprecation notice fires exactly once per install across every Codex agent, not once per agent, and no agent .toml pins a model by default (#3241)', () => {
+    // This test rides two properties deliberately: the notice's per-install
+    // dedupe (its original subject) AND the actual emitted-file content. The
+    // three describe-4 tests above (#443 Config-driven) all supply an
+    // explicit model_overrides pin to keep exercising unrelated effort-
+    // resolution behavior, so none of them prove the default (no
+    // model_overrides) install path actually stops pinning a model — only
+    // the unit-level generateCodexAgentToml tests in codex-config.test.cjs
+    // did. This is therefore the only install()-altitude coverage of Phase
+    // 1's headline behavior until Phase 4's health-check/sync land.
     runGlobalInstall('codex', codexHome);
     const stderr = stderrChunks.join('');
     const installedTomls = fs.readdirSync(path.join(codexHome, 'agents'))
@@ -3932,6 +3951,32 @@ describe('#3241 Codex install: deprecation warning when a resolver-sourced model
     const noticeLines = stderr.split(/\r?\n/).filter((line) => line.startsWith('gsd: notice — '));
     assert.strictEqual(noticeLines.length, 1,
       `expected the notice exactly once across ${installedTomls.length} installed agents, saw ${noticeLines.length}\nstderr:\n${stderr}`);
+
+    // Emission check. Trap (same one ADR-2313 flags for Phase 3's sync):
+    // `developer_instructions` is a `'''`-quoted TOML multiline block holding
+    // the agent's raw prompt text, and GSD agent prompts discuss "model"
+    // constantly — a bare `content.includes('model =')` would match prose
+    // inside that block and false-fail. Guard against it by only scanning the
+    // lines BEFORE the `developer_instructions = '''` marker (generateCodexAgentToml
+    // always emits model / model_reasoning_effort, if present, ahead of that
+    // marker — bin/install.js's `lines` array construction), and by anchoring
+    // each check on a line that STARTS a TOML key (`^model\s*=`), never a bare
+    // substring match.
+    for (const tomlName of installedTomls) {
+      const tomlPath = path.join(codexHome, 'agents', tomlName);
+      const content = fs.readFileSync(tomlPath, 'utf8');
+      const lines = content.split(/\r?\n/);
+      const bodyStart = lines.findIndex((line) => line.startsWith("developer_instructions = '''"));
+      assert.notStrictEqual(bodyStart, -1,
+        `${tomlName}: expected a developer_instructions = ''' marker to scope the header scan against\nActual:\n${content.slice(0, 500)}`);
+      const header = lines.slice(0, bodyStart);
+      const modelLine = header.find((line) => /^model\s*=/.test(line));
+      const effortLine = header.find((line) => /^model_reasoning_effort\s*=/.test(line));
+      assert.strictEqual(modelLine, undefined,
+        `${tomlName} must not pin a model by default (#3241 — no model_overrides configured) — found line: ${JSON.stringify(modelLine)}`);
+      assert.strictEqual(effortLine, undefined,
+        `${tomlName} must not emit model_reasoning_effort with no model pinned (#838 coupling) — found line: ${JSON.stringify(effortLine)}`);
+    }
   });
 });
 
@@ -4005,7 +4050,15 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
 
   test('effort.default="ultra" (invalid) + runtime:"codex" -> Codex .toml model_reasoning_effort is VALID', () => {
     // BUG before fix: "ultra" written into .toml verbatim
-    writeProjectConfig({ runtime: 'codex', effort: { default: 'ultra' } });
+    // #3241: include an explicit model_overrides pin — D1 removed the
+    // resolver-only auto-embed, and model_reasoning_effort is only emitted
+    // when a model is pinned (#838 coupling), so a pin is required to
+    // exercise this test's actual target (effort-token fallback validity).
+    writeProjectConfig({
+      runtime: 'codex',
+      model_overrides: { 'gsd-planner': 'gpt-5.6-sol' },
+      effort: { default: 'ultra' },
+    });
     runGlobalInstall('codex', codexHome);
     const tomlContent = fs.readFileSync(
       path.join(codexHome, 'agents', 'gsd-planner.toml'), 'utf8'

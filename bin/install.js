@@ -468,10 +468,10 @@ const _gsdLibDir = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
 const { MODEL_PROFILES: GSD_MODEL_PROFILES } = require(path.join(_gsdLibDir, 'model-profiles.cjs'));
 const {
   RUNTIME_PROFILE_MAP: GSD_RUNTIME_PROFILE_MAP,
+  isAnthropicFlavoredModel: gsdIsAnthropicFlavoredModel,
 } = require(path.join(_gsdLibDir, 'model-catalog.cjs'));
 const {
   resolveTierEntry: gsdResolveTierEntry,
-  CLAUDE_AGENT_ALIASES,
 } = require(path.join(_gsdLibDir, 'model-resolver.cjs'));
 
 // #2071 — install-time effort resolution (readGsdEffectiveEffortConfig /
@@ -4074,15 +4074,19 @@ purpose: ${toSingleLine(description)}
 /**
  * #2310 — True if `model` is an Anthropic-flavored value that must never appear as a
  * Codex agent `.toml` `model`. Two forms: (a) a bare Claude Agent-tool tier alias
- * (opus/sonnet/haiku/fable — the canonical CLAUDE_AGENT_ALIASES, imported from
- * src/model-resolver.cts so it can't diverge); (b) any Claude model id in any provider
- * namespacing — `claude-*`, `anthropic/claude-*`, `us.anthropic.claude-*` (the forms the
- * catalog assigns to opencode/hermes/kilo, reachable on a Codex .toml via the runtime-
- * resolver path). No OpenAI/Codex model id contains "claude", so a case-insensitive
- * substring test is a safe, exhaustive guard for (b). Codex/ChatGPT rejects all of these.
+ * (opus/sonnet/haiku/fable — the canonical CLAUDE_AGENT_ALIASES); (b) any Claude model
+ * id in any provider namespacing — `claude-*`, `anthropic/claude-*`, `us.anthropic.claude-*`
+ * (the forms the catalog assigns to opencode/hermes/kilo, reachable on a Codex .toml via
+ * the runtime-resolver path). No OpenAI/Codex model id contains "claude", so a
+ * case-insensitive substring test is a safe, exhaustive guard for (b). Codex/ChatGPT
+ * rejects all of these.
+ *
+ * #3241 — thin delegation to the shared predicate on src/model-catalog.cts (moved there
+ * so it can't diverge across Codex-posture surfaces); kept as a local name because it
+ * reads better at the call sites below.
  */
 function _isAnthropicFlavoredModel(model) {
-  return typeof model === 'string' && (CLAUDE_AGENT_ALIASES.has(model) || model.toLowerCase().includes('claude'));
+  return gsdIsAnthropicFlavoredModel(model);
 }
 
 // #2310 — dedupe stderr warnings so repeated agent emits don't spam (mirrors the
@@ -4098,6 +4102,25 @@ function _warnCodexModelOverrideDropped(agentName, value) {
     `gsd: warning — Codex agent "${agentName}" model "${safe}" is not a valid Codex model ` +
     `(Anthropic alias/id); dropping it so Codex uses a valid default. ` +
     `Set runtime:"codex" or pin a gpt-* model to route it.\n`,
+  );
+}
+
+// #3241 — one-time per-install deprecation notice: the automatic runtime-resolver
+// per-tier Codex model embed was removed (D1/D5, ADR-2313 passive-posture epic). When
+// the resolver *would have* supplied a model and nothing else ends up pinned, this
+// notice points the user at model_overrides as the explicit-pin replacement. Dedupes
+// with a module-level boolean (mirrors _codexModelOverrideDroppedWarned's Set above)
+// so a multi-agent install — every Codex agent hits this condition simultaneously —
+// emits exactly one line, not one per agent. Reset once per install() call (see
+// install()) so the "at most once" window is per-install, not per-process.
+let _codexResolverModelOmittedWarned = false;
+function _warnCodexResolverModelOmitted() {
+  if (_codexResolverModelOmittedWarned) return;
+  _codexResolverModelOmittedWarned = true;
+  process.stderr.write(
+    'gsd: notice — Codex agents no longer auto-pin a per-tier model from the runtime ' +
+    'resolver; set model_overrides for an agent if you want a specific Codex model ' +
+    'instead of the session model.\n',
   );
 }
 
@@ -4133,37 +4156,54 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
   // Embed model override when configured in ~/.gsd/defaults.json so that
   // model_overrides is respected on Codex (which uses static TOML, not inline
   // Task() model parameters). See #2256.
-  // Precedence: per-agent model_overrides > runtime-aware tier resolution (#2517).
   // #2310 — a Codex .toml `model` MUST be a real Codex/OpenAI model id. Codex is a
   // passive/session-only model host (ADR-1239): GSD cannot reliably route per-agent
   // tiers, and a bare GSD/Claude tier alias (opus/sonnet/haiku/fable) or a claude-*
   // id 400s on a ChatGPT-account Codex ("The 'sonnet' model is not supported when
   // using Codex with a ChatGPT account"). So: embed ONLY an explicit real-Codex
   // model pin from model_overrides; omit anything Anthropic-flavored so the agent
-  // inherits the always-available session model. (Removing the runtime-resolver
-  // per-tier embedding below is the ADR-2310 passive-posture epic.)
+  // inherits the always-available session model.
+  // #3241 (D1/D5) — the runtime-aware tier-resolver auto-embed that used to fall
+  // through here when model_overrides had nothing was removed: Codex is passive by
+  // default now, and only an explicit model_overrides pin survives. See the
+  // deprecation-notice block below for the population that used to get a pin from
+  // the resolver and no longer does.
   const rawModelOverride = modelOverrides?.[resolvedName] || modelOverrides?.[agentName];
   let pinnedModel = null;
   if (rawModelOverride) {
-    if (typeof rawModelOverride === 'string' && rawModelOverride && !_isAnthropicFlavoredModel(rawModelOverride)) {
-      pinnedModel = rawModelOverride;   // explicit real-Codex model pin → embed verbatim (#2256)
+    // Trim before the truthiness test (#3241 defect fix): a whitespace-only value
+    // (e.g. '   ') is a truthy JS string but not a model id — it must not be
+    // embedded verbatim (`model = "   "`, a live pre-fix defect) or routed to
+    // _warnCodexModelOverrideDropped, whose "is not a valid Codex model
+    // (Anthropic alias/id)" text would misdescribe a blank config field. It is
+    // silently dropped, matching how '' already behaves (no pin, no warning).
+    const trimmedOverride = typeof rawModelOverride === 'string' ? rawModelOverride.trim() : rawModelOverride;
+    if (typeof trimmedOverride === 'string' && trimmedOverride && !_isAnthropicFlavoredModel(trimmedOverride)) {
+      pinnedModel = trimmedOverride;   // explicit real-Codex model pin → embed verbatim (#2256)
+    } else if (typeof rawModelOverride === 'string' && trimmedOverride === '') {
+      // whitespace-only override — no pin, no warning (#3241).
     } else {
       _warnCodexModelOverrideDropped(resolvedName, rawModelOverride);   // alias/claude-* → omit
     }
   }
-  if (!pinnedModel && runtimeResolver) {
-    // #2517 — runtime-aware tier resolution. Embeds Codex-native model + reasoning_effort
-    // from RUNTIME_PROFILE_MAP / model_profile_overrides for the configured tier.
-    // (Superseded on the default path by the ADR-2310 passive-posture epic.)
-    const entry = runtimeResolver.resolve(resolvedName) || runtimeResolver.resolve(agentName);
-    if (entry?.model) pinnedModel = entry.model;
-  }
   // #2310 — final safety gate: never emit an Anthropic-flavored model into a Codex
-  // .toml, even from the runtime-resolver path (e.g. a defaults.json runtime that
-  // does not match the codex install target).
+  // .toml, even one that reached here through some other path than the override
+  // check above.
   if (pinnedModel && _isAnthropicFlavoredModel(pinnedModel)) {
     _warnCodexModelOverrideDropped(resolvedName, pinnedModel);
     pinnedModel = null;
+  }
+  // #3241 — one-time deprecation notice: if nothing ends up pinned but the
+  // runtime resolver would have supplied a per-tier model (the population that
+  // loses a pin now that the auto-embed above is gone), point the user at
+  // model_overrides. Never fires when the resolver is null, resolves to
+  // nothing, or an explicit real-Codex pin survived — in all of those cases
+  // nothing was lost.
+  if (!pinnedModel && runtimeResolver) {
+    const wouldHavePinned = runtimeResolver.resolve(resolvedName) || runtimeResolver.resolve(agentName);
+    if (wouldHavePinned?.model) {
+      _warnCodexResolverModelOmitted();
+    }
   }
   let hasPinnedModel = false;
   if (pinnedModel) {
@@ -10068,6 +10108,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   const plan = resolveInstallPlan(runtime);
   const dirName = getDirName(runtime);
   const src = path.join(__dirname, '..');
+
+  // #3241 — the Codex resolver-model-omitted notice dedupes "at most once", but
+  // scoped per install() call rather than per process — each install() run gets
+  // its own fresh window so a second install (e.g. a second runtime, or a test
+  // re-running install()) can warn again if the same condition recurs.
+  _codexResolverModelOmittedWarned = false;
 
   if (_hostBehaviors(runtime).localInstallDeferred && !isGlobal) {
     console.log(`  ${yellow}⚠${reset} Kimi local install is deferred for Phase 2.`);

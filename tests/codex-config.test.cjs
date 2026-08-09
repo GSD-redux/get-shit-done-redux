@@ -518,13 +518,17 @@ tools: Read, Grep, Glob
     );
   });
 
-  test('emits reasoning effort when runtime resolver pins Codex model (#838)', () => {
+  test('omits model and reasoning effort when only the runtime resolver would have pinned one (#838, #3241)', () => {
+    // #3241 flips this test: the runtime-resolver auto-embed block (D1) was
+    // removed, so a resolver alone (no explicit model_overrides) no longer
+    // pins a model at install time, and #838's model/effort coupling means
+    // neither line survives.
     const runtimeResolver = { resolve: () => ({ model: 'gpt-5.5' }) };
     const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
-    assert.ok(result.includes('model = "gpt-5.5"'), 'runtime resolver must pin model');
+    assert.ok(!result.includes('model = "gpt-5.5"'), 'runtime resolver alone must not pin model (#3241)');
     assert.ok(
-      result.includes('model_reasoning_effort ='),
-      'reasoning effort is safe to emit when runtime resolver pins model'
+      !result.includes('model_reasoning_effort ='),
+      'reasoning effort must not survive an omitted resolver model (#838 coupling)'
     );
   });
 
@@ -569,10 +573,13 @@ tools: Read, Grep, Glob
     assert.ok(!result.includes('model ='), 'unmappable Anthropic override falls through to Codex default (no model pinned)');
   });
 
-  test('a dropped claude-* override falls through to the runtime resolver (#2310)', () => {
+  test('a dropped claude-* override no longer falls through to the runtime resolver (#2310, #3241)', () => {
+    // #3241 (D1) removed the runtime-resolver fallback embed entirely, so a
+    // dropped alias/claude-* override now has nothing left to fall through to
+    // — it is simply omitted, same as the claude id never leaking.
     const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-terra' }) };
     const result = generateCodexAgentToml('gsd-executor', sampleAgent, { 'gsd-executor': 'claude-opus-4-8' }, runtimeResolver);
-    assert.ok(result.includes('model = "gpt-5.6-terra"'), 'falls through to the runtime-resolved Codex model');
+    assert.ok(!result.includes('model = "gpt-5.6-terra"'), 'resolver fallback no longer fires (#3241 D1)');
     assert.ok(!result.includes('claude-'), 'claude id must not leak even with a resolver present');
   });
 
