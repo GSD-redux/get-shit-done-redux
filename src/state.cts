@@ -1754,8 +1754,8 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // exclusion below). Project-code-aware via phaseKeyFromDir.
             if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir))) continue;
             // #3185: dedup grouping routed through the canonical phaseKeyFromDir
-            // (src/phase-id.cts) instead of a local `^0*(\d+[A-Za-z]?(?:\.\d+)*)`
-            // regex that diverged from extractPhaseToken/phaseKeyFromDir on
+            // (src/phase-id.cts) instead of a local leading-digits regex that
+            // diverged from extractPhaseToken/phaseKeyFromDir on
             // project-code-prefixed dirs (whole dirname fell through as the key,
             // so a `PROJ-05`/`PROJ-05-slug` pair never deduped) and on
             // multi-segment milestone dirs. Same key surface used two lines
