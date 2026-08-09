@@ -679,30 +679,61 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const BUILD_LIB_TIMEOUT_MS = 180_000;
   const BUILD_TIMEOUT_MS = 300_000;
 
+  // Per-step timings, carried into the thrown error. A bare "spawnSync ETIMEDOUT"
+  // names neither the step nor its elapsed time, which is exactly the information
+  // needed to tell a slow machine from a hung step — and the failure message is
+  // the only channel that survives into the remote runner's failures.json.
+  const timings = [];
+  const timed = (step, fn) => {
+    const started = Date.now();
+    try {
+      const value = fn();
+      timings.push(`${step}=${((Date.now() - started) / 1000).toFixed(1)}s`);
+      return value;
+    } catch (err) {
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      timings.push(`${step}=FAILED@${elapsed}s`);
+      const partial = [
+        err && err.stdout ? `stdout tail: ${String(err.stdout).trim().slice(-400)}` : '',
+        err && err.stderr ? `stderr tail: ${String(err.stderr).trim().slice(-400)}` : '',
+      ].filter(Boolean).join('\n  ');
+      err.gsdBaselineStep = step;
+      err.gsdBaselineTimings = timings.join(' ');
+      err.message =
+        `${step} failed after ${elapsed}s (bounds: worktree ${WORKTREE_TIMEOUT_MS}ms, ` +
+        `build:lib ${BUILD_LIB_TIMEOUT_MS}ms, generator ${BUILD_TIMEOUT_MS}ms). ` +
+        `Step timings: ${timings.join(' ')}. ${err.message}` +
+        (partial ? `\n  ${partial}` : '');
+      throw err;
+    }
+  };
+
   try {
-    execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
-      cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    timed('git-worktree-add', () =>
+      execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
+        cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      }));
 
     const sharedNodeModules = path.join(cwd, 'node_modules');
     if (fs.existsSync(sharedNodeModules)) {
       fs.symlinkSync(sharedNodeModules, path.join(worktreeDir, 'node_modules'), 'dir');
     }
 
-    runNpm(['run', 'build:lib'], {
-      cwd: worktreeDir, timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    timed('npm-run-build-lib', () =>
+      runNpm(['run', 'build:lib'], {
+        cwd: worktreeDir, timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      }));
 
     // Run `cwd`'s OWN generator (not the worktree's — see the function doc for why),
     // pointed at the worktree as the tree to measure.
-    execFileSync(
-      process.execPath,
-      [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
-      { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    timed('gen-emitted-baseline', () =>
+      execFileSync(
+        process.execPath,
+        [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
+        { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      ));
 
-    const raw = fs.readFileSync(outFile, 'utf8');
-    return JSON.parse(raw);
+    return timed('read-artifact', () => JSON.parse(fs.readFileSync(outFile, 'utf8')));
   } finally {
     try {
       execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'remove', '--force', worktreeDir], {
