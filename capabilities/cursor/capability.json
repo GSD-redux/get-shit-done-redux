@@ -107,8 +107,7 @@
         "stop",
         "subagentStart",
         "subagentStop"
-      ],
-      "reviewerCli": true
+      ]
     }
   },
   "reviewer": {

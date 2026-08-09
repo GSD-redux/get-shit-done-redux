@@ -161,24 +161,29 @@ Runtime capabilities describe how GSD projects its artefacts onto one host CLI. 
 
 ### `hostBehaviors`
 
-`runtime.hostBehaviors` is an **open, unvalidated bag** of per-host behavior switches consumed directly by installer and runtime-adaptation code. Unlike every axis in the table above, it is **not covered by any schema**: the key `hostBehaviors` appears zero times in `scripts/gen-capability-registry.cjs` and zero times in `scripts/registry-schema.cjs`. An unknown key inside `hostBehaviors` is neither rejected nor warned about — it is simply ignored by any code path that does not look for it by name.
+`runtime.hostBehaviors` is an **open, unvalidated bag** of per-host behavior switches consumed directly by installer and runtime-adaptation code. Unlike every axis in the table above, it is **not covered by any schema**, and an unknown key inside it is neither rejected nor warned about — it is simply ignored by any code path that does not look for it by name.
 
-58 distinct keys are declared across the shipped runtime manifests; most are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
+There is exactly **one** exception, and it is a keyed removal notice rather than validation: a manifest still declaring the removed `reviewerCli` key gets a non-fatal warning (see below). Every other key keeps the no-warning behavior.
+
+59 distinct keys are declared across the shipped runtime manifests; most are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
 
 | Key | Capabilities declaring it |
 |---|---|
 | `reapplyCommand` | 9 |
 | `skipSharedHooksInstall` | 8 |
-| `reviewerCli` | 6 |
 | `frontmatterDialect` | 5 |
 | `hyphenNameAgentBody` | 3 |
 | `legacyCommandsGsdInstallMigration` | 3 |
+| `legacyCommandsGsdUninstall` | 3 |
+| `nativePlugin` | 3 |
 | `skipUpdateBannerCommand` | 3 |
 | `verificationStyle` | 3 |
 
-**`reviewerCli` is deprecated.** It is a boolean that historically marked a runtime capability as also being a reviewer lane. It is now a **derived legacy alias**, retained for one release so an out-of-tree runtime descriptor that still sets it keeps working. A declared `reviewer` body (see below) takes precedence over the alias, and a capability declaring both contributes **one** slug, not two. `reviewerCli` is superseded by the `reviewer` body; its removal is tracked by issue #2801. It is currently set by 6 capabilities: `antigravity`, `claude`, `codex`, `cursor`, `opencode`, `qwen`.
+**`reviewerCli` has been removed.** It was a boolean that marked a runtime capability as also being a reviewer lane. [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) replaced it with the [`reviewer` body](#reviewer-body-role-reviewer-or-on-any-role); it survived one release (1.9.0 → 1.10.0) as a derived legacy alias and was deleted in Phase 7 ([#2801](https://github.com/open-gsd/gsd-core/issues/2801)). No shipped capability declares it.
 
-See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime body is a closed 8-axis plus 4 install-surface vocabulary; `hostBehaviors` is the deliberate open seam beside it) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body and the `reviewerCli` alias's deprecation).
+**If your out-of-tree manifest still sets it:** nothing crashes and nothing else about your capability changes — it simply contributes no reviewer lane, and the registry reports a non-fatal warning naming the capability. The warning reaches you at build time on stderr, and at install time through the overlay loader's diagnostics. To restore the lane, declare a `reviewer` body; [Ship a reviewer lane in your capability](../how-to/ship-a-reviewer-lane.md) is the migration path, and the field reference is below.
+
+See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime body is a closed 8-axis plus 4 install-surface vocabulary; `hostBehaviors` is the deliberate open seam beside it) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body, and D9 retires the `reviewerCli` alias).
 
 For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016-runtime-capability-descriptor.md).
 

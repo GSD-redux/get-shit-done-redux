@@ -187,7 +187,6 @@ const capabilities = {
         "effortSurface": "undocumented"
       },
       "hostBehaviors": {
-        "reviewerCli": true,
         "projectInstructionFile": "GEMINI.md",
         "noPathRewrite": true,
         "hookPathStyle": "raw",
@@ -577,8 +576,7 @@ const capabilities = {
         "skillsGlobalOnboarding": true,
         "legacyCommandsGsdInstallMigration": true,
         "legacyCommandsGsdUninstall": "global",
-        "hyphenNameAgentBody": true,
-        "reviewerCli": true
+        "hyphenNameAgentBody": true
       }
     },
     "reviewer": {
@@ -1085,8 +1083,7 @@ const capabilities = {
         "tomlConfigInstall": true,
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
-        "frontmatterDialect": "codex",
-        "reviewerCli": true
+        "frontmatterDialect": "codex"
       }
     },
     "reviewer": {
@@ -1337,8 +1334,7 @@ const capabilities = {
           "stop",
           "subagentStart",
           "subagentStop"
-        ],
-        "reviewerCli": true
+        ]
       }
     },
     "reviewer": {
@@ -2661,8 +2657,7 @@ const capabilities = {
         "skipHomePrefixSubstitution": true,
         "skipSettingsUi": true,
         "skipUpdateBannerCommand": true,
-        "skipCodexSkillsManifest": true,
-        "reviewerCli": true
+        "skipCodexSkillsManifest": true
       }
     },
     "reviewer": {
@@ -3005,8 +3000,7 @@ const capabilities = {
         "legacyCommandsGsdCleanup": true,
         "legacyCommandsGsdInstallMigration": true,
         "legacyCommandsGsdUninstall": true,
-        "hyphenNameAgentBody": true,
-        "reviewerCli": true
+        "hyphenNameAgentBody": true
       }
     },
     "reviewer": {
@@ -4853,7 +4847,6 @@ const runtimes = {
         "effortSurface": "undocumented"
       },
       "hostBehaviors": {
-        "reviewerCli": true,
         "projectInstructionFile": "GEMINI.md",
         "noPathRewrite": true,
         "hookPathStyle": "raw",
@@ -5114,8 +5107,7 @@ const runtimes = {
         "skillsGlobalOnboarding": true,
         "legacyCommandsGsdInstallMigration": true,
         "legacyCommandsGsdUninstall": "global",
-        "hyphenNameAgentBody": true,
-        "reviewerCli": true
+        "hyphenNameAgentBody": true
       }
     },
     "reviewer": {
@@ -5431,8 +5423,7 @@ const runtimes = {
         "tomlConfigInstall": true,
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
-        "frontmatterDialect": "codex",
-        "reviewerCli": true
+        "frontmatterDialect": "codex"
       }
     },
     "reviewer": {
@@ -5683,8 +5674,7 @@ const runtimes = {
           "stop",
           "subagentStart",
           "subagentStop"
-        ],
-        "reviewerCli": true
+        ]
       }
     },
     "reviewer": {
@@ -6264,8 +6254,7 @@ const runtimes = {
         "skipHomePrefixSubstitution": true,
         "skipSettingsUi": true,
         "skipUpdateBannerCommand": true,
-        "skipCodexSkillsManifest": true,
-        "reviewerCli": true
+        "skipCodexSkillsManifest": true
       }
     },
     "reviewer": {
@@ -6477,8 +6466,7 @@ const runtimes = {
         "legacyCommandsGsdCleanup": true,
         "legacyCommandsGsdInstallMigration": true,
         "legacyCommandsGsdUninstall": true,
-        "hyphenNameAgentBody": true,
-        "reviewerCli": true
+        "hyphenNameAgentBody": true
       }
     },
     "reviewer": {

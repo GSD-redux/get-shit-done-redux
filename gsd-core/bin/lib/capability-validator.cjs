@@ -1661,7 +1661,8 @@ function validateEnumField(ctx, label, value, validSet) {
 }
 
 /**
- * Collect NON-FATAL diagnostics for a reviewer body (ADR-2782 D4.3).
+ * Collect NON-FATAL reviewer diagnostics for a capability manifest
+ * (ADR-2782 D4.3, plus the D9 `hostBehaviors.reviewerCli` removal notice, #2801).
  *
  * Kept separate from validateReviewerBody so validateCapability's contract
  * (`=> string[]` of ERRORS) is unchanged for its two existing callers. The
@@ -1686,10 +1687,42 @@ function collectReviewerWarnings(cap) {
 function collectReviewerWarningFields(cap) {
   const warnings = [];
   if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return warnings;
+
+  const capId = typeof cap.id === 'string' ? cap.id : '(unknown)';
+
+  // ADR-2782 D9 / #2801 — the REMOVED `runtime.hostBehaviors.reviewerCli` alias.
+  //
+  // Placed BEFORE the `reviewer`-body early-return below, deliberately. The
+  // manifest this notice exists for is the ALIAS-ONLY one, which by definition
+  // carries no body; after that guard the check would fire only for
+  // capabilities that already declare a lane — exactly the set that does not
+  // need telling.
+  //
+  // Presence-based, not `=== true`: the key is unknown at ANY value now, which
+  // is the same rule the unknown-`reviewer.*`-field loop below applies. Own-key
+  // read, so a polluted prototype cannot manufacture this warning on every
+  // otherwise-innocent manifest. This is ONE keyed removal notice, not general
+  // `hostBehaviors` validation — that bag stays deliberately open (ADR-1016).
+  const runtimeBody = cap.runtime;
+  if (typeof runtimeBody === 'object' && runtimeBody !== null && !Array.isArray(runtimeBody)) {
+    const hostBehaviors = runtimeBody.hostBehaviors;
+    if (
+      typeof hostBehaviors === 'object'
+      && hostBehaviors !== null
+      && !Array.isArray(hostBehaviors)
+      && Object.prototype.hasOwnProperty.call(hostBehaviors, 'reviewerCli')
+    ) {
+      warnings.push(
+        '⚠ capability "' + capId + '" runtime.hostBehaviors.reviewerCli was removed (ADR-2782 D9) ' +
+        '— ignored, and it contributes no reviewer lane. Declare a `reviewer` body instead; see ' +
+        'docs/how-to/ship-a-reviewer-lane.md',
+      );
+    }
+  }
+
   const r = cap.reviewer;
   if (typeof r !== 'object' || r === null || Array.isArray(r)) return warnings;
 
-  const capId = typeof cap.id === 'string' ? cap.id : '(unknown)';
   for (const key of Object.keys(r)) {
     if (isReservedName(key) || KNOWN_REVIEWER_FIELDS.has(key)) continue;
     warnings.push(

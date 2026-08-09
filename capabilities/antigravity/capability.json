@@ -93,7 +93,6 @@
       "effortSurface": "undocumented"
     },
     "hostBehaviors": {
-      "reviewerCli": true,
       "projectInstructionFile": "GEMINI.md",
       "noPathRewrite": true,
       "hookPathStyle": "raw",
