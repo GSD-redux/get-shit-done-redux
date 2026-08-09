@@ -1731,6 +1731,41 @@ function describeValue(v) {
   }
 }
 
+/**
+ * Ceiling on how many undeclared-key diagnostics one capability may produce.
+ *
+ * The loops below iterate MANIFEST-SUPPLIED keys, and an installed third-party
+ * manifest is bounded only by MANIFEST_MAX_BYTES (8MB). Unbounded, one manifest
+ * of 800k keys yields 800k records and ~139MB of message text, retained for the
+ * registry's lifetime in OverlayMeta.diagnostics. Ten is enough to act on; the
+ * rest are summarized. Mirrors the existing truncation idiom in
+ * `capability-loader.cts` (`crossErrs.slice(0, 3)`).
+ */
+const MAX_REPORTED_UNKNOWN_KEYS = 10;
+
+/** Ceiling on how much of one manifest-supplied key name a diagnostic repeats. */
+const MAX_REPORTED_KEY_CHARS = 80;
+
+/**
+ * Render a manifest-supplied KEY for a diagnostic: control-safe and bounded.
+ *
+ * Key names carry no grammar anywhere — unlike `cap.id`, which `validateCapability`
+ * gates on KEBAB_RE before these diagnostics run — so a key is fully
+ * attacker-controlled text heading for stderr and OverlayMeta.warnings. C0/C1
+ * controls (ESC, CR, LF) become U+FFFD so a key cannot emit terminal escapes or
+ * forge a log line, and the result is clipped so one key cannot carry megabytes
+ * into a retained diagnostic.
+ *
+ * @param {*} key
+ * @returns {string}
+ */
+function describeKey(key) {
+  const raw = typeof key === 'string' ? key : String(key);
+  // eslint-disable-next-line no-control-regex
+  const safe = raw.replace(/[\x00-\x1f\x7f-\x9f]/g, '�');
+  return safe.length > MAX_REPORTED_KEY_CHARS ? safe.slice(0, MAX_REPORTED_KEY_CHARS) + '…' : safe;
+}
+
 /** Extract a message from an unknown thrown value without throwing again. */
 function safeErrorMessage(err) {
   try {
@@ -1871,15 +1906,36 @@ function collectReviewerWarningRecordFields(cap) {
     // excluded here: it already drew its own removal notice above, and a second,
     // generic "unknown key" record for the same key would be noise, not signal.
     if (typeof hostBehaviors === 'object' && hostBehaviors !== null && !Array.isArray(hostBehaviors)) {
+      let reported = 0;
+      let omitted = 0;
       for (const key of Object.keys(hostBehaviors)) {
         if (isReservedName(key) || key === 'reviewerCli' || KNOWN_HOST_BEHAVIORS.has(key)) continue;
+        if (reported >= MAX_REPORTED_UNKNOWN_KEYS) {
+          omitted += 1;
+          continue;
+        }
+        reported += 1;
+        const safeKey = describeKey(key);
         records.push({
           code: REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR,
           capId,
-          field: 'runtime.hostBehaviors.' + key,
+          field: 'runtime.hostBehaviors.' + safeKey,
           message:
-            '⚠ capability "' + capId + '" runtime.hostBehaviors.' + key + ' is not a known host behavior ' +
+            '⚠ capability "' + capId + '" runtime.hostBehaviors.' + safeKey + ' is not a known host behavior ' +
             'in this GSD version — ignored. Adding one is a reviewed first-party change (ADR-1016).',
+        });
+      }
+      if (omitted > 0) {
+        records.push({
+          code: REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR,
+          capId,
+          field: 'runtime.hostBehaviors',
+          truncated: true,
+          omittedCount: omitted,
+          message:
+            '⚠ capability "' + capId + '" declares ' + omitted + ' further unknown runtime.hostBehaviors ' +
+            'key(s), not listed. A manifest this far outside the vocabulary is likely built for a ' +
+            'different GSD version.',
         });
       }
     }
@@ -1888,16 +1944,40 @@ function collectReviewerWarningRecordFields(cap) {
   const r = cap.reviewer;
   if (typeof r !== 'object' || r === null || Array.isArray(r)) return records;
 
+  // Same ceiling and the same key sanitization as the hostBehaviors sweep above.
+  // This loop predates #2801 and carried both defects; fixing only the new copy
+  // would leave the identical defect one screen away from its own fix.
+  let reportedFields = 0;
+  let omittedFields = 0;
   for (const key of Object.keys(r)) {
     if (isReservedName(key) || KNOWN_REVIEWER_FIELDS.has(key)) continue;
+    if (reportedFields >= MAX_REPORTED_UNKNOWN_KEYS) {
+      omittedFields += 1;
+      continue;
+    }
+    reportedFields += 1;
+    const safeKey = describeKey(key);
     records.push({
       code: REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD,
       capId,
-      field: 'reviewer.' + key,
+      field: 'reviewer.' + safeKey,
       knownFields: [...KNOWN_REVIEWER_FIELDS],
       message:
-        '⚠ capability "' + capId + '" reviewer.' + key + ' is not a known reviewer field ' +
+        '⚠ capability "' + capId + '" reviewer.' + safeKey + ' is not a known reviewer field ' +
         'in this GSD version — ignored. Known fields: ' + [...KNOWN_REVIEWER_FIELDS].join(', '),
+    });
+  }
+  if (omittedFields > 0) {
+    records.push({
+      code: REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD,
+      capId,
+      field: 'reviewer',
+      knownFields: [...KNOWN_REVIEWER_FIELDS],
+      truncated: true,
+      omittedCount: omittedFields,
+      message:
+        '⚠ capability "' + capId + '" declares ' + omittedFields + ' further unknown reviewer field(s), ' +
+        'not listed.',
     });
   }
   return records;
@@ -3374,6 +3454,8 @@ module.exports = {
   VALID_LANE_HANDLERS,
   KNOWN_REVIEWER_FIELDS,
   KNOWN_HOST_BEHAVIORS,
+  MAX_REPORTED_UNKNOWN_KEYS,
+  MAX_REPORTED_KEY_CHARS,
   validateReviewerBody,
   collectReviewerWarnings,
   collectReviewerWarningRecords,

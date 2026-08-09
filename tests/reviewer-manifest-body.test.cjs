@@ -49,6 +49,8 @@ const {
   VALID_LANE_HANDLERS,
   KNOWN_REVIEWER_FIELDS,
   KNOWN_HOST_BEHAVIORS,
+  MAX_REPORTED_UNKNOWN_KEYS,
+  MAX_REPORTED_KEY_CHARS,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
 
 const { loadAndValidate, buildRegistry } = require('../scripts/gen-capability-registry.cjs');
@@ -2035,5 +2037,94 @@ describe('L. Closed hostBehaviors vocabulary (#2801)', () => {
     }
     assert.deepEqual(records, [], 'reserved names are skipped, not reported as unknown behaviors');
     assert.equal({}.polluted, undefined, 'Object.prototype must not be polluted');
+  });
+});
+
+// ─── M. Diagnostics are bounded and control-safe (#2801 review findings) ─────
+//
+// Both loops iterate MANIFEST-SUPPLIED keys. An installed third-party manifest
+// is attacker-controlled and bounded only by MANIFEST_MAX_BYTES (8MB), so the
+// record count and each key's rendered length must both have a ceiling, and a
+// key must not be able to carry terminal escapes or a forged newline into
+// stderr / OverlayMeta.warnings.
+
+describe('M. Diagnostics are bounded and control-safe (#2801)', () => {
+  function manyUnknownHostBehaviors(n) {
+    const hb = {};
+    for (let i = 0; i < n; i += 1) hb['undeclaredKey' + i] = true;
+    return runtimeCapWithHostBehaviors(hb);
+  }
+
+  test('unknownHostBehaviorRecordsAreCappedWithASummary', () => {
+    const n = MAX_REPORTED_UNKNOWN_KEYS + 25;
+    const records = collectReviewerWarningRecords(manyUnknownHostBehaviors(n));
+    assert.equal(
+      records.length, MAX_REPORTED_UNKNOWN_KEYS + 1,
+      `expected ${MAX_REPORTED_UNKNOWN_KEYS} records plus one summary, got ${records.length}`,
+    );
+    const summary = records[records.length - 1];
+    assert.equal(summary.truncated, true);
+    assert.equal(summary.omittedCount, 25);
+    assert.equal(summary.field, 'runtime.hostBehaviors');
+  });
+
+  test('exactlyAtTheCapThereIsNoSummaryRecord', () => {
+    // limit-1 / limit / limit+1 around the ceiling.
+    const below = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS - 1));
+    assert.equal(below.length, MAX_REPORTED_UNKNOWN_KEYS - 1);
+    assert.equal(below.some((rec) => rec.truncated), false);
+
+    const at = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS));
+    assert.equal(at.length, MAX_REPORTED_UNKNOWN_KEYS);
+    assert.equal(at.some((rec) => rec.truncated), false, 'no summary when nothing was omitted');
+
+    const above = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS + 1));
+    assert.equal(above.length, MAX_REPORTED_UNKNOWN_KEYS + 1);
+    assert.equal(above[above.length - 1].omittedCount, 1);
+  });
+
+  test('unknownReviewerFieldRecordsAreCappedTheSameWay', () => {
+    const lane = validLane();
+    for (let i = 0; i < MAX_REPORTED_UNKNOWN_KEYS + 5; i += 1) lane['futureField' + i] = 1;
+    const records = collectReviewerWarningRecords({ id: 'cap-x', reviewer: lane });
+    assert.equal(records.length, MAX_REPORTED_UNKNOWN_KEYS + 1);
+    assert.equal(records[records.length - 1].truncated, true);
+    assert.equal(records[records.length - 1].omittedCount, 5);
+  });
+
+  test('controlCharactersInAKeyNeverReachTheDiagnostic', () => {
+    // ESC-based colour sequence, a CR overwrite, and an embedded newline that
+    // would forge a second log line.
+    const hostile = '\x1b[31mred\x1b[0m\r\nforged: everything is fine';
+    for (const cap of [
+      runtimeCapWithHostBehaviors({ [hostile]: true }),
+      { id: 'cap-x', reviewer: { slug: 'x', [hostile]: true } },
+    ]) {
+      for (const rec of collectReviewerWarningRecords(cap)) {
+        // eslint-disable-next-line no-control-regex
+        assert.equal(/[\x00-\x1f\x7f-\x9f]/.test(rec.field), false, `control char survived into field: ${JSON.stringify(rec.field)}`);
+        // eslint-disable-next-line no-control-regex
+        assert.equal(/[\x00-\x1f\x7f-\x9f]/.test(rec.message), false, `control char survived into message: ${JSON.stringify(rec.message)}`);
+      }
+    }
+  });
+
+  test('anEnormousKeyNameIsClipped', () => {
+    const huge = 'k'.repeat(5000);
+    const [record] = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ [huge]: true }));
+    assert.ok(record, 'expected a record');
+    assert.ok(
+      record.field.length < MAX_REPORTED_KEY_CHARS + 40,
+      `field must be bounded, got length ${record.field.length}`,
+    );
+    assert.ok(record.field.endsWith('…'), 'a clipped key is marked as clipped');
+  });
+
+  test('aDeclaredKeyIsNeverClippedOrAltered', () => {
+    // The sanitizer must not perturb the ordinary case: declared keys are silent,
+    // and an undeclared but well-formed key is reported verbatim.
+    const records = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ someFutureSwitch: true }));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].field, 'runtime.hostBehaviors.someFutureSwitch');
   });
 });
