@@ -814,6 +814,25 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   }
 }
 
+/**
+ * Read `current_phase` from STATE.md frontmatter as a display scalar.
+ *
+ * Returns null when the file is unreadable, has no frontmatter, or carries a
+ * non-scalar `current_phase` — every one of which must leave the caller's own
+ * fallback in charge rather than producing a plausible-looking wrong phase.
+ */
+function readCurrentPhaseFromFrontmatter(statePath: string): string | null {
+  try {
+    const fm = extractFrontmatter(fs.readFileSync(statePath, 'utf-8'), statePath) as Record<string, unknown>;
+    const rawPhase = fm?.current_phase;
+    if (typeof rawPhase === 'string') return rawPhase.trim() || null;
+    if (typeof rawPhase === 'number' || typeof rawPhase === 'boolean') return String(rawPhase);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -832,7 +851,19 @@ function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw:
 
   if (!summaryText) { output({ error: 'summary required' }, raw, undefined); return; }
 
-  const entry = `- [Phase ${phase || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
+  // A decision entry is a permanent record. Writing "[Phase ?]" persists a
+  // placeholder for a fact STATE.md already carries in its own frontmatter, so
+  // the provenance is lost unless a human notices and hand-edits it. When
+  // --phase is omitted, fall back to current_phase.
+  //
+  // The scalar rule mirrors buildStateFrontmatter's fmScalar: only
+  // string/number/boolean are usable, so an object/array current_phase is
+  // ignored rather than stringified into "[object Object]". An explicit --phase
+  // still wins, and "?" is retained for the genuinely unresolvable case — an
+  // unknown phase should stay visibly unknown, never guessed.
+  const resolvedPhase = phase || readCurrentPhaseFromFrontmatter(statePath) || '?';
+
+  const entry = `- [Phase ${resolvedPhase}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
   let _added = false;
   let created = false;
 

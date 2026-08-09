@@ -5502,6 +5502,70 @@ describe('T6 section-splice characterization — add-decision', () => {
       cleanup(d);
     }
   });
+
+  // A decision recorded without --phase used to be written as a literal
+  // "- [Phase ?]:" even though STATE.md's own frontmatter names the current
+  // phase. The placeholder is persisted, so the provenance of that decision is
+  // lost permanently unless a human notices and hand-edits it.
+  const STATE_FM_PHASE = [
+    '---',
+    "gsd_state_version: '1.0'",
+    'current_phase: 3',
+    'current_phase_name: Sourcing Coverage',
+    'status: executing',
+    '---',
+    '',
+    '# Project State',
+    '',
+    '## Decisions',
+    '',
+  ].join('\n');
+
+  test('add-decision without --phase resolves the phase from frontmatter', () => {
+    const d = createTempProject();
+    try {
+      fs.writeFileSync(path.join(d, '.planning', 'STATE.md'), STATE_FM_PHASE);
+      const result = runGsdTools(['state', 'add-decision', '--summary', 'Threshold set by sweep'], d);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const after = fs.readFileSync(path.join(d, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(
+        after.includes('- [Phase 3]: Threshold set by sweep'),
+        'phase must come from frontmatter current_phase when --phase is omitted',
+      );
+      assert.ok(!after.includes('[Phase ?]'), 'no literal "?" placeholder may be persisted');
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  test('add-decision still honours an explicit --phase over frontmatter', () => {
+    const d = createTempProject();
+    try {
+      fs.writeFileSync(path.join(d, '.planning', 'STATE.md'), STATE_FM_PHASE);
+      const result = runGsdTools(['state', 'add-decision', '--phase', '4', '--summary', 'Explicit wins'], d);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const after = fs.readFileSync(path.join(d, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(after.includes('- [Phase 4]: Explicit wins'), 'explicit --phase must take precedence');
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  test('add-decision keeps the "?" placeholder when no phase can be resolved', () => {
+    const d = createTempProject();
+    try {
+      fs.writeFileSync(path.join(d, '.planning', 'STATE.md'), STATE_NO_DECISIONS);
+      const result = runGsdTools(['state', 'add-decision', '--summary', 'No phase anywhere'], d);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const after = fs.readFileSync(path.join(d, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(
+        after.includes('- [Phase ?]: No phase anywhere'),
+        'unresolvable phase must stay visibly unknown rather than be guessed',
+      );
+    } finally {
+      cleanup(d);
+    }
+  });
 });
 
 describe('T6 section-splice characterization — add-blocker', () => {
