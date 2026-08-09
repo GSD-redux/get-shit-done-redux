@@ -176,6 +176,7 @@ These govern the system as it stands. Cite these.
 | [ADR-2207](2207-status-field-lifecycle-ownership.md) | STATE.md `Status` lifecycle — phase-completion writes an intermediate state; milestone-close owns termination | Accepted | — |
 | [ADR-2313](2313-codex-passive-model-posture.md) | Codex Adopts the Passive / Session-Only Model Posture | Accepted | — |
 | [ADR-2346](2346-command-dispatch-completion.md) | Command Dispatch Completion | Accepted | — |
+| [ADR-2363](2363-capability-instruction-surface-trust.md) | A capability's skill body is an instruction surface — trusted, unscanned, and disclosed | Accepted | — |
 | [ADR-2619](2619-observability-shareable-diagnostics.md) | Observability and shareable diagnostics — wire the dispatch seam, add the outbound trust boundary | Accepted | — |
 | [ADR-2629](2629-phase-effort-estimation-calibration.md) | Phase effort is estimated against a calibrated smart-zone budget, not a static heuristic | Accepted | — |
 | [ADR-2719](2719-emitted-artifact-attribution.md) | Emitted-artifact attribution — replace the committed parity fixtures with a computed conservation law | Accepted | — |
@@ -199,7 +200,6 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1213](1213-capability-state-writer.md) | Capability write side — the Capability State Writer | Proposed | — |
 | [ADR-1606](1606-prohibition-enforcement-verify-seam.md) | prohibition-enforcement verify-time seam | Proposed | — |
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
-| [ADR-2363](2363-capability-instruction-surface-trust.md) | A capability's skill body is an instruction surface — trusted, unscanned, and disclosed | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
 
 ### Superseded, Retired, and Legacy

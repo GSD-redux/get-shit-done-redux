@@ -1,9 +1,9 @@
 # ADR-2363: A capability's skill body is an instruction surface — trusted, unscanned, and disclosed
 
-- **Status:** Proposed — D1–D4 are decided. D5's mechanism ships in [#3248](https://github.com/open-gsd/gsd-core/issues/3248), which is open and unmerged; this ADR ratifies to `Accepted` when that PR merges (see the ratification bar under Consequences).
+- **Status:** Accepted — ratified 2026-08-09 (originally Proposed 2026-08-09); see "Ratification" below
 - **Date:** 2026-08-09
 - **Issue:** [#2363](https://github.com/open-gsd/gsd-core/issues/2363) (epic); Phase 0 tracked by [#3247](https://github.com/open-gsd/gsd-core/issues/3247), Phase 1 by [#3248](https://github.com/open-gsd/gsd-core/issues/3248)
-- **Amends (prospective — this ADR is `Proposed`, so no back-link is owed yet):** [ADR-1244](1244-capability-ecosystem.md) — D5's disclosure gains a **fifth** class, and it is the first that is *not* an executable surface. [ADR-2782](2782-reviewer-lane-capability-surface.md) added the fourth (reviewer lanes); this adds the first non-executable one, which is why it needs its own classification rather than a fifth entry in the same list.
+- **Amends:** [ADR-1244](1244-capability-ecosystem.md) — D5's disclosure gains a **fifth** class, and it is the first that is *not* an executable surface. [ADR-2782](2782-reviewer-lane-capability-surface.md) added the fourth (reviewer lanes); this adds the first non-executable one, which is why it needs its own classification rather than a fifth entry in the same list.
 - **Related, and deliberately not amended:** [ADR-1577](1577-untrusted-input-boundary-and-injection-blocking.md) — the untrusted-input boundary and its injection scanner. D2 explains at length why that control does **not** transfer to this surface. The two share the word "trust" and solve opposite problems.
 
 ## Context
@@ -91,7 +91,7 @@ Point 3 is the part that makes this a decision rather than a punt: the door stay
 
 **The residual gap, stated plainly — and it is smaller than it first looks.** At **project** scope there is no gap at all: `bundleContentHash` walks every entry under the bundle with no exclusions and hashes every regular file (failing closed on symlinks and non-regular files), so a single changed byte in a skill body already deactivates a project-scoped capability until re-consent. At **global** scope there is no consent record in the first place — a global install is trusted because it sits under the user's own home ([ADR-1244](1244-capability-ecosystem.md) D5) — so a skill-body change on upgrade is not consent-gated there, and would not have been even if instruction surfaces were signature-bound. **The gap global scope has is the one it already had for code, and D4 neither widens nor narrows it.** What D4 declines to add is a re-consent *prompt* on skill-body change during an interactive upgrade; the v2 path above is where that would land if it is ever wanted.
 
-### D5 — The mechanism *(Phase 1, implemented in [#3248](https://github.com/open-gsd/gsd-core/issues/3248), open and unmerged at time of writing — not shipped by this ADR itself)*
+### D5 — The mechanism *(Phase 1, shipped in [#3248](https://github.com/open-gsd/gsd-core/issues/3248) — not by this ADR itself)*
 
 `discloseExecutableSurfaces` gains an `instructionSurfaces` collector, enumerating each skill stem the manifest contributes, collected through the same `safeCollect` wrapper as the existing four classes so a hostile value degrades only that class and the function stays total for any manifest shape. The pre-install consent summary names those skills as an instruction surface. The signature behavior implements D4 exactly, pinned by a test that asserts what happens to a pre-existing consent record rather than leaving it incidental.
 
@@ -111,7 +111,36 @@ The design is deliberately **additive** — a new independent collector and a ne
 - **First-party skills are equally unscanned.** Their assurance is provenance — they are the shipped package, and the GSD Core release process is their control — not content inspection. No content control exists on the first-party side either, and no reader should infer one.
 - **Global-scope skill-body change on upgrade is not consent-gated.** That is true of a global install's code too, and D4 does not change it either way. See D4.
 
-**Ratification bar.** This ADR flips to `Accepted` when #3248 has merged, the consent summary renders instruction surfaces, and the D4 signature behavior is pinned by a passing test. #3248, while open and unmerged, already delivers the second and third of these: the pre-install consent summary renders skill instruction surfaces by name, and a passing test pins the D4 signature behavior — instruction surfaces do not perturb `disclosureSignature`. The first condition, #3248's merge, has not yet occurred.
+**Ratification bar.** This ADR flips to `Accepted` when #3248 has merged, the consent summary renders instruction surfaces, and the D4 signature behavior is pinned by a passing test. **All three were met on 2026-08-09** — see the Ratification section below.
+
+## Ratification (2026-08-09): Proposed → Accepted
+
+Ratified against `docs/adr/README.md` → "Ratifying a stale `Proposed`". Tracked by [#3256](https://github.com/open-gsd/gsd-core/issues/3256). All four bar conditions, with evidence:
+
+**1. The decided mechanism demonstrably exists in the tree.**
+
+| Decision | Where it lives |
+|---|---|
+| D1 / D2 — posture recorded, scanning rejected | this file; `docs/explanation/capability-trust-model.md` |
+| D3 — three-class model | the class table in `docs/explanation/capability-trust-model.md`; the author-side statement in `docs/how-to/develop-a-capability.md` |
+| D4 — signature untouched | `disclosureSignature` in `src/capability-trust.cts` carries no instruction-surface term; pinned by the signature-invariance tests in `tests/instruction-surface-disclosure.security.test.cjs` |
+| D5 — the mechanism | `instructionSurfaces` on `Disclosure`, its `safeCollect`-wrapped collector, and `summarizeInstructionSurfaces` (called from **both** branches of `summarizeDisclosure`) in `src/capability-trust.cts` |
+
+Verified by `gsd-test` for the exact merged HEAD, plus CI's Linux and Windows lanes, the coverage gate, and the 80% mutation gate on changed files.
+
+**2. The owning issue is closed as completed.** [#2363](https://github.com/open-gsd/gsd-core/issues/2363) — `stateReason: COMPLETED`, as are both phase children [#3247](https://github.com/open-gsd/gsd-core/issues/3247) and [#3248](https://github.com/open-gsd/gsd-core/issues/3248).
+
+**3. No material part is unshipped.** This ADR's own stated bar named three conditions — #3248 merged, the consent summary rendering instruction surfaces, and the D4 signature behavior pinned by a passing test. All three hold.
+
+**4. No later ADR supersedes it, and no approved issue plans its graduation as separate work.**
+
+### The judgment call this ratification rests on, stated plainly
+
+D3 classifies instruction surfaces as **"skills, agents"**; the shipped mechanism discloses **skills only**. That is not a half-built decision, and the distinction is what makes ratification honest rather than a rubber stamp:
+
+Third-party `agents[]` are **never staged into the agent's instruction context**. `stageSkillsForRuntimeAsSkills` unions third-party skills in via `readInstalledCapabilitySkill`; `stageAgentsForRuntimeWithConverter` takes only a source directory and has no registry-aware third-party path. Disclosing agents would therefore have named a surface that does not exist — a false claim in a security prompt, which is worse than the omission it would have cured. **D5 discloses everything that is actually staged**, which is what the decision requires.
+
+The README's first ratification trap is *"shipped code is necessary, not sufficient — verify the decision, not just the code."* Applied here: the decision is that a body reaching the agent's instruction context must be disclosed. Every such body is disclosed. Whether third-party `agents[]` *should* be staged, and thereby become instruction surfaces in fact rather than only in classification, is recorded in D5 as an **open maintainer question** — a separate product decision, not an unshipped part of this one.
 
 ## Alternatives considered
 
