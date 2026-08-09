@@ -260,7 +260,7 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Guard.** `lint-milestone-window-drift.cjs`, token set widened by Phase 6 in the same change as the consolidation — never after, since a guard added later measures a surface already cleaned and reports a zero it did not earn. Token (a) now admits a **literal** `#`-run heading anchor in addition to the `#{N,M}` quantifier, but only inside a heading-**matcher** literal (a regex literal, or a string handed to `new RegExp(`), so a heading-**builder** template is not mistaken for a re-derivation. Token (b) additionally admits the grouped `v(\d+(?:\.\d+)+)` shape and an interpolated `${…Ver…}` placeholder.
 
-#### 7.3 Phase enumeration — *Enforced for the four named consumers (Phase 3, #3222); the fifth copy is unowned*
+#### 7.3 Phase enumeration — *Enforced (Phase 3, #3222 + #3185)*
 
 **Question.** Which directories under `<planning>/phases/` are phases of milestone `M`?
 
@@ -270,7 +270,11 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Consumers that must route through the owner.** `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats`, `cmdPhasesList`, **and `buildStateFrontmatter` / `syncStateFrontmatter`** — the fifth copy, reached by `state.record-session`, `state.sync`, `phase.complete` and every other state-mutating verb, which the epic's original scope did not name (coverage-audit gap 1).
 
-**Status, precisely.** Phase 3 (#3222) enforced this rule for `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and its guard (`scripts/lint-phase-enumeration-drift.cjs`) found 54 violations where the epic scoped 4. **It did not reach `buildStateFrontmatter` / `syncStateFrontmatter`.** That copy is still live, still writes its answer to disk, and is now unowned by any phase — see Amendment 4's scope table, row 1.
+**Status, precisely.** Phase 3 (#3222) enforced this rule for `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and its guard (`scripts/lint-phase-enumeration-drift.cjs`) found 54 violations where the epic scoped 4. It also routed `buildStateFrontmatter`'s enumeration through `listMilestonePhaseDirs`, which Amendment 4's scope table row 1 did not credit it for — the audit read the *absence of the symbol names from Amendment 3* as the absence of the work. #3185's remainder was therefore smaller than recorded: the local dedup-key regex that survived alongside the routed enumeration, now on `phaseKeyFromDir`.
+
+**What was actually unowned was one layer up.** `buildStateFrontmatter` decides whether it may *trust* the ROADMAP's declared count via `hasMilestoneSectioning` (§7.1), and that predicate — introduced by Phase 2 (#3184) to retire `state.cts`'s hand-rolled #2828 guard — was strictly more permissive than the guard it replaced, so a flat ROADMAP carrying an ordinary `## Progress` heading had its declared phase count discarded for the on-disk directory count (#3204). Fixed in #3185 by deciding milestone-ness from vocabulary rather than heading position; see §7.1 and the `CONTEXT.md` Roadmap Parser Module entry for the three position-based models that failed and why.
+
+**The lesson this phase adds to Amendment 3's standing rule:** a copy count derived from *which symbol names appear in a prior amendment* is as unreliable as one derived from the reported issues. Read the code, not the write-up.
 
 **Note on #3204.** Routing `buildStateFrontmatter` through the owner will not by itself fix #3204: its defect is the discriminator one layer *above* enumeration — "is the ROADMAP's phase count safe to trust" — which misclassifies ordinary `## Overview` / `## Progress` headings as milestone sectioning. That discriminator **is** §7.1's `isMilestoneBoundedInRoadmap`. The enumeration routing and the discriminator replacement must ship together or the defect survives the consolidation.
 
@@ -372,7 +376,7 @@ One row per derivation. A blank owner is a derivation whose contract is locked (
 |---|---|---|---|---|
 | Milestone windowing (§7.1) | `roadmap-parser.cts` | `lint-milestone-window-drift.cjs` | `src/` | enforced |
 | Milestone identity (§7.2) | `roadmap-parser.cts` (Phase 6) | same guard, token set widened by Phase 6 | `src/` | enforced |
-| Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced for the four named consumers; `buildStateFrontmatter`/`syncStateFrontmatter` **unowned** |
+| Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced — the state writers included (#3185) |
 | Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | blocked on #2957 |
 | Live-plan counting (§7.5) | `plan-scan.cts` | `lint-plan-count-drift.cjs` | `src/` | enforced |
 | Live-plan counting, prompt layer (§7.5) | — (Phase 8) | `lint-planning-prompt-drift.cjs` | `gsd-core/workflows`, `commands`, `agents`, `skills` | ratcheted, 7 sites |
@@ -632,7 +636,7 @@ scoped 4 — so it is not restated here.
 
 | # | Change | Why the existing phases do not cover it |
 |---|---|---|
-| 1 | ~~**Phase 3 widens** to include `buildStateFrontmatter` and `syncStateFrontmatter`~~ — **superseded: Phase 3 merged without them.** The fifth enumeration copy and #3204 are now unowned and need a phase of their own | Phase 3's Done-when named only `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and #3222 shipped exactly that. `buildStateFrontmatter`/`syncStateFrontmatter` appear nowhere in Amendment 3, and #3204 appears nowhere in this ADR outside this row. Routing alone would not have fixed #3204 anyway — its defect is the "is the ROADMAP count trustworthy" discriminator one layer *above* enumeration, which is §7.1's `isMilestoneBoundedInRoadmap` |
+| 1 | ~~**Phase 3 widens** to include `buildStateFrontmatter` and `syncStateFrontmatter`~~ — **twice superseded; closed by #3185.** First reading ("Phase 3 merged without them") was itself wrong: #3222 *had* routed the enumeration, and the audit mistook Amendment 3's silence for absent work. The real gap was the trust discriminator one layer above — see §7.3 | Routing alone would never have fixed #3204: a correctly scoped enumeration still returns the directory count. The defect was `hasMilestoneSectioning`, introduced by Phase 2 (#3184) and more permissive than the #2828 guard it retired |
 | 2 | **Phase 4 blocks on #2957** and its guard must fail while a third predicate exists | The audit found `buildStateFrontmatter` computing completed phases from plan scanning alone, ignoring the ROADMAP checkbox `cmdRoadmapAnalyze` honors. Checkbox-override vs disk-strict is an undecided product question, not a consolidation |
 | 3 | **Phase 6 — milestone identity** (§7.2): bind `getMilestoneInfo` to `locateMilestoneHeadings`, widen the windowing guard's token set in the same change (#3171, #3197) | A sixth derivation family. Phase 2 consolidated *windowing*; `getMilestoneInfo` hand-rolls its own heading regexes to answer a different question — *which milestone is this and what is it called* — and no named phase touches it |
 | 4 | **Phase 7 — completion-ratio scoping** (§7.6 rules 3–4). **Corrected: #3161 is NOT fixed here — Amendment 3 subsumed it.** Phase 7 keeps rule 4 and whatever consumers Phase 3 did not reach | A seventh derivation family. This amendment ships the arithmetic half. Its original claim — that enumeration consolidation "changes nothing here" — was **wrong**, and Phase 3 proved it: routing `cmdStats`/`cmdProgressRender`'s `totalPlans`/`totalSummaries` accumulation through `listMilestonePhaseDirs`'s scoped set *is* §7.6 rule 3 for those two consumers, and it is what closed #3161 |
