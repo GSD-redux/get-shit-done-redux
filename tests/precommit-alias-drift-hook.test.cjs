@@ -140,6 +140,37 @@ describe('.githooks/pre-commit alias drift guard', () => {
     }
   });
 
+  test('does not watch routers the drift check dropped', (t) => {
+    // The reverse direction of the parity row above. That row catches the hook
+    // UNDER-watching; this one catches it OVER-watching, using every
+    // `src/*-command-router.cts` on disk as the universe. Drop a family from
+    // scripts/lib/alias-drift-families.cjs without narrowing the hook and this
+    // fails — which is the half of the divergence #2725 would otherwise leave open.
+    const allRouters = fs
+      .readdirSync(path.join(ROOT, 'src'))
+      .filter((name) => name.endsWith('-command-router.cts'))
+      .map((name) => `src/${name}`);
+
+    const unwatched = allRouters.filter((routerPath) => !WATCHED_PATHS.has(routerPath));
+
+    assert.ok(
+      allRouters.length > DRIFT_SOURCES.length - 1,
+      'expected more routers on disk than the drift check reads — otherwise this row proves nothing',
+    );
+    assert.ok(unwatched.length > 0, 'expected at least one router outside the drift surface');
+
+    for (const routerPath of unwatched) {
+      const { npmCalls } = runPreCommit(t, staged(routerPath));
+
+      assert.equal(
+        npmCalls,
+        0,
+        `${routerPath} is not in the drift checker's family table, but .githooks/pre-commit ` +
+        'still watches it — the hook over-watches relative to the module (#2725)',
+      );
+    }
+  });
+
   test('does not run the drift check for unrelated staged files', (t) => {
     const { result, npmCalls } = runPreCommit(t, staged('README.md'));
 

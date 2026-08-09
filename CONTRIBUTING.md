@@ -1011,12 +1011,15 @@ This is opt-in and stays that way: nothing in `npm install` sets `core.hooksPath
 you, so a fresh clone acquires no hooks. To stop using them, `git config --unset
 core.hooksPath`.
 
-Do not paste a copy of the hook body into your own `.githooks/pre-commit` — the
-watched-path list is derived from `scripts/lib/alias-drift-families.cjs` and asserted
-against the checker's own family table by `tests/precommit-alias-drift-hook.test.cjs`.
-A hand-maintained copy is what silently rotted the previous version of this recipe
-(#2725): every path in it named the retired `sdk/` tree or a gitignored build output,
-so the guard matched nothing for months.
+Do not paste a copy of the hook body into your own `.githooks/pre-commit`. Bash cannot
+`require()` a CommonJS module, so the hook does carry the watched paths as literals —
+but `tests/precommit-alias-drift-hook.test.cjs` runs the real hook against every source
+derived from `scripts/lib/alias-drift-families.cjs` and fails in **both** directions: if
+the hook stops watching a source the checker reads, and if it keeps watching a router the
+checker dropped. A copy in your own tree has no such test behind it, and a hand-maintained
+copy is exactly what silently rotted the previous version of this recipe (#2725) — every
+path in it named the retired `sdk/` tree or a gitignored build output, so the guard
+matched nothing for months.
 
 Optional local pre-push hook to block a private author-email pattern:
 
