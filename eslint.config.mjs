@@ -25,6 +25,7 @@ import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-
 import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs';
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
+import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
 
 const localPlugin = {
   rules: {
@@ -44,6 +45,7 @@ const localPlugin = {
     'normalize-path-in-content': normalizePathInContent,
     'require-fs-op-fallback': requireFsOpFallback,
     'no-unbounded-spawn': noUnboundedSpawn,
+    'no-duplicate-fold-marker': noDuplicateFoldMarker,
   },
 };
 
@@ -462,6 +464,9 @@ export default tseslint.config(
       // exemption surface. The only sanctioned escapes are an explicit `timeout` on
       // a raw spawn or the `// allow-spawn-timeout-ceiling: <reason>` marker.
       'local/no-unbounded-spawn': 'error',
+      // Ban a consolidation-epic folded suite appearing twice in one host file (#3271).
+      // A second copy runs the same tests twice on every lane and drifts silently.
+      'local/no-duplicate-fold-marker': 'error',
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',
