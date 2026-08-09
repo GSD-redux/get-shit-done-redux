@@ -11,7 +11,6 @@
 // The goal is to surface suspicious content so the orchestrator can inspect it,
 // not to create false-positive deadlocks.
 
-const fs = require('fs');
 const path = require('path');
 
 // Prompt injection patterns (subset of security.cjs patterns, inlined for hook independence)

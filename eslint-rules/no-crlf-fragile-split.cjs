@@ -238,9 +238,6 @@ const rule = {
             // Check if preceded by \r? or \r (look back in the raw pattern string)
             // "preceded by" means the two chars before the current \\ are \r or \r?
             const before2 = pattern.slice(Math.max(0, i - 2), i); // up to 2 chars before \\
-            const safeByPrefix =
-              before2.endsWith('\\r?') || // \r?\n  (but \r? is 3 chars, before is 2 — need to check before3)
-              before2.endsWith('\\r');     // \r\n
 
             // Re-check with a wider window for \r?\n (pattern chars: \r?\n = 5 chars)
             const before3 = pattern.slice(Math.max(0, i - 3), i);
