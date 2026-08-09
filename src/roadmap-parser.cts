@@ -730,9 +730,15 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // non-bracket repo still resolves to something other than `'bracket'` (or
   // `null` on a poisoned env, caught below), so `bracketMilestoneHeadingRe`
   // stays `null` and every downstream branch is byte-identical to today.
+  //
+  // #2761 B1 (trek-e review): `ws` is FORWARDED. This function reads STATE (and
+  // its caller reads ROADMAP) from `planningDir(cwd, ws)`; resolving the
+  // convention from `planningDir(cwd)` instead took the CONVENTION from a
+  // different workstream than the DOCUMENT it was applied to whenever the
+  // caller passed `ws` as an ARGUMENT rather than through `GSD_WORKSTREAM`.
   let bracketScopeConvention: string | null = null;
   try {
-    bracketScopeConvention = resolvePhaseIdConvention(cwd);
+    bracketScopeConvention = resolvePhaseIdConvention(cwd, ws);
   } catch { /* unresolvable convention → treat as not-configured (base behaviour) */ }
   if (headingMatches.length === 0 && bracketScopeConvention === 'bracket') {
     const vMatch = version.match(/^v(\d+)/i);
@@ -1764,8 +1770,15 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     // the M-NN one it supersedes on the property that matters most here: totals
     // must track the ROADMAP, not the disk. Resolved lazily; `phaseIdConvention`
     // is honoured when the caller already has it.
+    //
+    // #2761 B1 (trek-e review): resolved with THIS call's `ws`, the same one
+    // `planningDir` above used to locate the ROADMAP being scanned. The
+    // `undefined` (= resolve it) vs `null` (= resolved, and it is not bracket)
+    // discriminator on `phaseIdConvention` is UNCHANGED — only the base the
+    // `undefined` branch resolves FROM moves, from the env-only workstream to
+    // this call's own.
     headingConvention = phaseIdConvention === undefined
-      ? resolvePhaseIdConvention(cwd)
+      ? resolvePhaseIdConvention(cwd, ws)
       : phaseIdConvention;
     // #612: `capturing` puts the bracket id in group 1, so the token moves to
     // group 1+bg — the same offset idiom the two sibling counters spell

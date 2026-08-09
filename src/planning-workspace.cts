@@ -166,19 +166,37 @@ function planningRoot(cwd: string): string {
  * read with the narrow directory read, or the reverse, and reported every phase
  * either missing from disk or malformed on disk. One resolver, one answer.
  *
- * The active workstream is whatever `planningDir` resolves, so this shares the
- * canonical resolution (and its GSD_PROJECT/GSD_WORKSTREAM handling) instead of
- * re-reading the environment. Root is consulted as a fallback only when a
- * workstream is active, matching config-loader; a project-scoped directory
- * stands alone. Returns null when unset, absent, or unreadable — every caller
- * treats null as "not the bracket convention".
+ * The workstream is `planningDir`'s own `ws` parameter, forwarded, so this
+ * shares the canonical resolution (and its GSD_PROJECT/GSD_WORKSTREAM
+ * handling). Root is consulted as a fallback only when a workstream is active,
+ * matching config-loader; a project-scoped directory stands alone. Returns null
+ * when unset, absent, or unreadable — every caller treats null as "not the
+ * bracket convention".
+ *
+ * #2761 B1 (trek-e review): `ws` is a PARAMETER, not read from the environment
+ * here. It was omitted at first on the reasoning that "the active workstream is
+ * whatever planningDir resolves" — true only for the env-driven caller. A
+ * caller that iterates workstreams passes the name as an ARGUMENT (it cannot
+ * set `GSD_WORKSTREAM` per iteration), and `planningDir` falls back to the env
+ * only when `ws` is `undefined`, so an argument-driven call resolved this
+ * convention from the ROOT config while reading that workstream's ROADMAP. Two
+ * consequences, both reproduced: a workstream that explicitly declares its OWN
+ * convention had it ignored — the root's value decided how the workstream's
+ * roadmap was parsed, so flipping ONLY the root config changed which milestone
+ * a workstream extracted; and `--workstream foo` disagreed with
+ * `GSD_WORKSTREAM=foo` on the same repo.
+ *
+ * `undefined` (the default) keeps `planningDir`'s env fallback, so every
+ * pre-#2761 call site is byte-identical; `null` means "explicitly no
+ * workstream". Same discriminator `planningDir` and `getMilestonePhaseFilter`
+ * already carry.
  *
  * SCOPE: this governs the #612 bracket-selection reads ONLY. The shipped
  * milestone-prefixed W021 gate keeps its own root-only read — re-basing a
  * legacy convention's gate onto a different config is a behaviour change to a
  * shipped check, in both directions, and is not part of read tolerance.
  */
-function resolvePhaseIdConvention(cwd: string): string | null {
+function resolvePhaseIdConvention(cwd: string, ws?: string | null): string | null {
   const readFrom = (dir: string): string | null => {
     const configPath = path.join(dir, 'config.json');
     if (!fs.existsSync(configPath)) return null;
@@ -190,7 +208,7 @@ function resolvePhaseIdConvention(cwd: string): string | null {
       return null;
     }
   };
-  const scoped = planningDir(cwd);
+  const scoped = planningDir(cwd, ws);
   const root = planningRoot(cwd);
   if (scoped === root) return readFrom(root);
   // Root is a fallback only when a WORKSTREAM is active — config-loader falls

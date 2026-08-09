@@ -456,6 +456,196 @@ describe('#612 PR-2: phase_id_convention resolves workstream -> root', () => {
       withWs(null, () => assert.equal(resolvePhaseIdConvention(d), null, 'non-string'));
     } finally { cleanupDir(); }
   });
+
+  // ─── #2761 B1: the workstream is an ARGUMENT, not only an env var ────────
+
+  test('the ws ARGUMENT selects the config, with no GSD_WORKSTREAM set', () => {
+    const d = setup({ root: 'milestone-prefixed', ws: 'bracket' });
+    try {
+      withWs(null, () => assert.equal(
+        resolvePhaseIdConvention(d, 'ws1'), 'bracket',
+        'a workstream passed by argument must resolve its OWN config, not the root',
+      ));
+    } finally { cleanupDir(); }
+  });
+
+  test('arg and env resolve identically — `--workstream ws1` === `GSD_WORKSTREAM=ws1`', () => {
+    const d = setup({ root: 'milestone-prefixed', ws: 'bracket' });
+    try {
+      const viaArg = withWs(null, () => resolvePhaseIdConvention(d, 'ws1'));
+      const viaEnv = withWs('ws1', () => resolvePhaseIdConvention(d));
+      assert.equal(viaArg, viaEnv, 'arg-driven and env-driven callers must agree');
+      assert.equal(viaArg, 'bracket');
+    } finally { cleanupDir(); }
+  });
+
+  test('an explicit ws overrides GSD_WORKSTREAM rather than being ignored', () => {
+    const d = setup({ root: 'bracket' });
+    try {
+      fs.writeFileSync(path.join(d, '.planning', 'workstreams', 'ws1', 'config.json'),
+        JSON.stringify({ phase_id_convention: 'milestone-prefixed' }));
+      // env names ws1; the ARGUMENT names no workstream at all -> root scope.
+      withWs('ws1', () => assert.equal(resolvePhaseIdConvention(d, null), 'bracket'));
+      // env names nothing; the ARGUMENT names ws1 -> the workstream's own value.
+      withWs(null, () => assert.equal(resolvePhaseIdConvention(d, 'ws1'), 'milestone-prefixed'));
+    } finally { cleanupDir(); }
+  });
+
+  test('omitting ws keeps the env fallback — pre-#2761 call sites are unchanged', () => {
+    const d = setup({ root: 'milestone-prefixed', ws: 'bracket' });
+    try {
+      withWs('ws1', () => assert.equal(resolvePhaseIdConvention(d), 'bracket'));
+      withWs(null, () => assert.equal(resolvePhaseIdConvention(d), 'milestone-prefixed'));
+    } finally { cleanupDir(); }
+  });
+});
+
+// ─── #2761 B1: workstream isolation, end-to-end through the readers ─────────
+
+describe('#2761 B1: a workstream\'s convention scopes ITS OWN roadmap read', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const { extractCurrentMilestone, getMilestonePhaseFilter } =
+    require('../gsd-core/bin/lib/roadmap-parser.cjs');
+  const { cleanup } = require('./helpers.cjs');
+
+  // Two bracket milestones, NEITHER carrying a version string. Under the
+  // bracket convention STATE's `v2.0` selects `[GSD.02]` alone; under any other
+  // convention nothing matches and the window is the whole document. So "which
+  // convention did this read use" is directly observable in the window.
+  const ROADMAP = [
+    '# Roadmap', '',
+    '## [GSD.01] Foundation', '',
+    '### [GSD.01] 01: Alpha',
+    '### [GSD.01] 02: Alpha2', '',
+    '## [GSD.02] Second', '',
+    '### [GSD.02] 01: Beta',
+    '### [GSD.02] 02: Beta2',
+    '### [GSD.02] 03: Beta3', '',
+  ].join('\n');
+
+  let dir;
+  const setup = ({ root, ws }) => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adr-612-b1-'));
+    const wsDir = path.join(dir, '.planning', 'workstreams', 'foo');
+    fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true });
+    if (root !== undefined) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'),
+        JSON.stringify({ phase_id_convention: root }));
+    }
+    if (ws !== undefined) {
+      fs.writeFileSync(path.join(wsDir, 'config.json'),
+        JSON.stringify({ phase_id_convention: ws }));
+    }
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), ROADMAP);
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), '---\nmilestone: v2.0\n---\n');
+    return dir;
+  };
+  const withWs = (name, fn) => {
+    const prev = process.env.GSD_WORKSTREAM;
+    if (name === null) delete process.env.GSD_WORKSTREAM;
+    else process.env.GSD_WORKSTREAM = name;
+    try { return fn(); } finally {
+      if (prev === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = prev;
+    }
+  };
+  const cleanupDir = () => cleanup(dir);
+
+  const scopedToGsd02 = (window) =>
+    window.includes('[GSD.02] 01: Beta') && !window.includes('[GSD.01] 01: Alpha');
+
+  // Repro A (trek-e). The workstream declares milestone-prefixed. Flipping ONLY
+  // the ROOT config used to change which milestone this workstream extracted,
+  // because the convention was resolved from `planningDir(cwd)` — the root,
+  // since no GSD_WORKSTREAM was set — while the DOCUMENT came from the
+  // workstream. The workstream's own declaration was never consulted at all.
+  test('repro A: flipping the ROOT config cannot move a workstream that owns its convention', () => {
+    const windows = [];
+    for (const root of ['bracket', 'milestone-prefixed']) {
+      const d = setup({ root, ws: 'milestone-prefixed' });
+      try {
+        const content = fs.readFileSync(
+          path.join(d, '.planning', 'workstreams', 'foo', 'ROADMAP.md'), 'utf-8');
+        windows.push(withWs(null, () => extractCurrentMilestone(content, d, 'foo')));
+      } finally { cleanupDir(); }
+    }
+    assert.equal(windows[0], windows[1],
+      'root=bracket and root=milestone-prefixed must produce the SAME window for a ' +
+      'workstream whose own config says milestone-prefixed');
+    assert.ok(!scopedToGsd02(windows[0]),
+      'a milestone-prefixed workstream must not take the bracket scoping path');
+  });
+
+  // The federation itself is preserved: a workstream that declares NOTHING
+  // still inherits the root, exactly as config-loader does. That is inheritance,
+  // not the leak — pinned so the B1 fix cannot be over-applied into isolation.
+  test('a workstream that declares no convention still inherits the root', () => {
+    const d = setup({ root: 'bracket', ws: undefined });
+    try {
+      const content = fs.readFileSync(
+        path.join(d, '.planning', 'workstreams', 'foo', 'ROADMAP.md'), 'utf-8');
+      assert.ok(scopedToGsd02(withWs(null, () => extractCurrentMilestone(content, d, 'foo'))));
+    } finally { cleanupDir(); }
+  });
+
+  // Repro B (trek-e): `--workstream foo` vs `GSD_WORKSTREAM=foo`.
+  test('repro B: the ws ARGUMENT and GSD_WORKSTREAM produce the same window', () => {
+    const d = setup({ root: 'milestone-prefixed', ws: 'bracket' });
+    try {
+      const content = fs.readFileSync(
+        path.join(d, '.planning', 'workstreams', 'foo', 'ROADMAP.md'), 'utf-8');
+      const viaArg = withWs(null, () => extractCurrentMilestone(content, d, 'foo'));
+      const viaEnv = withWs('foo', () => extractCurrentMilestone(content, d, undefined));
+      assert.equal(viaArg, viaEnv, 'arg-driven and env-driven reads must agree');
+      assert.ok(scopedToGsd02(viaArg), 'both must take the workstream\'s own bracket scoping');
+    } finally { cleanupDir(); }
+  });
+
+  test('repro B: arg/env parity holds through getMilestonePhaseFilter too', () => {
+    const d = setup({ root: 'milestone-prefixed', ws: 'bracket' });
+    try {
+      const viaArg = withWs(null, () => getMilestonePhaseFilter(d, 'v2.0', undefined, 'foo'));
+      const viaEnv = withWs('foo', () => getMilestonePhaseFilter(d, 'v2.0', undefined, undefined));
+      assert.equal(viaArg.phaseCount, viaEnv.phaseCount);
+      assert.equal(viaArg.phaseCount, 3, 'v2.0 declares exactly 3 bracket phases');
+    } finally { cleanupDir(); }
+  });
+
+  // The workstream-inventory delta: those two sites passed a literal `null`
+  // ("resolved, and it is not bracket") where they meant `undefined` ("resolve
+  // it"). On a bracket workstream `null` collapsed the heading set to empty.
+  test('undefined resolves the workstream convention where null pinned legacy', () => {
+    const d = setup({ root: undefined, ws: 'bracket' });
+    try {
+      withWs(null, () => {
+        assert.equal(getMilestonePhaseFilter(d, 'v2.0', undefined, 'foo').phaseCount, 3,
+          'undefined must resolve foo\'s bracket convention');
+        assert.equal(getMilestonePhaseFilter(d, 'v2.0', null, 'foo').phaseCount, 0,
+          'null still means "explicitly not bracket" — the discriminator is intact');
+      });
+    } finally { cleanupDir(); }
+  });
+
+  test('a NON-bracket workstream counts identically under null and undefined', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adr-612-b1-legacy-'));
+    const wsDir = path.join(dir, '.planning', 'workstreams', 'bar');
+    fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '## v2.0 — Second', '',
+      '### Phase 01: Beta', '### Phase 02: Beta2', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), '---\nmilestone: v2.0\n---\n');
+    try {
+      withWs(null, () => {
+        const asNull = getMilestonePhaseFilter(dir, 'v2.0', null, 'bar');
+        const asUndef = getMilestonePhaseFilter(dir, 'v2.0', undefined, 'bar');
+        assert.equal(asNull.phaseCount, asUndef.phaseCount);
+        assert.equal(asUndef.phaseCount, 2);
+      });
+    } finally { cleanupDir(); }
+  });
 });
 
 // ─── G8: the pin reads LIVE source, not a transcription ────────────────────
