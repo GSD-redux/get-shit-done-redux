@@ -237,15 +237,28 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | **Color** | Green |
 | **Produces** | PASS/FAIL verdict with specific feedback |
 
-**8 Verification Dimensions:**
-1. Requirement coverage
-2. Task atomicity
-3. Dependency ordering
-4. File scope
-5. Verification commands
-6. Context fit
-7. Gap detection
-8. Nyquist compliance (when enabled)
+**Verification Dimensions** — labels match the agent's own `## Dimension <N>` headings:
+
+| # | Dimension |
+|---|---|
+| 1 | Requirement coverage |
+| 2 | Task completeness |
+| 3 | Dependency correctness |
+| 3b | Undeclared / temporal coupling — advisory; flags same-wave plan pairs coupled through shared mutable state or execution order with no `depends_on` between them |
+| 4 | Key links planned |
+| 5 | Scope sanity |
+| 6 | Verification derivation |
+| 7 | Context compliance (when CONTEXT.md exists) |
+| 7b | Scope reduction detection |
+| 7c | Architectural tier compliance (when RESEARCH.md defines a responsibility map) |
+| 8 | Nyquist compliance (when enabled) |
+| 9 | Cross-plan data contracts |
+| 10 | CLAUDE.md compliance |
+| 11 | Research resolution |
+| 12 | Pattern compliance |
+
+Two further dimensions carry no number: **Verify Command Format Sanity** and
+**Numeric/Factual Claim Authority**.
 
 ---
 

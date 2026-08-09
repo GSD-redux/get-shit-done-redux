@@ -71,6 +71,16 @@ function countOrderedItems(span) {
   return matches ? matches.length : 0;
 }
 
+/**
+ * Remove fenced code blocks before scanning for headings. The agent's
+ * `### Dimension 8 Output` section embeds a literal `## Dimension 8: ...` line inside a
+ * fence as its output template, so a fence-blind scan reports Dimension 8 twice and any
+ * uniqueness or completeness check built on it is wrong before it starts.
+ */
+function stripFences(content) {
+  return content.replace(/^```[\s\S]*?^```/gm, '');
+}
+
 describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)', () => {
   describe('the sub-check exists and is scoped to Dimension 3', () => {
     test('Dimension 3 carries an undeclared-coupling sub-check', () => {
@@ -237,7 +247,7 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
     // names that matched no dimension in the agent at all — a stale count reads as
     // authoritative, which is worse than no count.
     function agentDimensionLabels() {
-      return [...agentDoc.matchAll(/^## Dimension ([0-9]+[a-z]?): /gm)].map((m) => m[1]);
+      return [...stripFences(agentDoc).matchAll(/^## Dimension ([0-9]+[a-z]?): /gm)].map((m) => m[1]);
     }
 
     test('the agent defines a discoverable set of numbered dimensions', () => {
