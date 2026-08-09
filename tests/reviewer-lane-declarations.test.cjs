@@ -390,22 +390,6 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     }
   });
 
-  test('whitespaceOnlySlugWithVestigialAliasContributesNothing', () => {
-    // The combination row a single-variable table misses. A whitespace-only slug
-    // is trimmed to empty, which BEFORE Phase 7 fell through to the alias branch
-    // and contributed the capability id. Now it contributes nothing at all.
-    const registry = {
-      capabilities: {
-        'padded-cap': {
-          role: 'runtime',
-          runtime: { hostBehaviors: { reviewerCli: true } },
-          reviewer: { slug: '   ' },
-        },
-      },
-    };
-    assert.deepEqual(deriveReviewerSlugs(registry), []);
-  });
-
   test('nonReviewerCapabilityContributesNoSlug', () => {
     const registry = { capabilities: { 'plain-feature': { role: 'feature' } } };
     assert.deepEqual(deriveReviewerSlugs(registry), []);
@@ -647,7 +631,7 @@ describe('E. Lane fidelity — no translation layer', () => {
     }
 
     assert.equal(REVIEWER_LANES.length, 12, 'expected exactly 12 declared descriptor lanes');
-    assert.equal(bySlug.size, 12, `expected exactly 11 capabilities declaring a reviewer body, got: ${bySlug.size}`);
+    assert.equal(bySlug.size, 12, `expected exactly 12 capabilities declaring a reviewer body, got: ${bySlug.size}`);
 
     // Top-level scalar/array fields compared whole; the two fields that are
     // themselves nested objects (probe, invoke) are compared sub-field-by-
@@ -730,16 +714,27 @@ describe('F. Isolated-security-review regressions', () => {
     );
   });
 
-  test('theAliasStillAppliesWhenABodyDeclaresOnlyWhitespace', () => {
-    // A body whose slug is blank is NOT a declaration, so the legacy alias must
-    // still contribute — otherwise a malformed body would silently REMOVE a lane
-    // that worked before, which is worse than the blank slug itself.
+  test('aBlankBodyContributesNothingAndNoAliasRescuesIt', () => {
+    // INVERTED by Phase 7 (#2801). While the alias existed, a blank slug fell
+    // through to it, so a malformed body could not silently remove a lane that
+    // worked before — that was the point of the original row. With the alias
+    // gone there is nothing to fall through TO: a blank body is not a
+    // declaration, and a declaration is now the only route onto the roster.
+    //
+    // The row is inverted rather than deleted because it is the combination the
+    // single-variable rows miss, and because it is the security-review
+    // provenance for the trim: `deriveReviewerSlugs` is exported and carries no
+    // other validation, so a whitespace slug must never occupy a roster entry
+    // it can never match.
     const roster = deriveReviewerSlugs({
       capabilities: {
         claude: { reviewer: { slug: '   ' }, runtime: { hostBehaviors: { reviewerCli: true } } },
       },
     });
-    assert.deepEqual(roster, ['claude'], 'a blank body must fall through to the alias, not drop the lane');
+    assert.deepEqual(
+      roster, [],
+      'a blank body is not a declaration, and the removed alias cannot rescue it',
+    );
   });
 
   test('moduleLoadSurvivesAHostileRegistryShape', () => {
@@ -748,7 +743,7 @@ describe('F. Isolated-security-review regressions', () => {
     // The module under test already imported successfully above; assert the
     // derived roster is a usable array rather than a partially-initialised value.
     assert.ok(Array.isArray([...KNOWN_REVIEWER_SLUGS]), 'roster must be iterable after module load');
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'the real registry still yields the eleven lanes');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'the real registry still yields the twelve lanes');
     // And the derivation itself is total over the shapes JSON can express.
     for (const hostile of [null, undefined, [], 0, 'x', { capabilities: null }, { capabilities: [] }]) {
       assert.doesNotThrow(
