@@ -799,6 +799,106 @@ describe('refactor-trigger: strict mode -> broken-windows ledger', () => {
   });
 });
 
+// ─── Strict-mode enforcement-gap warning (#1953) ─────────────────────────────
+//
+// `refactor.trigger_strict` only ever appends a deviation window to the
+// broken-windows ledger; a ship only actually stops when the SEPARATE
+// `workflow.windows_enforce` toggle is also on. These cases lock the typed
+// `REFACTOR_STRICT_NOT_ENFORCING` warning that closes that expectation gap.
+
+describe('refactor-trigger: strict-mode enforcement-gap warning', () => {
+  test('warnsWhenStrictOnAndWindowsEnforceOff', (t) => {
+    const dir = setupTriggeringProject('gsd-refactor-cli-swe-1-', true);
+    t.after(() => cleanup(dir));
+
+    const result = runCliOnce(['refactor', 'evaluate', '--phase', '1', '--raw'], dir);
+    assert.strictEqual(result.exitCode, 0);
+    const parsed = parseStdout(result);
+    assert.strictEqual(parsed.ledger_recorded, true, 'broken-windows must be present and recording for this case');
+    assert.ok(Array.isArray(parsed.warnings));
+    assert.strictEqual(parsed.warnings.length, 1);
+    assert.strictEqual(parsed.warnings[0].reason, REASON.REFACTOR_STRICT_NOT_ENFORCING);
+    assert.strictEqual(typeof parsed.warnings[0].message, 'string');
+    assert.notStrictEqual(parsed.warnings[0].message, '');
+  });
+
+  test('omitsWarningWhenStrictOnAndWindowsEnforceOn', (t) => {
+    const dir = createTempGitProject('gsd-refactor-cli-swe-2-');
+    t.after(() => cleanup(dir));
+    writeConfig(dir, {
+      refactor: { trigger_enabled: true, trigger_strict: true, complexity_threshold: 1, complexity_jump_delta: 100 },
+      workflow: { windows_enforce: true },
+    });
+    seedPhaseAndAnchor(dir);
+    commitFile(dir, 'hot.js', TRIGGERING_JS, 'hot file');
+
+    const result = runCliOnce(['refactor', 'evaluate', '--phase', '1', '--raw'], dir);
+    assert.strictEqual(result.exitCode, 0);
+    const parsed = parseStdout(result);
+    assert.strictEqual(parsed.ledger_recorded, true, 'broken-windows must be present and recording for this case');
+    assert.strictEqual(parsed.warnings, undefined);
+  });
+
+  test('warnsWhenStrictOnAndBrokenWindowsAbsent', (t) => {
+    const dir = createTempGitProject('gsd-refactor-cli-swe-3-');
+    t.after(() => cleanup(dir));
+    writeConfig(dir, {
+      refactor: { trigger_enabled: true, trigger_strict: true, complexity_threshold: 1, complexity_jump_delta: 100 },
+    });
+    seedPhaseAndAnchor(dir);
+    commitFile(dir, 'hot.js', TRIGGERING_JS, 'hot file');
+
+    // Simulate broken-windows genuinely absent, exactly as
+    // `notesLedgerUnavailableWithoutBrokenWindows` (row 86) does.
+    const origRequire = Module.prototype.require;
+    const requireMock = mock.method(Module.prototype, 'require', function mockedRequire(id) {
+      if (id === './broken-windows.cjs' && this.filename === ROUTER_MODULE_PATH) {
+        throw new Error('simulated: broken-windows capability not installed');
+      }
+      return origRequire.call(this, id);
+    });
+    t.after(() => requireMock.mock.restore());
+
+    const outputs = [];
+    routeRefactorTriggerCommand({
+      args: ['refactor', 'evaluate', '--phase', '1', '--raw'],
+      cwd: dir,
+      raw: true,
+      error: noThrowError('swe-3'),
+      _core: { output: (v) => outputs.push(v) },
+    });
+
+    assert.strictEqual(outputs.length, 1);
+    const result = outputs[0];
+    assert.strictEqual(result.ledger_recorded, false);
+    assert.ok(Array.isArray(result.warnings));
+    assert.strictEqual(result.warnings.length, 1);
+    assert.strictEqual(result.warnings[0].reason, REASON.REFACTOR_STRICT_NOT_ENFORCING);
+    assert.strictEqual(typeof result.warnings[0].message, 'string');
+    assert.notStrictEqual(result.warnings[0].message, '');
+  });
+
+  test('neverWarnsWhenStrictOffRegardlessOfWindowsEnforce', (t) => {
+    for (const windowsEnforce of [true, false]) {
+      const dir = createTempGitProject('gsd-refactor-cli-swe-4-');
+      t.after(() => cleanup(dir));
+      writeConfig(dir, {
+        refactor: { trigger_enabled: true, trigger_strict: false, complexity_threshold: 1, complexity_jump_delta: 100 },
+        workflow: { windows_enforce: windowsEnforce },
+      });
+      seedPhaseAndAnchor(dir);
+      commitFile(dir, 'hot.js', TRIGGERING_JS, 'hot file');
+
+      const result = runCliOnce(['refactor', 'evaluate', '--phase', '1', '--raw'], dir);
+      assert.strictEqual(result.exitCode, 0);
+      const parsed = parseStdout(result);
+      assert.strictEqual(parsed.verdict, VERDICT.TRIGGERED, `windowsEnforce=${windowsEnforce}: fixture must still trigger`);
+      assert.strictEqual(parsed.ledger_recorded, undefined, `windowsEnforce=${windowsEnforce}: strict is off`);
+      assert.strictEqual(parsed.warnings, undefined, `windowsEnforce=${windowsEnforce}: strict off must never warn`);
+    }
+  });
+});
+
 // ─── Row 87 (independence) — registry declares zero ship:pre gates ──────────
 
 describe('refactor-trigger: registry independence', () => {

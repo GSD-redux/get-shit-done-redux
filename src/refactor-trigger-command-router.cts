@@ -106,7 +106,7 @@ interface RouteRefactorTriggerCommandOptions {
 function disabledResponse(): { disabled: true; message: string } {
   return {
     disabled: true,
-    message: 'refactor-trigger is not enabled. Enable with: gsd-tools config-set refactor.trigger_enabled true',
+    message: 'refactor-trigger is not enabled. Enable with: gsd config-set refactor.trigger_enabled true',
   };
 }
 
@@ -295,14 +295,56 @@ function writeTextAtomic(filePath: string, content: string): void {
  * object — refactor-trigger is first-party, so the overlay/consent machinery
  * has nothing to add here and this avoids the extra indirection.
  */
-function readEvalConfig(cwd: string): { threshold: unknown; jumpDelta: unknown; strict: boolean } {
+function readEvalConfig(cwd: string): { threshold: unknown; jumpDelta: unknown; strict: boolean; windowsEnforce: boolean } {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const registry = require('./capability-registry.cjs') as Record<string, unknown>;
   const config = loadConfig(cwd);
   const threshold = resolveConfigKey('refactor.complexity_threshold', { config, cwd, registry }).value;
   const jumpDelta = resolveConfigKey('refactor.complexity_jump_delta', { config, cwd, registry }).value;
   const strict = resolveConfigKey('refactor.trigger_strict', { config, cwd, registry }).value;
-  return { threshold, jumpDelta, strict: Boolean(strict) };
+  // Read via the SAME four-level precedence walk as the `refactor.*` keys
+  // above — reusing `resolveConfigKey`/`loadConfig`/the frozen registry
+  // rather than a second config reader. A missing key resolves to the
+  // registry default (false), matching "treat a missing key as falsy".
+  const windowsEnforce = resolveConfigKey('workflow.windows_enforce', { config, cwd, registry }).value;
+  return { threshold, jumpDelta, strict: Boolean(strict), windowsEnforce: Boolean(windowsEnforce) };
+}
+
+// ─── Strict-mode enforcement-gap warning (#1953) ────────────────────────────
+
+const WINDOWS_ENFORCE_REMEDIATION = 'gsd config-set workflow.windows_enforce true';
+
+/**
+ * `refactor.trigger_strict` only ever APPENDS a deviation window to the
+ * broken-windows ledger — a ship only actually stops when the separate
+ * `workflow.windows_enforce` toggle is also on. A user who enables only
+ * `refactor.trigger_strict` gets tracking with no enforcement and, absent
+ * this warning, no signal that this is the case. Fires strictly on TRIGGERED
+ * evaluates with strict mode on, mirroring the existing ledger-recording
+ * gate: either the broken-windows capability could not record the window at
+ * all (`ledgerRecorded === false` — the existing degrade path), or it did,
+ * but `workflow.windows_enforce` is falsy. Never fires with strict off.
+ */
+function strictNotEnforcingWarning(
+  complexity: ComplexityModule,
+  ledgerRecorded: boolean,
+  windowsEnforce: boolean,
+): { reason: string; message: string } | null {
+  if (!ledgerRecorded) {
+    return {
+      reason: complexity.REASON.REFACTOR_STRICT_NOT_ENFORCING,
+      message: 'refactor.trigger_strict is on, but the broken-windows capability is unavailable, so ship will not '
+        + `actually be blocked. Install the broken-windows capability, then run: ${WINDOWS_ENFORCE_REMEDIATION}`,
+    };
+  }
+  if (!windowsEnforce) {
+    return {
+      reason: complexity.REASON.REFACTOR_STRICT_NOT_ENFORCING,
+      message: 'refactor.trigger_strict is on, but workflow.windows_enforce is off, so ship will not actually be '
+        + `blocked. Run: ${WINDOWS_ENFORCE_REMEDIATION}`,
+    };
+  }
+  return null;
 }
 
 // ─── Broken-windows integration (strict mode; OPTIONAL) ─────────────────────
@@ -563,10 +605,14 @@ function handleEvaluate(
   // Step 9: strict mode, TRIGGERED only.
   let ledgerRecorded: boolean | undefined;
   let ledgerNote: string | undefined;
+  const warnings: Array<{ reason: string; message: string }> = [];
   if (evalConfig.strict && evaluation.verdict === complexity.VERDICT.TRIGGERED && evaluation.target) {
     const strictResult = recordStrictWindow(cwd, padded, evaluation.target, windowsOverride);
     ledgerRecorded = strictResult.recorded;
     ledgerNote = strictResult.note;
+
+    const warning = strictNotEnforcingWarning(complexity, ledgerRecorded, evalConfig.windowsEnforce);
+    if (warning) warnings.push(warning);
   }
 
   const result: Record<string, unknown> = {
@@ -585,6 +631,7 @@ function handleEvaluate(
   if (!baselineWrite.ok && baselineWrite.reason) result.baseline_write_reason = baselineWrite.reason;
   if (ledgerRecorded !== undefined) result.ledger_recorded = ledgerRecorded;
   if (ledgerNote !== undefined) result.ledger_note = ledgerNote;
+  if (warnings.length > 0) result.warnings = warnings;
 
   c.output(result, raw);
   return undefined;

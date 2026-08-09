@@ -932,6 +932,7 @@ describe('complexity-trigger: typed surface', () => {
       'REFACTOR_INVALID_PHASE',
       'REFACTOR_NO_TOUCHED_FILES',
       'REFACTOR_OK',
+      'REFACTOR_STRICT_NOT_ENFORCING',
       'REFACTOR_USAGE',
     ].sort();
     assert.deepEqual(Object.keys(REASON).sort(), expected);

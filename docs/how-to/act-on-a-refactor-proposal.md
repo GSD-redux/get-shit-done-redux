@@ -86,7 +86,18 @@ gsd config-set workflow.windows_enforce true     # 2. make the ledger block /gsd
 
 Why two: `refactor.trigger_strict` records an untriaged proposal as an open `deviation` entry in the [broken-windows ledger](../FEATURES.md#158-broken-windows-ledger). The *blocking* is that capability's existing `ship:pre` gate, which is separately opt-in. Setting only the first gives you tracking without enforcement — which is a reasonable place to stop, but it will not stop a ship.
 
-If the broken-windows capability is not installed, strict mode still records the proposal locally and says so in its output (`ledger_recorded: false` with a note). It cannot block on its own.
+If you enable only `refactor.trigger_strict`, every `refactor evaluate` that triggers reports a typed warning saying so, so you never learn about the enforcement gap by hitting it at ship time:
+
+```json
+"warnings": [
+  {
+    "reason": "refactor_strict_not_enforcing",
+    "message": "refactor.trigger_strict is on, but workflow.windows_enforce is off, so ship will not actually be blocked. Run: gsd config-set workflow.windows_enforce true"
+  }
+]
+```
+
+If the broken-windows capability is not installed, strict mode still records the proposal locally and says so in its output (`ledger_recorded: false` with a note) — and the same `refactor_strict_not_enforcing` warning fires, with a message telling you to install the broken-windows capability first. It cannot block on its own.
 
 Dispositioning resolves the ledger entry automatically: `accept` marks it `fixed`, `decline` marks it `waived` with your reason attached.
 

@@ -67,6 +67,7 @@ export const REASON = Object.freeze({
   REFACTOR_FILE_UNREADABLE: 'refactor_file_unreadable',
   REFACTOR_BASELINE_MALFORMED: 'refactor_baseline_malformed',
   REFACTOR_BASELINE_WRITE_FAILED: 'refactor_baseline_write_failed',
+  REFACTOR_STRICT_NOT_ENFORCING: 'refactor_strict_not_enforcing',
   REFACTOR_ARTIFACT_NOT_FOUND: 'refactor_artifact_not_found',
   REFACTOR_ALREADY_DISPOSITIONED: 'refactor_already_dispositioned',
   REFACTOR_DECLINE_REASON_EMPTY: 'refactor_decline_reason_empty',
