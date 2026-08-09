@@ -56,6 +56,21 @@
  * an `isPathIgnored() === true` verdict can only mean "matches no `files:`
  * glob" and is therefore treated as UNCOVERED, not ignored. See
  * `resolveFileCoverage` below.
+ *
+ * ## Why `bin/install.js` is NOT in the allowlist
+ *
+ * The allowlist below is exclusively for files that resolve to ZERO rules —
+ * it is a registry of accepted escapes, not a general-purpose "reasons for
+ * how a file is configured" log. The `bin/install.js` / `bin/gsd-mcp-server.js`
+ * / `scripts/build-hooks.js` family is deliberately covered by a minimal,
+ * 2-rule block in `eslint.config.mjs` per ADR-1703 (targeting only the
+ * portability defect surface, not a full style sweep of ~12k lines of
+ * generated code) — see the comment at that block in `eslint.config.mjs`.
+ * Because 2 rules is non-empty, that family already passes this guard
+ * without needing an allowlist entry, and adding one anyway would itself be
+ * flagged `allowlist_stale` (see the ratchet above). The allowlist exemption
+ * surface deliberately cannot be used to re-state a decision that is already
+ * recorded in the config; #3059 is the guard, ADR-1703 is the decision.
  */
 
 const fs = require('fs');

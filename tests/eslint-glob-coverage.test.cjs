@@ -13,6 +13,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
   checkGlobCoverage,
@@ -238,6 +239,113 @@ describe('eslint-glob-coverage: path normalization', () => {
   });
 });
 
+describe('eslint-glob-coverage: listTrackedSourceFiles parser properties (fast-check)', () => {
+  // Generators for `git ls-files`-style path-like lines. Segments avoid '.',
+  // '\n', '\r' so extension/line boundaries stay unambiguous; the generators
+  // below deliberately introduce the shapes the parser must handle: source
+  // extensions, non-source extensions, no extension, backslashes, spaces,
+  // and empty lines.
+  const pathSegment = fc.stringMatching(/^[A-Za-z0-9_\- ]{1,12}$/);
+  const sourceExt = fc.constantFrom('cjs', 'cts', 'js', 'mjs');
+  const nonSourceExt = fc.constantFrom('md', 'json', 'txt');
+
+  const sourcePath = fc
+    .tuple(fc.array(pathSegment, { minLength: 1, maxLength: 3 }), sourceExt)
+    .map(([segs, ext]) => `${segs.join('/')}.${ext}`);
+
+  const nonSourcePath = fc
+    .tuple(fc.array(pathSegment, { minLength: 1, maxLength: 3 }), nonSourceExt)
+    .map(([segs, ext]) => `${segs.join('/')}.${ext}`);
+
+  const noExtPath = fc.array(pathSegment, { minLength: 1, maxLength: 3 }).map((segs) => segs.join('/'));
+
+  const backslashPath = fc
+    .tuple(fc.array(pathSegment, { minLength: 1, maxLength: 3 }), sourceExt)
+    .map(([segs, ext]) => `${segs.join('\\')}.${ext}`);
+
+  const spacedPath = fc
+    .tuple(fc.array(pathSegment, { minLength: 1, maxLength: 2 }), sourceExt)
+    .map(([segs, ext]) => `${segs.join(' / ')} file.${ext}`);
+
+  const emptyPath = fc.constant('');
+
+  const anyPathLine = fc.oneof(sourcePath, nonSourcePath, noExtPath, backslashPath, spacedPath, emptyPath);
+  const terminator = fc.constantFrom('\n', '\r\n');
+
+  // (1) Extension totality / soundness: every returned path ends in a
+  // source extension, is traceable back to a generated input line (modulo
+  // backslash->slash normalization), and no returned entry is empty. Each
+  // generated line carries its OWN terminator (mixing \n and \r\n within a
+  // single stdout blob), including the last line — this also exercises "a
+  // trailing terminator produces no phantom empty entry" on every run,
+  // since every line (including the last) is terminator-suffixed.
+  test('property: extension totality — every returned path is source-extensioned, traceable, non-empty', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(anyPathLine, terminator), { maxLength: 20 }),
+        (lines) => {
+          const stdout = lines.map(([p, t]) => p + t).join('');
+          const result = listTrackedSourceFiles({ execFile: () => stdout });
+          assert.equal(result.ok, true);
+
+          const normalizedInputs = new Set(
+            lines.map(([p]) => p.replace(/\\/g, '/')).filter((p) => p.length > 0)
+          );
+
+          for (const file of result.files) {
+            assert.notEqual(file, '', 'no returned entry is the empty string');
+            assert.match(file, SOURCE_EXT_RE, `${file} must end in a source extension`);
+            assert.ok(normalizedInputs.has(file), `${file} must be traceable to a generated input line`);
+          }
+
+          // Exact-equality corollary: the parser's own filter/normalize
+          // pipeline applied to the same inputs must reproduce the result.
+          const expected = lines
+            .map(([p]) => p)
+            .filter((p) => p.length > 0)
+            .map((p) => p.replace(/\\/g, '/'))
+            .filter((p) => SOURCE_EXT_RE.test(p));
+          assert.deepEqual(result.files, expected);
+        }
+      )
+    );
+  });
+
+  // (2) Separator normalization is total: any generated path containing a
+  // backslash never survives into the output with a backslash intact.
+  test('property: separator normalization is total — no returned path contains a backslash', () => {
+    fc.assert(
+      fc.property(fc.array(backslashPath, { minLength: 0, maxLength: 15 }), (paths) => {
+        const stdout = paths.map((p) => `${p}\n`).join('');
+        const result = listTrackedSourceFiles({ execFile: () => stdout });
+        assert.equal(result.ok, true);
+        for (const file of result.files) {
+          assert.ok(!file.includes('\\'), `${file} must not contain a backslash`);
+        }
+      })
+    );
+  });
+
+  // (3) CRLF/LF equivalence: the same set of path lines, terminated
+  // uniformly with LF vs. uniformly with CRLF, must parse to the same
+  // result — the invariant the recurring CRLF defect class breaks.
+  test('property: CRLF and LF inputs describing the same path set yield the same result', () => {
+    fc.assert(
+      fc.property(fc.array(anyPathLine, { maxLength: 20 }), (lines) => {
+        const lfStdout = lines.map((p) => `${p}\n`).join('');
+        const crlfStdout = lines.map((p) => `${p}\r\n`).join('');
+
+        const lfResult = listTrackedSourceFiles({ execFile: () => lfStdout });
+        const crlfResult = listTrackedSourceFiles({ execFile: () => crlfStdout });
+
+        assert.equal(lfResult.ok, true);
+        assert.equal(crlfResult.ok, true);
+        assert.deepEqual(lfResult.files, crlfResult.files);
+      })
+    );
+  });
+});
+
 describe('eslint-glob-coverage: SOURCE_EXT_RE filtering', () => {
   test('listTrackedSourceFiles filters to cjs/cts/js/mjs only', () => {
     const result = listTrackedSourceFiles({
@@ -262,34 +370,38 @@ describe('eslint-glob-coverage: SOURCE_EXT_RE filtering', () => {
 });
 
 describe('eslint-glob-coverage: ANCHOR rows (real ESLint against real config)', () => {
+  // One shared resolver for the anchor rows: the anchors deliberately re-resolve
+  // the config themselves rather than importing the guard's resolveFileCoverage,
+  // so an anchor still fails if the guard's own resolution regresses.
+  const { ESLint } = require('eslint');
+  const anchorEslint = new ESLint({ cwd: ROOT });
+  async function rulesFor(relPath) {
+    const config = await anchorEslint.calculateConfigForFile(path.join(ROOT, relPath));
+    return config && config.rules;
+  }
+
   test('tests/*.test.cjs has local/no-unbounded-spawn reachable', async () => {
-    const { ESLint } = require('eslint');
-    const eslint = new ESLint({ cwd: ROOT });
-    const config = await eslint.calculateConfigForFile(path.join(ROOT, 'tests/eslint-glob-coverage.test.cjs'));
-    assert.ok(config && config.rules, 'expected a resolved rule set');
+    const rules = await rulesFor('tests/eslint-glob-coverage.test.cjs');
+    assert.ok(rules, 'expected a resolved rule set');
     assert.ok(
-      Object.prototype.hasOwnProperty.call(config.rules, 'local/no-unbounded-spawn'),
+      Object.prototype.hasOwnProperty.call(rules, 'local/no-unbounded-spawn'),
       'expected local/no-unbounded-spawn to be reachable on a tests/*.test.cjs file'
     );
   });
 
   test('scripts/*.cjs has n/no-path-concat reachable', async () => {
-    const { ESLint } = require('eslint');
-    const eslint = new ESLint({ cwd: ROOT });
-    const config = await eslint.calculateConfigForFile(path.join(ROOT, 'scripts/lint-eslint-glob-coverage.cjs'));
-    assert.ok(config && config.rules, 'expected a resolved rule set');
+    const rules = await rulesFor('scripts/lint-eslint-glob-coverage.cjs');
+    assert.ok(rules, 'expected a resolved rule set');
     assert.ok(
-      Object.prototype.hasOwnProperty.call(config.rules, 'n/no-path-concat'),
+      Object.prototype.hasOwnProperty.call(rules, 'n/no-path-concat'),
       'expected n/no-path-concat to be reachable on a scripts/*.cjs file'
     );
   });
 
   test('src/*.cts has at least one @typescript-eslint/* rule reachable', async () => {
-    const { ESLint } = require('eslint');
-    const eslint = new ESLint({ cwd: ROOT });
-    const config = await eslint.calculateConfigForFile(path.join(ROOT, 'src/milestone.cts'));
-    assert.ok(config && config.rules, 'expected a resolved rule set');
-    const tsRules = Object.keys(config.rules).filter((r) => r.startsWith('@typescript-eslint/'));
+    const rules = await rulesFor('src/milestone.cts');
+    assert.ok(rules, 'expected a resolved rule set');
+    const tsRules = Object.keys(rules).filter((r) => r.startsWith('@typescript-eslint/'));
     assert.ok(tsRules.length > 0, 'expected at least one @typescript-eslint/* rule reachable on src/*.cts');
   });
 });
