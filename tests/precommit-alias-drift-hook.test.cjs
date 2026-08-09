@@ -60,10 +60,19 @@ function runPreCommit(t, stagedLines) {
   t.after(() => cleanup(tmpDir));
 
   const marker = path.join(tmpDir, 'npm-calls.txt');
+
+  // The payload goes through a FILE that the mock `cat`s, never through printf.
+  // `printf '%s' "…\n"` emits a literal backslash-n — bash does not expand escapes
+  // in a double-quoted string and printf does not expand them in a %s argument — so
+  // the hook saw one unterminated line and no whole-line match could ever succeed.
+  // `cat` reproduces bytes verbatim, which is also what lets the CR-terminated row
+  // and the empty-staged-list row mean what they say.
+  const stagedFile = path.join(tmpDir, 'staged-paths.txt');
+  fs.writeFileSync(stagedFile, stagedLines);
   const mockGit = writeMock(
     tmpDir,
     'git',
-    `#!/usr/bin/env bash\nprintf '%s' ${JSON.stringify(stagedLines)}\n`,
+    `#!/usr/bin/env bash\ncat ${JSON.stringify(stagedFile)}\n`,
   );
   const mockNpm = writeMock(
     tmpDir,

@@ -374,7 +374,7 @@ const GSD_CHANGESET_FILES = [
   'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
   'README.md', // documentation only — not user-authored
 ];
-const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs'];
+const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs', 'alias-drift-families.cjs'];
 
 /**
  * Resolve a runtime's shared-hooks directory name from its descriptor.
