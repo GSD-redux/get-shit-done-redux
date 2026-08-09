@@ -43,18 +43,33 @@ function npmLs(pkg) {
   return versions;
 }
 
-test('all installed js-yaml copies are patched (>=4.3.1 / >=3.15.1) — #3238', () => {
+// GHSA-5p4m-2wfm-xmqj names only the 3.x (<3.15.1) and 4.x (<4.3.1) lines. The SAME
+// weakness in the 5.x line is CVE-2026-59870 / GHSA-724g-mxrg-4qvm, fixed in 5.2.1 —
+// so a guard against this bug CLASS must require 5.2.1 there too rather than waving
+// every 5.x through, or an accidental major bump to 5.0.0 would reintroduce the exact
+// quadratic `!!omap` resolution this test exists to prevent.
+function isPatched(version) {
+  const core = String(version).split('+')[0]; // drop build metadata
+  // A prerelease of the patched version (e.g. 4.3.1-beta.1) sorts BELOW it in semver
+  // and may predate the fix — fail closed rather than guess.
+  if (core.includes('-')) return false;
+  const [maj, min, pat] = core.split('.').map(Number);
+  if (![maj, min, pat].every(Number.isInteger)) return false; // unparseable — fail closed
+  if (maj < 3) return true;                                   // predates the affected lines
+  if (maj === 3) return min > 15 || (min === 15 && pat >= 1);  // 3.x >= 3.15.1
+  if (maj === 4) return min > 3 || (min === 3 && pat >= 1);    // 4.x >= 4.3.1
+  if (maj === 5) return min > 2 || (min === 2 && pat >= 1);    // 5.x >= 5.2.1 (CVE-2026-59870)
+  return true;                                                // >5.x
+}
+
+test('all installed js-yaml copies are patched (>=4.3.1 / >=3.15.1 / >=5.2.1) — #3238', () => {
   const versions = npmLs('js-yaml');
   // Vacuity guard: an empty list would make every assertion below trivially true.
   assert.ok(versions.length > 0, 'js-yaml must be installed (devDependency) to guard');
   for (const v of versions) {
-    const [maj, min, pat] = v.split('.').map(Number);
-    const ok = (maj === 3 && (min > 15 || (min === 15 && pat >= 1)))  // 3.x >= 3.15.1
-      || (maj === 4 && (min > 3 || (min === 3 && pat >= 1)))          // 4.x >= 4.3.1
-      || (maj > 4);                                                   // >4.x
-    assert.ok(ok,
-      `js-yaml@${v} is within the vulnerable range (>=4.0.0 <4.3.1 / >=3.0.0 <3.15.1) — ` +
-      'lockfile regressed the #3238 patch bump (GHSA-5p4m-2wfm-xmqj). ' +
-      'Re-apply: npm install js-yaml@^4.3.1');
+    assert.ok(isPatched(v),
+      `js-yaml@${v} is not a patched version — the quadratic \`!!omap\` resolution bug is ` +
+      'present in 3.x <3.15.1 (GHSA-5p4m-2wfm-xmqj), 4.x <4.3.1 (same), and 5.x <5.2.1 ' +
+      '(CVE-2026-59870). Re-apply: npm install js-yaml@^4.3.1');
   }
 });
