@@ -392,10 +392,14 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // classification between them, so `missing_phase_details` depended on which
   // bullet the author happened to write first.
   //
-  // Prefers the owner's `bracketQualifiedKey` (fold- and padding-insensitive,
-  // so `[gsd.2] 01` and `[GSD.02] 01` are one phase). Two shapes it refuses,
-  // both falling back to a fold-normalized composite that still separates
-  // distinct pairs: a token carrying its OWN hyphen — `[GSD.02] 02-01` splices
+  // Prefers the owner's `bracketQualifiedKey`, which case-FOLDS, so
+  // `[gsd.02] 01` and `[GSD.02] 01` are one phase. (It is not padding-tolerant
+  // and does not need to be: the milestone grammar accepts exactly one spelling
+  // per milestone — pad2 below 100, no leading zero above — so `[GSD.2]` is
+  // malformed rather than an alternate spelling of `[GSD.02]`, and it takes the
+  // fallback below.) Two shapes the owner refuses, both falling back to a
+  // fold-normalized composite that still separates distinct pairs: a token
+  // carrying its OWN hyphen — `[GSD.02] 02-01` splices
   // to `GSD.02-02-01`, which the qualified-key grammar reads as milestone 02 /
   // phase 02 with the trailing `-01` truncated, collapsing distinct headings
   // onto one key (the same splice hazard `getMilestonePhaseFilter` guards with
