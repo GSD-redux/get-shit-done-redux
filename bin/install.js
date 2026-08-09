@@ -4128,13 +4128,16 @@ function _warnCodexResolverModelOmitted() {
   );
 }
 
-// Test seam only — the dedupe above is module-level by design (it is
-// per-install; install() resets it at ~:10116). A unit test that drives
-// generateCodexAgentToml() directly, without going through install(), has no
-// other way to reset the flag between assertions without busting the
-// require.cache (which breaks module-instance sharing with the rest of the
-// suite). Exported so tests can call it instead.
-function _resetCodexNoticeDedupeForTests() {
+// Test seam only — bin/install.js deliberately keeps per-install warning/notice
+// dedupe in module scope (both the _codexModelOverrideDroppedWarned Set above and
+// the _codexResolverModelOmittedWarned boolean; install() resets the latter at
+// ~:10116). A unit test that drives generateCodexAgentToml() directly, without
+// going through install(), has no other way to reset either store between
+// assertions without busting the require.cache (which breaks module-instance
+// sharing with the rest of the suite). This is the single sanctioned way for a
+// unit test to clear both dedupe stores — exported so tests can call it instead.
+function _resetCodexWarningDedupeForTests() {
+  _codexModelOverrideDroppedWarned.clear();
   _codexResolverModelOmittedWarned = false;
 }
 
@@ -13521,7 +13524,7 @@ module.exports = {
     convertClaudeAgentToCursorAgent,
     convertClaudeAgentToCodexAgent,
     generateCodexAgentToml,
-    _resetCodexNoticeDedupeForTests,
+    _resetCodexWarningDedupeForTests,
     cleanupCodexSkillMetadataSidecars,
     cleanupWindsurfLegacyDevinSkills,
     cleanupMovedSkillsOldLocation,

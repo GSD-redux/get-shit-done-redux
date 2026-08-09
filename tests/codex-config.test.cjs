@@ -58,7 +58,7 @@ const {
   convertClaudeAgentToCodexAgent,
   convertClaudeCommandToCodexSkill,
   generateCodexAgentToml,
-  _resetCodexNoticeDedupeForTests,
+  _resetCodexWarningDedupeForTests,
   cleanupCodexSkillMetadataSidecars,
   generateCodexConfigBlock,
   stripGsdFromCodexConfig,
@@ -785,7 +785,7 @@ tools: Read, Grep
   // notice's one-time dedupe is a module-level boolean shared across every
   // test in this file (an earlier test in this describe block, e.g.
   // L652-665, may have already latched it), so each test here resets it via
-  // the documented test seam (_resetCodexNoticeDedupeForTests) instead of
+  // the documented test seam (_resetCodexWarningDedupeForTests) instead of
   // busting require.cache — a cache bust would create a second module
   // instance and break every other test in this file that assumes a single
   // shared instance.
@@ -799,7 +799,7 @@ tools: Read, Grep
   }
 
   test('no deprecation notice when the resolver would only have produced an Anthropic-flavored model (#3241 review — defect fix)', (t) => {
-    _resetCodexNoticeDedupeForTests();
+    _resetCodexWarningDedupeForTests();
     const getLines = captureStderr(t);
     // Mixed-runtime config (runtime: opencode) resolving against a Codex
     // install target — the #2310 gate (bin/install.js:4192) rejects this
@@ -816,7 +816,7 @@ tools: Read, Grep
   });
 
   test('deprecation notice still fires when the resolver would have produced a legal Codex model (#3241 review)', (t) => {
-    _resetCodexNoticeDedupeForTests();
+    _resetCodexWarningDedupeForTests();
     const getLines = captureStderr(t);
     const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
     const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
@@ -835,7 +835,7 @@ tools: Read, Grep
     //   model) and that pin WOULD have been embedded pre-Phase-1 → this user
     //   genuinely lost a pin → `gsd: notice — ` fires too.
     // A future reader must not "fix" this down to one message.
-    _resetCodexNoticeDedupeForTests();
+    _resetCodexWarningDedupeForTests();
     const getLines = captureStderr(t);
     const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
     const result = generateCodexAgentToml(
