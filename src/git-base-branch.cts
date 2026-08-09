@@ -297,6 +297,75 @@ export function gitWorktreeInfoInternal(
   }
 }
 
+// ─── Adapter 3: phase-start anchor + touched-file listing (issue #1953) ───────
+
+/**
+ * Resolve the commit that ADDED `<phaseDir>/*-PLAN.md` — the anchor commit
+ * marking when the phase began (see `.gsd/phase/feat-1953-complexity-triggered-
+ * refactor/42-router-contract.md`, "Touched-file anchor"). `phaseDir` is a
+ * project-relative path (backslashes are normalized unconditionally before
+ * building the pathspec, never via `path.sep` — matches the repo's
+ * cross-platform path-normalization convention).
+ *
+ * Bounded (`timeout: 15_000`), degrades to `null` on any failure or when no
+ * such commit exists (a phase never planned through git, a shallow clone).
+ * Never throws.
+ */
+export function phaseStartCommit(
+  cwd: string,
+  phaseDir: string,
+  execGit?: ExecGitFn
+): string | null {
+  const git: ExecGitFn = execGit ?? execGitSeam;
+  try {
+    const normalizedPhaseDir = phaseDir.replace(/\\/g, '/');
+    const pathspec = `${normalizedPhaseDir}/*-PLAN.md`;
+    const r = git(
+      ['log', '--format=%H', '--diff-filter=A', '-1', '--', pathspec],
+      { cwd, timeout: 15_000 }
+    );
+    if (r.exitCode !== 0 || !r.stdout) return null;
+    const sha = r.stdout.trim();
+    return sha || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * List files changed between `sinceRef` and `HEAD`, NUL-delimited and
+ * quotepath-safe. Three load-bearing details (see the router contract):
+ *   - `-z` and `-c core.quotepath=false` avoid git's lossy quote-and-escape
+ *     round-trip for non-ASCII paths;
+ *   - splitting on `NUL` (never `\n`) tolerates a filename containing a real
+ *     newline (git permits it);
+ *   - the ref is placed before a literal `--` so a ref/path beginning with
+ *     `-` is never misread as a git option.
+ *
+ * Bounded (`timeout: 15_000`), degrades to `null` when the underlying git
+ * call fails (non-zero exit, timeout, or spawn error) — never throws. An
+ * empty result set (no files changed between the two revisions) is a valid,
+ * non-null answer: `[]`.
+ */
+export function changedFilesSince(
+  cwd: string,
+  sinceRef: string,
+  execGit?: ExecGitFn
+): string[] | null {
+  const git: ExecGitFn = execGit ?? execGitSeam;
+  try {
+    const r = git(
+      ['-c', 'core.quotepath=false', 'diff', '--name-only', '-z', `${sinceRef}..HEAD`, '--'],
+      { cwd, timeout: 15_000 }
+    );
+    if (r.exitCode !== 0) return null;
+    if (!r.stdout) return [];
+    return r.stdout.split('\0').filter((f) => f.length > 0);
+  } catch {
+    return null;
+  }
+}
+
 // ─── CLI entry point ──────────────────────────────────────────────────────────
 
 /**

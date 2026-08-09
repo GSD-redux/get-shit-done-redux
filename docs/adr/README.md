@@ -202,6 +202,7 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1213](1213-capability-state-writer.md) | Capability write side — the Capability State Writer | Proposed | — |
 | [ADR-1606](1606-prohibition-enforcement-verify-seam.md) | prohibition-enforcement verify-time seam | Proposed | — |
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
+| [ADR-1953](1953-complexity-triggered-refactor.md) | Complexity-triggered refactor — the loop measures the entropy it just added | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
 
 ### Superseded, Retired, and Legacy

@@ -37,7 +37,7 @@
     "refactor.trigger_strict": {
       "type": "boolean",
       "default": false,
-      "description": "Block /gsd-ship while any refactor proposal in the milestone is still untriaged. Off by default and deliberately so: a blocking complexity number is a metric an executor can satisfy by splitting one coherent function into two incoherent ones. The gate therefore clears on the proposal being DISPOSITIONED (gsd-tools refactor accept|decline), never on the score improving. Advisory mode surfaces the same proposal without blocking."
+      "description": "Record an untriaged refactor proposal as an open `deviation` entry in the broken-windows ledger, so it becomes a tracked task that must be resolved before ship. Off by default and deliberately so: a blocking complexity number is a metric an executor can satisfy by splitting one coherent function into two incoherent ones, so the entry clears on the proposal being DISPOSITIONED (gsd-tools refactor accept|decline), never on the score improving. Ship blocking is the broken-windows capability's existing ship:pre gate — enable it with workflow.windows_enforce. With broken-windows absent, strict mode still records the proposal locally and says so; it cannot block on its own. Advisory mode (the default) surfaces the same proposal and tracks nothing."
     }
   },
   "commands": [
@@ -63,15 +63,5 @@
     }
   ],
   "contributions": [],
-  "gates": [
-    {
-      "point": "ship:pre",
-      "check": {
-        "query": "refactor.ship-gate"
-      },
-      "when": "refactor.trigger_strict",
-      "blocking": true,
-      "onError": "halt"
-    }
-  ]
+  "gates": []
 }

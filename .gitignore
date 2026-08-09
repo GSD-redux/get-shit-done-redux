@@ -69,6 +69,8 @@ build/
 /tsconfig.build.tsbuildinfo
 /gsd-core/bin/lib/commonjs-marker.cjs
 /gsd-core/bin/lib/broken-windows.cjs
+/gsd-core/bin/lib/complexity-trigger.cjs
+/gsd-core/bin/lib/refactor-trigger-command-router.cjs
 /gsd-core/bin/lib/host-integration.cjs
 /gsd-core/bin/lib/host-integration-sdk.cjs
 /gsd-core/bin/lib/host-integration-adapters/imperative-hook-bus.cjs

@@ -1341,6 +1341,32 @@ The `API-SURFACE.md` output lists exported symbols (functions, classes, decorato
 
 ---
 
+### `gsd-tools refactor`
+
+Evaluate the complexity of the files a phase touched and surface a scoped refactor proposal when a function's score crosses `refactor.complexity_threshold` or jumps past its recorded anchor by more than `refactor.complexity_jump_delta`. Gated on `refactor.trigger_enabled: true` in `config.json` (see [Configuration Reference](CONFIGURATION.md#refactor-trigger-settings)); when disabled, every subcommand prints an activation hint and stops — it is inert otherwise.
+
+| Subcommand | Description |
+|------------|-------------|
+| `evaluate --phase <N> [--since <ref>] [--raw]` | Analyze files changed since the phase's start commit (or `--since <ref>`) and write a `<NN>-REFACTOR.md` proposal when a candidate triggers |
+| `status [--phase <N>] [--raw]` | List all recorded proposals across phases, or show the proposal for one phase |
+| `accept --phase <N> [--raw]` | Disposition the phase's untriaged proposal as accepted; re-anchors the target function's baseline to its current score |
+| `decline --phase <N> --reason "<text>" [--raw]` | Disposition the phase's untriaged proposal as declined with a recorded reason; re-anchors the baseline the same way |
+
+**Produces:** `.planning/phases/<N>/<NN>-REFACTOR.md` (from `evaluate`, only when a candidate triggers)
+
+```bash
+node gsd-tools.cjs refactor evaluate --phase 3                       # Evaluate phase 3's touched files
+node gsd-tools.cjs refactor evaluate --phase 3 --since abc123        # Evaluate against a specific ref
+node gsd-tools.cjs refactor status                                   # List all recorded proposals
+node gsd-tools.cjs refactor status --phase 3                         # Show phase 3's proposal
+node gsd-tools.cjs refactor accept --phase 3                         # Accept phase 3's proposal
+node gsd-tools.cjs refactor decline --phase 3 --reason "flat dispatch table, not a real hotspot"  # Decline with a reason
+```
+
+Trigger semantics match ESLint's `complexity: {max: N}` — strictly greater, so a score exactly equal to `refactor.complexity_threshold` does not trigger. The jump check compares against the function's anchor (the score recorded the last time it was accepted or declined), not the single-phase change, so it accumulates across phases until dispositioned. `refactor accept`/`refactor decline` are the only actions that clear a tracked proposal — the score improving on its own does not. See [ADR-1953](adr/1953-complexity-triggered-refactor.md).
+
+---
+
 ## AI Integration Commands
 
 ### `/gsd-ai-integration-phase`

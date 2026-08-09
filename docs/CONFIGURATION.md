@@ -778,6 +778,18 @@ A CI-built graph rebuilt minutes ago against an old checkout will read as
 fresh on mtime but `commit_stale: true`. Surface both when answering
 architecture questions.
 
+<a id="refactor-trigger-settings"></a>
+### Refactor-Trigger Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `refactor.trigger_enabled` | boolean | `false` | Enable the complexity-triggered refactor hook. When `true`, an `execute:post` step evaluates the complexity of the files the phase touched and writes a scoped refactor proposal if a function crosses `refactor.complexity_threshold` or jumps past `refactor.complexity_jump_delta`. Opt-in; when `false` the hook never runs. Added in v1.10.0 (#1953) |
+| `refactor.complexity_threshold` | number | `15` | Absolute per-function complexity above which a refactor proposal is surfaced. Semantics match ESLint's `complexity: {max: N}` — the trigger is strictly greater, so a score of exactly `N` does not trigger. Default `15` follows SonarSource's default; ESLint's own default is `20` and radon's rank C begins at `11`. Raise it if proposals feel like noise. Added in v1.10.0 |
+| `refactor.complexity_jump_delta` | number | `5` | Complexity growth above which a refactor proposal is surfaced even when the absolute threshold is not reached. Measured against the function's anchor — the score recorded the last time the function was consciously dispositioned (`refactor accept`/`refactor decline`) — so it accumulates across phases and catches slow creep the absolute threshold would miss. Strictly greater, as with the threshold. Added in v1.10.0 |
+| `refactor.trigger_strict` | boolean | `false` | Record an untriaged refactor proposal as an open `deviation` entry in the broken-windows ledger, so it becomes a tracked task that must be resolved before ship. Off by default and deliberately so: a blocking complexity number is a metric an executor can satisfy by splitting one coherent function into two incoherent ones, so the entry clears on the proposal being dispositioned (`gsd-tools refactor accept\|decline`), never on the score improving. Ship blocking is the broken-windows capability's existing `ship:pre` gate — enable it separately with `workflow.windows_enforce`. With broken-windows absent, strict mode still records the proposal locally and says so; it cannot block on its own. Advisory mode (the default) surfaces the same proposal and tracks nothing. Added in v1.10.0 |
+
+See [ADR-1953](adr/1953-complexity-triggered-refactor.md) for the design rationale, including why the anchor moves only on disposition and never on the score improving.
+
 ### Usage
 
 ```bash
