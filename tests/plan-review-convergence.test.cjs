@@ -1582,18 +1582,24 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
     });
 
     test('the pass region is outside the review-agent prompt', () => {
-      // The Agent(prompt="…") string ends at its `mode="auto"` argument. Both
-      // drift passes must begin after it, or their findings would land in the
-      // review agent's return message — which the workflow awk-parses and which
-      // must end with its two "## " sections and carry no others.
-      const agentPromptEnd = WORKFLOW.lastIndexOf('mode="auto"');
-      assert.ok(agentPromptEnd >= 0, 'the review Agent block must still carry its mode="auto" argument');
-      assert.ok(
-        offsetOf(WORKFLOW, GROUNDING_HEADING) > agentPromptEnd,
-        'source-grounding pass must remain orchestrator-side (after the Agent block)'
+      // Anchor on the review-agent return contract itself — the sentence inside
+      // the Agent(prompt=…) string that this test exists to protect — rather than
+      // on a generic mode-argument literal that a later Agent() block could reuse
+      // and thereby relocate the anchor past this section.
+      const RETURN_CONTRACT = 'These two sections MUST be the final content of your response';
+      const contractAt = WORKFLOW.indexOf(RETURN_CONTRACT);
+      assert.ok(contractAt >= 0, 'the review agent prompt must still carry its return-message contract');
+      assert.strictEqual(
+        WORKFLOW.indexOf(RETURN_CONTRACT, contractAt + 1),
+        -1,
+        'the return-message contract must appear exactly once — a second copy makes this anchor ambiguous'
       );
       assert.ok(
-        offsetOf(WORKFLOW, DRIFT_HEADING) > agentPromptEnd,
+        offsetOf(WORKFLOW, GROUNDING_HEADING) > contractAt,
+        'source-grounding pass must remain orchestrator-side (after the Agent prompt)'
+      );
+      assert.ok(
+        offsetOf(WORKFLOW, DRIFT_HEADING) > contractAt,
         'the fact-drift pass must be orchestrator-side — inside the Agent prompt its findings ' +
         'would break the "no additional ## headings" return contract the workflow parses'
       );
@@ -1615,11 +1621,25 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
       // concept, and its breaking-change mitigation reads "gated behind the
       // EXISTING plan_review config". A third key would also force a 25th
       // setting into gsd-core/workflows/settings.md's six-section UX.
+      //
+      // Two halves, both required. The gate must still be NAMED — otherwise a
+      // deleted or empty section would satisfy a bare "no novel keys" check
+      // vacuously — and nothing beyond the two keys the drift guard already owns
+      // may appear. (`source_grounding_authority` is resolved through
+      // `gsd_run drift-guard authority` and is not spelled out in this file
+      // today; it stays on the allowed list so naming it later is not a failure.)
       const keys = new Set([...WORKFLOW.matchAll(/plan_review\.([a-z_]+)/g)].map((m) => m[1]));
+      assert.ok(
+        keys.has('source_grounding'),
+        'the workflow must still name plan_review.source_grounding as the drift-guard gate'
+      );
+      const novel = [...keys]
+        .filter((k) => k !== 'source_grounding' && k !== 'source_grounding_authority')
+        .sort();
       assert.deepStrictEqual(
-        [...keys].sort(),
-        ['source_grounding', 'source_grounding_authority'],
-        'plan-review-convergence must reference only the two existing plan_review keys'
+        novel,
+        [],
+        `plan-review-convergence must introduce no new plan_review key, found: ${novel.join(', ')}`
       );
     });
   });
