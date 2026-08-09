@@ -4112,7 +4112,11 @@ function _warnCodexModelOverrideDropped(agentName, value) {
 // with a module-level boolean (mirrors _codexModelOverrideDroppedWarned's Set above)
 // so a multi-agent install — every Codex agent hits this condition simultaneously —
 // emits exactly one line, not one per agent. Reset once per install() call (see
-// install()) so the "at most once" window is per-install, not per-process.
+// install()) so the "at most once" window is per-install, not per-process. That
+// reset lives ONLY inside install() (~:10116) — generateCodexAgentToml is also
+// exported standalone (~:13460), and a caller invoking it directly/repeatedly
+// outside install() gets process-lifetime dedupe instead of per-install. No
+// current test depends on the standalone caller's dedupe window.
 let _codexResolverModelOmittedWarned = false;
 function _warnCodexResolverModelOmitted() {
   if (_codexResolverModelOmittedWarned) return;
@@ -4194,14 +4198,17 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
     pinnedModel = null;
   }
   // #3241 — one-time deprecation notice: if nothing ends up pinned but the
-  // runtime resolver would have supplied a per-tier model (the population that
-  // loses a pin now that the auto-embed above is gone), point the user at
-  // model_overrides. Never fires when the resolver is null, resolves to
-  // nothing, or an explicit real-Codex pin survived — in all of those cases
-  // nothing was lost.
+  // runtime resolver would have supplied a per-tier model that would actually
+  // have been EMBEDDED (the population that loses a pin now that the
+  // auto-embed above is gone), point the user at model_overrides. The would-be
+  // model must also clear the #2310 Anthropic-flavored gate above — if it
+  // wouldn't have survived that gate, the user never had that pin pre-Phase-1
+  // either, and the notice would be false. Never fires when the resolver is
+  // null, resolves to nothing, resolves to an Anthropic-flavored model, or an
+  // explicit real-Codex pin survived — in all of those cases nothing was lost.
   if (!pinnedModel && runtimeResolver) {
     const wouldHavePinned = runtimeResolver.resolve(resolvedName) || runtimeResolver.resolve(agentName);
-    if (wouldHavePinned?.model) {
+    if (wouldHavePinned?.model && !_isAnthropicFlavoredModel(wouldHavePinned.model)) {
       _warnCodexResolverModelOmitted();
     }
   }

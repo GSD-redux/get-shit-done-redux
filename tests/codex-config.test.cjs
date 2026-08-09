@@ -774,6 +774,84 @@ tools: Read, Grep
     assert.ok(!standardResult.includes('model_verbosity'), 'standard-tier agent must not gain model_verbosity just because no model is pinned');
   });
 
+  // ─── #3241 review: gate the deprecation notice on "would have been EMBEDDED",
+  // not "would have been returned" ────────────────────────────────────────────
+  // The resolver-would-have-supplied-a-model check above (L652-665) doesn't
+  // inspect stderr, so it couldn't catch this: the notice must not fire when
+  // the would-be resolver model would ALSO have been rejected by the #2310
+  // Anthropic-flavored gate (L4192) pre-Phase-1 — that user never had the pin
+  // in the first place, so telling them to set model_overrides is false. Each
+  // test here re-requires bin/install.js fresh (matches the require.cache
+  // pattern in tests/install.test.cjs) because the notice's one-time dedupe
+  // is a module-level boolean shared across every test in this file, and an
+  // earlier test in this describe block (e.g. L652-665) may have already
+  // latched it.
+
+  function freshInstallModule() {
+    const resolved = require.resolve('../bin/install.js');
+    delete require.cache[resolved];
+    return require('../bin/install.js');
+  }
+
+  function captureStderr(t) {
+    const origWrite = process.stderr.write;
+    const chunks = [];
+    process.stderr.write = (chunk) => { chunks.push(String(chunk)); return true; };
+    t.after(() => { process.stderr.write = origWrite; });
+    return () => chunks.join('').split(/\r?\n/).filter((l) => l.length > 0);
+  }
+
+  test('no deprecation notice when the resolver would only have produced an Anthropic-flavored model (#3241 review — defect fix)', (t) => {
+    const freshInstall = freshInstallModule();
+    const getLines = captureStderr(t);
+    // Mixed-runtime config (runtime: opencode) resolving against a Codex
+    // install target — the #2310 gate (bin/install.js:4192) rejects this
+    // model BEFORE Phase 1 too, so this user never had the pin. Bare alias
+    // form covered too, since both routes hit the same gate.
+    for (const model of ['anthropic/claude-opus-4-8', 'sonnet']) {
+      const runtimeResolver = { runtime: 'opencode', resolve: () => ({ model }) };
+      const result = freshInstall.generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+      assert.ok(!/^model = /m.test(result), `no model pinned for would-be resolver model "${model}"`);
+    }
+    const noticeLines = getLines().filter((l) => l.startsWith('gsd: notice — '));
+    assert.strictEqual(noticeLines.length, 0,
+      'no notice: the resolver model would never have survived the #2310 gate pre-Phase-1 either, so nothing was lost');
+  });
+
+  test('deprecation notice still fires when the resolver would have produced a legal Codex model (#3241 review)', (t) => {
+    const freshInstall = freshInstallModule();
+    const getLines = captureStderr(t);
+    const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
+    const result = freshInstall.generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+    assert.ok(!/^model = /m.test(result), 'no model pinned by default (#3241 D1)');
+    const noticeLines = getLines().filter((l) => l.startsWith('gsd: notice — '));
+    assert.strictEqual(noticeLines.length, 1,
+      'exactly one notice: a legal gpt-5.6-sol model would have been embedded pre-Phase-1, and now is not — the fix must not over-correct into silence');
+  });
+
+  test('both the override-dropped warning and the resolver-omitted notice fire for an Anthropic override plus a legal resolver model (#3241 review — intentional, do NOT collapse to one message)', (t) => {
+    // NOT a defect. Two distinct true facts, two distinct prefixes:
+    // - model_overrides:"sonnet" is Anthropic-flavored → dropped pre-Phase-1
+    //   too (#2310 gate on the override path) → `gsd: warning — ` fires.
+    // - With the override dropped, execution falls through to the runtime
+    //   resolver, which WOULD have supplied "gpt-5.6-sol" (a legal Codex
+    //   model) and that pin WOULD have been embedded pre-Phase-1 → this user
+    //   genuinely lost a pin → `gsd: notice — ` fires too.
+    // A future reader must not "fix" this down to one message.
+    const freshInstall = freshInstallModule();
+    const getLines = captureStderr(t);
+    const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
+    const result = freshInstall.generateCodexAgentToml(
+      'gsd-executor', sampleAgent, { 'gsd-executor': 'sonnet' }, runtimeResolver,
+    );
+    assert.ok(!/^model = /m.test(result), 'no model pinned (Anthropic override dropped, resolver model not auto-embedded)');
+    const lines = getLines();
+    const warningLines = lines.filter((l) => l.startsWith('gsd: warning — '));
+    const noticeLines = lines.filter((l) => l.startsWith('gsd: notice — '));
+    assert.strictEqual(warningLines.length, 1, 'exactly one warning: the Anthropic override was dropped');
+    assert.strictEqual(noticeLines.length, 1, 'exactly one notice: the legal resolver model would have been embedded and now is not');
+  });
+
   // ─── #774: service_tier / model_verbosity for light-tier agents ───────────────
 
   test('emits service_tier="flex" and model_verbosity="low" for light-tier agents (#774)', () => {
