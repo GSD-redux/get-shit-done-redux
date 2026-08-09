@@ -411,7 +411,7 @@ describe('complexity-trigger: analyzer — the leak surface', () => {
   });
 
   test('analyzesLargeFileWithinBounds', () => {
-    const N = 8000;
+    const N = 20000;
     const chunks = Array.from({ length: N }, (_, i) => [
       `function f${i}(x) {`,
       '  if (x) { return 1; }',
@@ -419,7 +419,7 @@ describe('complexity-trigger: analyzer — the leak surface', () => {
       '}',
     ].join('\n'));
     const source = chunks.join('\n\n');
-    assert.ok(source.length > 500000, 'fixture must actually be large enough to exercise the bound');
+    assert.ok(source.length > 1_000_000, 'fixture must actually be large enough to exercise the bound');
 
     const r = analyzeSource(source);
     assert.equal(r.ok, true);
