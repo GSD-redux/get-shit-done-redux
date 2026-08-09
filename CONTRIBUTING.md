@@ -918,13 +918,18 @@ This gives maintainers a faster, higher-confidence signal than CI-only validatio
 
 ### Pre-PR Seam Checks (Manifest/Alias Routing)
 
-If you touched any of the command-manifest or generated alias files, run:
+If you touched `src/command-aliases.cts` or any of the eight `src/*-command-router.cts`
+sources it feeds, run:
 
 ```bash
 npm run check:alias-drift
 ```
 
-This verifies generated alias artifacts are in sync with manifest source-of-truth.
+This verifies the built alias artifacts under `gsd-core/bin/lib/` agree with their
+source of truth — each family's `*_SUBCOMMANDS` list must match the `subcommand`
+values derived from its `*_COMMAND_ALIASES` table, in order, and each router must
+reference its own list. The surface is enumerated once in
+`scripts/lib/alias-drift-families.cjs`.
 
 ### Editing shipped content (gsd-core/workflows, references, templates, contexts, agents/, commands/gsd/)
 
@@ -993,60 +998,39 @@ npm run regen:derived
 
 Optional local pre-commit hook entry (Git-native):
 
+`.githooks/pre-commit` is **committed** — you do not write it, you only point git at
+it. It runs `check:alias-drift` when you stage one of the tracked sources that check
+reads, and stays silent otherwise.
+
 ```bash
 # one-time setup
-mkdir -p .githooks
-cat > .githooks/pre-commit <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if git diff --cached --name-only | grep -Eq "^sdk/src/query/command-manifest\.|^sdk/src/query/command-aliases\.generated\.ts$|^gsd-core/bin/lib/command-aliases\.generated\.cjs$|^sdk/scripts/gen-command-aliases\.ts$"; then
-  npm run check:alias-drift
-fi
-EOF
-chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks
 ```
 
+This is opt-in and stays that way: nothing in `npm install` sets `core.hooksPath` for
+you, so a fresh clone acquires no hooks. To stop using them, `git config --unset
+core.hooksPath`.
+
+Do not paste a copy of the hook body into your own `.githooks/pre-commit` — the
+watched-path list is derived from `scripts/lib/alias-drift-families.cjs` and asserted
+against the checker's own family table by `tests/precommit-alias-drift-hook.test.cjs`.
+A hand-maintained copy is what silently rotted the previous version of this recipe
+(#2725): every path in it named the retired `sdk/` tree or a gitignored build output,
+so the guard matched nothing for months.
+
 Optional local pre-push hook to block a private author-email pattern:
+
+`.githooks/pre-push` is committed too, and is covered by the same
+`core.hooksPath` opt-in above. It is a no-op until you set the regex, so enabling
+hooks does not enable this check:
 
 ```bash
 # set locally in your shell profile (example)
-export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\\.com$'
-
-cat > .githooks/pre-push <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-zero_sha='0000000000000000000000000000000000000000'
-blocked_regex="${GSD_BLOCKED_AUTHOR_REGEX:-}"
-[[ -z "$blocked_regex" ]] && exit 0
-violations=()
-
-while read -r local_ref local_sha remote_ref remote_sha; do
-  [[ "$local_sha" == "$zero_sha" ]] && continue
-  if [[ "$remote_sha" == "$zero_sha" ]]; then
-    commits=$(git rev-list "$local_sha" --not --remotes)
-  else
-    commits=$(git rev-list "$remote_sha..$local_sha")
-  fi
-  while read -r commit; do
-    [[ -z "$commit" ]] && continue
-    email=$(git show -s --format='%ae' "$commit" | tr '[:upper:]' '[:lower:]')
-    if printf '%s' "$email" | grep -Eq "$blocked_regex"; then
-      violations+=("$commit <$email>")
-    fi
-  done <<< "$commits"
-done
-
-if [[ ${#violations[@]} -gt 0 ]]; then
-  echo "Push blocked: commit author email matched local blocked regex ($blocked_regex)." >&2
-  printf '  - %s\n' "${violations[@]}" >&2
-  exit 1
-fi
-EOF
-chmod +x .githooks/pre-push
+export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\.com$'
 ```
+
+With that exported, a push carrying a commit whose author email matches is blocked,
+and the hook names the offending commits. Unset the variable to disable it.
 
 ### CI Test Quality Checks
 

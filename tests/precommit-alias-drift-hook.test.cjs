@@ -9,27 +9,27 @@ const { runHook } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { stagedSourcePaths } = require('../scripts/lib/alias-drift-families.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_PATH = path.join(ROOT, '.githooks', 'pre-commit');
 
 /**
- * The staged paths .githooks/pre-commit is expected to watch. Kept local for
- * now; #2725's fix replaces this with a derivation from the drift checker's
- * own family table so the two surfaces cannot silently diverge again.
+ * Derived, never restated: the sources `scripts/check-alias-drift.cjs` actually
+ * reads. The hook's watched list and the checker's family table are parallel
+ * surfaces over one constant set, and their silent divergence is exactly what
+ * made the guard inert (#2725) — so this test asserts the hook against the
+ * checker's own table rather than against a second copy of it.
  */
-const WATCHED_PATHS = new Set([
-  'src/command-aliases.cts',
-  'src/state-command-router.cts',
-  'src/verify-command-router.cts',
-  'src/init-command-router.cts',
-  'src/phase-command-router.cts',
-  'src/phases-command-router.cts',
-  'src/validate-command-router.cts',
-  'src/roadmap-command-router.cts',
-  'src/eval-command-router.cts',
+const DRIFT_SOURCES = stagedSourcePaths();
+
+/** The two script paths the hook additionally watches, beyond the sources above. */
+const WATCHED_SCRIPTS = [
   'scripts/check-alias-drift.cjs',
-]);
+  'scripts/lib/alias-drift-families.cjs',
+];
+
+const WATCHED_PATHS = new Set([...DRIFT_SOURCES, ...WATCHED_SCRIPTS]);
 
 /**
  * Write a mock bash script to a .sh file in tmpDir and return its absolute path.
@@ -84,7 +84,7 @@ function runPreCommit(t, stagedLines) {
   });
 
   const npmCalls = fs.existsSync(marker)
-    ? fs.readFileSync(marker, 'utf8').split('\n').filter(Boolean).length
+    ? fs.readFileSync(marker, 'utf8').split(/\r?\n/).filter(Boolean).length
     : 0;
 
   return { result, npmCalls };
@@ -115,6 +115,31 @@ describe('.githooks/pre-commit alias drift guard', () => {
     assert.equal(npmCalls, 1, 'editing the checker must re-run it');
   });
 
+  test('fires when the shared family table is staged', (t) => {
+    const { result, npmCalls } = runPreCommit(
+      t,
+      staged('scripts/lib/alias-drift-families.cjs'),
+    );
+
+    throwIfFailed(result, `bash ${HOOK_PATH}`);
+    assert.equal(npmCalls, 1, 'editing the family table must re-run the check');
+  });
+
+  test('fires for every source the drift check actually reads', (t) => {
+    assert.ok(DRIFT_SOURCES.length > 0, 'the drift surface must not be empty');
+
+    for (const source of DRIFT_SOURCES) {
+      const { npmCalls } = runPreCommit(t, staged(source));
+
+      assert.equal(
+        npmCalls,
+        1,
+        `${source} is in the drift checker's family table but .githooks/pre-commit ` +
+        'does not watch it — the two surfaces have diverged again (#2725)',
+      );
+    }
+  });
+
   test('does not run the drift check for unrelated staged files', (t) => {
     const { result, npmCalls } = runPreCommit(t, staged('README.md'));
 
@@ -123,7 +148,14 @@ describe('.githooks/pre-commit alias drift guard', () => {
   });
 
   test('does not fire for a src file outside the drift surface', (t) => {
-    const { result, npmCalls } = runPreCommit(t, staged('src/milestone.cts'));
+    const outsider = 'src/milestone.cts';
+    // Guards the row against going vacuous if milestone ever joins the family.
+    assert.ok(
+      !WATCHED_PATHS.has(outsider),
+      `${outsider} joined the drift surface — pick a different outsider for this row`,
+    );
+
+    const { result, npmCalls } = runPreCommit(t, staged(outsider));
 
     throwIfFailed(result, `bash ${HOOK_PATH}`);
     assert.equal(

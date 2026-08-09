@@ -4,9 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { FAMILIES, ALIAS_TABLE } = require('./lib/alias-drift-families.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
-const aliasesPath = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'command-aliases.cjs');
+const aliasesPath = path.join(ROOT, 'gsd-core', 'bin', 'lib', `${ALIAS_TABLE}.cjs`);
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -36,48 +37,11 @@ function main() {
 
   const aliases = require(aliasesPath);
 
-  const families = [
-    {
-      commandAliases: 'STATE_COMMAND_ALIASES',
-      subcommands: 'STATE_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'state-command-router.cjs'),
-    },
-    {
-      commandAliases: 'VERIFY_COMMAND_ALIASES',
-      subcommands: 'VERIFY_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'verify-command-router.cjs'),
-    },
-    {
-      commandAliases: 'INIT_COMMAND_ALIASES',
-      subcommands: 'INIT_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'init-command-router.cjs'),
-    },
-    {
-      commandAliases: 'PHASE_COMMAND_ALIASES',
-      subcommands: 'PHASE_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'phase-command-router.cjs'),
-    },
-    {
-      commandAliases: 'PHASES_COMMAND_ALIASES',
-      subcommands: 'PHASES_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'phases-command-router.cjs'),
-    },
-    {
-      commandAliases: 'VALIDATE_COMMAND_ALIASES',
-      subcommands: 'VALIDATE_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'validate-command-router.cjs'),
-    },
-    {
-      commandAliases: 'ROADMAP_COMMAND_ALIASES',
-      subcommands: 'ROADMAP_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'roadmap-command-router.cjs'),
-    },
-    {
-      commandAliases: 'EVAL_COMMAND_ALIASES',
-      subcommands: 'EVAL_SUBCOMMANDS',
-      routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', 'eval-command-router.cjs'),
-    },
-  ];
+  const families = FAMILIES.map((family) => ({
+    commandAliases: family.commandAliases,
+    subcommands: family.subcommands,
+    routerPath: path.join(ROOT, 'gsd-core', 'bin', 'lib', `${family.router}.cjs`),
+  }));
 
   for (const family of families) {
     const commandAliases = aliases[family.commandAliases];

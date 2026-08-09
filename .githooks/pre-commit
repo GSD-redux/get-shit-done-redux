@@ -6,42 +6,33 @@ set -euo pipefail
 GIT_CMD="${GIT_OVERRIDE:-git}"
 NPM_CMD="${NPM_OVERRIDE:-npm}"
 
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/command-manifest\.|^sdk/src/query/command-aliases\.generated\.ts$|^gsd-core/bin/lib/command-aliases\.cjs$|^sdk/scripts/gen-command-aliases\.ts$"; then
+# Tracked sources of the command-alias surface. These are the `src/*.cts` files,
+# never the `gsd-core/bin/lib/*.cjs` artifacts they compile to: those are
+# gitignored, so `git diff --cached --name-only` never lists them and a guard
+# keyed on them can never fire (#2725). Kept in sync with
+# scripts/lib/alias-drift-families.cjs by tests/precommit-alias-drift-hook.test.cjs.
+alias_drift_paths=(
+  'src/command-aliases.cts'
+  'src/state-command-router.cts'
+  'src/verify-command-router.cts'
+  'src/init-command-router.cts'
+  'src/phase-command-router.cts'
+  'src/phases-command-router.cts'
+  'src/validate-command-router.cts'
+  'src/roadmap-command-router.cts'
+  'src/eval-command-router.cts'
+  'scripts/check-alias-drift.cjs'
+  'scripts/lib/alias-drift-families.cjs'
+)
+
+# `tr -d '\r'` first: a whole-line match fails on a CR-terminated path.
+# Collected into a variable rather than piped straight into grep, because
+# `grep -q` exits on first match and would SIGPIPE its upstream — which under
+# `set -o pipefail` turns a successful match into a non-zero pipeline status.
+staged_paths="$("$GIT_CMD" diff --cached --name-only | tr -d '\r')"
+
+# -F -x: fixed strings, whole line. Exact path equality, no regex anchoring to
+# get wrong, and no escaping burden as the list grows.
+if grep -Fxqf <(printf '%s\n' "${alias_drift_paths[@]}") <<< "$staged_paths"; then
   "$NPM_CMD" run check:alias-drift
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/state-document\.|^gsd-core/bin/lib/state-document\.generated\.cjs$|^sdk/scripts/gen-state-document\.ts$|^sdk/scripts/check-state-document-fresh\.mjs$"; then
-  "$NPM_CMD" run check:state-document-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/configuration/|^sdk/shared/config-(defaults|schema)\.manifest\.json$|^gsd-core/bin/lib/configuration\.generated\.cjs$|^sdk/scripts/gen-configuration\.mjs$"; then
-  "$NPM_CMD" run check:configuration-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/workstream-inventory/|^gsd-core/bin/lib/workstream-inventory-builder\.generated\.cjs$|^sdk/scripts/gen-workstream-inventory-builder\.mjs$|^sdk/scripts/check-workstream-inventory-builder-fresh\.mjs$"; then
-  "$NPM_CMD" run check:workstream-inventory-builder-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/project-root/|^gsd-core/bin/lib/project-root\.generated\.cjs$|^sdk/scripts/gen-project-root\.mjs$|^sdk/scripts/check-project-root-fresh\.mjs$"; then
-  "$NPM_CMD" run check:project-root-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/plan-scan\.ts$|^gsd-core/bin/lib/plan-scan\.generated\.cjs$|^sdk/scripts/gen-plan-scan\.mjs$|^sdk/scripts/check-plan-scan-fresh\.mjs$"; then
-  "$NPM_CMD" run check:plan-scan-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/secrets\.ts$|^gsd-core/bin/lib/secrets\.generated\.cjs$|^sdk/scripts/gen-secrets\.mjs$|^sdk/scripts/check-secrets-fresh\.mjs$"; then
-  "$NPM_CMD" run check:secrets-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/schema-detect\.ts$|^gsd-core/bin/lib/schema-detect\.generated\.cjs$|^sdk/scripts/gen-schema-detect\.mjs$|^sdk/scripts/check-schema-detect-fresh\.mjs$"; then
-  "$NPM_CMD" run check:schema-detect-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/query/decisions\.ts$|^gsd-core/bin/lib/decisions\.generated\.cjs$|^sdk/scripts/gen-decisions\.mjs$|^sdk/scripts/check-decisions-fresh\.mjs$"; then
-  "$NPM_CMD" run check:decisions-fresh
-fi
-
-if "$GIT_CMD" diff --cached --name-only | grep -Eq "^sdk/src/workstream-name-policy\.ts$|^gsd-core/bin/lib/workstream-name-policy\.generated\.cjs$|^sdk/scripts/gen-workstream-name-policy\.mjs$|^sdk/scripts/check-workstream-name-policy-fresh\.mjs$"; then
-  "$NPM_CMD" run check:workstream-name-policy-fresh
 fi
