@@ -656,6 +656,14 @@ Show status, next steps, and automatically advance to the next logical workflow 
 | `--do "task description"` | Analyze freeform intent and dispatch to the most appropriate GSD command |
 | `--forensic` | Append a 6-check integrity audit after the standard report (STATE consistency, orphaned handoffs, deferred scope drift, memory-flagged pending work, blocking todos, uncommitted code) |
 
+> **Milestone name and version.** The milestone this report shows comes from one
+> implementation shared with `/gsd-stats`, `/gsd-manager` and `roadmap analyze`.
+> A name is no longer cut short at a parenthesis (`v3.3 — Portability (Windows)`
+> keeps its full name), a `### Phase N:` heading that mentions a version is never
+> mistaken for the milestone heading, and a milestone that cannot be identified is
+> shown as absent rather than as a plausible-looking `v1.0`/`milestone`. See
+> [CLI-TOOLS.md → Milestone identity](CLI-TOOLS.md#milestone-identity-which-milestone-and-what-it-is-called).
+
 **Auto-routing behavior (`--next`):**
 - No project → suggests `/gsd-new-project`
 - Phase needs discussion → runs `/gsd-discuss-phase`

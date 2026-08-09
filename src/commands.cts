@@ -29,6 +29,9 @@ const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phas
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getRoadmapPhaseInternal } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
 const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -48,6 +51,7 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
@@ -863,7 +867,19 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         }
       }
     } else if (branchingStrategy === 'milestone') {
-      const milestone = getMilestoneInfo(cwd);
+      const milestoneInfo = getMilestoneInfo(cwd);
+      // #3216 review Finding 3: explicit scope gate instead of plain truthiness.
+      // COMPLETE and TRUNCATED both carry a real `version` (ADR-3180 §7.2 rule
+      // 6 — TRUNCATED means the version resolved but the milestone's NAME did
+      // not), so a TRUNCATED identity is acceptable here: `milestone.version`
+      // only feeds a BRANCH NAME, and `generateSlugInternal(null) || 'milestone'`
+      // already degrades the missing name to the literal "milestone" slug on
+      // purpose. This differs from `archivePhaseDirectories` (milestone.cts),
+      // which uses the same value as a DIRECTORY NAME and therefore demands
+      // COMPLETE only — a real-but-unnamed version is not safe enough there.
+      const milestone = milestoneInfo.scope === SCOPE.COMPLETE || milestoneInfo.scope === SCOPE.TRUNCATED
+        ? milestoneInfo.value
+        : null;
       if (milestone && milestone.version) {
         branchName = (config['milestone_branch_template'] as string)
           .replace('{milestone}', milestone.version)
@@ -1560,7 +1576,7 @@ async function cmdWebsearch(query: string | undefined, options: WebsearchOptions
 
 function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
-  const milestone = getMilestoneInfo(cwd);
+  const milestone = getMilestoneInfo(cwd).value;
 
   const phases: PhaseProgress[] = [];
   let totalPlans = 0;
@@ -1595,14 +1611,14 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
   } catch { /* intentionally empty */ }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
 
   if (format === 'table') {
     // Render markdown table
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name}\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
     out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
@@ -1619,8 +1635,8 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   } else {
     // JSON format
     output({
-      milestone_version: milestone.version,
-      milestone_name: milestone.name,
+      milestone_version: milestone?.version ?? null,
+      milestone_name: milestone?.name ?? null,
       phases,
       total_plans: totalPlans,
       total_summaries: totalSummaries,
@@ -1864,7 +1880,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   const roadmapPath = planningPaths(cwd).roadmap;
   const reqPath = planningPaths(cwd).requirements;
   const statePath = planningPaths(cwd).state;
-  const milestone = getMilestoneInfo(cwd);
+  const milestone = getMilestoneInfo(cwd).value;
 
   // Phase & plan stats (reuse progress pattern)
   const phasesByNumber = new Map<string, {
@@ -1951,8 +1967,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
   const completedPhases = phases.filter(p => p.status === 'Complete').length;
-  const planPercent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
-  const percent = phases.length > 0 ? Math.min(100, Math.round((completedPhases / phases.length) * 100)) : 0;
+  const planPercent = clampPercent(totalSummaries, totalPlans);
+  const percent = clampPercent(completedPhases, phases.length);
 
   // Requirements stats
   let requirementsTotal = 0;
@@ -1993,8 +2009,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }
 
   const result = {
-    milestone_version: milestone.version,
-    milestone_name: milestone.name,
+    milestone_version: milestone?.version ?? null,
+    milestone_name: milestone?.name ?? null,
     phases,
     phases_completed: completedPhases,
     phases_total: phases.length,
@@ -2016,7 +2032,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name} — Statistics\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases (${percent}%)\n`;
     if (totalPlans > 0) {
       out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;

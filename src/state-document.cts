@@ -8,6 +8,7 @@
  */
 
 import { splitTableRow } from './markdown-table.cjs';
+import { clampPercentFromFraction } from './phase-lifecycle.cjs';
 
 // Internal helpers
 function escapeRegex(str: string): string {
@@ -305,7 +306,7 @@ export function computeProgressPercent(
   // cannot track through intermediate boolean variables).
   const planFraction = hasPlanData ? (completedPlans ?? 0) / (totalPlans ?? 1) : 1;
   const phaseFraction = hasPhaseData ? (completedPhases ?? 0) / (totalPhases ?? 1) : 1;
-  return Math.min(100, Math.round(Math.min(planFraction, phaseFraction) * 100));
+  return clampPercentFromFraction(Math.min(planFraction, phaseFraction));
 }
 
 export function shouldPreserveExistingProgress(existingProgress: unknown, derivedProgress: unknown): boolean {

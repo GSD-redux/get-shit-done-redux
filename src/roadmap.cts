@@ -20,9 +20,10 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -448,16 +449,14 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     });
   }
 
-  // Extract milestone info
-  const milestones: Array<{ heading: string; version: string }> = [];
-  const milestonePattern = /##\s*(.*v(\d+(?:\.\d+)+)[^(\n]*)/gi;
-  let mMatch: RegExpExecArray | null;
-  while ((mMatch = milestonePattern.exec(content)) !== null) {
-    milestones.push({
-      heading: mMatch[1].trim(),
-      version: 'v' + mMatch[2],
-    });
-  }
+  // Extract milestone info. #3216: routed through the canonical
+  // `listMilestoneHeadings` owner (deleted the inline `##…` regex, which
+  // truncated names at a parenthetical and had no phase-heading exclusion)
+  // rather than re-deriving the enumeration here.
+  const milestones: Array<{ heading: string; version: string }> = listMilestoneHeadings(content).map((m) => ({
+    heading: m.heading,
+    version: m.version,
+  }));
 
   // Find current and next phase
   const currentPhase = phases.find(p => p.disk_status === 'planned' || p.disk_status === 'partial') || null;
@@ -491,7 +490,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     completed_phases: completedPhases,
     total_plans: totalPlans,
     total_summaries: totalSummaries,
-    progress_percent: totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0,
+    progress_percent: clampPercent(totalSummaries, totalPlans),
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,
