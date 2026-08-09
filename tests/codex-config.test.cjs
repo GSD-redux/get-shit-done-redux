@@ -58,6 +58,7 @@ const {
   convertClaudeAgentToCodexAgent,
   convertClaudeCommandToCodexSkill,
   generateCodexAgentToml,
+  _resetCodexNoticeDedupeForTests,
   cleanupCodexSkillMetadataSidecars,
   generateCodexConfigBlock,
   stripGsdFromCodexConfig,
@@ -780,18 +781,14 @@ tools: Read, Grep
   // inspect stderr, so it couldn't catch this: the notice must not fire when
   // the would-be resolver model would ALSO have been rejected by the #2310
   // Anthropic-flavored gate (L4192) pre-Phase-1 — that user never had the pin
-  // in the first place, so telling them to set model_overrides is false. Each
-  // test here re-requires bin/install.js fresh (matches the require.cache
-  // pattern in tests/install.test.cjs) because the notice's one-time dedupe
-  // is a module-level boolean shared across every test in this file, and an
-  // earlier test in this describe block (e.g. L652-665) may have already
-  // latched it.
-
-  function freshInstallModule() {
-    const resolved = require.resolve('../bin/install.js');
-    delete require.cache[resolved];
-    return require('../bin/install.js');
-  }
+  // in the first place, so telling them to set model_overrides is false. The
+  // notice's one-time dedupe is a module-level boolean shared across every
+  // test in this file (an earlier test in this describe block, e.g.
+  // L652-665, may have already latched it), so each test here resets it via
+  // the documented test seam (_resetCodexNoticeDedupeForTests) instead of
+  // busting require.cache — a cache bust would create a second module
+  // instance and break every other test in this file that assumes a single
+  // shared instance.
 
   function captureStderr(t) {
     const origWrite = process.stderr.write;
@@ -802,7 +799,7 @@ tools: Read, Grep
   }
 
   test('no deprecation notice when the resolver would only have produced an Anthropic-flavored model (#3241 review — defect fix)', (t) => {
-    const freshInstall = freshInstallModule();
+    _resetCodexNoticeDedupeForTests();
     const getLines = captureStderr(t);
     // Mixed-runtime config (runtime: opencode) resolving against a Codex
     // install target — the #2310 gate (bin/install.js:4192) rejects this
@@ -810,7 +807,7 @@ tools: Read, Grep
     // form covered too, since both routes hit the same gate.
     for (const model of ['anthropic/claude-opus-4-8', 'sonnet']) {
       const runtimeResolver = { runtime: 'opencode', resolve: () => ({ model }) };
-      const result = freshInstall.generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+      const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
       assert.ok(!/^model = /m.test(result), `no model pinned for would-be resolver model "${model}"`);
     }
     const noticeLines = getLines().filter((l) => l.startsWith('gsd: notice — '));
@@ -819,10 +816,10 @@ tools: Read, Grep
   });
 
   test('deprecation notice still fires when the resolver would have produced a legal Codex model (#3241 review)', (t) => {
-    const freshInstall = freshInstallModule();
+    _resetCodexNoticeDedupeForTests();
     const getLines = captureStderr(t);
     const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
-    const result = freshInstall.generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
+    const result = generateCodexAgentToml('gsd-executor', sampleAgent, null, runtimeResolver);
     assert.ok(!/^model = /m.test(result), 'no model pinned by default (#3241 D1)');
     const noticeLines = getLines().filter((l) => l.startsWith('gsd: notice — '));
     assert.strictEqual(noticeLines.length, 1,
@@ -838,10 +835,10 @@ tools: Read, Grep
     //   model) and that pin WOULD have been embedded pre-Phase-1 → this user
     //   genuinely lost a pin → `gsd: notice — ` fires too.
     // A future reader must not "fix" this down to one message.
-    const freshInstall = freshInstallModule();
+    _resetCodexNoticeDedupeForTests();
     const getLines = captureStderr(t);
     const runtimeResolver = { runtime: 'codex', resolve: () => ({ model: 'gpt-5.6-sol' }) };
-    const result = freshInstall.generateCodexAgentToml(
+    const result = generateCodexAgentToml(
       'gsd-executor', sampleAgent, { 'gsd-executor': 'sonnet' }, runtimeResolver,
     );
     assert.ok(!/^model = /m.test(result), 'no model pinned (Anthropic override dropped, resolver model not auto-embedded)');

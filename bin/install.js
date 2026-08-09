@@ -4128,6 +4128,16 @@ function _warnCodexResolverModelOmitted() {
   );
 }
 
+// Test seam only — the dedupe above is module-level by design (it is
+// per-install; install() resets it at ~:10116). A unit test that drives
+// generateCodexAgentToml() directly, without going through install(), has no
+// other way to reset the flag between assertions without busting the
+// require.cache (which breaks module-instance sharing with the rest of the
+// suite). Exported so tests can call it instead.
+function _resetCodexNoticeDedupeForTests() {
+  _codexResolverModelOmittedWarned = false;
+}
+
 /**
  * Generate a per-agent .toml config file for Codex.
  * Sets required agent metadata, sandbox_mode, and developer_instructions
@@ -13511,6 +13521,7 @@ module.exports = {
     convertClaudeAgentToCursorAgent,
     convertClaudeAgentToCodexAgent,
     generateCodexAgentToml,
+    _resetCodexNoticeDedupeForTests,
     cleanupCodexSkillMetadataSidecars,
     cleanupWindsurfLegacyDevinSkills,
     cleanupMovedSkillsOldLocation,
