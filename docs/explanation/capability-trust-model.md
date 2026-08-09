@@ -236,12 +236,12 @@ So there are three classes, not two:
 | **Instruction surface** | skills, agents | Instructions that will reach the agent. Reach bounded only by what the agent will do when told. |
 | **Inert artifact** | everything else in the bundle | Note only. |
 
-**Not yet itemized at the prompt.** Naming a capability's individual skills in the
-pre-install consent summary lands with
-[#3248](https://github.com/open-gsd/gsd-core/issues/3248); today a skill-bearing
-capability is covered by the bundle's integrity and by your consent to install it,
-but its skills are not listed for you one by one. The classification above is
-what GSD has decided; the itemized prompt is what it has not yet built.
+**Itemized at the prompt.** [#3248](https://github.com/open-gsd/gsd-core/issues/3248)
+made the pre-install consent summary name each contributed skill and agent in
+its own section. A capability whose only contribution is skills — which used to
+disclose nothing at all beyond the bundle's integrity — is included: you see its
+skills listed before you consent to install it. The listing names the surface;
+it does not assert anything about what the surface contains.
 
 Installing a capability that ships skills grants it **instruction reach**. That is
 a real grant, and it is the same bargain this document already describes for code:
@@ -255,11 +255,11 @@ Two things worth stating so you do not infer them:
 - **First-party skills are equally unscanned.** Their assurance is provenance —
   they are the shipped package — not content inspection. There is no content
   control on either side.
-- **Correcting this document did not disturb any consent you have already
-  given.** No re-consent prompt follows from it. ADR-2363 D4 keeps instruction
-  surfaces out of the v1 disclosure signature precisely so that recording the
-  boundary honestly does not fire a spurious re-consent prompt on every
-  skill-bearing capability you have installed.
+- **Naming the instruction surface did not disturb any consent you have
+  already given.** No re-consent prompt follows from it. ADR-2363 D4 keeps
+  instruction surfaces out of the v1 disclosure signature precisely so that
+  disclosing the boundary honestly does not fire a spurious re-consent prompt
+  on every skill-bearing capability you have installed.
 
 ### Integrity pinning
 

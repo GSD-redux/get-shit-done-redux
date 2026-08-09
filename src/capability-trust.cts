@@ -1,6 +1,7 @@
 /**
  * Capability trust gate — ADR-1244 Phase 4 (Decision D5 + the compatibility half of D6), extended
- * by ADR-2782 Phase 3 (#2796) with a FOURTH executable-surface class: the reviewer lane.
+ * by ADR-2782 Phase 3 (#2796) with a FOURTH executable-surface class (the reviewer lane), and by
+ * ADR-2363 Phase 1 (#3248) with a FIFTH, NON-executable class: the instruction surface.
  *
  * PURE module. It computes *what* a capability would do and *whether* policy allows it; it
  * never mutates the filesystem and never performs I/O beyond reading staged files to confirm
@@ -20,16 +21,28 @@
  * the signature — the loader has no config resolver and must compute the same signature as the
  * lifecycle (constraint 2, `.gsd/phase/chore-2796-reviewer-trust-disclosure/40-design.md`).
  *
+ * ADR-2363 D5 (#3248): a capability's declared `skills`/`agents` are INSTRUCTION surfaces — their
+ * bodies are copied verbatim into the user's agent instruction context, so their reach is bounded
+ * only by what the agent will do when told. They are disclosed BY NAME and never content-scanned
+ * (D2 — Kerckhoffs: a shipped rule set is readable by the adversary who installs it). Unlike the
+ * four executable classes they never set `hasExecutable` (D3) and never enter `disclosureSignature`
+ * (D4): folding them in would perturb the stored signature of every already-consented skill-bearing
+ * capability and fire a spurious re-consent on its next upgrade — the harm ADR-2782 D4 rule 5
+ * already forbids. Any future signature binding arrives as a versioned v2, never an in-place
+ * re-encoding of v1.
+ *
  * Exports:
  *   RESERVED_NAMESPACES               — id prefixes third parties may not claim
- *   discloseExecutableSurfaces(...)   — enumerate hooks / command modules / mcpServers / reviewer lanes
+ *   discloseExecutableSurfaces(...)   — enumerate the four executable classes + instruction surfaces
  *   collectReviewerLaneSurfaces(...)  — the reviewer-lane collector, independently testable
+ *   collectInstructionSurfaces(...)   — the instruction-surface collector, independently testable
  *   checkReservedNamespace(id)        — is this id in a reserved namespace?
  *   evaluateSourceAllowed(parsed,...) — strictKnownRegistries enforcement
  *   checkEngines(manifest, host)      — engines.gsd hard gate + compatVersions downgrade
  *   evaluateInstallTrust(args)        — compose: source + namespace + engines + disclosure
  *   executableSetChanged(old, new)    — did the executable surface set change between versions?
  *   summarizeDisclosure(disclosure)   — human-readable consent-prompt lines
+ *   summarizeInstructionSurfaces(d)   — the instruction-surface section of the consent summary
  *   UNRESOLVED_HOST_MARKER            — the non-blank marker for an unresolved openai-http host
  *   EGRESS_PAYLOAD_CLASSES            — the named data classes every reviewer lane receives
  */
@@ -222,6 +235,21 @@ interface ReviewerLaneSurface {
   egressPayloadClasses: string[];
 }
 
+/**
+ * ADR-2363 D3 (#3248): an INSTRUCTION surface — an artifact whose body is copied verbatim into the
+ * user's agent instruction context. Peer to the four executable-surface classes, and deliberately
+ * NOT one of them: a skill body does not execute code, it instructs the thing that does.
+ *
+ * Disclosure NAMES the surface; it never inspects the body. Content scanning is rejected outright
+ * by ADR-2363 D2 (Kerckhoffs — a shipped rule set is readable by the adversary who installs it).
+ */
+interface InstructionSurface {
+  /** Which declaration array the name came from. */
+  kind: 'skill' | 'agent';
+  /** The declared stem/name, VERBATIM — never normalized, truncated, or deduped. */
+  name: string;
+}
+
 interface Disclosure {
   /** Hook scripts the capability registers (each runs as a runtime hook command). */
   hooks: HookSurface[];
@@ -235,6 +263,14 @@ interface Disclosure {
    * above; a standing egress channel to an external reviewer.
    */
   reviewerLanes: ReviewerLaneSurface[];
+  /**
+   * ADR-2363 D5 (#3248): the skills and agents this capability contributes to the agent's
+   * instruction context. A FIFTH disclosed class that is deliberately NOT executable: it never
+   * contributes to `hasExecutable` (D3) and never enters `disclosureSignature` (D4 — folding it in
+   * would perturb the stored signature of every already-consented skill-bearing capability and fire
+   * a spurious re-consent on its next upgrade, which ADR-2782 D4 rule 5 forbids).
+   */
+  instructionSurfaces: InstructionSurface[];
   /** True when the capability ships ANY executable surface (=> consent required). */
   hasExecutable: boolean;
   /**
@@ -689,6 +725,50 @@ function collectReviewerLaneSurfaces(
 }
 
 /**
+ * The manifest fields whose declared names become instruction surfaces, in DISCLOSURE ORDER
+ * (skills before agents). Ordered data rather than two hand-rolled loops so a future third member
+ * of the class is one row, not a third copy of the same filter.
+ */
+const INSTRUCTION_SURFACE_FIELDS: ReadonlyArray<{ field: string; kind: InstructionSurface['kind'] }> = [
+  { field: 'skills', kind: 'skill' },
+  { field: 'agents', kind: 'agent' },
+];
+
+/**
+ * Collect the instruction surfaces a manifest declares (ADR-2363 D5, #3248) — peer to the four
+ * executable-surface collectors, and invoked through the same `safeCollect` wrapper so a hostile
+ * value here degrades ONLY this class to empty rather than losing the other four.
+ *
+ * Liberal in what it accepts, exactly like the existing collectors: a non-object manifest, an
+ * absent field, a non-array field, and a non-string/blank member each degrade quietly. A non-array
+ * `skills` is NOT a partial success — it yields nothing, because a scalar declares no set.
+ *
+ * Deliberately does NOT:
+ *   - dedup (a manifest declaring a stem twice discloses it twice — disclosure reports what the
+ *     manifest SAYS; collapsing would misreport it, and dedup is the registry's job);
+ *   - normalize or truncate a name (it is disclosed verbatim so the user sees what was declared);
+ *   - existence-check the stem against `stagedDir`. A stem is a REGISTRY name, not a bundle-relative
+ *     artifact path — checking it would repeat the reviewer-lane `binary` mistake (matrix C6) and
+ *     put registry names into `missingArtifacts`, which is for declared bundle FILES only.
+ */
+function collectInstructionSurfaces(manifest: CapabilityManifest): InstructionSurface[] {
+  const surfaces: InstructionSurface[] = [];
+  if (typeof manifest !== 'object' || manifest === null) return surfaces;
+  for (const { field, kind } of INSTRUCTION_SURFACE_FIELDS) {
+    const declared = (manifest as Record<string, unknown>)[field];
+    if (!Array.isArray(declared)) continue;
+    for (const entry of declared) {
+      // A non-string or blank member is dropped INDIVIDUALLY — the valid siblings around it still
+      // disclose, mirroring how collectHookSurfaces skips a malformed entry rather than the array.
+      if (typeof entry !== 'string') continue;
+      if (entry.trim() === '') continue;
+      surfaces.push({ kind, name: entry });
+    }
+  }
+  return surfaces;
+}
+
+/**
  * Enumerate every executable surface a capability manifest declares.
  *
  * Recognizes the FOUR executable surface kinds a capability can ship:
@@ -696,6 +776,12 @@ function collectReviewerLaneSurfaces(
  *   - `commands`: [{ family, module, router? }]    — modules require()'d into the CLI process
  *   - `mcpServers`: { <name>: {...} } | [{ name }] — servers spawned by the host runtime
  *   - `reviewer`: { slug, transport, invoke, ... }  — an external reviewer lane (ADR-2782 D5, #2796)
+ *
+ * plus ONE non-executable class (ADR-2363 D5, #3248):
+ *   - `skills` / `agents`: string[] of owned stems — INSTRUCTION surfaces, whose bodies land in the
+ *     agent's instruction context. Disclosed by name; they never set `hasExecutable` (D3) and never
+ *     enter `disclosureSignature` (D4). Stems are registry names, so they are never existence-checked
+ *     against `stagedDir` and never appear in `missingArtifacts`.
  *
  * `mcpServers` is not a first-party capability.json field today, but a third-party manifest may
  * declare it, so the trust gate discloses it whenever present (honest disclosure over the
@@ -709,7 +795,7 @@ function collectReviewerLaneSurfaces(
  * throwing traps, or a property with a throwing getter (matrix C5, E2). Disclosure runs BEFORE
  * Phase 2's validation, on a manifest validation would reject outright, so it must tolerate what
  * validation does not. Each surface class is collected independently (`safeCollect`) so a hostile
- * value in ONE class degrades only that class to empty rather than losing the other three.
+ * value in ONE class degrades only that class to empty rather than losing the others.
  *
  * `resolveHost` (optional, #2796) is forwarded to `collectReviewerLaneSurfaces` so a caller with
  * config access (the lifecycle, never the loader — see `signatureForManifest`) can disclose the REAL
@@ -731,10 +817,16 @@ function discloseExecutableSurfaces(
     () => collectReviewerLaneSurfaces(manifest, resolveHost),
     [] as ReviewerLaneSurface[],
   );
+  const instructionSurfaces = safeCollect(
+    () => collectInstructionSurfaces(manifest),
+    [] as InstructionSurface[],
+  );
 
+  // ADR-2363 D3: instruction surfaces are deliberately ABSENT from this expression. Adding them
+  // would silently change `executableSetChanged` and the auto-update re-consent trigger.
   const hasExecutable =
     hooks.length > 0 || commandModules.length > 0 || mcpServers.length > 0 || reviewerLanes.length > 0;
-  return { hooks, commandModules, mcpServers, reviewerLanes, hasExecutable, missingArtifacts };
+  return { hooks, commandModules, mcpServers, reviewerLanes, instructionSurfaces, hasExecutable, missingArtifacts };
 }
 
 /**
@@ -1127,13 +1219,55 @@ function truncateEnvValue(v: string): string {
 }
 
 /**
+ * Render the instruction-surface section of a consent summary (ADR-2363 D3/D5, #3248).
+ *
+ * Extracted as its own exported function for two reasons. It is called from BOTH branches of
+ * `summarizeDisclosure` — a skill-only capability has `hasExecutable === false` and takes the early
+ * return, so a section appended only at the end would never render for exactly the capabilities
+ * that need it. And it gives tests a typed surface to assert on, instead of regex-matching prose out
+ * of `summarizeDisclosure` (CONTRIBUTING — "Prohibited: Raw Text Matching on Test Outputs").
+ *
+ * Returns `[]` when nothing is declared, so either caller can append unconditionally without
+ * emitting an empty header.
+ *
+ * TOTAL for a partial disclosure object: the CLI edge calls `summarizeDisclosure(res.disclosure || {})`
+ * (`capability-command-router.cjs`), so a bare `{}` — carrying no `instructionSurfaces` at all —
+ * reaches this function whenever a lifecycle result has no disclosure.
+ */
+function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
+  const declared = (disclosure as Partial<Disclosure> | null | undefined)?.instructionSurfaces;
+  const surfaces = Array.isArray(declared) ? declared : [];
+  if (surfaces.length === 0) return [];
+  const lines: string[] = [
+    `  instruction surfaces (${surfaces.length}): installed into your agent's instruction context`,
+  ];
+  for (const s of surfaces) {
+    lines.push(`    - ${s?.kind || '(kind?)'}: ${s?.name || '(name?)'}`);
+  }
+  // ADR-2363 D1/D2, and Kerckhoffs: say plainly that nothing inspected these bodies. A summary that
+  // named the surface while implying review would be worse than silence — a "looks checked" line
+  // displaces the judgement this prompt exists to provoke (Goodhart, D2).
+  lines.push('        these bodies are installed verbatim and are NOT content-scanned');
+  return lines;
+}
+
+/**
  * Render a disclosure as consent-prompt lines. Returned as an array so the CLI/runtime edge can
  * format it; the lib never writes to stdout.
  */
 function summarizeDisclosure(disclosure: Disclosure): string[] {
   const lines: string[] = [];
+  const instructionLines = summarizeInstructionSurfaces(disclosure);
   if (!disclosure.hasExecutable) {
-    lines.push('This capability ships no executable surfaces (declarative only).');
+    // ADR-2363 D3: "declarative only" is true ONLY when there is no instruction surface either.
+    // Claiming it unconditionally told a user their capability contributes nothing to weigh while
+    // it was contributing agent instructions — the exact category error ADR-2363 was written to end.
+    if (instructionLines.length === 0) {
+      lines.push('This capability ships no executable surfaces (declarative only).');
+      return lines;
+    }
+    lines.push('This capability ships no executable surfaces, but contributes agent instructions:');
+    for (const line of instructionLines) lines.push(line);
     return lines;
   }
   lines.push('This capability ships executable surfaces that will run in your agent runtime:');
@@ -1209,6 +1343,7 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       lines.push(`        sends: ${l.egressPayloadClasses.join(', ')}`);
     }
   }
+  for (const line of instructionLines) lines.push(line);
   if (disclosure.missingArtifacts.length > 0) {
     lines.push('  WARNING — declared artifacts not found in the staged bundle:');
     for (const a of disclosure.missingArtifacts) {
@@ -1228,12 +1363,18 @@ export = {
   // #2796: the reviewer-lane collector, exported for independent testability (ADR-2782's own
   // argument for extracting per-class collectors rather than growing the switch inline).
   collectReviewerLaneSurfaces,
+  // ADR-2363 D5 (#3248): the instruction-surface collector, exported for independent testability —
+  // same rationale as `collectReviewerLaneSurfaces` above.
+  collectInstructionSurfaces,
   checkReservedNamespace,
   evaluateSourceAllowed,
   checkEngines,
   evaluateInstallTrust,
   executableSetChanged,
   summarizeDisclosure,
+  // ADR-2363 D3/D5 (#3248): the instruction-surface section of the consent summary, exported so
+  // callers/tests can assert on it directly — see `summarizeInstructionSurfaces`'s own JSDoc.
+  summarizeInstructionSurfaces,
   // #1459: the consent-binding signature (single source of truth for loader + lifecycle consent).
   disclosureSignature,
   signatureForManifest,

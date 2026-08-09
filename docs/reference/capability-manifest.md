@@ -45,6 +45,8 @@ Feature capabilities declare owned artefacts, lifecycle hooks, a federated confi
 | `skills` | string[] | Owned skill stems. Exactly one capability may own each stem across the entire merged registry (first-party ∪ overlay). |
 | `agents` | string[] | Owned agent stems. Same uniqueness constraint as skills. |
 
+The stems declared here are disclosed by name as **instruction surfaces** in the pre-install consent summary ([ADR-2363](../adr/2363-capability-instruction-surface-trust.md)). Bodies are installed verbatim and are not content-scanned — see [the capability trust model](../explanation/capability-trust-model.md).
+
 ### `hooks`
 
 Non-loop lifecycle hooks.

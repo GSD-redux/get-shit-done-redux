@@ -479,42 +479,95 @@ describe('J. Independence — missingArtifacts', () => {
 
 // ─── K. Consent prompt (rows 26-27) ──────────────────────────────────────────
 //
-// CONTRIBUTING's "Prohibited: Raw Text Matching on Test Outputs" forbids asserting on
-// `summarizeDisclosure`'s rendered prose. `summarizeDisclosure` today returns only a flat
-// `string[]` with no typed intermediate representation for instruction surfaces distinct from the
-// executable-surface sections it already renders (hooks/command modules/MCP servers/reviewer
-// lanes) — so these two rows are written against the `Disclosure` object itself, per the matrix's
-// own note 41 ("assert on the disclosure object plus a minimal presence check the renderer already
-// supports; if no typed surface exists, add one rather than grepping").
-//
-// TODO(row 26/27): the implementation step must add a typed surface for the consent-prompt
-// renderer to expose instruction surfaces as a section distinct from executable surfaces — e.g. a
-// `{ executable: string[], instructionSurfaces: string[] }` shape from `summarizeDisclosure`, or a
-// separate `summarizeInstructionSurfaces(disclosure)` export — so a future test can assert on that
-// IR instead of continuing to test only the `Disclosure` object it would be derived from.
-describe('K. Consent prompt (structured surface — see TODO above)', () => {
+// `summarizeInstructionSurfaces(disclosure)` is the typed surface the implementation added for
+// exactly this: CONTRIBUTING's "Prohibited: Raw Text Matching on Test Outputs" forbids regex-matching
+// `summarizeDisclosure`'s rendered prose, so these rows assert on that function's structured output
+// (its length against the declared surface count) and on ARRAY CONTAINMENT between the two
+// renderers — never on the wording of a line.
+
+describe('K. Consent prompt', () => {
   test('consent prompt names instruction surfaces separately', () => {
     const manifest = { id: 'x', skills: ['ui-phase', 'ui-review'] };
     const d = trust.discloseExecutableSurfaces(manifest);
-    // The data a consent-prompt renderer would need to name each instruction surface, held in a
-    // field STRUCTURALLY SEPARATE from the four executable-surface classes (hooks/commandModules/
-    // mcpServers/reviewerLanes) — the distinction D3 draws must survive into whatever renders this.
     assert.deepEqual(d.instructionSurfaces, [
       { kind: 'skill', name: 'ui-phase' },
       { kind: 'skill', name: 'ui-review' },
     ]);
     assert.deepEqual(d.hooks, [], 'instruction surfaces must not be folded into an executable-surface class');
     assert.equal(d.hasExecutable, false, 'a skill-only manifest never requires consent from this data');
+
+    // One header line + one line per surface + one "not content-scanned" line.
+    const section = trust.summarizeInstructionSurfaces(d);
+    assert.equal(section.length, d.instructionSurfaces.length + 2, 'every declared surface gets its own line');
   });
 
   test('consent prompt omits the section when there is nothing to disclose', () => {
-    const manifest = { id: 'x' };
-    const d = trust.discloseExecutableSurfaces(manifest);
+    const d = trust.discloseExecutableSurfaces({ id: 'x' });
+    assert.deepEqual(d.instructionSurfaces, []);
     assert.deepEqual(
-      d.instructionSurfaces,
+      trust.summarizeInstructionSurfaces(d),
       [],
-      'no instruction surfaces declared => nothing for a renderer to name, so no section would render',
+      'nothing declared => no lines at all, so no empty header can render',
     );
+  });
+
+  // Row 26a — the defect this phase is most likely to ship silently. A skill-only capability has
+  // hasExecutable === false and takes summarizeDisclosure's EARLY RETURN, so a section appended only
+  // at the end of the function would never render for precisely the capabilities that need it.
+  // Asserted as ARRAY CONTAINMENT of one renderer's output in the other's — a structural property,
+  // not a prose match.
+  test('a skill-only capability still renders its instruction surfaces in the consent summary', () => {
+    const d = trust.discloseExecutableSurfaces({ id: 'x', skills: ['ui-phase'] });
+    assert.equal(d.hasExecutable, false, 'precondition: this manifest takes the early-return branch');
+    const section = trust.summarizeInstructionSurfaces(d);
+    const summary = trust.summarizeDisclosure(d);
+    assert.ok(section.length > 0, 'precondition: there is a section to render');
+    for (const line of section) {
+      assert.ok(summary.includes(line), 'every instruction-surface line must reach the rendered summary');
+    }
+  });
+
+  // Row 26b — the same containment property for a capability that ships BOTH, where the summary
+  // takes the executable branch instead.
+  test('a capability with both executable and instruction surfaces renders both', () => {
+    const manifest = executableSurfaceManifest((m) => {
+      m.skills = ['ui-phase'];
+      m.agents = ['gsd-ui-checker'];
+    });
+    const d = trust.discloseExecutableSurfaces(manifest);
+    assert.equal(d.hasExecutable, true, 'precondition: this manifest takes the executable branch');
+    const section = trust.summarizeInstructionSurfaces(d);
+    const summary = trust.summarizeDisclosure(d);
+    assert.equal(section.length, 4, 'header + 2 surfaces + the not-scanned line');
+    for (const line of section) {
+      assert.ok(summary.includes(line), 'every instruction-surface line must reach the rendered summary');
+    }
+  });
+
+  // Row 26c — the CLI edge calls `summarizeDisclosure(res.disclosure || {})`
+  // (gsd-core/bin/lib/capability-command-router.cjs), so a BARE `{}` carrying no arrays at all
+  // reaches both renderers whenever a lifecycle result has no disclosure. Reading
+  // `.instructionSurfaces.length` off that object unguarded would throw a TypeError at the consent
+  // prompt — a crash on the exact path that is supposed to inform the user.
+  test('a partial disclosure object from the CLI edge never throws', () => {
+    assert.doesNotThrow(() => trust.summarizeInstructionSurfaces({}));
+    assert.deepEqual(trust.summarizeInstructionSurfaces({}), []);
+    assert.doesNotThrow(() => trust.summarizeDisclosure({}));
+    assert.deepEqual(trust.summarizeDisclosure({}), ['This capability ships no executable surfaces (declarative only).']);
+  });
+
+  // Row 26d — a manifest may declare an unbounded number of stems. `lines.push(...section)` would
+  // exceed the engine's argument limit and throw RangeError here; the renderer must iterate. This
+  // guards a "simplification" back to spread, which no smaller fixture can catch.
+  test('an unbounded stem count does not break the renderer', () => {
+    const stems = Array.from({ length: 200000 }, (_, i) => `s${i}`);
+    const d = trust.discloseExecutableSurfaces({ id: 'x', skills: stems });
+    assert.equal(d.instructionSurfaces.length, 200000);
+    let summary;
+    assert.doesNotThrow(() => {
+      summary = trust.summarizeDisclosure(d);
+    });
+    assert.equal(summary.length, 200000 + 3, 'intro line + header + one line per stem + the not-scanned line');
   });
 });
 

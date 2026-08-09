@@ -1,9 +1,9 @@
 # ADR-2363: A capability's skill body is an instruction surface — trusted, unscanned, and disclosed
 
-- **Status:** Proposed — D1–D4 are decided; **D5's mechanism is unshipped** and is tracked by [#3248](https://github.com/open-gsd/gsd-core/issues/3248) (Phase 1). Per the corpus lifecycle rule, an ADR with an outstanding phase stays `Proposed`. Ratify when #3248 has merged and the consent summary renders the instruction surface.
+- **Status:** Accepted — D1–D5 are decided and shipped. Phase 1 ([#3248](https://github.com/open-gsd/gsd-core/issues/3248)) delivered D5's mechanism; the consent summary now renders the instruction surface, meeting the ratification bar below.
 - **Date:** 2026-08-09
 - **Issue:** [#2363](https://github.com/open-gsd/gsd-core/issues/2363) (epic); Phase 0 tracked by [#3247](https://github.com/open-gsd/gsd-core/issues/3247), Phase 1 by [#3248](https://github.com/open-gsd/gsd-core/issues/3248)
-- **Amends (prospective — this ADR is `Proposed`, so no back-link is owed yet):** [ADR-1244](1244-capability-ecosystem.md) — D5's disclosure gains a **fifth** class, and it is the first that is *not* an executable surface. [ADR-2782](2782-reviewer-lane-capability-surface.md) added the fourth (reviewer lanes); this adds the first non-executable one, which is why it needs its own classification rather than a fifth entry in the same list.
+- **Amends:** [ADR-1244](1244-capability-ecosystem.md) — D5's disclosure gains a **fifth** class, and it is the first that is *not* an executable surface. [ADR-2782](2782-reviewer-lane-capability-surface.md) added the fourth (reviewer lanes); this adds the first non-executable one, which is why it needs its own classification rather than a fifth entry in the same list.
 - **Related, and deliberately not amended:** [ADR-1577](1577-untrusted-input-boundary-and-injection-blocking.md) — the untrusted-input boundary and its injection scanner. D2 explains at length why that control does **not** transfer to this surface. The two share the word "trust" and solve opposite problems.
 
 ## Context
@@ -91,7 +91,7 @@ Point 3 is the part that makes this a decision rather than a punt: the door stay
 
 **The residual gap, stated plainly — and it is smaller than it first looks.** At **project** scope there is no gap at all: `bundleContentHash` walks every entry under the bundle with no exclusions and hashes every regular file (failing closed on symlinks and non-regular files), so a single changed byte in a skill body already deactivates a project-scoped capability until re-consent. At **global** scope there is no consent record in the first place — a global install is trusted because it sits under the user's own home ([ADR-1244](1244-capability-ecosystem.md) D5) — so a skill-body change on upgrade is not consent-gated there, and would not have been even if instruction surfaces were signature-bound. **The gap global scope has is the one it already had for code, and D4 neither widens nor narrows it.** What D4 declines to add is a re-consent *prompt* on skill-body change during an interactive upgrade; the v2 path above is where that would land if it is ever wanted.
 
-### D5 — The mechanism *(Phase 1, [#3248](https://github.com/open-gsd/gsd-core/issues/3248) — not shipped by this ADR)*
+### D5 — The mechanism *(Phase 1, shipped in [#3248](https://github.com/open-gsd/gsd-core/issues/3248) — not shipped by this ADR itself)*
 
 `discloseExecutableSurfaces` gains an `instructionSurfaces` collector, enumerating each skill stem the manifest contributes, collected through the same `safeCollect` wrapper as the existing four classes so a hostile value degrades only that class and the function stays total for any manifest shape. The pre-install consent summary names those skills as an instruction surface. The signature behavior implements D4 exactly, pinned by a test that asserts what happens to a pre-existing consent record rather than leaving it incidental.
 
@@ -99,7 +99,7 @@ The design is deliberately **additive** — a new independent collector and a ne
 
 ## Consequences
 
-**What improves.** The boundary is written down on both sides: a capability author reading [`docs/how-to/develop-a-capability.md`](../how-to/develop-a-capability.md) learns their skill body ships verbatim and unscanned, and a user reading [`capability-trust-model.md`](../explanation/capability-trust-model.md) learns what installing a skill-bearing capability grants. After Phase 1, a skill-only capability — which today discloses nothing at all — names its instruction surface at the consent moment.
+**What improves.** The boundary is written down on both sides: a capability author reading [`docs/how-to/develop-a-capability.md`](../how-to/develop-a-capability.md) learns their skill body ships verbatim and unscanned, and a user reading [`capability-trust-model.md`](../explanation/capability-trust-model.md) learns what installing a skill-bearing capability grants. A skill-only capability — which used to disclose nothing at all — now names its instruction surface at the consent moment.
 
 **What does not change.** No behavior changes in this ADR's phase. No stored consent record is perturbed and no spurious re-consent fires, now or under Phase 1 (D4). Skills remain the intended, low-friction contribution path; this is disclosure, not discouragement.
 
@@ -109,7 +109,7 @@ The design is deliberately **additive** — a new independent collector and a ne
 - **First-party skills are equally unscanned.** Their assurance is provenance — they are the shipped package, and the GSD Core release process is their control — not content inspection. No content control exists on the first-party side either, and no reader should infer one.
 - **Global-scope skill-body change on upgrade is not consent-gated.** That is true of a global install's code too, and D4 does not change it either way. See D4.
 
-**Ratification bar.** This ADR flips to `Accepted` when #3248 has merged, the consent summary renders instruction surfaces, and the D4 signature behavior is pinned by a passing test. Until then it is `Proposed` for a recorded reason, not through neglect.
+**Ratification bar.** This ADR flips to `Accepted` when #3248 has merged, the consent summary renders instruction surfaces, and the D4 signature behavior is pinned by a passing test. All three are now true: #3248 merged, the pre-install consent summary renders instruction surfaces by name, and a passing test pins the D4 signature behavior — instruction surfaces do not perturb `disclosureSignature`.
 
 ## Alternatives considered
 
