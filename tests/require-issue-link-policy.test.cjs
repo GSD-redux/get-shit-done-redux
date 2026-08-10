@@ -269,4 +269,71 @@ describe('allPathsAreTestsOrDocs', () => {
     assert.strictEqual(allPathsAreTestsOrDocs(['tests/a.cjs', '.github/workflows/x.yml']), false);
     assert.strictEqual(allPathsAreTestsOrDocs([]), false);
   });
+
+  // 25. Root-level markdown is a third accepted shape; CHANGELOG.md is
+  // excluded from it even though it is root-level markdown.
+  test('root-level markdown is accepted, CHANGELOG.md and subdirectory markdown are not', () => {
+    assert.strictEqual(allPathsAreTestsOrDocs(['CONTRIBUTING.md']), true);
+    assert.strictEqual(allPathsAreTestsOrDocs(['CHANGELOG.md']), false);
+    assert.strictEqual(allPathsAreTestsOrDocs(['agents/x.md']), false);
+    assert.strictEqual(allPathsAreTestsOrDocs(['package.json']), false);
+  });
+});
+
+describe('require-issue-link policy — root-level documentation (#2290 shape)', () => {
+  // #2290 is the motivating PR the follow-up-reference exemption failed to
+  // cover: its diff is CONTRIBUTING.md (root-level markdown) plus a tests/
+  // file, and the old EXEMPT_PATH_PREFIXES-only predicate rejected it because
+  // CONTRIBUTING.md is neither tests/ nor docs/-prefixed.
+  test('the motivating PR #2290 shape qualifies', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269',
+      changedFiles: ['CONTRIBUTING.md', 'tests/commit-files-pathspec.test.cjs'],
+      changedFilesTotal: 2,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  test('a root-level README change qualifies', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269', changedFiles: ['README.md'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  // scripts/changeset/lint.cjs classes a direct CHANGELOG.md edit as
+  // user-facing specifically to close a bypass — the docs carve-out here
+  // must not undo that by treating CHANGELOG.md as ordinary documentation.
+  test('a direct CHANGELOG.md edit does NOT qualify', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269', changedFiles: ['CHANGELOG.md'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
+
+  test('CHANGELOG.md alongside real docs still disqualifies', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269', changedFiles: ['docs/a.md', 'CHANGELOG.md'], changedFilesTotal: 2,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
+
+  // These are runtime-loaded text, deliberately gated by the same root-only
+  // anchor pre-pr-gate.sh uses — a subdirectory .md file is not root-level.
+  test('subdirectory markdown is not root-level documentation', () => {
+    const paths = ['gsd-core/workflows/next.md', 'agents/reviewer.md', 'commands/gsd/plan.md', 'src/notes.md'];
+    for (const p of paths) {
+      const result = evaluateIssueLink(forkPr({
+        prBody: 'Refs #2269', changedFiles: [p], changedFilesTotal: 1,
+      }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING, `path: ${p}`);
+    }
+  });
+
+  test('a root-level non-markdown file does not qualify', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269', changedFiles: ['package.json'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
 });

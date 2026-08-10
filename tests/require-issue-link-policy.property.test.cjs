@@ -56,8 +56,12 @@ describe('evaluateIssueLink — properties', () => {
         (paths) => {
           // At least one path must actually be non-exempt for the property
           // to be meaningful; skip runs where fc happened to draw only
-          // tests/docs paths.
-          fc.pre(paths.some((p) => !p.startsWith('tests/') && !p.startsWith('docs/')));
+          // tests/docs paths. The exempt set is tests/, docs/, and root-level
+          // markdown (see EXEMPT_PATH_PREFIXES / isRootLevelDoc), so this
+          // filter names the non-exempt generator (`src/*.cts`) directly
+          // rather than re-deriving the exempt predicate — re-deriving it
+          // here would silently go stale the next time the exempt set grows.
+          fc.pre(paths.some((p) => p.startsWith('src/')));
           const result = evaluateIssueLink({
             prBody: 'Refs #1',
             headRef: 'fix/1-something',

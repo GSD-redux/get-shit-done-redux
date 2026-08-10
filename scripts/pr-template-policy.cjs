@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { matchesGlob } = require('path');
+const { fileListIsComplete, parseChangedFilesEnv } = require('./lib/pr-changed-files.cjs');
 
 const TRUSTED_AUTHOR_ASSOCIATIONS = new Set([
   'CONTRIBUTOR',
@@ -142,8 +143,12 @@ function matchingTemplate(body) {
  * pattern in the allowlist. Returns false for an empty file list (no
  * files means we cannot confirm it is a tooling-only PR).
  */
-function allPathsAreTooling(changedFiles, allowlist) {
+function allPathsAreTooling(changedFiles, allowlist, changedFilesTotal) {
   if (!Array.isArray(changedFiles) || changedFiles.length === 0) return false;
+  // #3211: `gh pr view --json files` truncates at 100 entries with no
+  // in-band signal. A truncated list must not relax enforcement — an unseen
+  // 101st+ file could fall outside the tooling allowlist entirely.
+  if (!fileListIsComplete(changedFiles, changedFilesTotal)) return false;
   return changedFiles.every((file) =>
     allowlist.some((pattern) => matchesGlob(file, pattern)),
   );
@@ -159,13 +164,13 @@ function hasExemptMarker(body, regex) {
   return match[1].trim().length > 0;
 }
 
-function evaluatePrTemplate(body, authorAssociation, changedFiles) {
+function evaluatePrTemplate(body, authorAssociation, changedFiles, changedFilesTotal) {
   const association = String(authorAssociation || '').toUpperCase();
   const trusted = TRUSTED_AUTHOR_ASSOCIATIONS.has(association);
   const normalizedBody = String(body || '').trim();
 
   // --- Carve-out 1: all changed files are in the tooling allowlist ---
-  if (allPathsAreTooling(changedFiles, TOOLING_PATH_ALLOWLIST)) {
+  if (allPathsAreTooling(changedFiles, TOOLING_PATH_ALLOWLIST, changedFilesTotal)) {
     return {
       valid: true,
       action: 'pass',
@@ -235,13 +240,18 @@ function evaluatePrTemplate(body, authorAssociation, changedFiles) {
 }
 
 function main() {
+  // Preserve the existing distinction between "unset" (undefined) and
+  // "set but empty" ([]) — allPathsAreTooling treats them differently.
   const changedFiles = process.env.CHANGED_FILES
-    ? process.env.CHANGED_FILES.split('\n').map((f) => f.trim()).filter(Boolean)
+    ? parseChangedFilesEnv(process.env.CHANGED_FILES)
     : undefined;
+  const parsedTotal = Number.parseInt(process.env.CHANGED_FILES_TOTAL, 10);
+  const changedFilesTotal = Number.isNaN(parsedTotal) ? undefined : parsedTotal;
   const result = evaluatePrTemplate(
     process.env.PR_BODY || '',
     process.env.AUTHOR_ASSOCIATION || '',
     changedFiles,
+    changedFilesTotal,
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (process.env.GITHUB_OUTPUT) {
