@@ -38,7 +38,7 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, parseMustHavesBlock } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
-const { readVerificationStatus } = verificationMod;
+const { isPhaseComplete } = verificationMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -411,7 +411,14 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
       hasContext = counts.hasContext;
       hasResearch = counts.hasResearch;
 
-      if (summaryCount >= planCount && planCount > 0) diskStatus = 'complete';
+      // ADR-3180 §7.4 (issue #3186, disk-strict, #3168 fix): route "is this
+      // phase complete" through the canonical owner (`isPhaseComplete`),
+      // which calls readVerificationStatus UNCONDITIONALLY — plan count is
+      // NOT a precondition, so a zero-plan phase with a passing
+      // `*-VERIFICATION.md` reports complete here too, not just via
+      // `phase.complete`.
+      const completionResult = isPhaseComplete(path.join(phasesDir, dirMatch));
+      if (completionResult.value.complete) diskStatus = 'complete';
       else if (summaryCount > 0) diskStatus = 'partial';
       else if (planCount > 0) diskStatus = 'planned';
       else if (hasResearch) diskStatus = 'researched';
@@ -419,20 +426,23 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
       else diskStatus = 'empty';
     }
 
-    // Check ROADMAP checkbox status.
-    // #3537: padding-tolerant fragment — the heading discovered above may use
-    // a different padding than the summary-bullet checkbox below it (mixed
-    // padding inside one ROADMAP is legal and seen in real projects).
+    // Check ROADMAP checkbox status. #3537: padding-tolerant fragment — the
+    // heading discovered above may use a different padding than the
+    // summary-bullet checkbox below it (mixed padding inside one ROADMAP is
+    // legal and seen in real projects).
+    //
+    // ADR-3180 §7.4 (disk-strict, #2957, maintainer decision 2026-08-08):
+    // `roadmapComplete` is reported below as metadata ONLY — it carries NO
+    // machine authority over `diskStatus`. The override that used to trust a
+    // ticked checkbox over disk file structure is DELETED, not generalized
+    // (#2957: "a ticked ROADMAP checkbox is a human annotation with no
+    // machine authority"). A phase marked complete solely by a ticked
+    // checkbox — no passing `*-VERIFICATION.md`, plans outstanding — now
+    // reports incomplete; this is the deliberate Tier-2 break (ADR-3180 §7.4
+    // Decision 3).
     const checkboxPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+${phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i');
     const checkboxMatch = content.match(checkboxPattern);
     const roadmapComplete = checkboxMatch ? checkboxMatch[1] === 'x' : false;
-
-    // If roadmap marks phase complete, trust that over disk file structure.
-    // Phases completed before GSD tracking (or via external tools) may lack
-    // the standard PLAN/SUMMARY pairs but are still done.
-    if (roadmapComplete && diskStatus !== 'complete') {
-      diskStatus = 'complete';
-    }
 
     phases.push({
       number: phaseNum,
@@ -570,10 +580,18 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   // completion date until the phase's verification status is 'passed', matching
   // cmdPhaseComplete's gate (phase.cts:1436). Previously the checkbox fired the
   // moment the last plan summary landed — before gsd-verifier had verified.
+  //
+  // ADR-3180 §7.4 (issue #3186, disk-strict): routed through the canonical
+  // owner (`isPhaseComplete`) instead of hand-rolling `summaryCount >=
+  // planCount && verificationPassed` locally — the owner calls
+  // readVerificationStatus UNCONDITIONALLY, so `isComplete` here always
+  // agrees with `roadmap analyze` / `init manager` / `phase complete` for
+  // the same phase (ADR-3180 §7.4's headline: one predicate for the read
+  // path and the write path).
   const phaseDir = path.join(cwd, phaseInfo!.directory);
-  const verificationResult = readVerificationStatus(phaseDir);
-  const verificationPassed = verificationResult.status === 'passed';
-  const isComplete = summaryCount >= planCount && verificationPassed;
+  const completionResult = isPhaseComplete(phaseDir);
+  const verificationResult = completionResult.value.verification;
+  const isComplete = completionResult.value.complete;
   // #3057 B3: routing above is unchanged (an indeterminate staleness check
   // still routes as if nothing were stale) — this only makes the fact visible
   // to whatever reads this command's JSON output.

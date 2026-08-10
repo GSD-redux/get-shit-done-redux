@@ -41,12 +41,15 @@ PHASE_FOUND=$(echo "$PHASE_INFO" | jq -r '.found')
 PHASE_NAME=$(echo "$PHASE_INFO" | jq -r '.phase_name')
 PHASE_GOAL=$(echo "$PHASE_INFO" | jq -r '.goal')
 PHASE_MODE=$(echo "$PHASE_INFO" | jq -r '.mode // ""')
-PHASE_COMPLETE=$(echo "$PHASE_INFO" | jq -r '.roadmap_complete // false')
-
 ANALYZE=$(gsd_run query roadmap.analyze)
 if [[ "$ANALYZE" == @file:* ]]; then ANALYZE=$(cat "${ANALYZE#@file:}"); fi
 DISK_STATUS=$(echo "$ANALYZE" | jq -r --arg p "$PHASE" '.phases[] | select((.phase_number|tostring)==$p) | .disk_status' | head -1)
-if [[ "$DISK_STATUS" == "complete" || "$PHASE_COMPLETE" == "true" ]]; then
+# ADR-3180 §7.4 (issue #3186, disk-strict, #2957): DISK_STATUS alone decides
+# completion — a ROADMAP checkbox carries no machine authority and is never
+# ORed in here. `roadmap.analyze`'s `disk_status` already routes through the
+# canonical owner (`isPhaseComplete`), so this is the same predicate the read
+# and write paths both use.
+if [[ "$DISK_STATUS" == "complete" ]]; then
   STATUS="completed"
 elif [[ "$DISK_STATUS" == "planned" || "$DISK_STATUS" == "partial" ]]; then
   STATUS="in_progress"

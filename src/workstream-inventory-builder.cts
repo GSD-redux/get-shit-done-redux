@@ -304,6 +304,24 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     const summaryCount = counts?.summaryCount ?? 0;
     // #2562: SUMMARY≥PLAN parity is necessary but not sufficient — a phase whose
     // verification verdict is an explicit failing one is still in progress.
+    //
+    // ADR-3180 §7.4 (issue #3186) — DELIBERATELY NOT routed through
+    // `isPhaseComplete` (src/verification.cts). This module is a PURE, I/O-
+    // free projection (see the module header: "No I/O. No async.") over
+    // PRE-COLLECTED `planCount`/`summaryCount`/`verificationStatus` inputs —
+    // it cannot call the I/O-bound owner without breaking that contract.
+    // `summariesMeetPlans` answers "are all plans summarized?" (a Phase-1-
+    // shaped question); combined below with the caller-supplied
+    // `verificationStatus`, `status` is this builder's OWN completion
+    // projection over data a caller collected upstream, not a re-derivation
+    // of the owner's algorithm. Migrating this would mean either (a) piping
+    // `isPhaseComplete`'s `{ complete, verification }` result down through
+    // `PhaseFilesCount` instead of raw counts — a larger interface change
+    // than this phase's declared 6 call sites — or (b) importing the I/O-
+    // bound owner into this pure module, which this phase's callers do not
+    // do either. Declared deviation, exempted (function-scoped, not
+    // file-scoped) in scripts/lint-completion-predicate-drift.cjs's
+    // FUNCTION_SCOPED_EXEMPTIONS.
     const verificationStatus = counts?.verificationStatus ?? 'missing';
     const summariesMeetPlans = summaryCount >= planCount && planCount > 0;
     const status: 'complete' | 'in_progress' | 'pending' =
