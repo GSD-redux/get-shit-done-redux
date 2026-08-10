@@ -1738,6 +1738,41 @@ node gsd-tools.cjs roadmap upgrade --convention milestone-prefixed --apply  # ap
 
 ## State Management Commands
 
+### `effort sync`
+
+Re-align installed agent files with your current effort and model configuration, without a full reinstall.
+
+**Prerequisites:** GSD installed for a runtime
+**Produces:** A structured change report; writes only with `--apply`
+
+```bash
+node gsd-tools.cjs effort sync            # dry run — reports, writes nothing
+node gsd-tools.cjs effort sync --apply    # write the changes
+```
+
+| Flag | Description |
+|------|-------------|
+| `--apply` | Write the changes. **Omitted is a dry run** — the default reports and touches nothing |
+| `--dry-run` | Explicit dry run (the default) |
+| `--runtime <name>` | Override the runtime instead of reading it from config |
+| `--config-dir <path>` | Point at a specific runtime config directory |
+
+**On `claude`** it re-syncs the `effort:` frontmatter of installed `gsd-*.md` agents.
+
+**On `codex`** it repairs `.toml` files that drift from the passive model posture ([ADR-2313](adr/2313-codex-passive-model-posture.md)) — the counterpart to the detection that [`validate agents`](#validate-agents) performs:
+
+| Situation | What happens |
+|---|---|
+| `model` pins a tier alias or a `claude-*` id | the `model` line is removed, so the agent inherits the session model |
+| `model_reasoning_effort` with no `model` | the orphaned effort line is removed ([#838](https://github.com/open-gsd/gsd-core/issues/838)) |
+| `model` pins a real Codex id | **left untouched**, reported `skipped` — an explicit pin is yours to keep |
+| the file cannot be parsed | **refused and reported** — never partially rewritten |
+| the file is a symlink | skipped, as on the Claude path |
+
+Only the targeted lines are removed. Line endings, BOM, key order, comments, blank lines, and any keys GSD does not itself emit are preserved byte-for-byte, so a repair shows up as a two-line diff rather than a reformatted file. Writes are atomic — the file is either its old contents or its new ones, never a partial write.
+
+---
+
 ### `validate agents`
 
 Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture.
