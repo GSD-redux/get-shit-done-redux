@@ -87,15 +87,30 @@ describe('explore research-pass claim disposition (#2229)', () => {
   const workflowPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'explore.md');
   const readWorkflow = () => fs.readFileSync(workflowPath, 'utf-8');
 
-  test('abstained claims route to an unresolved ledger, never smoothed into prose', () => {
-    const content = readWorkflow();
+  test('#2543 B1: ledger discipline is stated WITHIN the Step-3 disposition region, not merely somewhere in the file', () => {
+    // Replaces the deleted vacuous "abstained claims route to an unresolved ledger"
+    // test, which grepped the whole file for /unresolved/ and /ledger/ independently —
+    // it could not fail even if the sentence tying them together were deleted from
+    // Step 3 and moved somewhere unrelated. This is region-scoped AND falsifiable:
+    // the self-check below proves the anchor actually depends on the sentence it names.
+    const explore = readWorkflow();
+    const step3 = explore.indexOf('## Step 3');
+    const step4 = explore.indexOf('## Step 4');
+    assert.ok(step3 !== -1 && step4 !== -1 && step3 < step4, 'Steps 3 and 4 must exist in order');
+    const disposition = explore.slice(step3, step4);
+
+    const LEDGER_ANCHOR = 'put it in the **Unresolved ledger**, **never smoothed into the narrative**';
     assert.ok(
-      /unresolved/i.test(content) && /ledger/i.test(content),
-      'research pass must route abstained claims to an "unresolved" ledger'
+      disposition.includes(LEDGER_ANCHOR),
+      'the Step-3 region must state that an abstained claim is routed to the Unresolved ledger and never smoothed into prose'
     );
+
+    // Falsifiability self-check: prove the anchor is unique to the ledger-routing
+    // sentence by stripping it and confirming the assertion above would then fail.
+    const stripped = disposition.split(LEDGER_ANCHOR).join('');
     assert.ok(
-      /never.*(smooth|prose|assert)|not.*smoothed/i.test(content),
-      'ledger discipline must state abstained claims are never smoothed into the narrative'
+      !stripped.includes(LEDGER_ANCHOR),
+      'sanity check: removing the ledger-routing sentence must make the anchor disappear'
     );
   });
 
@@ -131,26 +146,45 @@ describe('explore research-pass claim disposition (#2229)', () => {
     }
   });
 
-  test('#2543 M4: the ledger-reason enum is identical in explore.md and CONTEXT.md', () => {
-    // The 5 abstention reasons are duplicated verbatim across the workflow and the
-    // CONTEXT glossary with no coupling. Extract the enum from BOTH (no third hardcoded
-    // copy) and assert equality, so a drift fails CI (CLAUDE.md: shared constants across
-    // parallel surfaces need a parity assertion).
-    const pull = (text, label) => {
-      const m = text.match(
-        /[{(][^{}()]*\bunverifiable\b[^{}()]*untagged — disposition not reported[^{}()]*[})]/,
+  test('#2543 M4: the ledger-reason enum is identical across every copy in explore.md and CONTEXT.md', () => {
+    // The prior extractor used text.match() with no /g — it only ever inspected the
+    // FIRST copy, so a second explore.md copy (or the CONTEXT.md copy) could drift
+    // unnoticed. Use matchAll so every occurrence is checked, not just one.
+    const ENUM_RE = /[{(][^{}()]*\bunverifiable\b[^{}()]*untagged — disposition not reported[^{}()]*[})]/g;
+    const extractAll = (text, label) => {
+      const normalized = text.replace(/\s+/g, ' ');
+      const matches = [...normalized.matchAll(ENUM_RE)].map((m) =>
+        m[0].slice(1, -1).replace(/`/g, '').split('|').map((s) => s.trim()),
       );
-      assert.ok(m, `${label} must carry the 5-value ledger-reason enum in one {…}/(…) group`);
-      return m[0].slice(1, -1).replace(/`/g, '').split('|').map((s) => s.trim());
+      assert.ok(matches.length > 0, `${label} must carry at least one copy of the 5-value ledger-reason enum`);
+      return matches;
     };
-    const fromExplore = pull(readWorkflow(), 'explore.md');
-    const fromContext = pull(
+
+    const exploreCopies = extractAll(readWorkflow(), 'explore.md');
+    // Measured: explore.md currently carries 2 copies (the Step-3 share template and
+    // the Step-4 carry-forward instruction) and CONTEXT.md carries a 3rd — matching
+    // this PR's "all three ledger-enum copies now end `untagged — disposition not
+    // reported`" note. Assert >=2 in explore.md so a future removal of either copy
+    // is caught, without hardcoding a count this test can't independently justify.
+    assert.ok(
+      exploreCopies.length >= 2,
+      `explore.md must carry at least 2 copies of the 5-value ledger-reason enum; found ${exploreCopies.length}`,
+    );
+    for (const copy of exploreCopies) {
+      assert.deepStrictEqual(
+        copy,
+        exploreCopies[0],
+        'every ledger-enum copy within explore.md must be byte-identical to every other',
+      );
+    }
+
+    const contextCopies = extractAll(
       fs.readFileSync(path.join(__dirname, '..', 'CONTEXT.md'), 'utf-8'),
       'CONTEXT.md',
     );
     assert.deepStrictEqual(
-      fromContext,
-      fromExplore,
+      contextCopies[0],
+      exploreCopies[0],
       'the Unresolved-Ledger abstention reasons in explore.md and CONTEXT.md have drifted; keep them identical (#2543 M4)',
     );
   });
@@ -174,9 +208,9 @@ describe('explore research-pass claim disposition (#2229)', () => {
     const content = readWorkflow();
     assert.match(
       content,
-      /resolve-model\s+gsd-phase-researcher\s+--pick\s+profile/,
-      'the tier floor needs the resolved profile as its trigger; without a ' +
-        '`resolve-model … --pick profile` binding the guard has no operative input'
+      /resolve-model\s+gsd-phase-researcher\s+--pick\s+tier/,
+      'the tier floor needs the resolved tier as its trigger; without a ' +
+        '`resolve-model … --pick tier` binding the guard has no operative input'
     );
     assert.match(
       content,
@@ -201,60 +235,60 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
-  test('tier-floor guard: the floor keys on the budget profile and spares refute/abstain', () => {
-    const content = readWorkflow().replace(/\s+/g, ' ');
-    assert.match(
-      content,
-      /RESEARCHER_PROFILE[^.]*\bbudget\b/,
-      'the floor must key on the resolved RESEARCHER_PROFILE being `budget`'
-    );
-    assert.match(
-      content,
-      /`refute` and `abstain` are unaffected/,
-      'the floor suppresses unearned confidence only — it must not also suppress corrections'
-    );
-  });
-
-  // Keying the floor on the profile ALONE is bypassable by a documented config.
-  // `model_overrides[<agent>]` and `models.research` sit ABOVE the profile lookup in
-  // resolveModelInternal, while `--pick profile` reports config.model_profile verbatim —
-  // so `model_profile: balanced` + `models.research: haiku` dispatches haiku while the
-  // profile still reads `balanced`, and a profile-only floor never fires. Measured:
-  // `query resolve-model gsd-phase-researcher` returns {model: haiku, profile: balanced}
-  // for that config. These assert the floor also keys on the RESOLVED MODEL.
-  // Slice the Tier-floor bullet itself rather than searching the whole document:
-  // a whole-file proximity match is satisfied by ANY sentence that merely mentions
-  // RESEARCHER_MODEL near "haiku", including a purely descriptive one sitting beside
-  // a floor that still keys on the profile alone. Asserting on the guard's own text,
-  // and on its POLARITY, is what makes this a barrier instead of a word-search.
+  // Keying the floor on the RESOLVED TIER (not the model id or a profile config key)
+  // is the design this PR moved to. Slice the Tier-floor bullet itself rather than
+  // searching the whole document: a whole-file proximity match is satisfied by ANY
+  // sentence that merely mentions RESEARCHER_TIER near "haiku", including a purely
+  // descriptive one sitting beside a floor that keys on something else. Asserting on
+  // the guard's own text is what makes this a barrier instead of a word-search.
+  //
+  // Hardened per #2543 3.1: anchor on the literal bullet marker (not a position),
+  // and self-verify the slice is non-empty and actually names the floor, so a decoy
+  // bullet inserted ABOVE the real one cannot silently change what gets sliced.
   const tierFloorClause = (content) => {
-    const start = content.indexOf('- **Tier floor**');
+    const marker = '- **Tier floor**';
+    const start = content.indexOf(marker);
     assert.notStrictEqual(start, -1, 'the Tier floor bullet must exist');
     const rest = content.slice(start + 1);
     const end = rest.indexOf('\n- **');
-    return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
+    const clause = (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
+    assert.ok(clause.length > 0, 'the sliced Tier-floor clause must be non-empty');
+    assert.ok(clause.includes('Tier floor'), 'the sliced clause must actually contain the floor marker');
+    return clause;
   };
 
-  test('tier-floor guard: the floor keys on the resolved model AND the profile, as a disjunction', () => {
-    const clause = tierFloorClause(readWorkflow());
+  test('tier-floor guard: the clause slicer is anchored, not positional', () => {
+    const original = readWorkflow();
+    const insertionPoint = original.indexOf('- **Tier floor**');
+    assert.notStrictEqual(insertionPoint, -1, 'the Tier floor bullet must exist in the real file');
+    const decoy = '- **Something else** — an unrelated guard bullet that must not leak into the slice.\n';
+    // Prepend a decoy bullet directly above the real one, on an in-memory COPY only.
+    const withDecoy = original.slice(0, insertionPoint) + decoy + original.slice(insertionPoint);
+    const clause = tierFloorClause(withDecoy);
+    assert.ok(clause.includes('Tier floor'), 'the slicer must still find the real Tier-floor clause with a decoy bullet prepended above it');
+    assert.ok(!clause.includes('Something else'), 'the slicer must not swallow the decoy bullet into the Tier-floor clause');
+  });
 
-    assert.match(clause, /\bRESEARCHER_MODEL\b/,
-      'the floor itself must reference the resolved model; keying on RESEARCHER_PROFILE ' +
-      'alone is bypassed by models.research / model_overrides, which sit ABOVE the ' +
-      'profile lookup in resolveModelInternal (measured: model_profile balanced + ' +
-      'models.research haiku resolves {model: haiku, profile: balanced})');
-    assert.match(clause, /\bRESEARCHER_PROFILE\b/,
-      'the profile signal must stay — codex and qwen have non-haiku budget models, so a ' +
-      'model-only check would fail open there');
-    assert.match(clause, /\beither\b/i,
-      'the two signals must be a disjunction; requiring both would re-open the bypass');
+  test('tier-floor guard: the floor keys on RESEARCHER_TIER and names haiku as the budget tier', () => {
+    const clause = tierFloorClause(readWorkflow());
+    assert.match(clause, /\bRESEARCHER_TIER\b/,
+      'the floor must reference RESEARCHER_TIER — the single signal now, replacing RESEARCHER_PROFILE');
+    assert.match(clause, /RESEARCHER_TIER[^.]*\bhaiku\b/,
+      'the floor must name `haiku` as the budget tier for gsd-phase-researcher');
+  });
+
+  test('tier-floor guard: an unreadable tier (unknown/inherit/empty) is also floored', () => {
+    const clause = tierFloorClause(readWorkflow());
+    assert.match(clause, /\bunknown\b/i, 'the floor must cover an `unknown` tier');
+    assert.match(clause, /\binherit\b/i, 'the floor must cover an `inherit` tier');
+    assert.match(clause, /\bempty\b/i, 'the floor must cover an empty (unreadable) tier');
   });
 
   test('tier-floor guard: the floor SUPPRESSES an admit — polarity, not just vocabulary', () => {
     const clause = tierFloorClause(readWorkflow());
 
     // Without this, a clause saying "present every would-be admit as an admit, unchanged;
-    // do NOT suppress merely because RESEARCHER_MODEL names a haiku-tier model" passes
+    // do NOT suppress merely because RESEARCHER_TIER names a haiku-tier model" passes
     // every keyword check above. Verified: that exact inversion passed the prior test 20/20.
     assert.match(clause, /would-be \*\*admit\*\* as an \*\*abstain\*\*/,
       'the floor must state that a would-be admit is presented as an abstain; a clause ' +
@@ -263,15 +297,12 @@ describe('explore research-pass claim disposition (#2229)', () => {
       'an inverted floor must fail this test');
   });
 
-  test('an untagged finding has a defined destination, not a silent drop', () => {
-    const content = readWorkflow().toLowerCase().replace(/\s+/g, ' ');
-    assert.ok(
-      content.includes('untagged'),
-      'a finding returned with no disposition tag must have a defined fallback'
-    );
-    assert.ok(
-      /untagged[^.]*abstain|abstain[^.]*untagged/.test(content),
-      'the untagged fallback must resolve to abstain (ledger), never flat prose'
+  test('tier-floor guard: the floor suppresses only unearned confidence, sparing refute/abstain', () => {
+    const content = readWorkflow();
+    assert.match(
+      content,
+      /`refute` and `abstain` are unaffected/,
+      'the floor suppresses unearned confidence only — it must not also suppress corrections'
     );
   });
 
@@ -290,31 +321,35 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
-  test('cites the #1154 honest-verifier abstention precedent (pattern reuse)', () => {
-    const content = readWorkflow();
-    assert.ok(
-      content.includes('#1154'),
-      'the disposition must cite its #1154 honest-verifier precedent so the reuse is traceable'
+  test('spawn prompt: the refute arm requires a source AUTHORITATIVE for the claim, not merely any contradiction', () => {
+    // This is the assertion that would have caught the blocker: a spawn prompt whose
+    // refute arm reads "a source contradicts it" (no authority qualifier) lets any
+    // disagreeing source — wrong version, adjacent subject, secondary/derivative —
+    // trigger a refute instead of an abstain.
+    const explore = readWorkflow();
+    const spawn = explore.slice(explore.indexOf('Agent('), explore.indexOf('subagent_type="gsd-phase-researcher"'));
+    assert.match(
+      spawn,
+      /\[refute:[^\]]*\]\s*\([^)]*authoritative[^)]*\)/i,
+      'the spawn prompt\'s refute arm must require the contradicting source be AUTHORITATIVE for the claim'
     );
   });
 
-  test('#2543 B2: the research pass bootstraps gsd_run before the tier-floor probes', () => {
+  test('#2543 B2: the research pass reaches a gsd_run bootstrapped ahead of Step 3', () => {
     // The tier floor abstains EVERY claim when both resolve-model probes come back
-    // empty. On a fresh shell that happens unless gsd_run is defined IN the same
-    // bash block — a required_reading @-ref does not put a shell function in scope.
-    // Assert the resolver shim is inlined ahead of the FIRST resolve-model probe,
-    // not only in the later commit block, so the admit arm is actually reachable.
+    // empty because gsd_run is undefined. The launcher preamble now lives once,
+    // unconditionally, at the end of Step 1 (not re-inlined per bash block) — so this
+    // only needs to confirm the bootstrap precedes the probe, not that it is duplicated
+    // into the Step-3 fence.
     const explore = readWorkflow();
-    const probe = explore.indexOf('resolve-model gsd-phase-researcher --pick model');
-    assert.ok(probe !== -1, 'the research pass must call resolve-model to arm the tier floor');
-    const fenceStart = explore.lastIndexOf('```bash', probe);
-    assert.ok(fenceStart !== -1 && fenceStart < probe, 'the probe must sit inside a bash fence');
-    const block = explore.slice(fenceStart, probe);
+    const preamble = explore.indexOf('_GSD_SHIM_NAME="gsd-tools.cjs"');
+    const probe = explore.indexOf('resolve-model gsd-phase-researcher --pick tier');
+    assert.notStrictEqual(preamble, -1, 'the gsd_run bootstrap preamble must exist in the file');
+    assert.notStrictEqual(probe, -1, 'the research pass must call resolve-model to arm the tier floor');
     assert.ok(
-      block.includes('_GSD_SHIM_NAME="gsd-tools.cjs"') || /gsd_run\(\)\s*\{/.test(block),
-      'the gsd_run resolver shim must be bootstrapped inside the research bash block, before ' +
-        'the resolve-model probe — otherwise gsd_run is undefined, both probes return empty, ' +
-        'and the tier floor abstains every claim (#2543 B2)',
+      preamble < probe,
+      'gsd_run must be bootstrapped before the tier-floor probe runs, otherwise both probes ' +
+        'return empty and the tier floor abstains every claim (#2543 B2)'
     );
   });
 
@@ -335,6 +370,69 @@ describe('explore research-pass claim disposition (#2229)', () => {
     assert.ok(
       /carry[^.]{0,60}disposition/.test(crystallize),
       'Steps 4-5 must carry the research disposition into the durable artifact (#2543 B3)',
+    );
+  });
+
+  test('Step 4 sink fences untrusted research text before writing it into durable artifacts', () => {
+    const explore = readWorkflow();
+    const step4 = explore.indexOf('## Step 4');
+    const step6 = explore.indexOf('## Step 6');
+    assert.ok(step4 !== -1 && step6 !== -1 && step4 < step6, 'Steps 4 and 6 must exist in order');
+    const region = explore.slice(step4, step6);
+    assert.match(
+      region,
+      /untrusted-input-boundary/,
+      'Step 4 must reference @gsd-core/references/untrusted-input-boundary.md when quoting research text into a durable file'
+    );
+    assert.match(
+      region,
+      /fresh random|DATA_/i,
+      'Step 4 must require a fresh/random per-wrap delimiter (not a fixed marker) when fencing quoted research text'
+    );
+  });
+
+  test('exactly two guards are documented; "Three guards" no longer appears', () => {
+    const content = readWorkflow();
+    assert.match(content, /Two guards ride with it:/, 'the guard-list intro must read "Two guards ride with it:"');
+    assert.doesNotMatch(
+      content,
+      /Three guards/,
+      '"Three guards" must not appear — the untagged-findings rule moved out of the guard list into its own paragraph'
+    );
+
+    const start = content.indexOf('Two guards ride with it:');
+    const end = content.indexOf('**Untagged findings.**', start);
+    assert.ok(start !== -1 && end !== -1 && start < end, 'the guard list and the untagged-findings paragraph must both exist, in order');
+    const guardRegion = content.slice(start, end);
+    // Only TOP-LEVEL bullets (no leading indent) count as guards; the Tier-floor
+    // bullet's own nested `  - ` sub-bullets must not be double-counted.
+    const topLevelBullets = guardRegion.match(/^- \*\*/gm) || [];
+    assert.strictEqual(topLevelBullets.length, 2, `expected exactly 2 top-level guard bullets, found ${topLevelBullets.length}`);
+  });
+
+  test('the launcher preamble is bootstrapped once, unconditionally, ahead of Step 3', () => {
+    const explore = readWorkflow();
+    const marker = '_GSD_SHIM_NAME="gsd-tools.cjs"';
+    const firstMarker = explore.indexOf(marker);
+    const lastMarker = explore.lastIndexOf(marker);
+    assert.notStrictEqual(firstMarker, -1, 'the canonical preamble marker must exist');
+    assert.strictEqual(firstMarker, lastMarker, 'the preamble must be inlined exactly once in the file');
+
+    const firstGsdRun = explore.indexOf('gsd_run');
+    assert.notStrictEqual(firstGsdRun, -1, 'gsd_run must be used somewhere in the file');
+    assert.ok(
+      firstMarker < firstGsdRun,
+      'the preamble that DEFINES gsd_run must appear before the first USE of gsd_run anywhere in the file'
+    );
+
+    const step3 = explore.indexOf('## Step 3');
+    assert.notStrictEqual(step3, -1, 'Step 3 heading must exist');
+    // Must sit in Step 1, not inside Step 3's optional research-offer branch:
+    // declining the research offer must not leave Step 5's commit call unbootstrapped,
+    // since gsd_run is only ever defined at this one call site.
+    assert.ok(
+      firstMarker < step3,
+      'the launcher preamble must be bootstrapped before Step 3, not gated behind the optional research offer'
     );
   });
 });

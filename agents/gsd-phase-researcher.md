@@ -187,9 +187,9 @@ Keep using the provenance tags in RESEARCH.md:
 
 - `[admit: <source>]` — a finding you would tag `[VERIFIED]` (tool-confirmed AND from a source authoritative for *this* claim) **and** which survived your prompted-to-refute attempt.
 - `[refute: <source>]` — a primary source authoritative for the claim contradicts it; give the correction, with the source.
-- `[abstain: <why>]` — everything else: `[ASSUMED]`/LOW, a `[CITED]` source not authoritative for this claim, unverifiable, or a source-vs-prior conflict. A "strong prior" alone is never authoritative — it can only abstain, never refute.
+- `[abstain: <why>]` — everything else: `[ASSUMED]`/LOW, a non-authoritative `[CITED]` source, unverifiable, or a source-vs-prior conflict. `<why>` MUST be one of the caller's five ledger reasons, byte-identical to `explore.md`: `unverifiable` | `source-vs-prior conflict` | `non-authoritative source` | `tier-floor: unearned confidence` | `untagged — disposition not reported` — the last is the caller's to assign, not yours. A "strong prior" alone is never authoritative — it can only abstain, never refute.
 
-Every finding carries **exactly one** tag; an untagged finding is routed to the caller's Unresolved Ledger as `untagged — disposition not reported`, so the `admit` arm fires only when you tag. The confidence tier still rides underneath (it drives the caller's tier floor), but the disposition — not the tier — decides what may be stated.
+Every finding carries **exactly one** tag; an untagged finding is routed to the caller's Unresolved Ledger as `untagged — disposition not reported`. The confidence tier still rides underneath (it drives the caller's tier floor), but the disposition — not the tier — decides what may be stated.
 
 </source_hierarchy>
 
