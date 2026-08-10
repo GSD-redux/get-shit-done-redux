@@ -13,7 +13,8 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { RuleTester } = require('eslint');
+const { RuleTester, ESLint } = require('eslint');
+const path = require('node:path');
 const fc = require('fast-check');
 
 const noSourceGrep = require('../eslint-rules/no-source-grep.cjs');
@@ -22,6 +23,7 @@ const noElapsedAssertion = require('../eslint-rules/no-elapsed-assertion.cjs');
 const noRawRmsyncInTests = require('../eslint-rules/no-raw-rmsync-in-tests.cjs');
 const noTautologicalAssert = require('../eslint-rules/no-tautological-assert.cjs');
 const noAdhocMarkdownParsing = require('../eslint-rules/no-adhoc-markdown-parsing.cjs');
+const noDuplicateFoldMarker = require('../eslint-rules/no-duplicate-fold-marker.cjs');
 
 const ruleTester = new RuleTester({
   languageOptions: {
@@ -1586,6 +1588,377 @@ describe('no-adhoc-markdown-parsing rule', () => {
         }
       }),
       { numRuns: 200, seed: 2880 },
+    );
+  });
+});
+
+// ─── no-duplicate-fold-marker ────────────────────────────────────────────────
+
+describe('no-duplicate-fold-marker rule', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+
+  /** Build a source string whose line numbers are the array indices + 1. */
+  const src = (...lines) => lines.join('\n');
+
+  const FOLD_A_B1 = '__foldDescribe("folded:a (consolidation epic #1969 B1 #1970)", () => {});';
+  const FOLD_A_B5 = '__foldDescribe("folded:a (consolidation epic #1969 B5 #1975)", () => {});';
+  const FOLD_B_B1 = '__foldDescribe("folded:b (consolidation epic #1969 B1 #1970)", () => {});';
+
+  test('rule module exports a create function', () => {
+    assert.strictEqual(typeof noDuplicateFoldMarker.create, 'function');
+  });
+
+  // ── Row 1: the #3271 regression, asserted against the real tree ────────────
+  //
+  // The unit cases below prove the rule can fire. THIS proves the tree it
+  // guards is actually clean — it is the assertion that was red before the 25
+  // duplicated regions were deleted (18 in install.test.cjs, 5 in
+  // install-minimal-hooks.test.cjs, 2 in install-write-confinement.test.cjs).
+  //
+  // Driven through the real ESLint API over the production glob rather than a
+  // hand-rolled scan of file text: a readFileSync + .match() scan of a .cjs
+  // path is exactly the shape `local/no-source-grep` bans in tests/**.
+  test('regression #3271: the real tests/ tree has no duplicate fold markers', async () => {
+    const eslint = new ESLint({
+      cwd: REPO_ROOT,
+      overrideConfigFile: true,
+      overrideConfig: {
+        files: ['tests/**/*.cjs'],
+        plugins: { local: { rules: { 'no-duplicate-fold-marker': noDuplicateFoldMarker } } },
+        languageOptions: { ecmaVersion: 2022, sourceType: 'commonjs' },
+        rules: { 'local/no-duplicate-fold-marker': 'error' },
+      },
+    });
+
+    const results = await eslint.lintFiles(['tests/**/*.cjs']);
+
+    // Filter to THIS rule: an ad-hoc config also surfaces "rule not found" for
+    // inline eslint-disable directives naming rules it does not register.
+    const violations = results.flatMap((r) =>
+      r.messages
+        .filter((m) => m.ruleId === 'local/no-duplicate-fold-marker')
+        .map((m) => `${path.relative(REPO_ROOT, r.filePath)}:${m.line} ${m.message}`),
+    );
+
+    // Non-vacuous: if the glob silently matched nothing, the empty result below
+    // would be meaningless.
+    assert.ok(results.length > 100, `expected the tests/ glob to match many files, got ${results.length}`);
+    assert.deepStrictEqual(violations, [], `duplicate folded suites found:\n${violations.join('\n')}`);
+  });
+
+  test('the rule is registered at error for tests/**/*.cjs in the real config', async () => {
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const config = await eslint.calculateConfigForFile(
+      path.join(REPO_ROOT, 'tests', 'install.test.cjs'),
+    );
+    assert.deepStrictEqual(config.rules['local/no-duplicate-fold-marker'], [2]);
+  });
+
+  // ── Occurrence-count boundary: 1 (clean) / 2 (one report) / 3 (two) ────────
+
+  test('valid: a single folded marker in a file', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [{ code: src(FOLD_A_B1), filename: 'tests/host.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('invalid: the same folded marker twice in one file', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [],
+      invalid: [
+        {
+          code: src(FOLD_A_B1, FOLD_A_B1),
+          filename: 'tests/host.test.cjs',
+          errors: [
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 2 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test('invalid: three occurrences report the 2nd and 3rd', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [],
+      invalid: [
+        {
+          code: src(FOLD_A_B1, FOLD_A_B1, FOLD_A_B1),
+          filename: 'tests/host.test.cjs',
+          errors: [
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 2 },
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 3 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test('valid: two distinct folded markers', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [{ code: src(FOLD_A_B1, FOLD_B_B1), filename: 'tests/host.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  // ── Negative space (10-diagnosis.md) ──────────────────────────────────────
+
+  // #3271's own reproduction regex (`folded:[a-z0-9-]*`) stops at `.` and
+  // collides these two genuinely distinct suites, which coexist in
+  // tests/model-resolver.test.cjs. A guard written to that key would red the
+  // build on `next` forever.
+  test('valid: dot-suffixed marker is distinct from its prefix (model-resolver #3271 false positive)', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            '__foldDescribe("folded:feat-443-effort-fast-mode.integration (consolidation epic #1969 B8 #1977)", () => {});',
+            '__foldDescribe("folded:feat-443-effort-fast-mode (consolidation epic #1969 B8 #1977)", () => {});',
+          ),
+          filename: 'tests/model-resolver.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // tests/review-default-reviewers-workflow.test.cjs reuses the fold alias for
+  // an ordinary describe block. Those carry no uniqueness obligation.
+  test('valid: __foldDescribe titles without a folded: prefix are ignored', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            "__foldDescribe('#1936: OpenCode reviewer empty-output hardening', () => {});",
+            "__foldDescribe('#1936: OpenCode reviewer empty-output hardening', () => {});",
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: a file with no fold markers', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [{ code: src('describe("ordinary", () => {});'), filename: 'tests/host.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('valid: plain describe with a folded: title is not the fold convention', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            'describe("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+            'describe("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // Documented non-goal, pinned so the behavior is deliberate rather than
+  // accidental: the rule keys on the callee identifier being literally
+  // __foldDescribe. Every one of the 365 fold sites calls it directly.
+  test('valid: a call through a further alias of the fold alias is not tracked', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            'const d = __foldDescribe;',
+            'd("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+            'd("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: a member-expression call named __foldDescribe is not the fold alias', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            'helpers.__foldDescribe("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+            'helpers.__foldDescribe("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // The same marker in two different HOST files is not intra-file duplication.
+  // RuleTester lints each entry as its own file, so this also proves the
+  // per-file state is rebuilt rather than shared across files.
+  test('valid: the same marker in two different files is not an intra-file duplicate', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        { code: src(FOLD_A_B1), filename: 'tests/host-one.test.cjs' },
+        { code: src(FOLD_A_B1), filename: 'tests/host-two.test.cjs' },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── Ordering / identity ───────────────────────────────────────────────────
+
+  test('invalid: interleaved duplicates each report against their own first occurrence', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [],
+      invalid: [
+        {
+          code: src(FOLD_A_B1, FOLD_B_B1, FOLD_A_B1, FOLD_B_B1),
+          filename: 'tests/host.test.cjs',
+          errors: [
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 3 },
+            { messageId: 'duplicateFoldMarker', data: { marker: 'b', firstLine: '2' }, line: 4 },
+          ],
+        },
+      ],
+    });
+  });
+
+  // The batch label is provenance, not identity — a re-fold under a different
+  // batch must not evade the guard. This is the exact shape of #3271: #1975
+  // re-applied #1970's blocks.
+  test('invalid: a duplicate marker is reported even when the batch label differs', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [],
+      invalid: [
+        {
+          code: src(FOLD_A_B1, FOLD_A_B5),
+          filename: 'tests/host.test.cjs',
+          errors: [
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 2 },
+          ],
+        },
+      ],
+    });
+  });
+
+  // ── Title shapes that cannot be resolved statically ───────────────────────
+
+  test('invalid: substitution-free template-literal fold titles are resolved', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [],
+      invalid: [
+        {
+          code: src(
+            '__foldDescribe(`folded:a (consolidation epic #1969 B1 #1970)`, () => {});',
+            '__foldDescribe(`folded:a (consolidation epic #1969 B1 #1970)`, () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+          errors: [
+            { messageId: 'duplicateFoldMarker', data: { marker: 'a', firstLine: '1' }, line: 2 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test('valid: non-literal fold titles are skipped without throwing', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            'const name = "folded:a";',
+            'const x = "a";',
+            '__foldDescribe(name, () => {});',
+            '__foldDescribe(name, () => {});',
+            '__foldDescribe(`folded:${x} (epic)`, () => {});',
+            '__foldDescribe(`folded:${x} (epic)`, () => {});',
+            '__foldDescribe(42, () => {});',
+            '__foldDescribe(42, () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: __foldDescribe with no arguments does not throw', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        { code: src('__foldDescribe();', '__foldDescribe();'), filename: 'tests/host.test.cjs' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: an empty marker after the folded: prefix is not tracked', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            '__foldDescribe("folded: (consolidation epic #1969 B1 #1970)", () => {});',
+            '__foldDescribe("folded: (consolidation epic #1969 B1 #1970)", () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // Property: marker identity is the whole whitespace-delimited token.
+  //
+  // This is the generative form of the #3271 correctness question. An
+  // implementation that keyed on the issue's `[a-z0-9-]*` slice would truncate
+  // at `.` and pass arm 1 while failing arm 2 on any pair like
+  // (`a.integration`, `a`) — which is exactly the tests/model-resolver.test.cjs
+  // false positive. The alphabet deliberately includes `.` and `_` so those
+  // pairs are generated, not hoped for.
+  //
+  // `fc` is already imported at the top of this file and used by the
+  // no-adhoc-markdown-parsing suite; this follows the same
+  // fc.property-driving-ruleTester shape.
+  test('property: a marker is identified by its whole token, so distinct markers never collide', () => {
+    const markerArb = fc
+      .array(fc.constantFrom('a', 'z', 'q', '0', '9', '-', '.', '_'), { minLength: 1, maxLength: 12 })
+      .map((chars) => chars.join(''));
+
+    const fold = (marker) =>
+      `__foldDescribe("folded:${marker} (consolidation epic #1969 B1 #1970)", () => {});`;
+
+    // Arm 1: the SAME marker twice is always reported exactly once, against
+    // the first occurrence.
+    fc.assert(
+      fc.property(markerArb, (marker) => {
+        ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+          valid: [],
+          invalid: [
+            {
+              code: src(fold(marker), fold(marker)),
+              filename: 'tests/host.test.cjs',
+              errors: [
+                { messageId: 'duplicateFoldMarker', data: { marker, firstLine: '1' }, line: 2 },
+              ],
+            },
+          ],
+        });
+      }),
+      { numRuns: 150, seed: 3271 },
+    );
+
+    // Arm 2: two DISTINCT markers never collide, however they differ.
+    fc.assert(
+      fc.property(markerArb, markerArb, (a, b) => {
+        fc.pre(a !== b);
+        ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+          valid: [{ code: src(fold(a), fold(b)), filename: 'tests/host.test.cjs' }],
+          invalid: [],
+        });
+      }),
+      { numRuns: 150, seed: 3271 },
     );
   });
 });

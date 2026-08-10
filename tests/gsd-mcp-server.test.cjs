@@ -69,6 +69,12 @@ test('tools/call gsd_invoke_command: dispatches to the command hub (point 1); un
 test('tools/call gsd_invoke_command: REGRESSION #2102 — a valid read-only family dispatches for real (not the createHub()-with-no-args UnknownCommand bug)', () => {
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const res = handleMessage(
       { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'gsd_invoke_command', arguments: { family: 'progress', subcommand: 'json' } } },
       { cwd: dir },

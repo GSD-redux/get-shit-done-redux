@@ -279,3 +279,57 @@ to assemble it from Consequences and Scope boundary:
   ADR does not generalize the posture; extending it to another host would be its own decision.
 - **The posture is not real until Phase 1 merges.** `Accepted` locks the contract, not the tree —
   until #3241 lands, `generateCodexAgentToml` still embeds a per-tier model.
+
+## Amendment (2026-08-09): a deprecation notice IS offered (#3241)
+
+Recorded as a dated section rather than by editing the Migration section or the Known limits bullet
+above, since ADRs here are append-only. Both now read as superseded on this one point; the rest of
+each stands.
+
+**What changed.** This ADR's Migration section states *"No deprecation window is offered. The default
+flips in a single release rather than warning first,"* and Known limits repeats it. Phase 1 (#3241)
+ships a deprecation notice instead, by maintainer direction taken after this ADR merged.
+
+**Why the original position was wrong, precisely.** The argument for flipping silently was that the
+behavior being removed *"is one most affected users could never successfully use"* — it 400s on a
+ChatGPT-account Codex. That is true of the ChatGPT population and false of the API-key population,
+which is exactly the group the Migration section already identifies as *losing something real*. The
+ADR named a class of user harmed by the change and then declined to warn them, in the same document.
+Hyrum's Law's own guidance — break a long-lived observable behavior when you must, but give a
+migration path — was applied to the *recourse* (`model_overrides` stays) and not to the *notice*.
+
+**The notice.** One line to stderr per install, emitted only for the population that actually loses a
+pin: the runtime resolver would have supplied a model, and nothing ends up pinned. It names
+`model_overrides` as the recovery mechanism and the session model as what the agent gets instead.
+
+It deliberately names **no agent and no model**. The condition is per-install, not per-agent — every
+agent hits it simultaneously — so per-agent detail would imply a per-agent decision that was not made,
+and ~20 identical lines would train the reader to ignore them. It carries no interpolated
+user-controlled value, which is why it needs none of the length-capping the adjacent
+`_warnCodexModelOverrideDropped` applies.
+
+It does **not** fire when the resolver is null (`inherit`, or no configured `runtime`), when the
+resolver resolves to nothing, or when an explicit real-Codex pin survives. In each of those cases
+nothing was lost, and a notice would be noise that costs the signal its meaning.
+
+**Known limit this does not remove.** The notice fires at *install* time. A user who never
+re-installs never sees it — Phase 2's health-check and Phase 3's sync are what reach them. The
+Known-limits bullet above is therefore softened, not deleted: there is now a warning, but it is not
+a full deprecation *release*, and no separate release ships before the flip.
+
+## Amendment (2026-08-09): whitespace-only `model_overrides` was a live defect (#3241)
+
+Surfaced while writing Phase 1's failing-first suite, and fixed there rather than filed.
+
+`model_overrides[<agent>] = "   "` is **truthy**, survives the `typeof === 'string'` guard, is not
+Anthropic-flavored, and was therefore embedded verbatim as `model = "   "`. That is the same class
+the #2310 guard exists to stop — a value that is not a real Codex model id reaching the `.toml` and
+400-ing the agent — reached by a different route.
+
+Phase 1 trims before the truthiness test, so a whitespace-only override yields no pin. It is
+deliberately **not** routed to `_warnCodexModelOverrideDropped`: that message says the value *"is not
+a valid Codex model (Anthropic alias/id)"*, which misdescribes an empty config field. A blank value
+is silently no-pin, matching how `""` already behaved.
+
+This ADR's D2 ("embed a `model` only for an explicit real-Codex pin") always implied this. The
+implementation simply did not enforce it, and no test covered the case.

@@ -64,6 +64,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "gemini",
@@ -93,7 +94,6 @@
       "effortSurface": "undocumented"
     },
     "hostBehaviors": {
-      "reviewerCli": true,
       "projectInstructionFile": "GEMINI.md",
       "noPathRewrite": true,
       "hookPathStyle": "raw",

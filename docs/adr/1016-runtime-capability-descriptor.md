@@ -8,7 +8,31 @@
 - **Materializes:** [ADR-58](58-runtime-install-policy-module.md) (the typed `InstallPlan` projection)
 - **Builds on:** [ADR-3660](3660-runtime-artifact-layout-module.md) (artifact layout), [ADR-894](894-capability-declaration-format.md) (the `role: runtime` body, already validated)
 - **Subsumed by:** [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (GSD as an Embeddable Orchestration Engine) — read it first; see the amendment below
+- **Amended by:** [ADR-2866](2866-install-surface-resolution.md) (Install-surface resolution) — **one axis is added to this ADR's closed descriptor vocabulary: host trigger precedence.** ADR-2866 is the review this ADR's closed-vocabulary friction exists to force. The axis is *required-with-default*, so descriptors authored against today's schema keep working and [ADR-894](894-capability-declaration-format.md)'s additive-only contract holds; the registry generator and validator move with it. **Timing:** Phase 2 ([#2871](https://github.com/open-gsd/gsd-core/issues/2871)) of epic [#2866](https://github.com/open-gsd/gsd-core/issues/2866) has landed — `triggerPrecedence` now exists on all 19 runtime descriptors, validated required-with-default so a descriptor omitting it still validates. Nothing else in this ADR's vocabulary opens — precedence is a fact about the *host*, which is exactly why it belongs on the descriptor rather than in a per-runtime branch.
 - **Amended by:** [ADR-2782](2782-reviewer-lane-capability-surface.md) (Reviewer Lane capability surface) — a `role: "runtime"` capability may now carry a `reviewer` body **alongside** its runtime body. The runtime body itself remains closed and unchanged, and no feature-only field becomes permissible on it. ADR-2782 D6 **upholds** this ADR's closed-vocabulary principle: the lane's `handler` is a closed enum of first-party names (the `ConverterName` construction of Decision 3), never an open escape hatch, so §Alternatives #2 stands unreversed.
+- **Amended by:** [#2801](https://github.com/open-gsd/gsd-core/issues/2801) (closes `hostBehaviors`) — the one hole in this ADR's closure is closed; see the amendment below.
+
+## Amendment (2026-08-09): `hostBehaviors` is closed (#2801)
+
+This ADR closed twelve axes and rejected "an open escape hatch in the descriptor" (§Alternatives #2). It never mentioned `runtime.hostBehaviors`, and that silence was read as permission: the field accumulated **59 keys across 18 manifests — 39 of them set by a single capability** — validated by nothing. `docs/reference/capability-manifest.md` went further and described it as *"the deliberate open seam"* sanctioned by this ADR. That attribution was never true.
+
+**Decision.** `hostBehaviors` is a closed vocabulary, enumerated in `KNOWN_HOST_BEHAVIORS` (`gsd-core/bin/lib/capability-validator.cjs`). A key outside it is **ignored with a non-fatal warning**, surfaced on both paths a manifest arrives through — build-time registry generation to stderr, and overlay install through `OverlayMeta.warnings`.
+
+**Why warning and not error.** Two reasons, and the second is the load-bearing one:
+
+1. It matches the [ADR-2782](2782-reviewer-lane-capability-surface.md) D4.3 treatment of an unknown `reviewer` field, so one manifest surface does not contradict its neighbor.
+2. An error would hard-break any out-of-tree runtime descriptor carrying a bespoke key, with **no deprecation window** — the exact failure mode the change that closed this (#2801, ADR-2782 D9) spent a full release avoiding for `reviewerCli`. Escalating to an error is a separate decision and needs its own window.
+
+So this closure is real but soft: the vocabulary is enumerated, drift is visible, and adding a key is deliberate — while nothing installed today breaks.
+
+**Consequences.**
+
+- Adding a host behavior is now a reviewed change: the key must be declared in the vocabulary. That is this ADR's intended friction (§Consequences, "the closed vocabulary must grow (reviewed) … intentional friction, the trust boundary"), now applied to the surface that was escaping it.
+- A parity test asserts the vocabulary equals the set of keys the shipped manifests declare, in **both** directions — an undeclared key warns on every build, and a key left behind after its last manifest drops it is dead vocabulary. Neither can rot silently.
+- Zero shipped capability draws a warning at the time of closure; the change is inert for everything in-tree, and a test asserts that too.
+- Third-party descriptors carrying bespoke keys now see a warning where they previously saw silence. That is the intended signal, not a regression — but it is the reason enforcement stops at warning.
+
+**Not decided here.** Whether the 39 single-use keys should be consolidated, promoted to real axes, or retired. Closing the vocabulary makes that question answerable; it does not answer it.
 
 ## Amendment (2026-07-16): subsumed by ADR-1239 (EoS) — this ADR is the *declarative adapter*, not the whole architecture
 

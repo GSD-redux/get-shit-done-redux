@@ -31,6 +31,30 @@ const { DEFAULT_GIT_TIMEOUT_MS } = require('./git-fixture.cjs');
 const PROBE_TIMEOUT_MS = 15000;
 
 /**
+ * A git-hook invocation that FANS OUT to nested shell subprocesses — the hook
+ * itself under `bash`, plus every helper it shells to. The prepush guard is the
+ * worked example: it runs a mock `git` that is also a bash script, so a single
+ * `runHook` is roughly four Git Bash spawns.
+ *
+ * This is a heavier class than `PROBE_TIMEOUT_MS`, and the difference is
+ * Windows-shaped. Each spawn there is Defender-scanned, and the first hook test
+ * in a file pays cold start on top. CI (PR #3285, `full test (windows-latest,
+ * 22, shard 2/3)`) recorded `outcome=timed_out exitCode=null` at exactly the
+ * 15000ms probe bound while every other lane — including windows-latest node 24,
+ * all three shards — passed the same commit. That is a bound sized for the wrong
+ * class, not a slow machine.
+ *
+ * 60000ms is 4x the bound that failed and half `INSTALL_TIMEOUT_MS`, which is
+ * the right order: a hook fan-out is much lighter than a full installer run but
+ * far heavier than reading back a version string.
+ *
+ * Sites that invoke a hook doing NO subprocess fan-out should stay on
+ * `PROBE_TIMEOUT_MS` — this norm describes the fan-out shape, not `runHook` in
+ * general.
+ */
+const HOOK_FANOUT_TIMEOUT_MS = 60000;
+
+/**
  * Git plumbing (rev-parse, branch, log, ...) against a small mkdtemp
  * fixture repo. Re-exports `tests/helpers/git-fixture.cjs`'s
  * `DEFAULT_GIT_TIMEOUT_MS` rather than restating the literal, so the two
@@ -57,6 +81,7 @@ const INSTALL_TIMEOUT_MS = 120000;
 
 module.exports = {
   PROBE_TIMEOUT_MS,
+  HOOK_FANOUT_TIMEOUT_MS,
   GIT_TIMEOUT_MS,
   BUILD_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,

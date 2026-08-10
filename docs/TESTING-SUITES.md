@@ -55,6 +55,45 @@ identity ratchet (`npm run lint:regression-names`, part of `npm run lint:ci`):
   `docs/INVENTORY.md`) must be regenerated **after** rebasing, never carried
   through a rebase.
 
+### A folded suite may appear only once per host
+
+When a standalone file is folded into its owning module's test file, the moved
+suite is wrapped in a self-contained block carrying a marker:
+
+```javascript
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/bug-376-claude-js-hook-gsd-rewriter.test.cjs — …
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:bug-376-claude-js-hook-gsd-rewriter (…)", () => { … });
+}
+```
+
+Because the block is self-contained, a **second verbatim copy in the same host
+parses, registers, and passes — twice.** Nothing in a green suite reports it.
+[#3271](https://github.com/open-gsd/gsd-core/issues/3271) found 25 such copies
+(~5,800 lines) across three install suites, all from a single stale-base
+re-application during the consolidation epic. The cost is not only wasted CI on
+every lane: it is a `DEFECT.GENERATIVE-FIX` trap, because a contributor fixing
+one of those regressions edits the copy they found and leaves the other
+asserting the old behavior, with the suite still green.
+
+`local/no-duplicate-fold-marker` (`eslint-rules/no-duplicate-fold-marker.cjs`,
+error under `tests/**/*.cjs`) reports the second and every later occurrence of a
+`folded:<marker>` title in one file, naming the line the first occurrence sits
+on. **When it fires, delete the copy it points at** — the two blocks are the
+same suite, so the fix is removal, never an `eslint-disable`.
+
+It keys on the whitespace-delimited token after `folded:`, which matters in both
+directions. A narrower key that stops at `.` would collide
+`feat-443-effort-fast-mode.integration` with `feat-443-effort-fast-mode` — two
+genuinely distinct suites that coexist in `tests/model-resolver.test.cjs`. Keying
+on the *whole* title instead would let a re-fold under a different batch label
+slip through, which is exactly the shape #3271 took. Titles without a `folded:`
+prefix, non-literal titles, and the same marker appearing in two *different* host
+files are all left alone.
+
 The ratchet deliberately covers only `bug-*`. Files named `feat-NNNN-*` /
 `enh-NNNN-*` are *feature* test files — one (or one per suite) per feature is
 the sanctioned layout (see the #443 strategy below), not a one-off regression

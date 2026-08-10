@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout } from './shell-command-projection.cjs';
+import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -33,11 +33,16 @@ import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
-const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
+const { resolveModelInternal, resolveTierInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import agentCommandRouterMod = require('./agent-command-router.cjs');
 const { AGENT_FAILURE_CLASSES } = agentCommandRouterMod;
-import { renderEffortForRuntime, renderEffortArgv, RUNTIMES_WITH_FAST_MODE } from './model-catalog.cjs';
+import { renderEffortForRuntime, renderEffortArgv, RUNTIMES_WITH_FAST_MODE, isAnthropicFlavoredModel } from './model-catalog.cjs';
+// #3243 (ADR-2313 D7) — the Codex `.toml` sync's typed IR: parse/render/strip
+// primitives moved from agent-install-check.cts's Phase-2 parsing into this
+// leaf so both consumers share one block-range detector. See
+// codex-agent-toml.cts's module header for the reader/writer reconciliation.
+import { parseCodexAgentToml, renderCodexAgentToml, stripModel, stripReasoningEffort } from './codex-agent-toml.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import hostIntegrationMod = require('./host-integration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -516,10 +521,20 @@ function cmdResolveModel(cwd: string, agentType: string | undefined, raw: boolea
   const model = resolveModelInternal(cwd, agentType!);
   const effort = resolveEffortInternal(cwd, agentType!);
 
-  const agentModels = (MODEL_PROFILES as Record<string, unknown>)[agentType!];
+  // Own-property guard: agentType is an unvalidated CLI positional, so a
+  // prototype-chain value ("toString", "constructor") would otherwise return
+  // an inherited truthy member from this plain object and misreport a
+  // genuinely unknown agent as known (unknown_agent dropped from the result).
+  const agentModelsMap = MODEL_PROFILES as Record<string, unknown>;
+  const agentModels = Object.hasOwn(agentModelsMap, agentType!) ? agentModelsMap[agentType!] : undefined;
+  // #2229: `tier` is additive — existing keys and their values are untouched, so
+  // every `--pick model` / `--pick profile` / `--raw` consumer is unaffected. It
+  // exists because the model id is deliberately blank under resolve_model_ids:"omit",
+  // which leaves a tier-sensitive guard with nothing to read.
+  const tier = resolveTierInternal(cwd, agentType!);
   const result = agentModels
-    ? { model, profile, effort }
-    : { model, profile, effort, unknown_agent: true };
+    ? { model, profile, effort, tier }
+    : { model, profile, effort, tier, unknown_agent: true };
   output(result, raw, model);
 }
 
@@ -594,7 +609,12 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
-  const agentModels = (MODEL_PROFILES as Record<string, unknown>)[agentType!];
+  // Own-property guard: agentType is an unvalidated CLI positional, so a
+  // prototype-chain value ("toString", "constructor") would otherwise return
+  // an inherited truthy member from this plain object and misreport a
+  // genuinely unknown agent as known (unknown_agent dropped from the result).
+  const agentModelsMap = MODEL_PROFILES as Record<string, unknown>;
+  const agentModels = Object.hasOwn(agentModelsMap, agentType!) ? agentModelsMap[agentType!] : undefined;
   const result: Record<string, unknown> = {
     model,
     profile,
@@ -689,6 +709,15 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   const config = loadConfig(cwd);
   const runtime = opts.runtime || (config['runtime'] as string) || 'claude';
 
+  // ADR-2313 D7 (#3243) — Codex gets its own `.toml` sync path (strip a stale
+  // Anthropic/tier `model` and an orphaned `model_reasoning_effort`, leaving a
+  // legal pin untouched). Every other non-claude runtime keeps the prior
+  // early-return; the claude branch below is untouched byte-for-byte.
+  if (runtime === 'codex') {
+    cmdEffortSyncCodex(raw, dryRun, opts.configDir);
+    return;
+  }
+
   if (runtime !== 'claude') {
     output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
     return;
@@ -750,6 +779,140 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   }
 
   output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
+}
+
+/** One `{agent, field, from}` strip reported by {@link cmdEffortSyncCodex} — `to` is always omission (`null`). */
+interface CodexEffortSyncChange {
+  agent: string;
+  field: 'model' | 'model_reasoning_effort';
+  from: string;
+  to: null;
+}
+
+/** A file `parseCodexAgentToml` refused, reported rather than partially rewritten (ADR-2313 D7 row 11). */
+interface CodexEffortSyncRefusal {
+  agent: string;
+  file: string;
+  reason: string;
+}
+
+/** A write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
+interface CodexEffortSyncWriteFailure {
+  agent: string;
+  file: string;
+  error: string;
+}
+
+/**
+ * ADR-2313 D7 (#3243) — the Codex branch of `cmdEffortSync`. Strips a stale
+ * Anthropic-flavored/tier `model` pin and an orphaned `model_reasoning_effort`
+ * from every installed `~/.codex/agents/<agent>.toml`, leaving a legal
+ * real-Codex pin (and its coupled effort) untouched. Dry-run by default; every
+ * strip reported as a structured `{agent, field, from}` change; an unparseable
+ * document is refused and reported, never partially rewritten (40-design.md
+ * "Reconciliation" — parseCodexAgentToml is the STRICT half of the reader/
+ * writer split). Result shape is additive over the claude branch's
+ * `{synced, skipped, changes, dry_run, agents_dir}` — `refused` and
+ * `write_failures` are new fields, never a reshape of the existing ones.
+ */
+function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { getGlobalConfigDir } = require('./runtime-homes.cjs') as { getGlobalConfigDir(runtime: string, explicitDir?: string | null): string };
+  const agentsDir = path.join(configDir || getGlobalConfigDir('codex'), 'agents');
+
+  if (!fs.existsSync(agentsDir)) {
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'agents directory not found' }, raw, '');
+    return;
+  }
+
+  // Skip symlinks — matches the claude branch's existing guard above (only
+  // write regular files, never follow a symlink into clobbering its target).
+  const files = fs
+    .readdirSync(agentsDir)
+    .filter(f => {
+      if (!f.endsWith('.toml')) return false;
+      try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
+    })
+    .sort();
+
+  const changes: CodexEffortSyncChange[] = [];
+  const refused: CodexEffortSyncRefusal[] = [];
+  const writeFailures: CodexEffortSyncWriteFailure[] = [];
+  let synced = 0;
+  let skipped = 0;
+
+  for (const file of files) {
+    const agentName = file.replace(/\.toml$/, '');
+    const filePath = path.join(agentsDir, file);
+    const content = fs.readFileSync(filePath, 'utf8');
+
+    const parsed = parseCodexAgentToml(content);
+    if (!parsed.ok) {
+      // Never partially rewritten (40-design.md, ADR-2313 reader/writer
+      // boundary): an unparseable document is skipped and reported, not
+      // guessed at.
+      skipped++;
+      refused.push({ agent: agentName, file: filePath, reason: parsed.reason });
+      continue;
+    }
+
+    let doc = parsed.doc;
+    const stripModelNeeded = doc.model !== null && isAnthropicFlavoredModel(doc.model);
+    // #838 coupling: an orphaned effort (no model) is always stale; a stale
+    // model's effort is coupled to it and strips with it. A legal pin's effort
+    // (model present, not Anthropic-flavored) is left untouched (rows 4-5).
+    const stripEffortNeeded = doc.reasoningEffort !== null && (stripModelNeeded || doc.model === null);
+
+    if (!stripModelNeeded && !stripEffortNeeded) {
+      // Posture-clean, OR a legal pin (and its coupled effort) — reported
+      // skipped, never synced (ADR-2313 reader/writer boundary).
+      skipped++;
+      continue;
+    }
+
+    const pendingChanges: CodexEffortSyncChange[] = [];
+    if (stripModelNeeded) {
+      pendingChanges.push({ agent: agentName, field: 'model', from: doc.model as string, to: null });
+      doc = stripModel(doc);
+    }
+    if (stripEffortNeeded) {
+      pendingChanges.push({ agent: agentName, field: 'model_reasoning_effort', from: doc.reasoningEffort as string, to: null });
+      doc = stripReasoningEffort(doc);
+    }
+
+    if (!dryRun) {
+      // Atomic publish (ADR-2313 "never partially rewritten"): write the
+      // rendered TOML to a sibling tmp file, then rename it over the target.
+      // Same-filesystem rename is atomic, so filePath is either the old bytes
+      // or the new ones, never truncated/half-written mid-crash. Deliberately
+      // NOT platformWriteSync — its normalizeContent step rewrites CRLF/
+      // trailing-newline bytes, which would break the byte-identical
+      // round-trip (A14) this writer must preserve. retryRenameSync (not a
+      // bare fs.renameSync) carries the transient-Windows-lock retry per
+      // DEFECT.WINDOWS-FS-OPS.
+      const tmpPath = `${filePath}.tmp.${process.pid}`;
+      try {
+        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc));
+        retryRenameSync(tmpPath, filePath);
+      } catch (err) {
+        // Reported, not thrown — the remaining agents still get processed.
+        // Clean up the orphaned tmp file; filePath itself was never touched.
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
+        skipped++;
+        writeFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+    }
+
+    changes.push(...pendingChanges);
+    synced++;
+  }
+
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures },
+    raw,
+    synced > 0 ? 'changed' : 'ok',
+  );
 }
 
 /**
@@ -1611,15 +1774,25 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
   } catch { /* intentionally empty */ }
 
-  const percent = clampPercent(totalSummaries, totalPlans);
+  // #3217 (ADR-3180 §7.6 rule 4): `phaseScope` was already computed above
+  // (Phase 3, #3222) but never consulted before rendering — a percentage was
+  // rendered from counts the scope said were not answers (TRUNCATED /
+  // UNSCOPED / UNREADABLE). Withhold the percentage itself (never `0` — a
+  // real `0` under COMPLETE must still render, rule 2's territory) when the
+  // scope is not COMPLETE. `phaseScope` stays `null` only if the try block
+  // above threw before assigning it; treat that the same as non-COMPLETE.
+  const percent: number | null = phaseScope === SCOPE.COMPLETE
+    ? clampPercent(totalSummaries, totalPlans)
+    : null;
 
   if (format === 'table') {
     // Render markdown table
     const barWidth = 10;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
-    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)\n\n`;
+    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
     for (const p of phases) {
@@ -1628,9 +1801,10 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     output({ rendered: out }, raw, out);
   } else if (format === 'bar') {
     const barWidth = 20;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    const text = `[${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)`;
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
+    const text = `[${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}`;
     output({ bar: text, percent, completed: totalSummaries, total: totalPlans }, raw, text);
   } else {
     // JSON format
@@ -1967,8 +2141,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
   const completedPhases = phases.filter(p => p.status === 'Complete').length;
-  const planPercent = clampPercent(totalSummaries, totalPlans);
-  const percent = clampPercent(completedPhases, phases.length);
+  // #3217 (ADR-3180 §7.6 rule 4): both percentages here are derived from the
+  // same `phaseScope`-carrying directory enumeration above (Phase 3, #3222) —
+  // withhold both when that scope is not COMPLETE, same rationale as
+  // cmdProgressRender above. A real `0` under COMPLETE still renders.
+  const planPercent: number | null = phaseScope === SCOPE.COMPLETE ? clampPercent(totalSummaries, totalPlans) : null;
+  const percent: number | null = phaseScope === SCOPE.COMPLETE ? clampPercent(completedPhases, phases.length) : null;
 
   // Requirements stats
   let requirementsTotal = 0;
@@ -2030,11 +2208,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   if (format === 'table') {
     const barWidth = 10;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
-    out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases (${percent}%)\n`;
-    if (totalPlans > 0) {
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
+    out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;
+    if (totalPlans > 0 && planPercent !== null) {
       out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;
     }
     out += `**Phases:** ${completedPhases}/${phases.length} complete\n`;

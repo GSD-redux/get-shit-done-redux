@@ -1,0 +1,6 @@
+﻿name = "gsd-archivist"
+description = "Archives closed phase directories"
+model = "sonnet"
+developer_instructions = '''
+Archive the phase directory once its checklist is fully closed.
+'''

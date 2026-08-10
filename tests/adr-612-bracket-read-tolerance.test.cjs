@@ -739,13 +739,26 @@ describe('#612 PR-2: roadmap analyze resolves bracket phase DIRECTORIES', () => 
 **Goal:** b
 `;
 
-  /** Phase 01 complete (PLAN+SUMMARY), phase 02 planned (PLAN only). */
+  /**
+   * Phase 01 complete (PLAN + SUMMARY + a passing `*-VERIFICATION.md`),
+   * phase 02 planned (PLAN only).
+   *
+   * UPDATED at the origin/next merge — #3186 (ADR-3180 §7.4) made completion
+   * DISK-STRICT, so `disk_status` reads `partial`, not `complete`, for a phase
+   * whose plans are all summarized but which carries no verification verdict.
+   * The verification file is what carries completion now; it is convention-
+   * agnostic, which is why the legacy twin below moved identically.
+   */
   const mkDirs = (specs) => {
     for (const [dir, stem, complete] of specs) {
       const q = path.join(tmpDir, '.planning', 'phases', dir);
       fs.mkdirSync(q, { recursive: true });
       fs.writeFileSync(path.join(q, `${stem}-01-PLAN.md`), '# plan\n', 'utf-8');
-      if (complete) fs.writeFileSync(path.join(q, `${stem}-01-SUMMARY.md`), '# summary\n', 'utf-8');
+      if (complete) {
+        fs.writeFileSync(path.join(q, `${stem}-01-SUMMARY.md`), '# summary\n', 'utf-8');
+        fs.writeFileSync(
+          path.join(q, `${stem}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+      }
     }
   };
   const diskShape = () => analyze().phases.map(

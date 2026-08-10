@@ -59,17 +59,34 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
   // `state sync` short-circuits with no phase directories, leaving STATE.md
   // byte-unchanged — which is exactly how a mutation to the write-path counter
   // survives a test that reads `state json` afterwards. Give it real work.
-  // A dir spec is either `'name'` (a PLAN and its SUMMARY — a COMPLETE phase,
-  // the shape every earlier fixture in this file wants) or `['name', false]`
-  // (a PLAN with no SUMMARY — INCOMPLETE). The numerator assertions at the end
-  // of this file need the mix: a fixture where every phase is complete cannot
-  // tell `completed_phases` apart from `total_phases`.
+  // A dir spec is either `'name'` (a PLAN, its SUMMARY and a passing
+  // `*-VERIFICATION.md` — a COMPLETE phase, the shape every earlier fixture in
+  // this file wants) or `['name', false]` (a PLAN alone — INCOMPLETE). The
+  // numerator assertions at the end of this file need the mix: a fixture where
+  // every phase is complete cannot tell `completed_phases` apart from
+  // `total_phases`.
+  //
+  // UPDATED at the origin/next merge — #3186 (ADR-3180 §7.4) made completion
+  // DISK-STRICT: `isPhaseComplete` is now the single owner and it reads only
+  // the verification verdict, so a phase with a PLAN and its SUMMARY but no
+  // `*-VERIFICATION.md` is no longer complete anywhere ("a missing verdict is
+  // not a passing one"). That is upstream semantics, not a bracket regression
+  // — the LEGACY control fixtures in this file moved identically, because the
+  // predicate is convention-agnostic. The completion signal moves onto the
+  // verification file; the SUMMARY stays because the write path kept its own
+  // `summaryCount >= planCount` gate and because several assertions here read
+  // `total_plans`/`completed_plans` separately from the phase numerator.
+  // Written LAST so it is never older than the SUMMARY (#2348 staleness).
   for (const spec of dirs) {
     const [d, complete = true] = Array.isArray(spec) ? spec : [spec, true];
     const dir = path.join(planning, 'phases', d);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '01-01-x-PLAN.md'), '# plan\n', 'utf-8');
-    if (complete) fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
+    if (complete) {
+      fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
+      fs.writeFileSync(
+        path.join(dir, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+    }
   }
 }
 
@@ -111,6 +128,56 @@ function syncedPercent() {
   const m = raw.match(/^\*\*Progress:\*\*[^\r\n]*?(\d+)%/m);
   assert.ok(m, `state sync must have written a Progress percent; got:\n${raw}`);
   return parseInt(m[1], 10);
+}
+
+/**
+ * The reason `state sync` gave for WITHHOLDING the Progress percent — the
+ * companion observable to `syncedPercent()` above.
+ *
+ * ADDED at the origin/next merge. #3217 (ADR-3180 §7.6 rule 4) made
+ * `cmdStateSync` refuse to write a percentage at all when the milestone's
+ * phase-directory scope is not COMPLETE, pushing a `Progress: skipped — …`
+ * entry into `changes` instead. Every version-LESS fixture in this file whose
+ * STATE.md still pins `milestone: v2.0` is classification row 5 (a resolved
+ * version with no heading to bind it to — see `classifyMilestoneWindow` in
+ * roadmap-parser.cts), so it now withholds.
+ *
+ * On the WRITE path that is a convergence, not a regression: the LEGACY twin
+ * of the same shape ALREADY withheld before this merge, through the older and
+ * orthogonal #1761 `milestoneBounded` guard — `isMilestoneBounded`'s loose
+ * bracket-prefix regex simply returned `bounded: true` on the bracket leg, so
+ * the bracket leg alone kept emitting a percent. #3217 closes that asymmetry.
+ *
+ * It does NOT converge the READ path, and what it leaves behind there is
+ * bracket-only: `state json` still reports a percent on these shapes under
+ * bracket, while the legacy twin reports none (#1761 fires on the read path
+ * too). The mechanism is upstream's own call-site asymmetry, not this
+ * branch's — `cmdStateJson` calls `buildStateFrontmatter(body, cwd)` with no
+ * `storedMilestone`, so its `listMilestonePhaseDirs` sees
+ * `versionOverride: null` and classifies row 3 (COMPLETE), where
+ * `cmdStateSync` passes the stored version and gets row 5. Reconciling those
+ * two call sites belongs to whoever owns #3217; it is recorded here rather
+ * than papered over. (Not the same thing as the `PIN (G1 LEGACY control)`
+ * block below — that one is a VERSIONED fixture and a 999-icebox-token
+ * divergence, a different mechanism entirely.)
+ *
+ * On these fixtures the write-path counter is therefore no longer observable
+ * through a percentage — nothing computes one. Its coverage lives in the
+ * VERSIONED fixtures throughout this file, which still assert `syncedPercent`.
+ */
+function syncSkipReason() {
+  const r = runGsdTools(['state', 'sync'], tmpDir);
+  assert.ok(r.success, `state sync failed: ${r.error}`);
+  const changes = JSON.parse(r.output).changes || [];
+  const skipped = changes.find(c => /^Progress: skipped/.test(c));
+  assert.ok(skipped, `state sync must have recorded why Progress was skipped; got: ${JSON.stringify(changes)}`);
+  // The `changes` entry above is the discriminator for "withheld"; this only
+  // adds that the body Progress line still reads the fixture's starting value,
+  // so no percent was rendered into STATE.md behind the skip.
+  const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  assert.match(raw, /^\*\*Progress:\*\* \[░{10}\] 0%$/m,
+    'no percent may be rendered into the body when sync says it skipped');
+  return skipped;
 }
 
 const BRACKET_ROADMAP = `# Roadmap
@@ -1315,7 +1382,10 @@ describe('#612 PR-2 B1 round-2: a same-milestone continuation heading is not a b
     assert.equal(readTotal(), 2, 'pinned 1 before this fix');
     poisonTotalPhases();
     assert.equal(syncedTotal(), 2);
-    assert.equal(syncedPercent(), 50, 'pinned 100 before this fix');
+    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. This
+    // fixture's milestone is fully version-LESS while STATE.md pins v2.0, so
+    // #3217 withholds the sync percentage (row 5). See syncSkipReason's block.
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
   test('PIN (repro8 case 3): a trailing DIFFERENT-id icebox section still terminates the primary section — unchanged at 2/1/50', () => {
@@ -2011,7 +2081,12 @@ Authoring guide — a milestone heading looks like:
 `, 'bracket', D);
     assert.equal(readTotal(), 2, 'pinned 4 before this fix — the fenced VERSION heading won the min() and swallowed everything before it into the preamble unstripped');
     poisonTotalPhases();
-    assert.equal(syncedPercent(), 50, 'pinned 75 before this fix — base correctly suppressed this percent, HEAD must not resurface it wrong');
+    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. Once
+    // the fenced example is stripped this roadmap is version-LESS while
+    // STATE.md pins v2.0, so #3217 withholds (row 5). The RED's intent is
+    // unchanged and in fact strengthened: the wrong 75 must not resurface,
+    // and now NO percent is written at all. See syncSkipReason's block.
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
   test('PIN case C2: a fenced BRACKET-shaped heading in the same position (round-2\'s own fix target) stays unchanged at 2/1/50', () => {
@@ -2443,7 +2518,10 @@ Authoring guide:
     assert.equal(readTotal(), 2, 'pinned 3 before this fix');
     poisonTotalPhasesR4M1();
     assert.equal(syncedTotal(), 2);
-    assert.equal(syncedPercent(), 50, 'pinned 33 before this fix');
+    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. This
+    // fixture is version-LESS by construction (that is what F9 is about) while
+    // STATE.md pins v2.0, so #3217 withholds (row 5). See syncSkipReason.
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
   test('RED (F12): a fenced-ONLY bracket heading no longer bounds a milestone absent from the roadmap — percent stays suppressed', () => {
@@ -2803,7 +2881,12 @@ describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented he
 **Goal:** c
 `, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
     assert.equal(readTotal(), 2, 'pinned 3 before this fix — GSD.03\'s phase leaked into scope');
-    assert.equal(syncedPercent(), 50, 'pinned 67 before this fix');
+    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. Both
+    // milestones here are version-LESS while STATE.md pins v2.0, so #3217
+    // withholds the sync percentage (row 5). The read assertion above is what
+    // carries this RED; see syncSkipReason's block for why the write-path
+    // percent is no longer computable on this shape.
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
   test('PIN (G6c UNINDENTED control): the identical document with no leading indent is unaffected — 2/1/50', () => {
@@ -2823,7 +2906,11 @@ describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented he
 **Goal:** c
 `, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
     assert.equal(readTotal(), 2);
-    assert.equal(syncedPercent(), 50);
+    // UPDATED at the origin/next merge — was `syncedPercent() === 50`, for the
+    // same #3217 row-5 reason as its G6 twin above. The control's job is that
+    // the indented and unindented documents behave IDENTICALLY, and they still
+    // do — both now withhold.
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
   // G6 above happens to leave isMilestoneBounded's own verdict unchanged
