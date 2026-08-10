@@ -956,6 +956,70 @@ describe('checkCodexModelPosture', () => {
     );
   });
 
+  // Security review (#3242, MEDIUM): readdirSync + readFileSync followed symlinks,
+  // so a symlink in the agents directory pointing at an arbitrary file could have
+  // that file's content echoed into a violation's `value` field. Fixed by lstat-
+  // filtering to regular files only, matching cmdEffortSync's existing symlink
+  // guard in commands.cts. Symlinks are silently excluded (not reported), same
+  // as cmdEffortSync — see agent-install-check.cts inline comment for why.
+  test('symlink pointing at a file containing model = "sonnet" is never read — no violation names that value', (t) => {
+    const targetPath = path.join(tmpDir, 'outside-target.toml');
+    fs.writeFileSync(targetPath, 'model = "sonnet"\n');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const symlinkPath = path.join(agentsDir, 'gsd-linked.toml');
+    try {
+      fs.symlinkSync(targetPath, symlinkPath, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw error;
+    }
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.deepStrictEqual(result.checked, [], 'the symlinked entry must not appear in checked');
+  });
+
+  test('broken symlink in agents dir does not crash the scan — other agents still checked', (t) => {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const brokenTarget = path.join(tmpDir, 'does-not-exist.toml');
+    const brokenSymlink = path.join(agentsDir, 'gsd-broken.toml');
+    try {
+      fs.symlinkSync(brokenTarget, brokenSymlink, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw error;
+    }
+    writeAgentToml(agentsDir, 'gsd-good', 'name = "gsd-good"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+
+    let result;
+    assert.doesNotThrow(() => {
+      result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+    });
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.deepStrictEqual(result.checked, ['gsd-good'], 'the broken symlink must be excluded, the other agent still checked');
+  });
+
+  test('a regular .toml file is still scanned normally (guard against over-filtering)', () => {
+    writeAgentToml(agentsDir, 'gsd-planner', 'name = "gsd-planner"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.deepStrictEqual(result.checked, ['gsd-planner']);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
   // # 22 — boundary: empty / whitespace-only .toml pins nothing.
   test('row 22: empty / whitespace-only .toml — no violation', () => {
     writeAgentToml(agentsDir, 'gsd-blank', '   \n\n\t\n');

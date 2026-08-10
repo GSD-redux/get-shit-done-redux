@@ -293,8 +293,12 @@ offending value. Two things it flags:
 - `orphaned_reasoning_effort` — a `model_reasoning_effort` with no `model`, which leaves the model
   following your Codex session while the effort follows GSD.
 
-An empty violations list means the install is posture-clean, and the 400 is coming from somewhere
-else — check that your Codex session itself is healthy.
+An empty violations list means every regular `.toml` in the directory is posture-clean, so the 400
+is coming from somewhere else — check that your Codex session itself is healthy.
+
+One thing the check deliberately does not inspect: an agent file that is a **symlink** is skipped
+rather than followed, matching how the effort sync treats them. If you symlink your agent configs,
+verify those targets by hand.
 
 **Fix:** re-run the installer. Current versions write no model at all, so agents inherit the session
 model:

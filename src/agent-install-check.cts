@@ -362,9 +362,26 @@ function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexMo
     };
   }
 
+  // Skip symlinks — matches cmdEffortSync's existing idiom in commands.cts
+  // ("Skip symlinks — only write regular files..."). Here the risk is reading
+  // (not writing) through a symlink: readFileSync follows symlinks, so an
+  // agents-dir symlink pointing at an arbitrary file would let that target's
+  // contents be echoed into this function's `value` field. A symlinked agent
+  // file is a structural install choice (checkAgentsInstalled's territory),
+  // not a model-content posture defect, so it is silently excluded from
+  // `checked` rather than reported as a distinct violation — same shape as
+  // cmdEffortSync, which silently drops symlinks from its file list rather
+  // than inventing a new skip/violation reason.
   const tomlFiles = fs
     .readdirSync(agentsDir)
-    .filter((entry) => entry.endsWith('.toml'))
+    .filter((entry) => {
+      if (!entry.endsWith('.toml')) return false;
+      try {
+        return fs.lstatSync(path.join(agentsDir, entry)).isFile();
+      } catch {
+        return false;
+      }
+    })
     .sort();
 
   const checked: string[] = [];
