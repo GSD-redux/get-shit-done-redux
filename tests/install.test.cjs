@@ -7081,11 +7081,26 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
     // Pull the gate's OWN blocks — the ones a dispatch site is told to run —
     // out of the emitted reference. readFileNormalized strips CRLF first
     // (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE).
-    const blocks = [...readFileNormalized(gate).matchAll(/```bash\r?\n([\s\S]*?)```/g)].map(m => m[1]);
-    const resolveBlock = blocks.find(b => b.includes('ISOLATION=$(gsd_run query dispatch-isolation --raw'));
-    const flagBlock = blocks.find(b => b.includes('HARNESS_FLAG='));
-    assert.ok(resolveBlock, 'emitted dispatch-isolation-gate.md has no `Resolve ISOLATION` bash block');
-    assert.ok(flagBlock, 'emitted dispatch-isolation-gate.md has no `Resolve the harness flag` bash block');
+    // Anchor on the gate's own HEADINGS, not on an assignment literal inside a
+    // block. The workflows tell a dispatch site to run the `Resolve ISOLATION`
+    // and `Resolve the harness flag` blocks BY NAME, so the heading is the
+    // contract and the block body is free to change under it. Keying off the
+    // body instead is what broke here: when the resolver grew its
+    // `_ISOLATION_RAW`/`ISOLATION_RESOLVED` split — so a shim failure stops
+    // masquerading as a declared `none` — the old `ISOLATION=$(gsd_run query
+    // dispatch-isolation --raw` finder stopped matching, and a test whose
+    // subject is "does the emitted gate resolve cursor correctly" failed as
+    // "there is no such block".
+    const gateText = readFileNormalized(gate);
+    const blockUnder = (heading) => {
+      const at = gateText.indexOf(`## ${heading}`);
+      if (at === -1) return undefined;
+      return (gateText.slice(at).match(/```bash\r?\n([\s\S]*?)```/) || [])[1];
+    };
+    const resolveBlock = blockUnder('Resolve ISOLATION');
+    const flagBlock = blockUnder('Resolve the harness flag');
+    assert.ok(resolveBlock, 'emitted dispatch-isolation-gate.md has no `## Resolve ISOLATION` heading with a bash block under it');
+    assert.ok(flagBlock, 'emitted dispatch-isolation-gate.md has no `## Resolve the harness flag` heading with a bash block under it');
 
     // A disposable project dir: `query dispatch-isolation` writes the #3045
     // sentinel into its cwd as an unconditional side effect.
