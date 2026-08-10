@@ -24,11 +24,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { runGsdTools, createTempProject, createTempDir, cleanup, installSpawnEnv } = require('./helpers.cjs');
-// #2486: the marker regression drives a real install + the shipped query, so it
-// spawns node — through the process seam, never a hand-rolled spawnSync
-// (CONTRIBUTING "Spawning a subprocess: use the process seam").
-const { runNode } = require('./helpers/process-seam.cjs');
+const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { SENTINEL_RELATIVE_PATH, readSentinel } = require('../hooks/lib/isolation-sentinel.js');
 const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
@@ -346,71 +342,6 @@ describe('#2486 regression: inspect-dispatch-isolation is the side-effect-free r
     assert.equal(fs.existsSync(path.join(dir, '.gsd')), false, 'inspection must not even create the .gsd dir');
   });
 
-  // #2486 review round 7 — the runtime rung this whole gate stands on.
-  //
-  // `resolveRuntime` (runtime-slash) stops at GSD_RUNTIME > config.runtime >
-  // 'claude'. `config-new-project` writes NO `runtime` key, so on a real
-  // non-Claude install the gate resolved as Claude, reported `harness-worktree`,
-  // and both consumers silently reverted to the #2486 defect: settings still
-  // offered "Yes (Recommended)" and W024 stayed quiet. `resolveRuntime` — the
-  // ONE canonical resolver every dispatch query uses — now carries the
-  // per-install `.gsd-runtime` marker rung, so a per-consumer fix cannot fork
-  // precedence. Verified end-to-end against a real `--qwen`
-  // install (marker present, config `{}`, GSD_RUNTIME unset): the pre-fix
-  // resolver reported `harness-worktree`, the fixed one reports `none`.
-  test('a real non-Claude install resolves isolation from its own marker, not claude (#2486)', (t) => {
-    // Exercises the SHIPPED query wiring, not just the helper: an assertion
-    // against `resolveRuntime`'s exported behavior alone still passes if
-    // gsd-tools.cjs is reverted to a marker-blind resolver, which is exactly
-    // the regression this pins. So: a real `--qwen` install, a runtime-NEUTRAL
-    // `.planning/config.json` (what `config-new-project` actually writes), and
-    // no GSD_RUNTIME — the precise shape that reported `harness-worktree` and
-    // silently reverted /gsd:settings and W024 to the #2486 defect.
-    const installDir = createTempDir('gsd-2486-marker-inst-');
-    const projDir = createTempProject('gsd-2486-marker-proj-');
-    t.after(() => { cleanup(installDir); cleanup(projDir); });
-
-    // Spawn the installer through the repo's isolation seam, not raw
-    // process.env: ambient GSD_HOME / runtime-location variables otherwise leak
-    // in and make installed-capability discovery host-dependent.
-    // GSD_TEST_MODE (set at the top of this file) makes bin/install.js a no-op
-    // that still exits 0 — it must be cleared for the child, or this test
-    // "passes" an install that never wrote anything.
-    const installEnv = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir });
-    delete installEnv.GSD_TEST_MODE;
-    const install = runNode(
-      [path.join(__dirname, '..', 'bin', 'install.js'), '--qwen', '--global', '--config-dir', installDir],
-      { env: installEnv, timeoutMs: 120000 },
-    );
-    assert.equal(install.outcome, 'exited', `install --qwen did not complete: ${install.outcome}`);
-    assert.equal(install.exitCode, 0, `install --qwen failed: ${install.stderr || install.stdout}`);
-
-    const marker = path.join(installDir, 'gsd-core', '.gsd-runtime');
-    assert.equal(fs.existsSync(marker), true, 'the install wrote no .gsd-runtime marker — the rung under test does not exist');
-    assert.equal(fs.readFileSync(marker, 'utf8').trim(), 'qwen', 'marker should name the installed runtime');
-
-    fs.writeFileSync(path.join(projDir, '.planning', 'config.json'), '{}');
-    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
-    delete env.GSD_RUNTIME;   // production does not set it; only tests do
-
-    const res = runNode(
-      [path.join(installDir, 'gsd-core', 'bin', 'gsd-tools.cjs'), 'query', 'inspect-dispatch-isolation', '--raw'],
-      { cwd: projDir, env, timeoutMs: 60000 },
-    );
-    assert.equal(res.outcome, 'exited', `inspect query did not complete: ${res.outcome}`);
-    assert.equal(
-      res.stdout.trim(),
-      'none',
-      'a qwen install with a runtime-neutral config resolved as claude and reported a worktree capability it does not have — /gsd:settings would recommend Worktrees and W024 would stay silent (#2486)',
-    );
-
-    // The same install must not have written a sentinel: this is the read verb.
-    assert.equal(
-      fs.existsSync(path.join(projDir, '.gsd')),
-      false,
-      'inspect-dispatch-isolation created .gsd/ — the read path must stay side-effect-free (no loadConfig, no sentinel)',
-    );
-  });
 
   test('parity: inspect resolves byte-identically to the recording verb for every registry runtime', (t) => {
     // Same negotiation implementation by construction (shared helper) — this

@@ -1731,12 +1731,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     let exec = null;
     let harnessFlag = null;
     try {
-      // `resolveRuntime` now carries the per-install `.gsd-runtime` marker rung
-      // (#2486) — GSD_RUNTIME > config.runtime > marker > 'claude'. Deliberately
-      // NOT `resolveActiveRuntime`/`loadConfig`: loadConfig normalizes and
-      // rewrites legacy keys back to disk, and this resolver backs the
-      // side-effect-free `inspect-dispatch-isolation` verb, which must never
-      // write. resolveRuntime reads config.json directly instead.
+      // Deliberately `resolveRuntime`, NOT `resolveActiveRuntime`/`loadConfig`:
+      // loadConfig normalizes and rewrites legacy keys back to disk, and this
+      // resolver backs the side-effect-free `inspect-dispatch-isolation` verb,
+      // which must never write. resolveRuntime reads config.json directly.
+      //
+      // KNOWN LIMITATION, tracked separately: resolveRuntime stops at
+      // GSD_RUNTIME > config.runtime > 'claude' and does not consult the
+      // per-install `.gsd-runtime` marker, so on a non-Claude install whose
+      // project config carries no `runtime` key this resolves 'claude'. That is
+      // open-gsd/gsd-core#2395 — a pre-existing defect in the canonical
+      // resolver, not introduced here, and deliberately NOT fixed in this PR
+      // (its blast radius reaches every consumer of that resolver, so it is
+      // being handled on its own).
       const { resolveRuntime } = require('./lib/runtime-slash.cjs');
       runtimeId = resolveRuntime(cwd);
 
