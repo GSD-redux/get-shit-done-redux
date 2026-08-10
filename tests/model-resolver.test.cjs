@@ -4098,6 +4098,23 @@ describe('#2229 resolveTierInternal / resolveTierFromConfig — config rows', ()
     assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'unknown');
   });
 
+  // Regression: CLAUDE_POLICY_ID_TO_ALIAS is a plain object literal indexed
+  // with this config-supplied override value with no own-property guard. A
+  // prototype-chain override ("toString", "constructor", "__proto__",
+  // "valueOf", "hasOwnProperty") returned the inherited Function/Object
+  // member (typeof "function"/"object") instead of falling through to
+  // "unknown" — and a function-valued tier is silently dropped by
+  // JSON.stringify in the CLI output, so `tier` vanished from `query
+  // resolve-model` entirely.
+  for (const proto of ['toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty']) {
+    test(`REGRESSION: model_overrides="${proto}" (prototype-chain key) -> string "unknown", not an inherited member`, () => {
+      writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': proto } });
+      const result = resolveTierInternal(tmpDir, 'gsd-phase-researcher');
+      assert.strictEqual(typeof result, 'string', `expected a string, got ${typeof result}: ${String(result)}`);
+      assert.strictEqual(result, 'unknown');
+    });
+  }
+
   test('model_profile=inherit -> "inherit"', () => {
     writeConfig(tmpDir, { model_profile: 'inherit' });
     assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'inherit');
@@ -4138,6 +4155,64 @@ describe('#2229 resolveTierInternal — computeProfileTier is blind to model-id 
   test('models.research="haiku" wins over model_profile=balanced (a profile-only check would miss this)', () => {
     writeConfig(tmpDir, { model_profile: 'balanced', models: { research: 'haiku' } });
     assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+});
+
+// Regression (#3282): resolveTierFromConfig used to report only the PROFILE
+// tier and ignore the model_policy preset step that resolveModelInternal
+// applies afterward (its "2.5" step) — so a haiku-tier run under
+// model_policy.budget:"low" reported tier "sonnet", silently defeating any
+// tier-floor keyed on this value. These pin the fixed behavior: the reported
+// tier and the resolved model must agree on which tier actually ran.
+describe('#3282 resolveTierFromConfig mirrors resolveModelInternal step 2.5 (model_policy)', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { if (tmpDir) cleanup(tmpDir); tmpDir = null; });
+
+  test('model_policy budget:low -> tier "haiku", agreeing with the resolved model', () => {
+    writeConfig(tmpDir, { model_policy: { provider: 'anthropic', budget: 'low' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+
+  test('model_policy budget:high -> tier "opus", agreeing with the resolved model', () => {
+    writeConfig(tmpDir, { model_policy: { provider: 'anthropic', budget: 'high' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'opus');
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-phase-researcher'), 'opus');
+  });
+
+  test('model_policy budget:medium -> tier "sonnet"', () => {
+    writeConfig(tmpDir, { model_policy: { provider: 'anthropic', budget: 'medium' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+
+  // Measured (2026-08-09): model_profile:"budget" gives gsd-phase-researcher
+  // a "haiku" profile tier, but model_policy.budget:"high" resolves the
+  // anthropic "haiku" preset's high slot to "claude-sonnet-5" — the POLICY
+  // outranks the PROFILE, so the actually-dispatched tier is "sonnet", not
+  // the profile's "haiku". A profile-only reporter would under-report this.
+  test('model_policy outranks model_profile: budget profile + policy budget:high -> tier "sonnet"', () => {
+    writeConfig(tmpDir, { model_profile: 'budget', model_policy: { provider: 'anthropic', budget: 'high' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+
+  // Measured (2026-08-09): on a non-Claude runtime, resolveModelInternal
+  // returns the policy-resolved model id VERBATIM (no Claude-alias mapping
+  // is attempted) — "qwen3-coder-plus" carries no tier we can name. Must
+  // report "unknown", never fall back to the profile tier ("balanced" ->
+  // "sonnet" here), which would silently reintroduce the under-report.
+  test('non-Claude runtime + model_policy resolving a verbatim model id -> tier "unknown"', () => {
+    writeConfig(tmpDir, { runtime: 'qwen', model_policy: { provider: 'qwen', budget: 'medium' } });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-phase-researcher'), 'qwen3-coder-plus');
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'unknown');
+  });
+
+  // "fable" is a real, reachable tier value (Claude Code's Agent tool accepts
+  // it, and CLAUDE_POLICY_ID_TO_ALIAS maps "claude-fable-5" to it) — it is
+  // NOT the budget tier and must NOT be floored by a budget-tier check.
+  test('model_overrides pinning "fable" -> tier "fable", a valid non-floored tier', () => {
+    writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': 'fable' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'fable');
   });
 });
 
@@ -4211,6 +4286,20 @@ describe('#2229 cmdResolveModel CLI — tier key, additive-output guard, unknown
     assert.strictEqual(parsed.unknown_agent, true);
   });
 
+  // Regression: without the Object.hasOwn guard, model_overrides:"toString"
+  // resolved a function-valued tier, and JSON.stringify silently DROPS a
+  // function-valued object key — so `tier` disappeared from the parsed
+  // output entirely rather than merely holding a wrong value. Asserting the
+  // key's presence (not just its value) is what would have caught that.
+  test('REGRESSION: model_overrides="toString" (prototype-chain key) -> parsed JSON still HAS a "tier" key, equal to "unknown"', () => {
+    writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': 'toString' } });
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.ok(Object.hasOwn(parsed, 'tier'), `expected a "tier" key in ${result.output}`);
+    assert.strictEqual(parsed.tier, 'unknown');
+  });
+
   test('--pick tier prints the bare string "sonnet" (no JSON, no quotes) for {}', () => {
     writeConfig(tmpDir, {});
     const result = runGsdTools(['resolve-model', 'gsd-phase-researcher', '--pick', 'tier'], tmpDir);
@@ -4251,6 +4340,31 @@ describe('#2229 PROPERTY: resolveTierFromConfig never throws and always returns 
         let result;
         assert.doesNotThrow(() => { result = resolveTierFromConfig(cfg, 'gsd-phase-researcher'); });
         assert.ok(typeof result === 'string', `expected a string, got: ${JSON.stringify(result)}`);
+        assert.ok(KNOWN_TIERS.has(result), `unexpected tier value: ${JSON.stringify(result)}`);
+      })
+    );
+  });
+
+  // Regression: the generic fc.object() generator above almost never produces
+  // a prototype-chain string ("toString", "constructor", "__proto__",
+  // "valueOf", "hasOwnProperty") as a model_overrides value, so it never
+  // exercised the CLAUDE_POLICY_ID_TO_ALIAS own-property guard. This variant
+  // pins model_overrides['gsd-phase-researcher'] to a mix of those names and
+  // arbitrary strings so the "always returns a known tier" invariant is
+  // actually checked against the class of input that broke it.
+  test('for configs whose model_overrides value may be a prototype-chain key', () => {
+    const fc = require('./helpers/fast-check-setup.cjs');
+    const KNOWN_TIERS = new Set(['opus', 'sonnet', 'haiku', 'fable', 'inherit', 'unknown']);
+    const overrideArb = fc.oneof(
+      fc.constantFrom('toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty'),
+      fc.string(),
+    );
+    fc.assert(
+      fc.property(fc.object(), overrideArb, (baseCfg, overrideValue) => {
+        const cfg = { ...baseCfg, model_overrides: { 'gsd-phase-researcher': overrideValue } };
+        let result;
+        assert.doesNotThrow(() => { result = resolveTierFromConfig(cfg, 'gsd-phase-researcher'); });
+        assert.strictEqual(typeof result, 'string', `expected a string, got: ${typeof result} (${JSON.stringify(result)})`);
         assert.ok(KNOWN_TIERS.has(result), `unexpected tier value: ${JSON.stringify(result)}`);
       })
     );

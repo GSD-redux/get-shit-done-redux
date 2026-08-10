@@ -146,15 +146,27 @@ describe('explore research-pass claim disposition (#2229)', () => {
     }
   });
 
-  test('#2543 M4: the ledger-reason enum is identical across every copy in explore.md and CONTEXT.md', () => {
+  test('#2543 M4: the ledger-reason enum is identical across every copy in explore.md, CONTEXT.md, and agents/gsd-phase-researcher.md', () => {
     // The prior extractor used text.match() with no /g — it only ever inspected the
     // FIRST copy, so a second explore.md copy (or the CONTEXT.md copy) could drift
     // unnoticed. Use matchAll so every occurrence is checked, not just one.
-    const ENUM_RE = /[{(][^{}()]*\bunverifiable\b[^{}()]*untagged — disposition not reported[^{}()]*[})]/g;
+    //
+    // A fourth copy lives in agents/gsd-phase-researcher.md (~line 190) and was NOT
+    // scanned here, even though this exact class of defect — an enum duplicated
+    // across surfaces with no coupling between them — is why this test exists in the
+    // first place: a third copy (in CONTEXT.md) silently drifted earlier in this
+    // PR's history precisely because nothing compared it. A parity test that only
+    // looks at some of the copies gives false confidence; it must cover every known
+    // copy or it isn't proving what its name claims. The agent-file copy is a bare
+    // backtick-delimited list with no enclosing `{}`/`()`, unlike the other three, so
+    // the extractor below matches on the 5-value chain itself rather than requiring
+    // a bracket pair around it.
+    const ENUM_RE =
+      /`?unverifiable`?(?: \| `?[^`|{}()]+`?){3} \| `?untagged — disposition not reported`?/g;
     const extractAll = (text, label) => {
       const normalized = text.replace(/\s+/g, ' ');
       const matches = [...normalized.matchAll(ENUM_RE)].map((m) =>
-        m[0].slice(1, -1).replace(/`/g, '').split('|').map((s) => s.trim()),
+        m[0].replace(/`/g, '').split('|').map((s) => s.trim()),
       );
       assert.ok(matches.length > 0, `${label} must carry at least one copy of the 5-value ledger-reason enum`);
       return matches;
@@ -162,10 +174,10 @@ describe('explore research-pass claim disposition (#2229)', () => {
 
     const exploreCopies = extractAll(readWorkflow(), 'explore.md');
     // Measured: explore.md currently carries 2 copies (the Step-3 share template and
-    // the Step-4 carry-forward instruction) and CONTEXT.md carries a 3rd — matching
-    // this PR's "all three ledger-enum copies now end `untagged — disposition not
-    // reported`" note. Assert >=2 in explore.md so a future removal of either copy
-    // is caught, without hardcoding a count this test can't independently justify.
+    // the Step-4 carry-forward instruction), CONTEXT.md carries a 3rd, and
+    // agents/gsd-phase-researcher.md carries a 4th. Assert >=2 in explore.md so a
+    // future removal of either copy is caught, without hardcoding a count this test
+    // can't independently justify.
     assert.ok(
       exploreCopies.length >= 2,
       `explore.md must carry at least 2 copies of the 5-value ledger-reason enum; found ${exploreCopies.length}`,
@@ -186,6 +198,24 @@ describe('explore research-pass claim disposition (#2229)', () => {
       contextCopies[0],
       exploreCopies[0],
       'the Unresolved-Ledger abstention reasons in explore.md and CONTEXT.md have drifted; keep them identical (#2543 M4)',
+    );
+
+    const agentCopies = extractAll(
+      fs.readFileSync(path.join(__dirname, '..', 'agents', 'gsd-phase-researcher.md'), 'utf-8'),
+      'agents/gsd-phase-researcher.md',
+    );
+    assert.deepStrictEqual(
+      agentCopies[0],
+      exploreCopies[0],
+      'the ledger-reason enum in agents/gsd-phase-researcher.md has drifted from explore.md/CONTEXT.md; keep all copies identical (#2543 M4)',
+    );
+
+    // Total-copy floor across all three files so deleting a copy anywhere is also
+    // caught, not just a value-level drift within a surviving copy.
+    const totalCopies = exploreCopies.length + contextCopies.length + agentCopies.length;
+    assert.ok(
+      totalCopies >= 4,
+      `expected at least 4 total ledger-reason enum copies across explore.md, CONTEXT.md, and agents/gsd-phase-researcher.md; found ${totalCopies}`,
     );
   });
 
@@ -295,6 +325,26 @@ describe('explore research-pass claim disposition (#2229)', () => {
       'that merely NAMES admit and abstain does not establish which way it converts');
     assert.doesNotMatch(clause, /\bdo not suppress\b|as an \*\*admit\*\*, unchanged/i,
       'an inverted floor must fail this test');
+  });
+
+  // The disclosure is the only thing standing between a user and an unfloored cheap
+  // model in the model_profile_overrides escape (a tier's model repointed at another
+  // tier's model, e.g. codex's `opus` tier repointed at codex's own `haiku`-tier model
+  // id — measured: reports tier "opus" while the model that actually answers is
+  // "gpt-5.6-luna"). It is load-bearing text, not commentary — assert BOTH residual
+  // cases are named, and that the count reads "two cases" so shrinking the disclosure
+  // without shrinking the residual fails this test.
+  test('tier-floor guard: the disclosed residual names BOTH escape cases, not just the model_overrides one', () => {
+    const clause = tierFloorClause(readWorkflow());
+    assert.match(clause, /\bmodel_overrides\b/,
+      'the disclosed residual must still name the model_overrides pin-to-raw-id case');
+    assert.match(clause, /\bmodel_profile_overrides\b/,
+      'the disclosed residual must also name the model_profile_overrides tier-repointing case');
+    assert.match(clause, /two cases/i,
+      'the residual must be counted as "two cases", not "one case" — shrinking the count ' +
+        'without shrinking the residual must fail this test');
+    assert.doesNotMatch(clause, /one case remains/i,
+      'the stale "one case remains" heading must not survive alongside the second disclosed case');
   });
 
   test('tier-floor guard: the floor suppresses only unearned confidence, sparing refute/abstain', () => {

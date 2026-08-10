@@ -516,7 +516,12 @@ function cmdResolveModel(cwd: string, agentType: string | undefined, raw: boolea
   const model = resolveModelInternal(cwd, agentType!);
   const effort = resolveEffortInternal(cwd, agentType!);
 
-  const agentModels = (MODEL_PROFILES as Record<string, unknown>)[agentType!];
+  // Own-property guard: agentType is an unvalidated CLI positional, so a
+  // prototype-chain value ("toString", "constructor") would otherwise return
+  // an inherited truthy member from this plain object and misreport a
+  // genuinely unknown agent as known (unknown_agent dropped from the result).
+  const agentModelsMap = MODEL_PROFILES as Record<string, unknown>;
+  const agentModels = Object.hasOwn(agentModelsMap, agentType!) ? agentModelsMap[agentType!] : undefined;
   // #2229: `tier` is additive — existing keys and their values are untouched, so
   // every `--pick model` / `--pick profile` / `--raw` consumer is unaffected. It
   // exists because the model id is deliberately blank under resolve_model_ids:"omit",
@@ -599,7 +604,12 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
-  const agentModels = (MODEL_PROFILES as Record<string, unknown>)[agentType!];
+  // Own-property guard: agentType is an unvalidated CLI positional, so a
+  // prototype-chain value ("toString", "constructor") would otherwise return
+  // an inherited truthy member from this plain object and misreport a
+  // genuinely unknown agent as known (unknown_agent dropped from the result).
+  const agentModelsMap = MODEL_PROFILES as Record<string, unknown>;
+  const agentModels = Object.hasOwn(agentModelsMap, agentType!) ? agentModelsMap[agentType!] : undefined;
   const result: Record<string, unknown> = {
     model,
     profile,

@@ -74,7 +74,7 @@ If yes, spawn a research agent:
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
 Resolve the researcher's **tier** and its model before dispatching. `--pick tier` returns the effective
-tier GSD resolved (`opus` | `sonnet` | `haiku` | `inherit` | `unknown`) and is what arms the tier-floor
+tier GSD resolved (`opus` | `sonnet` | `haiku` | `fable` | `inherit` | `unknown`) and is what arms the tier-floor
 guard below. `--pick model` answers a different question — which model id to hand `Agent()` — and is
 **not** a tier signal: it is blank on runtimes installed with `resolve_model_ids: "omit"`, and a
 runtime-substituted name (`gpt-5.6-luna` on codex) where a tier map exists. `--raw` would drop both:
@@ -151,10 +151,17 @@ Two guards ride with it:
   A floor keyed on the model id therefore reads either nothing or the wrong thing on non-Claude
   installs, while the tier stays correct on all of them.
 
-  **Disclosed residual — one case remains.** A per-agent `model_overrides.gsd-phase-researcher`
-  pinned to a raw model id carries no tier, so it reports `unknown` and is floored. That is
-  deliberate over-flooring in the safe direction: a high-tier pin loses its admits rather than a
-  low-tier pin keeping them.
+  **Disclosed residual — two cases remain.**
+  - A per-agent `model_overrides.gsd-phase-researcher` pinned to a raw model id carries no tier,
+    so it reports `unknown` and is floored. That is deliberate over-flooring in the safe
+    direction: a high-tier pin loses its admits rather than a low-tier pin keeping them.
+  - A `model_profile_overrides.<runtime>.<tier>` entry that repoints a tier at another tier's
+    model — e.g. `model_profile_overrides.codex.opus` set to codex's own `haiku`-tier model id —
+    reports the tier that was *asked for*, not the tier of the model that actually answers, so
+    the floor stays silent on a cheap model wearing a high-tier label. This is the one direction
+    that fails *open*: it requires deliberately repointing a tier in config, and the model-id
+    check above does not catch it either, since the repointed id is a real, mappable model id,
+    not an unmappable pin.
 
 **Untagged findings.** A finding returned with **no** `[admit:/refute:/abstain:]` tag is treated
 as an **abstain** and goes to the ledger with the reason `untagged — disposition not reported`.
