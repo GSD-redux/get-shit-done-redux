@@ -73,18 +73,16 @@ PATTERNS=(
   # passing on GNU-grep CI runners. Found auditing #3175; fixed here since it
   # is the same unanchored/portability defect class as the boundary fix.
   #
-  # `exec` additionally excludes a preceding `.` in its left boundary, which
-  # `eval`/`Function` do not need. The apostrophe fix above is what surfaced
-  # this: before it, only `exec("` matched, and the double-quoted form is rare
-  # in method position. Now `re.exec('10-24')` matches, and RegExp.prototype
-  # .exec takes a subject string, not code. A plain `[^[:alnum:]]` boundary
-  # cannot separate the two, because `.` is not alnum. The command-execution
-  # vector the pattern exists for is kept by the dedicated member-call pattern
-  # on the next line, so a bare `exec('rm -rf /')` and `cp.exec('rm -rf /')`
-  # both still fire.
+  # `exec` stays receiver-blind on purpose. A left boundary that excludes a
+  # preceding `.` would drop every member-position `.exec('…')` — including
+  # `require('child_process').exec('…')`, the single most common Node spelling
+  # of the vector this pattern exists to catch — and a receiver allowlist
+  # cannot restore it, because the literal `child_process` is not adjacent to
+  # `.exec`. The cost is that `RegExp.prototype.exec`, which takes a subject
+  # string rather than code, also matches; files that legitimately call it are
+  # handled by ALLOWLIST below, never by narrowing the pattern.
   '(^|[^[:alnum:]])eval[[:space:]]*\([[:space:]]*["'"'"']'
-  '(^|[^[:alnum:].])exec[[:space:]]*\([[:space:]]*["'"'"']'
-  '(child_process|childProcess|(^|[^[:alnum:]])cp)\.exec[[:space:]]*\([[:space:]]*["'"'"']'
+  'exec[[:space:]]*\([[:space:]]*["'"'"']'
   '(^|[^[:alnum:]])Function[[:space:]]*\([[:space:]]*["'"'"'].*return'
 
   # Jailbreak / DAN patterns
@@ -140,6 +138,13 @@ ALLOWLIST=(
   # asserts nothing: it is the payload the guard is required to catch, carried
   # as test DATA. Same class as the read-injection-scanner suites above.
   'tests/kimi-payload-field-shadowing.security.test.cjs'
+  # #2528 — phase-token grammar suites drive the tokenizer regexes directly via
+  # `re.exec('05-80-20')`. That is `RegExp.prototype.exec` applied to a
+  # directory basename, not command execution; the argument is the subject
+  # string. Allowlisted per-file rather than narrowing the `exec(` pattern,
+  # which would blind the scanner to `require('child_process').exec('…')`.
+  'tests/health-validation.test.cjs'
+  'tests/continuation-grammar-parity.test.cjs'
 )
 
 is_allowlisted() {
