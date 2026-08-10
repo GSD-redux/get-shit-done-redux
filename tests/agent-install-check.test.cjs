@@ -832,6 +832,104 @@ describe('checkCodexModelPosture', () => {
     assert.strictEqual(result.checked.length, 3);
   });
 
+  // ─── Reviewer-found false negatives (quoted keys; block-marker truncation) ──
+  //
+  // Both defects are false negatives — checkCodexModelPosture reported ok:true
+  // when a real pin was present. Each test below is red against the
+  // implementation this PR replaces; see the PR description for exactly which
+  // assertion fails against each.
+
+  // Defect 1: a quoted TOML key (`"model" = ...`) is legal TOML and was invisible
+  // to a key regex that required a bare identifier.
+  test('quoted key "model" = "sonnet" (double-quoted) — still ANTHROPIC_FLAVORED_MODEL', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-quoted-double',
+      'name = "gsd-quoted-double"\n"model" = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  test("quoted key 'model' = \"sonnet\" (single-quoted) — still ANTHROPIC_FLAVORED_MODEL", () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-quoted-single',
+      'name = "gsd-quoted-single"\n\'model\' = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  // Defect 2a: the block marker used to be found by an unanchored whole-content
+  // search, so a `description` value that merely quotes the marker text earlier
+  // in the file truncated the header before a real, later `model` pin.
+  test('a description value quoting the marker text does not hide a real model pin before it', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-decoy-marker',
+      'name = "gsd-decoy-marker"\n' +
+        'description = "mentions developer_instructions = \'\'\' as an example string"\n' +
+        'model = "sonnet"\n' +
+        'developer_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  // Defect 2b: the old implementation only ever scanned the slice BEFORE the
+  // marker, so a hand-reordered file with `model` placed AFTER the
+  // developer_instructions block (still legal TOML) was never scanned at all.
+  test('a model pin placed AFTER the developer_instructions block is still flagged', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-reordered',
+      'name = "gsd-reordered"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\nmodel = "sonnet"\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  // Defect-2 boundary: no developer_instructions block at all — every line must
+  // be scanned. NOTE: a bare-key version of this fixture is already green
+  // against the pre-fix implementation (its no-marker fallback already scanned
+  // the whole file), so this uses a quoted key to keep the assertion genuinely
+  // red pre-fix (via defect 1) while proving the no-block path is fully scanned.
+  test('a file with no developer_instructions block at all is fully scanned', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-noblock',
+      'name = "gsd-noblock"\ndescription = "no prompt block on this agent"\n"model" = "sonnet"\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
   // # 21 — filesystem failure: an unreadable .toml is reported, not thrown, and
   // does not abort checking the rest of the agents. Injected via fs.readFileSync
   // monkeypatch/restore (see withInjectedReadFailure) rather than chmod 0o000,

@@ -70,15 +70,44 @@ function truncatePostureValue(value: string): string {
   return value.length > 64 ? `${value.slice(0, 64)}…` : value;
 }
 
-// The header slice is everything strictly before the `developer_instructions = '''`
-// marker `generateCodexAgentToml` always emits after the header fields. Scanning
-// only this slice — rather than the whole file — is what keeps agent-prompt prose
-// (which discusses models constantly) from being misread as a live `model` pin. If
-// the marker is absent (a malformed file), the whole body is scanned, which is a
-// false-positive-leaning fallback rather than a silent false negative.
-function extractHeaderSlice(content: string): string {
-  const markerIndex = content.search(/developer_instructions\s*=\s*'''/);
-  return markerIndex === -1 ? content : content.slice(0, markerIndex);
+// The `developer_instructions` block is a TOML multi-line literal string
+// (`developer_instructions = '''...'''`) that `generateCodexAgentToml` always
+// emits after the header fields. Prompt prose inside that block discusses models
+// constantly, so a `model = ...`-shaped line inside it must never be read as a
+// live pin — but the block can legally appear anywhere in the file (a
+// hand-reordered agent can move `model` after it), and another key's *value* can
+// legally contain the literal text `developer_instructions = '''` (e.g. a
+// `description` field quoting it) without that being the real block opener. So
+// instead of truncating the file at the first textual occurrence of the marker
+// anywhere in the content, this locates the block by its anchored line-start
+// opener (`^\s*developer_instructions\s*=\s*'''`, never a mid-line/mid-value
+// match) and its closing `'''` line, and excludes only the lines between them —
+// every other line in the file, before AND after the block, is scanned.
+//
+// If no opener is found, nothing is excluded (the whole file is scanned). If the
+// block is unterminated (no closing `'''` before EOF — a malformed file), the
+// rest of the file is treated as inside the block: that is the safe direction,
+// since misreading prompt prose as a pin past a malformed block is only a
+// false positive (wastes a user's time), while the alternative — scanning past
+// an unterminated block — risks hiding a real pin inside unclosed prose. The
+// emitter always uses `'''` (a TOML literal string), never a `"""` basic
+// multi-line string, so only `'''` is treated as the block delimiter here.
+function findDeveloperInstructionsBlockRange(lines: string[]): { start: number; end: number } {
+  const openIndex = lines.findIndex((line) => /^\s*developer_instructions\s*=\s*'''/.test(line));
+  if (openIndex === -1) {
+    return { start: -1, end: -1 };
+  }
+  const afterOpenMarker = lines[openIndex].replace(/^\s*developer_instructions\s*=\s*'''/, '');
+  if (afterOpenMarker.includes("'''")) {
+    // Same-line block: developer_instructions = '''one line'''
+    return { start: openIndex, end: openIndex };
+  }
+  for (let i = openIndex + 1; i < lines.length; i++) {
+    if (lines[i].includes("'''")) {
+      return { start: openIndex, end: i };
+    }
+  }
+  return { start: openIndex, end: lines.length - 1 };
 }
 
 // Strips a leading UTF-8 BOM (U+FEFF), which fs.readFileSync(..., 'utf8') does not
@@ -99,19 +128,26 @@ interface HeaderScanResult {
   hasReasoningEffort: boolean;
 }
 
-// Line-oriented scan of the header slice only. Full-key-name anchoring
-// (`^([A-Za-z_][\w]*)\s*=`) means `model_verbosity` / `model_reasoning_effort`
-// never satisfy a `model` probe, and vice versa; `#`-prefixed lines (after
-// trimming leading whitespace) are treated as comments, never live pins.
-function scanHeaderSlice(headerSlice: string): HeaderScanResult {
+// Line-oriented scan of every line OUTSIDE the `developer_instructions` block
+// (see findDeveloperInstructionsBlockRange). Full-key-name anchoring —
+// `^([A-Za-z_][\w]*)\s*=` for a bare key, or `^"([^"]*)"\s*=` / `^'([^']*)'\s*=`
+// for TOML's legal quoted-key forms, normalized to the same key name — means
+// `model_verbosity` / `model_reasoning_effort` never satisfy a `model` probe,
+// and vice versa; `#`-prefixed lines (after trimming leading whitespace) are
+// treated as comments, never live pins.
+function scanTomlLines(content: string): HeaderScanResult {
+  const lines = content.split(/\r?\n/);
+  const { start, end } = findDeveloperInstructionsBlockRange(lines);
   let model: string | null = null;
   let hasReasoningEffort = false;
-  for (const line of headerSlice.split(/\r?\n/)) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    if (start !== -1 && i >= start && i <= end) continue;
+    const trimmed = lines[i].trim();
     if (trimmed === '' || trimmed.startsWith('#')) continue;
-    const match = trimmed.match(/^([A-Za-z_][\w]*)\s*=\s*(.*)$/);
+    const match = trimmed.match(/^(?:"([^"]*)"|'([^']*)'|([A-Za-z_][\w]*))\s*=\s*(.*)$/);
     if (!match) continue;
-    const [, key, rawValue] = match;
+    const key = match[1] ?? match[2] ?? match[3];
+    const rawValue = match[4];
     if (key === 'model') {
       model = unquoteTomlValue(rawValue);
     } else if (key === 'model_reasoning_effort') {
@@ -349,8 +385,7 @@ function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexMo
       continue;
     }
 
-    const headerSlice = extractHeaderSlice(stripBOM(raw));
-    const { model, hasReasoningEffort } = scanHeaderSlice(headerSlice);
+    const { model, hasReasoningEffort } = scanTomlLines(stripBOM(raw));
 
     if (model !== null && isAnthropicFlavoredModel(model)) {
       violations.push({

@@ -275,8 +275,9 @@ plan/execute flow falls back to a generic agent:
 ```
 
 This means an installed `~/.codex/agents/<agent>.toml` still pins a model your Codex session cannot
-serve. Installs from before v1.11 embedded a per-tier model; a ChatGPT-account session exposes only
-its own model, so the pin fails the request outright ([ADR-2313](../adr/2313-codex-passive-model-posture.md)).
+serve. Installs made before the passive model posture landed embedded a per-tier model; a
+ChatGPT-account session exposes only its own model, so the pin fails the request outright
+([ADR-2313](../adr/2313-codex-passive-model-posture.md)).
 
 Check which agents are affected:
 
