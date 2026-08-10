@@ -137,7 +137,7 @@ await doWork();
 assert(Date.now() - start < 200, 'must complete in 200ms');
 ```
 
-**Enforcement:** `local/no-elapsed-assertion` (ESLint, currently `warn`; promotion to `error` was sequenced behind #3314, now delivered — ADR-456 §(a) is amended with a reachability-based selection rule covering all three clock-control mechanisms this repo uses, and the direct-use modules carrying real time-gating logic (`commands.cts`, `init.cts`, `io.cts`) have deterministic backfill coverage. The actual `warn`→`error` promotion is tracked as its own follow-up issue, since #3314's own precondition-handoff target, #1885, closed before this issue landed). Also `no-restricted-syntax` ban on `performance.now()` comparisons in assertions.
+**Enforcement:** `local/no-elapsed-assertion` (ESLint, currently `warn`; promotion to `error` was sequenced behind #3314, now delivered — ADR-456 §(a) is amended with a reachability-based selection rule covering all three clock-control mechanisms this repo uses, and the direct-use modules carrying real time-gating logic (`commands.cts`, `init.cts`, `io.cts`) have deterministic backfill coverage. The actual `warn`→`error` promotion is tracked at [#3331](https://github.com/open-gsd/gsd-core/issues/3331), since #3314's own precondition-handoff target, #1885, closed before this issue landed). Also `no-restricted-syntax` ban on `performance.now()` comparisons in assertions.
 
 ### Clock-seam pattern for concurrency
 
@@ -214,7 +214,7 @@ Real multi-process race tests are deleted once the corresponding deterministic c
 | `no-restricted-syntax` (ban 1) | `error` | Top-level `setTimeout` in `ExpressionStatement` |
 | `no-restricted-syntax` (ban 2) | `error` | `.only` member access on `test`/`it`/`describe` (belt-and-suspenders) |
 
-`local/no-source-grep` and `local/no-magic-sleep-in-tests` now ship at `error` (promoted by [#3313](https://github.com/open-gsd/gsd-core/issues/3313), absorbing the cleanup sweep originally tracked at #453). `local/no-elapsed-assertion` remains `warn` — [#3314](https://github.com/open-gsd/gsd-core/issues/3314) delivered its precondition (ADR-456 §(a) amended with a reachability-based 3-mechanism rule; `commands.cts`/`init.cts`/`io.cts` backfilled with deterministic coverage), but does not itself own the `warn`→`error` promotion (mirroring the same handover boundary the epic draws for its other items) — that promotion is tracked as its own follow-up issue. New violations added after the acceptance of ADR 456 are out of policy regardless of the current ESLint severity.
+`local/no-source-grep` and `local/no-magic-sleep-in-tests` now ship at `error` (promoted by [#3313](https://github.com/open-gsd/gsd-core/issues/3313), absorbing the cleanup sweep originally tracked at #453). `local/no-elapsed-assertion` remains `warn` — [#3314](https://github.com/open-gsd/gsd-core/issues/3314) delivered its precondition (ADR-456 §(a) amended with a reachability-based 3-mechanism rule; `commands.cts`/`init.cts`/`io.cts` backfilled with deterministic coverage), but does not itself own the `warn`→`error` promotion (mirroring the same handover boundary the epic draws for its other items) — that promotion is tracked at [#3331](https://github.com/open-gsd/gsd-core/issues/3331). New violations added after the acceptance of ADR 456 are out of policy regardless of the current ESLint severity.
 
 ESLint harness details: [`docs/adr/452-eslint-lint-harness.md`](docs/adr/452-eslint-lint-harness.md).
 

@@ -479,14 +479,17 @@ describe('init manager', () => {
     writeState(tmpDir);
     writeRoadmap(tmpDir, [{ number: '1', name: 'Stale Phase' }]);
 
+    const PINNED_NOW_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z (second-aligned)
     const phaseDir = scaffoldPhase(tmpDir, 1, { slug: 'stale-phase', context: true });
     const files = fs.readdirSync(phaseDir);
-    const old = new Date(Date.now() - 60 * 60 * 1000); // 1 hour old
+    const old = new Date(PINNED_NOW_MS - 60 * 60 * 1000); // 1 hour before the pinned "now"
     for (const f of files) {
       fs.utimesSync(path.join(phaseDir, f), old, old);
     }
 
-    const result = runGsdTools('init manager', tmpDir);
+    const result = runGsdTools('init manager', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_NOW_MS),
+    });
     const output = JSON.parse(result.output);
 
     assert.strictEqual(output.phases[0].is_active, false);
