@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout } from './shell-command-projection.cjs';
+import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -37,7 +37,12 @@ const { resolveModelInternal, resolveTierInternal, resolveModelForTier, resolveP
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import agentCommandRouterMod = require('./agent-command-router.cjs');
 const { AGENT_FAILURE_CLASSES } = agentCommandRouterMod;
-import { renderEffortForRuntime, renderEffortArgv, RUNTIMES_WITH_FAST_MODE } from './model-catalog.cjs';
+import { renderEffortForRuntime, renderEffortArgv, RUNTIMES_WITH_FAST_MODE, isAnthropicFlavoredModel } from './model-catalog.cjs';
+// #3243 (ADR-2313 D7) — the Codex `.toml` sync's typed IR: parse/render/strip
+// primitives moved from agent-install-check.cts's Phase-2 parsing into this
+// leaf so both consumers share one block-range detector. See
+// codex-agent-toml.cts's module header for the reader/writer reconciliation.
+import { parseCodexAgentToml, renderCodexAgentToml, stripModel, stripReasoningEffort } from './codex-agent-toml.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import hostIntegrationMod = require('./host-integration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -704,6 +709,15 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   const config = loadConfig(cwd);
   const runtime = opts.runtime || (config['runtime'] as string) || 'claude';
 
+  // ADR-2313 D7 (#3243) — Codex gets its own `.toml` sync path (strip a stale
+  // Anthropic/tier `model` and an orphaned `model_reasoning_effort`, leaving a
+  // legal pin untouched). Every other non-claude runtime keeps the prior
+  // early-return; the claude branch below is untouched byte-for-byte.
+  if (runtime === 'codex') {
+    cmdEffortSyncCodex(raw, dryRun, opts.configDir);
+    return;
+  }
+
   if (runtime !== 'claude') {
     output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
     return;
@@ -765,6 +779,140 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   }
 
   output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
+}
+
+/** One `{agent, field, from}` strip reported by {@link cmdEffortSyncCodex} — `to` is always omission (`null`). */
+interface CodexEffortSyncChange {
+  agent: string;
+  field: 'model' | 'model_reasoning_effort';
+  from: string;
+  to: null;
+}
+
+/** A file `parseCodexAgentToml` refused, reported rather than partially rewritten (ADR-2313 D7 row 11). */
+interface CodexEffortSyncRefusal {
+  agent: string;
+  file: string;
+  reason: string;
+}
+
+/** A write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
+interface CodexEffortSyncWriteFailure {
+  agent: string;
+  file: string;
+  error: string;
+}
+
+/**
+ * ADR-2313 D7 (#3243) — the Codex branch of `cmdEffortSync`. Strips a stale
+ * Anthropic-flavored/tier `model` pin and an orphaned `model_reasoning_effort`
+ * from every installed `~/.codex/agents/<agent>.toml`, leaving a legal
+ * real-Codex pin (and its coupled effort) untouched. Dry-run by default; every
+ * strip reported as a structured `{agent, field, from}` change; an unparseable
+ * document is refused and reported, never partially rewritten (40-design.md
+ * "Reconciliation" — parseCodexAgentToml is the STRICT half of the reader/
+ * writer split). Result shape is additive over the claude branch's
+ * `{synced, skipped, changes, dry_run, agents_dir}` — `refused` and
+ * `write_failures` are new fields, never a reshape of the existing ones.
+ */
+function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { getGlobalConfigDir } = require('./runtime-homes.cjs') as { getGlobalConfigDir(runtime: string, explicitDir?: string | null): string };
+  const agentsDir = path.join(configDir || getGlobalConfigDir('codex'), 'agents');
+
+  if (!fs.existsSync(agentsDir)) {
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'agents directory not found' }, raw, '');
+    return;
+  }
+
+  // Skip symlinks — matches the claude branch's existing guard above (only
+  // write regular files, never follow a symlink into clobbering its target).
+  const files = fs
+    .readdirSync(agentsDir)
+    .filter(f => {
+      if (!f.endsWith('.toml')) return false;
+      try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
+    })
+    .sort();
+
+  const changes: CodexEffortSyncChange[] = [];
+  const refused: CodexEffortSyncRefusal[] = [];
+  const writeFailures: CodexEffortSyncWriteFailure[] = [];
+  let synced = 0;
+  let skipped = 0;
+
+  for (const file of files) {
+    const agentName = file.replace(/\.toml$/, '');
+    const filePath = path.join(agentsDir, file);
+    const content = fs.readFileSync(filePath, 'utf8');
+
+    const parsed = parseCodexAgentToml(content);
+    if (!parsed.ok) {
+      // Never partially rewritten (40-design.md, ADR-2313 reader/writer
+      // boundary): an unparseable document is skipped and reported, not
+      // guessed at.
+      skipped++;
+      refused.push({ agent: agentName, file: filePath, reason: parsed.reason });
+      continue;
+    }
+
+    let doc = parsed.doc;
+    const stripModelNeeded = doc.model !== null && isAnthropicFlavoredModel(doc.model);
+    // #838 coupling: an orphaned effort (no model) is always stale; a stale
+    // model's effort is coupled to it and strips with it. A legal pin's effort
+    // (model present, not Anthropic-flavored) is left untouched (rows 4-5).
+    const stripEffortNeeded = doc.reasoningEffort !== null && (stripModelNeeded || doc.model === null);
+
+    if (!stripModelNeeded && !stripEffortNeeded) {
+      // Posture-clean, OR a legal pin (and its coupled effort) — reported
+      // skipped, never synced (ADR-2313 reader/writer boundary).
+      skipped++;
+      continue;
+    }
+
+    const pendingChanges: CodexEffortSyncChange[] = [];
+    if (stripModelNeeded) {
+      pendingChanges.push({ agent: agentName, field: 'model', from: doc.model as string, to: null });
+      doc = stripModel(doc);
+    }
+    if (stripEffortNeeded) {
+      pendingChanges.push({ agent: agentName, field: 'model_reasoning_effort', from: doc.reasoningEffort as string, to: null });
+      doc = stripReasoningEffort(doc);
+    }
+
+    if (!dryRun) {
+      // Atomic publish (ADR-2313 "never partially rewritten"): write the
+      // rendered TOML to a sibling tmp file, then rename it over the target.
+      // Same-filesystem rename is atomic, so filePath is either the old bytes
+      // or the new ones, never truncated/half-written mid-crash. Deliberately
+      // NOT platformWriteSync — its normalizeContent step rewrites CRLF/
+      // trailing-newline bytes, which would break the byte-identical
+      // round-trip (A14) this writer must preserve. retryRenameSync (not a
+      // bare fs.renameSync) carries the transient-Windows-lock retry per
+      // DEFECT.WINDOWS-FS-OPS.
+      const tmpPath = `${filePath}.tmp.${process.pid}`;
+      try {
+        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc));
+        retryRenameSync(tmpPath, filePath);
+      } catch (err) {
+        // Reported, not thrown — the remaining agents still get processed.
+        // Clean up the orphaned tmp file; filePath itself was never touched.
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
+        skipped++;
+        writeFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+    }
+
+    changes.push(...pendingChanges);
+    synced++;
+  }
+
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures },
+    raw,
+    synced > 0 ? 'changed' : 'ok',
+  );
 }
 
 /**

@@ -64,6 +64,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/claude-orchestration-command-router.cjs',
       'gsd-core/bin/lib/semver-compare.cjs',
       'gsd-core/bin/lib/host-integration.cjs',
+      'gsd-core/bin/lib/host-runtime-detection.cjs',
       'gsd-core/bin/lib/handshake-serialized.cjs',
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',
@@ -200,6 +201,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/onboard-projection.cjs',
       'gsd-core/bin/lib/agent-command-router.cjs',
       'gsd-core/bin/lib/agent-install-check.cjs',
+      // ADR-2313 Phase 3 (#3243): tsc-generated runtime artifact — lint the src/codex-agent-toml.cts source.
+      'gsd-core/bin/lib/codex-agent-toml.cjs',
       'gsd-core/bin/lib/task-command-router.cjs',
       'gsd-core/bin/lib/validate-command-router.cjs',
       'gsd-core/bin/lib/workstream-inventory.cjs',

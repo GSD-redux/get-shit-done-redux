@@ -300,12 +300,31 @@ One thing the check deliberately does not inspect: an agent file that is a **sym
 rather than followed, matching how the effort sync treats them. If you symlink your agent configs,
 verify those targets by hand.
 
-**Fix:** re-run the installer. Current versions write no model at all, so agents inherit the session
-model:
+**Fix — repair in place, without a reinstall.** Preview what would change:
+
+```bash
+node gsd-tools.cjs effort sync
+```
+
+That is a dry run; it writes nothing. When the reported changes look right, apply them:
+
+```bash
+node gsd-tools.cjs effort sync --apply
+```
+
+It removes only the offending `model` / `model_reasoning_effort` lines. Everything else — your line
+endings, comments, key order, and any keys you added by hand — is preserved byte-for-byte, so the
+result is a two-line diff rather than a reformatted file. An explicit real-Codex pin is left alone,
+and a file it cannot parse is refused and reported rather than partially rewritten.
+
+**Or re-run the installer**, which rewrites the agent files wholesale. Current versions write no
+model at all, so agents inherit the session model:
 
 ```bash
 npx @opengsd/gsd-core@latest --codex --global
 ```
+
+Prefer the sync if you have hand-edited your `.toml` files — a reinstall regenerates them.
 
 If you are on an **API-key** account and genuinely want a pinned model, name a real Codex model id
 per agent instead — see [How to configure model profiles](configure-model-profiles.md#codex-does-not-do-tier-routing--pin-explicitly-instead).

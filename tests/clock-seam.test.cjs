@@ -1115,6 +1115,9 @@ describe('roadmap analyze behavioral correctness (50-phase)', () => {
       fs.writeFileSync(path.join(phaseDir, `${pad}-01-PLAN.md`), `# Phase ${i} Plan 1\n`);
       if (i <= completedCount) {
         fs.writeFileSync(path.join(phaseDir, `${pad}-01-SUMMARY.md`), `# Phase ${i} Summary\n`);
+        // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+        // *-VERIFICATION.md is what makes a phase count as complete now.
+        fs.writeFileSync(path.join(phaseDir, `${pad}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
       }
     }
   }
