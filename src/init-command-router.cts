@@ -47,7 +47,12 @@ interface InitModule {
   cmdInitDocsUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitTransition(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
-  cmdInitDebug(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDebug(
+    cwd: string,
+    raw: boolean,
+    options?: Record<string, string | boolean | null | undefined>,
+    continueSlug?: string | null,
+  ): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -173,8 +178,45 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       transition: () => init.cmdInitTransition(cwd, raw, {}),
       debug: () => {
-        const namedArgs = parseNamedArgs(args, [], ['diagnose']);
-        init.cmdInitDebug(cwd, raw, { diagnose: namedArgs['diagnose'] });
+        const namedArgs = parseNamedArgs(
+          args,
+          [],
+          ['diagnose', 'runtime-probes', 'no-runtime-probes'],
+        );
+        if (namedArgs['runtime-probes'] && namedArgs['no-runtime-probes']) {
+          error('Cannot combine --runtime-probes with --no-runtime-probes.');
+          return;
+        }
+        if (namedArgs['diagnose'] && namedArgs['runtime-probes']) {
+          error('Cannot combine --diagnose with --runtime-probes.');
+          return;
+        }
+
+        // Probe flags are global to /gsd:debug, so remove every recognized exact
+        // token before interpreting `continue <slug>`. `parseNamedArgs` uses the
+        // same whole-token equality rule; lookalikes such as
+        // `--runtime-probes=true` therefore remain ordinary positional text and
+        // cannot enable the feature or select a saved session.
+        const debugBooleanTokens = new Set([
+          '--diagnose',
+          '--runtime-probes',
+          '--no-runtime-probes',
+        ]);
+        const positional = args.slice(2).filter((token) => !debugBooleanTokens.has(token));
+        const slugCandidate = positional.length === 2 && positional[0] === 'continue'
+          ? positional[1]
+          : null;
+        const continueSlug = typeof slugCandidate === 'string'
+          && slugCandidate.length <= 30
+          && /^[a-z0-9][a-z0-9-]*$/.test(slugCandidate)
+          ? slugCandidate
+          : null;
+
+        init.cmdInitDebug(cwd, raw, {
+          diagnose: namedArgs['diagnose'],
+          'runtime-probes': namedArgs['runtime-probes'],
+          'no-runtime-probes': namedArgs['no-runtime-probes'],
+        }, continueSlug);
       },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),

@@ -323,10 +323,13 @@ Usage: `/gsd:pause-work`
 
 ### Debugging
 
-**`/gsd:debug [issue description] [--diagnose]`**
+**`/gsd:debug [issue description] [--diagnose] [--runtime-probes | --no-runtime-probes]`**
 Systematic debugging with persistent state across context resets.
 
 - `--diagnose` — run a one-shot diagnostic pass without opening a persistent debug session
+- `--runtime-probes` — opt into `adaptive` runtime evidence; safety and cleanup gates still apply
+- `--no-runtime-probes` — select runtime-evidence policy `off` explicitly
+- With no probe flag, runtime-evidence policy defaults to `off`
 
 - Gathers symptoms through adaptive questioning
 - Creates `.planning/debug/[slug].md` to track investigation

@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { TextDecoder } from 'node:util';
 import { execGit, platformWriteSync, platformReadSync, toNativePath, posixNormalize } from './shell-command-projection.cjs';
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
@@ -39,6 +40,7 @@ import { resolveReportedRuntime } from './host-runtime-detection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- commands.cjs is an export= CommonJS module
 import commandsMod = require('./commands.cjs');
 import { validatePath, loadTrustedGlobalRoots } from './security.cjs';
+import { collectSection, stripFencedCode, tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { getGlobalSkillDir, getGlobalSkillDisplayPath, getGlobalSkillsBase, getGlobalConfigDir } from './runtime-homes.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
 import frontmatterMod = require('./frontmatter.cjs');
@@ -54,6 +56,8 @@ import sectionManifest = require('./section-manifest.cjs');
 import loopResolverMod = require('./loop-resolver.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-loader.cjs is compiled from capability-loader.cts's named exports; imported as a namespace to read loadRegistry off module.exports directly.
 import capabilityLoaderMod = require('./capability-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-ledger.cjs owns the shared fd-bound, size-capped reader for untrusted project files.
+import capabilityLedgerMod = require('./capability-ledger.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-state.cjs is an export= CommonJS module
 import capabilityStateMod = require('./capability-state.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- docs.cjs is an export= CommonJS module
@@ -106,6 +110,7 @@ const { isPhaseComplete } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
+const { readSmallRegularFileBufferWithIdentity } = capabilityLedgerMod;
 const { resolveCapabilityRuntimeState } = capabilityStateMod;
 
 // Unused but imported for structural parity
@@ -762,6 +767,7 @@ function buildSectionManifestField(
     workstreamActive?: boolean;
     flatMode?: boolean;
     uiPhaseActive?: boolean;
+    runtimeEvidenceEligible?: boolean;
   } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
@@ -807,6 +813,7 @@ function buildSectionManifestField(
     nextChannel: overrides.nextChannel,
     workstreamActive: overrides.workstreamActive,
     flatMode: overrides.flatMode,
+    runtimeEvidenceEligible: overrides.runtimeEvidenceEligible,
   };
 
   try {
@@ -2728,6 +2735,140 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
   output(withProjectRoot(cwd, result), raw);
 }
 
+type RuntimeEvidencePolicy = 'adaptive' | 'off';
+
+const DEBUG_SESSION_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+const DEBUG_SESSION_SLUG_MAX_LENGTH = 30;
+// A debug session should stay far below this; the generous ceiling is a DoS
+// backstop for a repo-planted file, not a product-level session-size limit.
+const DEBUG_SESSION_POLICY_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Mask closed HTML comments without changing line boundaries. The canonical
+ * Markdown Sectionizer owns heading/fence structure, but deliberately does not
+ * strip comments; masking them first prevents a commented-out heading or policy
+ * record from enabling source probes. Any malformed/unclosed comment leaves a
+ * delimiter behind and therefore fails safe to no saved policy.
+ */
+function maskDebugSessionComments(content: string): string | null {
+  const masked = content.replace(
+    /<!--(?:(?!<!--)[\s\S])*?-->/g,
+    (comment) => comment.replace(/[^\r\n]/g, ' '),
+  );
+  return masked.includes('<!--') || masked.includes('-->') ? null : masked;
+}
+
+/**
+ * Read one valid schema-v1 policy from the exact `## Runtime Evidence`
+ * section. Duplicate sections, duplicate keys, malformed records, fenced
+ * examples and unsupported values are ambiguous and resolve to null. This is
+ * intentionally read-only: invalid and legacy sessions remain byte-identical.
+ */
+function parseSavedRuntimeEvidencePolicy(content: string): RuntimeEvidencePolicy | null {
+  const commentMasked = maskDebugSessionComments(content);
+  if (commentMasked === null || commentMasked.includes('\0')) return null;
+
+  const isRuntimeEvidenceHeading = (heading: { level: number; text: string }): boolean =>
+    heading.level === 2 && heading.text === 'Runtime Evidence';
+  const matchingHeadings = tokenizeHeadings(commentMasked).filter(isRuntimeEvidenceHeading);
+  if (matchingHeadings.length !== 1) return null;
+
+  const section = collectSection(commentMasked, isRuntimeEvidenceHeading, { levelBounded: true });
+  if (!section) return null;
+  const unfenced = stripFencedCode(section.body);
+  if (unfenced.unterminatedFence) return null;
+
+  const lines = unfenced.text.split(/\r?\n/);
+  const schemaRecords = lines.filter((line) => /^schema_version[ \t]*:/.test(line));
+  const policyRecords = lines.filter((line) => /^policy[ \t]*:/.test(line));
+  if (schemaRecords.length !== 1 || policyRecords.length !== 1) return null;
+  if (!/^schema_version:[ \t]*1[ \t]*$/.test(schemaRecords[0])) return null;
+
+  const policyMatch = /^policy:[ \t]*(adaptive|off)[ \t]*$/.exec(policyRecords[0]);
+  return policyMatch ? policyMatch[1] as RuntimeEvidencePolicy : null;
+}
+
+/**
+ * Resolve a continuation's saved policy through the canonical planning path
+ * and security seams. The slug is shape-checked before any path construction;
+ * path containment, a non-symlink regular-file leaf, bounded fd-based reading,
+ * and stable pre/post identity are all required. Every degraded condition is
+ * fail-safe `null`, which the caller maps to the shipped `off` default.
+ */
+function readSavedRuntimeEvidencePolicy(
+  cwd: string,
+  continueSlug: string | null,
+): RuntimeEvidencePolicy | null {
+  if (
+    typeof continueSlug !== 'string'
+    || continueSlug.length > DEBUG_SESSION_SLUG_MAX_LENGTH
+    || !DEBUG_SESSION_SLUG_RE.test(continueSlug)
+  ) {
+    return null;
+  }
+
+  const debugDir = planningPaths(cwd).debug;
+  const sessionPath = path.join(debugDir, `${continueSlug}.md`);
+  const beforeValidation = validatePath(sessionPath, debugDir, { allowAbsolute: true });
+  if (!beforeValidation.safe) return null;
+
+  try {
+    const before = fs.lstatSync(sessionPath);
+    if (!before.isFile() || before.isSymbolicLink()) return null;
+
+    const opened = readSmallRegularFileBufferWithIdentity(
+      sessionPath,
+      DEBUG_SESSION_POLICY_MAX_BYTES,
+      before,
+    );
+    if (opened === null) return null;
+
+    let content: string;
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(opened.buffer);
+    } catch {
+      return null;
+    }
+
+    const after = fs.lstatSync(sessionPath);
+    const afterValidation = validatePath(sessionPath, debugDir, { allowAbsolute: true });
+    if (
+      !after.isFile()
+      || after.isSymbolicLink()
+      || opened.identity.dev !== after.dev
+      || opened.identity.ino !== after.ino
+      || opened.identity.mode !== after.mode
+      || opened.identity.size !== after.size
+      || opened.identity.mtimeMs !== after.mtimeMs
+      || opened.identity.ctimeMs !== after.ctimeMs
+      || !afterValidation.safe
+      || afterValidation.resolved !== beforeValidation.resolved
+    ) {
+      return null;
+    }
+
+    return parseSavedRuntimeEvidencePolicy(content);
+  } catch {
+    return null;
+  }
+}
+
+function resolveRuntimeEvidencePolicy(
+  cwd: string,
+  options: Record<string, unknown>,
+  continueSlug: string | null,
+): RuntimeEvidencePolicy {
+  const runtimeProbes = options['runtime-probes'] === true;
+  const noRuntimeProbes = options['no-runtime-probes'] === true;
+
+  // The public router rejects this combination. Keep the fact resolver itself
+  // fail-safe for any future internal caller that bypasses the argv seam.
+  if (runtimeProbes && noRuntimeProbes) return 'off';
+  if (runtimeProbes) return 'adaptive';
+  if (noRuntimeProbes) return 'off';
+  return readSavedRuntimeEvidencePolicy(cwd, continueSlug) ?? 'off';
+}
+
 /**
  * `debug.md`'s dedicated init entry point (#3149; prerequisite for #3128).
  * `debug.md` previously carried NO `gsd_run query init.*` call at all — it made
@@ -2758,17 +2899,21 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  * `state.load` is deliberately NOT narrowed — see the note beside its own
  * `debug_dir` field. This handler is purely additive alongside it.
  *
- * `diagnose` is the one flag `/gsd:debug` already documents. Exposing it as a
- * top-level fact follows `cmdInitUpdate`'s `next_channel` and
- * `cmdInitAutonomous`'s `plan_strategy_converge` precedent, and is what makes
- * the router's flag forwarding observable. No `when=` atom consumes it yet:
- * admission gate (1) — a consuming section of at least 400 bytes — is #3128's
- * to satisfy, and shipping the atom before its section is the same
- * silent-exclusion bug from the other direction.
+ * `diagnose` remains a top-level fact. #3128 additionally resolves runtime
+ * evidence once here — explicit flag, then a valid saved continuation policy,
+ * then the shipped `off` default — and projects the resulting boolean to the
+ * section-manifest evaluator. The grammar never re-derives that precedence.
  */
-function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+function cmdInitDebug(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+  continueSlug: string | null = null,
+): void {
   const config = loadConfig(cwd);
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
+  const runtimeEvidencePolicy = resolveRuntimeEvidencePolicy(cwd, options, continueSlug);
+  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off';
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -2779,13 +2924,13 @@ function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown
     debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
     tdd_mode: Boolean(wf['tdd_mode']),
     diagnose: options['diagnose'] === true,
+    runtime_evidence_policy: runtimeEvidencePolicy,
+    runtime_evidence_eligible: runtimeEvidenceEligible,
   };
 
-  // Additive, optional field — degrades to null while `debug` has no key in
-  // `gsd-core/workflows/section-manifest.json` (it has no `gsd:section` markers
-  // until #3128). null means "read everything", which is NOT the same as a
-  // computed empty selection.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'debug', {});
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'debug', {
+    runtimeEvidenceEligible,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }

@@ -171,6 +171,43 @@ function readSmallRegularFile(filePath: string, maxBytes: number): string | null
   return buf.toString('utf8');
 }
 
+interface RegularFileIdentity {
+  readonly dev: number;
+  readonly ino: number;
+  readonly mode: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+interface IdentityBoundBufferRead {
+  readonly buffer: Buffer;
+  readonly identity: RegularFileIdentity;
+}
+
+function snapshotRegularFileIdentity(st: fs.Stats): RegularFileIdentity {
+  return {
+    dev: st.dev,
+    ino: st.ino,
+    mode: st.mode,
+    size: st.size,
+    mtimeMs: st.mtimeMs,
+    ctimeMs: st.ctimeMs,
+  };
+}
+
+function sameRegularFileIdentity(
+  actual: RegularFileIdentity,
+  expected: RegularFileIdentity,
+): boolean {
+  return actual.dev === expected.dev
+    && actual.ino === expected.ino
+    && actual.mode === expected.mode
+    && actual.size === expected.size
+    && actual.mtimeMs === expected.mtimeMs
+    && actual.ctimeMs === expected.ctimeMs;
+}
+
 /**
  * #1459 finding 1 (HIGH): the RAW-BYTES variant of readSmallRegularFile. Identical open → fstat →
  * require-regular-file → size-cap → read-exactly-size protocol (so a FIFO/device/swapped/oversized
@@ -181,14 +218,41 @@ function readSmallRegularFile(filePath: string, maxBytes: number): string | null
  * for ENOENT (genuinely missing); throws LedgerIOError for every other fail-closed condition.
  */
 function readSmallRegularFileBuffer(filePath: string, maxBytes: number): Buffer | null {
-  // O_RDONLY | O_NONBLOCK: never block on opening a FIFO/device — return the fd so fstat can reject it.
-  const openFlags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+  const result = readSmallRegularFileBufferWithIdentity(filePath, maxBytes);
+  return result?.buffer ?? null;
+}
+
+/**
+ * Identity-bound variant for callers that validated a pathname before opening
+ * it. The optional expected identity is compared with the descriptor's fstat,
+ * not another path stat, closing rename/symlink substitution between validation
+ * and open. The returned identity is the descriptor actually read and can be
+ * matched against the caller's final pathname validation.
+ */
+function readSmallRegularFileBufferWithIdentity(
+  filePath: string,
+  maxBytes: number,
+  expectedIdentity?: RegularFileIdentity,
+): IdentityBoundBufferRead | null {
+  // O_NONBLOCK prevents a FIFO open from hanging. O_NOFOLLOW rejects a
+  // substituted symlink where the platform exposes it; descriptor identity
+  // binding remains the portable backstop.
+  const noFollow = expectedIdentity !== undefined && typeof fs.constants.O_NOFOLLOW === 'number'
+    ? fs.constants.O_NOFOLLOW
+    : 0;
+  const openFlags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | noFollow;
   let fd: number;
   try {
     fd = fs.openSync(filePath, openFlags);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return null; // genuinely missing — not a corruption.
+    if (code === 'ELOOP') {
+      throw new LedgerIOError(
+        `Cannot open ${filePath}: symlink is not accepted as a regular file — refusing.`,
+        code,
+      );
+    }
     throw new LedgerIOError(`Cannot open ${filePath}: ${(err as Error).message}`, code);
   }
   try {
@@ -203,6 +267,13 @@ function readSmallRegularFileBuffer(filePath: string, maxBytes: number): Buffer 
         code,
       );
     }
+    const openedIdentity = snapshotRegularFileIdentity(st);
+    if (expectedIdentity !== undefined && !sameRegularFileIdentity(openedIdentity, expectedIdentity)) {
+      throw new LedgerIOError(
+        `Cannot read ${filePath}: file identity changed between validation and open — refusing substituted bytes.`,
+        'ESTALE',
+      );
+    }
     if (st.size > maxBytes) {
       throw new LedgerIOError(
         `Cannot read ${filePath}: file size ${st.size} bytes exceeds the maximum of ${maxBytes} ` +
@@ -210,17 +281,30 @@ function readSmallRegularFileBuffer(filePath: string, maxBytes: number): Buffer 
         'EFBIG',
       );
     }
-    if (st.size === 0) return Buffer.alloc(0);
-    const buf = Buffer.allocUnsafe(st.size);
+    const buf = st.size === 0 ? Buffer.alloc(0) : Buffer.allocUnsafe(st.size);
     let off = 0;
     // Read EXACTLY st.size bytes from the fd (never a streaming/unbounded read).
     while (off < st.size) {
       const n = fs.readSync(fd, buf, off, st.size - off, off);
-      if (n <= 0) break; // EOF earlier than fstat reported (truncated under us) — return what we got.
+      if (n <= 0) break;
       off += n;
     }
-    // Return EXACTLY the bytes we read (off may be < st.size on a truncated-under-us read).
-    return off === buf.length ? buf : buf.subarray(0, off);
+    if (off !== st.size) {
+      throw new LedgerIOError(
+        `Cannot read ${filePath}: file was truncated during the bounded read — refusing partial bytes.`,
+        'ESTALE',
+      );
+    }
+
+    const afterRead = fs.fstatSync(fd);
+    if (!afterRead.isFile()
+      || !sameRegularFileIdentity(snapshotRegularFileIdentity(afterRead), openedIdentity)) {
+      throw new LedgerIOError(
+        `Cannot read ${filePath}: descriptor identity changed during the bounded read — refusing.`,
+        'ESTALE',
+      );
+    }
+    return { buffer: buf, identity: openedIdentity };
   } catch (err) {
     if (err instanceof LedgerIOError) throw err;
     throw new LedgerIOError(`Cannot read ${filePath}: ${(err as Error).message}`, (err as NodeJS.ErrnoException).code);
@@ -828,6 +912,9 @@ export = {
   // Finding 2 (HIGH): the SINGLE shared bounded fd reader — also consumed by capability-lifecycle's
   // lock-body reads so every untrusted file read goes through the regular-file + size-capped fd path.
   readSmallRegularFile,
+  // #3128: binds validated path identity to the descriptor actually read and returns that identity
+  // so a caller can prove its post-read pathname still names the same file.
+  readSmallRegularFileBufferWithIdentity,
   // #1459 finding 1 (HIGH): the RAW-BYTES variant — the SOLE correct reader for the byte-exact,
   // injective consent content-hash binding (a utf8 decode is lossy and could collide binary artifacts).
   readSmallRegularFileBuffer,
