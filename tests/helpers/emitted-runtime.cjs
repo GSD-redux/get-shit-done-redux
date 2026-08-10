@@ -668,33 +668,41 @@ function baselineManifestsAtRef(base = 'origin/next') {
  * @param {string} [o.cwd] repo to run `git worktree` from AND whose generator measures it
  * @returns {object} the parsed baseline artifact ({version, sha, manifests, sizes})
  */
+const WORKTREE_TIMEOUT_MS = 60_000;
+const BUILD_LIB_TIMEOUT_MS = 180_000;
+// 360s for the generator step. NOT the 600000ms `local/no-unbounded-spawn`
+// ceiling: `scripts/run-tests.cjs:973` bounds the WHOLE chunk at 600000ms, so a
+// step bound equal to it loses the race — the chunk is killed first and the
+// failure arrives as an opaque "no failed step" kill instead of the per-step
+// message below. The bounds must escalate inward-out, and
+// `emitted-runtime-bounds` in tests/emitted-attribution.test.cjs locks that.
+//
+// Measured for this step: ~22s idle in a container, ~142s with 8 CPU burners on
+// 8 cores, 91.6s and 115.8s in the run that passed, and 300.1s in the run that
+// timed out (censored — its real need is unknown). 360s is ~3x the passing
+// observation and 20% above the censored one, while leaving 240s of chunk
+// headroom for every other file sharing the chunk.
+//
+// The old 300s sat INSIDE that variance band. Under gsd-test this slow path runs
+// on every verification, because the on-disk baseline cache is restored by
+// actions/cache keyed on github.event.pull_request.base.sha — a key that exists
+// only inside GitHub Actions. The real remedy is making that cache reachable from
+// the remote runner so the in-job build returns to being the rare fallback
+// ADR-2719 §5 describes; that is a gsd-test-runner change, not one this repo can
+// make.
+const BUILD_TIMEOUT_MS = 360_000;
+// Mirrors `scripts/run-tests.cjs:973`'s default. Duplicated deliberately and
+// narrowly: the bounds here must be checkable against it, and the alternative is
+// reading that script's source, which `local/no-source-grep` bans. The lock test
+// names this as the drift risk.
+const CHUNK_TIMEOUT_CEILING_MS = 600_000;
+
 function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-baseline-wt-'));
   // mkdtempSync already created the directory; `git worktree add` requires the
   // target to not exist (or be empty) — remove it and let git recreate it.
   fs.rmdirSync(worktreeDir);
   const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
-
-  const WORKTREE_TIMEOUT_MS = 60_000;
-  const BUILD_LIB_TIMEOUT_MS = 180_000;
-  // 600s, the `local/no-unbounded-spawn` ceiling — deliberately the largest
-  // meaningful bound, because this step's cost is 19 sequential installer spawns
-  // and spawn latency is exactly what degrades under the suite's own concurrency.
-  //
-  // Measured for this step: ~22s idle in a container, ~142s with 8 CPU burners on
-  // 8 cores, and >300s under the real remote-runner suite (4 concurrent test files
-  // x 2 cells, all churning processes). The old 300s was sized on an idle machine
-  // for a step that never runs on one: under gsd-test the on-disk baseline cache is
-  // structurally absent — CI restores it via actions/cache keyed on
-  // github.event.pull_request.base.sha, a key that exists only inside GitHub
-  // Actions — so this slow path runs on EVERY remote verification.
-  //
-  // The real remedy is making the cache reachable from the remote runner so the
-  // in-job build stays the rare fallback ADR-2719 §5 describes. Until then this
-  // bound has to cover the step actually running, because the alternative is a
-  // propagation gate that reports red on every run for a reason that is not a
-  // propagation finding.
-  const BUILD_TIMEOUT_MS = 600_000;
 
   // Per-step timings, carried into the thrown error. A bare "spawnSync ETIMEDOUT"
   // names neither the step nor its elapsed time, which is exactly the information
@@ -714,8 +722,6 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
         err && err.stdout ? `stdout tail: ${String(err.stdout).trim().slice(-400)}` : '',
         err && err.stderr ? `stderr tail: ${String(err.stderr).trim().slice(-400)}` : '',
       ].filter(Boolean).join('\n  ');
-      err.gsdBaselineStep = step;
-      err.gsdBaselineTimings = timings.join(' ');
       err.message =
         `${step} failed after ${elapsed}s (bounds: worktree ${WORKTREE_TIMEOUT_MS}ms, ` +
         `build:lib ${BUILD_LIB_TIMEOUT_MS}ms, generator ${BUILD_TIMEOUT_MS}ms). ` +
@@ -974,4 +980,8 @@ module.exports = {
   currentManifests,
   currentSizes,
   readAckFile,
+  WORKTREE_TIMEOUT_MS,
+  BUILD_LIB_TIMEOUT_MS,
+  BUILD_TIMEOUT_MS,
+  CHUNK_TIMEOUT_CEILING_MS,
 };

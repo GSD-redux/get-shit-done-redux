@@ -146,6 +146,7 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
     parts: relPath.split('/'),
     content,
   }));
+  const skipped = [];
 
   function place(srcDir, destDir, pending, isTop) {
     fs.mkdirSync(destDir, { recursive: true });
@@ -188,14 +189,30 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
         // Real independent inode — a write through this path in the overlay
         // can never alias back to REPO_ROOT's own tracked file (see
         // opts.mode doc above).
-        placeVanishableLeaf(srcPath, () => fs.copyFileSync(srcPath, destPath));
+        const placed = placeVanishableLeaf(srcPath, () => fs.copyFileSync(srcPath, destPath));
+        if (!placed) skipped.push(srcPath);
       } else {
-        linkOrCopyFile(srcPath, destPath);
+        const placed = linkOrCopyFile(srcPath, destPath);
+        if (!placed) skipped.push(srcPath);
       }
     }
   }
 
   place(REPO_ROOT, tmpRepo, entries, true);
+
+  if (skipped.length > 0) {
+    // Not thrown: a source that left the tree mid-walk is genuinely not part of
+    // the snapshot, and failing here would reintroduce the crash this tolerance
+    // exists to remove. But it must not be SILENT either — a dropped leaf can
+    // surface later as a confusing "file missing" in an unrelated assertion, or
+    // as nothing at all for a test that never touches it.
+    console.warn(
+      `buildOverlayRepo: ${skipped.length} source file(s) vanished mid-walk and were ` +
+      `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist):\n  ` +
+      skipped.join('\n  '),
+    );
+  }
+
   return tmpRepo;
 }
 
