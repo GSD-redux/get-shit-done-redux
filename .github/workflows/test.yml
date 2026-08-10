@@ -557,6 +557,13 @@ jobs:
     if: needs.changes.outputs.product_changed == 'true' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Both report steps parse ~2.5GB of merged raw V8 dumps in one process;
+    # the runner's implicit heap ceiling (~4GB) is borderline for that merge,
+    # so pass/fail comes down to GC timing. #2952 gave the shard-collection
+    # step an explicit floor (6144 above) but the gate job was missed — this
+    # is the same fix, sized for the merged (3-shard) load.
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
