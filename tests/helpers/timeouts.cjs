@@ -21,7 +21,7 @@
  * sites onto a shared value that doesn't describe them.
  */
 
-const { DEFAULT_GIT_TIMEOUT_MS } = require('./git-fixture.cjs');
+const { DEFAULT_GIT_TIMEOUT_MS, GIT_FIXTURE_TIMEOUT_MS } = require('./git-fixture.cjs');
 
 /**
  * A single short CLI query or `node -e` probe against a temp fixture —
@@ -63,6 +63,13 @@ const HOOK_FANOUT_TIMEOUT_MS = 60000;
 const GIT_TIMEOUT_MS = DEFAULT_GIT_TIMEOUT_MS;
 
 /**
+ * Git fixture CONSTRUCTION calls (init/config/add/commit) — a heavier class
+ * than `GIT_TIMEOUT_MS`. See `tests/helpers/git-fixture.cjs`'s
+ * `GIT_FIXTURE_TIMEOUT_MS` for the full rationale (PR #3323); re-exported
+ * here rather than restated so the two can never disagree.
+ */
+
+/**
  * Hooks bundling via `scripts/build-hooks.js` (not a full project build —
  * see per-site comments for sites that run a heavier build and therefore
  * keep a larger local value). 30000ms is well over any observed duration
@@ -83,6 +90,7 @@ module.exports = {
   PROBE_TIMEOUT_MS,
   HOOK_FANOUT_TIMEOUT_MS,
   GIT_TIMEOUT_MS,
+  GIT_FIXTURE_TIMEOUT_MS,
   BUILD_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
 };
