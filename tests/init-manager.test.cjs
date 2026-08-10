@@ -475,6 +475,66 @@ describe('init manager', () => {
     assert.ok(output.phases[0].last_activity !== null);
   });
 
+  test('activity detection: hour-old file = not active', () => {
+    writeState(tmpDir);
+    writeRoadmap(tmpDir, [{ number: '1', name: 'Stale Phase' }]);
+
+    const phaseDir = scaffoldPhase(tmpDir, 1, { slug: 'stale-phase', context: true });
+    const files = fs.readdirSync(phaseDir);
+    const old = new Date(Date.now() - 60 * 60 * 1000); // 1 hour old
+    for (const f of files) {
+      fs.utimesSync(path.join(phaseDir, f), old, old);
+    }
+
+    const result = runGsdTools('init manager', tmpDir);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.phases[0].is_active, false);
+  });
+
+  // #3314 — ADR-456 subprocess clock pin: cmdInitManager's `is_active` gate
+  // (nowMs - newestMtime < 300000) is CLI-subprocess tested, so only the
+  // GSD_TEST_MODE+GSD_NOW_MS pin can control "now" here (t.mock.timers in the
+  // test process cannot reach the spawned child). newestMtime is set via
+  // fs.utimesSync to an exact epoch offset from the pinned "now" so the
+  // 300000ms boundary is provable exactly, not just "roughly recent"/"roughly old".
+  describe('is_active boundary (#3314 — exactly 300000ms, condition is strict <)', () => {
+    const PINNED_NOW_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z (second-aligned)
+    const PIN_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_NOW_MS) };
+
+    function scaffoldWithMtimeOffset(tmpDirLocal, offsetMs) {
+      writeState(tmpDirLocal);
+      writeRoadmap(tmpDirLocal, [{ number: '1', name: 'Boundary Phase' }]);
+      const phaseDir = scaffoldPhase(tmpDirLocal, 1, { slug: 'boundary-phase', context: true });
+      const mtimeMs = PINNED_NOW_MS - offsetMs;
+      const mtimeDate = new Date(mtimeMs);
+      for (const f of fs.readdirSync(phaseDir)) {
+        fs.utimesSync(path.join(phaseDir, f), mtimeDate, mtimeDate);
+      }
+    }
+
+    test('boundary: 299999ms since last activity → is_active true', () => {
+      scaffoldWithMtimeOffset(tmpDir, 299_999);
+      const result = runGsdTools('init manager', tmpDir, PIN_ENV);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.phases[0].is_active, true);
+    });
+
+    test('boundary: exactly 300000ms since last activity → is_active false', () => {
+      scaffoldWithMtimeOffset(tmpDir, 300_000);
+      const result = runGsdTools('init manager', tmpDir, PIN_ENV);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.phases[0].is_active, false);
+    });
+
+    test('boundary: 300001ms since last activity → is_active false', () => {
+      scaffoldWithMtimeOffset(tmpDir, 300_001);
+      const result = runGsdTools('init manager', tmpDir, PIN_ENV);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.phases[0].is_active, false);
+    });
+  });
+
   test('conflict filter: blocks dependent phase execute when dep is active', () => {
     writeState(tmpDir);
     writeRoadmap(tmpDir, [
