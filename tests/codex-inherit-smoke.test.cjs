@@ -163,6 +163,23 @@ function runEffortSyncDryRun(codexHome) {
   return JSON.parse(captured);
 }
 
+/**
+ * Runs `fn()` with `GSD_AGENTS_DIR` set to `dir`, restoring the prior value
+ * (or deleting it, if previously unset) in a `finally` inside this helper —
+ * never inside a test body, per CONTRIBUTING.md's try/finally-in-tests ban.
+ * Returns `fn`'s result.
+ */
+function withAgentsDir(dir, fn) {
+  const prevAgentsDir = process.env.GSD_AGENTS_DIR;
+  process.env.GSD_AGENTS_DIR = dir;
+  try {
+    return fn();
+  } finally {
+    if (prevAgentsDir === undefined) delete process.env.GSD_AGENTS_DIR;
+    else process.env.GSD_AGENTS_DIR = prevAgentsDir;
+  }
+}
+
 function captureStderr() {
   const chunks = [];
   const original = process.stderr.write;
@@ -253,15 +270,7 @@ describe('Row 1/2/3/5a/6/7 — codex install, model_profile: balanced (default),
   });
 
   test('row 7: checkCodexModelPosture reports the freshly-installed tree clean (emit -> validate)', () => {
-    const prevAgentsDir = process.env.GSD_AGENTS_DIR;
-    process.env.GSD_AGENTS_DIR = path.join(codexHome, 'agents');
-    let result;
-    try {
-      result = checkCodexModelPosture('codex');
-    } finally {
-      if (prevAgentsDir === undefined) delete process.env.GSD_AGENTS_DIR;
-      else process.env.GSD_AGENTS_DIR = prevAgentsDir;
-    }
+    const result = withAgentsDir(path.join(codexHome, 'agents'), () => checkCodexModelPosture('codex'));
     assert.strictEqual(result.ok, true,
       `Phase 2's validator must report the tree Phase 1's emitter just produced as clean\nviolations:\n${JSON.stringify(result.violations, null, 2)}`);
     assert.deepStrictEqual(result.violations, []);
@@ -375,15 +384,7 @@ describe('Row 9/10 — codex install with an explicit real-Codex model_overrides
   });
 
   test('row 10: checkCodexModelPosture reports the pinned tree clean — a legal pin is not a violation', () => {
-    const prevAgentsDir = process.env.GSD_AGENTS_DIR;
-    process.env.GSD_AGENTS_DIR = path.join(codexHome, 'agents');
-    let result;
-    try {
-      result = checkCodexModelPosture('codex');
-    } finally {
-      if (prevAgentsDir === undefined) delete process.env.GSD_AGENTS_DIR;
-      else process.env.GSD_AGENTS_DIR = prevAgentsDir;
-    }
+    const result = withAgentsDir(path.join(codexHome, 'agents'), () => checkCodexModelPosture('codex'));
     assert.strictEqual(result.ok, true,
       `Phase 2's validator must not flag a legal explicit model_overrides pin\nviolations:\n${JSON.stringify(result.violations, null, 2)}`);
     assert.deepStrictEqual(result.violations, []);
