@@ -50,6 +50,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "windsurf-hooks-json",
     "sandboxTier": "none",

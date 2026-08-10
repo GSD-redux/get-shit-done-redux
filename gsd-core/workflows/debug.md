@@ -140,7 +140,8 @@ specialist_dispatch_enabled: true
 """,
   subagent_type="gsd-debug-session-manager",
   model="{debugger_model}",
-  description="Continue debug session {SLUG}"
+  description="Continue debug session {SLUG}",
+  run_in_background=false
 )
 ```
 
@@ -203,7 +204,7 @@ Create `.planning/debug/{slug}.md` with initial state using the Write tool (neve
 
 After initial context setup, spawn the session manager to handle the full checkpoint/continuation loop. The session manager handles specialist_hint dispatch internally: when gsd-debugger returns ROOT CAUSE FOUND it extracts the specialist_hint field and invokes the matching skill (e.g. typescript-expert, swift-concurrency) before offering fix options.
 
-> **Foreground, blocking spawn — #2196.** The `Agent(subagent_type="gsd-debug-session-manager", …)` call below is FOREGROUND and BLOCKING — it returns the compact session summary directly. Wait for it; do not background it, and do not poll for it. Never pass an agent or session identifier to `TaskOutput` — an agent ID is NOT a task ID, so `TaskOutput <agent-id>` always returns `No task found with ID`. If the spawn returns no usable result (the handoff is lost), do NOT claim the session is still running: preserve the checkpoint at `.planning/debug/{slug}.md`, report the failed handoff plainly, and resume by re-spawning the session manager or via `/gsd:debug continue {slug}`.
+> **Foreground, blocking spawn — #2196.** The `Agent(subagent_type="gsd-debug-session-manager", …)` call below MUST carry `run_in_background: false` — Claude Code backgrounds subagents by default, and only that flag makes the spawn return the compact session summary directly. Wait for it; do not background it, and do not poll for it. Never pass an agent or session identifier to `TaskOutput` — an agent ID is NOT a task ID, so `TaskOutput <agent-id>` always returns `No task found with ID`. If the spawn returns no usable result (the handoff is lost), do NOT claim the session is still running: preserve the checkpoint at `.planning/debug/{slug}.md`, report the failed handoff plainly, and resume by re-spawning the session manager or via `/gsd:debug continue {slug}`.
 
 Print before spawning (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze):
 ```
@@ -229,7 +230,8 @@ specialist_dispatch_enabled: true
 """,
   subagent_type="gsd-debug-session-manager",
   model="{debugger_model}",
-  description="Debug session {slug}"
+  description="Debug session {slug}",
+  run_in_background=false
 )
 ```
 

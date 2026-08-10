@@ -147,12 +147,21 @@ If you target the wrong branch by accident, the `PR Target Validator`
 workflow will post a comment with the one-line fix (click "Edit" by the PR
 title and change the base branch — no need to recreate the PR).
 
-**Why this matters:** Under the old single-branch model, every PR required
-rebasing onto `main` because branch protection required "up-to-date before
-merging" and `main` moved on every merge. With `next` as the integration
-branch and that flag disabled on `next`, concurrent PRs can merge in any
-order as long as they don't conflict on the same lines. The rebase
-treadmill is gone for the 95% case.
+**Why this matters:** Under the old single-branch model, every PR rebased onto
+`main`, which moved on every merge. `next` moves far less often — only when
+another PR to `next` lands — so in practice you rebase much less.
+
+**But `next` does still require "up-to-date before merging".** Branch
+protection has `required_status_checks.strict = true`; check it yourself with
+`gh api repos/open-gsd/gsd-core/branches/next/protection --jq '.required_status_checks.strict'`.
+If another PR lands while yours is open, yours goes `BEHIND` and must be
+rebased before it can merge.
+
+Budget for that, because the rebase is not free here: **it changes your HEAD
+sha, which invalidates the sha-bound pass marker the push gate reads**, so a
+rebase means re-running the full remote verification and another CI cycle
+before the gate clears again. Rebase *last* — immediately before you push for
+review — rather than paying for a verification you are about to discard.
 
 ---
 
@@ -180,6 +189,9 @@ Contributor requirements (summary):
 - **No draft PRs** — draft PRs are automatically closed. Only open a PR when it is complete, tested, and ready for review. If your work is not finished, keep it on your local branch until it is.
 - **Use the correct PR template** — there are separate templates for [Fix](.github/PULL_REQUEST_TEMPLATE/fix.md), [Enhancement](.github/PULL_REQUEST_TEMPLATE/enhancement.md), and [Feature](.github/PULL_REQUEST_TEMPLATE/feature.md). Using the wrong template or using the default template for a feature is a rejection reason.
 - **Link with a closing keyword** — use `Closes #123`, `Fixes #123`, or `Resolves #123` in the PR body. The CI check will fail and the PR will be auto-closed if no valid issue reference is found.
+  - **Test-only and docs-only follow-up PRs may reference without closing.** If your PR is documentation or regression coverage only — say, a repo-wide guard for a fix that already shipped — and there is no open issue for it to close, use a non-closing reference instead: `Refs #123`. `Ref`, `Refs`, `References`, `Relates to`, `Related to`, and `Follow-up to` are all accepted in that position. Do **not** write a closing keyword against an already-closed issue to satisfy the check; on merge it closes nothing, and it trains readers to treat closing keywords as decorative.
+  - **Qualifying diff shape:** every changed file must be under `tests/`, under `docs/`, or a root-level `*.md` (`README.md`, `CONTRIBUTING.md`, …). This mirrors the doc-only classification the push gate already uses, and it is deliberately root-only — markdown under a subdirectory (`gsd-core/workflows/*.md`, `agents/*.md`, `commands/**/*.md`) is runtime-loaded text, not documentation, so it still requires a closing keyword. `CHANGELOG.md` is excluded too: edit it through a `.changeset/` fragment, never directly.
+  - This weaker form is accepted **only** for that diff shape. A PR touching anything else still needs a closing keyword, and a PR with no issue reference at all still fails. On a very large PR (more than 100 changed files) the check cannot confirm the diff shape and falls back to requiring a closing keyword.
 - **One concern per PR** — bug fixes, enhancements, and features must be separate PRs
 - **No drive-by formatting** — don't reformat code unrelated to your change
 - **Don't bundle test-fixture updates into `docs:` or unrelated commits** — when a production change makes an existing test assertion stale, the test correction MUST land as its own `test:` (or `fix:`) commit, not bundled into a `docs:` commit that also updates the explanation. The release-sdk hotfix cherry-pick filter routes by commit-subject prefix (`fix:`, `chore:`, `test:`); a test-fixture correction packed under a `docs:` prefix is invisible to the picker and ships a half-state to the hotfix branch — production code changed, test assertion stale. v1.42.3 hit this exact mode (#3621). The fix is upstream: keep the test-fixture commit separate.
@@ -918,13 +930,18 @@ This gives maintainers a faster, higher-confidence signal than CI-only validatio
 
 ### Pre-PR Seam Checks (Manifest/Alias Routing)
 
-If you touched any of the command-manifest or generated alias files, run:
+If you touched `src/command-aliases.cts` or any of the eight `src/*-command-router.cts`
+sources it feeds, run:
 
 ```bash
 npm run check:alias-drift
 ```
 
-This verifies generated alias artifacts are in sync with manifest source-of-truth.
+This verifies the built alias artifacts under `gsd-core/bin/lib/` agree with their
+source of truth — each family's `*_SUBCOMMANDS` list must match the `subcommand`
+values derived from its `*_COMMAND_ALIASES` table, in order, and each router must
+reference its own list. The surface is enumerated once in
+`scripts/lib/alias-drift-families.cjs`.
 
 ### Editing shipped content (gsd-core/workflows, references, templates, contexts, agents/, commands/gsd/)
 
@@ -993,60 +1010,42 @@ npm run regen:derived
 
 Optional local pre-commit hook entry (Git-native):
 
+`.githooks/pre-commit` is **committed** — you do not write it, you only point git at
+it. It runs `check:alias-drift` when you stage one of the tracked sources that check
+reads, and stays silent otherwise.
+
 ```bash
 # one-time setup
-mkdir -p .githooks
-cat > .githooks/pre-commit <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if git diff --cached --name-only | grep -Eq "^sdk/src/query/command-manifest\.|^sdk/src/query/command-aliases\.generated\.ts$|^gsd-core/bin/lib/command-aliases\.generated\.cjs$|^sdk/scripts/gen-command-aliases\.ts$"; then
-  npm run check:alias-drift
-fi
-EOF
-chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks
 ```
 
+This is opt-in and stays that way: nothing in `npm install` sets `core.hooksPath` for
+you, so a fresh clone acquires no hooks. To stop using them, `git config --unset
+core.hooksPath`.
+
+Do not paste a copy of the hook body into your own `.githooks/pre-commit`. Bash cannot
+`require()` a CommonJS module, so the hook does carry the watched paths as literals —
+but `tests/precommit-alias-drift-hook.test.cjs` runs the real hook against every source
+derived from `scripts/lib/alias-drift-families.cjs` and fails in **both** directions: if
+the hook stops watching a source the checker reads, and if it keeps watching a router the
+checker dropped. A copy in your own tree has no such test behind it, and a hand-maintained
+copy is exactly what silently rotted the previous version of this recipe (#2725) — every
+path in it named the retired `sdk/` tree or a gitignored build output, so the guard
+matched nothing for months.
+
 Optional local pre-push hook to block a private author-email pattern:
+
+`.githooks/pre-push` is committed too, and is covered by the same
+`core.hooksPath` opt-in above. It is a no-op until you set the regex, so enabling
+hooks does not enable this check:
 
 ```bash
 # set locally in your shell profile (example)
-export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\\.com$'
-
-cat > .githooks/pre-push <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-zero_sha='0000000000000000000000000000000000000000'
-blocked_regex="${GSD_BLOCKED_AUTHOR_REGEX:-}"
-[[ -z "$blocked_regex" ]] && exit 0
-violations=()
-
-while read -r local_ref local_sha remote_ref remote_sha; do
-  [[ "$local_sha" == "$zero_sha" ]] && continue
-  if [[ "$remote_sha" == "$zero_sha" ]]; then
-    commits=$(git rev-list "$local_sha" --not --remotes)
-  else
-    commits=$(git rev-list "$remote_sha..$local_sha")
-  fi
-  while read -r commit; do
-    [[ -z "$commit" ]] && continue
-    email=$(git show -s --format='%ae' "$commit" | tr '[:upper:]' '[:lower:]')
-    if printf '%s' "$email" | grep -Eq "$blocked_regex"; then
-      violations+=("$commit <$email>")
-    fi
-  done <<< "$commits"
-done
-
-if [[ ${#violations[@]} -gt 0 ]]; then
-  echo "Push blocked: commit author email matched local blocked regex ($blocked_regex)." >&2
-  printf '  - %s\n' "${violations[@]}" >&2
-  exit 1
-fi
-EOF
-chmod +x .githooks/pre-push
+export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\.com$'
 ```
+
+With that exported, a push carrying a commit whose author email matches is blocked,
+and the hook names the offending commits. Unset the variable to disable it.
 
 ### CI Test Quality Checks
 

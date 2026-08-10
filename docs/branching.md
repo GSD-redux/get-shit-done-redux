@@ -111,12 +111,16 @@ gh pr create --base next --repo open-gsd/gsd-core
 **Why this rarely needs a rebase:**
 
 - `next` moves slower than `main` did in the old single-branch model — only
-  changes when other PRs to `next` merge.
-- Branch protection on `next` does **not** require "up-to-date before merge"
-  — only requires CI to be green. So another PR landing on `next` while yours
-  is open doesn't force you to rebase.
+  changes when other PRs to `next` merge. Fewer landings means fewer rebases.
 - Squash-merge means each PR becomes one commit on `next` — easy to revert,
   easy to read, no merge-noise.
+
+**It does still need a rebase when `next` moves under you.** Branch protection
+on `next` requires "up-to-date before merge" (`required_status_checks.strict =
+true`), so a PR that goes `BEHIND` must be rebased before it can merge. And
+because the push gate binds its pass marker to an exact sha, that rebase
+invalidates the marker and costs a full re-verification plus another CI cycle
+— so rebase *last*, right before you push for review.
 
 ### Flow 2 — Hotfix (urgent patch release)
 
@@ -191,18 +195,27 @@ The old single-branch model:
 - 10 PRs in flight = 9 of them need to rebase every time one lands. The
   last one to merge has rebased N times.
 
-The new model removes the pressure in three ways:
+The new model reduces the pressure in two ways:
 
 1. **`main` rarely moves.** Only release/hotfix merges land. Most days `main`
    doesn't change at all.
-2. **`next` does NOT require "up-to-date before merge".** Branch protection
-   on `next` only requires CI green. Two PRs to `next` can merge in either
-   order without rebasing each other — git will handle the merge as long as
-   they don't touch the same lines.
-3. **Squash-merge into `next`.** One commit per PR. No "merge main into my
-   branch" noise. If you ever do need to bring `next` into your branch
-   (because of a real conflict), it's one rebase per conflict, not per PR
-   that lands somewhere else.
+2. **Squash-merge into `next`.** One commit per PR. No "merge main into my
+   branch" noise, and a clean revert.
+
+**It does not remove the up-to-date requirement.** `next` carries
+`required_status_checks.strict = true`, exactly as `main` did — so a PR that
+another merge pushes `BEHIND` still has to rebase. What changed is the
+*frequency*: `next` moves only when a PR to `next` lands, not on every release,
+so far fewer PRs go stale.
+
+Two consequences worth planning around:
+
+- The rebase changes your HEAD sha, which **invalidates the sha-bound pass
+  marker** the push gate reads. Re-verification and another CI cycle follow.
+  Rebase last, immediately before pushing for review.
+- With several PRs in flight, the last to merge may still rebase more than
+  once. That is the treadmill, reduced but not gone — size the queue with that
+  in mind rather than assuming order-independence.
 
 You'll still occasionally rebase — when your branch genuinely conflicts with
 something that landed on `next`. But that's a real conflict you'd have to

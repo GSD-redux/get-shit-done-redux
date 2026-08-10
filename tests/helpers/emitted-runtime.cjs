@@ -668,6 +668,35 @@ function baselineManifestsAtRef(base = 'origin/next') {
  * @param {string} [o.cwd] repo to run `git worktree` from AND whose generator measures it
  * @returns {object} the parsed baseline artifact ({version, sha, manifests, sizes})
  */
+const WORKTREE_TIMEOUT_MS = 60_000;
+const BUILD_LIB_TIMEOUT_MS = 180_000;
+// 360s for the generator step. NOT the 600000ms `local/no-unbounded-spawn`
+// ceiling: `scripts/run-tests.cjs:973` bounds the WHOLE chunk at 600000ms, so a
+// step bound equal to it loses the race — the chunk is killed first and the
+// failure arrives as an opaque "no failed step" kill instead of the per-step
+// message below. The bounds must escalate inward-out, and
+// `emitted-runtime-bounds` in tests/emitted-attribution.test.cjs locks that.
+//
+// Measured for this step: ~22s idle in a container, ~142s with 8 CPU burners on
+// 8 cores, 91.6s and 115.8s in the run that passed, and 300.1s in the run that
+// timed out (censored — its real need is unknown). 360s is ~3x the passing
+// observation and 20% above the censored one, while leaving 240s of chunk
+// headroom for every other file sharing the chunk.
+//
+// The old 300s sat INSIDE that variance band. Under gsd-test this slow path runs
+// on every verification, because the on-disk baseline cache is restored by
+// actions/cache keyed on github.event.pull_request.base.sha — a key that exists
+// only inside GitHub Actions. The real remedy is making that cache reachable from
+// the remote runner so the in-job build returns to being the rare fallback
+// ADR-2719 §5 describes; that is a gsd-test-runner change, not one this repo can
+// make.
+const BUILD_TIMEOUT_MS = 360_000;
+// Mirrors `scripts/run-tests.cjs:973`'s default. Duplicated deliberately and
+// narrowly: the bounds here must be checkable against it, and the alternative is
+// reading that script's source, which `local/no-source-grep` bans. The lock test
+// names this as the drift risk.
+const CHUNK_TIMEOUT_CEILING_MS = 600_000;
+
 function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-baseline-wt-'));
   // mkdtempSync already created the directory; `git worktree add` requires the
@@ -675,34 +704,59 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   fs.rmdirSync(worktreeDir);
   const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
 
-  const WORKTREE_TIMEOUT_MS = 60_000;
-  const BUILD_LIB_TIMEOUT_MS = 180_000;
-  const BUILD_TIMEOUT_MS = 300_000;
+  // Per-step timings, carried into the thrown error. A bare "spawnSync ETIMEDOUT"
+  // names neither the step nor its elapsed time, which is exactly the information
+  // needed to tell a slow machine from a hung step — and the failure message is
+  // the only channel that survives into the remote runner's failures.json.
+  const timings = [];
+  const timed = (step, fn) => {
+    const started = Date.now();
+    try {
+      const value = fn();
+      timings.push(`${step}=${((Date.now() - started) / 1000).toFixed(1)}s`);
+      return value;
+    } catch (err) {
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      timings.push(`${step}=FAILED@${elapsed}s`);
+      const partial = [
+        err && err.stdout ? `stdout tail: ${String(err.stdout).trim().slice(-400)}` : '',
+        err && err.stderr ? `stderr tail: ${String(err.stderr).trim().slice(-400)}` : '',
+      ].filter(Boolean).join('\n  ');
+      err.message =
+        `${step} failed after ${elapsed}s (bounds: worktree ${WORKTREE_TIMEOUT_MS}ms, ` +
+        `build:lib ${BUILD_LIB_TIMEOUT_MS}ms, generator ${BUILD_TIMEOUT_MS}ms). ` +
+        `Step timings: ${timings.join(' ')}. ${err.message}` +
+        (partial ? `\n  ${partial}` : '');
+      throw err;
+    }
+  };
 
   try {
-    execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
-      cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    timed('git-worktree-add', () =>
+      execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
+        cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      }));
 
     const sharedNodeModules = path.join(cwd, 'node_modules');
     if (fs.existsSync(sharedNodeModules)) {
       fs.symlinkSync(sharedNodeModules, path.join(worktreeDir, 'node_modules'), 'dir');
     }
 
-    runNpm(['run', 'build:lib'], {
-      cwd: worktreeDir, timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    timed('npm-run-build-lib', () =>
+      runNpm(['run', 'build:lib'], {
+        cwd: worktreeDir, timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      }));
 
     // Run `cwd`'s OWN generator (not the worktree's — see the function doc for why),
     // pointed at the worktree as the tree to measure.
-    execFileSync(
-      process.execPath,
-      [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
-      { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    timed('gen-emitted-baseline', () =>
+      execFileSync(
+        process.execPath,
+        [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
+        { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      ));
 
-    const raw = fs.readFileSync(outFile, 'utf8');
-    return JSON.parse(raw);
+    return timed('read-artifact', () => JSON.parse(fs.readFileSync(outFile, 'utf8')));
   } finally {
     try {
       execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'remove', '--force', worktreeDir], {
@@ -926,4 +980,8 @@ module.exports = {
   currentManifests,
   currentSizes,
   readAckFile,
+  WORKTREE_TIMEOUT_MS,
+  BUILD_LIB_TIMEOUT_MS,
+  BUILD_TIMEOUT_MS,
+  CHUNK_TIMEOUT_CEILING_MS,
 };

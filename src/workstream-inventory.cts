@@ -23,7 +23,10 @@ import planScan = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningRoot, getActiveWorkstream } = planningWorkspace;
-import { stateExtractField } from './state-document.cjs';
+import { stateFieldValue } from './state-document.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
+import frontmatterMod = require('./frontmatter.cjs');
+const { extractFrontmatter, stripFrontmatter } = frontmatterMod;
 import { findTableWithColumns } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
@@ -435,12 +438,29 @@ function writeVerificationLedger(wsDir: string, ledger: VerificationLedger): voi
 function readStateProjection(statePath: string): StateProjection {
   try {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+    // #3187: route Status/Current Phase/Last Activity through the single
+    // #1760 fallback-chain owner (state-document.cjs's stateFieldValue)
+    // instead of a frontmatter-blind stateExtractField(stateContent, …) call,
+    // mirroring cmdStateValidate/cmdStateSnapshot — a STATE.md whose fields
+    // live only in frontmatter is no longer projected as absent here.
+    const fm = extractFrontmatter(stateContent, statePath) as Record<string, unknown>;
+    const body = stripFrontmatter(stateContent);
     return {
-      status: stateExtractField(stateContent, 'Status') || 'unknown',
-      current_phase: stateExtractField(stateContent, 'Current Phase'),
-      last_activity: stateExtractField(stateContent, 'Last Activity'),
+      status: stateFieldValue(fm, body, 'status', 'Status').value || 'unknown',
+      current_phase: stateFieldValue(fm, body, 'current_phase', 'Current Phase').value,
+      last_activity: stateFieldValue(fm, body, 'last_activity', 'Last Activity').value,
     };
   } catch {
+    // Read/parse failure (missing file, permission fault, etc.) degrades to
+    // an all-unknown projection — unchanged. Not widened to also carry a
+    // `scope` here: doing so would ripple `StateProjection`
+    // (workstream-inventory-builder.cjs) and every consumer of this
+    // read-only rollup — the design doc's blast-radius table rates
+    // `readStateProjection` "low"/Tier-2, and this call site's migration is
+    // scoped to routing the fallback chain, not to widening the return type.
+    // The existing all-unknown degrade already distinguishes "could not
+    // read" from any real field value; only its scope-vs-absence *reason*
+    // stays uncaptured, same as before this change.
     return {
       status: 'unknown',
       current_phase: null,

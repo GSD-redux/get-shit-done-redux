@@ -49,6 +49,7 @@ import {
   normalizeStateStatus,
   shouldPreserveExistingProgress,
   stateExtractField,
+  stateFieldValue,
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
@@ -1456,18 +1457,9 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   const fm = extractFrontmatter(content, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(content);
 
-  // Helper: return frontmatter scalar value when present and non-empty.
-  // Accepts strings, numbers, and booleans — coercing non-string primitives to
-  // their string representation so callers always receive string | null.
-  // Returns null for missing, null/undefined, or empty-after-trim values so
-  // the caller falls back to body extraction.
-  const fmScalar = (key: string): string | null => {
-    const v = fm[key];
-    if (v === null || v === undefined) return null;
-    if (typeof v === 'string') return v.trim() || null;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    return null;
-  };
+  // #3187: frontmatter-scalar-then-body-field precedence is owned by
+  // state-document.cjs's `stateFieldValue` (ADR-3180 §7.7) — this function no
+  // longer holds its own fmScalar ladder.
 
   // Extract basic fields — frontmatter keys take precedence over body
   // #2956: scope `Phase` extraction to ## Current Position so a historical
@@ -1477,24 +1469,24 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   // full-body search only when no ## Current Position section exists, so files
   // with no section heading keep their current behaviour.
   const currentPositionScope = matchCurrentPositionSection(body) ?? body;
-  const prosePhase = parseProsePhaseField(stateExtractField(currentPositionScope, 'Phase'));
-  const currentPhase = fmScalar('current_phase') ?? stateExtractField(body, 'Current Phase') ?? prosePhase.phase;
-  const currentPhaseName = fmScalar('current_phase_name') ?? stateExtractField(body, 'Current Phase Name') ?? prosePhase.name;
-  const totalPhasesRaw = fmScalar('total_phases') ?? stateExtractField(body, 'Total Phases');
-  const currentPlan = fmScalar('current_plan') ?? stateExtractField(body, 'Current Plan');
-  const totalPlansRaw = fmScalar('total_plans_in_phase') ?? stateExtractField(body, 'Total Plans in Phase');
-  const status = fmScalar('status') ?? stateExtractField(body, 'Status');
-  const progressRaw = fmScalar('progress') ?? stateExtractField(body, 'Progress');
-  const rawLastActivity = stateExtractField(body, 'Last Activity') ?? stateExtractField(body, 'Last activity');
+  const prosePhase = parseProsePhaseField(stateFieldValue(fm, currentPositionScope, null, 'Phase').value);
+  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase.phase;
+  const currentPhaseName = stateFieldValue(fm, body, 'current_phase_name', 'Current Phase Name').value ?? prosePhase.name;
+  const totalPhasesRaw = stateFieldValue(fm, body, 'total_phases', 'Total Phases').value;
+  const currentPlan = stateFieldValue(fm, body, 'current_plan', 'Current Plan').value;
+  const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
+  const status = stateFieldValue(fm, body, 'status', 'Status').value;
+  const progressRaw = stateFieldValue(fm, body, 'progress', 'Progress').value;
+  const rawLastActivity = stateFieldValue(fm, body, null, 'Last Activity').value ?? stateFieldValue(fm, body, null, 'Last activity').value;
   const proseLastActivity = parseProseLastActivityField(rawLastActivity);
-  const lastActivity = fmScalar('last_activity') ?? proseLastActivity.date ?? rawLastActivity;
-  const lastActivityDesc = fmScalar('last_activity_desc') ?? stateExtractField(body, 'Last Activity Description') ?? proseLastActivity.description;
+  const lastActivity = stateFieldValue(fm, body, 'last_activity', null).value ?? proseLastActivity.date ?? rawLastActivity;
+  const lastActivityDesc = stateFieldValue(fm, body, 'last_activity_desc', 'Last Activity Description').value ?? proseLastActivity.description;
   // #2956: Paused At canonically lives in ## Session (see the comment above
   // preferNewerLastActivity and the write seam in buildStateFrontmatter). The
   // write seam already scopes it to ## Session; this read seam must agree, so a
   // stale "Paused At:" in a Session Continuity Archive cannot win here either.
   const sessionScope = matchSessionSection(body) ?? body;
-  const pausedAt = fmScalar('paused_at') ?? stateExtractField(sessionScope, 'Paused At');
+  const pausedAt = stateFieldValue(fm, sessionScope, 'paused_at', 'Paused At').value;
 
   // Parse numeric fields
   const totalPhases = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;
@@ -2843,8 +2835,84 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
 
 /**
  * Gate 1: Validate STATE.md against filesystem.
- * Returns { valid, warnings, drift } JSON.
+ * Returns { valid, warnings, drift, scope } JSON.
+ *
+ * #3187 (ADR-3180 §7.7, Decisions 2-4): two defects fixed here.
+ *
+ * (1) #3162 THE HEADLINE. Every warning this function can emit used to be
+ * gated behind `if (currentPhase && fs.existsSync(phasesDir))`, and
+ * `currentPhase` came from a body-only `stateExtractField(content, 'Current
+ * Phase')` call with no frontmatter fallback. A STATE.md whose phase lives
+ * ONLY in frontmatter therefore resolved `currentPhase` to `null`, the whole
+ * drift block was skipped, and the function returned
+ * `{valid:true, warnings:[], drift:{}}` — "could not look" was
+ * output-identical to "looked, all clean." Current Phase / Status / Total
+ * Plans in Phase now route through `stateFieldValue` (the single owner of the
+ * #1760 frontmatter-then-body fallback chain), so the frontmatter tier is
+ * actually consulted.
+ *
+ * (2) #1255 FRONTMATTER SHADOWING. The old code passed UNSTRIPPED `content`
+ * to the extractor. `stateExtractField`'s plain-format branch is
+ * `^Field:` with the `i` flag, so a frontmatter `status:` key matched the
+ * pattern for the body field `Status` and won, because the frontmatter block
+ * precedes the body. Parsed once now — `extractFrontmatter` +
+ * `stripFrontmatter` — and `fm`/`body` are handed to the chain owner, exactly
+ * as `advancePlanCore`/`beginPhaseCore`/`completePhaseCore`/
+ * `readModifyWriteStateMd` already guard against this class of defect.
+ *
+ * `scope` (ADR-3180 Decision 2) reports whether the derivation actually ran:
+ *   - `COMPLETE`  — the phase-vs-disk derivation ran over usable input,
+ *     including when it legitimately finds no VERIFICATION.md / no matching
+ *     phase directory (a real answer, not a non-answer).
+ *   - `UNSCOPED`  — Current Phase could not be resolved by ANY chain step (no
+ *     frontmatter scalar, no body field), so the drift derivation had no
+ *     phase to scope its disk lookup to and could not run at all. Reporting
+ *     this as COMPLETE would recreate the #3162 collapse this phase closes,
+ *     one layer out.
+ *   - `UNREADABLE` — the frontmatter parse or the phases-dir scan itself
+ *     could not be consulted (an existing `catch` block used to swallow this
+ *     silently; the degrade stays, but is now visible).
+ *
+ * ⛔ Rejected (ADR-3180 §7.7 Rejected #2): a non-`COMPLETE` scope is never
+ * routed to `valid:false`. `valid` keeps meaning "no drift warnings were
+ * found"; `scope` says whether the derivation could actually run. A caller
+ * branches on both — folding them into one boolean recreates the exact
+ * collapse this epic removes, in the opposite direction (a legacy STATE.md
+ * with no resolvable phase is a supported degrade, not an invalid document).
  */
+
+/**
+ * #1255/#3187: parse frontmatter and strip it from the body ONCE, shared by
+ * `cmdStateValidate` and `cmdStateCompletePhase` so both consult the identical
+ * fm/body precedence and degrade identically when the frontmatter half of the
+ * chain cannot be consulted. Extracted (code-review finding, epic #3180): the
+ * two call sites previously carried a byte-identical try/catch, comments
+ * included — an epic whose own thesis is "one canonical owner per
+ * derivation" must not ship a duplicated derivation in its own diff.
+ *
+ * Returns `scope: SCOPE.COMPLETE` unless the frontmatter parse itself threw,
+ * in which case `fm` degrades to `{}` and `scope` becomes `SCOPE.UNREADABLE`
+ * — callers that mutate `scope` further (e.g. `cmdStateValidate`'s later
+ * UNSCOPED/disk-scan degrades) start from this returned value rather than a
+ * fresh `SCOPE.COMPLETE`.
+ */
+function readStateFrontmatterScoped(content: string, statePath: string): { fm: Record<string, unknown>; body: string; scope: planningScopeMod.Scope } {
+  let fm: Record<string, unknown>;
+  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
+  try {
+    fm = extractFrontmatter(content, statePath);
+  } catch {
+    // extractFrontmatter is documented never to throw, but this mirrors the
+    // defensive try/catch already used around it elsewhere in this file
+    // (e.g. spliceFrontmatter) — a parse hiccup here means the frontmatter
+    // half of the chain could not be consulted; degrade visibly.
+    fm = {};
+    scope = SCOPE.UNREADABLE;
+  }
+  const body = stripFrontmatter(content);
+  return { fm, body, scope };
+}
+
 function cmdStateValidate(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
@@ -2864,22 +2932,36 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   const warnings: string[] = [];
   const drift: Record<string, unknown> = {};
 
-  const status = stateExtractField(content, 'Status') || '';
-  const currentPhase = stateExtractField(content, 'Current Phase');
-  const totalPlansRaw = stateExtractField(content, 'Total Plans in Phase');
+  // #1255/#3187: parse frontmatter and strip it from the body ONCE, so the
+  // chain owner sees the same fm/body precedence every other migrated call
+  // site sees. Pass statePath so a truncated STATE.md is named in the #1882
+  // diagnostic rather than reported under a content digest.
+  const { fm, body, scope: initialScope } = readStateFrontmatterScoped(content, statePath);
+  let scope: planningScopeMod.Scope = initialScope;
+
+  const status = stateFieldValue(fm, body, 'status', 'Status').value || '';
+  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+  const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
   const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
 
   const phasesDir = planningPaths(cwd).phases;
 
-  // Scan disk for current phase
-  if (currentPhase && fs.existsSync(phasesDir)) {
+  if (currentPhase === null) {
+    // #3162: nothing to scope the disk lookup to — the derivation cannot run
+    // at all. Distinct from "ran, found nothing to warn about" (scope stays
+    // COMPLETE elsewhere in this function).
+    if (scope === SCOPE.COMPLETE) scope = SCOPE.UNSCOPED;
+  } else if (fs.existsSync(phasesDir)) {
     const normalized = currentPhase.replace(/\s+of\s+\d+.*/, '').trim();
     try {
       const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
       const phaseDir = entries.find(e => e.isDirectory() && e.name.startsWith(normalized.replace(/^0+/, '').padStart(2, '0')));
       if (phaseDir) {
         const phaseDirPath = path.join(phasesDir, phaseDir.name);
-        const { planCount: diskPlans, summaryCount: diskSummaries } = scanPhasePlans(phaseDirPath);
+        const { planCount: diskPlans, summaryCount: diskSummaries, scope: planScanScope } = scanPhasePlans(phaseDirPath);
+        if (planScanScope !== SCOPE.COMPLETE && scope === SCOPE.COMPLETE) {
+          scope = planScanScope;
+        }
 
         // Check plan count mismatch
         if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
@@ -2900,7 +2982,8 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
           } catch { /* best-effort (#2245 audit): cmdStateValidate is a diagnostic
              * warnings scan across N VERIFICATION.md files — one unreadable file
              * (permission/race) must not abort the scan of the rest; it's simply
-             * excluded from drift detection. */ }
+             * excluded from drift detection. Does not degrade `scope` — the other
+             * N-1 files were consulted fine. */ }
         }
 
         // Check if all plans have summaries but status still says executing
@@ -2911,17 +2994,22 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
           }
         }
       }
-    } catch { /* best-effort (#2245 audit): cmdStateValidate is a read-only
-       * diagnostic scan of the current phase's directory (readdirSync +
-       * scanPhasePlans). A disk-scan failure here means drift detection for
-       * this phase is skipped for this run, degrading to "no warnings from
-       * that scan" rather than crashing the validate command — the same
-       * degrade-on-scan-failure pattern buildStateFrontmatter's own disk scan
-       * already uses. */ }
+      // else: phase resolved, but no matching directory on disk — a real
+      // answer (row 22), not a look failure. scope stays COMPLETE.
+    } catch {
+      // #3162/#2245: previously a silent best-effort swallow. The disk-scan
+      // failure (readdirSync/scanPhasePlans) means drift detection for this
+      // phase could not run this pass — that degrade is kept (validate still
+      // does not crash), but is now visible via `scope` instead of being
+      // indistinguishable from a clean pass.
+      scope = SCOPE.UNREADABLE;
+    }
   }
+  // else: phasesDir itself does not exist — a real answer (no phases on disk
+  // yet), not a look failure. scope stays COMPLETE.
 
   const valid = warnings.length === 0;
-  output({ valid, warnings, drift }, raw, undefined);
+  output({ valid, warnings, drift, scope }, raw, undefined);
 }
 
 /**
@@ -3113,18 +3201,16 @@ function cmdStatePrune(cwd: string, options: StatePruneOptions, raw: boolean): v
   const rawState = fs.readFileSync(statePath, 'utf-8');
   const fm = extractFrontmatter(rawState, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(rawState);
-  // Mirror buildStateFrontmatter's fmScalar: only string/number/boolean
-  // frontmatter scalars are usable (an object/array `current_phase` is ignored,
-  // which also avoids a base-to-string on a non-primitive).
-  const fmRawPhase = fm.current_phase;
-  const fmCurrentPhase =
-    typeof fmRawPhase === 'string' ? (fmRawPhase.trim() || null)
-      : typeof fmRawPhase === 'number' || typeof fmRawPhase === 'boolean' ? String(fmRawPhase)
-        : null;
+  // #3187: frontmatter-scalar-then-body-field precedence is owned by
+  // state-document.cjs's `stateFieldValue` (ADR-3180 §7.7). This comment
+  // previously claimed to mirror `buildStateFrontmatter`'s fmScalar — that
+  // attribution was stale: buildStateFrontmatter (state.cts:1620) reads body
+  // only and never consults frontmatter at all; this actually mirrored
+  // cmdStateSnapshot's now-removed closure instead.
   const positionSection = sliceCurrentPositionSection(body);
   const prosePhase =
-    positionSection !== null ? parseProsePhaseField(stateExtractField(positionSection, 'Phase')).phase : null;
-  const currentPhaseRaw = fmCurrentPhase ?? stateExtractField(body, 'Current Phase') ?? prosePhase;
+    positionSection !== null ? parseProsePhaseField(stateFieldValue(fm, positionSection, null, 'Phase').value).phase : null;
+  const currentPhaseRaw = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase;
   const currentPhase = parseInt(String(currentPhaseRaw), 10) || 0;
   const cutoff = currentPhase - keepRecent;
 
@@ -3366,10 +3452,17 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
  * that the phase execution is finished and the project is ready for the next phase.
  * Implements the `gsd state complete-phase` subcommand (issue #2735).
  */
-function resolvePhaseIdForCompletePhase(content: string, overridePhase: string | undefined): string | null {
+function resolvePhaseIdForCompletePhase(fm: Record<string, unknown>, body: string, overridePhase: string | undefined): string | null {
+  // #3187: route through the single #1760 fallback-chain owner (fm scalar
+  // then body field) instead of two raw stateExtractField calls on
+  // frontmatter-blind content — a STATE.md whose phase lives only in
+  // frontmatter no longer resolves to null here. `Phase` (the historical
+  // second-choice field name) has no frontmatter counterpart, so its fmKey
+  // is null — same shape as cmdStateSnapshot's `stateFieldValue(fm,
+  // currentPositionScope, null, 'Phase')` fallback.
   const candidate = overridePhase ||
-    stateExtractField(content, 'Current Phase') ||
-    stateExtractField(content, 'Phase') ||
+    stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ||
+    stateFieldValue(fm, body, null, 'Phase').value ||
     '';
 
   // #2125: parse via the canonical anchored parser so a narrative `Phase:`
@@ -3389,7 +3482,36 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   }
 
   const content = fs.readFileSync(statePath, 'utf-8');
-  const resolvedPhase = resolvePhaseIdForCompletePhase(content, overridePhase);
+  // #1255/#3187: parse frontmatter and strip it from the body ONCE, mirroring
+  // cmdStateValidate/cmdStateSnapshot, so resolvePhaseIdForCompletePhase and
+  // the idempotency guard below consult the identical fm/body precedence —
+  // the two sites cannot drift onto different chains, extending the #2125
+  // "same canonical parser" guarantee one layer earlier.
+  const { fm, body, scope } = readStateFrontmatterScoped(content, statePath);
+
+  // #3187 Postel/visibility (design doc's sharpest case): this whole handler
+  // is the DESTRUCTIVE path the #3489 idempotency guard below protects — it
+  // decides whether a re-run of `state complete-phase --phase N` is allowed
+  // to roll STATE.md back to N's moment-of-completion. If the frontmatter
+  // half of the chain could not be consulted (`scope` UNREADABLE),
+  // `existingCurrentPhase` below could read as null even though the
+  // project's true current phase lives only in that unreadable frontmatter —
+  // silently treating a non-COMPLETE scope as "not complete" would let the
+  // guard's `existingCurrentPhase &&` check fail OPEN and re-run an
+  // already-completed phase. Refuse outright instead of guessing; this
+  // applies even when `--phase` is explicit, because the guard's job is to
+  // protect against exactly that already-completed-phase case regardless of
+  // how the target phase was named.
+  if (scope !== SCOPE.COMPLETE) {
+    output(
+      { error: 'Unable to read STATE.md frontmatter; refusing to run complete-phase to avoid a destructive rollback (#3489). Fix or remove the malformed frontmatter and retry.' },
+      raw,
+      undefined,
+    );
+    return;
+  }
+
+  const resolvedPhase = resolvePhaseIdForCompletePhase(fm, body, overridePhase);
   if (!resolvedPhase || /^phase$/i.test(resolvedPhase)) {
     output({ error: 'Unable to resolve current phase. Pass an explicit phase: state complete-phase --phase <N>' }, raw, undefined);
     return;
@@ -3404,7 +3526,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   // Last Activity, Last Activity Description, and the Current Position body.
   // The handler is now a no-op in that case so re-invocation from downstream
   // workflows cannot regress the project state.
-  const existingCurrentPhaseRaw = stateExtractField(content, 'Current Phase') || '';
+  const existingCurrentPhaseRaw = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value || '';
   // #2125: same canonical parser as resolvePhaseIdForCompletePhase so the two
   // sites cannot diverge on the token they extract.
   const existingCurrentPhase = parsePhaseFromProse(existingCurrentPhaseRaw).phase;

@@ -16,6 +16,11 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
+// #3242 — model-catalog is a genuine leaf (only node:path + its own JSON), which is
+// exactly why Phase 1 (#3241) moved isAnthropicFlavoredModel there: this module can
+// consume it without dragging model-resolver's config-loader chain into a
+// pure read/verify surface.
+import { isAnthropicFlavoredModel } from './model-catalog.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -24,6 +29,132 @@ interface AgentsInstalledResult {
   incomplete_agents: string[];
   agents_dir: string;
   agent_runtime: string;
+}
+
+/**
+ * Frozen reason enum for {@link checkCodexModelPosture}. Per CONTRIBUTING's
+ * typed-IR rule ("Error / status / reason → a frozen enum"): callers and tests
+ * assert on these wire values, never on prose. Adding a member is a deliberate
+ * three-way coordinated change — enum, emitting site, and the enum-lock test.
+ */
+const POSTURE_REASON = Object.freeze({
+  ANTHROPIC_FLAVORED_MODEL: 'anthropic_flavored_model',
+  ORPHANED_REASONING_EFFORT: 'orphaned_reasoning_effort',
+  UNREADABLE: 'unreadable',
+  NOT_CODEX: 'not_codex',
+  AGENTS_DIR_MISSING: 'agents_dir_missing',
+});
+
+type PostureReason = (typeof POSTURE_REASON)[keyof typeof POSTURE_REASON];
+
+interface PostureViolation {
+  agent: string;
+  file: string;
+  reason: PostureReason;
+  value?: string;
+}
+
+interface CodexModelPostureResult {
+  ok: boolean;
+  violations: PostureViolation[];
+  checked: string[];
+  agents_dir: string;
+  agent_runtime: string;
+  reason?: PostureReason;
+}
+
+// Matches the value-truncation convention in bin/install.js's
+// _warnCodexModelOverrideDropped: values over 64 chars are capped so an
+// oversized or secret-shaped config value can never reach a report in full.
+function truncatePostureValue(value: string): string {
+  return value.length > 64 ? `${value.slice(0, 64)}…` : value;
+}
+
+// The `developer_instructions` block is a TOML multi-line literal string
+// (`developer_instructions = '''...'''`) that `generateCodexAgentToml` always
+// emits after the header fields. Prompt prose inside that block discusses models
+// constantly, so a `model = ...`-shaped line inside it must never be read as a
+// live pin — but the block can legally appear anywhere in the file (a
+// hand-reordered agent can move `model` after it), and another key's *value* can
+// legally contain the literal text `developer_instructions = '''` (e.g. a
+// `description` field quoting it) without that being the real block opener. So
+// instead of truncating the file at the first textual occurrence of the marker
+// anywhere in the content, this locates the block by its anchored line-start
+// opener (`^\s*developer_instructions\s*=\s*'''`, never a mid-line/mid-value
+// match) and its closing `'''` line, and excludes only the lines between them —
+// every other line in the file, before AND after the block, is scanned.
+//
+// If no opener is found, nothing is excluded (the whole file is scanned). If the
+// block is unterminated (no closing `'''` before EOF — a malformed file), the
+// rest of the file is treated as inside the block: that is the safe direction,
+// since misreading prompt prose as a pin past a malformed block is only a
+// false positive (wastes a user's time), while the alternative — scanning past
+// an unterminated block — risks hiding a real pin inside unclosed prose. The
+// emitter always uses `'''` (a TOML literal string), never a `"""` basic
+// multi-line string, so only `'''` is treated as the block delimiter here.
+function findDeveloperInstructionsBlockRange(lines: string[]): { start: number; end: number } {
+  const openIndex = lines.findIndex((line) => /^\s*developer_instructions\s*=\s*'''/.test(line));
+  if (openIndex === -1) {
+    return { start: -1, end: -1 };
+  }
+  const afterOpenMarker = lines[openIndex].replace(/^\s*developer_instructions\s*=\s*'''/, '');
+  if (afterOpenMarker.includes("'''")) {
+    // Same-line block: developer_instructions = '''one line'''
+    return { start: openIndex, end: openIndex };
+  }
+  for (let i = openIndex + 1; i < lines.length; i++) {
+    if (lines[i].includes("'''")) {
+      return { start: openIndex, end: i };
+    }
+  }
+  return { start: openIndex, end: lines.length - 1 };
+}
+
+// Strips a leading UTF-8 BOM (U+FEFF), which fs.readFileSync(..., 'utf8') does not
+// strip on its own, and unwraps a TOML basic/literal string value's surrounding
+// quotes so `model = "sonnet"` yields `sonnet`, not `"sonnet"`.
+function stripBOM(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
+function unquoteTomlValue(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  const quoted = trimmed.match(/^"([^"]*)"/) ?? trimmed.match(/^'([^']*)'/);
+  return quoted ? quoted[1] : trimmed;
+}
+
+interface HeaderScanResult {
+  model: string | null;
+  hasReasoningEffort: boolean;
+}
+
+// Line-oriented scan of every line OUTSIDE the `developer_instructions` block
+// (see findDeveloperInstructionsBlockRange). Full-key-name anchoring —
+// `^([A-Za-z_][\w]*)\s*=` for a bare key, or `^"([^"]*)"\s*=` / `^'([^']*)'\s*=`
+// for TOML's legal quoted-key forms, normalized to the same key name — means
+// `model_verbosity` / `model_reasoning_effort` never satisfy a `model` probe,
+// and vice versa; `#`-prefixed lines (after trimming leading whitespace) are
+// treated as comments, never live pins.
+function scanTomlLines(content: string): HeaderScanResult {
+  const lines = content.split(/\r?\n/);
+  const { start, end } = findDeveloperInstructionsBlockRange(lines);
+  let model: string | null = null;
+  let hasReasoningEffort = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (start !== -1 && i >= start && i <= end) continue;
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const match = trimmed.match(/^(?:"([^"]*)"|'([^']*)'|([A-Za-z_][\w]*))\s*=\s*(.*)$/);
+    if (!match) continue;
+    const key = match[1] ?? match[2] ?? match[3];
+    const rawValue = match[4];
+    if (key === 'model') {
+      model = unquoteTomlValue(rawValue);
+    } else if (key === 'model_reasoning_effort') {
+      hasReasoningEffort = true;
+    }
+  }
+  return { model, hasReasoningEffort };
 }
 
 /**
@@ -186,7 +317,123 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   };
 }
 
+/**
+ * Validate Codex `.toml` agent files for Anthropic-flavored `model` pins and
+ * orphaned `model_reasoning_effort` values (ADR-2313 D6, #3242).
+ *
+ * A new sibling export to {@link checkAgentsInstalled}, deliberately — that
+ * function carries 33 upstream dependents and cyclomatic complexity 25, so this
+ * posture check gets zero new branches there (see 40-design.md "Rejected" #1).
+ * Presence is `checkAgentsInstalled`'s job; this function's job starts only once
+ * the runtime is confirmed `codex` and only inspects posture, never presence.
+ *
+ * Read-only: detects, never repairs (repair is Phase 3, #3243).
+ *
+ * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for local-install discovery
+ */
+function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexModelPostureResult {
+  // Short-circuit BEFORE any filesystem access: a non-codex runtime must never
+  // have its agents directory resolved or a stray .toml inspected, however
+  // violating that file's contents would be if it were ever read (#3242 row 25).
+  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+  if (resolvedRuntime !== 'codex') {
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: '',
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.NOT_CODEX,
+    };
+  }
+
+  const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
+  if (!fs.existsSync(agentsDir)) {
+    // Presence is checkAgentsInstalled's job — an absent agents dir here is a
+    // distinct, non-violating outcome, not a failure of this check.
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: agentsDir,
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.AGENTS_DIR_MISSING,
+    };
+  }
+
+  // Skip symlinks — matches cmdEffortSync's existing idiom in commands.cts
+  // ("Skip symlinks — only write regular files..."). Here the risk is reading
+  // (not writing) through a symlink: readFileSync follows symlinks, so an
+  // agents-dir symlink pointing at an arbitrary file would let that target's
+  // contents be echoed into this function's `value` field. A symlinked agent
+  // file is a structural install choice (checkAgentsInstalled's territory),
+  // not a model-content posture defect, so it is silently excluded from
+  // `checked` rather than reported as a distinct violation — same shape as
+  // cmdEffortSync, which silently drops symlinks from its file list rather
+  // than inventing a new skip/violation reason.
+  const tomlFiles = fs
+    .readdirSync(agentsDir)
+    .filter((entry) => {
+      if (!entry.endsWith('.toml')) return false;
+      try {
+        return fs.lstatSync(path.join(agentsDir, entry)).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+
+  const checked: string[] = [];
+  const violations: PostureViolation[] = [];
+
+  for (const entry of tomlFiles) {
+    const agentName = entry.slice(0, -'.toml'.length);
+    const filePath = path.join(agentsDir, entry);
+    checked.push(agentName);
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      // Never throws, never silently skips — an unreadable file is reported and
+      // the loop continues checking the rest (40-design.md "Rejected" #5).
+      violations.push({ agent: agentName, file: filePath, reason: POSTURE_REASON.UNREADABLE });
+      continue;
+    }
+
+    const { model, hasReasoningEffort } = scanTomlLines(stripBOM(raw));
+
+    if (model !== null && isAnthropicFlavoredModel(model)) {
+      violations.push({
+        agent: agentName,
+        file: filePath,
+        reason: POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL,
+        value: truncatePostureValue(model),
+      });
+    } else if (model === null && hasReasoningEffort) {
+      // #838 coupling: a reasoning-effort pin with no model pin means Codex
+      // inherits the session model while the effort pin silently disagrees.
+      violations.push({
+        agent: agentName,
+        file: filePath,
+        reason: POSTURE_REASON.ORPHANED_REASONING_EFFORT,
+      });
+    }
+  }
+
+  return {
+    ok: violations.length === 0,
+    violations,
+    checked,
+    agents_dir: agentsDir,
+    agent_runtime: resolvedRuntime,
+  };
+}
+
 export = {
   getAgentsDir,
   checkAgentsInstalled,
+  checkCodexModelPosture,
+  POSTURE_REASON,
 };
