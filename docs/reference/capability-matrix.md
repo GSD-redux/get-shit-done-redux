@@ -44,7 +44,7 @@ Core package and are stamped with the package version at release (per
 ADR-1244 D6). They are not subject to the consent or integrity-pin flow applied
 to third-party capabilities.
 
-### Feature capabilities (role: feature) — 20
+### Feature capabilities (role: feature) — 21
 
 Feature capabilities extend what the loop does — contributing research,
 planning, execution, verification, or ship artefacts at the loop extension
@@ -67,6 +67,7 @@ points.
 | `nyquist` | feature | full | `>=1.6.0` | `verify:post` | step | first-party |
 | `pattern-mapper` | feature | full | `>=1.6.0` | `plan:pre` | step | first-party |
 | `profile-pipeline` | feature | full | `>=1.6.0` | — | — | first-party |
+| `refactor-trigger` | feature | full | `>=1.10.0` | `execute:post` | step | first-party |
 | `research` | feature | standard | `>=1.6.0` | `plan:pre` | step | first-party |
 | `schema-gate` | feature | full | `>=1.6.0` | `plan:pre` | contribution | first-party |
 | `security` | feature | full | `>=1.6.0` | `plan:pre`, `verify:post`, `ship:pre` | step, contribution, gate | first-party |

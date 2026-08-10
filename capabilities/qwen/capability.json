@@ -100,8 +100,7 @@
       "legacyCommandsGsdCleanup": true,
       "legacyCommandsGsdInstallMigration": true,
       "legacyCommandsGsdUninstall": true,
-      "hyphenNameAgentBody": true,
-      "reviewerCli": true
+      "hyphenNameAgentBody": true
     }
   },
   "reviewer": {

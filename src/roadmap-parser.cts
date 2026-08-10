@@ -13,7 +13,8 @@
  *   - ./phase-id.cjs        (escapeRegex, phaseMarkdownRegexSource)
  *   - ./planning-workspace.cjs (planningDir)
  *   - ./shell-command-projection.cjs (platformReadSync)
- *   - ./markdown-sectionizer.cjs (tokenizeHeadings, stripTaggedBlocks, withSection)
+ *   - ./markdown-sectionizer.cjs (tokenizeHeadings, stripTaggedBlocks, withSection, collectSection)
+ *   - ./markdown-table.cjs (findTableWithColumns)
  */
 
 import fs from 'node:fs';
@@ -38,8 +39,10 @@ import { platformReadSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
-import { tokenizeHeadings, stripTaggedBlocks, withSection, stripFencedCode } from './markdown-sectionizer.cjs';
+import { tokenizeHeadings, stripTaggedBlocks, withSection, stripFencedCode, collectSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
+import { findTableWithColumns } from './markdown-table.cjs';
+import type { MarkdownTable } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -632,10 +635,18 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // the selected milestone section actually contains its own — otherwise the
   // preamble phases ARE this milestone's phases and must be preserved.
   const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
-  const preamble = stripTaggedBlocks(beforeMilestones, 'details')
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    .replace(currentSectionHasPhaseDetails ? /^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim : /$/, '')
-    .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
+  const preambleBase = stripTaggedBlocks(beforeMilestones, 'details');
+  // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
+  // strip regex and a `/$/` sentinel, which made the do-not-strip branch an identity replacement
+  // (CodeQL js/identity-replacement, alert 53) -- correct, but it left both branches sharing one
+  // replacement argument, so changing `''` would silently give the no-op branch a real effect.
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  const preambleWithoutPhaseDetails = currentSectionHasPhaseDetails
+    ? preambleBase.replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+    : preambleBase;
+  // Unconditional in BOTH branches -- the #730 `Phase Details` heading strip is independent of
+  // whether the selected milestone section carries phase details of its own.
+  const preamble = preambleWithoutPhaseDetails.replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
   const value = detailsSection
     ? preamble + currentSection + '\n' + detailsSection
@@ -872,6 +883,42 @@ function reportUnreadableRoadmap(err: unknown, roadmapPath: string): void {
   const code = (err as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'string') return;
   warnUnusableInput({ reason: UNUSABLE_REASON.ROADMAP_UNREADABLE, source: roadmapPath });
+}
+
+// ─── Roadmap progress table (#1956/#2012 decoy avoidance) ─────────────────────
+
+/**
+ * Locate ROADMAP.md's "Progress" table — the sole owner of the #2012
+ * decoy-avoidance scope for the `drift-guard phase-status` CLI seam (#1956).
+ *
+ * Scopes to the `## Progress` heading first (level-2, exact case-insensitive
+ * text `'progress'`, `{ levelBounded: true }`) via `collectSection` — the
+ * same CRLF-safe seam `stateCurrentPositionSlice` (state-document.cts) uses
+ * to scope STATE.md's `## Current Position` — so a differently-headed table
+ * that happens to share the same column names (e.g. an "Archive Notes"
+ * table) is never picked up instead of the real one (#2012). Falls back to
+ * scanning the WHOLE document when no `## Progress` heading exists, so a
+ * headingless milestone slice (#1445) still resolves rather than going
+ * uncheckable — the same fallback `deriveProgressFromRoadmap`
+ * (phase-lifecycle.cts) deliberately preserves.
+ *
+ * `deriveProgressFromRoadmap` independently expresses this same "scope to
+ * `## Progress`, else whole document" rule via its own regex-based scope
+ * (kept there deliberately rather than refactored onto this function — its
+ * blast radius is large). The two locators are therefore separate
+ * implementations of the same scoping rule and must agree about WHICH table
+ * is the Progress table; a parity test in
+ * tests/adr-22-plan-drift-guard.test.cjs asserts they do, per the repo's
+ * generative-fix-divergence guard.
+ *
+ * Returns the same shape `findTableWithColumns` returns (or `null`).
+ */
+function findRoadmapProgressTable(roadmapContent: string): MarkdownTable | null {
+  const isProgressHeading = (h: HeadingToken): boolean =>
+    h.level === 2 && h.text.trim().toLowerCase() === 'progress';
+  const section = collectSection(roadmapContent, isProgressHeading, { levelBounded: true });
+  const scoped = section ? section.body : roadmapContent;
+  return findTableWithColumns(scoped, ['Phase', 'Plans Complete', 'Status', 'Completed']);
 }
 
 // ─── Milestone info lookup ────────────────────────────────────────────────────
@@ -1457,4 +1504,7 @@ export = {
   sliceMilestoneWindow,
   hasVersionedMilestones,
   hasMilestoneSectioning,
+  // #1956: sole owner of the #2012 decoy-avoidance scope for the
+  // `drift-guard phase-status` CLI seam.
+  findRoadmapProgressTable,
 };

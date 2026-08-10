@@ -560,6 +560,8 @@ claude --dangerously-skip-permissions
 
 **Default-on.** The plan drift guard (`plan_review.source_grounding: true`) runs during plan review and verifies that every symbol your plans cite — decorators, classes, functions, CLI flags — actually exists in your source tree at review time. This catches hallucinated names before any execution agent runs.
 
+**Two axes, one switch.** The same guard also runs a cross-artifact fact-drift pass: when ROADMAP.md, PLAN.md, STATE.md and CONTEXT.md state the *same* fact in contradictory ways — a phase marked complete in one and in progress in the other, a success criterion the plan restates with a different outcome, a term used against its CONTEXT.md definition — you get an advisory finding in REVIEWS.md naming both locations and which one is authoritative. It keys on contradicting *knowledge*, not on similar-looking text, so a plan that simply restates a criterion in its own words is not flagged. The findings never block convergence.
+
 **What it catches:**
 
 - Functions referenced in a PLAN.md step that don't exist in source

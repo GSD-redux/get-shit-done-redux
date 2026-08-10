@@ -22,9 +22,6 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
 const WRITE_TOOL_RE = /write|edit|replace|create|delete|remove|append|apply|patch|insert|mkdir/i;
 const PATH_KEY_RE = /^(path|file|file_?path|filepath|target_?path|target|dir|directory|uri|filename)$/i;
 const PLANNING_PATH_RE = /(^|[\\/])\.planning([\\/]|$)/;

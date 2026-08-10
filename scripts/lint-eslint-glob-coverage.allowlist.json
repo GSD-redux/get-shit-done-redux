@@ -1,0 +1,26 @@
+[
+  {
+    "path": "tests/fixtures/brand-typing/bad-calibrated-as-sample-basis.cts",
+    "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
+  },
+  {
+    "path": "tests/fixtures/brand-typing/bad-double-calibration.cts",
+    "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
+  },
+  {
+    "path": "tests/fixtures/brand-typing/bad-raw-against-budget.cts",
+    "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
+  },
+  {
+    "path": "tests/fixtures/brand-typing/bad-rebrand-calibrated-as-raw.cts",
+    "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
+  },
+  {
+    "path": "tests/fixtures/brand-typing/bad-unbranded-number-as-raw.cts",
+    "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
+  },
+  {
+    "path": "tests/fixtures/brand-typing/ok-correct-composition.cts",
+    "reason": "Positive-control counterpart to the bad-* must-not-compile fixtures (#3059); kept in the same exemption so the pair stays together."
+  }
+]

@@ -21,6 +21,7 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const roadmapParser = require('../gsd-core/bin/lib/roadmap-parser.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
@@ -357,6 +358,242 @@ describe('roadmap-parser: extractCurrentMilestone', () => {
     assert.ok(result.success, `roadmap.analyze should succeed; got: ${result.error}`);
     const payload = JSON.parse(result.output);
     assert.strictEqual(payload.phase_count, 2, `expected phase_count 2, got ${payload.phase_count} (phases dropped — #2947)`);
+  });
+
+  // ─── #3235: the preamble strip's conditional wraps the REPLACE, not the pattern.
+  // The previous form selected between the strip regex and a `/$/` sentinel, making
+  // the do-not-strip branch an identity replacement (CodeQL js/identity-replacement,
+  // alert 53). These pin BOTH branches so the restructure cannot move behavior. ──────
+
+  test('#3235 — Phase Details heading is stripped even when preamble phase details are preserved', () => {
+    // The do-not-strip branch must leave `### Phase N:` blocks alone WITHOUT also
+    // disabling the unconditional `Phase Details` heading strip. Pulling that second
+    // replace inside the conditional would regress #730 invisibly: no existing #2947
+    // fixture carries a `Phase Details` heading, so the suite would stay green.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phase Details',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'do-not-strip branch preserves preamble phase details');
+    assert.ok(result.includes('Phase 2: Beta'), 'do-not-strip branch preserves every preamble phase detail');
+    assert.ok(!result.includes('## Phase Details'), 'the Phase Details heading strip is unconditional and must still run');
+  });
+
+  test('#3235 — preamble phase details are still stripped when the milestone section has its own', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Preamble',
+      '',
+      '### Phase 7: PreambleGhost',
+      '',
+      '**Goal:** should be stripped',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'selected milestone phases retained');
+    assert.ok(!result.includes('PreambleGhost'), 'preamble phase-detail heading stripped on the strip branch');
+    assert.ok(!result.includes('should be stripped'), 'the stripped heading takes its body with it');
+    assert.ok(result.includes('## Preamble'), 'a non-Phase preamble heading is untouched');
+  });
+
+  test('#3235 — preamble strip honors the #{2,4} heading-depth bounds', () => {
+    // Boundary coverage: limit-1 (h1) and limit+1 (h5) survive; h2 and h4 are stripped.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '# Phase 90: DepthOne',
+      '',
+      '## Phase 91: DepthTwo',
+      '',
+      '#### Phase 93: DepthFour',
+      '',
+      '##### Phase 94: DepthFive',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('DepthOne'), 'h1 is below the #{2,4} floor and survives');
+    assert.ok(!result.includes('DepthTwo'), 'h2 is at the floor and is stripped');
+    assert.ok(!result.includes('DepthFour'), 'h4 is at the ceiling and is stripped');
+    assert.ok(result.includes('DepthFive'), 'h5 is above the #{2,4} ceiling and survives');
+  });
+
+  test('#3235 — #1729 pre-colon tag tolerance survives in the hoisted strip', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Preamble',
+      '',
+      '### Phase 8 (deferred): TaggedGhost',
+      '',
+      '**Goal:** should be stripped',
+      '',
+      '## 🚧 v9.0 Current',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(!result.includes('TaggedGhost'), '`### Phase 8 (deferred):` still matches the strip (#1729)');
+    assert.ok(result.includes('Phase 1: Alpha'), 'selected milestone phases retained');
+  });
+
+  // The fixture below carries its own `## Phase Details` heading in the preamble.
+  // The LF-only sibling test above can't catch a CRLF-specific regression in the
+  // `[^\n]*` / `\n?` tail of the Phase Details strip regex — those tail tokens are
+  // LF-anchored, so only a CRLF document can prove the strip still consumes the
+  // heading (and only the heading, leaving no orphaned `\r`) when line endings are
+  // `\r\n` throughout.
+  test('#3235 — CRLF roadmap preserves preamble phases on the do-not-strip branch', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone**',
+      '',
+      '## Phase Details',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n').replace(/\n/g, '\r\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'CRLF preamble phases preserved');
+    assert.ok(result.includes('\r\n'), 'CRLF line endings preserved in the extracted section');
+    assert.ok(!/^#{1,4}[ \t]*Phase Details\b/m.test(result), 'the unconditional Phase Details strip also runs under CRLF');
+    assert.ok(!/\r(?!\n)/.test(result), 'the CRLF strip leaves no orphaned CR behind');
+  });
+
+  test('#3235 — property: Phase Details strip is unconditional and #{2,4} bounds hold across generated preambles', () => {
+    writeState(tmpDir, { milestone: 'v9.0' });
+
+    // The alphabet below is deliberately a fixed list of literal line shapes, NOT
+    // derived from the parser's own regexes (CONTRIBUTING.md #2371: document-shaped,
+    // not writer-seeded).
+    const PREAMBLE_LINE = fc.constantFrom(
+      '## Phase 11: PreTwo',
+      '### Phase 12: PreThree',
+      '#### Phase 13: PreFour',
+      '# Phase 14: PreOne',
+      '##### Phase 15: PreFive',
+      '## Phase Details',
+      '#### Phase Details — trailing',
+      'prose line',
+      '**Goal:** something',
+      '',
+      '---',
+      '| Phase | Status |',
+    );
+
+    for (const hasOwnDetails of [true, false]) {
+      const prop = fc.property(
+        fc.array(PREAMBLE_LINE, { minLength: 0, maxLength: 12 }),
+        (preambleLines) => {
+          const doc = [
+            '# ROADMAP',
+            '',
+            ...preambleLines,
+            '',
+            '## 🚧 v9.0 Current',
+            '',
+            ...(hasOwnDetails
+              ? ['### Phase 1: OwnPhase', '', '**Goal:** own goal']
+              : ['just prose, no phase headings']),
+          ].join('\n');
+
+          writeRoadmap(tmpDir, doc);
+          const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+          const result = extractCurrentMilestone(roadmap, tmpDir);
+
+          // Invariant 1 (ALWAYS): no Phase Details heading survives, on either branch.
+          if (/^#{1,4}[ \t]*Phase Details\b/m.test(result)) return false;
+
+          // Invariant 2 (ALWAYS): markers outside the strip regex's #{2,4} bound
+          // survive if they were present in the input.
+          if (preambleLines.includes('# Phase 14: PreOne') && !result.includes('PreOne')) return false;
+          if (preambleLines.includes('##### Phase 15: PreFive') && !result.includes('PreFive')) return false;
+
+          if (hasOwnDetails) {
+            // Invariant 3: the milestone section has its own Phase headings, so
+            // every preamble Phase heading (#{2,4}) must be stripped.
+            if (result.includes('PreTwo') || result.includes('PreThree') || result.includes('PreFour')) {
+              return false;
+            }
+          } else {
+            // Invariant 4: the milestone section has no Phase headings of its own,
+            // so preamble Phase headings (#{2,4}) are preserved on the do-not-strip branch.
+            for (const marker of ['PreTwo', 'PreThree', 'PreFour']) {
+              const appeared = preambleLines.some((line) => line.includes(marker));
+              if (appeared && !result.includes(marker)) return false;
+            }
+          }
+
+          return true;
+        },
+      );
+
+      fc.assert(prop, { seed: 20260809, numRuns: 300, verbose: true });
+    }
   });
 });
 
