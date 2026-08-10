@@ -55,11 +55,23 @@ const EXEMPT_PATH_PREFIXES = ['tests/', 'docs/'];
 // docs carve-out either.
 const EXCLUDED_ROOT_DOCS = new Set(['CHANGELOG.md']);
 
+// Case-insensitive lookup set derived from EXCLUDED_ROOT_DOCS. The exclusion
+// check below is case-insensitive because the `.md` extension test above it
+// already is (`/\.md$/i`) — `changelog.md` or `CHANGELOG.MD` would otherwise
+// slip past the exclusion while still passing the extension test. In
+// practice this is defense in depth rather than a live bypass: the GitHub
+// API always reports the real path with its actual, fixed casing (the
+// filesystem is case-sensitive on the runners this executes on), so a PR
+// cannot rename CHANGELOG.md to bypass the check by casing alone.
+const EXCLUDED_ROOT_DOCS_UPPER = new Set(
+  Array.from(EXCLUDED_ROOT_DOCS, (name) => name.toUpperCase()),
+);
+
 function isRootLevelDoc(normalizedPath) {
   if (!normalizedPath) return false;
   if (normalizedPath.includes('/')) return false;
   if (!/\.md$/i.test(normalizedPath)) return false;
-  if (EXCLUDED_ROOT_DOCS.has(normalizedPath)) return false;
+  if (EXCLUDED_ROOT_DOCS_UPPER.has(normalizedPath.toUpperCase())) return false;
   return true;
 }
 

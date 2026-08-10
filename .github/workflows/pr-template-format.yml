@@ -28,10 +28,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          files=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path' | tr '\n' '\n')
-          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          # The delimiter must be unguessable: every path in `files` is
+          # attacker-controlled on a fork PR, and a file named after a fixed
+          # delimiter (e.g. a file literally named `EOF`, the weakest
+          # possible choice here) would terminate the heredoc value early,
+          # truncating everything after it — this is GitHub's own documented
+          # guidance for untrusted multiline output
+          # (https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings).
+          # The length-vs-total check in the policy (fileListIsComplete) is
+          # the second, independent layer.
+          delim="GSD_EOF_$(openssl rand -hex 16)"
+          files=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')
+          echo "files<<$delim" >> "$GITHUB_OUTPUT"
           echo "$files" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "$delim" >> "$GITHUB_OUTPUT"
 
       - name: Evaluate PR template format
         id: policy
@@ -39,6 +49,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
           CHANGED_FILES: ${{ steps.changed_files.outputs.files }}
+          CHANGED_FILES_TOTAL: ${{ github.event.pull_request.changed_files }}
         run: node scripts/pr-template-policy.cjs
 
       - name: Warn trusted contributor about missing template

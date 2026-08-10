@@ -21,20 +21,26 @@ const FILE_LIST_PAGE_LIMIT = 100;
 
 /**
  * Returns true iff `changedFiles` can be trusted as the COMPLETE list of
- * files changed in the PR (i.e. it was not silently truncated at the
- * GraphQL page limit).
+ * files changed in the PR (i.e. it was not silently truncated).
  *
  * - An empty/non-array list cannot confirm anything about the PR — mirror
  *   the fail-closed stance `allPathsAreTooling` already takes on an empty
  *   list in scripts/pr-template-policy.cjs.
- * - A list shorter than the page cap cannot have been truncated by it.
- * - A list at (or, defensively, above) the page cap is only trustworthy if
- *   the caller also supplied the true total and it matches the list length.
+ * - When the true total is known it is the AUTHORITY, at every list size —
+ *   not just when the list has hit the page cap. The 100-entry page cap is
+ *   only ONE way a list can be short of the truth; a `$GITHUB_OUTPUT`
+ *   heredoc terminated early by an attacker-named file, or a path
+ *   containing a newline, truncates or inflates the list just as
+ *   effectively, and at any length. Comparing against the total catches all
+ *   of them without enumerating the mechanisms.
+ * - Only when no total is supplied do we fall back to the page-cap
+ *   heuristic: a list below the cap cannot have been truncated BY THE CAP,
+ *   which is the only mechanism a caller without a total can rule out.
  */
 function fileListIsComplete(changedFiles, changedFilesTotal) {
   if (!Array.isArray(changedFiles) || changedFiles.length === 0) return false;
-  if (changedFiles.length < FILE_LIST_PAGE_LIMIT) return true;
-  return Number.isInteger(changedFilesTotal) && changedFilesTotal === changedFiles.length;
+  if (Number.isInteger(changedFilesTotal)) return changedFilesTotal === changedFiles.length;
+  return changedFiles.length < FILE_LIST_PAGE_LIMIT;
 }
 
 /**

@@ -78,11 +78,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # The delimiter must be unguessable: every path in `files` is
+          # attacker-controlled on a fork PR, and a file named after a fixed
+          # delimiter (e.g. a file literally named `GSD_EOF`) would terminate
+          # the heredoc value early, truncating everything after it — this is
+          # GitHub's own documented guidance for untrusted multiline output
+          # (https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings).
+          # The length-vs-total check in the policy (fileListIsComplete) is
+          # the second, independent layer: even if a delimiter collision slid
+          # past this, a truncated or inflated list would still fail closed.
+          delim="GSD_EOF_$(openssl rand -hex 16)"
           files=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')
           {
-            echo "files<<GSD_EOF"
+            echo "files<<$delim"
             echo "$files"
-            echo "GSD_EOF"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
       - name: Evaluate issue link

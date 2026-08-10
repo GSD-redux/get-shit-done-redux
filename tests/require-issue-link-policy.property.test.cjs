@@ -97,4 +97,30 @@ describe('evaluateIssueLink — properties', () => {
       { numRuns: 200 },
     );
   });
+
+  test('P4: changedFiles below the page cap with a mismatched total never yields OK_FOLLOWUP_REFERENCE', () => {
+    // The sub-100 counterpart to P3, and the property the reviewed blocker
+    // violated: fileListIsComplete used to only consult the total once
+    // length >= FILE_LIST_PAGE_LIMIT, so any mismatch below the cap
+    // (heredoc truncation, newline inflation) went undetected below 100.
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 60 }),
+        fc.integer({ min: 0, max: 60 }),
+        (len, total) => {
+          fc.pre(total !== len);
+          const changedFiles = Array.from({ length: len }, (_, i) => `tests/generated-${i}.test.cjs`);
+          const result = evaluateIssueLink({
+            prBody: 'Refs #1',
+            headRef: 'fix/1-something',
+            sameRepo: false,
+            changedFiles,
+            changedFilesTotal: total,
+          });
+          assert.notStrictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
 });

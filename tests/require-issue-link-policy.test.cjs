@@ -225,6 +225,31 @@ describe('evaluateIssueLink', () => {
     assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
   });
 
+  // Reviewed BLOCKER: the old fileListIsComplete only consulted the total
+  // when length >= FILE_LIST_PAGE_LIMIT, so ANY mechanism that shortens the
+  // list below 100 went undetected. A $GITHUB_OUTPUT heredoc terminated
+  // early by a file named after the delimiter is exactly such a mechanism —
+  // it truncates the list well below the page cap, with the true total
+  // still available from the separate, non-paginated `changedFiles` field.
+  test('a list shorter than its authoritative total fails closed', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #1', changedFiles: ['CONTRIBUTING.md'], changedFilesTotal: 3,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
+  });
+
+  // A path containing a literal newline can inflate the parsed list past the
+  // true total (e.g. a filename that itself looks like another path once
+  // split on newlines) — the total is the authority in both directions.
+  test('a list longer than its authoritative total fails closed', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #1',
+      changedFiles: ['tests/a.test.cjs', 'tests/b.test.cjs', 'tests/c.test.cjs'],
+      changedFilesTotal: 2,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
+  });
+
   // 21. An empty changedFiles list cannot confirm anything.
   test('empty changedFiles fails FAIL_FILE_LIST_INCOMPLETE', () => {
     const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: [], changedFilesTotal: 0 }));
@@ -243,6 +268,10 @@ describe('fileListIsComplete', () => {
       [testPaths(100), undefined, false],
       [[], 0, false],
       [undefined, 0, false],
+      [testPaths(3), 5, false],
+      [testPaths(5), 3, false],
+      [testPaths(3), 3, true],
+      [testPaths(3), undefined, true],
     ];
     for (const [changedFiles, changedFilesTotal, expected] of cases) {
       assert.strictEqual(
@@ -277,6 +306,15 @@ describe('allPathsAreTestsOrDocs', () => {
     assert.strictEqual(allPathsAreTestsOrDocs(['CHANGELOG.md']), false);
     assert.strictEqual(allPathsAreTestsOrDocs(['agents/x.md']), false);
     assert.strictEqual(allPathsAreTestsOrDocs(['package.json']), false);
+  });
+
+  // The exclusion of CHANGELOG.md must not be defeatable by casing — the
+  // extension test (`/\.md$/i`) is already case-insensitive, so the
+  // exclusion lookup must match it rather than silently letting a
+  // differently-cased CHANGELOG.md ride in on the docs carve-out.
+  test('CHANGELOG.md exclusion is case-insensitive', () => {
+    assert.strictEqual(allPathsAreTestsOrDocs(['changelog.md']), false);
+    assert.strictEqual(allPathsAreTestsOrDocs(['CHANGELOG.MD']), false);
   });
 });
 
