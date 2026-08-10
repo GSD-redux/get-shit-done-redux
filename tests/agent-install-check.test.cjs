@@ -37,6 +37,13 @@ const { getDirName } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'li
 const MODEL_PROFILES = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'model-profiles.cjs')).MODEL_PROFILES;
 const EXPECTED_AGENTS = Object.keys(MODEL_PROFILES);
 
+// #3242 — single source of truth for the Anthropic-flavored alias/id set (Phase 1
+// moved the predicate here), so the posture tests below can't silently drift from
+// what the posture check is actually supposed to reject.
+const { CLAUDE_AGENT_ALIASES } = require(
+  path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'model-catalog.cjs'),
+);
+
 // ─── Environment isolation ────────────────────────────────────────────────────
 
 let savedAgentsDir;
@@ -432,5 +439,553 @@ describe('checkAgentsInstalled', () => {
     // GSD_AGENTS_DIR overrides, so agents_dir = our tmp path
     assert.strictEqual(result.agents_dir, agentsDir);
     assert.strictEqual(result.agent_runtime, 'cursor');
+  });
+});
+
+// ─── 3. checkCodexModelPosture behaviour (#3242, ADR-2313 D6) ─────────────────
+//
+// Spec: .gsd/phase/feat-3242-codex-posture-health-check/{40-design,50-test-matrix}.md
+// Interface (not yet implemented — every test below is red until it lands):
+//   POSTURE_REASON: frozen enum { ANTHROPIC_FLAVORED_MODEL, ORPHANED_REASONING_EFFORT,
+//     UNREADABLE, NOT_CODEX, AGENTS_DIR_MISSING }
+//   checkCodexModelPosture(runtime?, projectRoot?) => {
+//     ok, violations: [{ agent, file, reason, value? }], checked, agents_dir,
+//     agent_runtime, reason?
+//   }
+//
+// Row numbers below (# N) map 1:1 to 50-test-matrix.md. Rows 12, 13, 14, 15, 16, 25
+// are the negative proofs the matrix calls out as the ones that actually discriminate
+// a correct implementation from a naive whole-file `/model\s*=/` scan; each of those
+// test names states the specific implementation mistake it catches.
+
+const POSTURE_FIXTURES_DIR = path.join(__dirname, 'fixtures', 'adversarial', 'toml');
+
+function writeAgentToml(agentsDir, agentName, content) {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(path.join(agentsDir, `${agentName}.toml`), content);
+}
+
+// Loads a hand-authored fixture (tests/fixtures/adversarial/toml/, #2371 provenance)
+// as raw bytes so CRLF / BOM content is copied byte-for-byte, not re-encoded through
+// a JS string round-trip that could normalize either.
+function copyFixtureToml(agentsDir, agentName, fixtureFile) {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  const raw = fs.readFileSync(path.join(POSTURE_FIXTURES_DIR, fixtureFile));
+  fs.writeFileSync(path.join(agentsDir, `${agentName}.toml`), raw);
+}
+
+// Fault injection for row 21 — monkeypatches node:fs's readFileSync and restores it
+// in a `finally` INSIDE this helper (never in a test body, and never chmod 0o000,
+// which root bypasses under Docker/CI and would give the test zero real coverage).
+function withInjectedReadFailure(targetPath, injectedError, fn) {
+  const realReadFileSync = fs.readFileSync;
+  fs.readFileSync = function poisonedReadFileSync(target, ...args) {
+    const targetStr = typeof target === 'string' ? target : String(target);
+    if (targetStr === targetPath || path.resolve(targetStr) === path.resolve(targetPath)) {
+      throw injectedError;
+    }
+    return realReadFileSync.apply(fs, [target, ...args]);
+  };
+  try {
+    return fn();
+  } finally {
+    fs.readFileSync = realReadFileSync;
+  }
+}
+
+describe('checkCodexModelPosture', () => {
+  let tmpDir;
+  let agentsDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-posture-check-');
+    agentsDir = path.join(tmpDir, 'agents');
+    process.env['GSD_AGENTS_DIR'] = agentsDir;
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // # 1 — runtime is not codex: a no-op, not a failure, and it must not even read
+  // the filesystem to get there (checkAgentsInstalled's job is presence; this
+  // function's job starts only once the runtime is actually codex).
+  test('row 1: non-codex runtime (claude) is a no-op — NOT_CODEX, no violations, no fs.readFileSync call', (t) => {
+    const reads = [];
+    t.mock.method(fs, 'readFileSync', (...args) => {
+      reads.push(args[0]);
+      throw new Error('unreachable: readFileSync must not be called for a non-codex runtime');
+    });
+
+    const result = agentInstallCheck.checkCodexModelPosture('claude', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.strictEqual(result.reason, agentInstallCheck.POSTURE_REASON.NOT_CODEX);
+    assert.deepStrictEqual(reads, [], 'non-codex runtime must short-circuit before any file read');
+  });
+
+  // # 2 — codex runtime, agents dir absent: distinct from row-3 empty-dir and
+  // distinct from a violation. Presence is checkAgentsInstalled's job.
+  test('row 2: codex + agents dir absent — AGENTS_DIR_MISSING, not a violation', () => {
+    // agentsDir intentionally not created
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.strictEqual(result.reason, agentInstallCheck.POSTURE_REASON.AGENTS_DIR_MISSING);
+  });
+
+  // # 3 — codex runtime, agents dir exists but is empty.
+  test('row 3: codex + empty agents dir — ok:true, checked:[]', () => {
+    fs.mkdirSync(agentsDir, { recursive: true });
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.deepStrictEqual(result.checked, []);
+  });
+
+  // # 4 — one clean .toml (no model, no effort key at all).
+  test('row 4: clean .toml (no model, no effort) — ok:true, no violations', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-clean',
+      'name = "gsd-clean"\ndescription = "a clean agent"\ndeveloper_instructions = \'\'\'\nDo the work.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 5 — the base case: a bare Claude tier alias pinned as `model`.
+  test('row 5: model = "sonnet" — ANTHROPIC_FLAVORED_MODEL naming the agent and the value', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-planner',
+      'name = "gsd-planner"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nPlan.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].agent, 'gsd-planner');
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+    assert.ok(result.violations[0].file.endsWith('gsd-planner.toml'));
+  });
+
+  // # 6 — table-driven over the full bare-alias set, sourced from model-catalog's
+  // CLAUDE_AGENT_ALIASES (not hardcoded) so this can't silently drift from the
+  // predicate the design says the posture check consumes.
+  for (const alias of CLAUDE_AGENT_ALIASES) {
+    test(`row 6: bare Claude alias "${alias}" — ANTHROPIC_FLAVORED_MODEL`, () => {
+      writeAgentToml(
+        agentsDir,
+        'gsd-alias-agent',
+        `name = "gsd-alias-agent"\nmodel = "${alias}"\ndeveloper_instructions = '''\nWork.\n'''\n`,
+      );
+
+      const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+      assert.strictEqual(result.violations.length, 1);
+      assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+      assert.strictEqual(result.violations[0].value, alias);
+    });
+  }
+
+  // # 7 — table-driven over full Claude model ids across provider namespacings,
+  // plus a case-insensitivity check.
+  for (const modelId of ['claude-opus-4-5', 'anthropic/claude-x', 'us.anthropic.claude-x', 'CLAUDE-X']) {
+    test(`row 7: Claude model id "${modelId}" — ANTHROPIC_FLAVORED_MODEL`, () => {
+      writeAgentToml(
+        agentsDir,
+        'gsd-id-agent',
+        `name = "gsd-id-agent"\nmodel = "${modelId}"\ndeveloper_instructions = '''\nWork.\n'''\n`,
+      );
+
+      const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+      assert.strictEqual(result.violations.length, 1);
+      assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    });
+  }
+
+  // # 8 — the rule is Anthropic-flavored, never an allowlist: a real Codex/OpenAI id
+  // must never be flagged, however unfamiliar it looks.
+  test('row 8: model = "gpt-5.6-sol" — no violation (not an allowlist)', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-gpt-agent',
+      'name = "gsd-gpt-agent"\nmodel = "gpt-5.6-sol"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 9 — must not go stale on a hypothetical future OpenAI release id.
+  test('row 9: model = "some-future-model-id" — no violation', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-future-agent',
+      'name = "gsd-future-agent"\nmodel = "some-future-model-id"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 10 — #838 coupling: a static reasoning-effort with no model pin means Codex
+  // is inheriting the session model while GSD's effort pin silently disagrees.
+  test('row 10: model_reasoning_effort with no model — ORPHANED_REASONING_EFFORT', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-orphan-agent',
+      'name = "gsd-orphan-agent"\nmodel_reasoning_effort = "high"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ORPHANED_REASONING_EFFORT);
+    assert.strictEqual(result.violations[0].agent, 'gsd-orphan-agent');
+  });
+
+  // # 11 — the legal pinned pair: model + matching reasoning effort is intentional.
+  test('row 11: model + model_reasoning_effort, model legal — no violation', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-pinned-agent',
+      'name = "gsd-pinned-agent"\nmodel = "gpt-5-codex"\nmodel_reasoning_effort = "high"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 12 — NEGATIVE PROOF. Catches: over-generalizing the #838 model/effort
+  // coupling rule to service_tier/model_verbosity too. Those are #774's
+  // cost/verbosity knobs and are decoupled from `model` by design — an
+  // implementation that treats "any knob present without model" as orphaned
+  // fails this row.
+  test('row 12 (negative proof): service_tier + model_verbosity, no model — no violation', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-light-agent',
+      'name = "gsd-light-agent"\nservice_tier = "flex"\nmodel_verbosity = "low"\ndeveloper_instructions = \'\'\'\nWork fast.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 13 — NEGATIVE PROOF. Catches: implementing the check as a whitelist over the
+  // whole TOML document (flagging any key GSD doesn't itself emit) instead of a
+  // predicate on exactly the two fields the posture owns (`model`,
+  // `model_reasoning_effort`). A hand-added `approval_policy` is legitimate and
+  // must never be flagged.
+  test('row 13 (negative proof): extra hand-added key (approval_policy) — no violation', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-custom-agent',
+      'name = "gsd-custom-agent"\napproval_policy = "on-request"\ndeveloper_instructions = \'\'\'\nFollow policy.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 14 — NEGATIVE PROOF, the headline trap. Catches: scanning the WHOLE file with
+  // a line-oriented `/^model\s*=/m` instead of only the header slice (the lines
+  // before `developer_instructions = '''`). The fixture below contains a literal,
+  // unindented `model = "sonnet"` line INSIDE the developer_instructions block —
+  // verified (see PR description / dispatch notes) to trip a naive whole-file
+  // regex scan (`/^model\s*=/m.test(wholeFile) === true`) while the correct
+  // header-slice scan sees nothing (`/^model\s*=/m.test(headerOnly) === false`).
+  // If this test passed against a whole-file scanner it would prove nothing; it
+  // must fail against one.
+  test('row 14 (negative proof, headline): model = inside developer_instructions block — no violation', () => {
+    copyFixtureToml(agentsDir, 'gsd-planner', 'model-in-developer-instructions.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 15 — NEGATIVE PROOF. Catches: a header-slice scan that doesn't skip comment
+  // lines, so a commented-out `# model = "sonnet"` still counts as a live pin.
+  test('row 15 (negative proof): commented-out model pin — no violation', () => {
+    copyFixtureToml(agentsDir, 'gsd-reviewer', 'commented-model-pin.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 16 — NEGATIVE PROOF. Catches: probing for the key by substring/prefix
+  // (e.g. a bare `/model/` test) instead of anchoring on the full key name, so
+  // `model_verbosity` gets misidentified as a `model` pin.
+  test('row 16 (negative proof): model_verbosity only (key-prefix collision) — no violation', () => {
+    copyFixtureToml(agentsDir, 'gsd-analyst', 'model-verbosity-prefix-collision.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 17 — boundary: whitespace around a REAL key must still be recognized as a pin.
+  test('row 17: indented / inner-spaced model pin — IS a violation', () => {
+    copyFixtureToml(agentsDir, 'gsd-tester', 'whitespace-indented-model-pin.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  // # 18 — cross-platform: CRLF and BOM must parse identically to plain LF.
+  test('row 18a: CRLF file with a pinned model — parsed identically to LF (still a violation)', () => {
+    copyFixtureToml(agentsDir, 'gsd-scribe', 'crlf-pinned-model.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  test('row 18b: BOM-prefixed file with a pinned model — parsed identically to a BOM-free file', () => {
+    copyFixtureToml(agentsDir, 'gsd-archivist', 'bom-pinned-model.toml');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.violations.length, 1);
+    assert.strictEqual(result.violations[0].reason, agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL);
+    assert.strictEqual(result.violations[0].value, 'sonnet');
+  });
+
+  // # 19 — independence: multiple agents, some violating; deterministic order;
+  // clean agents are simply absent from violations (not present-but-empty).
+  test('row 19: several agents, some violating — one entry per offender, deterministic order, clean absent', () => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-alpha',
+      'name = "gsd-alpha"\ndeveloper_instructions = \'\'\'\nClean.\n\'\'\'\n',
+    );
+    writeAgentToml(
+      agentsDir,
+      'gsd-bravo',
+      'name = "gsd-bravo"\nmodel = "opus"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+    writeAgentToml(
+      agentsDir,
+      'gsd-charlie',
+      'name = "gsd-charlie"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.violations.length, 2);
+    assert.strictEqual(result.violations[0].agent, 'gsd-bravo');
+    assert.strictEqual(result.violations[1].agent, 'gsd-charlie');
+    assert.ok(
+      !result.violations.some((v) => v.agent === 'gsd-alpha'),
+      'clean agent must not appear in violations at all',
+    );
+    assert.strictEqual(result.checked.length, 3);
+  });
+
+  // # 21 — filesystem failure: an unreadable .toml is reported, not thrown, and
+  // does not abort checking the rest of the agents. Injected via fs.readFileSync
+  // monkeypatch/restore (see withInjectedReadFailure) rather than chmod 0o000,
+  // which root bypasses under Docker/CI.
+  test('row 21: unreadable .toml (EACCES) — UNREADABLE violation naming the file, other agents still checked, no throw', () => {
+    writeAgentToml(agentsDir, 'gsd-bad', 'name = "gsd-bad"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    writeAgentToml(agentsDir, 'gsd-good', 'name = "gsd-good"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    const badPath = path.join(agentsDir, 'gsd-bad.toml');
+    const injected = Object.assign(new Error('injected EACCES'), { code: 'EACCES' });
+
+    const result = withInjectedReadFailure(badPath, injected, () =>
+      agentInstallCheck.checkCodexModelPosture('codex', tmpDir),
+    );
+
+    assert.strictEqual(result.ok, false);
+    const unreadable = result.violations.find((v) => v.agent === 'gsd-bad');
+    assert.ok(unreadable, 'unreadable file must produce a named violation, not a silent skip');
+    assert.strictEqual(unreadable.reason, agentInstallCheck.POSTURE_REASON.UNREADABLE);
+    assert.ok(unreadable.file.endsWith('gsd-bad.toml'));
+    assert.strictEqual(result.checked.length, 2, 'the unreadable file must still be counted as checked');
+    assert.ok(
+      !result.violations.some((v) => v.agent === 'gsd-good'),
+      'the still-readable sibling must be checked and found clean',
+    );
+  });
+
+  // # 22 — boundary: empty / whitespace-only .toml pins nothing.
+  test('row 22: empty / whitespace-only .toml — no violation', () => {
+    writeAgentToml(agentsDir, 'gsd-blank', '   \n\n\t\n');
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+  });
+
+  // # 23 — hostile: an oversized (secret-shaped) model value must be truncated at
+  // 64 chars, matching bin/install.js's _warnCodexModelOverrideDropped truncation
+  // (`slice(0, 64) + '…'`) so an oversized/secret-shaped value cannot reach logs
+  // in full.
+  test('row 23: oversized model value — truncated at 64 chars, matching the installer cap', () => {
+    const oversized = `claude-${'x'.repeat(80)}`; // 87 chars, Anthropic-flavored (contains "claude")
+    writeAgentToml(
+      agentsDir,
+      'gsd-oversized-agent',
+      `name = "gsd-oversized-agent"\nmodel = "${oversized}"\ndeveloper_instructions = '''\nWork.\n'''\n`,
+    );
+
+    const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
+
+    assert.strictEqual(result.violations.length, 1);
+    const { value } = result.violations[0];
+    assert.ok(value.length <= 65, `expected value capped at 64 chars (+ ellipsis), got length ${value.length}`);
+    assert.notStrictEqual(value, oversized, 'the full oversized value must not reach the violation untruncated');
+    assert.strictEqual(value, `${oversized.slice(0, 64)}…`);
+  });
+
+  // # 25 — NEGATIVE PROOF. Catches: gating the runtime no-op AFTER already
+  // scanning the agents directory (e.g. deciding what to report only at the end),
+  // instead of short-circuiting before any file is read. A stray .toml that WOULD
+  // trip a violation if inspected must never be inspected for a non-codex runtime.
+  test('row 25 (negative proof): non-codex runtime with a stray violating .toml present — still NOT_CODEX, file never inspected', (t) => {
+    writeAgentToml(
+      agentsDir,
+      'gsd-stray',
+      'name = "gsd-stray"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+    const reads = [];
+    t.mock.method(fs, 'readFileSync', (...args) => {
+      reads.push(args[0]);
+      throw new Error('unreachable: readFileSync must not be called for a non-codex runtime');
+    });
+
+    const result = agentInstallCheck.checkCodexModelPosture('opencode', tmpDir);
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(result.violations, []);
+    assert.strictEqual(result.reason, agentInstallCheck.POSTURE_REASON.NOT_CODEX);
+    assert.deepStrictEqual(reads, [], 'the stray violating file must never be read for a non-codex runtime');
+  });
+});
+
+// # 24 — enum lock: adding a POSTURE_REASON value is a deliberate three-way
+// coordinated change (enum, emitting site, this test), not a silent drift. Locks
+// the exact key set, matching the repo's established shape for reason enums
+// (see verify-reapply-patches.cjs's REASON).
+describe('POSTURE_REASON enum', () => {
+  test('row 24: Object.keys(POSTURE_REASON).sort() is locked', () => {
+    assert.deepStrictEqual(
+      Object.keys(agentInstallCheck.POSTURE_REASON).sort(),
+      [
+        'AGENTS_DIR_MISSING',
+        'ANTHROPIC_FLAVORED_MODEL',
+        'NOT_CODEX',
+        'ORPHANED_REASONING_EFFORT',
+        'UNREADABLE',
+      ].sort(),
+    );
+  });
+
+  test('POSTURE_REASON values are the frozen snake_case wire form, not prose', () => {
+    assert.strictEqual(agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL, 'anthropic_flavored_model');
+    assert.strictEqual(agentInstallCheck.POSTURE_REASON.ORPHANED_REASONING_EFFORT, 'orphaned_reasoning_effort');
+    assert.strictEqual(agentInstallCheck.POSTURE_REASON.UNREADABLE, 'unreadable');
+    assert.strictEqual(agentInstallCheck.POSTURE_REASON.NOT_CODEX, 'not_codex');
+    assert.strictEqual(agentInstallCheck.POSTURE_REASON.AGENTS_DIR_MISSING, 'agents_dir_missing');
+    assert.ok(Object.isFrozen(agentInstallCheck.POSTURE_REASON));
+  });
+});
+
+// # 20 — keystone wiring: a library that works but is never called from the
+// user-reachable command surface is the keystone-unwired failure the coverage
+// gate exists to catch. Drives cmdValidateAgents directly (the same seam
+// tests/verify.test.cjs already uses for cmdValidateHealth) and asserts through
+// the command's structured JSON output — captured by monkeypatching
+// node:fs.writeSync, the exact seam tests/io.test.cjs already establishes for
+// io.cjs's output(), which writes via writeAllSync(1, ...) → fs.writeSync, NOT
+// console.log — rather than calling checkCodexModelPosture a second time.
+describe('cmdValidateAgents surfaces the Codex posture result (#3242 row 20)', () => {
+  let tmpDir;
+  let agentsDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-posture-wiring-');
+    agentsDir = path.join(tmpDir, 'agents');
+    process.env['GSD_AGENTS_DIR'] = agentsDir;
+    process.env['GSD_RUNTIME'] = 'codex';
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('row 20: validate agents output carries the posture result for a violating install', (t) => {
+    const { cmdValidateAgents } = require(
+      path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'verify.cjs'),
+    );
+    writeAgentToml(
+      agentsDir,
+      EXPECTED_AGENTS[0],
+      `name = "${EXPECTED_AGENTS[0]}"\nmodel = "sonnet"\ndeveloper_instructions = '''\nWork.\n'''\n`,
+    );
+
+    const written = [];
+    const realWriteSync = fs.writeSync;
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) {
+        return realWriteSync.call(fs, fd, data, offset, length);
+      }
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      written.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+
+    cmdValidateAgents(tmpDir, false);
+
+    const parsed = JSON.parse(written.join(''));
+    assert.ok(
+      parsed.codex_posture,
+      `expected cmdValidateAgents output to carry a codex_posture key, got keys: ${Object.keys(parsed).join(', ')}`,
+    );
+    assert.strictEqual(parsed.codex_posture.ok, false);
+    assert.strictEqual(parsed.codex_posture.violations.length, 1);
+    assert.strictEqual(parsed.codex_posture.violations[0].agent, EXPECTED_AGENTS[0]);
+    assert.strictEqual(
+      parsed.codex_posture.violations[0].reason,
+      agentInstallCheck.POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL,
+    );
   });
 });
