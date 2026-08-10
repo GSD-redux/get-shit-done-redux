@@ -748,6 +748,28 @@ function isNamespacedByDir(kind: string, destSubpath: string, prefix: string): b
 }
 
 /**
+ * Compose the destination filename `_copyStaged` (install-engine.cts) writes
+ * for a `commands` kind entry, given `isNamespacedByDir`'s result, the
+ * kind's prefix, and the file's `.md`-stripped stem. Single source of truth
+ * alongside `isNamespacedByDir` for the FILENAME COMPOSITION itself (#2871
+ * Phase 2 review finding — the boolean was single-sourced first, but the
+ * `${stem}.md` / `${prefix}${stem}.md` string-building around it stayed
+ * duplicated between `_copyStaged` and `resolveTriggerSurface`'s `destPath`
+ * prediction below, so a divergence in the write convention would not have
+ * failed anything).
+ *
+ * Byte-identical to `_copyStaged`'s prior separate branches: when
+ * `namespacedByDir` is true this returns `${stem}.md`. `_copyStaged` always
+ * derives `stem` as `entry.name.slice(0, -3)` for an `entry.name` that has
+ * already been filtered to end in `.md`, so `${stem}.md` is always exactly
+ * `entry.name` again — `_copyStaged` can pass this helper's result in place
+ * of the `entry.name` it used to write directly, with no behavior change.
+ */
+function composeCommandFilename(namespacedByDir: boolean, prefix: string, stem: string): string {
+  return namespacedByDir ? `${stem}.md` : `${prefix}${stem}.md`;
+}
+
+/**
  * True when candidate `a` should win over the current best `b` for the same
  * trigger. Scope rank first (Phase 1's `install-scope.cts#scopeRank` —
  * global outranks local; NOT re-derived here), then the runtime's
@@ -825,10 +847,8 @@ function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: Tr
         let destPath: string;
         if (kind === 'skills') {
           destPath = `${destSubpath}/${entry.prefix}${stem}`;
-        } else if (namespacedByDir) {
-          destPath = `${destSubpath}/${stem}.md`;
         } else {
-          destPath = `${destSubpath}/${entry.prefix}${stem}.md`;
+          destPath = `${destSubpath}/${composeCommandFilename(namespacedByDir, entry.prefix, stem)}`;
         }
 
         let registration: TriggerRegistration = 'direct';
@@ -875,4 +895,4 @@ function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: Tr
 }
 
 // getInstallExports removed in ADR-1508 / #1511 Phase 2 (last upward .cts→install.js dep).
-export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot, resolveTriggerSurface, isNamespacedByDir };
+export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot, resolveTriggerSurface, isNamespacedByDir, composeCommandFilename };

@@ -482,12 +482,14 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
       destName = _agentExt
         ? entry.name.replace(/\.md$/, _agentExt)
         : entry.name;
-    } else if (namespacedByDir) {
-      // Directory is the namespace; don't double-prefix the filename
-      destName = entry.name;
     } else {
-      // Flat commands directory (e.g. command/ for opencode/kilo)
-      destName = `${kind.prefix}${stem}.md`;
+      // Commands: filename composition (namespacedByDir ? `${stem}.md` :
+      // `${prefix}${stem}.md`) is single-sourced with resolveTriggerSurface's
+      // destPath prediction via composeCommandFilename (#2871 Phase 2 review
+      // finding). Byte-identical to the prior separate namespacedByDir/flat
+      // branches — see that helper's doc comment for why the namespacedByDir
+      // case reconstructing `${stem}.md` is always exactly `entry.name`.
+      destName = runtimeArtifactLayout.composeCommandFilename(namespacedByDir, kind.prefix, stem);
     }
 
     fs.copyFileSync(path.join(stagedDir, entry.name), path.join(destDir, destName));
