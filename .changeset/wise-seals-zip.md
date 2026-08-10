@@ -1,6 +1,6 @@
 ---
 type: Changed
-pr: 0
+pr: 3306
 ---
 **Phase completion is now decided by a single disk-strict predicate — a ticked ROADMAP checkbox no longer carries machine authority.** `isPhaseComplete` (`src/verification.cts`) is the one owner: a phase is complete exactly when its `*-VERIFICATION.md` reads `passed`, read unconditionally — plan count is never a precondition. This changes four observable surfaces: `init manager` now reports a zero-plan phase with a passing verification as complete instead of the retired `not_required` sentinel (#3168); `roadmap analyze`'s checkbox override is removed, so a ticked checkbox with outstanding plans or no passing verification now reports incomplete instead of complete; `roadmap update-plan-progress` routes through the same owner (and, unchanged, still refuses to write a completion checkbox/date while any plan lacks a `*-SUMMARY.md`); and `gsd-core/workflows/mvp-phase.md` stops ORing a checkbox-derived `PHASE_COMPLETE` into its completion decision, deciding on disk status alone. A ticked checkbox is not deleted — only its authority over these commands is removed.
 
