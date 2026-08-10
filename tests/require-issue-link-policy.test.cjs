@@ -18,7 +18,7 @@ const {
   evaluateIssueLink,
 } = require('../scripts/require-issue-link-policy.cjs');
 
-const { fileListIsComplete } = require('../scripts/lib/pr-changed-files.cjs');
+const { fileListIsComplete } = require('../scripts/pr-changed-files.cjs');
 
 function forkPr(overrides = {}) {
   return {

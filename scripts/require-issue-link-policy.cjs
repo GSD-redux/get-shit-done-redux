@@ -16,7 +16,7 @@
  *      branch name to bypass the issue-link requirement entirely.
  *   2. (#3211, truncation) `gh pr view --json files` truncates the file list
  *      at 100 entries with no in-band signal that it did so (see
- *      scripts/lib/pr-changed-files.cjs). The reference-only carve-out below
+ *      scripts/pr-changed-files.cjs). The reference-only carve-out below
  *      only applies when every changed file is a test/doc file, so a PR
  *      whose file list may be truncated must fail closed rather than let an
  *      unseen 101st+ file (which could touch `src/`) slip through.
@@ -24,7 +24,7 @@
  * Tests assert on the typed ISSUE_LINK_REASON enum, never on free text.
  */
 
-const { fileListIsComplete, parseChangedFilesEnv } = require('./lib/pr-changed-files.cjs');
+const { fileListIsComplete, parseChangedFilesEnv } = require('./pr-changed-files.cjs');
 const { runMain } = require('./lib/cli-exit.cjs');
 
 const ISSUE_LINK_REASON = Object.freeze({

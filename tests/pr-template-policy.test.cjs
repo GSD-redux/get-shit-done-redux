@@ -2,7 +2,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { evaluatePrTemplate, allPathsAreTooling, hasExemptMarker, TOOLING_PATH_ALLOWLIST, EXEMPT_MARKER_REGEX } = require('../scripts/pr-template-policy.cjs');
-const { FILE_LIST_PAGE_LIMIT } = require('../scripts/lib/pr-changed-files.cjs');
+const { FILE_LIST_PAGE_LIMIT } = require('../scripts/pr-changed-files.cjs');
 
 const fixBody = [
   '## Fix PR',

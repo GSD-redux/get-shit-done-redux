@@ -13,6 +13,10 @@
  * pattern X" must treat a `files` list it cannot confirm is complete as
  * incomplete — i.e. fail closed — rather than silently approving a PR whose
  * 101st+ file might violate the policy.
+ *
+ * This file lives at the top level of scripts/ rather than in scripts/lib/
+ * because scripts/lib/** is enumerated in bin/install.js and ships to users
+ * on install; this is CI-only tooling with no reason to be installed.
  */
 
 // GitHub's GraphQL `files` connection is requested at `first: 100` by

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { matchesGlob } = require('path');
-const { fileListIsComplete, parseChangedFilesEnv } = require('./lib/pr-changed-files.cjs');
+const { fileListIsComplete, parseChangedFilesEnv } = require('./pr-changed-files.cjs');
 
 const TRUSTED_AUTHOR_ASSOCIATIONS = new Set([
   'CONTRIBUTOR',
