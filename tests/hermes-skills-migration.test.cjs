@@ -1192,7 +1192,7 @@ describe('#2284(b) branding protected-region — <runtime_compatibility> compari
 
   test('collision-robust: arbitrary sentinel-like content in surrounding prose (NUL byte, <!--PLACEHOLDER--> token) round-trips untouched while genuine self-references are still swapped — the split-and-rejoin rewrite has no sentinel/placeholder to collide with', () => {
     const fixture = [
-      'Claude Code embeds a literal NUL byte here: [ ] and a placeholder-shaped token <!--PLACEHOLDER--> in its prose.',
+      'Claude Code embeds a literal NUL byte here: [ ] and a placeholder-shaped token <!--PLACEHOLDER--> in its prose.',
       '',
       '<runtime_compatibility>',
       '- **Claude Code:** reference implementation',
@@ -1209,7 +1209,7 @@ describe('#2284(b) branding protected-region — <runtime_compatibility> compari
 
     // The NUL byte survives verbatim, exactly once, with no corruption.
     assert.ok(out.includes('[ ]'), 'NUL byte preserved verbatim');
-    assert.strictEqual(out.split(' ').length - 1, 1, 'NUL byte appears exactly once — not duplicated or leaked');
+    assert.strictEqual(out.split(' ').length - 1, 1, 'NUL byte appears exactly once — not duplicated or leaked');
 
     // The placeholder-shaped token survives verbatim, exactly once — proving
     // there is no internal sentinel this content could collide with.
