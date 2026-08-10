@@ -53,6 +53,18 @@ Real multi-process race tests (where two OS processes genuinely compete for a re
 
 Wall-clock timing in production code paths that cannot accept an injectable clock (e.g., third-party integrations) must be wrapped behind an adapter interface so tests can substitute a controlled clock.
 
+#### Reachability-based mechanism selection (amended 2026-08-10, #3314)
+
+As originally written, this section names one mechanism — an injected `{clock = Date}` parameter driven by `t.mock.timers`. In practice this repo uses three, and the choice between them is determined by how a test reaches the system under test, not by preference:
+
+| Test reaches the SUT via… | Mechanism | Why |
+|---|---|---|
+| **Direct in-process call** (`require(...)` then invoke) — regardless of whether the SUT accepts an injected clock or reads a global | `t.mock.timers.enable(['Date'])` | Patches the process-global `Date` class. Any code in the same process — whether it reads `Date.now()` directly or through `realClock.now()` — observes the mocked time. No production code change is required to make an in-process-tested function deterministic. |
+| **Spawned CLI subprocess** (`execFileSync`/`spawnSync` into a new Node process) | `GSD_TEST_MODE=1` + `GSD_NOW_MS=<epoch-ms>` (subprocess time-pin adapter, issue #474), with `TZ` also pinned when local-time getters are involved | `t.mock.timers` in the parent test process cannot reach a child process's clock — mocking is process-local. `GSD_NOW_MS` is read inside `realClock.now()`'s `_pinnedNowMs()` check (`src/clock.cts`), so it reaches the subprocess's clock **only if the subprocess's code path reads time through `realClock`** (`now()`/`nowIso()`/`today()`/`localToday()`). A code path that calls raw `Date.now()`/`new Date()` bypasses the pin entirely and stays untestable no matter what the test does — this is the concrete, repo-specific form the preceding paragraph's "must be wrapped behind an adapter interface" requirement takes at the subprocess boundary. `realClock.now() === Date.now()` whenever `GSD_TEST_MODE` is unset, so routing a call site through the seam is behavior-preserving in production. |
+| Module **accepts** an injected `{clock = Date}` parameter | `makeFakeClock()` (`tests/helpers/clock.cjs`) | The pattern this section already documented — unchanged, still correct for this population. |
+
+This does not relax the typed-surface or delete-bad-tests policies elsewhere in this ADR; it only names the two mechanisms the original text omitted. Their absence from the documented policy is why several `src` modules read as "zero time-control adoption" despite some already routing through `realClock` correctly for part of their output — see #3314's audit for the concrete module-by-module classification (`commands.cts`, `init.cts`, and `io.cts` needed backfill; `roadmap.cts`, `workstream.cts`, `gsd2-import.cts`, `template.cts`, and `verify.cts` were already compliant incidental stamps; `review-lane-invocation.cts` does not touch the clock at all despite an earlier assumption that it did).
+
 ### (b) Antagonistic tier — property-based and mutation testing
 
 Two tools form the antagonistic tier:
