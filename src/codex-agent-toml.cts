@@ -47,9 +47,13 @@ export type ParseReason = (typeof PARSE_REASON)[keyof typeof PARSE_REASON];
  * file. `stripModel`/`stripReasoningEffort` remove a targeted line AND its own
  * terminator from `lines`/`terminators`; every other line's content is
  * untouched, and so is its own terminator — EXCEPT when the removed line was
- * the file's last line, in which case the new last line inherits the removed
- * line's terminator (see {@link removeLine}) so the file's trailing-newline
- * status is preserved rather than silently changed.
+ * the file's last line AND the removed line had no terminator (the source had
+ * no trailing newline), in which case the new last line's terminator is
+ * cleared to `''` too (see {@link removeLine}) so the file's trailing-newline
+ * status is preserved rather than silently changed. When the source DID end
+ * with a newline, the new last line keeps its OWN terminator unchanged —
+ * copying the removed line's terminator there would corrupt a mixed-EOL
+ * source by silently changing the new last line's own ending style.
  */
 export interface CodexAgentDoc {
   /** Content lines (BOM-stripped, terminator-free). Paired 1:1 by index with `terminators`. */
@@ -302,13 +306,17 @@ export function renderCodexAgentToml(doc: CodexAgentDoc): string {
 // removal never has this problem because the terminator that survives (the
 // one that WAS between the previous line and the removed one) is exactly the
 // terminator the new neighbors should have between them. For a last-line
-// removal, the file's trailing-newline status lives in the REMOVED line's own
-// terminator (that is what `trailingNewline` was computed from), so the new
-// last line must inherit that terminator instead of keeping its own — the
-// invariant is "the file's trailing-newline-or-not survives", not "each
-// surviving line keeps its original own terminator". Removing the only
-// remaining line is the degenerate case: there is no new last line to
-// inherit anything, so the result is the empty document.
+// removal, the file's trailing-newline-or-not status lives in whether the
+// REMOVED line's own terminator was empty (that is what `trailingNewline`
+// was computed from) — so the new last line inherits the removed line's
+// EMPTINESS only: if the removed terminator was `''`, the new last line's
+// terminator is cleared to `''` too. If the removed terminator was
+// non-empty, the source already ended with a newline and the new last line
+// already has the right one (its OWN, unchanged) — overwriting it with the
+// removed line's terminator would silently change the new last line's own
+// ending style on a mixed-EOL source (see A26). Removing the only remaining
+// line is the degenerate case: there is no new last line, so the result is
+// the empty document.
 function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoningEffort'): CodexAgentDoc {
   const isLastLine = index === doc.lines.length - 1;
   let lines: string[];
@@ -318,7 +326,15 @@ function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoni
     terminators = [];
   } else if (isLastLine) {
     lines = doc.lines.slice(0, index);
-    terminators = doc.terminators.slice(0, index - 1).concat([doc.terminators[index]]);
+    // Inherit the removed line's EMPTINESS, never its STYLE: if the removed
+    // line had no terminator (the source had no trailing newline), the new
+    // last line's terminator becomes '' too. Otherwise the source DID end
+    // with a newline, and the new last line already has the right one — its
+    // OWN terminator, which may differ in style from the removed line's (a
+    // mixed-EOL source) — so it is left unchanged rather than overwritten.
+    const removedTerminator = doc.terminators[index];
+    const newLastTerminator = removedTerminator === '' ? '' : doc.terminators[index - 1];
+    terminators = doc.terminators.slice(0, index - 1).concat([newLastTerminator]);
   } else {
     lines = doc.lines.slice(0, index).concat(doc.lines.slice(index + 1));
     terminators = doc.terminators.slice(0, index).concat(doc.terminators.slice(index + 1));

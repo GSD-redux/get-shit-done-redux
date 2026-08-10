@@ -433,21 +433,24 @@ describe('A25-A28 (regression, B17): removeLine preserves trailing-newline statu
   });
 
   test('A26 (red pre-fix): strip a model line that is the file\'s last line, WITH a trailing newline — still exactly one trailing newline', () => {
-    // Mixed EOL is deliberate: it is the only way to make this case fail
-    // pre-fix. In a uniform-EOL file every terminator is identical, so the
-    // pre-fix bug (keeping the previous line's terminator instead of the
-    // removed line's own) coincidentally renders the right bytes anyway —
-    // it takes two DIFFERENT terminators either side of the removed last
-    // line to expose it without also removing the trailing newline entirely.
+    // Mixed EOL is deliberate: it is the only way to distinguish the two
+    // candidate fixes. removeLine must inherit the removed line's
+    // EMPTINESS (trailing-newline-or-not), never its STYLE — the survivor's
+    // OWN terminator is already the right style for the survivor; copying
+    // the removed line's terminator onto it would silently change the
+    // survivor's own ending, which is exactly the class of defect the
+    // mixed-EOL round-trip guarantee (A14) exists to prevent.
     const source = 'name = "gsd-bare"\r\nmodel = "sonnet"\n'; // name: CRLF: model (last): LF
     const result = parseCodexAgentToml(source);
     assert.equal(result.ok, true);
     assert.equal(result.doc.trailingNewline, true);
     const rendered = renderCodexAgentToml(stripModel(result.doc));
-    // Pre-fix: rendered came back as 'name = "gsd-bare"\r\n' — the survivor's
-    // OWN CRLF terminator, not the removed line's LF terminator that actually
-    // encoded "this file ends with exactly one trailing newline".
-    assert.equal(rendered, 'name = "gsd-bare"\n', 'exactly one trailing newline must survive, on the new last line');
+    // Pre-fix (style-inheriting variant): rendered came back as
+    // 'name = "gsd-bare"\n' — the removed line's own LF terminator, which
+    // silently changed the survivor's ending from CRLF to LF. Correct: the
+    // survivor keeps its OWN CRLF terminator unchanged; the file still ends
+    // with exactly one trailing newline, in the survivor's original style.
+    assert.equal(rendered, 'name = "gsd-bare"\r\n', 'exactly one trailing newline must survive, on the new last line, in ITS OWN style');
   });
 
   test('A27: strip the only line in a file — empty result', () => {
@@ -480,6 +483,33 @@ describe('A25-A28 (regression, B17): removeLine preserves trailing-newline statu
     // rendering 'name = "gsd-stale"\n' — a trailing newline the source
     // never had.
     assert.equal(renderCodexAgentToml(afterBoth), 'name = "gsd-stale"', 'both lines gone AND no invented trailing newline');
+    assert.equal(afterBoth.model, null);
+    assert.equal(afterBoth.reasoningEffort, null);
+  });
+
+  test('A29 (regression, B7 shape, mixed EOL): stale model plus its orphaned effort, effort is the last line, mixed line endings — survivor keeps its OWN terminator, not the removed effort\'s', () => {
+    // Exercises the two fixes' interaction: stripModel is a middle-line
+    // removal (untouched by the last-line fix), then stripReasoningEffort
+    // lands on the now-last line. Deliberately non-uniform EOL either side
+    // of the second removal (survivor 'name' is CRLF-terminated, the
+    // removed effort line is LF-terminated) so a style-inheriting bug and
+    // the correct emptiness-inheriting behavior render DIFFERENT bytes.
+    const source = 'name = "gsd-stale"\r\nmodel = "opus"\nmodel_reasoning_effort = "medium"\n';
+    const result = parseCodexAgentToml(source);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.trailingNewline, true);
+    assert.deepEqual(result.doc.terminators, ['\r\n', '\n', '\n']);
+    const afterModel = stripModel(result.doc);
+    // Middle-line removal: splice only, no terminator fiddling — survivor
+    // keeps its own '\r\n', the effort line keeps its own '\n'.
+    assert.deepEqual(afterModel.terminators, ['\r\n', '\n']);
+    const afterBoth = stripReasoningEffort(afterModel);
+    // If the bug were still present (inheriting the removed effort line's
+    // OWN '\n'), this would render 'name = "gsd-stale"\n' — silently
+    // downgrading the survivor's CRLF to LF. Correct: the survivor's own
+    // '\r\n' is unchanged; the file still ends with exactly one trailing
+    // newline.
+    assert.equal(renderCodexAgentToml(afterBoth), 'name = "gsd-stale"\r\n', 'survivor keeps its OWN terminator; no invented/altered line ending');
     assert.equal(afterBoth.model, null);
     assert.equal(afterBoth.reasoningEffort, null);
   });
