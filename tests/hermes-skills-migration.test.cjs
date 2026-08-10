@@ -1208,7 +1208,7 @@ describe('#2284(b) branding protected-region — <runtime_compatibility> compari
     assert.ok(out.includes('Trae again, after the block.'), 'trailing self-reference swapped');
 
     // The NUL byte survives verbatim, exactly once, with no corruption.
-    assert.ok(out.includes('[ ]'), 'NUL byte preserved verbatim');
+    assert.ok(out.includes('[\x00]'), 'NUL byte preserved verbatim');
     assert.strictEqual(out.split('\x00').length - 1, 1, 'NUL byte appears exactly once — not duplicated or leaked');
 
     // The placeholder-shaped token survives verbatim, exactly once — proving
