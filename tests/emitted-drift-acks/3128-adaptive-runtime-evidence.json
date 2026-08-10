@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "paths": {
+    "debug.md": "#3128: the debug workflow gains global probe-policy routing, immutable-goal persistence, one conditional runtime-evidence protocol fragment, exact continuation reuse, and fail-closed terminal reconciliation. The detailed lifecycle remains lazily loaded from its dedicated reference so ordinary debug invocations do not pay that context cost.",
+    "diagnose-issues.md": "#3128: direct diagnosis dispatch now declares its immutable root-cause-only goal, off policy, unsupported runtime checkpoints, and tracked-source read-only boundary so a diagnosis-only caller cannot create probes or apply a fix.",
+    "gsd-debug-session-manager.md": "#3128: the manager now preserves the durable goal and policy across every continuation, routes the two runtime checkpoints, suppresses fix choices for diagnosis-only sessions, and independently blocks every terminal or commit path until the complete runtime ledger is clean.",
+    "gsd-debugger.md": "#3128: the debugger now owns direct-invocation reconciliation, opt-in runtime-evidence routing, diagnosis-only read-only behavior, checkpoint restrictions, final uninstrumented reproduction ordering, and a complete fail-closed terminal predicate. Deep schema and capture detail stays in the on-demand reference."
+  }
+}
