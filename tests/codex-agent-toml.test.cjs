@@ -345,7 +345,10 @@ describe('A18-A24 (BLOCKER regression): mixed/edge line-ending round-trip', () =
     assert.equal(result.ok, true);
     assert.equal(result.doc.model, 'sonnet');
     // Each line's own terminator is captured, never collapsed to one style.
-    assert.deepEqual(result.doc.terminators, ['\r\n', '\n', '\r\n', '\n', '\r\n', '\n', '']);
+    // No phantom trailing '' entry: the file has exactly 6 content lines, and
+    // `terminators[i]` is the terminator that follows `lines[i]`, so the
+    // arrays are the same length as the file's real line count.
+    assert.deepEqual(result.doc.terminators, ['\r\n', '\n', '\r\n', '\n', '\r\n', '\n']);
     const rendered = renderCodexAgentToml(result.doc);
     assert.equal(rendered, A18_MIXED_EOL, 'mixed-EOL source must round-trip byte-identically, unmodified');
   });

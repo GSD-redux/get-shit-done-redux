@@ -212,24 +212,36 @@ export function scanTomlLines(content: string): HeaderScanResult {
   return { model, hasReasoningEffort: reasoningEffort !== null };
 }
 
-// Splits `content` into `{lines, terminators}` — each line's OWN terminator
-// (`'\r\n'`, `'\r'`, or `'\n'`) is captured alongside it rather than discarded,
-// so a source mixing line-ending styles round-trips byte-identically instead
-// of every line being normalized to one whole-file style (the A14 defect: a
-// `split(/\r?\n/)` + `join(eol)` pair throws away each line's own terminator
-// and re-imposes a single style on rejoin, corrupting a mixed-EOL file even
-// when zero lines were stripped). `String#split` with a capturing group
-// interleaves the delimiters into the result array — `"a\r\nb\nc".split(/(\r\n|\r|\n)/)`
-// yields `["a","\r\n","b","\n","c"]` — so even indices are line content and
-// odd indices are that line's terminator; a final line with no trailing
-// terminator has no odd-index sibling, which the `?? ''` below covers. `\r\n`
+// Splits `content` into `{lines, terminators}` where `terminators[i]` is the
+// terminator that FOLLOWS `lines[i]` (`'\r\n'`, `'\r'`, `'\n'`, or `''` for a
+// line with none — only possible as the file's last line). The two arrays are
+// always the same length and there is NEVER a phantom trailing entry: a
+// source ending in a terminator (the common case) yields exactly as many
+// lines as it has content lines, not one more. `render` is then a plain
+// `lines[i] + terminators[i]` concatenation with no special-casing of "the
+// last line" — see `renderCodexAgentToml`.
+//
+// `String#split` with a capturing group interleaves the delimiters into the
+// result array — `"a\r\nb\nc".split(/(\r\n|\r|\n)/)` yields
+// `["a","\r\n","b","\n","c"]` — so even indices are line content and odd
+// indices are that line's terminator. When `content` ends WITH a terminator,
+// `split` appends one extra empty-string element after the last real
+// terminator (e.g. `"a\n".split(...)` → `["a","\n",""]`); that trailing `""`
+// is not a real line, it is `split`'s "nothing after the last delimiter"
+// marker, so the loop below stops before consuming it instead of recording it
+// as a phantom empty final line (the defect this replaced — see A29: a doc
+// with a phantom last element made every removal rule reason about the wrong
+// element for any trailing-newline-terminated file, the common case). `\r\n`
 // is tried before the bare `\r` alternative so a CRLF is never misread as a
 // lone-CR line followed by an empty LF-terminated line.
 function splitPreservingTerminators(content: string): { lines: string[]; terminators: string[] } {
+  if (content === '') return { lines: [], terminators: [] };
   const parts = content.split(/(\r\n|\r|\n)/);
+  const lastIndex = parts.length - 1;
   const lines: string[] = [];
   const terminators: string[] = [];
   for (let i = 0; i < parts.length; i += 2) {
+    if (i === lastIndex && parts[i] === '') break; // split's post-terminator marker, not a real line
     lines.push(parts[i]);
     terminators.push(parts[i + 1] ?? '');
   }
@@ -326,15 +338,17 @@ function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoni
     terminators = [];
   } else if (isLastLine) {
     lines = doc.lines.slice(0, index);
+    terminators = doc.terminators.slice(0, index);
     // Inherit the removed line's EMPTINESS, never its STYLE: if the removed
     // line had no terminator (the source had no trailing newline), the new
     // last line's terminator becomes '' too. Otherwise the source DID end
     // with a newline, and the new last line already has the right one — its
-    // OWN terminator, which may differ in style from the removed line's (a
-    // mixed-EOL source) — so it is left unchanged rather than overwritten.
-    const removedTerminator = doc.terminators[index];
-    const newLastTerminator = removedTerminator === '' ? '' : doc.terminators[index - 1];
-    terminators = doc.terminators.slice(0, index - 1).concat([newLastTerminator]);
+    // OWN terminator (already carried over by the slice above), which may
+    // differ in style from the removed line's (a mixed-EOL source) — so it is
+    // left unchanged rather than overwritten.
+    if (doc.terminators[index] === '') {
+      terminators[terminators.length - 1] = '';
+    }
   } else {
     lines = doc.lines.slice(0, index).concat(doc.lines.slice(index + 1));
     terminators = doc.terminators.slice(0, index).concat(doc.terminators.slice(index + 1));
