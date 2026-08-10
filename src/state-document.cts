@@ -404,12 +404,25 @@ export function normalizeStateStatus(status: string | null | undefined, pausedAt
   return normalizedStatus;
 }
 
+/**
+ * ADR-3180 §7.6 rule 4 (#3217): `scope` is the `listMilestonePhaseDirs`-owner
+ * discriminator for the phase/plan set these four counts were derived from.
+ * A caller that cannot vouch for `scope === SCOPE.COMPLETE` must pass the
+ * scope it actually has — this function refuses to compose a percentage
+ * from counts whose scope says they are not a trustworthy answer, returning
+ * `null` (never `0`; see the module's already-existing "no data" `null`
+ * below, which this generalizes) exactly like its pre-existing "no data"
+ * case. `scope` is REQUIRED (no default) so a caller cannot silently opt out
+ * of rule 4 by omission.
+ */
 export function computeProgressPercent(
   completedPlans: number | null,
   totalPlans: number | null,
   completedPhases: number | null,
-  totalPhases: number | null
+  totalPhases: number | null,
+  scope: Scope
 ): number | null {
+  if (scope !== SCOPE.COMPLETE) return null;
   const hasPlanData = totalPlans !== null && totalPlans > 0 && completedPlans !== null;
   const hasPhaseData = totalPhases !== null && totalPhases > 0 && completedPhases !== null;
   if (!hasPlanData && !hasPhaseData)

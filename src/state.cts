@@ -36,6 +36,7 @@ const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
@@ -756,6 +757,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: Scope = SCOPE.UNREADABLE;
 
   {
     // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
@@ -764,12 +766,22 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // excluded sentinels, unlike the owner). The owner already handles an
     // absent phasesDir as a real empty, so the fs.existsSync guard folds
     // into it.
-    const phaseDirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
+    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
     for (const dir of phaseDirs) {
       const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
       totalSummaries += summaryCount;
     }
+  }
+
+  // #3217 (ADR-3180 §7.6 rule 4): a non-COMPLETE scope means the counts
+  // above are not a trustworthy answer — do not write a percentage derived
+  // from them into STATE.md at all (A7). This is the write path, so
+  // "withhold" means "make no edit" rather than emitting a null value.
+  if (phaseScope !== SCOPE.COMPLETE) {
+    output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+    return;
   }
 
   const percent = clampPercent(totalSummaries, totalPlans);
@@ -1890,7 +1902,16 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // ROADMAP-declared-but-unrealized future phases cap the reported completion
   // instead of a false 100% from plan-only coverage (#3242 Bug B).
   // Falls back to the body Progress: field only when no plan files exist on disk.
-  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases);
+  // #3217 (ADR-3180 §7.6 rule 4): computeProgressPercent now requires a
+  // `Scope` for its own rule-4 gate. This call site is NOT migrated onto the
+  // real `listMilestonePhaseDirs` scope this phase — `allMatchingDirs` above
+  // discards `.scope`, and threading it through would mean restructuring the
+  // `_diskScanCache` shared shape, which is out of this phase's named sites.
+  // SCOPE.COMPLETE here preserves this function's EXISTING behavior
+  // byte-for-byte (this call site already has its own orthogonal
+  // `milestoneUnbounded` null-out below, from #1761) rather than silently
+  // adding a new gate. Written reason per phase 7's "no silent un-migration".
+  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, SCOPE.COMPLETE);
   // #1761 read-path: when the milestone can't be bounded, percent would be
   // derived from a conflated/understated total — skip it (mirror cmdStateSync).
   if (milestoneUnbounded) progressPercent = null;
@@ -3164,7 +3185,13 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   if (!milestoneBounded) {
     changes.push(`Progress: skipped — milestone ${versionStr} cannot be bounded to a versioned ROADMAP phase set (#1761)`);
   } else {
-    const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases);
+    // #3217 (ADR-3180 §7.6 rule 4): same written-reason non-migration as
+    // buildStateFrontmatter above — `entries` here is a raw fs.readdirSync
+    // listing, never routed through listMilestonePhaseDirs, so there is no
+    // real Scope to pass. SCOPE.COMPLETE preserves this call site's existing
+    // behavior; the `milestoneBounded` guard above (#1761) is this
+    // function's own orthogonal null-out and is unchanged.
+    const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, SCOPE.COMPLETE);
     percent = p !== null ? p : 0;
   }
 

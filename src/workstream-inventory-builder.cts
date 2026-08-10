@@ -439,6 +439,27 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     // invariant above throws first) and matters only for the legacy unscoped
     // path, where the denominator is a roadmap heading count that a caller
     // cannot guarantee bounds the numerator.
+    //
+    // #3217 (ADR-3180 §7.6 rule 4) — WRITTEN REASON this site is NOT migrated
+    // onto the `SCOPE` enum this phase: `buildWorkstreamInventory` is a pure
+    // projection (no I/O — see the module header) fed `BuildWorkstreamInventoryInputs`
+    // by `workstream-inventory.cts`. Its own `milestoneScoped` is a pre-ADR-3180
+    // bespoke boolean, not a `SCOPE` value, and its caller does not currently
+    // thread a real `listMilestonePhaseDirs` scope into these inputs. Doing
+    // this honestly requires ONE of: (a) widening `BuildWorkstreamInventoryInputs`
+    // with a `Scope` field and `WorkstreamInventory.progress_percent`'s type
+    // from `number` to `number | null` — the exact "re-architecting
+    // StateProjection/WorkstreamInventory return types" the design phase
+    // (`.gsd/phase/refactor-3217-completion-ratio-scoping/40-design.md`,
+    // "Known limits") states is OUT of this phase's scope; or (b) silently
+    // reusing `milestoneScoped` as a `Scope` stand-in, which would be exactly
+    // the kind of proxy-for-a-data-flow-property this same phase's guard
+    // section explicitly rejects (a `boolean` cannot distinguish TRUNCATED
+    // from UNSCOPED from UNREADABLE, so a caller could not tell which
+    // non-answer it got). Left un-migrated rather than done dishonestly;
+    // `workstream inventory`'s `progress_percent` can still render a number
+    // derived from an under-scoped set (A8 in the phase's test matrix is
+    // NOT covered here for that reason — see this phase's PR description).
     progress_percent: clampPercent(completedPhases, effectivePhaseCount),
   };
 }

@@ -1774,15 +1774,25 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
   } catch { /* intentionally empty */ }
 
-  const percent = clampPercent(totalSummaries, totalPlans);
+  // #3217 (ADR-3180 §7.6 rule 4): `phaseScope` was already computed above
+  // (Phase 3, #3222) but never consulted before rendering — a percentage was
+  // rendered from counts the scope said were not answers (TRUNCATED /
+  // UNSCOPED / UNREADABLE). Withhold the percentage itself (never `0` — a
+  // real `0` under COMPLETE must still render, rule 2's territory) when the
+  // scope is not COMPLETE. `phaseScope` stays `null` only if the try block
+  // above threw before assigning it; treat that the same as non-COMPLETE.
+  const percent: number | null = phaseScope === SCOPE.COMPLETE
+    ? clampPercent(totalSummaries, totalPlans)
+    : null;
 
   if (format === 'table') {
     // Render markdown table
     const barWidth = 10;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
-    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)\n\n`;
+    out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
     for (const p of phases) {
@@ -1791,9 +1801,10 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     output({ rendered: out }, raw, out);
   } else if (format === 'bar') {
     const barWidth = 20;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    const text = `[${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)`;
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
+    const text = `[${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}`;
     output({ bar: text, percent, completed: totalSummaries, total: totalPlans }, raw, text);
   } else {
     // JSON format
@@ -2130,8 +2141,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
   const completedPhases = phases.filter(p => p.status === 'Complete').length;
-  const planPercent = clampPercent(totalSummaries, totalPlans);
-  const percent = clampPercent(completedPhases, phases.length);
+  // #3217 (ADR-3180 §7.6 rule 4): both percentages here are derived from the
+  // same `phaseScope`-carrying directory enumeration above (Phase 3, #3222) —
+  // withhold both when that scope is not COMPLETE, same rationale as
+  // cmdProgressRender above. A real `0` under COMPLETE still renders.
+  const planPercent: number | null = phaseScope === SCOPE.COMPLETE ? clampPercent(totalSummaries, totalPlans) : null;
+  const percent: number | null = phaseScope === SCOPE.COMPLETE ? clampPercent(completedPhases, phases.length) : null;
 
   // Requirements stats
   let requirementsTotal = 0;
@@ -2193,11 +2208,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   if (format === 'table') {
     const barWidth = 10;
-    const filled = Math.round((percent / 100) * barWidth);
+    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
-    out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases (${percent}%)\n`;
-    if (totalPlans > 0) {
+    const percentSuffix = percent === null ? '' : ` (${percent}%)`;
+    out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;
+    if (totalPlans > 0 && planPercent !== null) {
       out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;
     }
     out += `**Phases:** ${completedPhases}/${phases.length} complete\n`;
