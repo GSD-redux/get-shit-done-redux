@@ -1736,6 +1736,29 @@ node gsd-tools.cjs roadmap upgrade --convention milestone-prefixed --apply  # ap
 
 ## State Management Commands
 
+### `validate agents`
+
+Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture.
+
+**Prerequisites:** GSD installed for a runtime
+**Produces:** Installed / missing / incomplete agent lists, plus a `codex_posture` report
+
+```bash
+node gsd-tools.cjs validate agents
+```
+
+`codex_posture` is populated only when the active runtime is `codex`; on every other runtime it reports `not_codex` and reads nothing from disk. It is **read-only** — it reports violations and never edits your files.
+
+| Violation reason | Meaning |
+|---|---|
+| `anthropic_flavored_model` | The `.toml` pins a GSD tier alias (`opus`, `sonnet`, `haiku`, `fable`) or a `claude-*` id. Codex rejects these — the agent fails to spawn with a 400 |
+| `orphaned_reasoning_effort` | A `model_reasoning_effort` with no `model`, leaving the model following your Codex session while the effort follows GSD ([#838](https://github.com/open-gsd/gsd-core/issues/838)) |
+| `unreadable` | The file could not be read. Other agents are still checked |
+
+Presence and posture are separate verdicts: a missing agent is reported in `missing`, not as a posture violation. See [ADR-2313](adr/2313-codex-passive-model-posture.md) for the posture itself, and [How to recover and troubleshoot](how-to/recover-and-troubleshoot.md#if-codex-agents-fail-to-spawn-with-a-400-about-an-unsupported-model) for the symptom-led walkthrough.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
