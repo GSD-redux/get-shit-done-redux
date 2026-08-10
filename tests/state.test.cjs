@@ -10455,6 +10455,13 @@ describe('cmdStateSync nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, `1-SUMMARY-${pad}-t.md`), '# Summary\n');
       }
     }
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing *-VERIFICATION.md
+    // is what makes a phase complete now, not plan/summary counts alone. Phase
+    // 01-alpha is the one this test intends to be "complete" (fully planned and
+    // summarized), so give it a passing verification too — otherwise completed
+    // phases = 0 and no Progress change is emitted, which isn't what this test
+    // (nested plans/ summing correctly) is about.
+    writePassedVerification(tmpDir, '01-alpha', '01');
 
     const stateContent = [
       '# Project State',
