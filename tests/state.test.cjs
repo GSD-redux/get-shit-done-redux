@@ -2054,6 +2054,11 @@ describe('milestone-scoped phase counting in frontmatter', () => {
       // Add a plan to each
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan');
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a plan+summary count no
+      // longer implies "complete" — only a passing *-VERIFICATION.md does. Both
+      // milestone phases (5 and 6) get one so this test still exercises milestone
+      // SCOPING, not the (now-separate) completion predicate.
+      if (i === 5 || i === 6) writePassedVerification(tmpDir, `${padded}-phase-${i}`, padded);
     }
 
     // Write a STATE.md and trigger a write that will sync frontmatter
@@ -2071,7 +2076,7 @@ describe('milestone-scoped phase counting in frontmatter', () => {
 
     const output = JSON.parse(jsonResult.output);
     assert.strictEqual(Number(output.progress.total_phases), 2, 'should count only milestone phases (5 and 6), not all 6');
-    assert.strictEqual(Number(output.progress.completed_phases), 2, 'both milestone phases have summaries');
+    assert.strictEqual(Number(output.progress.completed_phases), 2, 'both milestone phases have a passing verification');
   });
 
   test('total_phases includes ROADMAP phases without directories', () => {
@@ -2097,6 +2102,10 @@ describe('milestone-scoped phase counting in frontmatter', () => {
       fs.mkdirSync(phaseDir, { recursive: true });
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan');
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): give each of the 4
+      // phases-with-directories a passing verification so this test still
+      // exercises ROADMAP-vs-disk SCOPING, not the completion predicate.
+      writePassedVerification(tmpDir, `${padded}-phase-${i}`, padded);
     }
 
     fs.writeFileSync(
@@ -2112,7 +2121,7 @@ describe('milestone-scoped phase counting in frontmatter', () => {
 
     const output = JSON.parse(jsonResult.output);
     assert.strictEqual(Number(output.progress.total_phases), 6, 'should count all 6 ROADMAP phases, not just 4 with directories');
-    assert.strictEqual(Number(output.progress.completed_phases), 4, 'only 4 phases have summaries');
+    assert.strictEqual(Number(output.progress.completed_phases), 4, 'only 4 phases have a passing verification');
   });
 
   test('without ROADMAP counts all phases (pass-all filter)', () => {
@@ -2339,6 +2348,12 @@ describe('progress counters correct after plan execution (#1589)', () => {
     fs.writeFileSync(path.join(phase02Dir, '02-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phase02Dir, '02-02-SUMMARY.md'), '# Summary\n');
 
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing *-VERIFICATION.md
+    // is what makes a phase complete now, not plan/summary parity — this test is
+    // about percent DERIVATION, so give both phases one.
+    writePassedVerification(tmpDir, '01-foundation', '01');
+    writePassedVerification(tmpDir, '02-api', '02');
+
     // Body Progress: still says 0% (stale — never updated by update-progress)
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
@@ -2415,6 +2430,14 @@ describe('progress counters correct after plan execution (#1589)', () => {
     fs.writeFileSync(path.join(phase04Dir, '04-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phase04Dir, '04-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phase04Dir, '04-02-SUMMARY.md'), '# Summary\n');
+
+    // Disk-strict completion (ADR-3180 §7.4, #3186): give all 4 phases a
+    // passing verification so this test still exercises the STALE-FRONTMATTER
+    // rebuild, not the (now-separate) completion predicate.
+    writePassedVerification(tmpDir, '01-phase', '01');
+    writePassedVerification(tmpDir, '02-phase', '02');
+    writePassedVerification(tmpDir, '03-phase', '03');
+    writePassedVerification(tmpDir, '04-phase', '04');
 
     // Write STATE.md with stale frontmatter matching the bug report exactly
     fs.writeFileSync(
@@ -9973,6 +9996,10 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, planFile), '# Plan\n');
         fs.writeFileSync(path.join(plansDir, summaryFile), '# Summary\n');
       }
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+      // *-VERIFICATION.md is what makes a phase complete, not plan/summary
+      // parity — this test is about nested plans/ COUNTING, not the predicate.
+      writePassedVerification(tmpDir, phaseSlug, `0${phase}`);
     }
 
     writeRoadmap(tmpDir, [1, 2]);
@@ -9987,7 +10014,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 6, 'total_plans must count nested plans/ files (2 phases × 3 plans)');
     assert.strictEqual(Number(progress.completed_plans), 6, 'completed_plans must count nested summary files (2 phases × 3 summaries)');
-    assert.strictEqual(Number(progress.completed_phases), 2, 'completed_phases: both phases have summaries >= plans');
+    assert.strictEqual(Number(progress.completed_phases), 2, 'completed_phases: both phases have a passing verification');
   });
 
   test('counts PLAN-NN-slug form (bare PLAN- prefix, no phase prefix)', () => {
@@ -10025,6 +10052,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phaseDir, '01-02-SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes the phase complete now.
+    writePassedVerification(tmpDir, '01-init', '01');
 
     writeRoadmap(tmpDir, [1]);
     writeStateFile(tmpDir, { phase: '01' });
@@ -10038,7 +10068,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 2, 'flat layout: top-level *-PLAN.md files counted');
     assert.strictEqual(Number(progress.completed_plans), 2, 'flat layout: top-level *-SUMMARY.md files counted');
-    assert.strictEqual(Number(progress.completed_phases), 1, 'flat layout: phase complete when summaries >= plans');
+    assert.strictEqual(Number(progress.completed_phases), 1, 'flat layout: phase complete with a passing verification');
   });
 
   test('no double-count when both top-level and nested plan files coexist', () => {
@@ -10081,6 +10111,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     // One top-level plan
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes the phase complete now.
+    writePassedVerification(tmpDir, '01-init', '01');
 
     writeRoadmap(tmpDir, [1]);
     writeStateFile(tmpDir, { phase: '01' });
@@ -10094,7 +10127,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 1, 'empty plans/ must not add phantom plan count');
     assert.strictEqual(Number(progress.completed_plans), 1, 'empty plans/ must not affect summary count');
-    assert.strictEqual(Number(progress.completed_phases), 1, 'phase complete: 1 summary >= 1 plan');
+    assert.strictEqual(Number(progress.completed_phases), 1, 'phase complete with a passing verification');
   });
 
   test('PLAN-OUTLINE.md files are excluded from nested plan count', () => {
@@ -10168,6 +10201,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, `${num}-PLAN-${pad}-task${p}.md`), '# Plan\n');
         fs.writeFileSync(path.join(plansDir, `${num}-SUMMARY-${pad}-task${p}.md`), '# Summary\n');
       }
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      writePassedVerification(tmpDir, `0${num}-phase-${num}`, `0${num}`);
     }
 
     writeRoadmap(tmpDir, [1, 2]);
@@ -10182,7 +10218,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 7, 'reporter scenario: total_plans must be 7');
     assert.strictEqual(Number(progress.completed_plans), 7, 'reporter scenario: completed_plans must be 7');
-    assert.strictEqual(Number(progress.completed_phases), 2, 'reporter scenario: both phases complete');
+    assert.strictEqual(Number(progress.completed_phases), 2, 'reporter scenario: both phases have a passing verification');
     assert.strictEqual(Number(progress.percent), 100, 'reporter scenario: 100% when all plans have summaries');
   });
 });
@@ -10692,6 +10728,10 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
     fs.mkdirSync(phase2);
     fs.writeFileSync(path.join(phase2, '02-1-PLAN.md'), '---\nphase: 2\nplan: 1\n---\n# Plan\n');
     fs.writeFileSync(path.join(phase2, '02-1-SUMMARY.md'), '---\nstatus: complete\n---\n# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes a phase complete now — this test is about CACHE
+    // invalidation, not the completion predicate, so give phase 2 one.
+    fs.writeFileSync(path.join(phase2, '02-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
 
     // Second write in the SAME process — must see the new phase
     const content2 = fs.readFileSync(statePath, 'utf-8');
@@ -11551,9 +11591,12 @@ describe('bug #1446 — state sync writes corrected (lower) total_phases', () =>
       const dir = path.join(planning, 'phases', d);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
-      // Mark 01 and 02 as complete (2 summaries)
+      // Mark 01 and 02 as complete: disk-strict completion (ADR-3180 §7.4,
+      // #3186) requires a passing *-VERIFICATION.md, not just a summary — a
+      // summary alone no longer implies completion.
       if (d !== '03-gamma') {
         fs.writeFileSync(path.join(dir, 'PLAN-SUMMARY.md'), '# Summary\n', 'utf-8');
+        fs.writeFileSync(path.join(dir, `${d.slice(0, 2)}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
       }
     }
   });
@@ -11576,10 +11619,14 @@ describe('bug #1446 — state sync writes corrected (lower) total_phases', () =>
       3,
       `total_phases must be corrected to 3 (derived), not kept at 10 (stale). Got ${state.progress.total_phases}`,
     );
-    // completed_phases ratchet still works: existing 2 ≥ disk-derived → keep 2
-    assert.ok(
-      state.progress.completed_phases >= 2,
-      `completed_phases must be at least 2 (ratchet). Got ${state.progress.completed_phases}`,
+    // Disk-strict (ADR-3180 §7.4, #3186): completed_phases is recomputed from
+    // disk on every sync (resync=true bypasses the curated-progress ratchet),
+    // so it must equal the number of phases with a passing *-VERIFICATION.md
+    // (01 and 02), not a preserved/ratcheted stale frontmatter value.
+    assert.equal(
+      state.progress.completed_phases,
+      2,
+      `completed_phases must be 2 (01 and 02 have a passing verification). Got ${state.progress.completed_phases}`,
     );
   });
 });
@@ -11663,6 +11710,11 @@ function seedProject(prefix, roadmap, completeDirs) {
     if (completeDirs.includes(d)) {
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+      // *-VERIFICATION.md is what makes a phase complete now, not a summary
+      // alone — this suite is about RETIRED-phase exclusion, not the
+      // completion predicate itself.
+      fs.writeFileSync(path.join(dir, `${d}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
   }
   return tmpDir;
@@ -11800,6 +11852,9 @@ function seedFromSpecs(prefix, specs) {
     if (s.shipped) {
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      fs.writeFileSync(path.join(dir, `${s.dir}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
   }
   return tmpDir;
@@ -11889,6 +11944,9 @@ describe('bug #1514 — retired exclusion across phase shapes', () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      fs.writeFileSync(path.join(dir, `${d}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
     tmpDir = tmp;
     const result = runGsdTools(['state', 'json'], tmpDir);

@@ -59,7 +59,18 @@ function writeRoadmap(tmpDir, phases) {
     const mark = p.complete ? 'x' : ' ';
     return `- [${mark}] **Phase ${p.number}: ${p.name}**`;
   }).join('\n');
-  const content = `# Roadmap\n\n## Progress\n\n${checklist}\n\n${sections}`;
+  // A real Progress TABLE (gsd-core/templates/roadmap.md shape), not just the
+  // checklist — cmdRoadmapUpdatePlanProgress writes into this table via the
+  // markdown-table seam (editProgressTableSlice/updateTableCell), which no-ops
+  // when no table with these columns exists. G2 (#3186) needs a real table to
+  // observe the "Plans Complete / Status cells still update, only the
+  // completion checkbox is withheld" behavior.
+  const table = [
+    '| Phase | Plans Complete | Status | Completed |',
+    '|-------|-----------------|--------|-----------|',
+    ...phases.map((p) => `| ${p.number}. ${p.name} | 0/0 | Not started | - |`),
+  ].join('\n');
+  const content = `# Roadmap\n\n## Progress\n\n${checklist}\n\n${table}\n\n${sections}`;
   fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), content);
 }
 
@@ -235,7 +246,11 @@ describe('B — disk-strict: ROADMAP checkbox carries no machine authority', () 
       const result = runGsdTools('roadmap analyze --raw', tmpDir);
       assert.ok(result.success, result.error);
       const analyzed = JSON.parse(result.output);
-      assert.strictEqual(analyzed.phases[0].disk_status, 'partial');
+      // 2 plans, 0 summaries -> 'planned' (disk_status's own taxonomy: no
+      // summaries yet means "planned", not "partial" — 'partial' requires
+      // summaryCount > 0). The load-bearing assertion for the Tier-2 break is
+      // the notStrictEqual below: the checkbox alone must not read 'complete'.
+      assert.strictEqual(analyzed.phases[0].disk_status, 'planned');
       assert.notStrictEqual(analyzed.phases[0].disk_status, 'complete');
     } finally {
       cleanup(tmpDir);

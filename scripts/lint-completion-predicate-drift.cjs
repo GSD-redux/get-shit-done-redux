@@ -29,7 +29,10 @@
  * markdown (`gsd-core/workflows`, `commands`, `agents`, `skills`) — see the
  * "PROMPT-LAYER PROSE DETECTION" section below.
  *
- * THREE INDEPENDENT SHAPES are detected, matching issue #3186's dispatch:
+ * FOUR INDEPENDENT SHAPES are detected, matching issue #3186's dispatch (shape
+ * (d) added by the Phase 4 follow-up that closed the `cmdStateSync` /
+ * `src/state.cts` gap the remote matrix exposed — see shape (d)'s own header
+ * below):
  *
  *   (a) CHECKBOX-DERIVED COMPLETION — a ROADMAP `- [x] Phase N` tick treated
  *       as completion evidence. Categorically wrong under disk-strict
@@ -77,6 +80,45 @@
  *       `cmdRoadmapAnalyze`, `cmdRoadmapUpdatePlanProgress`, and
  *       `buildWorkstreamInventory` all independently hand-roll this exact
  *       comparison.
+ *   (d) A BARE FIELD READ OF `scanPhasePlans(...).completed` OUTSIDE THE
+ *       OWNER (`src/plan-scan.cts`) — the shape the remote matrix exposed:
+ *       `cmdStateSync` (`src/state.cts`, now fixed) destructured
+ *       `scanPhasePlans(dirPath).completed` directly and used it AS a
+ *       completion verdict, with no comparison for shapes (a)/(b)/(c) to
+ *       catch — a bare property read is not a re-derivation shape any of the
+ *       other three detectors match. `scanPhasePlans` legitimately EXPOSES
+ *       `.completed` (it is Phase 1's own owner for "are all plans
+ *       summarized?", a real and distinct question from "is the phase
+ *       complete?"), so reading the field is not inherently wrong — USING it
+ *       as a completion verdict is. That distinction is DATA-FLOW (what the
+ *       caller does with the value), which no textual guard can decide.
+ *       KNOWN, DISCLOSED, HONEST LIMIT: this detector cannot tell a
+ *       legitimate "are summaries caught up with plans" read from an illegal
+ *       "is the phase complete" read — it flags EVERY read of `.completed`
+ *       off a `scanPhasePlans(` result outside `src/plan-scan.cts` and
+ *       relies on `FUNCTION_SCOPED_EXEMPTIONS` carrying a WRITTEN REASON per
+ *       exempted function (see that map's own comment for each current
+ *       entry's reasoning) rather than silently deciding the question for
+ *       itself. Detected in three independent textual forms, ALL
+ *       function-scoped (Decision 4(a), no line window — see below):
+ *         - the direct chained form, `scanPhasePlans(...).completed`, on one
+ *           statement — the call's own argument list is walked with a plain
+ *           paren-depth counter (not a `[^)]*` regex), so a nested-paren
+ *           argument (`scanPhasePlans(path.join(phasesDir, dir))`, the
+ *           majority real shape in this tree) is still matched correctly;
+ *         - the destructured form, `const { completed } = scanPhasePlans(…)`
+ *           or the renamed-alias form `const { completed: isDone } =
+ *           scanPhasePlans(…)`, on one statement;
+ *         - the INDIRECT form — `const scan = scanPhasePlans(…)` binding the
+ *           whole result to a variable, with `.completed` read off that same
+ *           variable ANYWHERE else in the SAME named function, including on a
+ *           different line — no bounded window (the same Phase-5 "bounded
+ *           window missed 7 of 14 copies" lesson shape (b) already learned;
+ *           `cmdStateSync`'s own real shape bound the result to a
+ *           destructured `{ planCount: plans, summaryCount: summaries }`
+ *           rather than a whole-object variable, so this indirect form is
+ *           precautionary breadth for a shape not yet observed in this tree,
+ *           not a shape already caught in the wild).
  *
  * DETECTION IS FUNCTION-SCOPED, NOT A BOUNDED LINE-WINDOW, for the
  * *discovery* co-occurrence in each shape (shape (a)'s if/assignment pairing
@@ -546,12 +588,142 @@ function findLocalCompletionCountDerivationDrift(text, relPath, exemptFunctions)
   return out;
 }
 
+// ─── SHAPE (d): scanPhasePlans(...).completed READ AS A COMPLETION VERDICT ─
+//
+// See the module header's shape (d) entry for the full rationale and the
+// three textual forms detected below. `FUNCTION_SCOPED_EXEMPTIONS` is
+// SHARED with shapes (a)/(b)/(c) — the same per-file, per-function map, so a
+// function already exempted for one shape (e.g. `scanPhasePlans` itself,
+// which legitimately builds the `completed` field it returns) is exempted
+// for shape (d) too, and a function newly exempted for shape (d) must carry
+// its own written reason in that map's comment exactly like the others.
+const SCAN_CALL_TOKEN = 'scanPhasePlans(';
+const DOT_COMPLETED_RE = /^\.completed\b/;
+const SCAN_ASSIGN_VAR_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*scanPhasePlans\(/;
+// Bounded: `[^{}]*` is a single, non-nested, non-overlapping quantifier — no
+// backtracking blow-up regardless of destructure-pattern length. Real
+// destructuring assignments in this tree are single-line (the same
+// assumption `SCAN_ASSIGN_VAR_RE` and every sibling shape's regexes make).
+const DESTRUCTURE_ASSIGN_RE = /\{([^{}]*)\}\s*=\s*scanPhasePlans\(/;
+const COMPLETED_KEY_RE = /\bcompleted\b/;
+
+function isWordChar(ch) {
+  return !!ch && /[A-Za-z0-9_$]/.test(ch);
+}
+
+// Plain paren-depth counter over a SINGLE line (not a regex — nothing for a
+// backtracking engine to explore), so a nested-paren call argument (e.g.
+// `scanPhasePlans(path.join(phasesDir, dir))`, the majority real shape in
+// this tree) still resolves to the call's own true closing `)`. Confined to
+// one line: every real `scanPhasePlans(` call site in this tree closes on
+// the line it opens on (the same assumption the rest of this file's
+// detectors make about this specific call).
+function findCallEndOnLine(line, afterOpenParenIdx) {
+  let depth = 1;
+  for (let i = afterOpenParenIdx; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+function findScanPhasePlansCompletedReadDrift(text, relPath, exemptFunctions) {
+  const out = [];
+  const lines = text.split('\n');
+  const { innermostAt, detect } = buildFunctionInfo(lines);
+  const isExemptAt = (i) => {
+    const fn = innermostAt[i];
+    return !!(fn && exemptFunctions && exemptFunctions.has(fn));
+  };
+
+  // fnKey: the innermost function name at the ASSIGNMENT site, or this
+  // sentinel for module-scope assignments (never collides with a real
+  // identifier — function names cannot start with U+0000).
+  const FN_KEY_MODULE = ' module';
+  const varsByFn = new Map(); // fnKey -> Set<varName> bound directly (non-destructured) to a scanPhasePlans( result
+
+  for (let i = 0; i < lines.length; i++) {
+    const detectCode = detect[i];
+    if (!detectCode.trim()) continue;
+
+    // Direct chained form: scanPhasePlans(...).completed — every occurrence
+    // on the line, paren-matched (not a naive `[^)]*`, which would stop at
+    // the FIRST `)`, i.e. the inner `path.join(...)`'s own closing paren).
+    let searchFrom = 0;
+    for (;;) {
+      const idx = detectCode.indexOf(SCAN_CALL_TOKEN, searchFrom);
+      if (idx === -1) break;
+      if (isWordChar(detectCode[idx - 1])) {
+        searchFrom = idx + 1;
+        continue;
+      }
+      const callEnd = findCallEndOnLine(detectCode, idx + SCAN_CALL_TOKEN.length);
+      if (callEnd === -1) {
+        searchFrom = idx + 1;
+        continue;
+      }
+      if (DOT_COMPLETED_RE.test(detectCode.slice(callEnd)) && !isExemptAt(i)) {
+        out.push({ line: i + 1, found: lines[i].trim().slice(0, MAX_REGEX_LITERAL_LEN), shape: 'd', fn: innermostAt[i] || null });
+      }
+      searchFrom = callEnd;
+    }
+
+    // Destructured form: const { completed[, ...] } = scanPhasePlans(...)
+    // (bare key or a `completed: alias` rename).
+    const destructureMatch = DESTRUCTURE_ASSIGN_RE.exec(detectCode);
+    if (destructureMatch && COMPLETED_KEY_RE.test(destructureMatch[1]) && !isExemptAt(i)) {
+      out.push({ line: i + 1, found: lines[i].trim().slice(0, MAX_REGEX_LITERAL_LEN), shape: 'd', fn: innermostAt[i] || null });
+    }
+
+    // Indirect form, pass 1: const NAME = scanPhasePlans(...) — record the
+    // binding; the read (possibly on a LATER line) is matched in pass 2
+    // below, function-scoped with no line window.
+    const assignMatch = SCAN_ASSIGN_VAR_RE.exec(detectCode);
+    if (assignMatch) {
+      const fnKey = innermostAt[i] || FN_KEY_MODULE;
+      if (!varsByFn.has(fnKey)) varsByFn.set(fnKey, new Set());
+      varsByFn.get(fnKey).add(assignMatch[1]);
+    }
+  }
+
+  // Indirect form, pass 2: NAME.completed anywhere in the SAME function that
+  // bound NAME to a scanPhasePlans( result — Decision 4(a)'s Goodhart
+  // lesson again: no bounded distance between the binding and the read.
+  for (const [fnKey, varNames] of varsByFn) {
+    if (fnKey !== FN_KEY_MODULE && exemptFunctions && exemptFunctions.has(fnKey)) continue;
+    for (const varName of varNames) {
+      const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const readRe = new RegExp(`\\b${escaped}\\.completed\\b`);
+      for (let i = 0; i < lines.length; i++) {
+        const fnHere = innermostAt[i] || FN_KEY_MODULE;
+        if (fnHere !== fnKey) continue;
+        if (!detect[i].trim()) continue;
+        if (readRe.test(detect[i])) {
+          out.push({
+            line: i + 1,
+            found: lines[i].trim().slice(0, MAX_REGEX_LITERAL_LEN),
+            shape: 'd',
+            fn: fnKey === FN_KEY_MODULE ? null : fnKey,
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 function findCompletionPredicateDrift(text, relPath) {
   const exemptFunctions = FUNCTION_SCOPED_EXEMPTIONS.get(relPath) || null;
   return [
     ...findChecklistOverrideDrift(text, relPath, exemptFunctions),
     ...findGatedVerificationReadDrift(text, relPath, exemptFunctions),
     ...findLocalCompletionCountDerivationDrift(text, relPath, exemptFunctions),
+    ...findScanPhasePlansCompletedReadDrift(text, relPath, exemptFunctions),
   ].sort((x, y) => x.line - y.line);
 }
 
@@ -656,6 +828,26 @@ const OWNER_FILE = path.join('src', 'verification.cts');
 //     doc's own DO-NOT-MIGRATE list (which named only `scanPhasePlans` and
 //     `buildWorkstreamInventory`) — flagged for orchestrator review rather
 //     than silently exempted.
+//
+// SHAPE (d) reuses this exact map (`findScanPhasePlansCompletedReadDrift`
+// takes the same `exemptFunctions` set every other shape's finder does). The
+// four entries above were entered for shapes (a)/(b)/(c); of them, only
+// `scanPhasePlans` (src/plan-scan.cts) also legitimately reads its OWN
+// `completed` field for shape (d)'s purposes (building the return value it
+// itself defines — not a call-then-read of another `scanPhasePlans(`
+// invocation). `isPhaseComplete`, `buildWorkstreamInventory`, and
+// `buildPhaseCompletionProjection` do not read `.completed` off a
+// `scanPhasePlans(` call result at all (verified by direct inspection of
+// each function's body as of this guard's shape-(d) addition — they consume
+// `planCount`/`summaryCount`/`summaryFiles`, never `.completed`), so their
+// presence in this map exempts nothing NEW for shape (d); they are listed
+// here only because the map is shared. As of this addition, a whole-repo
+// scan found ZERO live shape-(d) sites needing a fresh exemption entry — the
+// one real instance this shape exists to catch (`cmdStateSync`,
+// src/state.cts) was fixed by routing through `isPhaseComplete` rather than
+// being exempted, which is the outcome ADR-3180 §7.4 requires. If a future
+// change legitimately needs a NEW shape-(d) exemption, add it here with its
+// own written reason — do not silently extend an existing entry's Set.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [OWNER_FILE, new Set(['isPhaseComplete'])],
   [path.join('src', 'plan-scan.cts'), new Set(['scanPhasePlans'])],
@@ -701,6 +893,7 @@ module.exports = {
   findChecklistOverrideDrift,
   findGatedVerificationReadDrift,
   findLocalCompletionCountDerivationDrift,
+  findScanPhasePlansCompletedReadDrift,
   findPromptCompletionDrift,
   buildFunctionInfo,
   findIfCountGateBlockLines,
@@ -720,6 +913,12 @@ module.exports = {
   PLAN_LE_SUMMARY_RE,
   SUMMARY_MINUS_PLAN_GE_ZERO_RE,
   PLAN_MINUS_SUMMARY_LE_ZERO_RE,
+  SCAN_CALL_TOKEN,
+  DOT_COMPLETED_RE,
+  SCAN_ASSIGN_VAR_RE,
+  DESTRUCTURE_ASSIGN_RE,
+  COMPLETED_KEY_RE,
+  findCallEndOnLine,
   PROMPT_ROADMAP_COMPLETE_ASSIGN_RE,
   PROMPT_TRUE_TEST_RE,
   PROMPT_OVERRIDE_WINDOW_LINES,

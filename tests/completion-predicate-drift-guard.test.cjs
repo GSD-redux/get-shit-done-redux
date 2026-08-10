@@ -462,6 +462,143 @@ describe('E11 — finding 4(b): the algebraic-restatement evasion of shape (c) i
 });
 
 // ═════════════════════════════════════════════════════════════════════════
+// E12 — shape (d): a bare `.completed` read off a `scanPhasePlans(` result,
+// used as a completion verdict outside the owner (src/plan-scan.cts). The
+// #3186 remote-matrix finding: cmdStateSync (src/state.cts, now fixed)
+// destructured `scanPhasePlans(dirPath).completed` directly with no
+// comparison for shapes (a)/(b)/(c) to catch.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('E12 — shape (d): scanPhasePlans(...).completed read as a completion verdict', () => {
+  test('direct chained form: scanPhasePlans(dir).completed is flagged', () => {
+    const text = [
+      'function cmdSomeVerb(dirPath) {',
+      '  return scanPhasePlans(dirPath).completed;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+    assert.strictEqual(out[0].fn, 'cmdSomeVerb');
+  });
+
+  test('direct chained form with a nested-paren call argument is still flagged (path.join(...) inside the call)', () => {
+    // A naive `[^)]*` regex would stop at path.join(...)'s OWN closing paren
+    // and miss the `.completed` that follows the call's TRUE closing paren —
+    // the real shape most scanPhasePlans( call sites in this tree use.
+    const text = [
+      'function cmdSomeVerb(phasesDir, dir) {',
+      '  return scanPhasePlans(path.join(phasesDir, dir)).completed;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+  });
+
+  test('destructured form: const { completed } = scanPhasePlans(dirPath) is flagged (the exact #3186 cmdStateSync shape)', () => {
+    const text = [
+      'function cmdStateSyncLike(dirPath) {',
+      '  const { completed } = scanPhasePlans(dirPath);',
+      '  return completed;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+    assert.strictEqual(out[0].fn, 'cmdStateSyncLike');
+  });
+
+  test('destructured renamed-alias form: const { completed: isDone } = scanPhasePlans(dirPath) is flagged', () => {
+    const text = [
+      'function cmdSomeVerb(dirPath) {',
+      '  const { completed: isDone } = scanPhasePlans(dirPath);',
+      '  return isDone;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+  });
+
+  test('indirect form: the call and the .completed read sit on DIFFERENT lines in the SAME function — flagged, proving no line window', () => {
+    const text = [
+      'function cmdSomeVerb(dirPath) {',
+      '  const scan = scanPhasePlans(dirPath);',
+      '  const summaryCount = scan.summaryFiles.length;',
+      '  const planCount = scan.planFiles.length;',
+      '  // several unrelated lines of bookkeeping in between',
+      '  const x = summaryCount + planCount;',
+      '  const y = x * 2;',
+      '  return scan.completed;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+    assert.strictEqual(out[0].line, 8);
+  });
+
+  test('a `.completed` read inside src/plan-scan.cts itself (the owner, exempt function) is NOT flagged', () => {
+    const text = [
+      'function scanPhasePlans(phaseDir) {',
+      '  const inner = scanPhasePlans(phaseDir);',
+      '  return { completed: inner.completed, extra: true };',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(drift.findCompletionPredicateDrift(text, path.join('src', 'plan-scan.cts')), []);
+  });
+
+  test('an exempted function is not flagged, but a DIFFERENT function in the SAME file still is (function-scoped, never whole-file)', () => {
+    // OWNER_RELPATH (src/verification.cts) has `isPhaseComplete` exempt in
+    // FUNCTION_SCOPED_EXEMPTIONS — reused here to prove shape (d) shares that
+    // same per-function map rather than a whole-file allowlist.
+    const text = [
+      'function isPhaseComplete(phaseDir) {',
+      '  const scan = scanPhasePlans(phaseDir);',
+      '  return scan.completed;',
+      '}',
+      '',
+      'function cmdSomeNewVerb(phaseDir) {',
+      '  return scanPhasePlans(phaseDir).completed;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, OWNER_RELPATH);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'd');
+    assert.strictEqual(out[0].fn, 'cmdSomeNewVerb');
+  });
+
+  test('an unrelated .completed property on a non-scanPhasePlans object is NOT flagged', () => {
+    const text = [
+      'function cmdSomeVerb(job) {',
+      '  const result = someOtherFunction(job);',
+      '  return result.completed;',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts')), []);
+  });
+
+  test('scanRepo against the real repo tree is capable of finding a deliberate shape (d) fixture (not silently swallowed)', (t) => {
+    const root = createTempDir('gsd-completion-predicate-drift-');
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'src', 'fake-shape-d.cts'),
+      [
+        'function cmdSomeVerb(dirPath) {',
+        '  const { completed } = scanPhasePlans(dirPath);',
+        '  return completed;',
+        '}',
+      ].join('\n'),
+    );
+    const violations = drift.scanRepo(root);
+    assert.strictEqual(violations.length, 1);
+    assert.strictEqual(violations[0].shape, 'd');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
 // D3 — the 0.x-split over-consolidation guard: plan-scan.cts does NOT
 // import verification.cts (the owner consumes plan counts, never the
 // reverse — ADR-3180 §7.4 HARD CONSTRAINT).
