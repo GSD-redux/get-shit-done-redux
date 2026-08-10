@@ -58,19 +58,70 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 
 const OVERLAY_SKIP_TOP = new Set(['node_modules', '.git']);
 
+/**
+ * True when `err` reports that a path was not there.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isMissingPath(err) {
+  return Boolean(err) && typeof err === 'object' && err.code === 'ENOENT';
+}
+
+/**
+ * Run `attempt` against a source path that another process may be replacing
+ * underneath the walk, and report whether the leaf was actually placed.
+ *
+ * `buildOverlayRepo` enumerates names with `readdirSync` and then acts on them,
+ * which is a TOCTOU window. It is not theoretical: `hooks/dist` is regenerated
+ * by an ATOMIC REPLACE (`scripts/build-hooks.js` unlinks and renames), so any
+ * concurrently running test that rebuilds hooks makes a just-listed name vanish
+ * mid-walk. That took down three runs on three different branches with a bare
+ * `ENOENT ... link '/work/hooks/dist/...'`.
+ *
+ * On ENOENT the source is re-examined ONCE rather than slept on: an atomic
+ * rename is a single syscall, so by the time the failure surfaces the successor
+ * is either already in place (retry succeeds) or the path is genuinely gone from
+ * the tree (nothing to mirror, so the leaf is skipped). No sleep, no spin — a
+ * timing-based wait here would be the flake this is fixing, not a fix for it.
+ *
+ * Returns false only when the path left the source tree entirely; the overlay
+ * mirrors the tree, and a file that is no longer in it is not part of the
+ * snapshot. Every other error propagates untouched.
+ *
+ * @param {string} srcPath
+ * @param {() => void} attempt
+ * @returns {boolean} whether the leaf was placed
+ */
+function placeVanishableLeaf(srcPath, attempt) {
+  try {
+    attempt();
+    return true;
+  } catch (err) {
+    if (!isMissingPath(err)) throw err;
+    if (!fs.existsSync(srcPath)) return false;
+    attempt();
+    return true;
+  }
+}
+
 /** Hard-link a file, falling back to a real copy only if the two paths sit on
  *  different filesystems/devices (EXDEV) or linking is denied (EPERM) — both
- *  cross-platform-legitimate, unlike a symlink's Dirent type-detection gap. */
+ *  cross-platform-legitimate, unlike a symlink's Dirent type-detection gap.
+ *  Returns whether the leaf was placed; false means the source vanished
+ *  mid-walk (see `placeVanishableLeaf`). */
 function linkOrCopyFile(src, dest) {
-  try {
-    fs.linkSync(src, dest);
-  } catch (err) {
-    if (err.code === 'EXDEV' || err.code === 'EPERM') {
-      fs.copyFileSync(src, dest);
-    } else {
-      throw err;
+  return placeVanishableLeaf(src, () => {
+    try {
+      fs.linkSync(src, dest);
+    } catch (err) {
+      if (err.code === 'EXDEV' || err.code === 'EPERM') {
+        fs.copyFileSync(src, dest);
+      } else {
+        throw err;
+      }
     }
-  }
+  });
 }
 
 /**
@@ -120,13 +171,24 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
       // fs.statSync follows symlinks (unlike Dirent.isDirectory()), so a
       // symlinked source directory is still recursed as a REAL directory in
       // the overlay — the property copyWithPathReplacement itself needs.
-      if (fs.statSync(srcPath).isDirectory()) {
+      //
+      // The stat sits in the same TOCTOU window as the copy/link below: the
+      // name came from readdirSync, and an atomic replace elsewhere in the tree
+      // can retire it before we get here.
+      let srcStat;
+      try {
+        srcStat = fs.statSync(srcPath);
+      } catch (err) {
+        if (isMissingPath(err)) continue;
+        throw err;
+      }
+      if (srcStat.isDirectory()) {
         place(srcPath, destPath, overridden || [], false);
       } else if (mode === 'copy') {
         // Real independent inode — a write through this path in the overlay
         // can never alias back to REPO_ROOT's own tracked file (see
         // opts.mode doc above).
-        fs.copyFileSync(srcPath, destPath);
+        placeVanishableLeaf(srcPath, () => fs.copyFileSync(srcPath, destPath));
       } else {
         linkOrCopyFile(srcPath, destPath);
       }
@@ -137,4 +199,4 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
   return tmpRepo;
 }
 
-module.exports = { buildOverlayRepo, linkOrCopyFile, REPO_ROOT, OVERLAY_SKIP_TOP };
+module.exports = { buildOverlayRepo, linkOrCopyFile, placeVanishableLeaf, isMissingPath, REPO_ROOT, OVERLAY_SKIP_TOP };
