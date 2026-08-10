@@ -56,9 +56,10 @@
         "runtime-artifact-layout-descriptor-drive.test.cjs",
         "runtime-artifact-layout-install-profiles.test.cjs",
         "runtime-artifact-layout-surface.test.cjs",
+        "runtime-artifact-layout-trigger-surface.test.cjs",
         "runtime-artifact-layout.test.cjs"
       ],
-      "issue": "TBD"
+      "issue": "2871"
     },
     "security": {
       "files": [

@@ -42,6 +42,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "shell-var",
     "hooksSurface": "codex-hooks-json",
     "hookEvents": "claude",

@@ -745,6 +745,23 @@ const VALID_EXTENSION_EVENTS = new Set(['opencode', 'pi', 'hermes', 'kilo', 'non
 const VALID_SANDBOX_TIERS = new Set(['none', 'codex-agent-sandbox']);
 const VALID_ARTIFACT_KIND_NAMES = new Set(['commands', 'agents', 'skills', 'kimi-agents']);
 const VALID_ARTIFACT_NESTINGS = new Set(['flat', 'nested']);
+// #2871 Phase 2 — only `commands` and `skills` are trigger-bearing (a `/gsd-<name>`
+// the USER types). `agents` and `kimi-agents` are a separate dispatch interface
+// point (subagent invocation via `subagent_type`/named dispatch), never a trigger —
+// see 40-design.md's "agents are not trigger-bearing" correction. A narrower set
+// than VALID_ARTIFACT_KIND_NAMES on purpose: an artifact KIND can be agents; a
+// trigger-precedence MEMBER never can.
+const VALID_TRIGGER_PRECEDENCE_KINDS = new Set(['commands', 'skills']);
+// The default runtime.triggerPrecedence (highest priority first) applied when a
+// descriptor omits the axis (see validateRuntimeBody's required-with-default
+// handling below). Not invented: `['skills', 'commands']` is the ordering every
+// in-tree runtime that emits both kinds (from the same trigger stems) wants —
+// claude's local/global collision and the same-scope collision (codebuddy, kilo,
+// opencode, zcode) all resolve to skills winning. claude's shipped descriptor
+// declares this SAME value explicitly, and
+// tests/runtime-artifact-layout-trigger-surface.test.cjs asserts the two agree
+// (a parity assertion — two surfaces reading one rule must not silently drift).
+const DEFAULT_TRIGGER_PRECEDENCE = Object.freeze(['skills', 'commands']);
 const FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey'];
 // 'none' added #2103 — Marketplace/VSIX-distributed hosts (e.g. VS Code) that
 // are never CLI-installed (no allRuntimes membership, no install flag).
@@ -1554,6 +1571,45 @@ function validateRuntimeBody(cap) {
         r.extendedHookEvents.filter((ev) => CLAUDE_FAMILY_EVENTS.has(ev)).join(', ') +
         ') but runtime.hookEvents is "' + r.hookEvents + '" — must be "claude"',
       );
+    }
+  }
+
+  // triggerPrecedence — #2871 Phase 2 amendment to ADR-1016's runtime body.
+  // REQUIRED-WITH-DEFAULT: no other axis in this validator uses this shape —
+  // every axis above either hard-requires the field (throws when absent) or
+  // treats absence as fully unconstrained (effortSurface/isolation: "nothing to
+  // validate" when undefined). This axis does neither: an ABSENT value is
+  // substituted with DEFAULT_TRIGGER_PRECEDENCE and then validated exactly as
+  // if it HAD been supplied, so a third-party capability.json authored before
+  // this phase keeps validating (ADR-894 additive-only / Hyrum's Law, ADR-1244)
+  // while a PRESENT-but-malformed value still fails loudly instead of silently
+  // passing through unchecked.
+  const triggerPrecedenceValue = Object.prototype.hasOwnProperty.call(r, 'triggerPrecedence')
+    ? r.triggerPrecedence
+    : DEFAULT_TRIGGER_PRECEDENCE;
+  if (!Array.isArray(triggerPrecedenceValue)) {
+    errors.push(
+      'runtime.triggerPrecedence must be an array of trigger-bearing kind names (' +
+      [...VALID_TRIGGER_PRECEDENCE_KINDS].join(', ') + ') (got: ' + JSON.stringify(triggerPrecedenceValue) + ')',
+    );
+  } else if (triggerPrecedenceValue.length === 0) {
+    errors.push('runtime.triggerPrecedence must not be empty');
+  } else {
+    const seenKinds = new Set();
+    for (let i = 0; i < triggerPrecedenceValue.length; i++) {
+      const k = triggerPrecedenceValue[i];
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+        errors.push('runtime.triggerPrecedence[' + i + '] "' + k + '" is a reserved name');
+      } else if (typeof k !== 'string' || !VALID_TRIGGER_PRECEDENCE_KINDS.has(k)) {
+        errors.push(
+          'runtime.triggerPrecedence[' + i + '] must be one of: ' + [...VALID_TRIGGER_PRECEDENCE_KINDS].join(', ') +
+          ' (got: ' + JSON.stringify(k) + ')',
+        );
+      } else if (seenKinds.has(k)) {
+        errors.push('runtime.triggerPrecedence contains a duplicate kind: ' + JSON.stringify(k));
+      } else {
+        seenKinds.add(k);
+      }
     }
   }
 
@@ -3438,6 +3494,8 @@ module.exports = {
   VALID_SANDBOX_TIERS,
   VALID_ARTIFACT_KIND_NAMES,
   VALID_ARTIFACT_NESTINGS,
+  VALID_TRIGGER_PRECEDENCE_KINDS,
+  DEFAULT_TRIGGER_PRECEDENCE,
   FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME,
   // ADR-2782 D1/D2/D3/D6/D7/D8 — reviewer lane body
   FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER,
