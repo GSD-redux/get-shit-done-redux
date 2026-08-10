@@ -34,7 +34,7 @@ const src = readFileSync('./bin/lib/plan.cjs', 'utf8');
 assert(src.includes('plan-1.1')); // never do this
 ```
 
-**Enforcement:** `local/no-source-grep` (ESLint, currently `warn`; becomes `error` after issue #453 merges).
+**Enforcement:** `local/no-source-grep` (ESLint, `error`; promoted repo-wide by #3313).
 
 ### 2. No vacuous-truth assertions
 
@@ -137,7 +137,7 @@ await doWork();
 assert(Date.now() - start < 200, 'must complete in 200ms');
 ```
 
-**Enforcement:** `local/no-elapsed-assertion` (ESLint, currently `warn`; becomes `error` after issue #453 merges). Also `no-restricted-syntax` ban on `performance.now()` comparisons in assertions.
+**Enforcement:** `local/no-elapsed-assertion` (ESLint, currently `warn`; promotion to `error` is sequenced behind #3314 — 10 of 19 clock-touching `src` modules have no sanctioned time-control mechanism until ADR-456 is amended there). Also `no-restricted-syntax` ban on `performance.now()` comparisons in assertions.
 
 ### Clock-seam pattern for concurrency
 
@@ -162,7 +162,7 @@ test('lock expires after TTL', (t) => {
 });
 ```
 
-**Enforcement:** `local/no-magic-sleep-in-tests` (bans `setTimeout`/`sleep`/`delay` inside test bodies; ESLint, currently `warn`; becomes `error` after issue #453 merges). Code review catches the race pattern directly.
+**Enforcement:** `local/no-magic-sleep-in-tests` (bans `setTimeout`/`sleep`/`delay` inside test bodies; ESLint, `error`). Code review catches the race pattern directly.
 
 ### Property-based testing tier
 
@@ -207,14 +207,14 @@ Real multi-process race tests are deleted once the corresponding deterministic c
 
 | Rule | Severity | What it catches |
 |---|---|---|
-| `local/no-source-grep` | `warn` → `error` (#453) | `readFileSync` on source files + text assertions; `assert.match`/`doesNotMatch` on raw stdout/stderr |
-| `local/no-magic-sleep-in-tests` | `warn` → `error` (#453) | `setTimeout`/`sleep`/`delay` calls inside `test()`/`it()`/`describe()` bodies |
-| `local/no-elapsed-assertion` | `warn` → `error` (#453) | Assertions on `Date.now()` delta, `process.hrtime()`, `performance.now()` comparisons |
+| `local/no-source-grep` | `error` (promoted by #3313) | `readFileSync` on source files + text assertions; `assert.match`/`doesNotMatch` on raw stdout/stderr |
+| `local/no-magic-sleep-in-tests` | `error` | `setTimeout`/`sleep`/`delay` calls inside `test()`/`it()`/`describe()` bodies |
+| `local/no-elapsed-assertion` | `warn` → `error` (#3314) | Assertions on `Date.now()` delta, `process.hrtime()`, `performance.now()` comparisons |
 | `no-only-tests/no-only-tests` | `error` | `test.only`/`describe.only`/`it.only` committed to non-scratch files |
 | `no-restricted-syntax` (ban 1) | `error` | Top-level `setTimeout` in `ExpressionStatement` |
 | `no-restricted-syntax` (ban 2) | `error` | `.only` member access on `test`/`it`/`describe` (belt-and-suspenders) |
 
-All three `local/*` rules currently ship at `warn`. They become `error` after the cleanup sweep tracked at [#453](https://github.com/open-gsd/gsd-core/issues/453) merges. New violations added after the acceptance of ADR 456 are out of policy regardless of the current ESLint severity.
+`local/no-source-grep` and `local/no-magic-sleep-in-tests` now ship at `error` (promoted by [#3313](https://github.com/open-gsd/gsd-core/issues/3313), absorbing the cleanup sweep originally tracked at #453). `local/no-elapsed-assertion` remains `warn`, gated behind [#3314](https://github.com/open-gsd/gsd-core/issues/3314) — 10 of 19 clock-touching `src` modules have no sanctioned time-control mechanism until ADR-456 is amended there; promoting sooner would fail CI on correct, currently-unfixable code. New violations added after the acceptance of ADR 456 are out of policy regardless of the current ESLint severity.
 
 ESLint harness details: [`docs/adr/452-eslint-lint-harness.md`](docs/adr/452-eslint-lint-harness.md).
 

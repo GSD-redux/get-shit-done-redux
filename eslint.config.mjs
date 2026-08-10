@@ -375,8 +375,9 @@ export default tseslint.config(
       // eslint-plugin-n rules
       'n/no-process-exit': 'error',
       'n/no-path-concat': 'error',
-      // Local rules — warn for now; flip to error after cleanup phases
-      'local/no-source-grep': 'warn',
+      // Promoted to error (#3313) — a fresh non-cached `npx eslint .` run found
+      // zero live violations of this rule in this glob at promotion time.
+      'local/no-source-grep': 'error',
     },
   },
 
