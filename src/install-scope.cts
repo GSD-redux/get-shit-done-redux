@@ -319,3 +319,19 @@ export function resolveScope(input: ResolveScopeInput): ResolvedScope {
 export function isGlobalScope(scope: InstallScope): boolean {
   return validateScopeId(scope, 'isGlobalScope') === 'global';
 }
+
+/**
+ * Project a bare `InstallScope` down to its `hostPrecedenceRank` — the SAME
+ * `HOST_PRECEDENCE_RANK` table `resolveScope`'s `ResolvedScope.hostPrecedenceRank`
+ * field reads, exposed standalone so a caller that only needs the ranking (not a
+ * full config-home resolution, which touches the filesystem via
+ * `resolveConfigHomeFromDescriptor`) never has to re-derive `{global: 2, local:
+ * 1}` as a second copy of the same fact. First consumer: `resolveTriggerSurface`
+ * (`runtime-artifact-layout.cts`, #2871 Phase 2), which is documented pure — no
+ * filesystem — so it cannot call `resolveScope` itself. Same validation/error
+ * contract as `resolveScope` / `isGlobalScope`: all three share `validateScopeId`,
+ * so an out-of-union `id` throws the same `TypeError` shape everywhere.
+ */
+export function scopeRank(id: InstallScope): number {
+  return HOST_PRECEDENCE_RANK[validateScopeId(id, 'scopeRank')];
+}

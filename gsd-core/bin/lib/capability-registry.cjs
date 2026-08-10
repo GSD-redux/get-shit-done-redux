@@ -158,6 +158,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "gemini",
@@ -393,6 +397,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -524,6 +532,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -741,6 +753,10 @@ const capabilities = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "cline-rules",
       "sandboxTier": "none",
@@ -914,6 +930,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -1038,6 +1058,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "shell-var",
       "hooksSurface": "codex-hooks-json",
       "hookEvents": "claude",
@@ -1190,6 +1214,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "copilot-inline",
       "sandboxTier": "none",
@@ -1284,6 +1312,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "cursor-hooks-json",
       "hookEvents": "claude",
@@ -1709,6 +1741,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -1875,6 +1911,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "kilo",
@@ -1965,6 +2005,10 @@ const capabilities = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "kimi-hooks-toml",
       "hookEvents": "claude",
@@ -2054,6 +2098,10 @@ const capabilities = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "kimi-hooks-toml",
       "hookEvents": "claude",
@@ -2607,6 +2655,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "opencode",
@@ -2782,6 +2834,10 @@ const capabilities = {
         "global": [],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "pi",
@@ -2957,6 +3013,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -3409,6 +3469,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "sandboxTier": "none",
@@ -3561,6 +3625,10 @@ const capabilities = {
         "global": [],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "none",
@@ -3643,6 +3711,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "windsurf-hooks-json",
       "sandboxTier": "none",
@@ -3753,6 +3825,10 @@ const capabilities = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "sandboxTier": "none",
@@ -4926,6 +5002,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "gemini",
@@ -5078,6 +5158,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -5163,6 +5247,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -5292,6 +5380,10 @@ const runtimes = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "cline-rules",
       "sandboxTier": "none",
@@ -5404,6 +5496,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -5486,6 +5582,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "shell-var",
       "hooksSurface": "codex-hooks-json",
       "hookEvents": "claude",
@@ -5638,6 +5738,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "copilot-inline",
       "sandboxTier": "none",
@@ -5732,6 +5836,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "cursor-hooks-json",
       "hookEvents": "claude",
@@ -5864,6 +5972,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -5978,6 +6090,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "kilo",
@@ -6068,6 +6184,10 @@ const runtimes = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "kimi-hooks-toml",
       "hookEvents": "claude",
@@ -6157,6 +6277,10 @@ const runtimes = {
         ],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "kimi-hooks-toml",
       "hookEvents": "claude",
@@ -6312,6 +6436,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "opencode",
@@ -6433,6 +6561,10 @@ const runtimes = {
         "global": [],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "pi",
@@ -6531,6 +6663,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "settings-json",
       "hookEvents": "claude",
@@ -6666,6 +6802,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "sandboxTier": "none",
@@ -6723,6 +6863,10 @@ const runtimes = {
         "global": [],
         "local": []
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "extensionEvents": "none",
@@ -6805,6 +6949,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "windsurf-hooks-json",
       "sandboxTier": "none",
@@ -6915,6 +7063,10 @@ const runtimes = {
           }
         ]
       },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
       "commandStyle": "slash-hyphen",
       "hooksSurface": "none",
       "sandboxTier": "none",

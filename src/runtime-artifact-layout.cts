@@ -34,7 +34,7 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // projection both kind-builder closures below need at the converters'
 // positional `isGlobal` boundary (see its doc comment in install-scope.cts
 // for why the projection is centralized rather than eliminated).
-import { isGlobalScope } from './install-scope.cjs';
+import { isGlobalScope, scopeRank, type InstallScope } from './install-scope.cjs';
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -610,5 +610,247 @@ function resolveRuntimeArtifactLayoutFromRegistry(
   return { runtime, configDir, scope, kinds };
 }
 
+// ---------------------------------------------------------------------------
+// resolveTriggerSurface (#2871 Phase 2)
+// ---------------------------------------------------------------------------
+//
+// Widens this module from PLACEMENT (resolveRuntimeArtifactLayout, above —
+// untouched, still 7 callers) to TRIGGER resolution: "what does a user type"
+// rather than "where does a file land". A new function, not a widened
+// signature — see .gsd/phase/feat-2871-trigger-resolution/40-design.md.
+//
+// Only `commands` and `skills` are trigger-bearing. `agents` / `kimi-agents`
+// are a SEPARATE dispatch interface point (subagent invocation via
+// `subagent_type` / named dispatch, never a `/gsd-<name>` a user types) — see
+// 40-design.md's "agents are not trigger-bearing" correction to ADR-2866.
+// Excluding them here is deliberate, not an oversight: including `agents`
+// would misreport windsurf (whose global scope emits agents only) as fully
+// shadowing its local `/gsd-*` surface, when in fact nothing shadows it.
+
+/** The trigger-bearing subset of ArtifactKindName — mirrors
+ *  VALID_TRIGGER_PRECEDENCE_KINDS in capability-validator.cjs (kept as two
+ *  literal-typed surfaces rather than importing a runtime Set into a type
+ *  position; tests assert the two vocabularies parity-match via
+ *  DEFAULT_TRIGGER_PRECEDENCE). */
+type TriggerKindName = 'commands' | 'skills';
+
+/** 'direct': the host itself registers this trigger. 'via-router': only the
+ *  owning router is registered by the host; this trigger is reachable
+ *  because the router's body was rewritten to `Read` it (#69 nested-skill
+ *  bundles — install-profiles.cts:714-723). See 40-design.md's "Nested-router
+ *  children" section for why a boolean cannot carry this distinction.
+ *
+ *  Not `export`ed: matches this file's existing house style (`Layout`,
+ *  `ArtifactKind`, etc. are internal types too) — `export =` at the bottom
+ *  of this module is its sole export surface, and mixing it with named type
+ *  exports is unnecessary since the only external consumer of these shapes
+ *  is a plain-JS test file. */
+type TriggerRegistration = 'direct' | 'via-router';
+
+interface TriggerShadower {
+  kind: TriggerKindName;
+  scope: InstallScope;
+}
+
+interface TriggerSurface {
+  /** What the user types, e.g. `gsd-plan-phase`. Always `${prefix}${stem}` —
+   *  unaffected by the destPath branch below (see `destPath`). */
+  trigger: string;
+  kind: TriggerKindName;
+  scope: InstallScope;
+  /** Where the artifact is staged, mirroring `_copyStaged`'s actual write
+   *  (`install-engine.cts:404-493`) INCLUDING its `namespacedByDir` branch
+   *  (~L464-466): a `commands` kind whose `destSubpath` basename equals
+   *  `prefix` minus its trailing hyphen is written bare (no prefix on the
+   *  filename) because the directory itself is the namespace. */
+  destPath: string;
+  registration: TriggerRegistration;
+  /** The owning router's trigger string, only when `registration ===
+   *  'via-router'`; `null` otherwise (including for the router's own entry —
+   *  a router has no router of its own). */
+  routerTrigger: string | null;
+  /** The winning sibling entry for this SAME trigger, or `null` when this
+   *  entry is itself unshadowed (including when it is the only candidate).
+   *  Reported as a fact, never a defect — see 40-design.md's "Not-corruption"
+   *  section: same-kind shadowing across scopes is the healthy, expected
+   *  state for every both-scope runtime. */
+  shadowedBy: TriggerShadower | null;
+}
+
+interface TriggerSurfaceOpts {
+  /** Source command/skill stems present for this call, shared across every
+   *  trigger-bearing kind entry — mirrors ResolvedProfile's flat stem
+   *  membership at staging time (install-profiles.cts). */
+  stems: string[];
+  /** Subset of `stems` that are namespace routers (nested-router runtimes
+   *  only, #69). Absent or empty ⇒ no nested-router distinction is made —
+   *  every stem resolves `registration: 'direct'`, matching the caller's own
+   *  choice not to supply router membership. */
+  routerStems?: string[];
+  /** Concrete stem -> owning router stem(s); mirrors
+   *  buildNamespaceBundleMap's childToRouters shape. Only consulted for a
+   *  stem that is NOT itself in `routerStems`, on a `nesting: 'nested'` kind
+   *  entry. The first named router is used. */
+  childToRouters?: Record<string, string[]>;
+  /** Registry override — the SAME seam resolveRuntimeArtifactLayoutFromRegistry
+   *  already exposes. Lets a synthetic descriptor be exercised without
+   *  touching the real capability-registry. */
+  registry?: TriggerRegistryLike;
+}
+
+interface RuntimeDescriptorForTriggers {
+  artifactLayout?: ArtifactLayoutDescriptor;
+  /** Ordered kind precedence, highest priority first (#2871 Phase 2). Absent
+   *  ⇒ capability-validator.cjs's DEFAULT_TRIGGER_PRECEDENCE applies — see
+   *  `getDefaultTriggerPrecedence` below. */
+  triggerPrecedence?: string[];
+}
+
+interface TriggerRegistryLike {
+  runtimes: Record<string, { runtime?: RuntimeDescriptorForTriggers }>;
+}
+
+function getTriggerRegistry(): TriggerRegistryLike {
+  return _require('./capability-registry.cjs') as TriggerRegistryLike;
+}
+
+/**
+ * capability-validator.cjs is a COMMITTED plain .cjs (not built from a .cts
+ * source — see its own header comment), so it is required the same way
+ * capability-registry.cjs is above: a lazy `_require` rather than a static
+ * ES import. DEFAULT_TRIGGER_PRECEDENCE is the single source of truth for
+ * "what applies when a descriptor omits triggerPrecedence"; this module
+ * reads it rather than re-declaring `['skills', 'commands']` as a second
+ * literal that could silently drift from the validator's own default.
+ */
+function getDefaultTriggerPrecedence(): string[] {
+  const capValidator = _require('./capability-validator.cjs') as { DEFAULT_TRIGGER_PRECEDENCE: string[] };
+  return capValidator.DEFAULT_TRIGGER_PRECEDENCE;
+}
+
+const SCOPE_ORDER: readonly InstallScope[] = ['global', 'local'];
+
+/**
+ * True when candidate `a` should win over the current best `b` for the same
+ * trigger. Scope rank first (Phase 1's `install-scope.cts#scopeRank` —
+ * global outranks local; NOT re-derived here), then the runtime's
+ * `triggerPrecedence` kind ordering (lower index = higher priority). A kind
+ * absent from `precedenceRank` (should not happen — every entry's kind is
+ * validated against the same closed vocabulary the precedence list draws
+ * from) sorts last rather than throwing, so a malformed precedence value
+ * degrades to "leaves the incumbent standing" instead of corrupting the
+ * whole resolution.
+ */
+function isHigherPriority(a: TriggerSurface, b: TriggerSurface, precedenceRank: Map<string, number>): boolean {
+  const rankA = scopeRank(a.scope);
+  const rankB = scopeRank(b.scope);
+  if (rankA !== rankB) return rankA > rankB;
+  const pa = precedenceRank.get(a.kind) ?? Number.POSITIVE_INFINITY;
+  const pb = precedenceRank.get(b.kind) ?? Number.POSITIVE_INFINITY;
+  return pa < pb;
+}
+
+/**
+ * Resolve the `/gsd-<name>`-style trigger surface for a runtime: what the
+ * user types, at which scope, whether it wins or is shadowed, and (for
+ * nested-router runtimes) whether the host registers it directly or only
+ * reaches it through a router. Pure — no filesystem, no mutation of `scopes`
+ * or `opts`, and safe against a caller mutating the returned array/objects
+ * (a fresh array/objects are built on every call; nothing is cached or
+ * shared across calls beyond the read-only registry module).
+ *
+ * Only `commands` and `skills` kind entries are considered — see the
+ * module-level comment above. `resolveRuntimeArtifactLayout` is untouched by
+ * this function; they are independent readers of the same descriptor.
+ *
+ * @throws {TypeError} for an unknown runtime — same contract (and message
+ *   shape) as `resolveRuntimeArtifactLayoutFromRegistry`.
+ */
+function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: TriggerSurfaceOpts): TriggerSurface[] {
+  const registry = opts.registry ?? getTriggerRegistry();
+  const runtimeDescriptor = registry.runtimes[runtime]?.runtime;
+  const layout = runtimeDescriptor?.artifactLayout;
+  if (!layout) {
+    throw new TypeError(`Unknown runtime: '${runtime}' — add to runtime-artifact-layout.cjs table`);
+  }
+
+  const scopeSet = new Set(scopes);
+  const stems = opts.stems ?? [];
+  const routerStemSet = new Set(opts.routerStems ?? []);
+  const childToRouters = opts.childToRouters ?? {};
+  const precedence = runtimeDescriptor?.triggerPrecedence ?? getDefaultTriggerPrecedence();
+  const precedenceRank = new Map(precedence.map((kind, index) => [kind, index]));
+
+  const surfaces: TriggerSurface[] = [];
+
+  for (const scope of SCOPE_ORDER) {
+    if (!scopeSet.has(scope)) continue;
+    const entries = layout[scope] ?? [];
+    for (const entry of entries) {
+      if (entry.kind !== 'commands' && entry.kind !== 'skills') continue; // excludes agents/kimi-agents
+      const kind = entry.kind;
+      const destSubpath = posixNormalize(entry.destSubpath);
+      const destLast = path.posix.basename(destSubpath);
+      const prefixStem = entry.prefix ? entry.prefix.replace(/-$/, '') : '';
+      // Mirrors _copyStaged's namespacedByDir branch exactly (install-engine.cts
+      // ~L464-466): a commands kind whose destSubpath basename equals the prefix
+      // stem is written bare (directory IS the namespace).
+      const namespacedByDir = kind === 'commands' && destLast === prefixStem;
+      const nested = entry.nesting === 'nested';
+
+      for (const stem of stems) {
+        const trigger = `${entry.prefix}${stem}`;
+        let destPath: string;
+        if (kind === 'skills') {
+          destPath = `${destSubpath}/${entry.prefix}${stem}`;
+        } else if (namespacedByDir) {
+          destPath = `${destSubpath}/${stem}.md`;
+        } else {
+          destPath = `${destSubpath}/${entry.prefix}${stem}.md`;
+        }
+
+        let registration: TriggerRegistration = 'direct';
+        let routerTrigger: string | null = null;
+        if (nested && routerStemSet.size > 0 && !routerStemSet.has(stem)) {
+          const owningRouters = childToRouters[stem];
+          const routerStem = owningRouters && owningRouters.length > 0 ? owningRouters[0] : undefined;
+          if (routerStem !== undefined && routerStemSet.has(routerStem)) {
+            registration = 'via-router';
+            routerTrigger = `${entry.prefix}${routerStem}`;
+          }
+        }
+
+        surfaces.push({ trigger, kind, scope, destPath, registration, routerTrigger, shadowedBy: null });
+      }
+    }
+  }
+
+  // Winner computation, per trigger string, across every scope/kind candidate.
+  const groups = new Map<string, TriggerSurface[]>();
+  for (const surface of surfaces) {
+    const group = groups.get(surface.trigger);
+    if (group) {
+      group.push(surface);
+    } else {
+      groups.set(surface.trigger, [surface]);
+    }
+  }
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue; // sole candidate: unshadowed by construction
+    let winner = group[0];
+    for (let i = 1; i < group.length; i++) {
+      const candidate = group[i];
+      if (isHigherPriority(candidate, winner, precedenceRank)) winner = candidate;
+    }
+    for (const surface of group) {
+      if (surface !== winner) {
+        surface.shadowedBy = { kind: winner.kind, scope: winner.scope };
+      }
+    }
+  }
+
+  return surfaces;
+}
+
 // getInstallExports removed in ADR-1508 / #1511 Phase 2 (last upward .cts→install.js dep).
-export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot };
+export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot, resolveTriggerSurface };
