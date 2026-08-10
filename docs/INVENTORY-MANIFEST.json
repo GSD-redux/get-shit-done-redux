@@ -333,6 +333,7 @@
       "check-command-router.cjs",
       "cjs-command-router-adapter.cjs",
       "claude-orchestration-command-router.cjs",
+      "claude-orchestration.cjs",
       "cli-exit.cjs",
       "cli-skew-check.cjs",
       "clock.cjs",
@@ -485,7 +486,8 @@
       "workstream-name-policy.cjs",
       "workstream.cjs",
       "worktree-base-ref.cjs",
-      "worktree-safety.cjs"
+      "worktree-safety.cjs",
+      "write-set.cjs"
     ],
     "hooks": [
       "gsd-agent-isolation-guard.js",

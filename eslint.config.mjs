@@ -307,8 +307,7 @@ export default tseslint.config(
       // Flag execSync/execFileSync/spawnSync without a `timeout` option — an
       // unbounded sync subprocess hangs indefinitely on a stuck remote/large
       // repo/missing network (DEFECT.UNBOUNDED-SUBPROCESS in CONTEXT.md).
-      // 'warn' for now: 8 pre-existing production call sites lack `timeout`
-      // (see blast-radius survey); flip to 'error' once those are migrated.
+      // The 8 pre-existing call sites this surfaced were migrated in #2896.
       'local/require-subprocess-timeout': 'error',
     },
   },
