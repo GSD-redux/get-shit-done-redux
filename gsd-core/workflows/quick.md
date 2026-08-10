@@ -410,7 +410,7 @@ gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null
 Capture current HEAD before spawning (used for worktree branch check):
 ```bash
 EXPECTED_BASE=$(git rev-parse HEAD)
-if [ "${USE_WORKTREES:-true}" != "false" ]; then
+if [ "$ISOLATION" = "harness-worktree" ]; then   # keyed on ISOLATION like every other dispatch-coupled branch (#2652)
   # BSD/macOS mktemp only randomizes XXXXXX when it is the final path component, so make a
   # suffixless temp then append the extension — portable across BSD + GNU (#1520).
   QUICK_WORKTREE_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/gsd-quick-worktree-XXXXXX") && mv "$QUICK_WORKTREE_MANIFEST" "${QUICK_WORKTREE_MANIFEST}.json" && QUICK_WORKTREE_MANIFEST="${QUICK_WORKTREE_MANIFEST}.json" || exit 1
@@ -426,7 +426,7 @@ Agent(
   prompt="
 Execute quick task ${quick_id}.
 
-${USE_WORKTREES !== "false" ? `
+${ISOLATION === "harness-worktree" ? `
 <worktree_branch_check>
 ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read \`gsd-core/references/worktree-branch-check.md\`, substitute \`{EXPECTED_BASE}\` with the base SHA captured above (${EXPECTED_BASE}), substitute \`{EXPECTED_BASE_ALTERNATE}\` with \`${QUICK_PLAN_PARENT}\` when it differs from \`${EXPECTED_BASE}\` (otherwise empty), and replace this note with that fragment's \`<worktree_branch_check>\` block so the dispatched prompt carries the runnable guard verbatim — do not pass this instruction through in its place.
 </worktree_branch_check>
@@ -524,7 +524,7 @@ After executor returns:
    # Fail closed: SDK refusal (safety guard #3174/#3384) must surface — do not swallow exit 1.
    gsd_run query worktree.cleanup-wave --manifest "$QUICK_WORKTREE_MANIFEST" || exit 1
    ```
-   If `ISOLATION` was not `"harness-worktree"` at dispatch (including a #2649 base-check degrade), skip this step.
+   If `ISOLATION` was not `"harness-worktree"` at dispatch (including a #1941 base-check degrade — that is *this* file's degrade; #2649 is the `diagnose-issues.md` / `execute-plan.md` one), skip this step.
 
    > **ISOLATED-RUN RECOVERY — FAIL SAFE (#1292):** When an isolated (worktree) run is *rejected* — the user declines to merge it, the orchestrator surfaces recovery guidance for a blocked/halted plan, or the run over-reached the requested scope — the worktree-isolation contract MUST hold through recovery. Do **NOT** propose continuing on `main`/the primary checkout as the default or recommended recovery path. Default to a **safe halt** and offer: (a) re-attempt in a **fresh, narrowly-scoped worktree**, or (b) inspect or discard the rejected worktree without merging. Any path that edits the primary checkout requires an **explicit, clearly-labeled confirmation** from the user first — editing `main` directly is never the proposed or default option for a run the user configured to be isolated.
 
