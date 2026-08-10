@@ -7878,6 +7878,15 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
 
+    // #3333: srcPath was enumerated by readdirSync above, but a filesystem is not
+    // transactional — the file it named can vanish between listing and this read
+    // (a concurrent process, or another test in this suite writing/cleaning up a
+    // fixture inside this same real directory). Treat "gone by the time we get
+    // here" as benign and skip it, never a fatal crash of the whole install.
+    if (!entry.isDirectory() && !fs.existsSync(srcPath)) {
+      continue;
+    }
+
     if (entry.isDirectory()) {
       copyWithPathReplacement(srcPath, destPath, pathPrefix, runtime, isCommand, isGlobal, confinementRoot);
     } else if (entry.name.endsWith('.md')) {
