@@ -19,6 +19,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const pkg = require('../vscode/package.json');
 const extension = require('../vscode/extension.js');
@@ -89,6 +91,12 @@ test('REACHABILITY (desktop): registerLanguageModelTools registers every manifes
 test('REACHABILITY (desktop): gsd_progress tool.invoke() dispatches through the hub and returns REAL output', async () => {
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const mock = mockVscodeLm();
     extension.registerLanguageModelTools(mock, { subscriptions: [] });
     const progressTool = mock.registered.find((r) => r.name === 'gsd_progress');

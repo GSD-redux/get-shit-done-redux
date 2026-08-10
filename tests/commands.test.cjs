@@ -523,9 +523,12 @@ describe('progress command', () => {
   });
 
   test('renders JSON progress', () => {
+    // #3217: no version token — genuinely free-form, so windowing scope is
+    // COMPLETE (§7.1) rather than UNSCOPED (a title merely mentioning "v1.0"
+    // with no STATE.md milestone pointer cannot be windowed to that version).
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -545,9 +548,10 @@ describe('progress command', () => {
   });
 
   test('renders bar format', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0\n`
+      `# Roadmap\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
     fs.mkdirSync(p1, { recursive: true });
@@ -576,9 +580,10 @@ describe('progress command', () => {
   });
 
   test('does not crash when summaries exceed plans (orphaned SUMMARY.md)', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -2005,6 +2010,12 @@ describe('stats command', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token
+    // anywhere) is COMPLETE scope for windowing (§7.1) — without this, an
+    // absent ROADMAP.md is UNREADABLE and stats withholds `percent`/counts.
+    // Individual tests below that write their own ROADMAP.md content
+    // overwrite this baseline.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2114,6 +2125,11 @@ describe('stats command', () => {
     fs.writeFileSync(path.join(p2, '15-01-SUMMARY.md'), '# Summary');
     fs.writeFileSync(path.join(p2, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
+    // #3217 (ADR-3180 §7.6 rule 4): no `vX.Y` token in the milestone heading
+    // — the ROADMAP has no STATE.md milestone pointer, so a real version
+    // token here would resolve to UNSCOPED (§7.1 row 4: "has versioned
+    // milestones, but no version resolved"), not the free-form COMPLETE
+    // window this test's counting assertions depend on.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       `# Roadmap
@@ -2122,7 +2138,7 @@ describe('stats command', () => {
 - [x] **Phase 15: Proof Generation**
 - [ ] **Phase 16: Multi-Claim Verification & UX**
 
-## Milestone v1.0 Growth
+## Milestone Growth
 
 ### Phase 14: Auth Hardening
 **Goal:** Improve auth checks
