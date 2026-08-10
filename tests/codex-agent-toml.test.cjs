@@ -408,6 +408,83 @@ describe('A18-A24 (BLOCKER regression): mixed/edge line-ending round-trip', () =
   });
 });
 
+// ─── A25-A28 (regression, B17): removeLine trailing-newline preservation ──────
+//
+// A stale/orphaned strip that lands on the file's LAST line must preserve
+// (not invent, not drop) the file's trailing-newline status. The defect: a
+// last-line removal used to keep the PREVIOUS line's own terminator, which
+// only happens to be correct when every terminator in the file is identical
+// (the common case, which is why A1-A24 never caught it) — it silently
+// invents a trailing newline whenever the removed line's own terminator
+// differs from the survivor's, e.g. no trailing newline at all (B17,
+// commands.test.cjs), or a mixed-EOL source (A26 below).
+
+describe('A25-A28 (regression, B17): removeLine preserves trailing-newline status', () => {
+  test('A25 (red pre-fix): strip a model line that is the file\'s last line, no trailing newline — still no trailing newline', () => {
+    const source = 'name = "gsd-bare"\nmodel = "sonnet"'; // no trailing \n; model is the last line
+    const result = parseCodexAgentToml(source);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.trailingNewline, false);
+    const rendered = renderCodexAgentToml(stripModel(result.doc));
+    // Pre-fix: removeLine kept the PREVIOUS line's terminator ('\n') instead
+    // of the removed line's own ('') — rendered came back as
+    // 'name = "gsd-bare"\n', a trailing newline the source never had.
+    assert.equal(rendered, 'name = "gsd-bare"', 'the file must still have no trailing newline');
+  });
+
+  test('A26 (red pre-fix): strip a model line that is the file\'s last line, WITH a trailing newline — still exactly one trailing newline', () => {
+    // Mixed EOL is deliberate: it is the only way to make this case fail
+    // pre-fix. In a uniform-EOL file every terminator is identical, so the
+    // pre-fix bug (keeping the previous line's terminator instead of the
+    // removed line's own) coincidentally renders the right bytes anyway —
+    // it takes two DIFFERENT terminators either side of the removed last
+    // line to expose it without also removing the trailing newline entirely.
+    const source = 'name = "gsd-bare"\r\nmodel = "sonnet"\n'; // name: CRLF: model (last): LF
+    const result = parseCodexAgentToml(source);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.trailingNewline, true);
+    const rendered = renderCodexAgentToml(stripModel(result.doc));
+    // Pre-fix: rendered came back as 'name = "gsd-bare"\r\n' — the survivor's
+    // OWN CRLF terminator, not the removed line's LF terminator that actually
+    // encoded "this file ends with exactly one trailing newline".
+    assert.equal(rendered, 'name = "gsd-bare"\n', 'exactly one trailing newline must survive, on the new last line');
+  });
+
+  test('A27: strip the only line in a file — empty result', () => {
+    // Already correct pre-fix (JS Array#slice(1) on a length-1 array is [],
+    // so the old generic slice degenerated to the right answer here) —
+    // included as a regression guard for the new length===1 branch, not
+    // because it was red before the fix.
+    const source = 'model = "sonnet"'; // one line, no trailing newline
+    const result = parseCodexAgentToml(source);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.lines.length, 1);
+    const stripped = stripModel(result.doc);
+    assert.deepEqual(stripped.lines, []);
+    assert.deepEqual(stripped.terminators, []);
+    assert.equal(renderCodexAgentToml(stripped), '');
+  });
+
+  test('A28 (red pre-fix, row B7 shape): stale model plus its orphaned effort, effort is the last line, no trailing newline — both counts correct', () => {
+    const source = 'name = "gsd-stale"\nmodel = "opus"\nmodel_reasoning_effort = "medium"'; // no trailing \n
+    const result = parseCodexAgentToml(source);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.trailingNewline, false);
+    // Sequential removal, same order commands.test.cjs's syncCodex applies:
+    // model first (a middle line — unaffected by the fix), then the now-last
+    // orphaned effort line (the fix's compounding case).
+    const afterModel = stripModel(result.doc);
+    const afterBoth = stripReasoningEffort(afterModel);
+    // Pre-fix: the second removal (now-last-line) kept the intermediate
+    // survivor's terminator instead of the removed effort line's own,
+    // rendering 'name = "gsd-stale"\n' — a trailing newline the source
+    // never had.
+    assert.equal(renderCodexAgentToml(afterBoth), 'name = "gsd-stale"', 'both lines gone AND no invented trailing newline');
+    assert.equal(afterBoth.model, null);
+    assert.equal(afterBoth.reasoningEffort, null);
+  });
+});
+
 // ─── A17: enum lock ────────────────────────────────────────────────────────
 
 describe('PARSE_REASON enum', () => {

@@ -45,8 +45,11 @@ export type ParseReason = (typeof PARSE_REASON)[keyof typeof PARSE_REASON];
  * load-bearing round-trip property — see 50-test-matrix.md row A14), even when
  * the source mixes line-ending styles (`\r\n`, `\n`, a lone `\r`) within one
  * file. `stripModel`/`stripReasoningEffort` remove a targeted line AND its own
- * terminator from `lines`/`terminators`; every other line's content and its
- * own original terminator are untouched.
+ * terminator from `lines`/`terminators`; every other line's content is
+ * untouched, and so is its own terminator — EXCEPT when the removed line was
+ * the file's last line, in which case the new last line inherits the removed
+ * line's terminator (see {@link removeLine}) so the file's trailing-newline
+ * status is preserved rather than silently changed.
  */
 export interface CodexAgentDoc {
   /** Content lines (BOM-stripped, terminator-free). Paired 1:1 by index with `terminators`. */
@@ -291,9 +294,35 @@ export function renderCodexAgentToml(doc: CodexAgentDoc): string {
 // `doc.lines`/`doc.terminators`, re-indexing the block range and the OTHER
 // key's line index so a subsequent strip/render still sees a consistent doc.
 // Never touches any other line's content or terminator.
+//
+// The one exception is when `index` names the file's LAST line: a plain
+// slice-out would drop the removed line's terminator but leave the
+// *previous* line's terminator standing in its place, which silently
+// invents (or drops) a trailing newline the source never had — a middle-line
+// removal never has this problem because the terminator that survives (the
+// one that WAS between the previous line and the removed one) is exactly the
+// terminator the new neighbors should have between them. For a last-line
+// removal, the file's trailing-newline status lives in the REMOVED line's own
+// terminator (that is what `trailingNewline` was computed from), so the new
+// last line must inherit that terminator instead of keeping its own — the
+// invariant is "the file's trailing-newline-or-not survives", not "each
+// surviving line keeps its original own terminator". Removing the only
+// remaining line is the degenerate case: there is no new last line to
+// inherit anything, so the result is the empty document.
 function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoningEffort'): CodexAgentDoc {
-  const lines = doc.lines.slice(0, index).concat(doc.lines.slice(index + 1));
-  const terminators = doc.terminators.slice(0, index).concat(doc.terminators.slice(index + 1));
+  const isLastLine = index === doc.lines.length - 1;
+  let lines: string[];
+  let terminators: string[];
+  if (doc.lines.length === 1) {
+    lines = [];
+    terminators = [];
+  } else if (isLastLine) {
+    lines = doc.lines.slice(0, index);
+    terminators = doc.terminators.slice(0, index - 1).concat([doc.terminators[index]]);
+  } else {
+    lines = doc.lines.slice(0, index).concat(doc.lines.slice(index + 1));
+    terminators = doc.terminators.slice(0, index).concat(doc.terminators.slice(index + 1));
+  }
   const reindex = (i: number | null): number | null => (i === null ? null : i > index ? i - 1 : i);
   const blockRange = { ...doc.blockRange };
   if (blockRange.start !== -1) {
