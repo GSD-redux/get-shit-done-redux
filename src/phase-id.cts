@@ -680,9 +680,32 @@ const unpad = (digits: string): string => digits.replace(/^0+(?=\d)/, '');
  * which is the defect #2528 exists to fix. The tie is therefore broken in favour
  * of resolving, and the consequence is bounded on the side that matters: when
  * BOTH readings have a directory (`05-01-auth` + `05-02-api`) the result is two
- * matches, and every caller — including the destructive `phase remove` path —
- * refuses to choose. `tests/phase-resolution-parity.test.cjs` pins both
- * directions: the lone-directory resolution and the two-directory refusal.
+ * matches. `tests/phase-resolution-parity.test.cjs` pins both directions: the
+ * lone-directory resolution and the two-directory refusal.
+ *
+ * WHAT IS SHARED IS SELECTION, NOT AMBIGUITY POLICY. This function is the one
+ * owner of "which directories does this query name". What a caller does with
+ * two of them stays the caller's own decision, and the callers split in two
+ * tiers on purpose:
+ *
+ *   REFUSE on `matches.length > 1` — `searchPhaseInDir`, `cmdFindPhase`,
+ *   `cmdPhasePlanIndex`, `cmdPhaseRemove`. These either act destructively or
+ *   answer "which phase is this", so guessing is worse than reporting the
+ *   candidates (#2237).
+ *
+ *   TAKE `matches[0]` — `cmdPhasesList`, `cmdInitManager`, `cmdRoadmapAnalyze`,
+ *   `cmdVerifySchemaDrift`, `detectVerifyFailed`. Each read a directory to
+ *   DECORATE a row they are already emitting; each used `.find()` before this
+ *   PR, so first-match is their prior behavior preserved verbatim, and each is
+ *   order-stable because the directory list is sorted and this function filters
+ *   without reordering.
+ *
+ * The honest caveat on that second tier: the bare-number fallback makes
+ * multi-match newly REACHABLE for inputs that previously found nothing, so those
+ * five can now silently pick one of several candidates where they used to report
+ * not-found. That is a widening of an existing first-match rule, not a new rule
+ * — but it is a widening, and promoting any of them to refusal is a UX decision
+ * about their own output, not a change to selection, so it does not belong here.
  *
  * `usedBareFallback` tells callers to derive the displayed phase number from
  * the directory's leading digit run instead of `extractPhaseToken` (whose

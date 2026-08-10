@@ -403,4 +403,67 @@ describe('#612 bracket divergence — wider only where the delimiter disambiguat
     // inventing a field the parser would refuse.
     assert.strictEqual(tokenOf('01-014-slug'), '01');
   });
+
+  // The `(?=-|$)` terminator this PR adds is what keeps surface 6 in step with
+  // the others: without it the run would stop mid-field and report a prefix.
+  // It also costs something, and the cost is pinned rather than left implicit —
+  // a token followed by any OTHER delimiter no longer tokenizes at all. No
+  // production caller reads this constant (its consumers are this file and
+  // adr-612-bracket-grammar.test.cjs), so the loss is confined to the display
+  // shapes below. Anyone restoring them must widen the terminator class
+  // deliberately, not by deleting the lookahead.
+  test('the terminator is dash-or-end, and display punctuation is not in it', () => {
+    assert.strictEqual(tokenOf('05.03-slug'), '05.03', 'dash terminates');
+    assert.strictEqual(tokenOf('05.03'), '05.03', 'end-of-string terminates');
+    assert.strictEqual(tokenOf('05.03: Title'), undefined, 'a colon does not');
+    assert.strictEqual(tokenOf('12A: X'), undefined, 'nor after a letter suffix');
+    assert.strictEqual(tokenOf('05.03]'), undefined, 'nor a closing bracket');
+  });
+});
+
+// ─── #2528: two more grammar edges this PR moves, pinned ────────────────────
+// Neither has a production consumer today, so neither can break a caller — they
+// are pinned so the change is a decision on record rather than a silent drift a
+// future reader has to reconstruct from a diff.
+describe('#2528 grammar edges without production consumers', () => {
+  test('canonicalPlanStem only strips an UPPERCASE plan suffix', () => {
+    // The `i` flag is gone and the lookahead is uppercase-only, so a lowercase
+    // suffix — and a dotted sub-plan — now fall through unchanged instead of
+    // being reduced to the stem. Uppercase, the shape `toDir` actually emits,
+    // is unaffected. If a production caller ever appears, this is the line to
+    // revisit.
+    assert.strictEqual(validate.canonicalPlanStem('10-01A-auth'), '10-01', 'uppercase: stripped');
+    assert.strictEqual(validate.canonicalPlanStem('10-01a-auth'), '10-01a-auth', 'lowercase: unchanged');
+    assert.strictEqual(validate.canonicalPlanStem('10-01.2-auth'), '10-01.2-auth', 'dotted sub-plan: unchanged');
+  });
+
+  test('a letter-suffixed phase with a sub-phase windows like its plain-numeric twin', () => {
+    // Before this PR `12A-01-foo` yielded `12A` while `12-01-foo` yielded
+    // `12-01` — the letter suffix was the only reason a sub-phase directory
+    // folded into its PARENT phase's milestone. That asymmetry is the defect;
+    // the two shapes now agree. The visible consequence is that a milestone
+    // declaring `12A` no longer absorbs `12A-01-foo`, exactly as one declaring
+    // `12` has never absorbed `12-01-foo`.
+    const tmpDir = createTempProject();
+    try {
+      const planning = path.join(tmpDir, '.planning');
+      fs.mkdirSync(planning, { recursive: true });
+      fs.writeFileSync(path.join(planning, 'STATE.md'), '---\nmilestone: v1.0\n---\n');
+      fs.writeFileSync(path.join(planning, 'ROADMAP.md'), [
+        '## v1.0: Current',
+        '### Phase 2-01: Alpha',
+        '**Goal:** puts the filter in hyphenated mode',
+        '',
+        '### Phase 12A: Letter Suffixed',
+        '**Goal:** the shape under test',
+      ].join('\n'));
+
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(filter('12-01-foo'), false, 'plain numeric: unchanged');
+      assert.strictEqual(filter('12A-01-foo'), false, 'letter-suffixed: now agrees');
+      assert.strictEqual(filter('12A-foo'), true, 'the phase itself still windows');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });
