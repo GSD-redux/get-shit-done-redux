@@ -55,7 +55,7 @@ Valid values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model
 
 `model_overrides` can be set per-project in `.planning/config.json` or globally in `~/.gsd/defaults.json`. Per-project entries win on conflict; non-conflicting global entries are preserved.
 
-**Important for Codex and OpenCode:** Those runtimes embed the resolved model into each agent's static config at install time. After editing `model_overrides`, re-run the installer for the change to take effect:
+**Important for Codex and OpenCode:** Those runtimes embed the model into each agent's static config at install time rather than choosing it per spawn, so after editing `model_overrides` you must re-run the installer for the change to take effect:
 
 ```bash
 npx @opengsd/gsd-core@latest --codex --global   # or --opencode, --kilo, etc.
@@ -187,16 +187,46 @@ quota / rate-limit failures; other failures keep the tier ladder. Leaving
 
 If you installed GSD for Codex, OpenCode, Antigravity CLI, or Kilo, the installer already set `resolve_model_ids: "omit"` in your config. This tells GSD to skip Anthropic model ID resolution and let the runtime choose its own default model. No manual setup is needed for the basic case.
 
-**If you want tiered models on Codex:**
+### Codex does not do tier routing — pin explicitly instead
+
+**Codex agents inherit whatever model your Codex session is using.** GSD writes no `model` line into
+`~/.codex/agents/<agent>.toml`, so setting `model_profile` has no effect on Codex.
+
+This is deliberate ([ADR-2313](../adr/2313-codex-passive-model-posture.md)). A ChatGPT-account Codex
+session exposes only its own model, so a pinned tier model fails the request outright —
+`400 invalid_request_error: "The 'sonnet' model is not supported when using Codex with a ChatGPT
+account"` — and the agent never spawns.
+
+**To pin a model on Codex, name a real Codex model id per agent:**
 
 ```json
 {
   "runtime": "codex",
-  "model_profile": "balanced"
+  "model_overrides": {
+    "gsd-planner":  "gpt-5.6-sol",
+    "gsd-executor": "gpt-5.6-terra"
+  }
 }
 ```
 
-GSD resolves each tier alias to the Codex-native model and reasoning effort defined in the runtime tier map.
+Then re-run the installer, as with any `model_overrides` edit on Codex (see above).
+
+Two rules apply to what you can put there:
+
+- **It must be a real Codex model id.** A GSD tier alias (`opus`, `sonnet`, `haiku`, `fable`) or a
+  `claude-*` id is dropped with a warning rather than written, because Codex rejects them.
+- **Your account must actually expose it.** GSD cannot check this — if you pin `gpt-5.6-sol` on an
+  account that does not have it, you get the same 400. When in doubt, omit the pin and let the
+  session model apply.
+
+`model_reasoning_effort` follows the model: with no pin, GSD writes no effort line either, so the
+Codex UI drives both rather than one following GSD and the other following your session.
+
+> **Upgrading from v1.10 or earlier?** Codex installs used to embed a per-tier model
+> (`opus→gpt-5.6-sol`, `sonnet→gpt-5.6-terra`, `haiku→gpt-5.6-luna`). If you were on an API-key
+> account where those resolved successfully, add the `model_overrides` block above to keep them.
+> The installer prints a one-time notice when it drops a pin. If you were on a ChatGPT account, this
+> is the change that stops the 400s — nothing to do.
 
 **If you want per-agent model IDs on any non-Claude runtime:**
 

@@ -5905,6 +5905,15 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       fs.writeFileSync(path.join(phase4Dir, `04-${padded}-PLAN.md`), `plan ${i}`, 'utf8');
       fs.writeFileSync(path.join(phase4Dir, `04-${padded}-SUMMARY.md`), `summary ${i}`, 'utf8');
     }
+    // Disk-strict completion (ADR-3180 §7.4, #3186): Phase 4 is already
+    // shipped per the ROADMAP checklist/table above — a passing
+    // *-VERIFICATION.md is what actually makes it count as complete now
+    // (runSdkQuery's writePassedVerificationForPhase only covers the phase
+    // under test, phase 5, not this already-complete phase 4 fixture).
+    fs.writeFileSync(
+      path.join(phase4Dir, '04-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
 
     const phase6Dir = path.join(phasesDir, '06-integration');
     fs.mkdirSync(phase6Dir, { recursive: true });

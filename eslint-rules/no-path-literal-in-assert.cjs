@@ -118,7 +118,7 @@ const rule = {
       // Suppressed if the receiver is already a valid POSIX normalizer.
       if (isPosixNormalizerCall(receiverNode)) return false;
 
-      let probe = unwrapString(receiverNode);
+      const probe = unwrapString(receiverNode);
       if (isPathReturningCall(probe)) return true;
 
       // Peel one non-normalizer method chain (.replace / .replaceAll / .split().join()).

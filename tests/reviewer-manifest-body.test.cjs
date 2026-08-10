@@ -3,7 +3,7 @@ process.env.GSD_TEST_MODE = '1';
 
 /**
  * reviewer-manifest-body.test.cjs — behavioral tests for the reviewer lane body
- * (ADR-2782, chore #2795 Phase 2): `validateReviewerBody`, `collectReviewerWarnings`,
+ * (ADR-2782, chore #2795 Phase 2): `validateReviewerBody`, `collectReviewerWarnings` / `collectReviewerWarningRecords`,
  * the `role:'reviewer'` dispatch branch of `validateCapability`, the reviewer-lane
  * uniqueness rules inside `validateCrossCapability`, and the harvest widening in
  * `buildRegistry` / `loadAndValidate`.
@@ -37,6 +37,9 @@ const {
   LANE_SLUG_RE,
   validateReviewerBody,
   collectReviewerWarnings,
+  collectReviewerWarningRecords,
+  REVIEWER_WARNING,
+  REMOVED_REVIEWER_CLI_FIELD,
   validateCapability,
   validateCrossCapability,
   VALID_LANE_EFFORT_CHANNELS,
@@ -45,6 +48,9 @@ const {
   VALID_EVIDENCE_CLASSES,
   VALID_LANE_HANDLERS,
   KNOWN_REVIEWER_FIELDS,
+  KNOWN_HOST_BEHAVIORS,
+  MAX_REPORTED_UNKNOWN_KEYS,
+  MAX_REPORTED_KEY_CHARS,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
 
 const { loadAndValidate, buildRegistry } = require('../scripts/gen-capability-registry.cjs');
@@ -268,14 +274,19 @@ describe('A. Body presence / shape', () => {
     const errs = validateReviewerBody(cap);
     assert.deepEqual(errs, [], `unknown field must not be a validation error, got: ${JSON.stringify(errs)}`);
 
-    const warnings = collectReviewerWarnings(cap);
-    assert.ok(
-      warnings.some(
-        (w) => w.includes('cap-x') && w.includes('reviewer.futureField')
-          && w.includes([...KNOWN_REVIEWER_FIELDS].join(', ')),
-      ),
-      `expected a warning naming reviewer.futureField and the known-fields list, got: ${JSON.stringify(warnings)}`,
-    );
+    // Asserted on the typed IR, not the rendered prose (CONTRIBUTING.md,
+    // "Prohibited: Raw Text Matching on Test Outputs"). The `message` field
+    // exists for operator console output only.
+    const records = collectReviewerWarningRecords(cap);
+    assert.equal(records.length, 1, `expected exactly one record, got: ${JSON.stringify(records)}`);
+    assert.equal(records[0].code, REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD);
+    assert.equal(records[0].capId, 'cap-x');
+    assert.equal(records[0].field, 'reviewer.futureField');
+    assert.deepEqual(records[0].knownFields, [...KNOWN_REVIEWER_FIELDS]);
+
+    // The renderer still produces one string per record for the two production
+    // consumers (gen-capability-registry -> stderr, capability-loader -> OverlayMeta.warnings).
+    assert.equal(collectReviewerWarnings(cap).length, records.length);
   });
 
   test('unknownRoleIsRejectedWithEnumeratedMembers', () => {
@@ -1698,5 +1709,422 @@ describe('J. Property-based (fast-check)', () => {
       ),
       { numRuns: 200 },
     );
+  });
+});
+
+// ─── K. Removed `hostBehaviors.reviewerCli` alias (ADR-2782 D9, chore #2801) ──
+//
+// Phase 7 deletes the derived legacy alias. `collectReviewerWarnings` is the
+// channel the removal announces itself on, because it is already wired to BOTH
+// surfaces a manifest can arrive through: the build-time generator
+// (`gen-capability-registry.cjs` -> stderr) and the overlay loader
+// (`capability-loader.cts` -> OverlayMeta.warnings, on the ACCEPT path for every
+// accepted capability). An out-of-tree manifest still setting the alias reaches
+// the second one.
+//
+// Rows K1-K9 implement W1-W9 of
+// `.gsd/phase/chore-2801-remove-reviewercli-alias/50-test-matrix.md`.
+//
+// The load-bearing structural fact these rows pin down: the removal check must
+// run BEFORE `collectReviewerWarningRecordFields`' `reviewer`-body early-return. An
+// alias-only manifest — precisely the case the deprecation window existed for —
+// has no `reviewer` body, so a check placed after that guard would fire only for
+// capabilities that do not need it. K1 is the row that fails if it is misplaced.
+
+/** A whole runtime manifest — the shape production passes to this function. */
+function runtimeCapWithHostBehaviors(hostBehaviors, extra = {}) {
+  return {
+    id: 'legacy-cli',
+    role: 'runtime',
+    runtime: { hostBehaviors },
+    ...extra,
+  };
+}
+
+describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
+  /** Records for the removal notice only, keyed on the typed code. */
+  function removalRecords(cap) {
+    return collectReviewerWarningRecords(cap)
+      .filter((rec) => rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR);
+  }
+
+  test('reviewerWarningCodeSurfaceIsLocked', () => {
+    // The third of the three coordinated changes a new code requires. Without
+    // this, a code can be added or renamed with no test noticing.
+    assert.deepEqual(
+      Object.keys(REVIEWER_WARNING).sort(),
+      ['REMOVED_HOST_BEHAVIOR', 'UNKNOWN_HOST_BEHAVIOR', 'UNKNOWN_REVIEWER_FIELD'],
+    );
+    assert.equal(Object.isFrozen(REVIEWER_WARNING), true, 'the code enum must be frozen');
+    assert.equal(REMOVED_REVIEWER_CLI_FIELD, 'runtime.hostBehaviors.reviewerCli');
+  });
+
+  test('removedReviewerCliAliasWarnsWhenPresentWithoutABody', () => {
+    // No `reviewer` body at all — the alias-only manifest. This is the row that
+    // proves the check runs before the body early-return.
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true });
+    const records = removalRecords(cap);
+    assert.equal(
+      records.length, 1,
+      `expected exactly one removal record for an alias-only manifest, got: ${JSON.stringify(collectReviewerWarningRecords(cap))}`,
+    );
+    assert.equal(records[0].capId, 'legacy-cli');
+    assert.equal(records[0].field, REMOVED_REVIEWER_CLI_FIELD);
+  });
+
+  test('removedReviewerCliAliasWarnsAlongsideADeclaredBody', () => {
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true }, { reviewer: validLane() });
+    assert.equal(removalRecords(cap).length, 1, 'a declared body must not suppress the removal notice');
+    assert.deepEqual(
+      validateReviewerBody(cap), [],
+      'the vestigial key must stay a WARNING — never a validation error (Postel: liberal in what we accept)',
+    );
+  });
+
+  test('removedReviewerCliAliasWarnsRegardlessOfItsValue', () => {
+    // Presence-based, deliberately: after removal the key is unknown at ANY
+    // value, exactly as an unknown `reviewer.*` field is. A value-sensitive
+    // warning would tell an author carrying `reviewerCli: false` that their
+    // stale key is fine, when it is simply dead.
+    // (40-design.md -> Rejected 3.)
+    for (const value of [true, false, 'true', 0, 1, null, {}, []]) {
+      const cap = runtimeCapWithHostBehaviors({ reviewerCli: value });
+      assert.equal(
+        removalRecords(cap).length, 1,
+        `expected a removal record for reviewerCli = ${JSON.stringify(value)}, got: ${JSON.stringify(collectReviewerWarningRecords(cap))}`,
+      );
+    }
+  });
+
+  test('similarlyNamedHostBehaviorKeysAreNotTheRemovedField', () => {
+    // Exact own-key match only: a near-miss name must never be reported as the
+    // removed `reviewerCli`. Since #2801 closed the vocabulary these names DO
+    // now draw an unknown-host-behavior notice, which is correct — they are not
+    // declared behaviors — but they must not draw the removal notice.
+    const cap = runtimeCapWithHostBehaviors({
+      reviewerCliPath: '/usr/bin/thing',
+      reviewer_cli: true,
+      reviewerCLI: true,
+      reapplyCommand: 'x',
+    });
+    const records = collectReviewerWarningRecords(cap);
+    assert.deepEqual(
+      records.filter((rec) => rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR), [],
+      'only the exact own key `reviewerCli` is the removed field',
+    );
+    assert.deepEqual(
+      records.map((rec) => rec.field).sort(),
+      [
+        'runtime.hostBehaviors.reviewerCLI',
+        'runtime.hostBehaviors.reviewer_cli',
+        'runtime.hostBehaviors.reviewerCliPath',
+      ].sort(),
+      'the three undeclared names draw an unknown-host-behavior notice; the declared reapplyCommand does not',
+    );
+  });
+
+  test('malformedHostBehaviorsNeitherWarnsNorThrows', () => {
+    const shapes = [
+      ['null', { id: 'c', role: 'runtime', runtime: { hostBehaviors: null } }],
+      ['array', { id: 'c', role: 'runtime', runtime: { hostBehaviors: [] } }],
+      ['string', { id: 'c', role: 'runtime', runtime: { hostBehaviors: 'reviewerCli' } }],
+      ['number', { id: 'c', role: 'runtime', runtime: { hostBehaviors: 42 } }],
+      ['empty object', { id: 'c', role: 'runtime', runtime: { hostBehaviors: {} } }],
+      ['no hostBehaviors', { id: 'c', role: 'runtime', runtime: {} }],
+      ['no runtime', { id: 'c', role: 'reviewer', reviewer: validLane() }],
+      ['runtime null', { id: 'c', role: 'runtime', runtime: null }],
+    ];
+    for (const [name, cap] of shapes) {
+      let records;
+      try {
+        records = collectReviewerWarningRecords(cap);
+      } catch (err) {
+        assert.fail(`collectReviewerWarningRecords threw for ${name}: ${err && err.message}`);
+      }
+      assert.deepEqual(
+        records.filter((rec) => rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR), [],
+        `${name} must not produce a removal record`,
+      );
+    }
+  });
+
+  test('removalWarningAndUnknownFieldWarningCoexist', () => {
+    // Two independent diagnostics on one manifest. Neither may swallow the other
+    // — an early `return` after the first would hide the second.
+    const lane = validLane();
+    lane.futureField = 'from-a-newer-gsd';
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true }, { id: 'both-cap', reviewer: lane });
+
+    const records = collectReviewerWarningRecords(cap);
+    assert.deepEqual(
+      records.map((rec) => rec.code).sort(),
+      [REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR, REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD].sort(),
+      `expected exactly one of each code, got: ${JSON.stringify(records)}`,
+    );
+  });
+
+  test('inheritedReviewerCliFromPrototypeDoesNotWarn', () => {
+    // Own-key read: a polluted prototype must not manufacture a removal record
+    // on every otherwise-innocent manifest.
+    const polluted = Object.create({ reviewerCli: true });
+    polluted.reapplyCommand = 'x';
+    const cap = runtimeCapWithHostBehaviors(polluted);
+    assert.deepEqual(
+      collectReviewerWarningRecords(cap), [],
+      'an inherited reviewerCli is not a declared field',
+    );
+  });
+
+  test('removalWarningNamesTheReviewerBodyReplacement', () => {
+    // A removal notice that does not say what to do instead is not a migration
+    // path. The field was undocumented for its whole life and only documented at
+    // 1.9.0 as ALREADY deprecated, so we cannot enumerate who depends on it
+    // (Hyrum) — the exit has to carry its own instructions. Asserted on the
+    // typed fields, never on the rendered sentence.
+    const [record] = removalRecords(runtimeCapWithHostBehaviors({ reviewerCli: true }));
+    assert.ok(record, 'expected a removal record');
+    assert.equal(record.replacement, 'reviewer');
+    assert.equal(record.docs, 'docs/how-to/ship-a-reviewer-lane.md');
+  });
+
+  test('renderedStringsStayOneToOneWithRecords', () => {
+    // The two production consumers still receive strings; the renderer must not
+    // drop or duplicate a diagnostic.
+    const lane = validLane();
+    lane.futureField = 'x';
+    for (const cap of [
+      runtimeCapWithHostBehaviors({ reviewerCli: true }),
+      runtimeCapWithHostBehaviors({ reviewerCli: true }, { reviewer: lane }),
+      runtimeCapWithHostBehaviors({ reapplyCommand: 'x' }),
+    ]) {
+      const records = collectReviewerWarningRecords(cap);
+      const strings = collectReviewerWarnings(cap);
+      assert.equal(strings.length, records.length);
+      assert.deepEqual(strings, records.map((rec) => rec.message));
+    }
+  });
+
+  test('collectReviewerWarningsStaysTotalOverTheNewHostBehaviorsReadPath', () => {
+    // W9 — the totality contract (#1461 OVL-1) now covers a second read path.
+    // A throwing getter or Proxy trap fires on the READ, before any message is
+    // built, so only the structural wrapper can save these. Both the IR and the
+    // renderer must survive, since the renderer maps over the IR.
+    const throwing = () => { throw new Error('boom'); };
+
+    const hostBehaviorsGetterThrows = { id: 'x', role: 'runtime', runtime: {} };
+    Object.defineProperty(hostBehaviorsGetterThrows.runtime, 'hostBehaviors', { get: throwing });
+
+    const reviewerCliGetterThrows = { id: 'x', role: 'runtime', runtime: { hostBehaviors: {} } };
+    Object.defineProperty(reviewerCliGetterThrows.runtime.hostBehaviors, 'reviewerCli', { get: throwing });
+
+    const cases = [
+      ['runtime getter throws', Object.defineProperty({ id: 'x' }, 'runtime', { get: throwing })],
+      ['hostBehaviors getter throws', hostBehaviorsGetterThrows],
+      ['reviewerCli getter throws', reviewerCliGetterThrows],
+      ['hostBehaviors Proxy traps throw', {
+        id: 'x',
+        role: 'runtime',
+        runtime: { hostBehaviors: new Proxy({}, { has: throwing, get: throwing, getOwnPropertyDescriptor: throwing, ownKeys: throwing }) },
+      }],
+    ];
+
+    for (const [name, cap] of cases) {
+      let records;
+      let strings;
+      try {
+        records = collectReviewerWarningRecords(cap);
+        strings = collectReviewerWarnings(cap);
+      } catch (err) {
+        assert.fail(`${name}: threw ${err && err.message}`);
+      }
+      assert.ok(Array.isArray(records), `${name}: records must always be an array`);
+      assert.ok(Array.isArray(strings), `${name}: strings must always be an array`);
+    }
+  });
+});
+
+// ─── L. Closed `hostBehaviors` vocabulary (ADR-1016, closed by #2801) ────────
+
+describe('L. Closed hostBehaviors vocabulary (#2801)', () => {
+  const ROOT = path.resolve(__dirname, '..');
+
+  /** Every hostBehaviors key the shipped manifests actually declare. */
+  function shippedHostBehaviorKeys() {
+    const keys = new Set();
+    const capsDir = path.join(ROOT, 'capabilities');
+    for (const dir of fs.readdirSync(capsDir, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const file = path.join(capsDir, dir.name, 'capability.json');
+      if (!fs.existsSync(file)) continue;
+      const cap = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const hb = cap && cap.runtime && cap.runtime.hostBehaviors;
+      if (hb && typeof hb === 'object' && !Array.isArray(hb)) {
+        for (const key of Object.keys(hb)) keys.add(key);
+      }
+    }
+    return keys;
+  }
+
+  test('vocabularyExactlyMatchesWhatTheShippedManifestsDeclare', () => {
+    // DEFECT.GENERATIVE-FIX: two surfaces, one truth. A key added to a manifest
+    // without being declared here would warn on every build; a key left here
+    // after its last manifest drops it is dead vocabulary. Both directions fail.
+    const shipped = shippedHostBehaviorKeys();
+    assert.deepEqual(
+      [...shipped].sort(), [...KNOWN_HOST_BEHAVIORS].sort(),
+      'the closed vocabulary and the shipped manifests must name the same keys',
+    );
+  });
+
+  test('noShippedCapabilityDrawsAHostBehaviorWarning', () => {
+    // The closure must be inert for everything that ships today. If this fails,
+    // closing the vocabulary broke a real capability rather than a hypothetical one.
+    const capsDir = path.join(ROOT, 'capabilities');
+    const offenders = [];
+    for (const dir of fs.readdirSync(capsDir, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const file = path.join(capsDir, dir.name, 'capability.json');
+      if (!fs.existsSync(file)) continue;
+      const cap = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const rec of collectReviewerWarningRecords(cap)) {
+        if (rec.code === REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR
+          || rec.code === REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR) {
+          offenders.push(`${dir.name}: ${rec.field}`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [], `no shipped capability may draw a hostBehaviors notice, got: ${JSON.stringify(offenders)}`);
+  });
+
+  test('anUndeclaredHostBehaviorWarnsAndIsNotAnError', () => {
+    const cap = runtimeCapWithHostBehaviors({ someFutureSwitch: true });
+    const records = collectReviewerWarningRecords(cap);
+    assert.equal(records.length, 1, `expected one record, got: ${JSON.stringify(records)}`);
+    assert.equal(records[0].code, REVIEWER_WARNING.UNKNOWN_HOST_BEHAVIOR);
+    assert.equal(records[0].field, 'runtime.hostBehaviors.someFutureSwitch');
+    // Forward-compat invariant: a warning, never a validation error.
+    assert.deepEqual(validateCapability({ ...cap, version: '1.0.0' }, cap.id).filter((e) => e.includes('someFutureSwitch')), []);
+  });
+
+  test('aDeclaredHostBehaviorIsSilentAtAnyValue', () => {
+    for (const value of [true, false, 'x', 0, null, {}, []]) {
+      const cap = runtimeCapWithHostBehaviors({ reapplyCommand: value });
+      assert.deepEqual(
+        collectReviewerWarningRecords(cap), [],
+        `a declared key must be silent regardless of value, got value ${JSON.stringify(value)}`,
+      );
+    }
+  });
+
+  test('theRemovedAliasDrawsItsOwnNoticeNotTheGenericOne', () => {
+    // reviewerCli is excluded from the unknown-key sweep on purpose: it has a
+    // migration pointer the generic notice does not carry, and two records for
+    // one key would be noise.
+    const records = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ reviewerCli: true }));
+    assert.equal(records.length, 1, `expected exactly one record, got: ${JSON.stringify(records)}`);
+    assert.equal(records[0].code, REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR);
+    assert.equal(records[0].replacement, 'reviewer');
+  });
+
+  test('reservedKeysInTheBagAreIgnoredNotWarned', () => {
+    const hostile = JSON.parse('{"__proto__": {"polluted": true}, "constructor": 1, "prototype": 2, "reapplyCommand": "x"}');
+    const cap = runtimeCapWithHostBehaviors(hostile);
+    let records;
+    try {
+      records = collectReviewerWarningRecords(cap);
+    } catch (err) {
+      assert.fail(`collectReviewerWarningRecords threw: ${err && err.message}`);
+    }
+    assert.deepEqual(records, [], 'reserved names are skipped, not reported as unknown behaviors');
+    assert.equal({}.polluted, undefined, 'Object.prototype must not be polluted');
+  });
+});
+
+// ─── M. Diagnostics are bounded and control-safe (#2801 review findings) ─────
+//
+// Both loops iterate MANIFEST-SUPPLIED keys. An installed third-party manifest
+// is attacker-controlled and bounded only by MANIFEST_MAX_BYTES (8MB), so the
+// record count and each key's rendered length must both have a ceiling, and a
+// key must not be able to carry terminal escapes or a forged newline into
+// stderr / OverlayMeta.warnings.
+
+describe('M. Diagnostics are bounded and control-safe (#2801)', () => {
+  function manyUnknownHostBehaviors(n) {
+    const hb = {};
+    for (let i = 0; i < n; i += 1) hb['undeclaredKey' + i] = true;
+    return runtimeCapWithHostBehaviors(hb);
+  }
+
+  test('unknownHostBehaviorRecordsAreCappedWithASummary', () => {
+    const n = MAX_REPORTED_UNKNOWN_KEYS + 25;
+    const records = collectReviewerWarningRecords(manyUnknownHostBehaviors(n));
+    assert.equal(
+      records.length, MAX_REPORTED_UNKNOWN_KEYS + 1,
+      `expected ${MAX_REPORTED_UNKNOWN_KEYS} records plus one summary, got ${records.length}`,
+    );
+    const summary = records[records.length - 1];
+    assert.equal(summary.truncated, true);
+    assert.equal(summary.omittedCount, 25);
+    assert.equal(summary.field, 'runtime.hostBehaviors');
+  });
+
+  test('exactlyAtTheCapThereIsNoSummaryRecord', () => {
+    // limit-1 / limit / limit+1 around the ceiling.
+    const below = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS - 1));
+    assert.equal(below.length, MAX_REPORTED_UNKNOWN_KEYS - 1);
+    assert.equal(below.some((rec) => rec.truncated), false);
+
+    const at = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS));
+    assert.equal(at.length, MAX_REPORTED_UNKNOWN_KEYS);
+    assert.equal(at.some((rec) => rec.truncated), false, 'no summary when nothing was omitted');
+
+    const above = collectReviewerWarningRecords(manyUnknownHostBehaviors(MAX_REPORTED_UNKNOWN_KEYS + 1));
+    assert.equal(above.length, MAX_REPORTED_UNKNOWN_KEYS + 1);
+    assert.equal(above[above.length - 1].omittedCount, 1);
+  });
+
+  test('unknownReviewerFieldRecordsAreCappedTheSameWay', () => {
+    const lane = validLane();
+    for (let i = 0; i < MAX_REPORTED_UNKNOWN_KEYS + 5; i += 1) lane['futureField' + i] = 1;
+    const records = collectReviewerWarningRecords({ id: 'cap-x', reviewer: lane });
+    assert.equal(records.length, MAX_REPORTED_UNKNOWN_KEYS + 1);
+    assert.equal(records[records.length - 1].truncated, true);
+    assert.equal(records[records.length - 1].omittedCount, 5);
+  });
+
+  test('controlCharactersInAKeyNeverReachTheDiagnostic', () => {
+    // ESC-based colour sequence, a CR overwrite, and an embedded newline that
+    // would forge a second log line.
+    const hostile = '\x1b[31mred\x1b[0m\r\nforged: everything is fine';
+    for (const cap of [
+      runtimeCapWithHostBehaviors({ [hostile]: true }),
+      { id: 'cap-x', reviewer: { slug: 'x', [hostile]: true } },
+    ]) {
+      for (const rec of collectReviewerWarningRecords(cap)) {
+        // eslint-disable-next-line no-control-regex
+        assert.equal(/[\x00-\x1f\x7f-\x9f]/.test(rec.field), false, `control char survived into field: ${JSON.stringify(rec.field)}`);
+        // eslint-disable-next-line no-control-regex
+        assert.equal(/[\x00-\x1f\x7f-\x9f]/.test(rec.message), false, `control char survived into message: ${JSON.stringify(rec.message)}`);
+      }
+    }
+  });
+
+  test('anEnormousKeyNameIsClipped', () => {
+    const huge = 'k'.repeat(5000);
+    const [record] = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ [huge]: true }));
+    assert.ok(record, 'expected a record');
+    assert.ok(
+      record.field.length < MAX_REPORTED_KEY_CHARS + 40,
+      `field must be bounded, got length ${record.field.length}`,
+    );
+    assert.ok(record.field.endsWith('…'), 'a clipped key is marked as clipped');
+  });
+
+  test('aDeclaredKeyIsNeverClippedOrAltered', () => {
+    // The sanitizer must not perturb the ordinary case: declared keys are silent,
+    // and an undeclared but well-formed key is reported verbatim.
+    const records = collectReviewerWarningRecords(runtimeCapWithHostBehaviors({ someFutureSwitch: true }));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].field, 'runtime.hostBehaviors.someFutureSwitch');
   });
 });

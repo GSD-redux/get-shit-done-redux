@@ -1,0 +1,7 @@
+name = "gsd-reviewer"
+description = "Reviews pull requests for policy compliance"
+# model = "sonnet"
+developer_instructions = '''
+Review the diff for policy violations. Flag anything that touches auth,
+secrets, or CI configuration for a second pass.
+'''

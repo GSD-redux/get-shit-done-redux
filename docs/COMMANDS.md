@@ -721,6 +721,8 @@ Interactive command center for managing multiple phases from one terminal.
 /gsd-manager --analyze-deps         # Scan ROADMAP phases for dependency relationships before parallel execution
 ```
 
+**Phase completion is disk-strict (ADR-3180 §7.4, issue #3186).** A phase's status here — and in `roadmap analyze`, `roadmap update-plan-progress`, and `phase complete` — is decided by one rule: a passing `*-VERIFICATION.md` on disk, checked unconditionally (plan count is never a precondition, so a zero-plan phase with a passing verification reports complete). A ticked `- [x]` checkbox in `ROADMAP.md` is a human annotation only; it carries no machine authority and is never consulted for these commands' completion verdicts. `roadmap update-plan-progress` additionally withholds writing the checkbox/completion date while any plan in the phase has no matching `*-SUMMARY.md`, mirroring `phase complete`'s own coverage gate.
+
 **Checkpoint Heartbeats (#2410):**
 
 Background `execute-phase` runs emit `[checkpoint]` markers at every wave and plan
@@ -787,6 +789,8 @@ Socratic ideation session — guide an idea through probing questions, optionall
 /gsd-explore                        # Open-ended ideation session
 /gsd-explore authentication strategy  # Explore a specific topic
 ```
+
+When the optional research pass runs, each surfaced claim is dispositioned three ways — **admit** (survives a prompted-to-refute pass and is grounded in a source, shown with the source), **refute** (a source *authoritative for that claim* contradicts it, dropped or corrected), or **abstain** (unverifiable, non-authoritative disagreement, or a source-vs-prior conflict). Abstained claims are listed in a separate **Unresolved** ledger rather than smoothed into the narrative. (Claims-side analogue of the honest verifier, #1154.)
 
 ---
 
@@ -1341,6 +1345,32 @@ The `API-SURFACE.md` output lists exported symbols (functions, classes, decorato
 
 ---
 
+### `gsd-tools refactor`
+
+Evaluate the complexity of the files a phase touched and surface a scoped refactor proposal when a function's score crosses `refactor.complexity_threshold` or jumps past its recorded anchor by more than `refactor.complexity_jump_delta`. Gated on `refactor.trigger_enabled: true` in `config.json` (see [Configuration Reference](CONFIGURATION.md#refactor-trigger-settings)); when disabled, every subcommand prints an activation hint and stops — it is inert otherwise.
+
+| Subcommand | Description |
+|------------|-------------|
+| `evaluate --phase <N> [--since <ref>] [--raw]` | Analyze files changed since the phase's start commit (or `--since <ref>`) and write a `<NN>-REFACTOR.md` proposal when a candidate triggers |
+| `status [--phase <N>] [--raw]` | List all recorded proposals across phases, or show the proposal for one phase |
+| `accept --phase <N> [--raw]` | Disposition the phase's untriaged proposal as accepted; re-anchors the target function's baseline to its current score |
+| `decline --phase <N> --reason "<text>" [--raw]` | Disposition the phase's untriaged proposal as declined with a recorded reason; re-anchors the baseline the same way |
+
+**Produces:** `.planning/phases/<N>/<NN>-REFACTOR.md` (from `evaluate`, only when a candidate triggers)
+
+```bash
+node gsd-tools.cjs refactor evaluate --phase 3                       # Evaluate phase 3's touched files
+node gsd-tools.cjs refactor evaluate --phase 3 --since abc123        # Evaluate against a specific ref
+node gsd-tools.cjs refactor status                                   # List all recorded proposals
+node gsd-tools.cjs refactor status --phase 3                         # Show phase 3's proposal
+node gsd-tools.cjs refactor accept --phase 3                         # Accept phase 3's proposal
+node gsd-tools.cjs refactor decline --phase 3 --reason "flat dispatch table, not a real hotspot"  # Decline with a reason
+```
+
+Trigger semantics match ESLint's `complexity: {max: N}` — strictly greater, so a score exactly equal to `refactor.complexity_threshold` does not trigger. The jump check compares against the function's anchor (the score recorded the last time it was accepted or declined), not the single-phase change, so it accumulates across phases until dispositioned. `refactor accept`/`refactor decline` are the only actions that clear a tracked proposal — the score improving on its own does not. See [ADR-1953](adr/1953-complexity-triggered-refactor.md).
+
+---
+
 ## AI Integration Commands
 
 ### `/gsd-ai-integration-phase`
@@ -1710,6 +1740,64 @@ node gsd-tools.cjs roadmap upgrade --convention milestone-prefixed --apply  # ap
 
 ## State Management Commands
 
+### `effort sync`
+
+Re-align installed agent files with your current effort and model configuration, without a full reinstall.
+
+**Prerequisites:** GSD installed for a runtime
+**Produces:** A structured change report; writes only with `--apply`
+
+```bash
+node gsd-tools.cjs effort sync            # dry run — reports, writes nothing
+node gsd-tools.cjs effort sync --apply    # write the changes
+```
+
+| Flag | Description |
+|------|-------------|
+| `--apply` | Write the changes. **Omitted is a dry run** — the default reports and touches nothing |
+| `--dry-run` | Explicit dry run (the default) |
+| `--runtime <name>` | Override the runtime instead of reading it from config |
+| `--config-dir <path>` | Point at a specific runtime config directory |
+
+**On `claude`** it re-syncs the `effort:` frontmatter of installed `gsd-*.md` agents.
+
+**On `codex`** it repairs `.toml` files that drift from the passive model posture ([ADR-2313](adr/2313-codex-passive-model-posture.md)) — the counterpart to the detection that [`validate agents`](#validate-agents) performs:
+
+| Situation | What happens |
+|---|---|
+| `model` pins a tier alias or a `claude-*` id | the `model` line is removed, so the agent inherits the session model |
+| `model_reasoning_effort` with no `model` | the orphaned effort line is removed ([#838](https://github.com/open-gsd/gsd-core/issues/838)) |
+| `model` pins a real Codex id | **left untouched**, reported `skipped` — an explicit pin is yours to keep |
+| the file cannot be parsed | **refused and reported** — never partially rewritten |
+| the file is a symlink | skipped, as on the Claude path |
+
+Only the targeted lines are removed. Line endings, BOM, key order, comments, blank lines, and any keys GSD does not itself emit are preserved byte-for-byte, so a repair shows up as a two-line diff rather than a reformatted file. Writes are atomic — the file is either its old contents or its new ones, never a partial write.
+
+---
+
+### `validate agents`
+
+Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture.
+
+**Prerequisites:** GSD installed for a runtime
+**Produces:** Installed / missing / incomplete agent lists, plus a `codex_posture` report
+
+```bash
+node gsd-tools.cjs validate agents
+```
+
+`codex_posture` is populated only when the active runtime is `codex`; on every other runtime it reports `not_codex` and reads nothing from disk. It is **read-only** — it reports violations and never edits your files.
+
+| Violation reason | Meaning |
+|---|---|
+| `anthropic_flavored_model` | The `.toml` pins a GSD tier alias (`opus`, `sonnet`, `haiku`, `fable`) or a `claude-*` id. Codex rejects these — the agent fails to spawn with a 400 |
+| `orphaned_reasoning_effort` | A `model_reasoning_effort` with no `model`, leaving the model following your Codex session while the effort follows GSD ([#838](https://github.com/open-gsd/gsd-core/issues/838)) |
+| `unreadable` | The file could not be read. Other agents are still checked |
+
+Presence and posture are separate verdicts: a missing agent is reported in `missing`, not as a posture violation. See [ADR-2313](adr/2313-codex-passive-model-posture.md) for the posture itself, and [How to recover and troubleshoot](how-to/recover-and-troubleshoot.md#if-codex-agents-fail-to-spawn-with-a-400-about-an-unsupported-model) for the symptom-led walkthrough.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
@@ -1720,6 +1808,17 @@ Detect drift between STATE.md and the actual filesystem.
 ```bash
 node gsd-tools.cjs state validate
 ```
+
+The report also carries a `scope` field reporting whether the drift derivation could actually run:
+
+| `scope` | Meaning |
+|---|---|
+| `complete` | The derivation ran over usable input — a resolvable phase, a readable disk scan. `valid`/`warnings`/`drift` are a real answer. |
+| `truncated` | Part of the input was cut short (e.g. the phase's plan/summary scan hit its cap) — the answer may be incomplete. |
+| `unscoped` | `Current Phase` could not be resolved from either frontmatter or body — there was nothing to scope the disk lookup to, so the derivation never ran. |
+| `unreadable` | The frontmatter parse or a filesystem read (the phases directory scan) failed — the derivation could not consult its input. |
+
+`valid` is **not** routed from `scope`: `valid` still means "no drift warnings were found," and `scope` says whether the scan could actually run. A freshly-initialized project reports `{valid:true, warnings:[], drift:{}, scope:'unscoped'}` — nothing was wrong, and the phase could not be checked. See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) for how to act on each `scope` value.
 
 ---
 
@@ -1777,6 +1876,21 @@ Record state transition after plan-phase completes (Planned/Ready to execute).
 
 ```bash
 node gsd-tools.cjs state planned-phase --phase 3 --plans 2
+```
+
+---
+
+### `state complete-phase [--phase N]`
+
+Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `Last Activity`, and `## Current Position` fields. `--phase` is optional; when omitted, the phase is resolved from STATE.md's `Current Phase`/`Phase` fields (frontmatter `current_phase` preferred, falling back to the body).
+
+**Idempotency guard (#3489):** if STATE.md's canonical current phase already names a phase distinct from the one being marked complete — including when that phase lives only in frontmatter `current_phase`, not the body — the command is a no-op (`idempotent: true`) rather than rolling STATE.md back to the requested phase's moment-of-completion. If the frontmatter cannot be parsed at all, the command refuses outright (`Unable to read STATE.md frontmatter; refusing to run complete-phase to avoid a destructive rollback`) instead of guessing.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** Updated `STATE.md` marking the resolved phase complete, or a no-op when the guard determines the phase was already superseded
+
+```bash
+node gsd-tools.cjs state complete-phase --phase 3
 ```
 
 ---

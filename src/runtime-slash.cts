@@ -74,19 +74,24 @@ export function formatGsdSlash(commandName: unknown, runtime: unknown): unknown 
 }
 
 /**
- * Resolve the effective runtime for a project directory.
+ * Resolve the explicit runtime for a project directory, from the two
+ * explicit sources only — no default is applied.
  *
- *   process.env.GSD_RUNTIME  >  config.runtime  >  'claude'
+ *   env.GSD_RUNTIME  >  config.runtime  >  null
  *
- * Mirrors the precedence already used by profile-output.cjs and the rest of
- * the runtime resolution chain. Returns a lowercased string so downstream
- * comparisons can be case-blind.
+ * Returns null when neither explicit source is set, so a caller can
+ * distinguish "config said claude" from "nothing was set" (needed by
+ * #3245's host-detection rung, which must only run when this returns null).
  *
  * @param projectDir - path to the project directory, or null/undefined
- * @returns the resolved runtime name
+ * @param env - environment variables to read GSD_RUNTIME from; defaults to process.env
+ * @returns the resolved runtime name, or null if neither source is set
  */
-export function resolveRuntime(projectDir: string | null | undefined): string {
-  const envRuntime = resolveRuntimeNameFromCandidates(process.env['GSD_RUNTIME']);
+export function resolveExplicitRuntime(
+  projectDir: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const envRuntime = resolveRuntimeNameFromCandidates(env['GSD_RUNTIME']);
   if (envRuntime) return envRuntime;
   if (projectDir) {
     try {
@@ -109,7 +114,23 @@ export function resolveRuntime(projectDir: string | null | undefined): string {
       // runtime output formatting.
     }
   }
-  return 'claude';
+  return null;
+}
+
+/**
+ * Resolve the effective runtime for a project directory.
+ *
+ *   process.env.GSD_RUNTIME  >  config.runtime  >  'claude'
+ *
+ * Mirrors the precedence already used by profile-output.cjs and the rest of
+ * the runtime resolution chain. Returns a lowercased string so downstream
+ * comparisons can be case-blind.
+ *
+ * @param projectDir - path to the project directory, or null/undefined
+ * @returns the resolved runtime name
+ */
+export function resolveRuntime(projectDir: string | null | undefined): string {
+  return resolveExplicitRuntime(projectDir) ?? 'claude';
 }
 
 /**

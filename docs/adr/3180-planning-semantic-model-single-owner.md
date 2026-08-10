@@ -278,7 +278,7 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Note on #3204.** Routing `buildStateFrontmatter` through the owner will not by itself fix #3204: its defect is the discriminator one layer *above* enumeration — "is the ROADMAP's phase count safe to trust" — which misclassifies ordinary `## Overview` / `## Progress` headings as milestone sectioning. That discriminator **is** §7.1's `isMilestoneBoundedInRoadmap`. The enumeration routing and the discriminator replacement must ship together or the defect survives the consolidation.
 
-#### 7.4 Phase completion — *Required — Phase 4, blocked*
+#### 7.4 Phase completion — *Required — Phase 4 (decided: disk-strict)*
 
 **Question.** Is phase `P` complete?
 
@@ -286,9 +286,29 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Rule.** `readVerificationStatus` is called **unconditionally**. Plan count is not a precondition: a phase with zero plans and a passing `*-VERIFICATION.md` is complete. The read path and the write path share this predicate, so "`phase.complete` succeeds while `init.manager` reports incomplete" is unrepresentable for identical input.
 
-**OPEN QUESTION — does a ROADMAP checkbox override disk state? (#2957).** There are **three** completion implementations, not the two the epic recorded: `cmdPhaseComplete`, `buildPhaseCompletionProjection`, and `buildStateFrontmatter`, which computes completed phases from plan scanning alone and never consults the ROADMAP checkbox that `cmdRoadmapAnalyze` deliberately honors. Checkbox-override versus disk-strict is a **product decision**, and it is not made here.
+**DECIDED — disk state is authoritative; a ROADMAP checkbox does not override it (#2957, maintainer decision 2026-08-08).** This replaces the OPEN QUESTION this section previously carried, per §7's own rule that a behavior not stated here is not decided.
 
-**Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third, and Phase 4 must not ship before #2957 is decided — a shared predicate that silently adopts whichever semantics its author happened to hold is a product decision made by typing order.
+There are **three** completion implementations, not the two the epic recorded: `cmdPhaseComplete`, `buildPhaseCompletionProjection`, and `buildStateFrontmatter`, which computes completed phases from plan scanning alone and never consults the ROADMAP checkbox that `cmdRoadmapAnalyze` deliberately honors. The resolution:
+
+1. **A ticked ROADMAP checkbox is a human annotation with no machine authority.** `cmdRoadmapAnalyze`'s deliberate honoring of it is the **divergent** behavior here, and it is **removed** rather than generalized.
+2. `buildStateFrontmatter`'s existing plan-scanning semantics therefore become **canonical**, and all three implementations route through the one predicate.
+3. The shared predicate derives completion from plan and verification state **on disk**, per the Rule above — `readVerificationStatus` unconditionally, plan count not a precondition.
+
+**Why disk-strict.** A stale tick asserting completion over contradicting disk state is precisely the confidently-wrong answer this epic exists to remove, and it is the same failure shape as the `100`-percent aggregate (#3161): a well-formed, plausible value that no caller can distinguish from a real one.
+
+**Tier-2 consequence (Decision 3).** A phase marked complete *solely* by a ticked checkbox — no passing `*-VERIFICATION.md`, plans outstanding — **stops reporting complete from `roadmap analyze`**. The break is deliberate and ships with its own breaking-change call-out, changeset fragment and docs update in Phase 4's PR.
+
+**A missing verdict is not a passing one (decided 2026-08-10, maintainer).** `isPhaseComplete` is `verification.status === 'passed'`, so an **absent** `*-VERIFICATION.md` means **not complete** — everywhere, including `workstream list` / `status` / `progress`.
+
+This retires #2645's deliberate boundary, which kept `missing` / `unknown` / `stale` out of the failing set specifically so a verifier-disabled project would not report 0% forever. Recorded rather than absorbed silently, because the consequence is real: **a project that never runs the verifier now reports its phases incomplete.**
+
+It also closes #2645's Goodhart hole from the opposite side. That issue's symptom was that *deleting* a `*-VERIFICATION.md` **raised** the reported percentage — the metric could be improved by destroying the evidence. Under disk-strict, deleting it **lowers** completion, so the incentive inverts and the ledger's deletion-memory role is no longer load-bearing.
+
+**Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third.
+
+**Consumers that must route through the owner.** `cmdPhaseComplete`, `buildPhaseCompletionProjection`, `buildStateFrontmatter` (the three #2957 names), plus `cmdRoadmapAnalyze`, `cmdInitManager`, `cmdRoadmapUpdatePlanProgress`, `buildWorkstreamInventory`, and the prompt layer's `mvp-phase.md` — **nine re-derivations found by the guard where this section named three.**
+
+**A write-path gate is not a second predicate.** `cmdRoadmapUpdatePlanProgress` writes a completion checkbox, and completion alone does not mean every plan was executed — `readVerificationStatus`'s staleness check compares summary mtimes, never plan count. It therefore ANDs the owner's verdict with an explicit plan-coverage gate, mirroring the separate #2648 unexecuted-plan gate `cmdPhaseComplete` already carries. That composition is sanctioned; re-deriving completion beside it is not.
 
 #### 7.5 Live-plan counting — *Enforced (Phase 1), with a known representation gap*
 
@@ -377,7 +397,7 @@ One row per derivation. A blank owner is a derivation whose contract is locked (
 | Milestone windowing (§7.1) | `roadmap-parser.cts` | `lint-milestone-window-drift.cjs` | `src/` | enforced |
 | Milestone identity (§7.2) | `roadmap-parser.cts` (Phase 6) | same guard, token set widened by Phase 6 | `src/` | enforced |
 | Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced — the state writers included (#3185) |
-| Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | blocked on #2957 |
+| Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | contract decided (disk-strict, #2957); migration is Phase 4 |
 | Live-plan counting (§7.5) | `plan-scan.cts` | `lint-plan-count-drift.cjs` | `src/` | enforced |
 | Live-plan counting, prompt layer (§7.5) | — (Phase 8) | `lint-planning-prompt-drift.cjs` | `gsd-core/workflows`, `commands`, `agents`, `skills` | ratcheted, 7 sites |
 | Completion ratio (§7.6) | `phase-lifecycle.cts` | `lint-completion-ratio-drift.cjs` | `src/` | arithmetic + rule 3 enforced; rule 4 is Phase 7 |
@@ -739,3 +759,377 @@ out, and an incomplete list is the same defect in miniature that this epic exist
 as a *named canonical function* — the only sanctioned exemption form. `locateMilestoneHeadings` was
 refactored into a version-filtered view over one shared grammar source so the two primitives cannot
 drift, with a parity test asserting the filtered enumeration equals the locator's selection.
+
+### Amendment 5 — Phase 5 (#3187) validation: the contract held; the guard nearly reported a zero it had not earned
+
+Decision 2's contract needed **no change** for its fifth consumer. `stateFieldValue` returns
+`{ value, scope }` over the frozen four-member `SCOPE`, and every case this phase hit was already
+one of them. `src/planning-scope.cts` is untouched, so Phase 5 carries no `.cts` six-gate ripple.
+
+**Declared deviation from Decision 1's owner surface.** Decision 1 names the owner as
+`stateExtractField` "carrying the #1760 fallback chain". Shipped instead: `stateExtractField` is
+left **byte-identical** and the chain is a *new* owner beside it. `stateExtractField` answers a
+narrower question — "what is field F in this body text" — which genuinely has no scope dimension,
+and it has **20 direct callers with a CRITICAL blast radius** (53 affected symbols, 5 process
+flows). Putting the scope on the primitive would have rewritten every one of those call sites to
+buy nothing. The thing that can fail to run is the *chain*, so the chain is what carries the scope.
+This is a signature deviation, not a contract change — the same class Amendment 3 declared for
+`listMilestonePhaseDirs`.
+
+**The copy count was a lower bound for the SIXTH consecutive time — 14, where the epic scoped 5.**
+Per Amendment 3's standing rule the guard was built and run **before** scope was fixed. Grouped by
+ladder-bearing function: `cmdStateSnapshot` 11, `cmdStatePrune` 2, `smart-entry.cts::fmScalar` 1.
+`find_symbol` separately reports 20 direct callers, which is the figure §7.7 already told Phase 5 to
+drive from rather than the epic's "five call sites".
+
+**The first guard would have lied, and the mechanism is worth recording because it is new.** A
+bounded-line-window detector was built first and found **7**. The other **7** —
+`state.cts:1484–1497` — sat further from `cmdStateSnapshot`'s ladder than its 15-line window
+reached. Migrating the visible 7 would have left a green guard with seven survivors: Decision 4(a)'s
+"a zero it did not earn", arrived at by a mechanism no prior phase met. Replaced with
+**function-scoped co-occurrence** — *a function that both reads a frontmatter scalar and calls the
+body extractor is re-deriving the chain* — which needs no threshold constant and cannot be reflowed
+around. **Generalized lesson: any numeric window in a drift guard is a Goodhart target; scope
+detection to a syntactic unit instead.** Two further evasions (a member/computed operand, a swapped
+tier order) were found by the isolated review and closed with their own tests; a guard is not
+trusted until a deliberate re-derivation is shown to fail it.
+
+**Decision 4(d) applied to this derivation, and it bit again.** The guard's first scan surface was
+`src/` — which is exactly the one-directory-wide allowlist 4(d) was written to forbid, repeated by a
+phase that had read 4(d). `gsd-core/workflows/smart-entry.md` instructs an agent to read `status`
+from "frontmatter `status:` or body `**Status:**`" — a prose expression of this chain. The surface
+is now scanned. That site carries a **permanent exemption with a written reason**, not a Decision
+4(e) ratchet: it is the `gsd-tools`-is-down fallback, so by construction it cannot call the owner,
+and a ratchet implies removable debt with an owning issue. **Not every unconsolidated site is
+debt** — 4(e) governs debt, and a documented impossibility is a different thing.
+
+**A seventh derivation family was found and deliberately NOT consolidated, on evidence.** Three
+`## Current Position` locators exist. `state.cts::matchCurrentPositionSection` genuinely delegates
+to `state-document.cts::stateCurrentPositionSlice`, so it is not a copy. But
+`state-transition.cts::locateCurrentPosition` / `sliceCurrentPositionSection` is independent, and
+both were run over eight adversarial bodies. Fence-awareness turned out to be **shared** (both reach
+`tokenizeHeadings`), so that concern was unfounded — but the two diverge in *both* directions:
+`locateCurrentPosition` misses `### Current Position` at h3, while `collectSection` applies
+`.trimEnd()` where the byte-exact mutation callers (`mutateCurrentPositionFirstTime` /
+`mutateCurrentPositionResume`) depend on the trailing newline for span reassembly. Folding would
+silently drop a newline from every Current Position body on every write. **This is Amendment 3's
+"0.x split" recurring: one owner governs who computes an answer, not how many questions share it.**
+Left for its own phase; `CONTEXT.md`'s claim that the read-path slice is "the one owner of that
+scope" is corrected to name the mutation-path locator.
+
+**Decision 3's Tier-2 table, re-derived for Phase 5:**
+
+| Command surface | Output change |
+|---|---|
+| `state validate` | gains `scope`. `valid` is **not** routed from it — Decision 2 rejected a boolean ok/degraded, and a legacy STATE.md with no `## Current Position` is `UNSCOPED`, a supported degrade, not an invalid document. It also stops resolving its phase from unstripped content, closing a #1255-class frontmatter shadowing where a frontmatter `status:` key won over the body field |
+| `state complete-phase` — **not predicted** | the #3489 idempotency guard now consults frontmatter `current_phase`, so a project whose phase lives only in frontmatter is no longer silently rolled back on a re-run; adds a refusal when frontmatter cannot be read |
+| `workstream` inventory — **not predicted** | `readStateProjection` resolves frontmatter-only `status`/`current_phase`/`last_activity` instead of reporting them absent |
+| `state snapshot`, `state prune`, `/gsd:next` signals | resolve fields through the one owner, so they can no longer disagree about the same STATE.md. `smart-entry`'s read stays deliberately **unscoped** under a written exemption — it asks a different question than `state.cts`'s #1776/#2956-scoped copies, and folding it would silently change routing |
+
+**What this phase does NOT close.** §7.7's rule says `state validate` "reports invalid for a
+genuinely invalid document" but never defines *genuinely invalid*. This phase does not invent that
+definition — it makes the derivation's scope visible so the question becomes answerable, and emits
+the drift warnings that were always intended but unreachable. Widening what counts as invalid stays
+undecided, per §7's own rule.
+### Amendment 6 — 2026-08-09: the diagnostic layer, and a citation convention for the duplicated Amendment 4
+
+**Phase 9 (#3287). Docs-only; adds Decision 8. Nothing in the tree changes on this merge.**
+
+This section is **append-only by construction**: `docs/adr/README.md` states "ADRs are append-only.
+Amendments extend existing ADRs with a dated section rather than replacing them", and
+`docs/contributor-standards.md` adds "the original body is never rewritten." An earlier draft of this
+amendment edited §6, the Guard roster, the status block and a historical heading in place. That was a
+standards violation caught in review and reverted; every change below is *declared here* and the
+original body is untouched.
+
+**Line numbers in this section are as of `next` @ `2dbee3ebd`** and will drift; the symbol names are
+the durable anchors. Where a number below corrects an earlier draft, the correction is noted — a
+design lock citing the wrong line teaches the next reader the wrong thing.
+
+**Phase 5 (#3187) merged while this amendment was in review, and it changed one of the facts below.**
+Re-verified against `2dbee3ebd` rather than restated from the draft: `cmdStateValidate` no longer
+reads a bare literal — it now calls `stateFieldValue(fm, body, 'current_phase', 'Current Phase')`
+(`state.cts:2943`), consults frontmatter first, and early-returns on `currentPhase === null`
+(`state.cts:2949`). So **#3162 is fixed on `next`**, exactly as §6's subsumption table predicted it
+would be. That removes one of the two instances this amendment originally cited and is recorded here
+rather than silently dropped, because the prediction coming true is evidence for Decision 8, not
+against it. `verify.cts` was untouched by Phase 5, so the checker-side instance below still stands.
+
+#### 6a. Citation convention for the two sections numbered "Amendment 4"
+
+**On this amendment's own number.** Seven amendment sections now exist but only six distinct numbers
+are used — 1, 2, 3, 4 twice, and 5 (taken by Phase 5, #3187, which merged while this amendment was in
+review). This section takes **6**, the next unused number, so the sequence reads 1, 2, 3, 4a, 4b, 5, 6
+with no phantom gap.
+
+Two sections carry the heading `### Amendment 4`. Renaming either would rewrite the original body, so
+they are **not renamed**; instead they are disambiguated by origin, and later text should cite them
+this way:
+
+| Cite as | Heading | Introduced by | Subject |
+|---|---|---|---|
+| **Amendment 4a** | "the 2026-08-08 coverage audit…" | PR #3223 (`b9f51836e`) | two more derivation families, a fifth enumeration copy, a half-surface guard |
+| **Amendment 4b** | "Phase 6 (#3216) validation…" | PR #3226 (`86bebcefa`) | milestone identity; three copies found where one was scoped |
+
+Every pre-existing in-body citation of "Amendment 4" was audited against both candidates and refers
+to **4a** — the status block's "adds Decision 7", Decision 4's "see Amendment 4", §7.3's "Amendment 4's
+scope table row 1", §7.6's "Amendment 4 originally asserted", and the Cross-references' "the three
+added by Amendment 4". None is ambiguous in effect, so none is edited.
+
+#### 6b. Scope, as extended by this amendment
+
+§6's lists are not rewritten. As of this amendment they are read with these additions:
+
+- **In scope, added:** the *diagnostic layer* — the surfaces that report on these derivations
+  (Decision 8 below) and its two guards.
+- **Out of scope, added:** `state.sync`. It is a *writer* whose disk scan belongs to §7.3's owner, so
+  Decision 8 refers rather than duplicates — the posture `CONTEXT.md` § *Bespoke vs Canon Prohibition*
+  already names, "referred, not duplicated". Also out: the repo-wide "every validator proves it can
+  fail" gate, which belongs to epic #3053; Decision 8.5 requires the fixture only for the rules it
+  defines.
+- **§6's Phase 5 scope note is resolved.** It reads "#3180's Done-when list should be amended to
+  match, or Phase 5 reads as unclaimed scope." Verified against the live epic: the list already
+  carries a *State field extraction* item bound to Phase 5, so the note is historical. Re-checking it
+  surfaced a live instance of the same defect — this amendment's own — because §6 now admits a layer
+  the epic's Done-when list did not claim. A *Diagnostic layer* item was added to #3180 in the same
+  change; shipping the warning while reproducing the fault would have been the worse outcome.
+
+#### 6c. Guard roster, as extended by this amendment
+
+Two rows join the roster (declared here rather than inserted above):
+
+| Derivation | Owner | Guard | Scan surface | Status |
+|---|---|---|---|---|
+| Diagnostic subject (8.1) | `planning-snapshot.cts` (Phase 10) | `lint-planning-snapshot-bypass-drift.cjs` | `src/` | contract only |
+| Planning-artifact registration (8.4) | `artifacts.cts` | `lint-planning-artifact-writer-drift.cjs` (Phase 12) | `src/` | contract only |
+
+**The second row is a different shape, recorded as such rather than filed under a contract it does
+not match.** Every other row guards a derivation's **uniqueness** — that exactly one implementation of
+an answer exists. The artifact-registry guard proves a registry's **completeness**: that every writer
+producing a `.planning/` root file is represented in `artifacts.cts`. It scans for *writers*, not
+re-derivations, so "0 independent re-derivations" is not its success condition — "0 unregistered
+writers" is. It belongs in this roster because it is the same mechanism (whole-surface scan,
+ratcheted, shrink-only) applied to an adjacent failure mode.
+
+#### Why the diagnostic layer is the same failure class, one layer up
+
+Decisions 1–7 gave every derivation an owner and a written correct answer. They said nothing about the
+surfaces that **report** those answers, and the defect history moved there.
+
+`cmdValidateHealth` (`src/verify.cts:1553-2459`) is a single 907-line function, `complexity_score` 28,
+one direct caller, emitting 30+ codes through one nested
+`addIssue(severity, code, message, fix, repairable)` closure (`verify.cts:1599`) where severity is a
+per-call argument rather than a property of the code. Each check re-derives the thing it checks, and in
+every row a correct implementation already exists beside the broken one:
+
+| What the checker re-derives | Its version | The owner beside it | Issue |
+|---|---|---|---|
+| The current phase | W011 reads `/\*\*Current Phase:\*\*/i` then `/Current Phase:/i` (`verify.cts:1992-1993`, emit `:2006`) and matches neither against real output | §7.7's owner, now `stateFieldValue` — which `cmdStateValidate` was migrated onto by Phase 5 (`state.cts:2943`), fixing #3162. `buildStateFrontmatter` (`state.cts:1631`) still carries the older `stateExtractField(bodyContent, 'Current Phase') ?? prosePhase.phase` form | #3280 (#3162 closed by Phase 5) |
+| Real vs sentinel phase dir | health's `collectDiskPhases` (`verify.cts:1346-1366`) applies no filter | `isSentinelPhaseId` (`phase-id.cts:378-394`) — **1 caller, and health is not it** | #3225 |
+| Recognized `.planning/` artifact | `isCanonicalPlanningFile` (`artifacts.cts:42`) — **1 caller, 0 callees**, 11 hand-typed names | no writer registers; `.planning/WINDOWS.md`, which gsd-core itself writes, is absent | #3224 |
+| Disk-vs-roadmap phase comparison | a **second** copy in `cmdValidateConsistency` (`verify.cts:1413-1551`), emitting bare strings with no code | §7.3's enumeration owner | #3225, second copy |
+
+**A gate that cannot fail — one instance left, and the arithmetic is shown.** The shipped template
+(`gsd-core/templates/state.md:32`) emits `Phase:` under `## Current Position`; the literal
+`Current Phase` appears nowhere in it. The class had two members when this amendment was drafted:
+`cmdStateValidate`, which §7.7 already governed, and **W011** (`verify.cts:1992-1993`, emit `:2006`),
+which no decision covered. Phase 5 fixed the first by migrating it onto §7.7's owner. W011 remains,
+because `verify.cts` sits in a surface Decisions 1–7 do not reach — which is the whole argument for
+Decision 8, stated by a live example rather than by assertion. **A derivation getting an owner does
+not fix the surfaces that report on it; only owning those surfaces does.**
+
+**An earlier draft of this amendment claimed three instances and named W002 as the third. That was
+wrong and is corrected rather than quietly dropped.** `verify.cts:1646` is a generic
+`[Pp]hase\s+(TOKEN)` reference collector and W002 emits at `:1682`; it cross-checks any phase
+reference against the disk set and has nothing to do with the `Current Phase` literal. Recording the
+error because a design lock's central evidence claim is exactly the thing a later reader will not
+re-verify — and because the same over-count is what Amendment 4a's standing rule warns about, in the
+other direction.
+
+**The correct model was in the prompt layer the whole time.** `gsd-core/workflows/health.md:169-190`
+publishes a roster declaring severity and repairability **per code**, plus a repair-actions table with
+named actions and a **risk** column. The code carries only `fix: string` and `repairable: boolean`. The
+published roster carries **17 rows** against the 30+ codes emitted, so W010–W017 and W020–W023 have
+never been documented — the doc is not merely stale, it is structurally unable to keep up, because
+nothing derives it. Decision 8 inverts that: the rule table becomes the source and the table is
+generated from it. *(An earlier draft said 16 rows; the table is E001–E005, W001–W009, W018, W019 and
+I001 — 17.)*
+
+**Codes are not 1:1 with subjects.** W021 (`:2172` milestone-prefixed phase mismatch, `:2276`
+milestone-complete unstarted check) and W017 (`:2107` orphan worktree, `:2127` stale worktree) each
+cover two unrelated subjects under one code. W010 (×4), W020 (×3) and W022 (×3) are multi-branch but
+share one subject and one remedy each, so they are legitimately one rule apiece — the distinguishing
+test is subject identity, not message count.
+
+### Decision 8. The diagnostic contract — *Required — Phases 9–12*
+
+Added by Amendment 6, and **normative on the same terms as Decision 7**: where this section and the
+code disagree the code is the defect; a behavior not stated here is not decided; amending a rule here
+is a further amendment to this ADR. Decision 8 **consumes** §7.1–7.7 and does not restate or fork any
+of them — in particular §7.7 already governs `state validate`'s unconditional `{valid: true}`, and
+Decision 8 does not re-decide it.
+
+#### 8.1 The subject a rule may read — *Required — Phase 10*
+
+**Question.** What may a diagnostic rule look at?
+
+**Owner.** `src/planning-snapshot.cts` — a parsed projection of `.planning/`, composed from the §7 owners.
+
+**Rule.**
+1. A rule's signature is `(snapshot) => Diagnostic[]`. It receives no `cwd`, no `fs`, no other ambient I/O.
+2. The snapshot exposes **parsed values, never raw document text.** This clause is load-bearing: given
+   the text a rule can re-derive a field's location locally, which is the defect §7.7 removes one layer
+   down. Given only the parsed value it cannot. The prohibition is structural, not advisory.
+3. Every snapshot field carries its `scope` (Decision 2). A rule branches on `COMPLETE`-and-empty
+   versus the three non-answers; it may not treat them alike.
+4. Read failures are reported at construction via `warnUnusableInput` (the Unusable Input Diagnostic
+   Module, #1879/#1883) and the field's `scope` is `UNREADABLE`. A rule never sees a plausible default
+   standing in for a failed read. **That module is distinct from Decision 8:** it owns *I/O and parse*
+   failure, whereas Decision 8's rules have no exception to catch — the read succeeded and the
+   predicate was wrong.
+
+#### 8.2 The diagnostic a rule emits — *Required — Phase 11*
+
+**Question.** What is a finding?
+
+**Owner.** `src/health-diagnostic.cts` — the `Diagnostic` value, the frozen remedy vocabulary, the rule
+table, the evaluator.
+
+**Rule.**
+1. **One code = one rule = one subject.** A rule may vary its message with the data; it may not cover
+   two subjects. A code identifies the *subject*, not the sentence.
+2. **Codes are append-only and never renumbered.** A code is the only part of this contract a user
+   carries away from the tool — into a troubleshooting page, a session log, an issue report — so
+   renumbering is a silent break with no compensating benefit. Where one code currently covers two
+   subjects, the second subject takes a **new** code.
+3. **Severity and repairability are declared on the rule**, not passed at the emit call. They are
+   properties of the finding class, and `health.md` has published them per-code all along; the code is
+   what diverged.
+4. A rule is a **function in a frozen table.** There is deliberately no declarative rule grammar, no
+   condition mini-language, no precedence system, no string-dispatched predicate, and no user-authored
+   rules. See *Software laws applied* — Greenspun's Tenth Rule is why this is written down rather than
+   left to taste.
+
+#### 8.3 The remedy — *Required — Phase 11*
+
+**Rule.**
+1. A remedy is a **value** — `{action, risk, args}` over two frozen enums — not a prose string. Adding
+   a member is the repo's standard three coordinated changes: enum + emitting site + the test locking
+   `Object.keys(...).sort()`, exactly as `PARITY_VIOLATION` and `UNUSABLE_REASON` do.
+2. The vocabulary is **harvested, not invented.** `health.md`'s published repair-actions table already
+   names **five** actions and classifies each by risk — `createConfig`, `addNyquistKey` and
+   `backfillMilestones` are additive with no risk; `resetConfig` loses custom settings;
+   `regenerateState` loses session history. Those five are Decision 8's first members and that column
+   is its risk axis. Note the two non-trivial risks are the *only* two, so `DESTRUCTIVE` starts with
+   exactly two members and the enum is not a speculative taxonomy.
+3. A remedy that destroys user data or history declares `risk: DESTRUCTIVE`. **A `DESTRUCTIVE` remedy
+   is describable but is never applied by `--repair`.** Risk classification is meaningless if the
+   destructive members stay auto-runnable. W017's current remedy string is an untested
+   `git worktree remove --force` (`verify.cts:2129`).
+4. `--repair` dispatches a **closed enum with one hand-written handler per member.** It may not
+   interpret an action specification — the Greenspun boundary again, on the apply side.
+5. An advisory-only finding uses the `ADVISE` action with a command payload, so runtime-specific
+   command formatting lives behind the value instead of inside every message string.
+
+#### 8.4 The envelope — *Required — Phases 11–12*
+
+**Rule.**
+1. `validate.health`, `validate.consistency` and `state.validate` emit **one envelope** carrying
+   `Diagnostic` values. Three renderings of one rule table is this ADR's own divergence, one level up.
+2. `valid` and `passed` are **retained as derived booleans.** Both commands are published in
+   `docs/COMMANDS.md` / `docs/CLI-TOOLS.md`, so a user script is conceivable even though the sweep
+   found no in-repo consumer of either.
+3. **`drift` is removed, not deprecated — and the asymmetry with rule 2 is deliberate.** `valid` and
+   `passed` are scalars a script branches on. `drift` is a structured payload whose shape was never
+   specified and whose populating branches sit behind the dead gate above, so in practice it has always
+   been `{}`. Retaining an always-empty field is cargo, not compatibility. Its contents become coded
+   diagnostics, which is strictly more information.
+4. Neither `validate.consistency` nor `state.validate` may keep a private copy of a §7 derivation.
+   `validate.consistency`'s disk-versus-roadmap comparison is §7.3's, and is why a sentinel-filter fix
+   reaching only `validate.health` would be a fix landing on one copy.
+
+#### 8.5 Proving a rule can fail — *Required — Phase 11*
+
+**Rule.** Every rule carries a **known-bad fixture** that makes it fire, enforced by the same lint that
+enforces 8.2's 1:1 invariant. A predicate whose failure arm is unreachable is output-identical to one
+that passes — the Decision 3 failure mode, inside the diagnostic layer itself.
+
+The fixture is bound to `CONTRIBUTING.md` § *Fixture provenance (#2371)*: it may not be derived from
+the rule author's own model of the format. Without that binding this clause is a coverage percentage,
+satisfiable by a fixture that trips the predicate trivially while never exercising the real condition.
+
+#### 8.6 Turning an inert predicate live is a behavior change
+
+**Rule.** A phase that makes a previously-unreachable predicate reachable **states the expected
+new-finding volume on existing projects** in its PR. Such a rule has never fired, so every project it
+now flags is a first-time report, and "the checker got noisier" is indistinguishable from "the checker
+regressed" without the number stated up front.
+
+#### Open question, recorded with a forcing function
+
+**Does a diagnostic rule assert phase completion?** Not until Phase 4 (#3186) resolves #2957
+(checkbox-override versus disk-strict). Decision 8 defines no completion rule, because a rule asserting
+"this phase is done" would settle a product decision by typing order — the outcome Decision 5's
+blocking note exists to prevent. Phase 4's guard fails while a third predicate exists, so this cannot
+be routed around.
+
+#### Software laws applied — re-run for Decision 8
+
+The original run is in *Software laws applied* above; it ruled `conways_law` and `zawinskis_law` not
+applicable. For Decision 8 three of the four fire again, one new law fires, and both of those two now
+apply.
+
+- **Greenspun's Tenth Rule — new, and it changed Decision 8.** A "rule table with predicates and a
+  frozen remedy vocabulary" is one step from an ad-hoc rules engine. It clears only because rules stay
+  **code**: ordinary functions in a frozen array, with no conditionals-as-data, no precedence, no
+  string dispatch, no user-authored rules. That is exactly the line a later phase would cross by making
+  rules declarative "so users can add their own", so 8.2 rule 4 and 8.3 rule 4 write the prohibition
+  down instead of trusting taste.
+- **Hyrum's Law — fired again, and found a gap.** Codes are the observable contract, hence 8.2's
+  append-only rule. It also caught an unjustified asymmetry in the first draft of 8.4: `valid`/`passed`
+  were retained for compatibility while `drift` was dropped, though all three are published in the same
+  docs. 8.4 rule 3 now states the distinction rather than leaving it implicit.
+- **Goodhart's Law — fired again.** "A known-bad fixture per rule" is structurally a coverage
+  percentage and is gameable, hence 8.5's binding to fixture provenance.
+- **Gall's Law — fired again, and produced 8.6.** Phases 10–12 replace a 907-line function, but
+  incrementally and out of already-proven parts — the shape Phases 1–6 shipped six times. Its "preserve
+  existing behavior until you understand why" clause is what 8.6 discharges.
+- **Conway's Law — now applies.** 8.1 puts the snapshot in its own module rather than inside its first
+  consumer, so the seam is not shaped around whichever surface happened to need it first.
+- **Zawinski's Law — now applies**, and the evidence that scope was disciplined is the exclusion:
+  `validate.consistency` and `state.validate` are in because they hold duplicate copies of §7
+  derivations; `state.sync` is explicitly out because it is a writer.
+- **Kernighan's Law** — 907 lines at complexity 28 is the violation Decision 8 removes; each predicate
+  becomes individually testable against a literal object.
+
+#### Phase index for the diagnostic layer
+
+| Phase | Issue | Deliverable | Status |
+|---|---|---|---|
+| 9 | #3287 | this design lock (Decision 8) | docs-only |
+| 10 | to file | `src/planning-snapshot.cts` (8.1) + `lint-planning-snapshot-bypass-drift.cjs`, ratcheted | ready — Phase 5 merged |
+| 11 | to file | `src/health-diagnostic.cts` (8.2/8.3/8.5), `validate.health` migrated, W021/W017 second subjects take new codes, `health.md` tables generated | follows Phase 10 |
+| 12 | to file | `validate.consistency` + `state.validate` onto the envelope (8.4); `lint-planning-artifact-writer-drift.cjs` | follows Phase 11 |
+
+**Ordering, and why it was not negotiable.** The set had to follow **Phase 5 (#3187)**: the snapshot's
+current-phase field *is* §7.7's derivation, so building the snapshot first would have created a fourth
+copy of the exact thing Phase 5 existed to consolidate — this ADR's own failure mode, committed inside
+the fix for it. **Phase 5 merged 2026-08-09 (PR #3283), so that constraint is satisfied and Phase 10
+is ready to file.** Phase 10 consumes `stateFieldValue` as its current-phase source; it does not
+introduce a reader of its own. No phase-completion rule ships until **Phase 4 (#3186)** clears #2957.
+
+**Copy counts are deliberately absent.** Amendment 4a's standing rule applies: each phase builds and
+runs its guard **before** its scope is fixed, and states "N found by the guard", never "N per the
+epic". `.planning/WINDOWS.md` is one confirmed registry miss; the real number is Phase 12's to report.
+The scoped count has been wrong in every prior phase — 54 where the epic said 4 (Phase 3), three where
+it said one (Phase 6).
+
+**Coverage was verified mechanically before this decomposition was locked** — 24 decisions across 12
+phases, every decision owned by exactly one phase, every hand-off landing in a phase that claims it,
+and all five user-facing capabilities wired by an owning phase's acceptance criteria. The checker was
+also run against a known-broken fixture to confirm it reports errors rather than passing vacuously —
+the same discipline 8.5 imposes on the rules themselves.
+
+**No recorded decision governed this seam.** `recall_decision` returns nothing for the health
+diagnostic surface — the condition that made Phase 0 necessary, and the reason Decision 8 is locked
+before Phase 10 rather than settled inside it.

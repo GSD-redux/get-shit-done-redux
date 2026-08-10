@@ -6,10 +6,33 @@ name: Require Issue Link
 # rejection kills the step, and the core.setFailed on the last line never runs —
 # the contributor sees an API stack trace instead of "add Closes #NNN".
 # pull_request_target runs in the base-repo context with a write-capable token.
-# Safe here: this job performs NO checkout at all and reads the PR body only via
-# an env var (never interpolated into a shell), so no head code executes. The
-# #1389 fork-forgery carve-out below still holds — it is keyed on
+# Safe here: the only checkout is the BASE branch (persist-credentials: false),
+# and every PR-controlled input — body, head ref, changed-file list — is read as
+# data via env vars, never interpolated into a shell. No head code executes. The
+# #1389 fork-forgery carve-out still holds — it is keyed on
 # head.repo.full_name == github.repository, not on the branch name alone.
+#
+# #3211: the gate used to model exactly one PR→issue relationship ("this PR
+# closes that issue"), so a test-only or docs-only FOLLOW-UP PR — which
+# references an issue without closing it — had no way to pass. A fork could not
+# use the backmerge carve-out either (it requires same-repo identity), so the
+# only green path was a knowingly-inert `Closes #N` against an already-closed
+# issue. The verdict now lives in scripts/require-issue-link-policy.cjs, which
+# additionally accepts a non-closing reference (`Refs #N`, `Follow-up to #N`, …)
+# but ONLY when every changed file is under tests/, under docs/, or a root-level
+# *.md — the same doc-only shape pre-pr-gate.sh:111 already recognizes, minus
+# CHANGELOG.md, which changeset/lint.cjs classes as user-facing. Ordinary
+# source-touching PRs still require a closing keyword, so gate strength is
+# unchanged. The exemption is keyed on the server-computed diff shape, which a
+# fork author cannot forge — preserving the #1389 property.
+#
+# Trust boundary: the policy module is loaded from a BASE-branch checkout (the
+# already-merged, reviewed copy on the PR's target), exactly as
+# pr-title-validator.yml and pr-template-format.yml load theirs. A PR cannot
+# edit the ruler that measures it. Until the module lands on the base branch it
+# does not exist there — the introducing PR falls back to the legacy
+# closing-keyword grep (see the bootstrap branch below) rather than skipping,
+# so the gate is never silently open.
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
@@ -18,62 +41,158 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Scope unchanged by #2331 — see the note in pr-title-validator.yml. `issues:
-# write` alone already authorizes this workflow's issues.createComment call on a
-# PR: its sticky comment has posted on same-repo PRs (#106, #164, #232, #259) on
-# exactly this scope. The 403 was the fork token downgrade, not a missing scope,
-# so no `pull-requests: write` is added — this job never calls a pulls.* API.
+# `issues: write` alone already authorizes this workflow's issues.createComment
+# call on a PR: its sticky comment has posted on same-repo PRs (#106, #164,
+# #232, #259) on exactly this scope. The #2331 403 was the fork token
+# downgrade, not a missing scope, so no `pull-requests: WRITE` is added — this
+# job still calls no mutating pulls.* API. #3211 adds exactly two read scopes,
+# each for one concrete need: `contents: read` for the base-branch checkout
+# that supplies the policy module, and `pull-requests: read` for the
+# `gh pr view --json files,changedFiles` call that supplies the diff shape.
 permissions:
+  contents: read
   issues: write
+  pull-requests: read
 
 jobs:
   check-issue-link:
     name: Issue link required
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - name: Check PR body for issue reference
-        id: check
+      # BASE branch only — the trusted policy source. Never the PR head.
+      - name: Check out policy from base branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+
+      # The authoritative diff shape. `gh pr view --json files` returns at most
+      # 100 paths and does NOT paginate, so `changedFiles` (the true total) is
+      # fetched alongside it: the policy compares the two and fails closed when
+      # they disagree. Without that check a >100-file fork PR could present a
+      # falsely tests-only list and forge the follow-up exemption (#3211).
+      - name: Get changed files
+        id: changed_files
         env:
-          # Bound to env var — never interpolated into shell directly
-          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if echo "$PR_BODY" | grep -qiE '(closes|fixes|resolves)\s+#[0-9]+'; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
+          # The delimiter must be unguessable: every path in `files` is
+          # attacker-controlled on a fork PR, and a file named after a fixed
+          # delimiter (e.g. a file literally named `GSD_EOF`) would terminate
+          # the heredoc value early, truncating everything after it — this is
+          # GitHub's own documented guidance for untrusted multiline output
+          # (https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#multiline-strings).
+          # The length-vs-total check in the policy (fileListIsComplete) is
+          # the second, independent layer: even if a delimiter collision slid
+          # past this, a truncated or inflated list would still fail closed.
+          delim="GSD_EOF_$(openssl rand -hex 16)"
+          files=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')
+          {
+            echo "files<<$delim"
+            echo "$files"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate issue link
+        id: policy
+        env:
+          # Every PR-controlled value is bound to an env var and read as data —
+          # never interpolated into the shell or into a JS template literal.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          CHANGED_FILES: ${{ steps.changed_files.outputs.files }}
+          CHANGED_FILES_TOTAL: ${{ github.event.pull_request.changed_files }}
+        run: |
+          # Bootstrap: the policy module is loaded from the BASE checkout, so it
+          # is absent on the PR that first introduces it. Fall back to the legacy
+          # closing-keyword grep — enforcing, not skipping — so the gate is never
+          # silently open during the changeover. Mirrors the bootstrap guard in
+          # pr-title-validator.yml, which skips; this one keeps enforcing because
+          # the legacy behavior is a strict subset of the new policy.
+          if [ ! -f scripts/require-issue-link-policy.cjs ]; then
+            if echo "$PR_BODY" | grep -qiE '(closes|fixes|resolves)\s+#[0-9]+'; then
+              printf 'ok=true\nreason=ok_closing_keyword\n' >> "$GITHUB_OUTPUT"
+            else
+              printf 'ok=false\nreason=fail_no_issue_reference\n' >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # Exit 0 = satisfied, 1 = not satisfied (both are verdicts, and the
+          # step must survive to let the comment step run). Anything else is a
+          # real error in the policy script and must fail the job loudly rather
+          # than be mistaken for "no issue link".
+          set +e
+          node scripts/require-issue-link-policy.cjs
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            echo "::error::require-issue-link-policy.cjs exited with status $status" >&2
+            exit "$status"
           fi
 
       - name: Comment and fail if no issue link
-        # Exempt auto-backmerge PRs (chore/backmerge-main-to-next-*): they map to
-        # no issue and a `Closes #N` would pollute the released CHANGELOG. Keyed on
-        # the workflow-authored branch name AND same-repo identity so a fork PR
-        # cannot forge the exemption. Step-level (not job-level) so the required
-        # "Issue link required" check still reports SUCCESS rather than a
-        # branch-protection-blocking "skipped". See #1389.
-        if: >-
-          steps.check.outputs.found == 'false' &&
-          !(startsWith(github.head_ref, 'chore/backmerge-main-to-next-') &&
-            github.event.pull_request.head.repo.full_name == github.repository)
+        # Step-level (not job-level) so the required "Issue link required" check
+        # still reports SUCCESS rather than a branch-protection-blocking
+        # "skipped" when a PR is exempt. See #1389 — that placement is load
+        # bearing and every exemption added since must preserve it.
+        if: steps.policy.outputs.ok != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REASON: ${{ steps.policy.outputs.reason }}
         with:
           # Uses GitHub API SDK — no shell string interpolation of untrusted input
           script: |
             const marker = '<!-- gsd-require-issue-link -->';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             const prNumber = context.payload.pull_request.number;
+            // #3211: the verdict is a typed reason, so the guidance can name the
+            // rule that actually fired instead of always saying "no issue link".
+            // Read from an env var — never interpolated into this script body.
+            const reason = process.env.REASON || 'fail_no_issue_reference';
+            const explanation = {
+              fail_reference_needs_closing: [
+                'This PR references an issue without a closing keyword, but its diff touches files outside `tests/`, `docs/`, and root-level `*.md`.',
+                '',
+                'The non-closing reference form is accepted **only** for test-only or docs-only follow-up PRs. Because this PR changes other files, it needs a closing keyword:',
+              ],
+              fail_file_list_incomplete: [
+                'This PR references an issue without a closing keyword, but its changed-file list could not be confirmed as complete, so it cannot be verified as a test-only or docs-only follow-up.',
+                '',
+                'This happens on very large PRs (more than 100 files). Use a closing keyword instead:',
+              ],
+              fail_no_issue_reference: [
+                'This PR does not reference an issue. **All PRs must link to an issue** in the PR body:',
+              ],
+            }[reason] || [
+              'This PR does not reference an issue. **All PRs must link to an issue** in the PR body:',
+            ];
             const body = [
                 marker,
                 '## Missing issue link',
                 '',
-                'This PR does not reference an issue. **All PRs must link to an open issue** using a closing keyword in the PR body:',
+                ...explanation,
                 '',
                 '```',
                 'Closes #123',
                 '```',
                 '',
+                'Accepted closing keywords are `Closes #NNN`, `Fixes #NNN`, and `Resolves #NNN`.',
+                '',
+                '**Test-only or docs-only follow-up PR?** If every file your PR changes is under `tests/`, under `docs/`, or a root-level `*.md` (`README.md`, `CONTRIBUTING.md`, … but not `CHANGELOG.md`), and there is no open issue for it to close, reference the related issue without closing it:',
+                '',
+                '```',
+                'Refs #123',
+                '```',
+                '',
+                '`Ref`, `Refs`, `References`, `Relates to`, `Related to`, and `Follow-up to` are all accepted in that position. See CONTRIBUTING.md → "Link with a closing keyword".',
+                '',
                 `If no issue exists for this change, [open one first](${repoUrl}/issues/new/choose), then update this PR body with the reference.`,
                 '',
-                'Edit the PR description to add a valid `Closes #NNN`, `Fixes #NNN`, or `Resolves #NNN` line. This check will re-evaluate on the next PR update.',
+                'This check will re-evaluate on the next PR update.',
               ].join('\n');
             // #2331: the comment is a COURTESY, the setFailed below is the GATE.
             // A failure here must never suppress the verdict. pull_request_target

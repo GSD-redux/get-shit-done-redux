@@ -37,7 +37,7 @@ import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
 import { VALID_PROFILES, VALID_TIERS, VALID_PHASE_TYPES } from './model-catalog.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
-const { checkAgentsInstalled } = agentInstallCheck;
+const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -2527,8 +2527,13 @@ function cmdValidateHealth(
 }
 
 function cmdValidateAgents(cwd: string, raw: boolean): void {
-  const agentStatus = checkAgentsInstalled(resolveRuntime(cwd), cwd);
+  const runtime = resolveRuntime(cwd);
+  const agentStatus = checkAgentsInstalled(runtime, cwd);
   const expected = Object.keys(MODEL_PROFILES);
+  // #3242 ADR-2313 D6 — additive: validates posture (never an Anthropic-flavored
+  // model or an orphaned reasoning-effort pin in a Codex agent .toml), not just
+  // presence. checkAgentsInstalled above is untouched.
+  const codexPosture = checkCodexModelPosture(runtime, cwd);
 
   output(
     {
@@ -2538,6 +2543,7 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
       missing: agentStatus.missing_agents,
       incomplete: agentStatus.incomplete_agents,
       expected,
+      codex_posture: codexPosture,
     },
     raw,
   );

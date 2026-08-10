@@ -49,6 +49,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "claude",
@@ -101,8 +102,7 @@
       "skillsGlobalOnboarding": true,
       "legacyCommandsGsdInstallMigration": true,
       "legacyCommandsGsdUninstall": "global",
-      "hyphenNameAgentBody": true,
-      "reviewerCli": true
+      "hyphenNameAgentBody": true
     }
   },
   "reviewer": {

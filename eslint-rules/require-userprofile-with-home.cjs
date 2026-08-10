@@ -40,8 +40,6 @@ const rule = {
   },
 
   create(context) {
-    const sourceCode = context.sourceCode ?? context.getSourceCode();
-
     /** Collected HOME assignment nodes */
     const homeAssignments = [];
 
