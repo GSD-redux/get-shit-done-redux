@@ -83,6 +83,44 @@ See [`CONTRIBUTING.md` — "QA Matrix Requirements"](CONTRIBUTING.md#qa-matrix-r
 
 **Enforcement:** Code review, `no-only-tests/no-only-tests` ESLint rule (prevents happy-path-only merges via `test.only`).
 
+#### Standing rule: assert the degraded verdict, not just "did not throw"
+
+A counter-test that feeds a hostile or failing input satisfies the letter of contract 6 above and can still be worthless. If a function has an error or fallback branch — a guard that degrades permissively on bad input, a resolver that falls back to a default root, a lock that expires — the test for that branch must assert the **specific degraded verdict** the branch produces, not merely that the call completed without throwing or returned *some* value of the right type.
+
+**Non-compliant (the actual pre-fix shape of `tests/worktree-safety.test.cjs`'s `resolveWorktreeContext` timeout counter-test, per [#3050](https://github.com/open-gsd/gsd-core/issues/3050) finding 2 and epic [#3051](https://github.com/open-gsd/gsd-core/issues/3051) Phase 3, generalized here as [#3053](https://github.com/open-gsd/gsd-core/issues/3053) H4):**
+
+```javascript
+// A liveness test wearing a correctness test's name — it proves the call
+// survived a timeout, not that it degraded to the RIGHT shape.
+test('resolveWorktreeContext handles a timeout', () => {
+  const result = resolveWorktreeContext('/repo/wt', { execGit: makeTimeoutStub() });
+  assert.doesNotThrow(() => resolveWorktreeContext('/repo/wt', { execGit: makeTimeoutStub() }));
+  assert.strictEqual(typeof result.effectiveRoot, 'string'); // true of ANY string, including the wrong one
+});
+```
+
+**Compliant (the actual fixed test, `tests/worktree-safety.test.cjs`):**
+
+```javascript
+test('returns effectiveRoot=cwd, mode=current_directory, reason=git_timed_out on timeout, not throw', () => {
+  const result = resolveWorktreeContext('/tmp', { execGit: makeTimeoutStub() });
+  assert.deepStrictEqual(result, {
+    effectiveRoot: '/tmp',           // the specific degraded value, not just "a string"
+    mode: 'current_directory',
+    reason: 'git_timed_out',
+  });
+});
+```
+
+This is not the same requirement as the input-rejection rule above it. A test can already satisfy "feed the SUT a hostile input" while still failing this one, if it never checks *what the SUT did in response*. Two shapes are explicitly out of scope for this rule — they are not fail-open guards and adding this counter-test to them would be noise, not signal:
+
+- A branch that re-throws or propagates the error rather than producing a degraded verdict — contract 4 above ("test the claimed path") already covers it via `assert.throws`.
+- A branch that returns a documented, structured error signal that the test already asserts on directly (a three-state policy that fails closed on malformed input, a dispatch convention, an `{isError: true}` return shape) — the structured field *is* the verdict; asserting on it already satisfies this rule.
+
+**Why this isn't a lint rule.** A pattern scan for fail-open shapes was measured directly against this repo's `src/*.cts` during epic #3051: it scored 1 true positive against 3 false positives (a documented three-state policy, a dispatch convention, and a structured `isError` return each looked like a fail-open guard and were not). The permissive-verdict shape is module-specific, not mechanically enumerable, so a lint rule here would be both incomplete and noisy. This is a code-review expectation, not a CI gate — it will not fail a build on its own; it fails when a reviewer (human or `/code-review`) lets a "did not throw" test stand in for a correctness test.
+
+**Enforcement:** Code review only — deliberately not lint-enforced (see above). Cross-linked from [`CONTRIBUTING.md` — "QA Matrix Requirements"](CONTRIBUTING.md#qa-matrix-requirements) so reviewers see it at the point they already apply the negative-space matrix.
+
 ---
 
 ## New policies (ADR 456)

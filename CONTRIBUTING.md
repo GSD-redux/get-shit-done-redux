@@ -612,6 +612,8 @@ Happy-path tests are not enough for code that accepts user input, reads project 
 
 See [`TEST-EXAMPLES.md`](TEST-EXAMPLES.md) for concrete demo tests that show these requirements in practice.
 
+**Standing rule for error/fallback branches:** feeding an adversarial input is not sufficient on its own — if the code degrades permissively instead of throwing, the test must assert the *specific* degraded verdict, not just that the call survived. See [`TESTING-STANDARDS.md` — "Standing rule: assert the degraded verdict"](TESTING-STANDARDS.md#standing-rule-assert-the-degraded-verdict-not-just-did-not-throw).
+
 Use this matrix when it applies to the changed surface:
 
 1. Happy path
