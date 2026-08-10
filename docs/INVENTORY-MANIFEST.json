@@ -339,6 +339,7 @@
       "clock.cjs",
       "clusters.cjs",
       "code-review-flags.cjs",
+      "codex-agent-toml.cjs",
       "command-aliases.cjs",
       "command-arg-projection.cjs",
       "command-roster.cjs",

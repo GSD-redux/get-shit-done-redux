@@ -3704,6 +3704,430 @@ describe('feat-488: effort sync command', () => {
     cleanup(tmpDir);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// #3243 (ADR-2313 D7) — the Codex `.toml` branch of `cmdEffortSync`.
+// Spec: .gsd/phase/feat-3243-codex-toml-sync/{40-design,50-test-matrix}.md
+// Row numbers below (# B<N>) map 1:1 to 50-test-matrix.md's "B — the sync"
+// table. B1/B2 (the claude/opencode rows) are the EXISTING tests directly
+// above this block ('feat-488: effort sync command' + the non-claude-runtime
+// test) and are asserted UNCHANGED — this describe adds only new coverage.
+//
+// Every `.toml` fixture below is hand-authored against the real
+// `generateCodexAgentToml` shape (CONTRIBUTING's fixture-provenance rule,
+// #2371), not produced by calling that writer.
+// ────────────────────────────────────────────────────────────────────────
+describe('#3243 (ADR-2313 D7): Codex .toml effort sync', () => {
+  const { PARSE_REASON } = require('../gsd-core/bin/lib/codex-agent-toml.cjs');
+  const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'adversarial', 'toml');
+
+  function writeCodexAgentToml(agentsDir, agentName, content) {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, `${agentName}.toml`), content);
+  }
+
+  function syncCodex(tmpDir, dryRun) {
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    return captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun, configDir: tmpDir, runtime: 'codex' })
+    );
+  }
+
+  test('B3: model = "sonnet" — the model line stripped; one structured change', () => {
+    const tmpDir = makeTmpDir('codex-sync-b3-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-planner',
+      'name = "gsd-planner"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nPlan.\n\'\'\'\n',
+    );
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    assert.equal(result.skipped, 0);
+    assert.equal(result.changes.length, 1);
+    assert.equal(result.changes[0].agent, 'gsd-planner');
+    assert.equal(result.changes[0].field, 'model');
+    assert.equal(result.changes[0].from, 'sonnet');
+    assert.equal(result.changes[0].to, null);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-planner.toml'), 'utf8');
+    assert.ok(!updated.includes('model = "sonnet"'), 'the stale model line must be gone');
+    assert.ok(updated.includes('name = "gsd-planner"'), 'other lines must survive');
+
+    cleanup(tmpDir);
+  });
+
+  test('B4 (negative proof): model = "gpt-5.6-sol" (legal pin) — untouched, reported skipped not synced', () => {
+    const tmpDir = makeTmpDir('codex-sync-b4-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = 'name = "gsd-gpt-agent"\nmodel = "gpt-5.6-sol"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n';
+    writeCodexAgentToml(agentsDir, 'gsd-gpt-agent', content);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0, 'a legal pin must never be reported synced');
+    assert.equal(result.skipped, 1);
+    assert.equal(result.changes.length, 0);
+    assert.equal(fs.readFileSync(path.join(agentsDir, 'gsd-gpt-agent.toml'), 'utf8'), content);
+
+    cleanup(tmpDir);
+  });
+
+  test('B5 (negative proof): legal pin plus its coupled effort — both untouched', () => {
+    const tmpDir = makeTmpDir('codex-sync-b5-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = 'name = "gsd-pinned-agent"\nmodel = "gpt-5-codex"\nmodel_reasoning_effort = "high"\n' +
+      "developer_instructions = '''\nWork.\n'''\n";
+    writeCodexAgentToml(agentsDir, 'gsd-pinned-agent', content);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0);
+    assert.equal(result.skipped, 1);
+    assert.equal(fs.readFileSync(path.join(agentsDir, 'gsd-pinned-agent.toml'), 'utf8'), content);
+
+    cleanup(tmpDir);
+  });
+
+  test('B6: orphaned model_reasoning_effort, no model — the effort stripped', () => {
+    const tmpDir = makeTmpDir('codex-sync-b6-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-orphan-agent',
+      'name = "gsd-orphan-agent"\nmodel_reasoning_effort = "high"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    assert.equal(result.changes.length, 1);
+    assert.equal(result.changes[0].field, 'model_reasoning_effort');
+    assert.equal(result.changes[0].from, 'high');
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-orphan-agent.toml'), 'utf8');
+    assert.ok(!updated.includes('model_reasoning_effort'), 'the orphaned effort must be gone');
+
+    cleanup(tmpDir);
+  });
+
+  test('B7: stale model plus its effort — both stripped', () => {
+    const tmpDir = makeTmpDir('codex-sync-b7-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-stale-agent',
+      'name = "gsd-stale-agent"\nmodel = "opus"\nmodel_reasoning_effort = "medium"\n' +
+        "developer_instructions = '''\nWork.\n'''\n",
+    );
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    assert.equal(result.changes.length, 2, 'both the model and the coupled effort must be reported');
+    const fields = result.changes.map(c => c.field).sort();
+    assert.deepEqual(fields, ['model', 'model_reasoning_effort']);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-stale-agent.toml'), 'utf8');
+    assert.ok(!updated.includes('model = "opus"'));
+    assert.ok(!updated.includes('model_reasoning_effort'));
+
+    cleanup(tmpDir);
+  });
+
+  test('B8: posture-clean .toml — synced:0, no write (mtime unchanged)', () => {
+    const tmpDir = makeTmpDir('codex-sync-b8-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-clean',
+      'name = "gsd-clean"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n',
+    );
+    const filePath = path.join(agentsDir, 'gsd-clean.toml');
+    const mtimeBefore = fs.statSync(filePath).mtimeMs;
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0);
+    assert.equal(fs.statSync(filePath).mtimeMs, mtimeBefore, 'a posture-clean file must never be written');
+
+    cleanup(tmpDir);
+  });
+
+  test('B9 (boundary): dry-run is the default — changes reported, file byte-identical after', () => {
+    const tmpDir = makeTmpDir('codex-sync-b9-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = 'name = "gsd-planner"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nPlan.\n\'\'\'\n';
+    writeCodexAgentToml(agentsDir, 'gsd-planner', content);
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { configDir: tmpDir, runtime: 'codex' }) // no dryRun key — must default true
+    );
+
+    assert.equal(result.dry_run, true);
+    assert.equal(result.synced, 1, 'the pending strip must still be reported');
+    assert.equal(fs.readFileSync(path.join(agentsDir, 'gsd-planner.toml'), 'utf8'), content, 'dry-run must not write');
+
+    cleanup(tmpDir);
+  });
+
+  test('B10: --no-dry-run writes; reports identically to the dry run', () => {
+    const content = 'name = "gsd-planner"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nPlan.\n\'\'\'\n';
+
+    const dryTmpDir = makeTmpDir('codex-sync-b10-dry-');
+    writeCodexAgentToml(makeAgentsDir(dryTmpDir), 'gsd-planner', content);
+    const dryResult = syncCodex(dryTmpDir, true);
+
+    const applyTmpDir = makeTmpDir('codex-sync-b10-apply-');
+    const applyAgentsDir = makeAgentsDir(applyTmpDir);
+    writeCodexAgentToml(applyAgentsDir, 'gsd-planner', content);
+    const applyResult = syncCodex(applyTmpDir, false);
+
+    assert.equal(dryResult.synced, applyResult.synced);
+    assert.deepEqual(dryResult.changes, applyResult.changes, 'the report must match the dry run exactly');
+    assert.equal(dryResult.dry_run, true);
+    assert.equal(applyResult.dry_run, false);
+    assert.ok(!fs.readFileSync(path.join(applyAgentsDir, 'gsd-planner.toml'), 'utf8').includes('model = "sonnet"'));
+
+    cleanup(dryTmpDir);
+    cleanup(applyTmpDir);
+  });
+
+  test('B11 (negative proof): unterminated block — skipped and reported, file byte-identical after', () => {
+    const tmpDir = makeTmpDir('codex-sync-b11-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = 'name = "gsd-broken"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nThis block never closes.\n';
+    writeCodexAgentToml(agentsDir, 'gsd-broken', content);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0, 'an unparseable document must never be synced');
+    assert.equal(result.skipped, 1);
+    assert.equal(result.refused.length, 1);
+    assert.equal(result.refused[0].agent, 'gsd-broken');
+    assert.equal(result.refused[0].reason, PARSE_REASON.UNTERMINATED_BLOCK);
+    assert.equal(
+      fs.readFileSync(path.join(agentsDir, 'gsd-broken.toml'), 'utf8'),
+      content,
+      'a refused file must never be partially rewritten',
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('B12 (negative proof): symlinked .toml — skipped, target byte-identical after', (t) => {
+    const tmpDir = makeTmpDir('codex-sync-b12-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const targetPath = path.join(tmpDir, 'outside-target.toml');
+    const targetContent = 'model = "sonnet"\n';
+    fs.writeFileSync(targetPath, targetContent);
+    const symlinkPath = path.join(agentsDir, 'gsd-linked.toml');
+    try {
+      fs.symlinkSync(targetPath, symlinkPath, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        cleanup(tmpDir);
+        return;
+      }
+      throw error;
+    }
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0);
+    assert.ok(
+      !result.changes.some(c => c.agent === 'gsd-linked'),
+      'a symlinked agent must never be reported as synced',
+    );
+    assert.equal(fs.readFileSync(targetPath, 'utf8'), targetContent, 'the symlink target must never be written through');
+
+    cleanup(tmpDir);
+  });
+
+  test('B13: agents dir absent — reports not-found, as the claude path does', () => {
+    const tmpDir = makeTmpDir('codex-sync-b13-');
+    // agentsDir intentionally not created
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0);
+    assert.equal(result.reason, 'agents directory not found');
+
+    cleanup(tmpDir);
+  });
+
+  test('B14 (hostile, headline data-loss case): model = inside developer_instructions — file byte-identical after a non-dry-run sync', () => {
+    const tmpDir = makeTmpDir('codex-sync-b14-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const fixtureContent = fs.readFileSync(path.join(FIXTURES_DIR, 'model-in-developer-instructions.toml'), 'utf8');
+    writeCodexAgentToml(agentsDir, 'gsd-planner', fixtureContent);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 0, 'the prose model= inside the block must never be treated as a pin');
+    assert.equal(
+      fs.readFileSync(path.join(agentsDir, 'gsd-planner.toml'), 'utf8'),
+      fixtureContent,
+      'the agent prompt must survive a non-dry-run sync untouched',
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('B15 (cross-platform): CRLF file, stale pin — pin stripped, remaining line endings still CRLF', () => {
+    const tmpDir = makeTmpDir('codex-sync-b15-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const lfContent = 'name = "gsd-scribe"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWrite a changelog entry.\n\'\'\'\n';
+    const crlfContent = lfContent.replace(/\n/g, '\r\n');
+    writeCodexAgentToml(agentsDir, 'gsd-scribe', crlfContent);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-scribe.toml'), 'utf8');
+    assert.ok(!updated.includes('model = "sonnet"'));
+    assert.equal(
+      updated,
+      'name = "gsd-scribe"\r\ndeveloper_instructions = \'\'\'\r\nWrite a changelog entry.\r\n\'\'\'\r\n',
+      'every remaining line ending must still be CRLF',
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('B16 (cross-platform): BOM file, stale pin — pin stripped, BOM preserved', () => {
+    const tmpDir = makeTmpDir('codex-sync-b16-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = String.fromCharCode(0xfeff) +
+      'name = "gsd-archivist"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nArchive.\n\'\'\'\n';
+    writeCodexAgentToml(agentsDir, 'gsd-archivist', content);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    const updatedRaw = fs.readFileSync(path.join(agentsDir, 'gsd-archivist.toml'));
+    assert.equal(updatedRaw[0], 0xef, 'BOM byte 1 (EF) must survive');
+    assert.equal(updatedRaw[1], 0xbb, 'BOM byte 2 (BB) must survive');
+    assert.equal(updatedRaw[2], 0xbf, 'BOM byte 3 (BF) must survive');
+    assert.ok(!updatedRaw.toString('utf8').includes('model = "sonnet"'));
+
+    cleanup(tmpDir);
+  });
+
+  test('B17 (boundary): file with no trailing newline — preserved', () => {
+    const tmpDir = makeTmpDir('codex-sync-b17-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const content = 'name = "gsd-bare"\nmodel = "sonnet"'; // deliberately no trailing \n
+    writeCodexAgentToml(agentsDir, 'gsd-bare', content);
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-bare.toml'), 'utf8');
+    assert.equal(updated, 'name = "gsd-bare"', 'the file must still have no trailing newline');
+
+    cleanup(tmpDir);
+  });
+
+  test('B18 (negative proof): hand-added approval_policy survives a strip of the stale pin untouched', () => {
+    const tmpDir = makeTmpDir('codex-sync-b18-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-custom-agent',
+      'name = "gsd-custom-agent"\nmodel = "sonnet"\napproval_policy = "on-request"\n' +
+        "developer_instructions = '''\nFollow policy.\n'''\n",
+    );
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-custom-agent.toml'), 'utf8');
+    assert.ok(updated.includes('approval_policy = "on-request"'), 'the hand-added key must survive verbatim');
+    assert.ok(!updated.includes('model = "sonnet"'));
+
+    cleanup(tmpDir);
+  });
+
+  test('B19 (negative proof): interleaved comments preserved verbatim', () => {
+    const tmpDir = makeTmpDir('codex-sync-b19-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(
+      agentsDir,
+      'gsd-commented',
+      '# top comment\nname = "gsd-commented"\n# a note about the model below\nmodel = "sonnet"\n# trailing comment\n' +
+        "developer_instructions = '''\nWork.\n'''\n",
+    );
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1);
+    const updated = fs.readFileSync(path.join(agentsDir, 'gsd-commented.toml'), 'utf8');
+    assert.ok(updated.includes('# top comment'));
+    assert.ok(updated.includes('# a note about the model below'));
+    assert.ok(updated.includes('# trailing comment'));
+    assert.ok(!updated.includes('model = "sonnet"'));
+
+    cleanup(tmpDir);
+  });
+
+  test('B20 (filesystem failure): a write that fails midway is reported; the remaining agents still get processed', (t) => {
+    const tmpDir = makeTmpDir('codex-sync-b20-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(agentsDir, 'gsd-alpha', 'name = "gsd-alpha"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    writeCodexAgentToml(agentsDir, 'gsd-bravo', 'name = "gsd-bravo"\nmodel = "opus"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    const failingPath = path.join(agentsDir, 'gsd-alpha.toml');
+
+    const realWriteFileSync = fs.writeFileSync;
+    t.mock.method(fs, 'writeFileSync', (target, ...args) => {
+      if (target === failingPath) {
+        throw Object.assign(new Error('injected ENOSPC'), { code: 'ENOSPC' });
+      }
+      return realWriteFileSync.call(fs, target, ...args);
+    });
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 1, 'only the non-failing agent must be reported synced');
+    assert.equal(result.write_failures.length, 1);
+    assert.equal(result.write_failures[0].agent, 'gsd-alpha');
+    assert.ok(
+      !result.changes.some(c => c.agent === 'gsd-alpha'),
+      'a failed write must never be reported as a completed change',
+    );
+    assert.ok(
+      fs.readFileSync(path.join(agentsDir, 'gsd-bravo.toml'), 'utf8').indexOf('model = "opus"') === -1,
+      'the sibling agent must still be synced despite the other write failing',
+    );
+    assert.ok(
+      fs.readFileSync(failingPath, 'utf8').includes('model = "sonnet"'),
+      'the failed write must leave the original file untouched, not a partial file',
+    );
+
+    cleanup(tmpDir);
+  });
+
+  test('B21 (independence): several agents, mixed states — per-agent results, deterministic order', () => {
+    const tmpDir = makeTmpDir('codex-sync-b21-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    writeCodexAgentToml(agentsDir, 'gsd-alpha', 'name = "gsd-alpha"\ndeveloper_instructions = \'\'\'\nClean.\n\'\'\'\n');
+    writeCodexAgentToml(agentsDir, 'gsd-bravo', 'name = "gsd-bravo"\nmodel = "opus"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    writeCodexAgentToml(agentsDir, 'gsd-charlie', 'name = "gsd-charlie"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+
+    const result = syncCodex(tmpDir, false);
+
+    assert.equal(result.synced, 2, 'gsd-bravo and gsd-charlie must both sync; gsd-alpha is clean');
+    assert.equal(result.skipped, 1);
+    assert.deepEqual(
+      result.changes.map(c => c.agent),
+      ['gsd-bravo', 'gsd-charlie'],
+      'agents must be processed in deterministic (sorted) order',
+    );
+
+    cleanup(tmpDir);
+  });
+});
   });
 }
 
