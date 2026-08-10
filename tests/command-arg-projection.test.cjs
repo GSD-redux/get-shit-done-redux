@@ -147,13 +147,13 @@ function readFrontmatter(filePath) {
   return parseFrontmatter(fs.readFileSync(filePath, 'utf8'));
 }
 
-test('#3431: commands/gsd/debug.md frontmatter parses as YAML and preserves argument-hint', () => {
+test('#3431/#3128: debug command frontmatter preserves the public flag hint', () => {
   const frontmatter = readFrontmatter(DEBUG_COMMAND_PATH);
 
   assert.equal(frontmatter.name, 'gsd:debug');
   assert.equal(
     frontmatter['argument-hint'],
-    '[list | status <slug> | continue <slug> | --diagnose] [issue description]',
+    '[list | status <slug> | continue <slug>] [--diagnose] [--runtime-probes | --no-runtime-probes] [issue description]',
     'argument-hint should remain user-visible text after YAML parsing'
   );
 });

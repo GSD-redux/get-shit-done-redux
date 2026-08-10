@@ -626,7 +626,9 @@ describe('frozen when= vocabulary', () => {
     // and `state:needs-codebase-map` gained its first real consumer
     // (`new-project.md`'s `codebase-map-offer` section). This is the row the
     // lock exists to force — a deliberate, coordinated update, never a
-    // silent drift (Greenspun's Tenth Rule / ADR-1671:69).
+    // silent drift (Greenspun's Tenth Rule / ADR-1671:69). #3128 flips the
+    // existing ADR-1671 reservation and widens 29 -> 30 with the resolved
+    // `state:runtime-evidence-eligible` atom (never either raw probe flag).
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
     assert.deepEqual(
       [...WHEN_VOCABULARY].sort(),
@@ -657,6 +659,7 @@ describe('frozen when= vocabulary', () => {
         'state:phase-mvp-mode',
         'state:plan-strategy-converge',
         'state:reviewer-instances-configured',
+        'state:runtime-evidence-eligible',
         'state:ui-phase-active',
         'state:workstream-active',
         'state:worktrees-enabled',

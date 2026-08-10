@@ -40,6 +40,49 @@ describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
     assert.equal(initDebugCalls.length, 1, 'exactly one init.debug round-trip');
   });
 
+  test('the sole init.debug call receives a prevalidated continue slug (#3128)', () => {
+    const invocation = /gsd_run query init\.debug([^\r\n]*)/.exec(workflow);
+    assert.ok(invocation, 'expected the one init.debug invocation');
+
+    const beforeInit = workflow.slice(0, invocation.index);
+    assert.match(
+      beforeInit,
+      /\^\[a-z0-9\]\[a-z0-9-\]\*\$/,
+      'the canonical continue-slug allowlist must execute before policy lookup',
+    );
+    assert.match(
+      beforeInit,
+      /(?:reject|invalid|stop)[\s\S]{0,300}(?:30|max)|(?:30|max)[\s\S]{0,300}(?:reject|invalid|stop)/i,
+      'the pre-init slug guard must enforce the documented 30-character bound',
+    );
+
+    const invocationArgs = invocation[1].replace(/\)\s*$/, '').trim();
+    assert.notEqual(invocationArgs, '', 'the init.debug call must not discard all parsed arguments');
+
+    // Accept a direct `continue "$slug"` projection or any scalar/array argv
+    // variable populated by the preceding parser. Variable casing, shell
+    // representation, and whether `continue` appears before or after the slug
+    // in explanatory prose are implementation details; the semantic link is
+    // that one parameter reaching init.debug is prepared from BOTH values.
+    const parameterNames = [
+      ...invocationArgs.matchAll(/\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)/g),
+    ].map((match) => match[1]);
+    const directlyProjectsContinueSlug =
+      /\bcontinue\b/.test(invocationArgs) && parameterNames.some((name) => /slug/i.test(name));
+    const indirectlyProjectsContinueSlug = parameterNames.some((name) => {
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      for (const ref of beforeInit.matchAll(new RegExp(`\\b${escapedName}\\b`, 'g'))) {
+        const context = beforeInit.slice(Math.max(0, ref.index - 500), ref.index + 500);
+        if (/\bcontinue\b/i.test(context) && /\bslug\b/i.test(context)) return true;
+      }
+      return false;
+    });
+    assert.ok(
+      directlyProjectsContinueSlug || indirectlyProjectsContinueSlug,
+      'the exact sanitized slug must reach init.debug as the positional `continue <slug>` input',
+    );
+  });
+
   test('no longer makes the three replaced calls (row F2)', () => {
     const queries = queryInvocations(workflow);
 

@@ -445,6 +445,42 @@ describe('state:chunked-mode predicate (row A8)', () => {
   });
 });
 
+// ─── #3128: resolved runtime-evidence eligibility predicate ────────────
+
+describe('state:runtime-evidence-eligible predicate (#3128)', () => {
+  const atom = 'state:runtime-evidence-eligible';
+  const sections = [{ id: 'runtime-evidence-protocol', when: atom }];
+
+  test('uses a strict resolved boolean fact, true only for literal true', () => {
+    assert.equal(typeof WHEN_PREDICATES[atom], 'function');
+    assert.equal(WHEN_PREDICATES[atom](facts({ runtimeEvidenceEligible: true })), true);
+    assert.equal(WHEN_PREDICATES[atom](facts({ runtimeEvidenceEligible: false })), false);
+    assert.equal(WHEN_PREDICATES[atom](facts({ runtimeEvidenceEligible: 'true' })), false);
+    assert.equal(WHEN_PREDICATES[atom](facts({ runtimeEvidenceEligible: 1 })), false);
+  });
+
+  test('is total over an absent or undefined fact', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES[atom](facts({})));
+    assert.equal(WHEN_PREDICATES[atom](facts({})), false);
+    assert.equal(WHEN_PREDICATES[atom](facts({ runtimeEvidenceEligible: undefined })), false);
+  });
+
+  test('selectSections includes only when cmdInitDebug has resolved eligibility true', () => {
+    assert.deepEqual(
+      selectSections(sections, facts({ runtimeEvidenceEligible: true })),
+      { included: ['runtime-evidence-protocol'], excluded: [] },
+    );
+    assert.deepEqual(
+      selectSections(sections, facts({ runtimeEvidenceEligible: false })),
+      { included: [], excluded: ['runtime-evidence-protocol'] },
+    );
+    assert.deepEqual(
+      selectSections(sections, facts({})),
+      { included: [], excluded: ['runtime-evidence-protocol'] },
+    );
+  });
+});
+
 // ─── Rows 25-33: Object.prototype-shaped when= values fail closed ──────────
 // Added during review — prototype-chain fail-open found by isolated
 // adversarial pass. A bracket lookup on a plain frozen object resolves
@@ -489,6 +525,7 @@ const STATE_ATOM_FACT_FIELD = Object.freeze({
   'state:phase-mvp-mode': 'phaseMvpMode',
   'state:plan-strategy-converge': 'planStrategyConverge',
   'state:reviewer-instances-configured': 'reviewerInstancesConfigured',
+  'state:runtime-evidence-eligible': 'runtimeEvidenceEligible',
   'state:ui-phase-active': 'uiPhaseActive',
   'state:worktrees-enabled': 'worktreesEnabled',
   'state:is-monorepo': 'isMonorepo',
@@ -521,7 +558,7 @@ function factFragmentsFor(atom) {
 
 describe('every when= atom is satisfiable by some InvocationFacts (#2994 matrix rows A1/A2/A5)', () => {
   // A5 anti-vacuity: the atom set this describe block iterates must be
-  // non-empty AND exactly equal to WHEN_VOCABULARY's full 29-entry set — an
+  // non-empty AND exactly equal to WHEN_VOCABULARY's full 30-entry set — an
   // A1/A2 loop over an empty or partial collection would be a green test
   // proving nothing (ADR-1671 eval-gate rot, named explicitly in the design).
   test('atom satisfiability set is non-empty and equals the full frozen WHEN_VOCABULARY (row A5)', () => {
@@ -535,7 +572,7 @@ describe('every when= atom is satisfiable by some InvocationFacts (#2994 matrix 
       assert.doesNotThrow(() => factFragmentsFor(atom), `factFragmentsFor must resolve "${atom}"`);
     }
     assert.deepEqual(coveredAtoms, [...WHEN_VOCABULARY].sort(), 'the covered atom set must be exactly WHEN_VOCABULARY');
-    assert.equal(WHEN_VOCABULARY.length, 29, 'sanity: the frozen vocabulary is expected at 29 entries for #2994 — update this literal alongside a deliberate vocabulary widening');
+    assert.equal(WHEN_VOCABULARY.length, 30, 'sanity: ADR-3128 deliberately widens the frozen vocabulary to 30 entries');
   });
 
   for (const atom of WHEN_VOCABULARY) {
