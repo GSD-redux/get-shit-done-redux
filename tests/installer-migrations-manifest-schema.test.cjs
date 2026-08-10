@@ -45,7 +45,7 @@
  * defense-in-depth case per 40-design.md row A4.
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -77,16 +77,18 @@ function sha256(content) {
 describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   let dir;
 
-  const setup = (t) => {
+  beforeEach(() => {
     dir = createTempDir('gsd-manifest-schema-');
-    t.after(() => cleanup(dir));
-  };
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
 
   // R1 — no manifest file at all. manifestVersion must be null, distinct from
   // the `1` a v1 manifest reports (locked together with R2/R6 elsewhere), and
   // scope/runtime null too.
-  test('R1: absent manifest reports manifestVersion null, distinct from 1', (t) => {
-    setup(t);
+  test('R1: absent manifest reports manifestVersion null, distinct from 1', () => {
     const result = readInstallManifest(dir);
     assert.strictEqual(result.manifestVersion, null);
     assert.notStrictEqual(result.manifestVersion, 1);
@@ -101,8 +103,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R2 — the must-have acceptance criterion (AC2): a REAL v1 manifest, with
   // exactly the four pre-#2872 fields and nothing else, reads without error
   // and without requiring a reinstall.
-  test('R2 (must-have AC2): reads a v1 manifest without error and without reinstall', (t) => {
-    setup(t);
+  test('R2 (must-have AC2): reads a v1 manifest without error and without reinstall', () => {
     const v1 = {
       version: '1.49.0',
       timestamp: '2026-05-10T00:00:00.000Z',
@@ -126,8 +127,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   });
 
   // R3/R5 — a v2 manifest surfaces all three new fields.
-  test('R3: reads scope and runtime from a v2 manifest', (t) => {
-    setup(t);
+  test('R3: reads scope and runtime from a v2 manifest', () => {
     writeJsonManifest(dir, {
       manifestVersion: 2,
       version: '1.60.0',
@@ -146,8 +146,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R4 — a FUTURE writer's manifestVersion is reported verbatim, never
   // clamped and never thrown on.
-  test('R4: reports a future manifestVersion verbatim', (t) => {
-    setup(t);
+  test('R4: reports a future manifestVersion verbatim', () => {
     writeJsonManifest(dir, {
       manifestVersion: 3,
       version: '1.99.0',
@@ -178,8 +177,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
     { label: 'R9: stringified "2" is not a version claim, rejected to 1', raw: '2', expected: 1 },
   ];
   for (const { label, raw, expected } of manifestVersionCases) {
-    test(label, (t) => {
-      setup(t);
+    test(label, () => {
       writeJsonManifest(dir, {
         manifestVersion: raw,
         version: '1.50.0',
@@ -195,7 +193,6 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R6 (paired assertion) — an explicit manifestVersion:1 is indistinguishable
   // from one with the key entirely absent.
   test('R6: an explicit manifestVersion 1 matches an implicit one', (t) => {
-    setup(t);
     const explicitDir = createTempDir('gsd-manifest-schema-explicit-');
     const implicitDir = createTempDir('gsd-manifest-schema-implicit-');
     t.after(() => cleanup(explicitDir));
@@ -214,8 +211,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R10 — the negative-space row: consent/lifecycle vocabulary ('project')
   // must never be read as an install scope, and must NEVER collapse to
   // 'local'.
-  test('R10 (negative space): does not read the consent vocabulary as an install scope', (t) => {
-    setup(t);
+  test('R10 (negative space): does not read the consent vocabulary as an install scope', () => {
     writeJsonManifest(dir, {
       manifestVersion: 2,
       version: '1.60.0',
@@ -233,8 +229,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R11 — hostile scope values all reject to null.
   for (const scope of ['GLOBAL', '', 7, null]) {
-    test(`R11: rejects an invalid scope (${JSON.stringify(scope)}) to null`, (t) => {
-      setup(t);
+    test(`R11: rejects an invalid scope (${JSON.stringify(scope)}) to null`, () => {
       writeJsonManifest(dir, {
         manifestVersion: 2,
         version: '1.60.0',
@@ -251,8 +246,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R12 — malformed runtime values (empty, whitespace-only, non-string)
   // reject to null.
   for (const runtime of ['', '   ', 42]) {
-    test(`R12: rejects an empty or non-string runtime (${JSON.stringify(runtime)}) to null`, (t) => {
-      setup(t);
+    test(`R12: rejects an empty or non-string runtime (${JSON.stringify(runtime)}) to null`, () => {
       writeJsonManifest(dir, {
         manifestVersion: 2,
         version: '1.60.0',
@@ -268,8 +262,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R13 — an unregistered runtime string is a fact about the file, reported
   // verbatim; the reader does not validate against the runtime registry.
-  test('R13: reports an unregistered runtime string verbatim', (t) => {
-    setup(t);
+  test('R13: reports an unregistered runtime string verbatim', () => {
     writeJsonManifest(dir, {
       manifestVersion: 2,
       version: '1.60.0',
@@ -283,8 +276,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   });
 
   // R14 — unparseable JSON reads as absent, no throw (Known limit, B9).
-  test('R14: an unparseable manifest reads as absent', (t) => {
-    setup(t);
+  test('R14: an unparseable manifest reads as absent', () => {
     writeRawManifest(dir, '{not valid json');
 
     let result;
@@ -300,8 +292,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R15 — valid JSON that is NOT an object (0, "str", true, null) all read
   // as absent, no throw.
   for (const value of [0, 'str', true, null]) {
-    test(`R15 (negative space): valid non-object JSON (${JSON.stringify(value)}) reads as absent`, (t) => {
-      setup(t);
+    test(`R15 (negative space): valid non-object JSON (${JSON.stringify(value)}) reads as absent`, () => {
       writeJsonManifest(dir, value);
 
       let result;
@@ -317,8 +308,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R16 — valid JSON `[]` documents the current branch: typeof [] === 'object'
   // passes the guard, but `files` is absent on an array so it collapses to {}.
-  test('R16 (negative space): an array manifest yields an empty file map', (t) => {
-    setup(t);
+  test('R16 (negative space): an array manifest yields an empty file map', () => {
     writeJsonManifest(dir, []);
 
     let result;
@@ -329,8 +319,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   });
 
   // R17 — a zero-byte manifest file reads as absent, no throw.
-  test('R17 (negative space): an empty manifest file reads as absent', (t) => {
-    setup(t);
+  test('R17 (negative space): an empty manifest file reads as absent', () => {
     writeRawManifest(dir, '');
 
     let result;
@@ -345,8 +334,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R18 — a manifest with zero files still reports its version: "present but
   // empty" is a distinct state from "absent".
-  test('R18: a manifest with no files still reports its version', (t) => {
-    setup(t);
+  test('R18: a manifest with no files still reports its version', () => {
     writeJsonManifest(dir, {
       manifestVersion: 2,
       version: '1.60.0',
@@ -364,7 +352,6 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R19 — CRLF line endings inside the JSON text must not change the parse.
   test('R19: CRLF line endings do not change the parse', (t) => {
-    setup(t);
     const lfDir = createTempDir('gsd-manifest-schema-lf-');
     const crlfDir = createTempDir('gsd-manifest-schema-crlf-');
     t.after(() => cleanup(lfDir));
@@ -389,8 +376,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
 
   // R20 — a `files` key literally named `__proto__` must never pollute
   // Object.prototype.
-  test('R20 (hostile): a __proto__ manifest key does not pollute the prototype', (t) => {
-    setup(t);
+  test('R20 (hostile): a __proto__ manifest key does not pollute the prototype', () => {
     // Built as raw JSON TEXT (never a JS object literal) so the on-disk bytes
     // contain a literal `"__proto__"` key. An object-literal spelling
     // (`{ '__proto__': ... }`) is special-cased by the ObjectLiteral grammar
@@ -421,8 +407,7 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
   // R21 — independence: the four v1 callers read only `files`. A manifest
   // carrying just the four v1 fields must yield the exact same `files` map
   // the pre-#2872 reader produced for that input.
-  test('R21 (independence): existing callers see an unchanged files map', (t) => {
-    setup(t);
+  test('R21 (independence): existing callers see an unchanged files map', () => {
     const files = {
       'gsd-core/hooks/dist/gsd-check-update.js': 'aaa111',
       'agents/gsd-planner.md': 'bbb222',
@@ -438,19 +423,112 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
     const result = readInstallManifest(dir);
     assert.deepStrictEqual(result.files, files);
   });
+
+  // R22 — boundary (limit): a runtime string of exactly 64 chars is reported
+  // unchanged, no truncation marker.
+  test('R22: reports a 64-char runtime unchanged', () => {
+    const runtime = 'a'.repeat(64);
+    writeJsonManifest(dir, {
+      manifestVersion: 2,
+      version: '1.60.0',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      mode: 'full',
+      runtime,
+      scope: 'global',
+      files: {},
+    });
+    assert.strictEqual(readInstallManifest(dir).runtime, runtime);
+  });
+
+  // R23 — boundary (limit+1): one char past the cap is truncated to 64 chars
+  // plus the ellipsis marker (same convention as `truncatePostureValue`,
+  // agent-install-check.cts:75-77).
+  test('R23: truncates a 65-char runtime to 64 chars plus an ellipsis', () => {
+    const runtime = 'a'.repeat(65);
+    writeJsonManifest(dir, {
+      manifestVersion: 2,
+      version: '1.60.0',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      mode: 'full',
+      runtime,
+      scope: 'global',
+      files: {},
+    });
+    const result = readInstallManifest(dir);
+    assert.strictEqual(result.runtime, `${'a'.repeat(64)}…`);
+    assert.strictEqual(result.runtime.length, 65);
+  });
+
+  // R24 — boundary (limit-1): one char under the cap is reported unchanged.
+  test('R24: reports a 63-char runtime unchanged', () => {
+    const runtime = 'a'.repeat(63);
+    writeJsonManifest(dir, {
+      manifestVersion: 2,
+      version: '1.60.0',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      mode: 'full',
+      runtime,
+      scope: 'global',
+      files: {},
+    });
+    assert.strictEqual(readInstallManifest(dir).runtime, runtime);
+  });
+
+  // R25 — hostile: the manifest is attacker-influenceable (a project-local
+  // one lives inside a repository a user may merely have cloned), so a very
+  // long `runtime` string must never reach a consumer unbounded, and must
+  // never throw.
+  test('R25: bounds a very long runtime without throwing', () => {
+    const runtime = 'x'.repeat(100_000);
+    writeJsonManifest(dir, {
+      manifestVersion: 2,
+      version: '1.60.0',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      mode: 'full',
+      runtime,
+      scope: 'global',
+      files: {},
+    });
+    let result;
+    assert.doesNotThrow(() => {
+      result = readInstallManifest(dir);
+    });
+    assert.strictEqual(result.runtime.length, 65);
+  });
+
+  // R26 — negative space, documented deliberately: the CHARSET of `runtime`
+  // is NOT gated, only its length. `declaredRuntimeMatchesProbe` needs to see
+  // the actual value to detect a mismatch, so a charset gate here would
+  // destroy that signal. A future reader must not "fix" this by adding one —
+  // Phase 4 (#2873) owns sanitizing `declaredRuntime` before it is rendered.
+  test('R26: still reports a runtime containing a control character', () => {
+    const runtime = 'claude[31m';
+    writeJsonManifest(dir, {
+      manifestVersion: 2,
+      version: '1.60.0',
+      timestamp: '2026-08-01T00:00:00.000Z',
+      mode: 'full',
+      runtime,
+      scope: 'global',
+      files: {},
+    });
+    assert.strictEqual(readInstallManifest(dir).runtime, runtime);
+  });
 });
 
 describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   let dir;
 
-  const setup = (t) => {
+  beforeEach(() => {
     dir = createTempDir('gsd-write-manifest-');
-    t.after(() => cleanup(dir));
-  };
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
 
   // W1 — global install, claude: manifestVersion 2, runtime + scope recorded.
-  test('records manifestVersion, runtime and scope for a global install', (t) => {
-    setup(t);
+  test('records manifestVersion, runtime and scope for a global install', () => {
     writeManifest(dir, 'claude', { mode: 'full', scope: 'global' });
 
     const manifest = readManifest(dir);
@@ -460,8 +538,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   });
 
   // W2 — local install, claude: same runtime, scope local.
-  test('records scope local for a --local install', (t) => {
-    setup(t);
+  test('records scope local for a --local install', () => {
     writeManifest(dir, 'claude', { mode: 'full', scope: 'local' });
 
     const manifest = readManifest(dir);
@@ -471,8 +548,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   });
 
   // W3 — a non-claude runtime is recorded as itself, not a hardcoded default.
-  test('records the installing runtime, not a default', (t) => {
-    setup(t);
+  test('records the installing runtime, not a default', () => {
     writeManifest(dir, 'codex', { mode: 'full', scope: 'global' });
 
     const manifest = readManifest(dir);
@@ -481,8 +557,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
 
   // W4 — an install over a pre-existing v1 manifest rebuilds it whole, as v2,
   // with `files` still reflecting what's actually on disk (not wiped).
-  test('an install over a v1 manifest rewrites it as v2', (t) => {
-    setup(t);
+  test('an install over a v1 manifest rewrites it as v2', () => {
     const gsdCoreDir = path.join(dir, 'gsd-core');
     fs.mkdirSync(gsdCoreDir, { recursive: true });
     const trackedContent = 'console.log("hook");\n';
@@ -514,8 +589,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   // W5 — options omitted entirely: scope defaults to 'global', never
   // null/absent (A3: the SAME fallback the skills-root line already
   // applies, read from one place).
-  test('defaults scope to global when options are omitted', (t) => {
-    setup(t);
+  test('defaults scope to global when options are omitted', () => {
     writeManifest(dir, 'claude');
 
     const manifest = readManifest(dir);
@@ -527,8 +601,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   // defense-in-depth for a third-party caller; junk cannot reach here from
   // bin/install.js itself).
   for (const junkScope of ['GLOBAL', '', 0, null]) {
-    test(`coerces an unrecognized scope (${JSON.stringify(junkScope)}) to global without throwing`, (t) => {
-      setup(t);
+    test(`coerces an unrecognized scope (${JSON.stringify(junkScope)}) to global without throwing`, () => {
       let manifest;
       assert.doesNotThrow(() => {
         writeManifest(dir, 'claude', { mode: 'full', scope: junkScope });
@@ -539,8 +612,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   }
 
   // W7 — runtime omitted: records DEFAULT_RUNTIME, never null.
-  test('records the default runtime when none is passed', (t) => {
-    setup(t);
+  test('records the default runtime when none is passed', () => {
     writeManifest(dir);
 
     const manifest = readManifest(dir);
@@ -551,8 +623,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
 
   // W8 — independence: the four pre-existing manifest fields keep their
   // names and types.
-  test('does not change any pre-existing manifest field', (t) => {
-    setup(t);
+  test('does not change any pre-existing manifest field', () => {
     writeManifest(dir, 'claude', { mode: 'full', scope: 'global' });
 
     const manifest = readManifest(dir);
@@ -568,8 +639,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   // produces two manifests that differ ONLY in their timestamp. Never
   // asserts on elapsed wall-clock time — only on structural equality once
   // `timestamp` is removed from both sides.
-  test('is idempotent apart from timestamp', (t) => {
-    setup(t);
+  test('is idempotent apart from timestamp', () => {
     writeManifest(dir, 'claude', { mode: 'full', scope: 'global' });
     const first = readManifest(dir);
     writeManifest(dir, 'claude', { mode: 'full', scope: 'global' });
@@ -588,8 +658,7 @@ describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {
   // agree on the manifest schema version via the SAME owned constant, never
   // two independent literals that can drift apart (the "generative fix
   // divergence" class). This fails if either side is changed alone.
-  test('W10 (parity): the version writeManifest emits is the same constant readInstallManifest owns', (t) => {
-    setup(t);
+  test('W10 (parity): the version writeManifest emits is the same constant readInstallManifest owns', () => {
     writeManifest(dir, 'claude', { mode: 'full', scope: 'global' });
 
     const manifest = readManifest(dir);

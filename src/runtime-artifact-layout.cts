@@ -34,7 +34,7 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // projection both kind-builder closures below need at the converters'
 // positional `isGlobal` boundary (see its doc comment in install-scope.cts
 // for why the projection is centralized rather than eliminated).
-import { isGlobalScope, scopeRank, validateScopeId, type InstallScope } from './install-scope.cjs';
+import { isGlobalScope, scopeRank, validateScopeId, SCOPE_ORDER, type InstallScope } from './install-scope.cjs';
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -727,8 +727,6 @@ function getDefaultTriggerPrecedence(): string[] {
   const capValidator = _require('./capability-validator.cjs') as { DEFAULT_TRIGGER_PRECEDENCE: string[] };
   return capValidator.DEFAULT_TRIGGER_PRECEDENCE;
 }
-
-const SCOPE_ORDER: readonly InstallScope[] = ['global', 'local'];
 
 /**
  * True when a `commands` kind entry is namespaced by its destination

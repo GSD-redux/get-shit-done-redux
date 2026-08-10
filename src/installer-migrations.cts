@@ -187,8 +187,10 @@ interface InstallManifest {
    */
   manifestVersion: number | null;
   /** Runtime that wrote this manifest, or `null` for a v1 manifest. Reported
-   *  verbatim — an unregistered runtime string is a fact about the file, and
-   *  this reader reports facts; callers decide what to do with one. */
+   *  verbatim up to `MAX_REPORTED_RUNTIME_LENGTH` chars, then truncated with
+   *  `…` — an unregistered runtime string is a fact about the file, and this
+   *  reader reports facts; callers decide what to do with one. Charset is
+   *  deliberately NOT gated (see `normalizeReportedRuntime`). */
   runtime: string | null;
   /** Install scope that wrote this manifest, or `null` for a v1 manifest (or
    *  an unrecognized value). Validated through Install Scope Module's shared
@@ -200,6 +202,33 @@ interface InstallManifest {
 
 /** Lowest manifest schema version that records `runtime`/`scope` (#2872). */
 const MANIFEST_SCHEMA_VERSION = 2;
+
+/**
+ * Longest `runtime` string this reader will report. Real runtime ids are
+ * registry keys (`claude`, `antigravity`, `kimi-code` — 11 chars at the
+ * longest), so this loses nothing legitimate; it exists because the manifest
+ * is attacker-influenceable (a project-local one lives inside a repository a
+ * user may merely have cloned) and the value reaches a consumer that renders
+ * it. Same 64-char convention as `truncatePostureValue`
+ * (`agent-install-check.cts`), deliberately, so the subsystem caps reported
+ * values one way.
+ */
+const MAX_REPORTED_RUNTIME_LENGTH = 64;
+
+/**
+ * A manifest's `runtime` is reported as a FACT about the file — it is
+ * deliberately NOT validated against the capability registry, because an
+ * unregistered id is exactly the kind of mismatch the Installed Surface
+ * Resolver exists to surface (#2872 design row B8). It is, however, LENGTH
+ * bounded: "report the fact" never required "report unbounded bytes".
+ */
+function normalizeReportedRuntime(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  if (raw.trim() === '') return null;
+  return raw.length > MAX_REPORTED_RUNTIME_LENGTH
+    ? `${raw.slice(0, MAX_REPORTED_RUNTIME_LENGTH)}…`
+    : raw;
+}
 
 /**
  * Normalize a raw `manifestVersion`. Only a finite integer >= 1 is a version
@@ -236,7 +265,7 @@ function readInstallManifest(configDir: string): InstallManifest {
     mode: typeof m.mode === 'string' ? m.mode : null,
     files: m.files && typeof m.files === 'object' ? m.files as Record<string, string> : {},
     manifestVersion: normalizeManifestVersion(m.manifestVersion),
-    runtime: typeof rawRuntime === 'string' && rawRuntime.trim() !== '' ? rawRuntime : null,
+    runtime: normalizeReportedRuntime(rawRuntime),
     scope: isInstallScopeId(m.scope) ? m.scope : null,
   };
 }

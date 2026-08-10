@@ -348,3 +348,14 @@ export function isGlobalScope(scope: InstallScope): boolean {
 export function scopeRank(id: InstallScope): number {
   return HOST_PRECEDENCE_RANK[validateScopeId(id, 'scopeRank')];
 }
+
+/**
+ * Both scope ids, highest host precedence first. The ONE ordering of the
+ * install-scope axis: `runtime-artifact-layout.cts`'s trigger resolution and
+ * `installed-surface-resolver.cts`'s scope-record construction both consume
+ * this rather than each re-declaring `['global','local']` (#2872 review
+ * finding — this repo's recorded "generative fix divergence" class). Frozen so
+ * a caller cannot reorder it for everyone else. Ordering is not arbitrary: it
+ * is `scopeRank` descending, and a test locks that so the two cannot drift.
+ */
+export const SCOPE_ORDER: readonly InstallScope[] = Object.freeze(['global', 'local']);

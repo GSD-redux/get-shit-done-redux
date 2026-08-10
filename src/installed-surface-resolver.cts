@@ -53,7 +53,7 @@
  * than re-deriving either rule as a fourth independent copy.
  */
 
-import { resolveScope, type InstallScope } from './install-scope.cjs';
+import { resolveScope, SCOPE_ORDER, type InstallScope } from './install-scope.cjs';
 import { posixNormalize } from './shell-command-projection.cjs';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -159,12 +159,6 @@ export interface ResolveInstalledSurfacesOptions {
  */
 const SAFE_STEM = /^[a-z0-9][a-z0-9-]*$/;
 
-/** Both scopes, higher-precedence (`global`) first — matches
- *  `resolveTriggerSurface`'s own `SCOPE_ORDER` constant and `scopeRank`'s
- *  ranking, without importing either (a two-element literal is not worth a
- *  cross-module dependency). */
-const SCOPE_ORDER: readonly InstallScope[] = ['global', 'local'];
-
 function getDefaultRuntimeRegistry(): RuntimeEnumerableRegistry {
   return _require('./capability-registry.cjs') as RuntimeEnumerableRegistry;
 }
@@ -175,10 +169,6 @@ function getDefaultRuntimeRegistry(): RuntimeEnumerableRegistry {
 function listRegisteredRuntimeIds(opts: ResolveInstalledSurfacesOptions): string[] {
   const registry = (opts.registry as RuntimeEnumerableRegistry | undefined) ?? getDefaultRuntimeRegistry();
   return Object.keys(registry.runtimes).sort();
-}
-
-function defaultReadManifest(configDir: string) {
-  return readInstallManifest(configDir);
 }
 
 /**
@@ -295,7 +285,7 @@ function buildScopeRecord(
     files: Record<string, string>;
   };
   try {
-    const readManifest = opts.readManifest ?? defaultReadManifest;
+    const readManifest = opts.readManifest ?? readInstallManifest;
     manifest = readManifest(resolvedConfigHome);
   } catch {
     // C14: manifest read/probe failure degrades to not-installed, never throws.
