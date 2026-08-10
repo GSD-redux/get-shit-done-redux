@@ -537,6 +537,23 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     total_plans: totalPlans,
     total_summaries: totalSummaries,
     progress_percent: progressPercent,
+    // #3217 finding 2: `progress_percent` is gated by a SECOND, independently
+    // computed `listMilestonePhaseDirs` scope (`progressScope` above) — not
+    // by the top-level `scope` field, which describes the heading-windowing
+    // identity `phases`/`total_plans`/`total_summaries`/`completed_phases`
+    // were built from. Those two scopes can legitimately disagree (e.g.
+    // `scope: "complete"` alongside a genuinely unreadable phases directory),
+    // and per the documented contract "scope tells you whether the counts
+    // are trustworthy", a consumer seeing `progress_percent: null` needs a
+    // field to tell WHY without reading source. Exposing `progress_scope`
+    // (rather than reconciling the two scopes into one, or re-deriving
+    // `total_plans`/`phases`/etc. from the scoped set) preserves the
+    // deliberate, already-documented choice a few lines up: `phases`/
+    // `total_plans`/`total_summaries`/`completed_phases` stay the
+    // heading-matched detail view (`_phaseDirNames` is a lookup index, not a
+    // milestone enumeration — see its comment); only `progress_percent`'s own
+    // inputs move onto the scoped owner.
+    progress_scope: progressScope,
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,

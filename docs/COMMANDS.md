@@ -674,6 +674,8 @@ Show status, next steps, and automatically advance to the next logical workflow 
 
 Status reporting is scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases, so the reported progress percentage no longer holds at `100` while phases in the active window are still outstanding.
 
+> **Nullable percentage.** The reported completion percentage is `null` — never a fabricated `0`, `100`, or stale value — when the current milestone's phase set is not fully readable/scoped. See [CLI-TOOLS.md → A non-COMPLETE scope withholds the percentage entirely](CLI-TOOLS.md#a-non-complete-scope-withholds-the-percentage-entirely-3217).
+
 ```bash
 /gsd-progress                       # "Where am I? What's next?" with auto-routing
 /gsd-progress --next                # Advance to next step automatically
@@ -959,6 +961,8 @@ Display project statistics.
 ```
 
 Scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases.
+
+> **Nullable percentage.** The reported completion percentage is `null` — never a fabricated `0`, `100`, or stale value — when the current milestone's phase set is not fully readable/scoped (e.g. a truncated or unresolvable milestone window, or an unreadable `.planning/phases` directory). See [CLI-TOOLS.md → A non-COMPLETE scope withholds the percentage entirely](CLI-TOOLS.md#a-non-complete-scope-withholds-the-percentage-entirely-3217).
 
 ### `/gsd-profile-user`
 

@@ -150,6 +150,12 @@ function stateUpdateProgressRaw(cwd) {
   return result.output;
 }
 
+function stateJsonRaw(cwd) {
+  const result = runGsdTools(['state', 'json', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  return JSON.parse(result.output);
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // A. Rule 4 at each consumer's OBSERVABLE output (ADR Decision 4c)
 // ═════════════════════════════════════════════════════════════════════════
@@ -163,6 +169,10 @@ describe('A. rule 4 — a non-COMPLETE scope renders no percentage, at the CLI s
     assert.strictEqual(analyzed.scope, SCOPE.COMPLETE);
     assert.strictEqual(typeof analyzed.progress_percent, 'number');
     assert.strictEqual(analyzed.progress_percent, 50);
+    // Finding 2: `progress_scope` is the field that governs `progress_percent`
+    // specifically — it must be exposed (not merely equal to `scope` by
+    // coincidence on this fixture) so a consumer never has to infer it.
+    assert.strictEqual(analyzed.progress_scope, SCOPE.COMPLETE);
   });
 
   test('A2: roadmap analyze --json, TRUNCATED scope -> progress_percent: null (never 0, never 100)', (t) => {
@@ -191,6 +201,14 @@ describe('A. rule 4 — a non-COMPLETE scope renders no percentage, at the CLI s
     buildUnreadableFixture(cwd);
     const analyzed = analyzeRaw(cwd);
     assert.strictEqual(analyzed.progress_percent, null);
+    // Finding 2's exact repro shape: the top-level `scope` (heading-windowing
+    // identity) is COMPLETE — the ROADMAP heading resolves fine — while
+    // `progress_scope` (the listMilestonePhaseDirs scope that actually gates
+    // `progress_percent`) is UNREADABLE. Without `progress_scope` a consumer
+    // sees `scope: "complete"` next to `progress_percent: null` with nothing
+    // in the JSON explaining why.
+    assert.strictEqual(analyzed.scope, SCOPE.COMPLETE);
+    assert.strictEqual(analyzed.progress_scope, SCOPE.UNREADABLE);
   });
 
   test('A5: query progress, non-COMPLETE scope -> percent: null, no number rendered', (t) => {
@@ -264,6 +282,48 @@ describe('A. rule 4 — a non-COMPLETE scope renders no percentage, at the CLI s
     assert.strictEqual(progress.percent, null);
     assert.strictEqual(stats.percent, null);
     assert.strictEqual(stats.plan_percent, null);
+  });
+
+  test('A10: state json --raw, UNREADABLE phases dir -> progress.percent is ABSENT (not 0, not null-valued)', (t) => {
+    const cwd = createTempDir('gsd-3217-a10-');
+    t.after(() => cleanup(cwd));
+    buildUnreadableFixture(cwd);
+
+    const built = stateJsonRaw(cwd);
+    // buildStateFrontmatter's established convention (unchanged by this
+    // phase): a null percent is OMITTED from `progress`, never emitted as
+    // `percent: 0` or `percent: null`. Before finding 1's fix this hardcoded
+    // SCOPE.COMPLETE and, because the ROADMAP heading gave a real
+    // totalPhases=1 with disk-scanned completedPhases=0 (the phases dir
+    // being unreadable collapses to an empty scanned set), rendered an
+    // EARNED-LOOKING but untrustworthy `percent: 0`.
+    assert.ok(built.progress === undefined || !('percent' in built.progress));
+  });
+
+  test('A11 (finding-1 repro): one genuinely UNREADABLE-phases-dir fixture — state json / roadmap analyze / stats / query progress / state update-progress ALL withhold, none renders a number', (t) => {
+    const cwd = createTempDir('gsd-3217-a11-');
+    t.after(() => cleanup(cwd));
+    buildUnreadableFixture(cwd);
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+    const before = fs.readFileSync(statePath, 'utf-8');
+
+    const built = stateJsonRaw(cwd);
+    const analyzed = analyzeRaw(cwd);
+    const stats = statsRaw(cwd);
+    const progress = queryProgressRaw(cwd);
+    const updateOutput = stateUpdateProgressRaw(cwd);
+
+    assert.ok(built.progress === undefined || !('percent' in built.progress), 'state json must not render a percent');
+    assert.strictEqual(analyzed.progress_percent, null, 'roadmap analyze must withhold');
+    assert.strictEqual(analyzed.progress_scope, SCOPE.UNREADABLE, 'roadmap analyze must expose WHY via progress_scope');
+    assert.strictEqual(stats.percent, null, 'stats must withhold');
+    assert.strictEqual(stats.phase_scope, SCOPE.UNREADABLE);
+    assert.strictEqual(progress.percent, null, 'query progress must withhold');
+    assert.strictEqual(progress.phase_scope, SCOPE.UNREADABLE);
+    assert.strictEqual(updateOutput, 'false', 'state update-progress must not write');
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.strictEqual(after, before, 'state update-progress must leave STATE.md untouched');
   });
 });
 
@@ -508,6 +568,238 @@ describe('E. Tier-2 regression surface', () => {
     const line = 'const p = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;';
     const out = drift.findCompletionRatioDrift(line, 'src/somewhere.cts');
     assert.strictEqual(out.length, 1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// F/G/H. `state sync` (cmdStateSync) — BLOCKER fix (post-review, #3217)
+//
+// cmdStateSync's own disk scan (`entries`, ~state.cts:3113) is UNFILTERED by
+// the real milestone window — it only drops retired phase numbers (#1514).
+// A phase directory outside the real window (or present while the window
+// itself is TRUNCATED/UNSCOPED) still counted toward totalDiskPlans /
+// totalDiskSummaries / diskCompletedPhases, and the percent gate hardcoded
+// SCOPE.COMPLETE, so a non-COMPLETE window could still compute and WRITE a
+// fabricated percentage into STATE.md's body. Fixed by threading the real
+// `listMilestonePhaseDirs` scope through the same gate `computeProgressPercent`
+// already enforces for every other consumer.
+// ═════════════════════════════════════════════════════════════════════════
+
+// UNSCOPED-row-4 fixture: no milestone asserted in STATE.md at all
+// (`versionResolved` false) while the ROADMAP carries versioned milestone
+// headings (`hasVersionedMilestones` true) — classifyMilestoneWindow row 4,
+// distinct from the row-5 fixture above (which asserts an unmatched version).
+// A completed phase directory is included so the pre-fix hardcoded-COMPLETE
+// disk scan has real numbers to fabricate a percentage from.
+function buildUnscopedRow4Fixture(cwd) {
+  writeState(cwd, {});
+  writeRoadmap(cwd, [
+    '## v1.0 Shipped',
+    '',
+    '### Phase 1: Foo',
+  ].join('\n'));
+  writeFile(cwd, '.planning/phases/01-foo/01-01-PLAN.md', '# Plan\n');
+  writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+}
+
+// TRUNCATED fixture (mirrors buildTruncatedFixture above) but WITH a
+// completed phase directory on disk — the empty-window/empty-phases-dir
+// shape above never exercises cmdStateSync's fabrication bug because
+// cmdStateSync returns early ({ changes: [] }) when `.planning/phases`
+// itself does not exist. This variant makes the phases dir real so the
+// disk-scan gate is actually reached.
+function buildTruncatedFixtureWithPhaseDir(cwd) {
+  writeState(cwd, { milestone: 'v2.0' });
+  writeRoadmap(cwd, [
+    '## v1.0 Planned',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '## v2.0 Current 🚧',
+  ].join('\n'));
+  writeFile(cwd, '.planning/phases/01-foo/01-01-PLAN.md', '# Plan\n');
+  writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+}
+
+// A COMPLETE-scope fixture whose disk-derived percent is a genuine 0 (empty
+// milestone window, empty phases dir) — the over-withholding guard (rule 2
+// negative space) for the WRITE path specifically.
+function buildSyncCompleteZeroFixture(cwd) {
+  writeState(cwd, { milestone: 'v1.0' });
+  writeRoadmap(cwd, ['## v1.0 Current 🚧', ''].join('\n'));
+  fs.mkdirSync(path.join(planningDirOf(cwd), 'phases'), { recursive: true });
+}
+
+// Appends a syncable body (STATE.md's frontmatter is already written by
+// writeState/buildXFixture above) carrying a `Progress:` line that
+// `state-transition.cts`'s syncCore can locate and, if warranted, replace —
+// `stateExtractField`'s plain-line pattern (`^Progress:`). `initialPercent`
+// lets a test start from a value distinguishable from both 0 and any
+// fabricated disk-derived number.
+function appendSyncableBody(cwd, initialPercent) {
+  const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+  const existing = fs.readFileSync(statePath, 'utf-8');
+  fs.writeFileSync(
+    statePath,
+    existing + [
+      '',
+      '# GSD State',
+      '',
+      '## Configuration',
+      'Total Plans in Phase: 1',
+      `Progress: [░░░░░░░░░░] ${initialPercent}`,
+      'Last Activity: 2020-01-01',
+      '',
+    ].join('\n'),
+  );
+}
+
+function stateSyncRaw(cwd) {
+  const result = runGsdTools(['state', 'sync', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  return JSON.parse(result.output);
+}
+
+describe('F. state sync (cmdStateSync) — BLOCKER: withhold on a non-COMPLETE scope, never fabricate', () => {
+  test('F1: TRUNCATED window — no Progress rewrite, a skip entry appears in changes, body carries no fabricated percent', (t) => {
+    const cwd = createTempDir('gsd-3217-f1-');
+    t.after(() => cleanup(cwd));
+    buildTruncatedFixtureWithPhaseDir(cwd);
+    appendSyncableBody(cwd, '0%');
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+
+    const out = stateSyncRaw(cwd);
+    assert.strictEqual(out.synced, true);
+    assert.ok(
+      out.changes.some((c) => /^Progress: skipped/.test(c) && /#3217/.test(c)),
+      `expected a #3217 skip entry in changes, got: ${JSON.stringify(out.changes)}`,
+    );
+    assert.ok(
+      !out.changes.some((c) => /^Progress: \[/.test(c)),
+      `must not record a Progress bar rewrite, got: ${JSON.stringify(out.changes)}`,
+    );
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.ok(after.includes('Progress: [░░░░░░░░░░] 0%'), 'body Progress line must be untouched');
+    assert.ok(!/100%/.test(after), 'must never fabricate 100% (the pre-fix defect: disk scan saw 1/1 complete)');
+  });
+
+  test('F2: UNSCOPED row 4 (no milestone asserted, ROADMAP has versioned headings) — same withholding', (t) => {
+    const cwd = createTempDir('gsd-3217-f2-');
+    t.after(() => cleanup(cwd));
+    buildUnscopedRow4Fixture(cwd);
+    appendSyncableBody(cwd, '0%');
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+
+    const out = stateSyncRaw(cwd);
+    assert.ok(
+      out.changes.some((c) => /^Progress: skipped/.test(c) && /#3217/.test(c)),
+      `expected a #3217 skip entry, got: ${JSON.stringify(out.changes)}`,
+    );
+    assert.ok(!out.changes.some((c) => /^Progress: \[/.test(c)));
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.ok(after.includes('Progress: [░░░░░░░░░░] 0%'), 'body Progress line must be untouched');
+    assert.ok(!/100%/.test(after), 'must never fabricate 100%');
+  });
+
+  test('F3: UNSCOPED row 5 (asserted version with no matching heading) — unchanged: the pre-existing #1761 guard still fires first', (t) => {
+    const cwd = createTempDir('gsd-3217-f3-');
+    t.after(() => cleanup(cwd));
+    buildUnscopedFixture(cwd);
+    appendSyncableBody(cwd, '0%');
+
+    const out = stateSyncRaw(cwd);
+    assert.ok(
+      out.changes.some((c) => /^Progress: skipped/.test(c) && /#1761/.test(c)),
+      `row 5 must still hit the pre-existing #1761 guard, got: ${JSON.stringify(out.changes)}`,
+    );
+    // The new #3217 gate is orthogonal and must never fire once #1761 already
+    // skipped — only one skip entry should be recorded.
+    assert.strictEqual(out.changes.filter((c) => /^Progress: skipped/.test(c)).length, 1);
+    assert.ok(!out.changes.some((c) => /#3217/.test(c)));
+  });
+
+  test('F4: COMPLETE scope, genuine 0 — still WRITTEN (over-withholding guard)', (t) => {
+    const cwd = createTempDir('gsd-3217-f4-');
+    t.after(() => cleanup(cwd));
+    buildSyncCompleteZeroFixture(cwd);
+    appendSyncableBody(cwd, '100%');
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+
+    const out = stateSyncRaw(cwd);
+    assert.ok(
+      out.changes.some((c) => /^Progress: .* -> \[░{10}\] 0%$/.test(c)),
+      `expected a real 0% write, got: ${JSON.stringify(out.changes)}`,
+    );
+    assert.ok(!out.changes.some((c) => /^Progress: skipped/.test(c)), 'a COMPLETE scope must never skip');
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.ok(/Progress: \[░{10}\] 0%/.test(after), 'body must carry the real 0%, not the stale 100%');
+  });
+});
+
+describe('G. cross-surface — one non-COMPLETE fixture, ALL FIVE surfaces withhold (the assertion that would have caught the defect)', () => {
+  test('G1: state sync / state json / roadmap analyze / stats / query progress all agree on withholding', (t) => {
+    const cwd = createTempDir('gsd-3217-g1-');
+    t.after(() => cleanup(cwd));
+    buildTruncatedFixtureWithPhaseDir(cwd);
+    appendSyncableBody(cwd, '0%');
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+
+    const syncOut = stateSyncRaw(cwd);
+    const jsonOut = stateJsonRaw(cwd);
+    const analyzed = analyzeRaw(cwd);
+    const stats = statsRaw(cwd);
+    const progress = queryProgressRaw(cwd);
+
+    assert.ok(
+      syncOut.changes.some((c) => /^Progress: skipped/.test(c)),
+      'state sync must withhold (skip entry present)',
+    );
+    assert.ok(!syncOut.changes.some((c) => /^Progress: \[/.test(c)), 'state sync must not rewrite Progress');
+    assert.ok(jsonOut.progress === undefined || !('percent' in jsonOut.progress), 'state json must withhold');
+    assert.strictEqual(analyzed.progress_percent, null, 'roadmap analyze must withhold');
+    assert.strictEqual(stats.percent, null, 'stats must withhold');
+    assert.strictEqual(progress.percent, null, 'query progress must withhold');
+
+    const afterSync = fs.readFileSync(statePath, 'utf-8');
+    assert.ok(afterSync.includes('Progress: [░░░░░░░░░░] 0%'), 'body Progress line untouched by state sync');
+    assert.ok(!/100%/.test(afterSync), 'state sync must never fabricate 100% on this fixture');
+  });
+});
+
+describe('H. self-consistency — after state sync, STATE.md body and frontmatter never contradict each other', () => {
+  test('H1: non-COMPLETE scope — body carries no fabricated percent AND frontmatter progress: carries no percent key', (t) => {
+    const cwd = createTempDir('gsd-3217-h1-');
+    t.after(() => cleanup(cwd));
+    buildTruncatedFixtureWithPhaseDir(cwd);
+    appendSyncableBody(cwd, '0%');
+    const statePath = path.join(planningDirOf(cwd), 'STATE.md');
+
+    stateSyncRaw(cwd);
+    const after = fs.readFileSync(statePath, 'utf-8');
+
+    // Body half: the Progress: bar line must still read 0%, never 100%.
+    assert.ok(/Progress: \[░{10}\] 0%/.test(after), 'body Progress line must remain at 0%');
+
+    // Frontmatter half: syncStateFrontmatter (called from writeStateMd on
+    // every write, including this one) regenerates the YAML block via the
+    // already-fixed buildStateFrontmatter — its progress: sub-block must
+    // omit `percent` entirely on this non-COMPLETE fixture. Before this fix
+    // the two halves could disagree within the SAME write: frontmatter
+    // (already scoped) omitted percent while the body (hardcoded
+    // SCOPE.COMPLETE) rendered one.
+    const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    assert.ok(fmMatch, 'STATE.md must carry a frontmatter block after a write');
+    assert.ok(!/^\s*percent:/m.test(fmMatch[1]), 'frontmatter progress: block must not carry a percent key');
+
+    // The self-contradiction shape this test guards against: body renders a
+    // percent while frontmatter's own progress: block has none (or vice
+    // versa). Assert directly that no percent digit sequence beyond the
+    // untouched-0% line's own "0%" appears anywhere else in the body.
+    const percentTokens = after.match(/\d+%/g) || [];
+    assert.deepStrictEqual(percentTokens, ['0%'], `no other percentage may appear anywhere in STATE.md, got: ${JSON.stringify(percentTokens)}`);
   });
 });
 

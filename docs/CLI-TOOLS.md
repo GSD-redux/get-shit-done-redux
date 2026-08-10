@@ -230,6 +230,37 @@ shape) reports `complete`: the whole document *is* the milestone there. Note
 this answer is specific to *windowing* — see the next section for why milestone
 *identity* answers the same document differently.
 
+### A non-`COMPLETE` scope withholds the percentage entirely (#3217)
+
+`roadmap analyze --json`'s `progress_percent`, `stats --raw`'s `percent` /
+`plan_percent`, `query progress --raw`'s `percent`, and `state json --raw`'s
+`progress.percent` are now **nullable** — a Tier-2 contract change. When the
+phase set a percentage would be computed from is not fully trustworthy (any
+scope other than `complete`), these surfaces render **no percentage at all**
+rather than a number computed from a truncated, unscoped, or unreadable set:
+
+| Surface | Non-`complete` behavior |
+|---|---|
+| `roadmap analyze --json` | `progress_percent: null` |
+| `stats --raw` | `percent: null`, `plan_percent: null` |
+| `query progress --raw` | `percent: null` |
+| `state json --raw` | `progress.percent` is **omitted** from the `progress` object (not `0`, not present as `null`) |
+| `state update-progress --raw` | `false` — no write; `STATE.md`'s Progress field is left untouched, and a `[gsd-tools] WARNING:` line is written to stderr naming the scope |
+
+`0` is a legitimate, real answer under a `complete` scope (e.g. a
+freshly-declared milestone with zero phases, or a phase with zero plan files)
+and is never withheld — only a non-`complete` scope withholds.
+
+`roadmap analyze --json` gates `total_plans` / `total_summaries` / `phases` /
+`completed_phases` on the top-level `scope` field described above (heading
+windowing identity), but `progress_percent` is governed by a **separate**
+`progress_scope` field — the scope of the phase-directory set the percentage
+was actually computed from. The two can legitimately disagree (e.g.
+`scope: "complete"` — the ROADMAP heading resolves fine — alongside
+`progress_scope: "unreadable"` when `.planning/phases` itself cannot be read),
+so a consumer must branch on `progress_scope`, not `scope`, to know why
+`progress_percent` is `null`.
+
 ### Milestone identity (which milestone, and what it is called)
 
 Milestone identity — the version and name behind `STATE.md`'s `milestone:`
