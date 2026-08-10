@@ -143,7 +143,7 @@ function buildCorpus(root) {
   for (const rel of SCAN_ROOTS) {
     for (const abs of walk(path.join(root, rel))) {
       try {
-        corpus.push({ file: path.relative(root, abs), content: fs.readFileSync(abs, 'utf8') });
+        corpus.push({ file: path.relative(root, abs).replace(/\\/g, '/'), content: fs.readFileSync(abs, 'utf8') });
       } catch {
         // unreadable (broken symlink, binary that slipped past SKIP_EXT) — skip
       }
