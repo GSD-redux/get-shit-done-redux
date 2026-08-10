@@ -73,6 +73,16 @@ function shippedCap(runtimeId) {
   );
 }
 
+/** A real shipped capability.json with one `runtime` field genuinely deleted —
+ *  mirrors tests/effort-surface-axis.test.cjs's shippedDescriptorWithout idiom
+ *  (fixture-provenance rule #2371), adapted for a top-level `runtime.<field>`
+ *  rather than a nested `runtime.hostIntegration.<axis>`. */
+function shippedCapWithout(runtimeId, field) {
+  const cap = shippedCap(runtimeId);
+  delete cap.runtime[field];
+  return cap;
+}
+
 const VALID_KINDS = new Set(['commands', 'skills']);
 const VALID_SCOPES = new Set(['global', 'local']);
 const VALID_REGISTRATIONS = new Set(['direct', 'via-router']);
@@ -310,6 +320,27 @@ describe('resolveTriggerSurface — unknown runtime', () => {
   });
 });
 
+describe('resolveTriggerSurface — unrecognized scope', () => {
+  test('rejects an unrecognized scope entry with the shared validateScopeId contract', () => {
+    // Sibling parity (#2871 Phase 2 review finding): scopeRank/resolveScope/
+    // isGlobalScope (install-scope.cts) already throw TypeError via
+    // validateScopeId for a bad scope id. resolveTriggerSurface must not
+    // fail open on the same input.
+    assert.throws(
+      () => resolveTriggerSurface('claude', ['bogus-scope'], { stems: ['plan-phase'] }),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.ok(err.message.includes('bogus-scope'), 'error message must name the offending scope');
+        return true;
+      },
+    );
+  });
+
+  test('an empty scopes array still returns [] rather than throwing', () => {
+    assert.deepStrictEqual(resolveTriggerSurface('claude', [], { stems: ['plan-phase'] }), []);
+  });
+});
+
 describe('resolveTriggerSurface — purity', () => {
   test('is pure and does not mutate its input', () => {
     const scopes = ['global', 'local'];
@@ -351,10 +382,30 @@ describe('resolveTriggerSurface — exhaustive sweep', () => {
 
 describe('triggerPrecedence axis — validator', () => {
   test('a descriptor without the axis remains valid', () => {
-    const cap = shippedCap('claude'); // real descriptor; declares no triggerPrecedence today
+    // claude's shipped descriptor now DECLARES triggerPrecedence (this PR added
+    // it), so the fixture must genuinely omit the key to exercise the omission
+    // path rather than merely echoing what is already on disk.
+    const cap = shippedCapWithout('claude', 'triggerPrecedence');
+    assert.ok(!('triggerPrecedence' in cap.runtime), 'fixture must not carry triggerPrecedence');
     assert.deepStrictEqual(capValidator.validateRuntimeBody(cap), []);
     assert.ok(Array.isArray(capValidator.DEFAULT_TRIGGER_PRECEDENCE), 'DEFAULT_TRIGGER_PRECEDENCE must be exported');
     assert.deepStrictEqual(capValidator.DEFAULT_TRIGGER_PRECEDENCE, ['skills', 'commands']);
+
+    // Non-vacuous half: resolution must still pick the DEFAULT_TRIGGER_PRECEDENCE
+    // winner (skills over commands) when the axis is absent from the registry
+    // entry actually consulted by resolveTriggerSurface — same registry-override
+    // seam the 'reordering the axis changes which artifact wins' test below uses.
+    const registry = { runtimes: { claude: cap } };
+    const stems = ['plan-phase'];
+    const result = resolveTriggerSurface('claude', ['global', 'local'], { stems, registry });
+    const trigger = 'gsd-plan-phase';
+    const winner = result.find((s) => s.trigger === trigger && s.shadowedBy === null);
+    const loser = result.find((s) => s.trigger === trigger && s.shadowedBy !== null);
+    assert.ok(winner, `missing unshadowed winner for ${trigger}`);
+    assert.strictEqual(winner.kind, 'skills', 'default precedence (skills > commands) must pick skills');
+    assert.strictEqual(winner.scope, 'global');
+    assert.ok(loser, `missing shadowed loser for ${trigger}`);
+    assert.deepStrictEqual(loser.shadowedBy, { kind: 'skills', scope: 'global' });
   });
 
   test('every shipped descriptor validates with the new axis', () => {

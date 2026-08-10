@@ -115,12 +115,15 @@ export interface ResolveScopeInput {
 const VALID_SCOPE_IDS: ReadonlySet<string> = new Set(['global', 'local']);
 
 /**
- * Single owner of the `'global' | 'local'` membership check. `resolveScope`
- * and `isGlobalScope` (below) both call this instead of each carrying its
- * own copy of the rule — two surfaces reading one validator, not two
- * validators that could silently diverge.
+ * Single owner of the `'global' | 'local'` membership check. `resolveScope`,
+ * `isGlobalScope`, `scopeRank`, and `resolveTriggerSurface`
+ * (`runtime-artifact-layout.cts`, #2871 Phase 2) all call this instead of
+ * each carrying its own copy of the rule — one validator every scope-typed
+ * seam reads, not N validators that could silently diverge. Exported so a
+ * sibling module can reuse it directly rather than re-deriving the same
+ * membership check a second time.
  */
-function validateScopeId(id: unknown, caller: string): InstallScope {
+export function validateScopeId(id: unknown, caller: string): InstallScope {
   if (typeof id !== 'string' || !VALID_SCOPE_IDS.has(id)) {
     throw new TypeError(
       `${caller}: id must be one of 'global' | 'local', got ${JSON.stringify(id)}`,

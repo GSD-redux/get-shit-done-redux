@@ -461,9 +461,10 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
   const entries = fs.readdirSync(stagedDir, { withFileTypes: true });
   // For commands: apply prefix unless the destSubpath's last segment already
   // represents the GSD namespace (e.g. 'commands/gsd' → last segment 'gsd').
-  const destLast = path.basename(kind.destSubpath);
-  const prefixStem = kind.prefix ? kind.prefix.replace(/-$/, '') : '';
-  const namespacedByDir = kind.kind === 'commands' && destLast === prefixStem;
+  // Single source of truth: runtimeArtifactLayout.isNamespacedByDir (#2871
+  // Phase 2 review finding — this rule previously drifted independently
+  // across install-engine.cts / surface.cts / runtime-artifact-layout.cts).
+  const namespacedByDir = runtimeArtifactLayout.isNamespacedByDir(kind.kind, kind.destSubpath, kind.prefix);
 
   for (const entry of entries) {
     if (!entry.isFile()) continue;

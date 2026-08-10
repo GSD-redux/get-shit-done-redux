@@ -34,7 +34,7 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // projection both kind-builder closures below need at the converters'
 // positional `isGlobal` boundary (see its doc comment in install-scope.cts
 // for why the projection is centralized rather than eliminated).
-import { isGlobalScope, scopeRank, type InstallScope } from './install-scope.cjs';
+import { isGlobalScope, scopeRank, validateScopeId, type InstallScope } from './install-scope.cjs';
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -731,6 +731,23 @@ function getDefaultTriggerPrecedence(): string[] {
 const SCOPE_ORDER: readonly InstallScope[] = ['global', 'local'];
 
 /**
+ * True when a `commands` kind entry is namespaced by its destination
+ * directory rather than by a filename prefix — i.e. `destSubpath`'s basename
+ * equals `prefix` with its trailing hyphen stripped (e.g. `commands/gsd` +
+ * `gsd-`). When true, `_copyStaged` (`install-engine.cts`) and `surface.cts`
+ * both write the bare stem filename (no prefix) because the directory itself
+ * already carries the namespace; `resolveTriggerSurface` mirrors that in its
+ * own `destPath` computation. Single source of truth for the three sites
+ * that used to compute this independently (#2871 Phase 2 review finding) —
+ * a new caller MUST reuse this rather than re-deriving the rule.
+ */
+function isNamespacedByDir(kind: string, destSubpath: string, prefix: string): boolean {
+  const destLast = path.posix.basename(posixNormalize(destSubpath));
+  const prefixStem = prefix ? prefix.replace(/-$/, '') : '';
+  return kind === 'commands' && destLast === prefixStem;
+}
+
+/**
  * True when candidate `a` should win over the current best `b` for the same
  * trigger. Scope rank first (Phase 1's `install-scope.cts#scopeRank` —
  * global outranks local; NOT re-derived here), then the runtime's
@@ -765,6 +782,12 @@ function isHigherPriority(a: TriggerSurface, b: TriggerSurface, precedenceRank: 
  *
  * @throws {TypeError} for an unknown runtime — same contract (and message
  *   shape) as `resolveRuntimeArtifactLayoutFromRegistry`.
+ * @throws {TypeError} for an unrecognized entry in `scopes` — reuses
+ *   `install-scope.cts`'s shared `validateScopeId`, the same validator
+ *   `scopeRank`/`resolveScope`/`isGlobalScope` already throw through, so this
+ *   sibling of theirs cannot silently fail open on a bad scope (#2871 Phase 2
+ *   review finding). `scopes: []` is untouched — an empty array has no
+ *   entries to validate and still resolves to `[]`.
  */
 function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: TriggerSurfaceOpts): TriggerSurface[] {
   const registry = opts.registry ?? getTriggerRegistry();
@@ -772,6 +795,10 @@ function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: Tr
   const layout = runtimeDescriptor?.artifactLayout;
   if (!layout) {
     throw new TypeError(`Unknown runtime: '${runtime}' — add to runtime-artifact-layout.cjs table`);
+  }
+
+  for (const scope of scopes) {
+    validateScopeId(scope, 'resolveTriggerSurface');
   }
 
   const scopeSet = new Set(scopes);
@@ -790,12 +817,7 @@ function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: Tr
       if (entry.kind !== 'commands' && entry.kind !== 'skills') continue; // excludes agents/kimi-agents
       const kind = entry.kind;
       const destSubpath = posixNormalize(entry.destSubpath);
-      const destLast = path.posix.basename(destSubpath);
-      const prefixStem = entry.prefix ? entry.prefix.replace(/-$/, '') : '';
-      // Mirrors _copyStaged's namespacedByDir branch exactly (install-engine.cts
-      // ~L464-466): a commands kind whose destSubpath basename equals the prefix
-      // stem is written bare (directory IS the namespace).
-      const namespacedByDir = kind === 'commands' && destLast === prefixStem;
+      const namespacedByDir = isNamespacedByDir(kind, entry.destSubpath, entry.prefix);
       const nested = entry.nesting === 'nested';
 
       for (const stem of stems) {
@@ -853,4 +875,4 @@ function resolveTriggerSurface(runtime: string, scopes: InstallScope[], opts: Tr
 }
 
 // getInstallExports removed in ADR-1508 / #1511 Phase 2 (last upward .cts→install.js dep).
-export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot, resolveTriggerSurface };
+export = { resolveRuntimeArtifactLayout, resolveRuntimeArtifactLayoutFromRegistry, findInstallSourceRoot, resolveTriggerSurface, isNamespacedByDir };
