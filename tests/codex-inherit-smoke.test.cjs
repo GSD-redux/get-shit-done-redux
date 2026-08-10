@@ -22,22 +22,24 @@
  *   Row 5, 6      — regression guard — negative proof (posture removes a pin,
  *                   not an agent; #774 service_tier/model_verbosity decoupled)
  *   Row 7         — cross-phase integration (emitter -> validator)
+ *   Row 8         — cross-phase integration (emitter -> repairer, dry-run,
+ *                   posture-clean tree needs zero changes)
  *   Row 9         — regression guard — explicit pin survives
  *   Row 10        — cross-phase integration (emitter -> validator, legal pin)
+ *   Row 11        — cross-phase integration (emitter -> repairer, dry-run,
+ *                   legal pin reported skipped and left byte-identical)
  *
- * Rows 8 and 11 (effort-sync dry-run against the installed .toml tree) are
- * DELIBERATELY OMITTED. They require Phase 3's repair sync (#3243:
- * "sync installed codex .toml model/effort to the passive posture"), which
- * is NOT an ancestor of this branch's HEAD — confirmed via
- * `git merge-base --is-ancestor 8a11f528d HEAD` (fails) and by reading
- * `cmdEffortSync` in src/commands.cts, which today unconditionally
- * short-circuits for any non-claude runtime:
- *   if (runtime !== 'claude') { output({ ..., reason: "runtime '${runtime}'
- *   does not use effort: frontmatter" }); return; }
- * A dry-run test against that stub would assert on behavior Phase 3 has not
- * shipped yet — vacuous today and guaranteed to need rewriting once #3243
- * lands. Writing it now would be inventing coverage, which the phase brief
- * explicitly warns against.
+ * Rows 8 and 11 exercise Phase 3's repair sync (#3243: "sync installed codex
+ * .toml model/effort to the passive posture") against a REAL emitted tree —
+ * `cmdEffortSync` (src/commands.cts) is driven the same way Phase 3's own
+ * `tests/commands.test.cjs` (describe('#3243 (ADR-2313 D7): Codex .toml
+ * effort sync')) drives it: `require('../gsd-core/bin/lib/commands.cjs')`,
+ * called as `cmdEffortSync(cwd, raw=false, {dryRun, configDir, runtime:
+ * 'codex'})`, with its `output()` JSON captured off fd 1 (see
+ * `captureOutput` below — same technique as commands.test.cjs's own helper).
+ * Both rows are expected to PASS today (Phase 3 is merged) — cross-phase
+ * integration, not red-first; see 50-test-matrix.md's "Red-before-green"
+ * section.
  */
 
 'use strict';
@@ -52,6 +54,8 @@ const os = require('node:os');
 
 const { install } = require('../bin/install.js');
 const { checkCodexModelPosture } = require('../gsd-core/bin/lib/agent-install-check.cjs');
+const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+const { parseCodexAgentToml } = require('../gsd-core/bin/lib/codex-agent-toml.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -133,6 +137,30 @@ function headerLines(tomlContent) {
 function findKeyLine(header, key) {
   const re = new RegExp(`^${key}\\s*=`);
   return header.find((line) => re.test(line));
+}
+
+/**
+ * Runs Phase 3's `cmdEffortSync` codex branch against `codexHome` and returns
+ * the parsed structured result. Mirrors `syncCodex` in tests/commands.test.cjs
+ * (describe('#3243 (ADR-2313 D7): Codex .toml effort sync')) — `configDir` is
+ * the agents dir's PARENT (cmdEffortSync joins 'agents' itself), `raw` is
+ * false so `output()` emits JSON, and `output()`'s `fs.writeSync(1, ...)` is
+ * intercepted rather than parsed from stdout text, so this asserts on
+ * structure, never prose.
+ */
+function runEffortSyncDryRun(codexHome) {
+  const origWriteSync = fs.writeSync;
+  let captured = '';
+  fs.writeSync = (fd, data) => {
+    if (fd === 1) { captured += data; return data.length; }
+    return origWriteSync(fd, data);
+  };
+  try {
+    cmdEffortSync(codexHome, false, { dryRun: true, configDir: codexHome, runtime: 'codex' });
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  return JSON.parse(captured);
 }
 
 function captureStderr() {
@@ -238,6 +266,16 @@ describe('Row 1/2/3/5a/6/7 — codex install, model_profile: balanced (default),
       `Phase 2's validator must report the tree Phase 1's emitter just produced as clean\nviolations:\n${JSON.stringify(result.violations, null, 2)}`);
     assert.deepStrictEqual(result.violations, []);
     assert.ok(result.checked.includes('gsd-planner'), 'sanity: gsd-planner.toml must have been checked');
+  });
+
+  test('row 8: effort sync (dry-run) reports zero changes on the freshly-installed tree (emit -> repair)', () => {
+    const result = runEffortSyncDryRun(codexHome);
+    assert.strictEqual(result.synced, 0,
+      `Phase 3's repairer must find nothing to fix in the tree Phase 1's emitter just produced\nchanges:\n${JSON.stringify(result.changes, null, 2)}`);
+    assert.deepStrictEqual(result.changes, []);
+    assert.deepStrictEqual(result.refused, []);
+    assert.deepStrictEqual(result.write_failures, []);
+    assert.ok(result.skipped > 0, 'sanity: at least one agent must have been examined and reported skipped (clean)');
   });
 });
 
@@ -349,5 +387,33 @@ describe('Row 9/10 — codex install with an explicit real-Codex model_overrides
     assert.strictEqual(result.ok, true,
       `Phase 2's validator must not flag a legal explicit model_overrides pin\nviolations:\n${JSON.stringify(result.violations, null, 2)}`);
     assert.deepStrictEqual(result.violations, []);
+  });
+
+  test('row 11: effort sync (dry-run) reports the pinned agent skipped, not synced, and the file is byte-identical', () => {
+    const filePath = path.join(codexHome, 'agents', 'gsd-planner.toml');
+    const before = fs.readFileSync(filePath, 'utf8');
+
+    const result = runEffortSyncDryRun(codexHome);
+
+    const plannerChange = result.changes.find((c) => c.agent === 'gsd-planner');
+    assert.strictEqual(plannerChange, undefined,
+      `a legal pin must never be reported as a change\nchanges:\n${JSON.stringify(result.changes, null, 2)}`);
+    assert.strictEqual(result.synced, 0,
+      'an over-eager stripper would report this agent synced; a legal pin must be skipped instead');
+    assert.ok(result.skipped > 0);
+
+    const after = fs.readFileSync(filePath, 'utf8');
+    assert.strictEqual(after, before,
+      'file contents must be byte-identical after a dry-run — comparing bytes, not mtime, per the phase brief');
+
+    // Confirm via Phase 3's own IR (parseCodexAgentToml), not just the raw
+    // text compare above: the pin and its coupled effort must still be
+    // present in the parsed structure, not merely absent from `changes`.
+    const parsed = parseCodexAgentToml(after);
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(parsed.doc.model, PINNED_MODEL,
+      'the legal pin must still be present in the parsed IR after a dry-run sync');
+    assert.strictEqual(parsed.doc.reasoningEffort !== null, true,
+      'the coupled effort must still be present in the parsed IR after a dry-run sync');
   });
 });
