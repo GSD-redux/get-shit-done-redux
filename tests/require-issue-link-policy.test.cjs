@@ -9,6 +9,9 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const yaml = require('js-yaml');
 
 const {
   ISSUE_LINK_REASON,
@@ -16,6 +19,8 @@ const {
   hasFollowUpReference,
   allPathsAreTestsOrDocs,
   evaluateIssueLink,
+  EXEMPT_PATH_PREFIXES,
+  EXCLUDED_ROOT_DOCS,
 } = require('../scripts/require-issue-link-policy.cjs');
 
 const { fileListIsComplete } = require('../scripts/pr-changed-files.cjs');
@@ -373,5 +378,53 @@ describe('require-issue-link policy — root-level documentation (#2290 shape)',
       prBody: 'Refs #2269', changedFiles: ['package.json'], changedFilesTotal: 1,
     }));
     assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
+});
+
+describe('require-issue-link policy — the workflow guidance matches the rule', () => {
+  // Parity assertion (CLAUDE.md "Generative Fix Divergence"): the sticky
+  // comment's guidance text is generated separately from the predicate it
+  // describes, and the two have already drifted once (the predicate widened
+  // to accept root-level markdown while the guidance kept saying "nothing
+  // outside tests/ and docs/"). Every expectation below is derived from the
+  // module's actual exports, never hardcoded, so a future widening of the
+  // predicate without a guidance update fails this test.
+  const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'require-issue-link.yml');
+  const workflowDoc = yaml.load(fs.readFileSync(workflowPath, 'utf8'));
+  const job = workflowDoc.jobs['check-issue-link'];
+  const steps = job.steps;
+  const lastStep = steps[steps.length - 1];
+  const script = lastStep.with.script;
+
+  // Non-vacuous guards: if these fail, the assertions below would otherwise
+  // silently pass against zero-length input.
+  test('the resolved script text and export lists are non-empty (guard)', () => {
+    assert.strictEqual(typeof script, 'string');
+    assert.ok(script.length > 200, `expected script.length > 200, got ${script.length}`);
+    assert.ok(EXEMPT_PATH_PREFIXES.length > 0, 'EXEMPT_PATH_PREFIXES must be non-empty');
+    assert.ok(EXCLUDED_ROOT_DOCS instanceof Set, 'EXCLUDED_ROOT_DOCS must be a Set');
+    assert.ok(EXCLUDED_ROOT_DOCS.size > 0, 'EXCLUDED_ROOT_DOCS must be non-empty');
+  });
+
+  test('guidance names every EXEMPT_PATH_PREFIXES entry verbatim', () => {
+    for (const prefix of EXEMPT_PATH_PREFIXES) {
+      assert.ok(script.includes(prefix), `guidance script missing prefix: ${prefix}`);
+    }
+  });
+
+  // isRootLevelDoc accepts root-level *.md — the guidance must say so; this
+  // is the exact shape that drifted before.
+  test('guidance mentions root-level markdown', () => {
+    assert.ok(script.includes('root-level'), 'guidance script missing "root-level"');
+  });
+
+  test('guidance names every EXCLUDED_ROOT_DOCS entry verbatim', () => {
+    for (const doc of EXCLUDED_ROOT_DOCS) {
+      assert.ok(script.includes(doc), `guidance script missing excluded doc: ${doc}`);
+    }
+  });
+
+  test('guidance mentions an accepted non-closing reference marker', () => {
+    assert.ok(script.includes('Refs #'), 'guidance script missing "Refs #"');
   });
 });

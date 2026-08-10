@@ -155,7 +155,7 @@ jobs:
             const reason = process.env.REASON || 'fail_no_issue_reference';
             const explanation = {
               fail_reference_needs_closing: [
-                'This PR references an issue without a closing keyword, but its diff touches files outside `tests/` and `docs/`.',
+                'This PR references an issue without a closing keyword, but its diff touches files outside `tests/`, `docs/`, and root-level `*.md`.',
                 '',
                 'The non-closing reference form is accepted **only** for test-only or docs-only follow-up PRs. Because this PR changes other files, it needs a closing keyword:',
               ],
@@ -182,7 +182,7 @@ jobs:
                 '',
                 'Accepted closing keywords are `Closes #NNN`, `Fixes #NNN`, and `Resolves #NNN`.',
                 '',
-                '**Test-only or docs-only follow-up PR?** If your PR changes nothing outside `tests/` and `docs/` and there is no open issue for it to close, reference the related issue without closing it:',
+                '**Test-only or docs-only follow-up PR?** If every file your PR changes is under `tests/`, under `docs/`, or a root-level `*.md` (`README.md`, `CONTRIBUTING.md`, … but not `CHANGELOG.md`), and there is no open issue for it to close, reference the related issue without closing it:',
                 '',
                 '```',
                 'Refs #123',
