@@ -675,9 +675,47 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   fs.rmdirSync(worktreeDir);
   const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
 
+  // ── Timeout sizing: bounded for a SHARED bench, not an idle machine ────────────
+  // In practice this runs on the remote runner's shared CI benches, and that
+  // contended environment is what the bounds below must be sized for. It is
+  // not what makes them non-binding locally: a direct local invocation of
+  // `buildBaselineAtRef('origin/next')` and of a synthetic-sha variant each
+  // completed in ~10s, so on an idle developer machine these bounds are
+  // nowhere near being hit. The three bounds exist to catch an indefinite
+  // hang, not to enforce a performance SLA.
+  //
+  // Both real failures (`tests/emitted-attribution.test.cjs`, #2767 regression
+  // suite) were `spawnSync … ETIMEDOUT` on the `gen-emitted-baseline.cjs` call
+  // while the bench measured `/proc/pressure/cpu` at `cpu some avg60 ≈ 70%`
+  // (`full = 0.00`) — contended, not thrashing: the NORMAL state of these benches
+  // while other sessions' suites run concurrently. Under that same contention a
+  // full suite run took 29+ minutes against a ~13-minute unloaded norm — a
+  // measured ~2.2x slowdown. The old 300_000ms bound was already below the
+  // observed worst case (300_000 × 2.2 ≈ 660_000).
+  //
+  // This raise is mitigation, not a root-cause fix (#3282). A ~10s local
+  // operation blowing through a 300s bound is a ≥29x slowdown, and the
+  // measured ~2.2x suite-level contention above does not account for that
+  // gap. Host-level PSI showed no I/O pressure (`io some avg60 = 0.33`) and
+  // no memory pressure at the time of the ETIMEDOUT failures, so contention
+  // visible from the host does not explain the size of the miss either. The
+  // unexplored lead is per-container cgroup pressure — `/sys/fs/cgroup/{cpu,io}.pressure`
+  // read from inside a tester container, which host-level PSI cannot see. Do
+  // not read the raised numbers below as evidence the underlying cause is
+  // understood; they are a wider net, not a diagnosis.
+  // `git worktree add`/`remove` is metadata-only and has never failed here; even
+  // at 2.2x contention 60s is ample, so this one is left as-is.
   const WORKTREE_TIMEOUT_MS = 60_000;
-  const BUILD_LIB_TIMEOUT_MS = 180_000;
-  const BUILD_TIMEOUT_MS = 300_000;
+  // Precautionary, not yet observed failing: same kind of call (a real build), in
+  // the same helper, sized against the same wrong idle-machine assumption as the
+  // generator call below. 180_000 × 2.2 ≈ 396_000 already exceeds the old bound,
+  // so raise it ahead of a failure rather than after one.
+  const BUILD_LIB_TIMEOUT_MS = 420_000;
+  // 300_000 × 2.2 ≈ 660_000, i.e. the failure mode above; 900_000 gives headroom
+  // beyond that measured worst case. This exceeds the 600_000ms
+  // `local/no-unbounded-spawn` ceiling — see the `allow-spawn-timeout-ceiling`
+  // marker on the call below.
+  const BUILD_TIMEOUT_MS = 900_000;
 
   try {
     execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
@@ -698,7 +736,15 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
     execFileSync(
       process.execPath,
       [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
-      { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      {
+        cwd, encoding: 'utf8',
+        // allow-spawn-timeout-ceiling: measured bench contention (cpu some avg60
+        // ≈ 70%, full = 0.00) produced a ~2.2x slowdown (29+ min vs. ~13 min
+        // unloaded); 300_000 × 2.2 ≈ 660_000 already exceeds the old bound, which
+        // is what caused the #2767-regression ETIMEDOUT failures this raise fixes.
+        timeout: BUILD_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
     );
 
     const raw = fs.readFileSync(outFile, 'utf8');
