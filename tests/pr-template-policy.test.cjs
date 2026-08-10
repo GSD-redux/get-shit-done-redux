@@ -2,6 +2,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { evaluatePrTemplate, allPathsAreTooling, hasExemptMarker, TOOLING_PATH_ALLOWLIST, EXEMPT_MARKER_REGEX } = require('../scripts/pr-template-policy.cjs');
+const { FILE_LIST_PAGE_LIMIT } = require('../scripts/lib/pr-changed-files.cjs');
 
 const fixBody = [
   '## Fix PR',
@@ -290,5 +291,43 @@ describe('pr-template-policy', () => {
     assert.equal(result.action, 'warn');
     assert.equal(result.trusted, true);
     assert.match(result.reason, /PR body is empty; a typed pull request template is required\./);
+  });
+});
+
+// `gh pr view --json files` returns at most 100 paths and does not
+// paginate, while the PR's `changedFiles` field reports the true total.
+// The tooling-paths carve-out RELAXES template enforcement, so trusting a
+// possibly-truncated list would let a >100-file PR skip enforcement on the
+// strength of its first 100 (all-tooling) paths. Verified live: PR
+// open-gsd/gsd-core#3202 returns 100 paths for 118 changed files.
+describe('pr-template-policy carve-out — truncated file lists (#3211)', () => {
+  const toolingPaths = (n) => Array.from({ length: n }, (_, i) => `docs/generated-${i}.md`);
+
+  // A. Forgery vector — a truncated 100-of-118 list must not be trusted
+  test('a truncated 100-of-118 tooling file list does not skip enforcement', () => {
+    const result = evaluatePrTemplate('no template here', 'NONE', toolingPaths(FILE_LIST_PAGE_LIMIT), 118);
+    assert.equal(result.skipped, undefined);
+    // author association 'NONE' is untrusted, so enforcement closes the PR.
+    assert.equal(result.action, 'close');
+  });
+
+  // B. A 100-file tooling list whose total agrees is genuinely complete
+  test('a 100-file tooling list whose total agrees still skips enforcement', () => {
+    const result = evaluatePrTemplate('no template here', 'NONE', toolingPaths(FILE_LIST_PAGE_LIMIT), 100);
+    assert.equal(result.skipped, 'tooling-paths');
+    assert.equal(result.valid, true);
+  });
+
+  // C. A 100-file tooling list with no corroborating total fails closed
+  test('a 100-file tooling list with no corroborating total fails closed', () => {
+    const result = evaluatePrTemplate('no template here', 'NONE', toolingPaths(FILE_LIST_PAGE_LIMIT), undefined);
+    assert.equal(result.skipped, undefined);
+  });
+
+  // D. Back-compat boundary — every existing caller passes no total, and
+  // lists shorter than the page cap cannot have been truncated.
+  test('a 99-file tooling list is trusted without a total (below the page cap)', () => {
+    const result = evaluatePrTemplate('no template here', 'NONE', toolingPaths(FILE_LIST_PAGE_LIMIT - 1), undefined);
+    assert.equal(result.skipped, 'tooling-paths');
   });
 });

@@ -1,0 +1,272 @@
+'use strict';
+
+/**
+ * Tests for scripts/require-issue-link-policy.cjs (#3211, preserving #1389).
+ *
+ * All assertions are on the typed ISSUE_LINK_REASON enum, never on free
+ * text — see CLAUDE.md "Mutation Score" / test conventions.
+ */
+
+const { describe, test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const {
+  ISSUE_LINK_REASON,
+  hasClosingKeyword,
+  hasFollowUpReference,
+  allPathsAreTestsOrDocs,
+  evaluateIssueLink,
+} = require('../scripts/require-issue-link-policy.cjs');
+
+const { fileListIsComplete } = require('../scripts/lib/pr-changed-files.cjs');
+
+function forkPr(overrides = {}) {
+  return {
+    prBody: '',
+    headRef: 'fix/123-something',
+    sameRepo: false,
+    changedFiles: ['src/init.cts'],
+    changedFilesTotal: 1,
+    ...overrides,
+  };
+}
+
+function testPaths(n) {
+  return Array.from({ length: n }, (_, i) => `tests/generated-${i}.test.cjs`);
+}
+
+describe('evaluateIssueLink', () => {
+  // 1. Real-world vector: a fork PR that adds regression coverage for an
+  // issue without closing it.
+  test('fork PR referencing an issue with a tests-only diff is OK_FOLLOWUP_REFERENCE', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269 — regression coverage.',
+      changedFiles: ['tests/commit-files-pathspec.test.cjs'],
+      changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+    assert.strictEqual(result.ok, true);
+  });
+
+  // 2. Every accepted reference form, including a lowercase variant.
+  test('every accepted follow-up reference form passes with a tests-only diff', () => {
+    const forms = [
+      'Refs #1', 'Ref #1', 'References #1', 'Relates to #1',
+      'Related to #1', 'Follow-up to #1', 'Follow up to #1', 'refs #1',
+    ];
+    for (const body of forms) {
+      const result = evaluateIssueLink(forkPr({ prBody: body, changedFiles: ['tests/a.test.cjs'], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE, `form: ${body}`);
+    }
+  });
+
+  // 3. Docs-only and mixed tests+docs diffs are both allowed.
+  test('docs-only and mixed tests+docs diffs pass', () => {
+    const docsOnly = evaluateIssueLink(forkPr({
+      prBody: 'Refs #1', changedFiles: ['docs/CONFIGURATION.md'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(docsOnly.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+
+    const mixed = evaluateIssueLink(forkPr({
+      prBody: 'Refs #1', changedFiles: ['tests/a.test.cjs', 'docs/guide.md'], changedFilesTotal: 2,
+    }));
+    assert.strictEqual(mixed.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  // 4. Windows-style backslash path is normalized before the prefix check.
+  test('backslash path is normalized and recognized as tests/', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #1', changedFiles: ['tests\\windows\\a.test.cjs'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  // 5. CRLF vs LF bodies must produce the same reason.
+  test('CRLF and LF bodies with the same reference produce the same reason', () => {
+    const lf = evaluateIssueLink(forkPr({ prBody: 'Refs #1\n\nMore prose.', changedFiles: ['tests/a.test.cjs'], changedFilesTotal: 1 }));
+    const crlf = evaluateIssueLink(forkPr({ prBody: 'Refs #1\r\n\r\nMore prose.', changedFiles: ['tests/a.test.cjs'], changedFilesTotal: 1 }));
+    assert.strictEqual(lf.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+    assert.strictEqual(crlf.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  // 6. No reference at all, even with a docs-only diff, fails.
+  test('no reference at all fails even with a docs-only diff', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Just a description, no issue mentioned.', changedFiles: ['docs/guide.md'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE);
+  });
+
+  // 7 & 8. A reference (not a closing keyword) touching source files needs
+  // an actual closing keyword instead.
+  test('reference-only PR touching a source file fails needs-closing', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269', changedFiles: ['src/init.cts'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
+
+  test('reference-only PR with a mixed tests+source diff fails needs-closing', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: 'Refs #2269',
+      changedFiles: ['tests/a.test.cjs', 'tests/b.test.cjs', 'src/b.cts'],
+      changedFilesTotal: 3,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING);
+  });
+
+  // 9. Bodies that must NOT be recognized as any kind of issue reference.
+  test('non-reference bodies fail with FAIL_NO_ISSUE_REFERENCE', () => {
+    const bodies = ['see #123', '#123', 'unlike #123', 'issue 123', 'a #123 b'];
+    for (const body of bodies) {
+      const result = evaluateIssueLink(forkPr({ prBody: body, changedFiles: ['tests/a.test.cjs'], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE, `body: ${JSON.stringify(body)}`);
+    }
+  });
+
+  // 10. Lookalike words that embed "ref"/"reference" inside a longer word
+  // must not be treated as a reference.
+  test('lookalike embedded-word bodies fail with FAIL_NO_ISSUE_REFERENCE', () => {
+    const bodies = ['prefs #1', 'unreferenced #1', 'xref#1', 'preferences #1'];
+    for (const body of bodies) {
+      const result = evaluateIssueLink(forkPr({ prBody: body, changedFiles: ['tests/a.test.cjs'], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE, `body: ${JSON.stringify(body)}`);
+    }
+  });
+
+  // 11. Directory-lookalike paths (tests-e2e/, src/tests/, testsuite/,
+  // docsite/) must NOT be treated as tests/ or docs/.
+  test('directory-lookalike paths are rejected, forcing needs-closing', () => {
+    const paths = ['tests-e2e/src/a.ts', 'src/tests/x.ts', 'testsuite/y.cjs', 'docsite/z.md'];
+    for (const p of paths) {
+      const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: [p], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_REFERENCE_NEEDS_CLOSING, `path: ${p}`);
+    }
+  });
+
+  // 12. A closing keyword on a source diff passes outright.
+  test('Closes #123 with a source diff is OK_CLOSING_KEYWORD', () => {
+    const result = evaluateIssueLink(forkPr({ prBody: 'Closes #123', changedFiles: ['src/init.cts'], changedFilesTotal: 1 }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_CLOSING_KEYWORD);
+  });
+
+  // 13. Closing keyword case/whitespace variants.
+  test('closing keyword variants (case, whitespace) all pass', () => {
+    const bodies = ['closes #1', 'FIXES #1', 'Resolves  #1', 'resolves\t#1'];
+    for (const body of bodies) {
+      const result = evaluateIssueLink(forkPr({ prBody: body, changedFiles: ['src/init.cts'], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_CLOSING_KEYWORD, `body: ${JSON.stringify(body)}`);
+    }
+  });
+
+  // 14 & 15. #1389 anti-forgery property: the backmerge exemption requires
+  // BOTH the branch prefix AND sameRepo === true.
+  test('backmerge branch + sameRepo true is exempt with no reference at all', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: '', headRef: 'chore/backmerge-main-to-next-20260101', sameRepo: true,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_BACKMERGE_EXEMPT);
+  });
+
+  test('#1389 anti-forgery: backmerge branch name from a FORK (sameRepo false) is NOT exempt', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: '', headRef: 'chore/backmerge-main-to-next-20260101', sameRepo: false,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE);
+  });
+
+  // 16. hasClosingKeyword corpus parity — expected values come from the
+  // shipped shell grep this regex replaces:
+  //   grep -qiE '(closes|fixes|resolves)\s+#[0-9]+'
+  test('hasClosingKeyword corpus parity with the replaced shell grep', () => {
+    const cases = [
+      ['Closes #2269', true],
+      ['closes #1', true],
+      ['Fixes #12', true],
+      ['Resolves #3', true],
+      ['fixes  #4', true],
+      ['Closes #123 and more prose', true],
+      ['Refs #2269', false],
+      ['Follow-up to #2269', false],
+      ['no reference at all', false],
+      ['Closes #', false],
+      ['Closes123', false],
+      ['closes issue 5', false],
+    ];
+    for (const [body, expected] of cases) {
+      assert.strictEqual(hasClosingKeyword(body), expected, `body: ${JSON.stringify(body)}`);
+    }
+  });
+
+  // 17-18. BOUNDARY: exactly at and just below the page cap, with a total
+  // that matches, must pass.
+  test('BOUNDARY 99 tests-only paths, total 99 passes', () => {
+    const paths = testPaths(99);
+    const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: paths, changedFilesTotal: 99 }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  test('BOUNDARY 100 tests-only paths, total 100 passes', () => {
+    const paths = testPaths(100);
+    const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: paths, changedFilesTotal: 100 }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_FOLLOWUP_REFERENCE);
+  });
+
+  // 19. Real vector: PR #3202 — gh returns 100 of 118 changed files.
+  test('BOUNDARY 100 tests-only paths, total 118 fails FAIL_FILE_LIST_INCOMPLETE (PR #3202 vector)', () => {
+    const paths = testPaths(100);
+    const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: paths, changedFilesTotal: 118 }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
+  });
+
+  test('100 tests-only paths, total undefined fails FAIL_FILE_LIST_INCOMPLETE', () => {
+    const paths = testPaths(100);
+    const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: paths, changedFilesTotal: undefined }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
+  });
+
+  // 21. An empty changedFiles list cannot confirm anything.
+  test('empty changedFiles fails FAIL_FILE_LIST_INCOMPLETE', () => {
+    const result = evaluateIssueLink(forkPr({ prBody: 'Refs #1', changedFiles: [], changedFilesTotal: 0 }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_FILE_LIST_INCOMPLETE);
+  });
+});
+
+describe('fileListIsComplete', () => {
+  // 22. Direct table of (changedFiles, changedFilesTotal) -> expected.
+  test('boundary table', () => {
+    const cases = [
+      [['a', 'b', 'c'], 3, true],
+      [['a', 'b', 'c'], undefined, true],
+      [testPaths(100), 100, true],
+      [testPaths(100), 101, false],
+      [testPaths(100), undefined, false],
+      [[], 0, false],
+      [undefined, 0, false],
+    ];
+    for (const [changedFiles, changedFilesTotal, expected] of cases) {
+      assert.strictEqual(
+        fileListIsComplete(changedFiles, changedFilesTotal),
+        expected,
+        `changedFiles.length=${Array.isArray(changedFiles) ? changedFiles.length : changedFiles}, total=${changedFilesTotal}`,
+      );
+    }
+  });
+});
+
+describe('hasFollowUpReference', () => {
+  // 23. Direct spot checks on the raw predicate.
+  test('rejects a closing keyword, accepts a reference', () => {
+    assert.strictEqual(hasFollowUpReference('Closes #1'), false);
+    assert.strictEqual(hasFollowUpReference('Refs #1'), true);
+  });
+});
+
+describe('allPathsAreTestsOrDocs', () => {
+  // 24. Direct spot checks on the raw predicate.
+  test('true for tests/docs mix, false for a non-exempt path, false for empty', () => {
+    assert.strictEqual(allPathsAreTestsOrDocs(['tests/a.cjs', 'docs/b.md']), true);
+    assert.strictEqual(allPathsAreTestsOrDocs(['tests/a.cjs', '.github/workflows/x.yml']), false);
+    assert.strictEqual(allPathsAreTestsOrDocs([]), false);
+  });
+});
