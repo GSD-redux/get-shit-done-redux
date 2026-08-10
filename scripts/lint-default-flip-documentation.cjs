@@ -154,7 +154,7 @@ function main() {
     return;
   }
 
-  const baseRef = `origin/${process.env.GITHUB_BASE_REF || 'main'}`;
+  const baseRef = `origin/${process.env.GITHUB_BASE_REF || 'next'}`; // #2988
   const baseMap = flatten(readManifestAtRef(ROOT, baseRef));
   const headMap = flatten(readManifestAtRef(ROOT, 'HEAD'));
   const changes = findDefaultValueChanges(baseMap, headMap);
