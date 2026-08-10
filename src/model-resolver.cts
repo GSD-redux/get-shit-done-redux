@@ -313,6 +313,71 @@ function resolveModelPolicy(policy: Record<string, unknown> | null | undefined, 
   return budgetEntry.model;
 }
 
+/**
+ * #2229 — the profile/phase-type tier for (config, agentType).
+ *
+ * Extracted verbatim from resolveModelInternal's step 2 so the same expression can
+ * answer "which tier did GSD resolve?" without also resolving a model id. The
+ * extraction is behaviour-preserving by construction: resolveModelInternal calls
+ * straight back into it.
+ *
+ * Returns null when the agent has no catalog entry and the profile is not `inherit`.
+ */
+function computeProfileTier(config: Record<string, unknown>, agentType: string): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const profile = String(config['model_profile'] || 'balanced').toLowerCase();
+  const agentModels = (MODEL_PROFILES as unknown as Record<string, Record<string, string>>)[agentType];
+  const phaseType = (AGENT_TO_PHASE_TYPE)[agentType];
+  const configModels = config['models'] as Record<string, string> | null | undefined;
+  const phaseTypeTier = (phaseType && configModels && typeof configModels === 'object')
+    ? configModels[phaseType]
+    : undefined;
+  return (phaseTypeTier && VALID_TIERS.has(phaseTypeTier))
+    ? phaseTypeTier
+    : (profile === 'inherit'
+      ? 'inherit'
+      : (agentModels ? (agentModels[profile] || agentModels['balanced']) : null));
+}
+
+/**
+ * #2229 — the effective model TIER for (config, agentType), as a signal a workflow can
+ * read: `gsd_run query resolve-model <agent> --pick tier`.
+ *
+ * Why this is not just "look at the resolved model": on every runtime the installer
+ * configures with `resolve_model_ids: "omit"` — which is every non-Claude runtime, see
+ * docs/CONFIGURATION.md — resolveModelInternal deliberately returns '' below. A guard
+ * keyed on the model id therefore cannot tell a budget-tier run from a top-tier one
+ * there, while the tier itself is computed ABOVE that early-return and stays knowable.
+ *
+ * Honesty contract — this never guesses, because a guard that reports a wrong tier is
+ * worse than one that reports none:
+ *   - a per-agent `model_overrides` pin naming a known alias (or a full Claude id that
+ *     maps to one) reports that alias;
+ *   - a pin that maps to nothing reports 'unknown' — a raw model id carries no tier;
+ *   - `model_profile: inherit` reports 'inherit' — the session model is not ours to name;
+ *   - an agent with no catalog entry reports 'unknown'.
+ *
+ * Callers must treat 'unknown' and 'inherit' as "cannot tell", never as "adequate".
+ */
+function resolveTierFromConfig(config: Record<string, unknown>, agentType: string): string {
+  const rawOverrides = config['model_overrides'];
+  const modelOverrides = (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides))
+    ? rawOverrides as Record<string, string>
+    : null;
+  const override = modelOverrides?.[agentType];
+  if (override && typeof override === 'string') {
+    if (CLAUDE_AGENT_ALIASES.has(override)) return override;
+    const alias = CLAUDE_POLICY_ID_TO_ALIAS[override];
+    if (alias) return alias;
+    return 'unknown';
+  }
+  return computeProfileTier(config, agentType) || 'unknown';
+}
+
+function resolveTierInternal(cwd: string, agentType: string): string {
+  return resolveTierFromConfig(loadConfig(cwd), agentType);
+}
+
 function resolveModelInternal(cwd: string, agentType: string): string {
   const config = loadConfig(cwd);
 
@@ -327,20 +392,12 @@ function resolveModelInternal(cwd: string, agentType: string): string {
     // Unmappable Claude ID — fall through to tier resolution (matches model_policy).
   }
 
-  // 2. Compute the tier
+  // 2. Compute the tier (#2229: shared with resolveTierFromConfig so the tier a
+  // workflow reads and the tier a model is resolved from can never diverge).
   // eslint-disable-next-line @typescript-eslint/no-base-to-string
   const profile = String(config['model_profile'] || 'balanced').toLowerCase();
   const agentModels = (MODEL_PROFILES as unknown as Record<string, Record<string, string>>)[agentType];
-  const phaseType = (AGENT_TO_PHASE_TYPE)[agentType];
-  const configModels = config['models'] as Record<string, string> | null | undefined;
-  const phaseTypeTier = (phaseType && configModels && typeof configModels === 'object')
-    ? configModels[phaseType]
-    : undefined;
-  const tier = (phaseTypeTier && VALID_TIERS.has(phaseTypeTier))
-    ? phaseTypeTier
-    : (profile === 'inherit'
-      ? 'inherit'
-      : (agentModels ? (agentModels[profile] || agentModels['balanced']) : null));
+  const tier = computeProfileTier(config, agentType);
 
   // 2.5. model_policy preset (#49, #1133)
   const configRuntime = config['runtime'] as string | null | undefined;
@@ -781,6 +838,8 @@ export = {
   CLAUDE_AGENT_ALIASES,
   resolveModelPolicy,
   resolveModelInternal,
+  resolveTierInternal,
+  resolveTierFromConfig,
   _resetModelPolicyWarningCacheForTests,
   _resetModelOverrideWarningCacheForTests,
   _setInstallRuntimeMarkerForTests,

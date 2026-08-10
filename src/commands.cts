@@ -33,7 +33,7 @@ import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
-const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
+const { resolveModelInternal, resolveTierInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import agentCommandRouterMod = require('./agent-command-router.cjs');
 const { AGENT_FAILURE_CLASSES } = agentCommandRouterMod;
@@ -517,9 +517,14 @@ function cmdResolveModel(cwd: string, agentType: string | undefined, raw: boolea
   const effort = resolveEffortInternal(cwd, agentType!);
 
   const agentModels = (MODEL_PROFILES as Record<string, unknown>)[agentType!];
+  // #2229: `tier` is additive — existing keys and their values are untouched, so
+  // every `--pick model` / `--pick profile` / `--raw` consumer is unaffected. It
+  // exists because the model id is deliberately blank under resolve_model_ids:"omit",
+  // which leaves a tier-sensitive guard with nothing to read.
+  const tier = resolveTierInternal(cwd, agentType!);
   const result = agentModels
-    ? { model, profile, effort }
-    : { model, profile, effort, unknown_agent: true };
+    ? { model, profile, effort, tier }
+    : { model, profile, effort, tier, unknown_agent: true };
   output(result, raw, model);
 }
 

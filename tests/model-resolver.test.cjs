@@ -44,6 +44,8 @@ const {
   resolveEffortInternal,
   resolveFastModeInternal,
   resolveEffortForTier,
+  resolveTierFromConfig,
+  resolveTierInternal,
 } = modelResolver;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -4058,6 +4060,200 @@ describe('#49 resolveModelForTier: model_policy beats dynamic_routing', () => {
     });
     // gsd-planner → opus tier; runtime_tiers.claude.opus = "fable" is already a valid alias → "fable"
     assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'fable');
+  });
+});
+
+// ─── #2229: computeProfileTier / resolveTierFromConfig / resolveTierInternal ──
+//
+// `tier` is additive on top of resolveModelInternal's model/profile/effort keys
+// (cmdResolveModel, src/commands.cts) so a caller can learn the effective tier
+// even under resolve_model_ids:"omit", where `model` is deliberately blank.
+
+describe('#2229 resolveTierInternal / resolveTierFromConfig — config rows', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { if (tmpDir) cleanup(tmpDir); tmpDir = null; });
+
+  test('no config -> balanced profile -> "sonnet"', () => {
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+
+  test('model_profile=budget -> "haiku"', () => {
+    writeConfig(tmpDir, { model_profile: 'budget' });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+
+  test('model_overrides="haiku" alias -> "haiku"', () => {
+    writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': 'haiku' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+
+  test('model_overrides full Claude id "claude-haiku-4-5" maps back to its alias -> "haiku"', () => {
+    writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': 'claude-haiku-4-5' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+
+  test('model_overrides pinning a non-Claude id (gemini-2.5-flash-lite) is never guessed -> "unknown"', () => {
+    writeConfig(tmpDir, { model_overrides: { 'gsd-phase-researcher': 'gemini-2.5-flash-lite' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'unknown');
+  });
+
+  test('model_profile=inherit -> "inherit"', () => {
+    writeConfig(tmpDir, { model_profile: 'inherit' });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'inherit');
+  });
+
+  test('ADVERSARIAL: models=0 (non-object) does not throw and falls back to "sonnet"', () => {
+    writeConfig(tmpDir, { models: 0 });
+    assert.doesNotThrow(() => resolveTierInternal(tmpDir, 'gsd-phase-researcher'));
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+
+  for (const hostileModels of ['nope', [], null]) {
+    test(`ADVERSARIAL: models=${JSON.stringify(hostileModels)} does not throw and falls back to "sonnet"`, () => {
+      writeConfig(tmpDir, { models: hostileModels });
+      assert.doesNotThrow(() => resolveTierInternal(tmpDir, 'gsd-phase-researcher'));
+      assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+    });
+  }
+
+  test('ADVERSARIAL: empty config object {} does not throw -> "sonnet"', () => {
+    writeConfig(tmpDir, {});
+    assert.doesNotThrow(() => resolveTierInternal(tmpDir, 'gsd-phase-researcher'));
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+
+  test('ADVERSARIAL: zero-byte config.json does not throw -> "sonnet"', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '', 'utf-8');
+    assert.doesNotThrow(() => resolveTierInternal(tmpDir, 'gsd-phase-researcher'));
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'sonnet');
+  });
+});
+
+describe('#2229 resolveTierInternal — computeProfileTier is blind to model-id and profile-only checks', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { if (tmpDir) cleanup(tmpDir); tmpDir = null; });
+
+  test('models.research="haiku" wins over model_profile=balanced (a profile-only check would miss this)', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced', models: { research: 'haiku' } });
+    assert.strictEqual(resolveTierInternal(tmpDir, 'gsd-phase-researcher'), 'haiku');
+  });
+});
+
+describe('#2229 resolveTierFromConfig — config-object form matches the cwd/CLI form', () => {
+  // computeProfileTier itself is an internal (unexported) helper — per its own
+  // doc comment, resolveTierFromConfig "calls straight back into it", so this
+  // exercises the same code path through the public API.
+  test('config-object form of the phase-type-override case matches the tmpDir form', () => {
+    const cfg = { model_profile: 'balanced', models: { research: 'haiku' } };
+    assert.strictEqual(resolveTierFromConfig(cfg, 'gsd-phase-researcher'), 'haiku');
+  });
+
+  test('agent with no catalog entry and a non-inherit profile -> "unknown"', () => {
+    assert.strictEqual(resolveTierFromConfig({ model_profile: 'balanced' }, 'not-a-real-agent'), 'unknown');
+  });
+});
+
+describe('#2229 cmdResolveModel CLI — tier key, additive-output guard, unknown_agent', () => {
+  let tmpDir;
+  // Local require, matching the folded-block idiom elsewhere in this file:
+  // the top-level imports only pull in `cleanup` from helpers.cjs.
+  const { runGsdTools } = require('./helpers.cjs');
+
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { if (tmpDir) cleanup(tmpDir); tmpDir = null; });
+
+  test('model_profile=balanced + models.research=haiku -> tier "haiku", profile still "balanced"', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced', models: { research: 'haiku' } });
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.tier, 'haiku');
+    assert.strictEqual(parsed.profile, 'balanced');
+  });
+
+  test('resolve_model_ids=omit -> tier "sonnet" even though model is blank', () => {
+    writeConfig(tmpDir, { resolve_model_ids: 'omit' });
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.tier, 'sonnet');
+    assert.strictEqual(parsed.model, '');
+  });
+
+  test('CORE CASE: resolve_model_ids=omit + models.research=haiku -> tier "haiku" though model is blank ' +
+    'and profile alone would also miss it', () => {
+    writeConfig(tmpDir, { resolve_model_ids: 'omit', models: { research: 'haiku' } });
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.tier, 'haiku');
+    assert.strictEqual(parsed.model, '');
+  });
+
+  test('runtime=codex + model_profile=budget -> tier "haiku" even though the resolved model id ' +
+    '("gpt-5.6-luna") contains no "haiku" substring', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'budget' });
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.tier, 'haiku');
+    assert.strictEqual(parsed.model, 'gpt-5.6-luna');
+  });
+
+  test('unknown agent -> tier "unknown", unknown_agent:true still present', () => {
+    writeConfig(tmpDir, {});
+    const result = runGsdTools('resolve-model not-a-real-agent', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.tier, 'unknown');
+    assert.strictEqual(parsed.unknown_agent, true);
+  });
+
+  test('--pick tier prints the bare string "sonnet" (no JSON, no quotes) for {}', () => {
+    writeConfig(tmpDir, {});
+    const result = runGsdTools(['resolve-model', 'gsd-phase-researcher', '--pick', 'tier'], tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    assert.strictEqual(result.output, 'sonnet');
+  });
+
+  // Compatibility guard, not a tier test: pins that adding `tier` to
+  // cmdResolveModel's output did not disturb the pre-existing
+  // model/profile/effort keys that other consumers already parse.
+  test('COMPATIBILITY GUARD: adding tier did not disturb model/profile/effort for {}', () => {
+    writeConfig(tmpDir, {});
+    const result = runGsdTools('resolve-model gsd-phase-researcher', tmpDir);
+    assert.ok(result.success, `resolve-model failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.model, 'sonnet');
+    assert.strictEqual(parsed.profile, 'balanced');
+    assert.strictEqual(parsed.effort, 'high');
+  });
+});
+
+describe('#2229 PARITY GUARD: catalog budget tier for gsd-phase-researcher backs explore.md\'s tier-floor text', () => {
+  test('MODEL_PROFILES["gsd-phase-researcher"].budget === "haiku"', () => {
+    // gsd-core/workflows/explore.md's tier-floor text names "haiku" as this
+    // agent's budget tier; if the catalog ever moves that tier, this test
+    // fails instead of the floor silently ceasing to fire.
+    const { MODEL_PROFILES } = require('../gsd-core/bin/lib/model-profiles.cjs');
+    assert.strictEqual(MODEL_PROFILES['gsd-phase-researcher'].budget, 'haiku');
+  });
+});
+
+describe('#2229 PROPERTY: resolveTierFromConfig never throws and always returns a known tier', () => {
+  test('for arbitrary plain-object configs', () => {
+    const fc = require('./helpers/fast-check-setup.cjs');
+    const KNOWN_TIERS = new Set(['opus', 'sonnet', 'haiku', 'fable', 'inherit', 'unknown']);
+    fc.assert(
+      fc.property(fc.object(), (cfg) => {
+        let result;
+        assert.doesNotThrow(() => { result = resolveTierFromConfig(cfg, 'gsd-phase-researcher'); });
+        assert.ok(typeof result === 'string', `expected a string, got: ${JSON.stringify(result)}`);
+        assert.ok(KNOWN_TIERS.has(result), `unexpected tier value: ${JSON.stringify(result)}`);
+      })
+    );
   });
 });
   });
