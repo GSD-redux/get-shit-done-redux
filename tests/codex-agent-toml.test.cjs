@@ -301,6 +301,113 @@ describe('A15/A16: round-trip after stripModel / stripReasoningEffort', () => {
   });
 });
 
+// ─── A18-A24: mixed/edge line-ending round-trip (BLOCKER fix, per-line terminators) ──
+//
+// Regression coverage for the defect a review caught: `eol` used to be a
+// single whole-file flag and `split(/\r?\n/)` discarded every line's own
+// terminator, so `renderCodexAgentToml` re-joined with ONE style and
+// normalized every line — even when zero strips were performed. None of
+// A1-A17 exercised a MIXED-ending source (A12 is pure CRLF), so this gap
+// shipped untested. These fixtures are hand-authored (never emitted by
+// `generateCodexAgentToml`), per CONTRIBUTING's fixture-provenance rule.
+
+const A18_MIXED_EOL = 'name = "gsd-mixed"\r\n' +
+  'model = "sonnet"\n' +
+  'description = "mixed line endings"\r\n' +
+  "developer_instructions = '''\n" +
+  'Work.\r\n' +
+  "'''\n";
+
+const A20_LONE_CR = 'name = "gsd-oldmac"\r' +
+  'model = "sonnet"\n' +
+  "developer_instructions = '''\n" +
+  'Work.\n' +
+  "'''\n";
+
+const A21_NO_TRAILING_AFTER_BLOCK = 'name = "gsd-terse2"\n' +
+  "developer_instructions = '''\n" +
+  'Work.\n' +
+  "'''"; // no trailing newline at all — last line is the block's closing '''
+
+const A22_MULTI_TRAILING_NEWLINES = 'name = "gsd-multi"\n' +
+  'model = "sonnet"\n' +
+  "developer_instructions = '''\n" +
+  'Work.\n' +
+  "'''\n\n\n"; // three trailing newlines after the closing '''
+
+const A23_BOM_ONLY = String.fromCharCode(0xfeff); // a file that is ONLY a BOM
+
+const A24_EMPTY = ''; // a genuinely empty file
+
+describe('A18-A24 (BLOCKER regression): mixed/edge line-ending round-trip', () => {
+  test('A18: mixed \\r\\n and \\n in one file, unmodified — round-trips byte-identically', () => {
+    const result = parseCodexAgentToml(A18_MIXED_EOL);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.model, 'sonnet');
+    // Each line's own terminator is captured, never collapsed to one style.
+    assert.deepEqual(result.doc.terminators, ['\r\n', '\n', '\r\n', '\n', '\r\n', '\n', '']);
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A18_MIXED_EOL, 'mixed-EOL source must round-trip byte-identically, unmodified');
+  });
+
+  test('A19: mixed endings + a stale pin stripped — the pin\'s line (and only its own terminator) goes, every other line keeps its original terminator', () => {
+    const result = parseCodexAgentToml(A18_MIXED_EOL);
+    assert.equal(result.ok, true);
+    const stripped = stripModel(result.doc);
+    const rendered = renderCodexAgentToml(stripped);
+    const expected = 'name = "gsd-mixed"\r\n' +
+      'description = "mixed line endings"\r\n' +
+      "developer_instructions = '''\n" +
+      'Work.\r\n' +
+      "'''\n";
+    assert.equal(rendered, expected, 'the model line (and its own \\n) must be gone; every surviving line keeps its own original terminator');
+    assert.equal(stripped.model, null);
+  });
+
+  test('A20: a lone \\r (old-Mac style) somewhere in the file — preserved, not upgraded to \\r\\n or collapsed to \\n', () => {
+    const result = parseCodexAgentToml(A20_LONE_CR);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.model, 'sonnet');
+    assert.equal(result.doc.terminators[0], '\r', 'the lone CR must be recorded exactly, not merged with the following line');
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A20_LONE_CR, 'must round-trip byte-identically, unmodified');
+  });
+
+  test('A21: last line is the block\'s closing \'\'\' with no trailing newline — round-trips byte-identically', () => {
+    const result = parseCodexAgentToml(A21_NO_TRAILING_AFTER_BLOCK);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.trailingNewline, false);
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A21_NO_TRAILING_AFTER_BLOCK);
+  });
+
+  test('A22: multiple trailing newlines — every one preserved, round-trips byte-identically', () => {
+    const result = parseCodexAgentToml(A22_MULTI_TRAILING_NEWLINES);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.model, 'sonnet');
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A22_MULTI_TRAILING_NEWLINES);
+  });
+
+  test('A23: a file that is only a BOM — parses, round-trips to just the BOM', () => {
+    const result = parseCodexAgentToml(A23_BOM_ONLY);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.hadBOM, true);
+    assert.equal(result.doc.model, null);
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A23_BOM_ONLY);
+  });
+
+  test('A24: an empty file — parses, round-trips to an empty string', () => {
+    const result = parseCodexAgentToml(A24_EMPTY);
+    assert.equal(result.ok, true);
+    assert.equal(result.doc.hadBOM, false);
+    assert.equal(result.doc.model, null);
+    const rendered = renderCodexAgentToml(result.doc);
+    assert.equal(rendered, A24_EMPTY);
+  });
+});
+
 // ─── A17: enum lock ────────────────────────────────────────────────────────
 
 describe('PARSE_REASON enum', () => {

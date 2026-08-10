@@ -40,20 +40,35 @@ export type ParseReason = (typeof PARSE_REASON)[keyof typeof PARSE_REASON];
 
 /**
  * The typed IR. Carries the original `lines` (never re-tokenized once parsed)
- * plus the detected `eol`/BOM/trailing-newline metadata so
- * {@link renderCodexAgentToml} can reproduce the source **byte-identically**
- * when nothing was stripped (the load-bearing round-trip property — see
- * 50-test-matrix.md row A14). `stripModel`/`stripReasoningEffort` remove a
- * targeted line from `lines`; every other byte is untouched.
+ * plus the detected BOM/trailing-newline metadata so {@link renderCodexAgentToml}
+ * can reproduce the source **byte-identically** when nothing was stripped (the
+ * load-bearing round-trip property — see 50-test-matrix.md row A14), even when
+ * the source mixes line-ending styles (`\r\n`, `\n`, a lone `\r`) within one
+ * file. `stripModel`/`stripReasoningEffort` remove a targeted line AND its own
+ * terminator from `lines`/`terminators`; every other line's content and its
+ * own original terminator are untouched.
  */
 export interface CodexAgentDoc {
-  /** Content lines (BOM-stripped, EOL-stripped). `lines.join(eol)` reproduces the body. */
+  /** Content lines (BOM-stripped, terminator-free). Paired 1:1 by index with `terminators`. */
   lines: string[];
-  /** The single line-ending style detected in the source. */
+  /**
+   * Each line's OWN terminator (`'\r\n'`, `'\n'`, `'\r'`, or `''` for a line
+   * with none — the last line of a source with no trailing newline). Never
+   * collapsed to one whole-file style: {@link renderCodexAgentToml} rejoins
+   * `lines[i] + terminators[i]` so a mixed-EOL source round-trips exactly.
+   */
+  terminators: string[];
+  /**
+   * The line-ending style that appears in the source, informational only —
+   * `renderCodexAgentToml` does NOT use this field (it rejoins each line with
+   * its own `terminators[i]` instead). Recorded as `'\r\n'` if any `\r\n`
+   * appears anywhere in the source, else `'\n'`, purely for callers that want
+   * a human-readable summary (e.g. logging); never a rendering input.
+   */
   eol: '\n' | '\r\n';
   /** Whether the source began with a UTF-8 BOM (U+FEFF). */
   hadBOM: boolean;
-  /** Whether the source ended with a line terminator. */
+  /** Whether the source ended with a line terminator (any of `\r\n`/`\n`/`\r`). */
   trailingNewline: boolean;
   /** The `developer_instructions = '''...'''` block's line range, or `{start:-1,end:-1}` if absent. */
   blockRange: { start: number; end: number };
@@ -190,21 +205,49 @@ export function scanTomlLines(content: string): HeaderScanResult {
   return { model, hasReasoningEffort: reasoningEffort !== null };
 }
 
+// Splits `content` into `{lines, terminators}` — each line's OWN terminator
+// (`'\r\n'`, `'\r'`, or `'\n'`) is captured alongside it rather than discarded,
+// so a source mixing line-ending styles round-trips byte-identically instead
+// of every line being normalized to one whole-file style (the A14 defect: a
+// `split(/\r?\n/)` + `join(eol)` pair throws away each line's own terminator
+// and re-imposes a single style on rejoin, corrupting a mixed-EOL file even
+// when zero lines were stripped). `String#split` with a capturing group
+// interleaves the delimiters into the result array — `"a\r\nb\nc".split(/(\r\n|\r|\n)/)`
+// yields `["a","\r\n","b","\n","c"]` — so even indices are line content and
+// odd indices are that line's terminator; a final line with no trailing
+// terminator has no odd-index sibling, which the `?? ''` below covers. `\r\n`
+// is tried before the bare `\r` alternative so a CRLF is never misread as a
+// lone-CR line followed by an empty LF-terminated line.
+function splitPreservingTerminators(content: string): { lines: string[]; terminators: string[] } {
+  const parts = content.split(/(\r\n|\r|\n)/);
+  const lines: string[] = [];
+  const terminators: string[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    lines.push(parts[i]);
+    terminators.push(parts[i + 1] ?? '');
+  }
+  return { lines, terminators };
+}
+
 /**
  * The STRICT parse entry point (Phase 3, the writer's half of the
  * reconciliation). Returns `{ok:false, reason:UNTERMINATED_BLOCK}` rather than
  * guessing when the `developer_instructions` block is opened but never closed.
- * On success, `doc` carries enough (the original `lines`, `eol`, BOM/trailing-
- * newline flags, and the two resolved values with their line indices) for
- * {@link renderCodexAgentToml} to reproduce the source byte-identically, and for
- * {@link stripModel}/{@link stripReasoningEffort} to remove exactly one line.
+ * On success, `doc` carries enough (the original `lines`/`terminators`, BOM/
+ * trailing-newline flags, and the two resolved values with their line indices)
+ * for {@link renderCodexAgentToml} to reproduce the source byte-identically —
+ * including a source with mixed line-ending styles — and for
+ * {@link stripModel}/{@link stripReasoningEffort} to remove exactly one line
+ * and its own terminator.
  */
 export function parseCodexAgentToml(content: string): ParseCodexAgentTomlResult {
   const hadBOM = content.charCodeAt(0) === 0xfeff;
   const stripped = stripBOM(content);
+  // Informational only — see CodexAgentDoc.eol's docstring. Never used by
+  // renderCodexAgentToml.
   const eol: '\n' | '\r\n' = stripped.includes('\r\n') ? '\r\n' : '\n';
-  const trailingNewline = /\r?\n$/.test(stripped);
-  const lines = stripped.split(/\r?\n/);
+  const trailingNewline = /(\r\n|\r|\n)$/.test(stripped);
+  const { lines, terminators } = splitPreservingTerminators(stripped);
   const { start, end, terminated } = findDeveloperInstructionsBlockRange(lines);
   if (start !== -1 && !terminated) {
     return { ok: false, reason: PARSE_REASON.UNTERMINATED_BLOCK };
@@ -212,6 +255,7 @@ export function parseCodexAgentToml(content: string): ParseCodexAgentTomlResult 
   const { model, modelLineIndex, reasoningEffort, reasoningEffortLineIndex } = scanHeaderLines(lines, start, end);
   const doc: CodexAgentDoc = {
     lines,
+    terminators,
     eol,
     hadBOM,
     trailingNewline,
@@ -226,23 +270,30 @@ export function parseCodexAgentToml(content: string): ParseCodexAgentTomlResult 
 
 /**
  * Renders `doc` back to a string. For an unmodified doc this is
- * byte-identical to the original `parseCodexAgentToml` input (matrix row A14)
- * — it never re-derives line content, only rejoins `lines` with the recorded
- * `eol` and re-prepends a BOM if one was present. `split(/\r?\n/)` followed by
- * `join(eol)` round-trips exactly for a uniformly-line-ended source, including
- * the trailing-newline case: a trailing terminator in the source produces a
- * trailing empty string in `lines`, which `join` restores as a trailing `eol`.
+ * byte-identical to the original `parseCodexAgentToml` input (matrix row
+ * A14) — it never re-derives line content, only rejoins each line with its
+ * OWN recorded terminator (`terminators[i]`, never the whole-file `eol`) and
+ * re-prepends a BOM if one was present. This is a plain concatenation of the
+ * surviving `[line, terminator]` pieces, so a source with mixed `\r\n`/`\n`/
+ * lone-`\r` line endings round-trips exactly, and a strip
+ * ({@link stripModel}/{@link stripReasoningEffort}) removes only the target
+ * line and its own terminator — every other line's ending is untouched.
  */
 export function renderCodexAgentToml(doc: CodexAgentDoc): string {
-  const body = doc.lines.join(doc.eol);
+  let body = '';
+  for (let i = 0; i < doc.lines.length; i++) {
+    body += doc.lines[i] + (doc.terminators[i] ?? '');
+  }
   return doc.hadBOM ? BOM_CHAR + body : body;
 }
 
-// Removes exactly one line (by index) from `doc.lines`, re-indexing the block
-// range and the OTHER key's line index so a subsequent strip/render still sees
-// a consistent doc. Never touches any other line's content.
+// Removes exactly one line (by index) — AND its own terminator — from
+// `doc.lines`/`doc.terminators`, re-indexing the block range and the OTHER
+// key's line index so a subsequent strip/render still sees a consistent doc.
+// Never touches any other line's content or terminator.
 function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoningEffort'): CodexAgentDoc {
   const lines = doc.lines.slice(0, index).concat(doc.lines.slice(index + 1));
+  const terminators = doc.terminators.slice(0, index).concat(doc.terminators.slice(index + 1));
   const reindex = (i: number | null): number | null => (i === null ? null : i > index ? i - 1 : i);
   const blockRange = { ...doc.blockRange };
   if (blockRange.start !== -1) {
@@ -252,6 +303,7 @@ function removeLine(doc: CodexAgentDoc, index: number, which: 'model' | 'reasoni
   return {
     ...doc,
     lines,
+    terminators,
     blockRange,
     model: which === 'model' ? null : doc.model,
     modelLineIndex: which === 'model' ? null : reindex(doc.modelLineIndex),

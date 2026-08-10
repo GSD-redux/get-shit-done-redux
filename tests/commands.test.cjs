@@ -4072,19 +4072,35 @@ describe('#3243 (ADR-2313 D7): Codex .toml effort sync', () => {
     cleanup(tmpDir);
   });
 
-  test('B20 (filesystem failure): a write that fails midway is reported; the remaining agents still get processed', (t) => {
+  test('B20 (filesystem failure, atomic-write proof): a mid-write failure is reported; the remaining agents still get processed; the target is left byte-identical, never partially rewritten', (t) => {
     const tmpDir = makeTmpDir('codex-sync-b20-');
     const agentsDir = makeAgentsDir(tmpDir);
-    writeCodexAgentToml(agentsDir, 'gsd-alpha', 'name = "gsd-alpha"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
+    const alphaOriginal = 'name = "gsd-alpha"\nmodel = "sonnet"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n';
+    writeCodexAgentToml(agentsDir, 'gsd-alpha', alphaOriginal);
     writeCodexAgentToml(agentsDir, 'gsd-bravo', 'name = "gsd-bravo"\nmodel = "opus"\ndeveloper_instructions = \'\'\'\nWork.\n\'\'\'\n');
     const failingPath = path.join(agentsDir, 'gsd-alpha.toml');
 
+    // Unlike the old version of this test — which mocked fs.writeFileSync to
+    // throw BEFORE any bytes ever reached disk, proving nothing about a
+    // mid-write failure — this injects the failure at the point a NON-ATOMIC
+    // implementation (`fs.writeFileSync(filePath, ...)` straight into the
+    // target, in place) would already have truncated the real file: 'w'-mode
+    // open+truncate happens before any content is written, so a crash between
+    // open and completion leaves a partial file. The mock actually performs a
+    // REAL (truncated) write to whatever path it's called with — including a
+    // hypothetical direct write to `failingPath` itself — before throwing, so
+    // an in-place implementation's target would end up holding these 4 bytes,
+    // not the original content. An atomic tmp+rename implementation instead
+    // sends this call to a SIBLING tmp path (never `failingPath` itself), so
+    // `failingPath` is never opened for write in the first place and survives
+    // untouched.
     const realWriteFileSync = fs.writeFileSync;
-    t.mock.method(fs, 'writeFileSync', (target, ...args) => {
-      if (target === failingPath) {
-        throw Object.assign(new Error('injected ENOSPC'), { code: 'ENOSPC' });
+    t.mock.method(fs, 'writeFileSync', (target, data, ...args) => {
+      if (typeof target === 'string' && target.startsWith(failingPath)) {
+        realWriteFileSync.call(fs, target, String(data).slice(0, 4));
+        throw Object.assign(new Error('injected ENOSPC (mid-write)'), { code: 'ENOSPC' });
       }
-      return realWriteFileSync.call(fs, target, ...args);
+      return realWriteFileSync.call(fs, target, data, ...args);
     });
 
     const result = syncCodex(tmpDir, false);
@@ -4100,10 +4116,23 @@ describe('#3243 (ADR-2313 D7): Codex .toml effort sync', () => {
       fs.readFileSync(path.join(agentsDir, 'gsd-bravo.toml'), 'utf8').indexOf('model = "opus"') === -1,
       'the sibling agent must still be synced despite the other write failing',
     );
-    assert.ok(
-      fs.readFileSync(failingPath, 'utf8').includes('model = "sonnet"'),
-      'the failed write must leave the original file untouched, not a partial file',
+    // The load-bearing assertion (ADR-2313 "never partially rewritten"): the
+    // target must be BYTE-IDENTICAL to its pre-sync content, not merely
+    // "contains model = sonnet somewhere" — a truncated-to-4-bytes file would
+    // pass a substring check but fail this equality. Against the pre-fix
+    // in-place `fs.writeFileSync(filePath, renderCodexAgentToml(doc))`, this
+    // assertion FAILS: that call's target IS `failingPath`, so the mock's
+    // real truncated write lands directly on the file, leaving it as the
+    // 4-byte slice `'name'` instead of `alphaOriginal`.
+    assert.equal(
+      fs.readFileSync(failingPath, 'utf8'),
+      alphaOriginal,
+      'a mid-write failure must leave the original file byte-identical, never partially rewritten',
     );
+    // The atomic write path cleans up its sibling tmp file on failure — no
+    // stray `.tmp.<pid>` left behind in the agents directory.
+    const leftovers = fs.readdirSync(agentsDir).filter(f => f !== 'gsd-alpha.toml' && f !== 'gsd-bravo.toml');
+    assert.deepEqual(leftovers, [], 'a failed write must not leave a stray tmp file behind');
 
     cleanup(tmpDir);
   });

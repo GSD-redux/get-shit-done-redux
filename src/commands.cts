@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout } from './shell-command-projection.cjs';
+import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -881,11 +881,23 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
     }
 
     if (!dryRun) {
+      // Atomic publish (ADR-2313 "never partially rewritten"): write the
+      // rendered TOML to a sibling tmp file, then rename it over the target.
+      // Same-filesystem rename is atomic, so filePath is either the old bytes
+      // or the new ones, never truncated/half-written mid-crash. Deliberately
+      // NOT platformWriteSync — its normalizeContent step rewrites CRLF/
+      // trailing-newline bytes, which would break the byte-identical
+      // round-trip (A14) this writer must preserve. retryRenameSync (not a
+      // bare fs.renameSync) carries the transient-Windows-lock retry per
+      // DEFECT.WINDOWS-FS-OPS.
+      const tmpPath = `${filePath}.tmp.${process.pid}`;
       try {
-        fs.writeFileSync(filePath, renderCodexAgentToml(doc));
+        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc));
+        retryRenameSync(tmpPath, filePath);
       } catch (err) {
-        // Reported, not thrown — the remaining agents still get processed,
-        // and since the write itself never began, no partial file is left.
+        // Reported, not thrown — the remaining agents still get processed.
+        // Clean up the orphaned tmp file; filePath itself was never touched.
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
         skipped++;
         writeFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
         continue;
