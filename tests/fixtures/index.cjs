@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { gitOrThrow } = require('../helpers/git-fixture.cjs');
+const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('../helpers/git-fixture.cjs');
 
 /**
  * Create a temp test fixture directory with canonical planning layout.
@@ -36,16 +36,20 @@ function createFixture(options = {}) {
   }
 
   if (git) {
-    gitOrThrow(['init'], { cwd: tmpDir });
-    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: tmpDir });
-    gitOrThrow(['config', 'user.name', 'Test'], { cwd: tmpDir });
-    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: tmpDir });
-    gitOrThrow(['add', '-A'], { cwd: tmpDir });
+    // Construction calls (init/config/add/commit), a heavier class than a
+    // plumbing read — each of `init`/`commit` writes dozens of files, and on
+    // Windows every spawn is Defender-scanned (#3323).
+    const gitOpts = { cwd: tmpDir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS };
+    gitOrThrow(['init'], gitOpts);
+    gitOrThrow(['config', 'user.email', 'test@test.com'], gitOpts);
+    gitOrThrow(['config', 'user.name', 'Test'], gitOpts);
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], gitOpts);
+    gitOrThrow(['add', '-A'], gitOpts);
     // `--allow-empty`: a fixture with `git: true, planning: false,
     // projectDoc: false` (e.g. a "greenfield" starting world) stages nothing,
     // so a plain `git commit` would fail with "nothing to commit" and the
     // caller would never get a usable repo (there'd be no HEAD at all).
-    gitOrThrow(['commit', '--allow-empty', '-m', 'initial commit'], { cwd: tmpDir });
+    gitOrThrow(['commit', '--allow-empty', '-m', 'initial commit'], gitOpts);
   }
 
   return tmpDir;

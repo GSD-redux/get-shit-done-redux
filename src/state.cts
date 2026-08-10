@@ -36,6 +36,7 @@ const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
@@ -177,6 +178,12 @@ const _diskScanCache = new Map<string, {
   totalPlans: number;
   completedPlans: number;
   milestoneBounded: boolean;
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): the real `listMilestonePhaseDirs`
+  // scope for `allMatchingDirs` below, threaded through the cache so the
+  // percent computation at the bottom of buildStateFrontmatter can gate on it
+  // instead of hardcoding SCOPE.COMPLETE. Distinct from `milestoneBounded`
+  // (a heading-existence guard, #1761) — this one is disk-readability.
+  phaseDirScope: Scope;
 }>();
 
 // Track all lock files held by this process so they can be removed on exit.
@@ -756,6 +763,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: Scope = SCOPE.UNREADABLE;
 
   {
     // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
@@ -764,12 +772,32 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // excluded sentinels, unlike the owner). The owner already handles an
     // absent phasesDir as a real empty, so the fs.existsSync guard folds
     // into it.
-    const phaseDirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
+    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
     for (const dir of phaseDirs) {
       const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
       totalSummaries += summaryCount;
     }
+  }
+
+  // #3217 (ADR-3180 §7.6 rule 4): a non-COMPLETE scope means the counts
+  // above are not a trustworthy answer — do not write a percentage derived
+  // from them into STATE.md at all (A7). This is the write path, so
+  // "withhold" means "make no edit" rather than emitting a null value.
+  if (phaseScope !== SCOPE.COMPLETE) {
+    // #3217 finding 3 (decided: surface a warning, not silent-only
+    // disclosure): the JSON `reason` field alone is easy for a caller to
+    // never read, and STATE.md's Progress field goes stale with no
+    // user-visible signal beyond it. Mirrors the established
+    // `[gsd-tools] WARNING:` stderr convention this file already uses
+    // (stateReplaceFieldWithFallback above) for a comparable silent no-op.
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — phase scope is ${phaseScope}, not complete. ` +
+      `STATE.md's Progress field was left unchanged.\n`
+    );
+    output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+    return;
   }
 
   const percent = clampPercent(totalSummaries, totalPlans);
@@ -1706,6 +1734,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // #1761 read-path: set from cached.milestoneBounded inside the disk-scan
   // block; consumed at the percent computation to mirror the cmdStateSync guard.
   let milestoneUnbounded = false;
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): the real listMilestonePhaseDirs
+  // scope for the disk-scanned counts below, set from cached.phaseDirScope
+  // when a fresh disk scan runs. SCOPE.COMPLETE is the correct default here
+  // — NOT a rule-4 hardcode — for the cases where no disk scan happens at all
+  // (no cwd, or phasesDir absent): totalPhases/totalPlans then come straight
+  // from the pre-existing frontmatter fields parsed above, a path this phase
+  // does not touch and which predates listMilestonePhaseDirs entirely.
+  let diskScope: Scope = SCOPE.COMPLETE;
 
   if (cwd) {
     try {
@@ -1738,7 +1774,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           // CURRENT (stored) milestone" — routed through the canonical owner
           // instead of a hand-rolled readdirSync + isDirInMilestone filter
           // (which also never excluded sentinels, unlike the owner).
-          const allMatchingDirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null }).value;
+          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null });
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
@@ -1865,6 +1901,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
               completedPlans: diskTotalSummaries,
+              phaseDirScope,
             };
           })();
           _diskScanCache.set(cwd, cached);
@@ -1874,6 +1911,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
         totalPlans = cached.totalPlans;
         completedPlans = cached.completedPlans;
         milestoneUnbounded = cached.milestoneBounded === false;
+        diskScope = cached.phaseDirScope;
       }
       /* best-effort (#2245 audit): this is a READ path building STATE.md's
        * display frontmatter. The real throw source is fs.readdirSync(phasesDir)
@@ -1890,11 +1928,30 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // ROADMAP-declared-but-unrealized future phases cap the reported completion
   // instead of a false 100% from plan-only coverage (#3242 Bug B).
   // Falls back to the body Progress: field only when no plan files exist on disk.
-  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases);
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): computeProgressPercent requires
+  // a `Scope` for its own rule-4 gate. `diskScope` is the real
+  // `listMilestonePhaseDirs` scope threaded through `_diskScanCache`
+  // (`phaseDirScope` above) when a fresh disk scan ran — an UNREADABLE
+  // phases dir now withholds here exactly as it does at every sibling
+  // surface, closing the cross-surface disagreement the isolated review
+  // caught. When no disk scan ran at all (no cwd, or phasesDir absent)
+  // `diskScope` keeps its SCOPE.COMPLETE default, preserving this
+  // function's pre-existing behavior on that (unrelated, pre-dating
+  // listMilestonePhaseDirs) fallback path. This call site also keeps its own
+  // orthogonal `milestoneUnbounded` null-out below (#1761) — a different
+  // guard (ROADMAP heading boundedness, not disk readability).
+  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, diskScope);
   // #1761 read-path: when the milestone can't be bounded, percent would be
   // derived from a conflated/understated total — skip it (mirror cmdStateSync).
   if (milestoneUnbounded) progressPercent = null;
-  if (progressPercent === null && progressRaw && !milestoneUnbounded) {
+  // #3217 finding 1 (follow-on): a non-COMPLETE diskScope must withhold the
+  // percentage EVERYWHERE, including this prose fallback — without the
+  // `diskScope === SCOPE.COMPLETE` guard, a stale/existing "Progress: N%"
+  // body line would silently defeat computeProgressPercent's rule-4 null,
+  // re-introducing a rendered percentage on the exact scope this phase
+  // withholds for (this is how the reviewer's UNREADABLE-phases fixture
+  // could still surface a number even after the scope threading above).
+  if (progressPercent === null && progressRaw && !milestoneUnbounded && diskScope === SCOPE.COMPLETE) {
     const pctMatch = progressRaw.match(/(\d+)%/);
     if (pctMatch) progressPercent = parseInt(pctMatch[1], 10);
   }
@@ -3164,8 +3221,24 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   if (!milestoneBounded) {
     changes.push(`Progress: skipped — milestone ${versionStr} cannot be bounded to a versioned ROADMAP phase set (#1761)`);
   } else {
-    const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases);
-    percent = p !== null ? p : 0;
+    // #3217 (ADR-3180 §7.6 rule 4) BLOCKER fix: the prior comment here claimed
+    // `entries` (the raw fs.readdirSync listing above) was "never routed
+    // through listMilestonePhaseDirs, so there is no real Scope to pass" —
+    // that was factually wrong. The same `syncRoadmapRaw`/`syncRoadmapScope`
+    // already parsed above (~3104) is precisely what
+    // `listMilestonePhaseDirs` (via `getMilestonePhaseFilter`) re-derives
+    // from `cwd` to produce a real `Scope` — the identical shape already
+    // threaded through `buildStateFrontmatter`'s `diskScope` above. Calling
+    // it here (discarding `.value`, which duplicates `entries`'s own
+    // retired-phase-filtered listing) gets the real scope without changing
+    // the disk-scan totals computed above.
+    const syncScope: Scope = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr }).scope;
+    if (syncScope !== SCOPE.COMPLETE) {
+      changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);
+    } else {
+      const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, syncScope);
+      percent = p !== null ? p : 0;
+    }
   }
 
   const syncResult = transitionCore(

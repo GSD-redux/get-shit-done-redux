@@ -863,7 +863,12 @@ If `section_manifest` is `null` or `"chunked-planning-mode"` is in its `included
 **Triggered when:** Agent() returns but the return contains no recognized marker (`## PLANNING COMPLETE`, `## PHASE SPLIT RECOMMENDED`, `## ⚠ Source Audit`, `## CHECKPOINT REACHED`, `## PLANNING INCONCLUSIVE`).
 
 ```bash
-DISK_PLANS=$(ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null | wc -l | tr -d ' ')
+# #3218: this asks "did the planner write files to disk at all" — a
+# planner-produced-nothing check, not outstanding-work counting — so it
+# takes the PHYSICAL set (`plan_count_all`, status:superseded INCLUDED): a
+# superseded plan is still a file the planner wrote, and this check must not
+# read "nothing written" just because every plan happens to be superseded.
+DISK_PLANS=$(gsd_run query find-phase "${PHASE_NUMBER}" | jq -r '.plan_count_all // 0')
 ```
 
 **If `DISK_PLANS` > 0:** The planner wrote plans to disk but the Agent() return was empty or
@@ -1037,7 +1042,12 @@ If thinking_partner disabled: skip this block entirely.
 **Triggered when:** Checker Agent() returns but the return contains neither `## VERIFICATION PASSED` nor `## ISSUES FOUND`.
 
 ```bash
-DISK_PLANS=$(ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null | wc -l | tr -d ' ')
+# #3218: this asks "did the planner write files to disk at all" — a
+# planner-produced-nothing check, not outstanding-work counting — so it
+# takes the PHYSICAL set (`plan_count_all`, status:superseded INCLUDED): a
+# superseded plan is still a file the planner wrote, and this check must not
+# read "nothing written" just because every plan happens to be superseded.
+DISK_PLANS=$(gsd_run query find-phase "${PHASE_NUMBER}" | jq -r '.plan_count_all // 0')
 ```
 
 **If `DISK_PLANS` > 0:** Plans exist on disk; the checker return was empty or truncated (the

@@ -51,6 +51,31 @@ const { runGit, OUTCOME } = require('./process-seam.cjs');
 const DEFAULT_GIT_TIMEOUT_MS = 15000;
 
 /**
+ * Timeout for git calls that CONSTRUCT a fixture repository, in milliseconds.
+ *
+ * A distinct class from `DEFAULT_GIT_TIMEOUT_MS` above, which is sized for
+ * plumbing READS (rev-parse, branch, log) against an existing repo.
+ * `createFixture` (`tests/fixtures/index.cjs`) issues SIX sequential spawns to
+ * build one repo — `init`, three `config` writes, `add -A`, `commit` — and
+ * `init`/`commit` each write dozens of files. On Windows every one of those
+ * spawns is Defender-scanned, so the construction sequence is materially
+ * heavier than any single read.
+ *
+ * CI (PR #3323, `full test (windows-latest, 22, shard 2/3)`) recorded
+ * `gitOrThrow: git init failed — outcome=timed_out exitCode=null` and the same
+ * for `git commit --allow-empty`, with sibling tests in the same block taking
+ * 15.6-22.0s, while every other lane — including windows-latest node 24, all
+ * three shards — passed the same commit. That is a bound sized for the wrong
+ * class, not a slow machine: the identical conclusion, in the identical job,
+ * that `HOOK_FANOUT_TIMEOUT_MS` records for PR #3285.
+ *
+ * 60000ms is 4x the bound that failed and half `INSTALL_TIMEOUT_MS` — the same
+ * ratio `HOOK_FANOUT_TIMEOUT_MS` uses, and the right order for a call that is
+ * far heavier than a plumbing read but much lighter than a full installer run.
+ */
+const GIT_FIXTURE_TIMEOUT_MS = 60000;
+
+/**
  * Throw on anything other than a clean (exit 0) process-seam result,
  * preserving the legacy `execSync`/`execFileSync` throw-on-failure idiom
  * that existing test code is written against. Returns quietly (no return
@@ -147,4 +172,10 @@ function toLegacyResult(result) {
   return { status: result.exitCode, stdout: result.stdout, stderr: result.stderr };
 }
 
-module.exports = { gitOrThrow, throwIfFailed, toLegacyResult, DEFAULT_GIT_TIMEOUT_MS };
+module.exports = {
+  gitOrThrow,
+  throwIfFailed,
+  toLegacyResult,
+  DEFAULT_GIT_TIMEOUT_MS,
+  GIT_FIXTURE_TIMEOUT_MS,
+};

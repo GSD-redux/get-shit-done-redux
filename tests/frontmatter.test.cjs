@@ -1052,7 +1052,12 @@ function buildStateWithCuratedProgress(opts) {
  * Only `numRealizedDirs` phase dirs will have plan/summary files on disk.
  */
 function buildRoadmap(numPhases) {
-  const lines = ['# ROADMAP', '', '## Milestone v1.0', ''];
+  // #3217 (ADR-3180 §7.6 rule 4): no version token in the heading — none of
+  // this section's STATE.md fixtures set a `milestone:` field, so a
+  // `vX.Y`-bearing heading here would window as UNSCOPED (§7.1 row 4:
+  // "has versioned milestones, but no version resolved"), not the free-form
+  // COMPLETE window these tests' phase/plan counting depends on.
+  const lines = ['# ROADMAP', '', '## Milestone', ''];
   for (let i = 1; i <= numPhases; i++) {
     lines.push(`### Phase ${i}: phase-${i}`);
     lines.push('');
@@ -1196,6 +1201,11 @@ describe('#3242 Bug A: body-only state.update preserves curated progress frontma
   });
 
   test('state.update "Progress" resyncs progress frontmatter from the updated body', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the body-Progress-field resync this test
+    // exercises is withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const statePath = path.join(tmpDir, '.planning', 'STATE.md');
     fs.writeFileSync(statePath, buildStateWithCuratedProgress({
       completedPlans: 22,

@@ -181,8 +181,14 @@ if [ -z "$ROADMAP" ]; then
 else
   for PHASE_NUM in $(echo "$ROADMAP" | jq -r '.phases[] | (.number // .phase_number)'); do
     PHASE_DATA=$(echo "$ROADMAP" | jq --arg n "$PHASE_NUM" '.phases[] | select((.number // .phase_number) == ($n | tonumber))')
-    PLAN_COUNT=$(echo "$PHASE_DATA" | jq '(.plans // []) | length')
-    SUMMARY_COUNT=$(echo "$PHASE_DATA" | jq '(.summaries // []) | length')
+    # #3218: $PHASE_DATA is a `.phases[]` entry from `roadmap.analyze`, which
+    # emits `plan_count`/`summary_count` SCALARS (src/roadmap.cts) — it has
+    # never emitted `.plans`/`.summaries` ARRAYS. Reading those absent keys
+    # (even with a `// []` fallback) always produced 0, permanently disabling
+    # this resume-incomplete-phase check. Read the scalars the producer
+    # actually emits.
+    PLAN_COUNT=$(echo "$PHASE_DATA" | jq '.plan_count // 0')
+    SUMMARY_COUNT=$(echo "$PHASE_DATA" | jq '.summary_count // 0')
     if [ "${PLAN_COUNT:-0}" -gt "${SUMMARY_COUNT:-0}" ]; then
       INCOMPLETE_PHASE="$PHASE_NUM"
       break
@@ -213,11 +219,13 @@ Then exit the route step. Do NOT run Steps 1 through Routes A-F.
 
 **Step 1: Count plans, summaries, and issues in current phase**
 
-List files in the current phase directory:
+Get plan/summary counts for the current phase from the single owner (#3218 — LIVE
+counts, i.e. `status: superseded` plans excluded, matching "outstanding work"):
 
 ```bash
-(ls -1 .planning/phases/[current-phase-dir]/*-PLAN.md 2>/dev/null || true) | wc -l
-(ls -1 .planning/phases/[current-phase-dir]/*-SUMMARY.md 2>/dev/null || true) | wc -l
+PHASE_COUNTS=$(gsd_run query find-phase "${CURRENT_PHASE}")
+X=$(echo "$PHASE_COUNTS" | jq -r '.plan_count // 0')
+Y=$(echo "$PHASE_COUNTS" | jq -r '.summary_count // 0')
 (ls -1 .planning/phases/[current-phase-dir]/*-UAT.md 2>/dev/null || true) | wc -l
 ```
 

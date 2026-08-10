@@ -241,9 +241,13 @@ describe('roadmap analyze command', () => {
   });
 
   test('parses phases with goals and disk status', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): no version token — no STATE.md exists to
+    // resolve which milestone "v1.0" names, so a version-bearing title here
+    // would window as UNSCOPED (§7.1 row 4), not the free-form COMPLETE
+    // window this test's disk-status counting depends on.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0
+      `# Roadmap
 
 ### Phase 1: Foundation
 **Goal:** Set up infrastructure

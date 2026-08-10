@@ -1166,3 +1166,158 @@ describe('cmdValidateAgents surfaces the Codex posture result (#3242 row 20)', (
     );
   });
 });
+
+// ─── #2872 (ADR-2866 Phase 3): checkAgentsInstalled unchanged by the ──────
+// manifest-reader de-duplication (50-test-matrix.md section 5, rows A1-A5)
+//
+// installer-migrations.cts's readInstallManifest now records manifestVersion
+// /runtime/scope, but checkAgentsInstalled only ever consumed `.files`
+// before AND after the substitution (agent-install-check.cts:191-194
+// swapped an inlined try/readFileSync/JSON.parse for the shared reader,
+// zero new branches) — see 40-design.md's "Rejected" #4 for why this
+// function is not rewired onto the two-scope resolver instead. These rows
+// prove the substitution changed nothing observable here.
+describe('checkAgentsInstalled — unchanged by the manifest-reader substitution (#2872 A1-A5)', () => {
+  describe('A1-A4: v1/v2 manifest parity', () => {
+    let tmpDir;
+    let agentsDir;
+
+    beforeEach(() => {
+      tmpDir = createTempDir('gsd-agent-check-schema-');
+      agentsDir = path.join(tmpDir, 'agents');
+      process.env['GSD_AGENTS_DIR'] = agentsDir;
+      fs.mkdirSync(agentsDir, { recursive: true });
+      for (const agent of EXPECTED_AGENTS) {
+        fs.writeFileSync(path.join(agentsDir, `${agent}.md`), `# ${agent}\n`);
+      }
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // A1 — a v1 manifest (no manifestVersion/runtime/scope key at all)
+    // beside the agents dir: result identical to pre-#2872 behavior.
+    test('A1: checkAgentsInstalled is unchanged for a v1 manifest', () => {
+      const manifestFiles = {};
+      for (const agent of EXPECTED_AGENTS) manifestFiles[`agents/${agent}.md`] = 'somehash';
+      fs.writeFileSync(
+        path.join(tmpDir, 'gsd-file-manifest.json'),
+        JSON.stringify({
+          version: '1.49.0',
+          timestamp: '2026-05-10T00:00:00.000Z',
+          mode: 'full',
+          files: manifestFiles,
+        }),
+      );
+
+      const result = agentInstallCheck.checkAgentsInstalled();
+      assert.strictEqual(result.agents_installed, true);
+      assert.deepStrictEqual(result.missing_agents, []);
+      assert.deepStrictEqual(result.incomplete_agents, []);
+    });
+
+    // A2 — a v2 manifest (carrying manifestVersion/runtime/scope) produces
+    // the exact same result: the new fields change nothing here.
+    test('A2: checkAgentsInstalled is unchanged for a v2 manifest', () => {
+      const manifestFiles = {};
+      for (const agent of EXPECTED_AGENTS) manifestFiles[`agents/${agent}.md`] = 'somehash';
+      fs.writeFileSync(
+        path.join(tmpDir, 'gsd-file-manifest.json'),
+        JSON.stringify({
+          manifestVersion: 2,
+          version: '1.60.0',
+          timestamp: '2026-08-01T00:00:00.000Z',
+          mode: 'full',
+          runtime: 'claude',
+          scope: 'global',
+          files: manifestFiles,
+        }),
+      );
+
+      const result = agentInstallCheck.checkAgentsInstalled();
+      assert.strictEqual(result.agents_installed, true);
+      assert.deepStrictEqual(result.missing_agents, []);
+      assert.deepStrictEqual(result.incomplete_agents, []);
+    });
+
+    // A3 — no manifest at all (readInstallManifest's absent-file branch):
+    // the completeness check is skipped, no throw — today's behavior.
+    // Presence (the .md files above) still makes the install look complete.
+    test('A3: an unreadable/absent manifest still skips the completeness check', () => {
+      let result;
+      assert.doesNotThrow(() => {
+        result = agentInstallCheck.checkAgentsInstalled();
+      });
+      assert.deepStrictEqual(result.incomplete_agents, []);
+      assert.strictEqual(result.agents_installed, true);
+    });
+
+    // A4 — manifest present, one agent's .toml tracked but absent on disk:
+    // still reported as incomplete, same as before the substitution.
+    test('A4: still reports an incomplete agent', () => {
+      const targetAgent = EXPECTED_AGENTS[0];
+      const manifestFiles = {};
+      for (const agent of EXPECTED_AGENTS) manifestFiles[`agents/${agent}.md`] = 'somehash';
+      manifestFiles[`agents/${targetAgent}.toml`] = 'somehash';
+      fs.writeFileSync(
+        path.join(tmpDir, 'gsd-file-manifest.json'),
+        JSON.stringify({
+          manifestVersion: 2,
+          version: '1.60.0',
+          timestamp: '2026-08-01T00:00:00.000Z',
+          mode: 'full',
+          runtime: 'claude',
+          scope: 'global',
+          files: manifestFiles,
+        }),
+      );
+
+      const result = agentInstallCheck.checkAgentsInstalled();
+      assert.ok(
+        result.incomplete_agents.includes(targetAgent),
+        `expected ${targetAgent} in incomplete_agents, got: ${JSON.stringify(result.incomplete_agents)}`,
+      );
+      assert.strictEqual(result.agents_installed, false);
+    });
+  });
+
+  // A5 — getAgentsDir's local-install probe is deliberately NOT rewired to
+  // readInstallManifest: it stays an lstat-based (symlink-unaware) presence
+  // check (agent-install-check.cts:123, "Not touched" in 40-design.md's
+  // blast-radius table), so a manifest path that is itself a SYMLINK is
+  // still ignored, exactly as before the substitution.
+  test('A5: getAgentsDir still ignores a symlinked manifest', (t) => {
+    const projectRoot = createTempDir('gsd-local-codex-schema-');
+    const globalHome = createTempDir('gsd-global-codex-schema-');
+    const localConfigDir = path.join(projectRoot, '.codex');
+    const localAgentsDir = path.join(localConfigDir, 'agents');
+    const realManifestTarget = path.join(projectRoot, 'real-manifest.json');
+    t.after(() => cleanup(projectRoot));
+    t.after(() => cleanup(globalHome));
+    fs.mkdirSync(localAgentsDir, { recursive: true });
+    for (const agent of EXPECTED_AGENTS) {
+      fs.writeFileSync(path.join(localAgentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+    }
+    fs.writeFileSync(realManifestTarget, JSON.stringify({ files: {} }));
+    const manifestPath = path.join(localConfigDir, 'gsd-file-manifest.json');
+    createCompleteAgents(path.join(globalHome, 'agents'));
+    process.env['CODEX_HOME'] = globalHome;
+    try {
+      fs.symlinkSync(realManifestTarget, manifestPath, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw error;
+    }
+
+    // getAgentsDir's own probe (`fs.lstatSync(manifestPath).isFile()`) sees
+    // the manifest path as a symlink, not a regular file — isFile() is false
+    // for the link itself even though its target is a regular file — so the
+    // local install is NOT selected; the global fallback wins instead.
+    assert.strictEqual(agentInstallCheck.getAgentsDir('codex', projectRoot), path.join(globalHome, 'agents'));
+    assert.notStrictEqual(agentInstallCheck.getAgentsDir('codex', projectRoot), localAgentsDir);
+  });
+});

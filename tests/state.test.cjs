@@ -642,6 +642,11 @@ describe('state json command', () => {
   });
 
   test('builds frontmatter on-the-fly from body when no frontmatter exists', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the body-Progress-field fallback this
+    // test exercises is withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       `# Project State
@@ -1665,6 +1670,11 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
   beforeEach(() => {
     tmpDir = createFixture();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and state update-progress withholds
+    // (updated:false) instead of computing a percent.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2321,6 +2331,11 @@ describe('progress counters correct after plan execution (#1589)', () => {
 
   beforeEach(() => {
     tmpDir = createFixture();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the disk-derived percent this describe
+    // exercises is withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -9953,7 +9968,12 @@ function writeStateFile(tmpDir, overrides = {}) {
  * filter includes them (avoids needing a milestone header to count phases).
  */
 function writeRoadmap(tmpDir, phaseNums) {
-  const lines = ['## Roadmap v1.0'];
+  // #3217 (ADR-3180 §7.6 rule 4): no version token — none of this helper's
+  // callers write a STATE.md `milestone:` field, so a `vX.Y`-bearing heading
+  // here would window as UNSCOPED (§7.1 row 4: "has versioned milestones,
+  // but no version resolved"), not the free-form COMPLETE window the
+  // percent/count assertions below depend on.
+  const lines = ['## Roadmap'];
   for (const n of phaseNums) {
     lines.push('', `### Phase ${n}: Phase ${n}`);
   }
@@ -10474,6 +10494,11 @@ describe('cmdStateSync nested plans/ layout (#3257)', () => {
       '',
     ].join('\n');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent, 'utf-8');
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the Progress: field this test asserts on
+    // is withheld ("milestone phase scope is unreadable, not COMPLETE").
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
 
     const result = runGsdTools('state sync', tmpDir);
     assert.ok(result.success, `state sync failed: ${result.error}`);

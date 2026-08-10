@@ -523,9 +523,12 @@ describe('progress command', () => {
   });
 
   test('renders JSON progress', () => {
+    // #3217: no version token — genuinely free-form, so windowing scope is
+    // COMPLETE (§7.1) rather than UNSCOPED (a title merely mentioning "v1.0"
+    // with no STATE.md milestone pointer cannot be windowed to that version).
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -545,9 +548,10 @@ describe('progress command', () => {
   });
 
   test('renders bar format', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0\n`
+      `# Roadmap\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
     fs.mkdirSync(p1, { recursive: true });
@@ -576,9 +580,10 @@ describe('progress command', () => {
   });
 
   test('does not crash when summaries exceed plans (orphaned SUMMARY.md)', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -960,6 +965,56 @@ describe('current-timestamp command', () => {
 
     // The router should call commands.cmdCurrentTimestamp directly.
     // (Verified behaviorally by the 'current-timestamp command' tests above.)
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cmdCurrentTimestamp exact-value tests (#3314 — ADR-456 subprocess clock pin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('current-timestamp command — exact value under GSD_NOW_MS pin', () => {
+  let tmpDir;
+  // Pinned instant with a non-zero millisecond fraction so the 'full' format
+  // assertion can't accidentally pass against a truncated value.
+  const PINNED_MS = 1_700_000_000_123; // 2023-11-14T22:13:20.123Z
+  const PIN_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_MS) };
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('date format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp date', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().split('T')[0];
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('filename format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp filename', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().replace(/:/g, '-').replace(/\..+/, '');
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('full format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp full', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
+  });
+
+  test('default format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
   });
 });
 
@@ -2005,6 +2060,12 @@ describe('stats command', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token
+    // anywhere) is COMPLETE scope for windowing (§7.1) — without this, an
+    // absent ROADMAP.md is UNREADABLE and stats withholds `percent`/counts.
+    // Individual tests below that write their own ROADMAP.md content
+    // overwrite this baseline.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2114,6 +2175,11 @@ describe('stats command', () => {
     fs.writeFileSync(path.join(p2, '15-01-SUMMARY.md'), '# Summary');
     fs.writeFileSync(path.join(p2, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
+    // #3217 (ADR-3180 §7.6 rule 4): no `vX.Y` token in the milestone heading
+    // — the ROADMAP has no STATE.md milestone pointer, so a real version
+    // token here would resolve to UNSCOPED (§7.1 row 4: "has versioned
+    // milestones, but no version resolved"), not the free-form COMPLETE
+    // window this test's counting assertions depend on.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       `# Roadmap
@@ -2122,7 +2188,7 @@ describe('stats command', () => {
 - [x] **Phase 15: Proof Generation**
 - [ ] **Phase 16: Multi-Claim Verification & UX**
 
-## Milestone v1.0 Growth
+## Milestone Growth
 
 ### Phase 14: Auth Hardening
 **Goal:** Improve auth checks
@@ -2460,15 +2526,46 @@ describe('_wsParseRetryAfter (#308)', () => {
     assert.strictEqual(_wsParseRetryAfter('120000'), 60000);
   });
 
-  test('future HTTP-date → value in (0, 60000]', () => {
-    const futureDate = new Date(Date.now() + 5000).toUTCString();
-    const v = _wsParseRetryAfter(futureDate);
-    assert.ok(typeof v === 'number' && v > 0 && v <= 60000, `expected (0,60000], got ${v}`);
+  // ADR-456 §(a) reachability rule: this function is required directly
+  // (in-process), so t.mock.timers reaches it without any production change —
+  // it patches the global `Date` that `Date.now()` reads from regardless of
+  // whether the SUT goes through realClock. Fixed, second-aligned pin so the
+  // HTTP-date's whole-second precision doesn't round the expected value away.
+  const PINNED_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+
+  test('future HTTP-date 5s ahead → exactly 5000 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const futureDate = new Date(PINNED_MS + 5000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(futureDate), 5000);
   });
 
-  test('past HTTP-date → 0', () => {
-    const pastDate = new Date(Date.now() - 5000).toUTCString();
+  test('past HTTP-date 5s behind → exactly 0 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const pastDate = new Date(PINNED_MS - 5000).toUTCString();
     assert.strictEqual(_wsParseRetryAfter(pastDate), 0);
+  });
+
+  test('boundary: HTTP-date 59s ahead → 59000, not clamped', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 59_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 59_000);
+  });
+
+  test('boundary: HTTP-date 60s ahead → 60000, at cap exactly', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 60_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
+  });
+
+  test('boundary: HTTP-date 61s ahead → clamped to 60000', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 61_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
   });
 
   test('"garbage" → null', () => {
