@@ -31,9 +31,12 @@ Categories present:
 - `whitespace-indented-model-pin.toml` — `  model   =  "sonnet"` (leading
   indentation, spaced `=`). This one **is** a violation — whitespace
   around a real key must still be recognized.
-- `crlf-pinned-model.toml` — the entire file uses `\r\n` line endings
-  and pins `model = "sonnet"` in the header. Must be flagged identically
-  to an LF file.
+- CRLF has no committed fixture: `.gitattributes` (`* text=auto eol=lf`,
+  repo-wide) normalizes any `\r\n` file back to LF on commit and on every
+  checkout, so a committed CRLF fixture would silently prove nothing. The
+  CRLF case (row 18a in `tests/agent-install-check.test.cjs`) instead
+  authors LF content inline and converts it with `.replace(/\n/g, '\r\n')`
+  at test runtime, keeping the CRLF-ness under the test's control.
 - `bom-pinned-model.toml` — UTF-8 BOM (`EF BB BF`) prefix, then a header
   pinning `model = "sonnet"`. Must be flagged identically to a
   BOM-free file.

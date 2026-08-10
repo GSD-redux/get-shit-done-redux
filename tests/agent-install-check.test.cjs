@@ -474,6 +474,17 @@ function copyFixtureToml(agentsDir, agentName, fixtureFile) {
   fs.writeFileSync(path.join(agentsDir, `${agentName}.toml`), raw);
 }
 
+// Row 18a's CRLF fixture is derived at test runtime, never read from a committed file.
+// `.gitattributes:2` is `* text=auto eol=lf`, repo-wide and deliberate, so a `\r\n`
+// fixture committed to disk is normalized to LF on every commit and every checkout —
+// a whole-file CRLF fixture proves nothing about CRLF handling once git has touched it.
+// Authoring the LF content inline and converting it here keeps the CRLF-ness under the
+// test's control instead of git's. (The BOM fixture is unaffected by eol=lf — a BOM is
+// not a line ending — so it stays a committed file.)
+function toCrlf(lfContent) {
+  return lfContent.replace(/\n/g, '\r\n');
+}
+
 // Fault injection for row 21 — monkeypatches node:fs's readFileSync and restores it
 // in a `finally` INSIDE this helper (never in a test body, and never chmod 0o000,
 // which root bypasses under Docker/CI and would give the test zero real coverage).
@@ -766,7 +777,11 @@ describe('checkCodexModelPosture', () => {
 
   // # 18 — cross-platform: CRLF and BOM must parse identically to plain LF.
   test('row 18a: CRLF file with a pinned model — parsed identically to LF (still a violation)', () => {
-    copyFixtureToml(agentsDir, 'gsd-scribe', 'crlf-pinned-model.toml');
+    const lfContent =
+      'name = "gsd-scribe"\ndescription = "Writes changelog entries from merged PRs"\n' +
+      'model = "sonnet"\ndeveloper_instructions = \'\'\'\n' +
+      'Write a changelog entry summarizing the merged pull request.\n\'\'\'\n';
+    writeAgentToml(agentsDir, 'gsd-scribe', toCrlf(lfContent));
 
     const result = agentInstallCheck.checkCodexModelPosture('codex', tmpDir);
 

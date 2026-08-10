@@ -1,6 +1,0 @@
-name = "gsd-scribe"
-description = "Writes changelog entries from merged PRs"
-model = "sonnet"
-developer_instructions = '''
-Write a changelog entry summarizing the merged pull request.
-'''
