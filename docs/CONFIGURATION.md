@@ -1532,11 +1532,15 @@ The intent is the same as the Claude profile tiers -- use a stronger model for p
 
 ### The `tier` Field
 
-`node gsd-tools.cjs resolve-model <agent> --pick tier` returns the tier GSD resolved for that agent, independent of `resolve_model_ids`: `opus` | `sonnet` | `haiku` | `fable` | `inherit` | `unknown`.
+`node gsd-tools.cjs query resolve-model <agent> --pick tier` returns the tier GSD resolved for that agent, independent of `resolve_model_ids`: `opus` | `sonnet` | `haiku` | `fable` | `inherit` | `unknown`. It is also emitted as a `tier` key in the command's full JSON output.
 
 `tier` is computed above the `resolve_model_ids: "omit"` gate, so it stays meaningful exactly where `model` does not — every non-Claude install (blank under `"omit"`) and any install where the runtime's tier map substitutes a name (e.g. `gpt-5.6-luna` for the haiku tier on Codex).
 
-**Honesty semantics:** a `model_overrides` pin naming a known alias or a mappable full Claude id reports that alias; a pin to an unmappable raw model id reports `unknown`; `model_profile: inherit` reports `inherit`; an agent with no catalog entry reports `unknown`. `tier` never guesses.
+`tier` accounts for every step that can change which tier runs, including a `model_policy` preset — a preset resolves after the profile tier and can dispatch a different one, so `model_policy: {provider: anthropic, budget: low}` under a `balanced` profile reports `haiku`, not `sonnet`.
+
+**Honesty semantics:** a `model_overrides` pin naming a known alias or a mappable full Claude id reports that alias; a pin to an unmappable raw model id reports `unknown`; a policy-resolved model that maps to no alias — including every non-Claude runtime, where the policy model is passed through verbatim — reports `unknown` rather than falling back to the profile tier; `model_profile: inherit` reports `inherit`; an agent with no catalog entry reports `unknown`. `tier` never guesses, so treat `unknown` and `inherit` as *cannot tell*, never as *adequate*.
+
+**One limit:** a `model_profile_overrides.<runtime>.<tier>` entry that repoints a tier at another tier's model makes `tier` report the tier that was asked for, not the tier of the model that answers.
 
 ### Runtime-Aware Profiles (#2517)
 
