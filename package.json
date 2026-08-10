@@ -108,6 +108,7 @@
     "version": "node scripts/sync-manifest-versions.cjs --stage && node scripts/gen-capability-registry.cjs --write && git add gsd-core/bin/lib/capability-registry.cjs",
     "prepublishOnly": "npm run build:lib && npm run build:hooks",
     "pretest": "npm run build:lib && npm run lint:skill-deps",
+    "gsd:pretest-baseline": "node scripts/gsd-pretest-baseline.cjs",
     "pretest:coverage": "npm run build:lib && npm run lint:skill-deps",
     "lint": "eslint . --cache --cache-location node_modules/.cache/eslint/",
     "lint:fix": "eslint . --fix",
