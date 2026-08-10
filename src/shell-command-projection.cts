@@ -631,9 +631,22 @@ export function execGit(args: string[], opts: { cwd?: string; env?: Record<strin
 }
 
 export function execNpm(args: string[], opts: { cwd?: string; timeout?: number } = {}): SpawnResultOutput {
-  const result = childProcess.spawnSync('npm', args, {
+  // Windows: spawn cmd.exe ourselves rather than passing shell:true. Node's
+  // shell:true path wraps the command in its own internal cmd.exe invocation,
+  // and combining that with windowsHide:true is a long-standing Node/Windows
+  // bug (nodejs/node#21825) where the wrapper's console window still briefly
+  // flashes on screen for a console-less (detached) parent — see #799, which
+  // this same file was previously fixed for (#688) by adding windowsHide:true
+  // alone; that sweep didn't remove the shell:true that defeats it here.
+  // Invoking cmd.exe directly as the spawned program makes windowsHide:true
+  // apply to the CreateProcess call we control, which reliably suppresses the
+  // window. Mirrors the no-shell-for-argv-array .cmd-shim pattern already used
+  // elsewhere in this codebase (gsd-tools.cjs, #2667/#3086).
+  const isWin = process.platform === 'win32';
+  const command = isWin ? 'cmd.exe' : 'npm';
+  const commandArgs = isWin ? ['/d', '/s', '/c', 'npm', ...args] : args;
+  const result = childProcess.spawnSync(command, commandArgs, {
     cwd: opts.cwd,
-    shell: process.platform === 'win32',
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: opts.timeout ?? 15_000,

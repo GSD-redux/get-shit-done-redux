@@ -255,6 +255,29 @@ describe('bug #685: Windows spawns must set windowsHide:true (no console-window 
     });
   }
 
+  // Regression test for the #685/#688 fix's residual gap (see #3293): adding
+  // windowsHide:true alone is not sufficient. Node's shell:true path wraps the
+  // command in Node's own internal cmd.exe invocation, and windowsHide:true does not
+  // reliably apply to that wrapper (nodejs/node#21825) — so execNpm kept flashing a
+  // console window on Windows even after #688 landed. windowsHide:true must be paired
+  // with NOT using shell:true; a direct cmd.exe /d /s /c invocation (as execTool's
+  // .cmd-shim callers already do elsewhere in this codebase) is the pattern that
+  // actually suppresses the window.
+  test('execNpm spawnSync does not use shell:true (defeats windowsHide on Windows)', () => {
+    const region = regionBetween(cts(), 'export function execNpm', "_spawnResult(result, 'npm')");
+    // Strip // line comments first: this region's own explanatory comment discusses
+    // the shell:true bug pattern in prose, which would otherwise self-match.
+    const code = region
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n');
+    assert.doesNotMatch(
+      code,
+      /shell:\s*(true|process\.platform)/,
+      'execNpm spawnSync must not use shell:true — it defeats windowsHide:true on Windows (nodejs/node#21825); invoke cmd.exe directly instead',
+    );
+  });
+
   test('gsd-worktree-path-guard SPAWNOPT sets windowsHide', () => {
     const region = regionBetween(read('hooks/gsd-worktree-path-guard.js'), 'const SPAWNOPT', '};');
     assert.match(region, /windowsHide:\s*true/, 'gsd-worktree-path-guard SPAWNOPT must set windowsHide: true');

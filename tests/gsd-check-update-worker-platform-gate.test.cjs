@@ -45,28 +45,58 @@ function codeOnly(file) {
     .replace(/(^|[^:])\/\/[^\r\n]*/g, '$1');
 }
 
+// Slice the exact body of one spawn site (comment-stripped) so the assertion
+// binds that site, not merely "the pattern appears somewhere in the file" —
+// mirrors regionBetween() in tests/windows-robustness.test.cjs.
+function regionInFile(file, startAnchor, endAnchor) {
+  const src = codeOnly(file);
+  const i = src.indexOf(startAnchor);
+  assert.notEqual(i, -1, `start anchor not found: ${startAnchor}`);
+  const j = src.indexOf(endAnchor, i);
+  assert.notEqual(j, -1, `end anchor not found after start: ${endAnchor}`);
+  return src.slice(i, j);
+}
+
 describe('execNpm: Windows npm spawn platform gate (PR #3102, relocated #498)', () => {
   test('projection seam exists', () => {
     assert.ok(fs.existsSync(PROJECTION_PATH), `not found at ${PROJECTION_PATH}`);
   });
 
-  test('execNpm gates shell to process.platform === "win32"', () => {
+  // #3102's original fix used `shell: process.platform === 'win32'` to resolve
+  // npm.cmd on Windows without adding shell overhead on POSIX. #3293 found
+  // that shape defeats windowsHide:true (Node's shell:true wraps the command in
+  // its own internal cmd.exe, and windowsHide:true does not reliably apply to
+  // that wrapper — nodejs/node#21825), so execNpm was rewritten to spawn cmd.exe
+  // itself directly on Windows only (still resolving npm.cmd via PATHEXT) and to
+  // spawn npm directly (no shell) on POSIX. The contract this test locks is
+  // unchanged — Windows-only shell-equivalent resolution, zero overhead on
+  // POSIX — only the mechanism moved.
+  test('execNpm resolves npm via a Windows-only gate (isWin), not shell:true', () => {
+    const code = codeOnly(PROJECTION_PATH);
     assert.match(
-      codeOnly(PROJECTION_PATH),
-      /shell:\s*process\.platform\s*===\s*['"]win32['"]/,
+      code,
+      /isWin\s*=\s*process\.platform\s*===\s*['"]win32['"]/,
       [
-        'execNpm must gate shell to `process.platform === "win32"`.',
-        'A regression to `shell: true` would spawn /bin/sh -c on POSIX',
-        '(adds shell overhead, changes signal/exit semantics). See PR #3102.',
+        'execNpm must gate its Windows-only npm-resolution path to',
+        '`process.platform === "win32"`; POSIX must take the plain `npm` spawn.',
       ].join(' '),
+    );
+    assert.match(
+      code,
+      /isWin\s*\?\s*['"]cmd\.exe['"]/,
+      'execNpm must spawn cmd.exe directly (not via shell:true) to resolve npm.cmd on Windows.',
     );
   });
 
-  test('no unconditional shell: true on the npm spawn', () => {
+  test('no shell:true or shell:process.platform on the npm spawn (defeats windowsHide)', () => {
+    // PROJECTION_PATH is the compiled .cjs; TS `export function` compiles to a
+    // plain `function` declaration plus a separate `exports.x = x` line, so the
+    // anchor must match the compiled form, not the .cts source's `export function`.
+    const region = regionInFile(PROJECTION_PATH, 'function execNpm', "_spawnResult(result, 'npm')");
     assert.doesNotMatch(
-      codeOnly(PROJECTION_PATH),
-      /shell\s*:\s*true\s*[,\s}]/,
-      'shell: true is forbidden — use the `process.platform === "win32"` gate.',
+      region,
+      /shell\s*:\s*(true|process\.platform)/,
+      'shell:true/shell:process.platform is forbidden on execNpm — it defeats windowsHide:true on Windows (nodejs/node#21825); spawn cmd.exe directly instead.',
     );
   });
 });
