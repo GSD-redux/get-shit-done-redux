@@ -26,6 +26,7 @@ import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
 import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
+import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
 
 const localPlugin = {
   rules: {
@@ -46,6 +47,7 @@ const localPlugin = {
     'require-fs-op-fallback': requireFsOpFallback,
     'no-unbounded-spawn': noUnboundedSpawn,
     'no-duplicate-fold-marker': noDuplicateFoldMarker,
+    'require-subprocess-timeout': requireSubprocessTimeout,
   },
 };
 
@@ -302,6 +304,12 @@ export default tseslint.config(
       // (EPERM/EBUSY/EACCES retry or a Windows platform guard). See
       // DEFECT.WINDOWS-FS-OPS in CONTEXT.md.
       'local/require-fs-op-fallback': 'error',
+      // Flag execSync/execFileSync/spawnSync without a `timeout` option — an
+      // unbounded sync subprocess hangs indefinitely on a stuck remote/large
+      // repo/missing network (DEFECT.UNBOUNDED-SUBPROCESS in CONTEXT.md).
+      // 'warn' for now: 8 pre-existing production call sites lack `timeout`
+      // (see blast-radius survey); flip to 'error' once those are migrated.
+      'local/require-subprocess-timeout': 'error',
     },
   },
 

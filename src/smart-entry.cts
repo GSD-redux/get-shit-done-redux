@@ -187,6 +187,7 @@ function readGitSignals(cwd: string): GitSignals {
         maxBuffer: 4 * 1024 * 1024,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 10_000,
       });
     } catch {
       return '';

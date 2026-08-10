@@ -7,7 +7,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
-const { evaluateLint, LINT_REASON, DEFAULT_BASE: CHANGESET_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'lint.cjs'));
+const { evaluateLint, LINT_REASON, findPrFieldDrift, DEFAULT_BASE: CHANGESET_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'lint.cjs'));
 const { DEFAULT_BASE: DOCS_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'lint-docs-required.cjs'));
 
 const ROOT = path.join(__dirname, '..');
@@ -87,6 +87,31 @@ function runLint(repoDir) {
   return { status: result.exitCode, report };
 }
 
+/**
+ * Like runLint, but with a real GITHUB_EVENT_PATH pointing at a synthetic PR
+ * event payload — needed to exercise DEFECT.CHANGESET-PR-FIELD-DRIFT, which
+ * compares each fragment's `pr:` against `event.pull_request.number`.
+ * @param {string} repoDir
+ * @param {number|undefined} prNumber - omit to simulate a push/non-PR run
+ *   (no `pull_request` key in the payload at all).
+ */
+function runLintWithPrEvent(repoDir, prNumber) {
+  const eventPath = path.join(repoDir, 'event.json');
+  const payload = prNumber === undefined ? {} : { pull_request: { number: prNumber, labels: [] } };
+  fs.writeFileSync(eventPath, JSON.stringify(payload));
+  const result = runNode(
+    [LINT_SCRIPT, '--json'],
+    {
+      cwd: repoDir,
+      env: { ...process.env, GITHUB_BASE_REF: 'main', GITHUB_EVENT_PATH: eventPath },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    },
+  );
+  let report = {};
+  try { report = JSON.parse(result.stdout); } catch { /* leave as empty object */ }
+  return { status: result.exitCode, report };
+}
+
 // evaluateLint is a pure function over file lists + label list — no fs, no git.
 // Tests assert on the structured verdict: { ok: bool, reason: LINT_REASON.X }.
 
@@ -94,7 +119,10 @@ describe('changeset lint: pure verdict (#2975)', () => {
   test('LINT_REASON enum exposes the documented codes', () => {
     assert.deepEqual(
       Object.keys(LINT_REASON).sort(),
-      ['OK_FRAGMENT_PRESENT', 'OK_NO_USER_FACING_CHANGES', 'OK_OPT_OUT_LABEL', 'FAIL_MISSING_FRAGMENT', 'FAIL_INVALID_FRAGMENT'].sort(),
+      [
+        'OK_FRAGMENT_PRESENT', 'OK_NO_USER_FACING_CHANGES', 'OK_OPT_OUT_LABEL',
+        'FAIL_MISSING_FRAGMENT', 'FAIL_INVALID_FRAGMENT', 'FAIL_PR_FIELD_DRIFT',
+      ].sort(),
     );
   });
 
@@ -174,6 +202,57 @@ describe('changeset lint: pure verdict (#2975)', () => {
     });
     assert.equal(verdict.ok, false);
     assert.equal(verdict.reason, LINT_REASON.FAIL_INVALID_FRAGMENT);
+  });
+
+  test('FAIL_PR_FIELD_DRIFT when prFieldDrift is non-empty, even with a fragment present', () => {
+    const verdict = evaluateLint({
+      changedFiles: ['.changeset/good.md'],
+      labels: [],
+      prFieldDrift: [{ file: '.changeset/good.md', found: 1234, expected: 1240 }],
+    });
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.reason, LINT_REASON.FAIL_PR_FIELD_DRIFT);
+    assert.deepEqual(verdict.drift, [{ file: '.changeset/good.md', found: 1234, expected: 1240 }]);
+  });
+
+  test('FAIL_INVALID_FRAGMENT beats FAIL_PR_FIELD_DRIFT (checked first)', () => {
+    const verdict = evaluateLint({
+      changedFiles: ['.changeset/bad.md'],
+      labels: [],
+      fragmentFailures: [{ file: '.changeset/bad.md', reason: 'invalid_pr', detail: '0' }],
+      prFieldDrift: [{ file: '.changeset/bad.md', found: 1, expected: 2 }],
+    });
+    assert.equal(verdict.reason, LINT_REASON.FAIL_INVALID_FRAGMENT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFECT.CHANGESET-PR-FIELD-DRIFT (#3316, #3325): a fragment's pr: field is a
+// guess (issue number, stacked-PR leftover) that never got backfilled to the
+// real PR number.
+// ---------------------------------------------------------------------------
+describe('changeset lint: findPrFieldDrift (pure)', () => {
+  test('a fragment whose pr matches the real PR number is not drift', () => {
+    assert.deepEqual(findPrFieldDrift([{ file: '.changeset/good.md', pr: 1234 }], 1234), []);
+  });
+
+  test('a fragment whose pr disagrees with the real PR number IS flagged, naming the file', () => {
+    const drift = findPrFieldDrift([{ file: '.changeset/stale.md', pr: 1234 }], 1240);
+    assert.deepEqual(drift, [{ file: '.changeset/stale.md', found: 1234, expected: 1240 }]);
+  });
+
+  test('realPrNumber === null (no PR event payload) always yields no drift — push/non-PR runs never fail', () => {
+    assert.deepEqual(findPrFieldDrift([{ file: '.changeset/anything.md', pr: 999 }], null), []);
+  });
+
+  test('a pr: 0 placeholder entry is silent even when it disagrees with a real, non-zero PR number', () => {
+    // CONTRIBUTING.md documents pr:0 as the deliberate placeholder used
+    // "during initial commit" before the real PR number is backfilled — it
+    // is unbackfilled, not drifted, so it must never be flagged. (In the
+    // real main() wiring, parseFragment already rejects pr:0 upstream as
+    // invalid_pr before a fragment reaches this function at all — this test
+    // locks in the pure function's own contract independent of that.)
+    assert.deepEqual(findPrFieldDrift([{ file: '.changeset/placeholder.md', pr: 0 }], 1234), []);
   });
 });
 
@@ -313,5 +392,78 @@ describe('#2988: changeset + docs lints resolve the same local base fallback', (
   test('both lints resolve the same base given the same environment (parity)', () => {
     assert.strictEqual(CHANGESET_DEFAULT_BASE, DOCS_DEFAULT_BASE,
       `the two lints must not diverge on base resolution: changeset='${CHANGESET_DEFAULT_BASE}' docs='${DOCS_DEFAULT_BASE}'`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFECT.CHANGESET-PR-FIELD-DRIFT end-to-end: real main() wiring reading
+// GITHUB_EVENT_PATH's pull_request.number and comparing it against each
+// changed fragment's pr: field.
+// ---------------------------------------------------------------------------
+describe('changeset lint: PR-field-drift end-to-end wiring', () => {
+  test('correct pr: (matches the real PR number) passes the gate', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-e2e-'));
+    t.after(() => cleanup(tmpDir));
+
+    buildTempRepo(tmpDir, [
+      { file: 'bin/thing.js', content: '// placeholder\n' },
+      { file: '.changeset/good.md', content: '---\ntype: Fixed\npr: 4242\n---\n**Good** fix. (#4242)\n' },
+    ]);
+
+    const { status, report } = runLintWithPrEvent(tmpDir, 4242);
+
+    assert.equal(status, 0, `expected exit 0, got ${status}: ${JSON.stringify(report)}`);
+    assert.equal(report.reason, LINT_REASON.OK_FRAGMENT_PRESENT);
+  });
+
+  test('wrong pr: (stale/guessed number) fails the gate, naming the offending file', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-e2e-'));
+    t.after(() => cleanup(tmpDir));
+
+    buildTempRepo(tmpDir, [
+      { file: 'bin/thing.js', content: '// placeholder\n' },
+      { file: '.changeset/stale.md', content: '---\ntype: Fixed\npr: 3312\n---\n**Stale pr field** fix. (#3316)\n' },
+    ]);
+
+    const { status, report } = runLintWithPrEvent(tmpDir, 3316);
+
+    assert.equal(status, 1, `expected exit 1, got ${status}`);
+    assert.equal(report.reason, LINT_REASON.FAIL_PR_FIELD_DRIFT);
+    assert.ok(Array.isArray(report.drift), 'drift must be an array');
+    const entry = report.drift.find((d) => d.file.endsWith('.changeset/stale.md'));
+    assert.ok(entry, `drift must name the offending file, got: ${JSON.stringify(report.drift)}`);
+    assert.equal(entry.found, 3312);
+    assert.equal(entry.expected, 3316);
+  });
+
+  test('no PR event payload (push / non-PR run) skips the drift check entirely, even with a stale pr:', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-e2e-'));
+    t.after(() => cleanup(tmpDir));
+
+    buildTempRepo(tmpDir, [
+      { file: 'bin/thing.js', content: '// placeholder\n' },
+      { file: '.changeset/anything.md', content: '---\ntype: Fixed\npr: 999\n---\n**Anything** fix. (#999)\n' },
+    ]);
+
+    // runLint() (no override) sets GITHUB_EVENT_PATH: '' — no payload at all.
+    const { status, report } = runLint(tmpDir);
+
+    assert.equal(status, 0, `expected exit 0, got ${status}: ${JSON.stringify(report)}`);
+    assert.equal(report.reason, LINT_REASON.OK_FRAGMENT_PRESENT);
+  });
+
+  test('event payload present but with no pull_request key (also push-shaped) skips the drift check', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-e2e-'));
+    t.after(() => cleanup(tmpDir));
+
+    buildTempRepo(tmpDir, [
+      { file: 'bin/thing.js', content: '// placeholder\n' },
+      { file: '.changeset/anything.md', content: '---\ntype: Fixed\npr: 999\n---\n**Anything** fix. (#999)\n' },
+    ]);
+
+    const { status, report } = runLintWithPrEvent(tmpDir, undefined);
+
+    assert.equal(status, 0, `expected exit 0, got ${status}: ${JSON.stringify(report)}`);
+    assert.equal(report.reason, LINT_REASON.OK_FRAGMENT_PRESENT);
   });
 });
