@@ -132,6 +132,16 @@ export function validateScopeId(id: unknown, caller: string): InstallScope {
   return id as InstallScope;
 }
 
+/**
+ * Non-throwing sibling of {@link validateScopeId}, for readers that must
+ * report an unrecognized scope as a value rather than fail (#2872). Reads the
+ * same `VALID_SCOPE_IDS` set, so the two can never disagree about what a
+ * scope is.
+ */
+export function isInstallScopeId(value: unknown): value is InstallScope {
+  return typeof value === 'string' && VALID_SCOPE_IDS.has(value);
+}
+
 // Higher wins. Not exported as a public constant — only the resulting
 // `hostPrecedenceRank` field on `ResolvedScope` is public API, so a future
 // re-basing of the literal values (Phase 2, #2871) never requires touching

@@ -387,6 +387,7 @@
       "install-engine.cjs",
       "install-profiles.cjs",
       "install-scope.cjs",
+      "installed-surface-resolver.cjs",
       "installer-migration-authoring.cjs",
       "installer-migration-report.cjs",
       "installer-migrations.cjs",

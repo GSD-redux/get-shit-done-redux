@@ -18,6 +18,7 @@ import {
 } from './installer-migration-authoring.cjs';
 import { platformWriteSync, retryRenameSync, posixNormalize } from './shell-command-projection.cjs';
 import { realClock, type Clock } from './clock.cjs';
+import { isInstallScopeId, type InstallScope } from './install-scope.cjs';
 
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const INSTALL_STATE_NAME = 'gsd-install-state.json';
@@ -164,19 +165,79 @@ interface InstallManifest {
   timestamp: string | null;
   mode: string | null;
   files: Record<string, string>;
+  /**
+   * Schema version of the manifest DOCUMENT (#2872, ADR-2866 Phase 3) — NOT
+   * the GSD package version, which `version` above already carries. The two
+   * are deliberately separate fields: `version` holds `pkg.version` and is
+   * read by the golden-parity fixtures, so overloading it with a schema
+   * number would be the textbook Hyrum break (same key, new meaning).
+   *
+   *   `null` — no manifest at this configDir (or an unparseable one; see
+   *            `readJsonIfPresent`'s long-standing fallback).
+   *   `1`    — a manifest written before #2872: no `manifestVersion` key, and
+   *            therefore no recorded `runtime`/`scope`. **This is a correct
+   *            manifest, not a broken one** — read without error and without
+   *            requiring a reinstall.
+   *   `>= 2` — records `runtime` and `scope`.
+   *
+   * A value written by a NEWER GSD is reported verbatim rather than clamped
+   * or rejected: two GSD versions on one machine is a supported state, and an
+   * older reader must not crash on a newer writer. Consumers branch on
+   * `>= 2`, never `=== 2`.
+   */
+  manifestVersion: number | null;
+  /** Runtime that wrote this manifest, or `null` for a v1 manifest. Reported
+   *  verbatim — an unregistered runtime string is a fact about the file, and
+   *  this reader reports facts; callers decide what to do with one. */
+  runtime: string | null;
+  /** Install scope that wrote this manifest, or `null` for a v1 manifest (or
+   *  an unrecognized value). Validated through Install Scope Module's shared
+   *  membership predicate, never a second copy of the rule — so `'project'`
+   *  (the consent/lifecycle vocabulary) reads as `null` rather than being
+   *  silently mistaken for `'local'`. */
+  scope: InstallScope | null;
+}
+
+/** Lowest manifest schema version that records `runtime`/`scope` (#2872). */
+const MANIFEST_SCHEMA_VERSION = 2;
+
+/**
+ * Normalize a raw `manifestVersion`. Only a finite integer >= 1 is a version
+ * claim; everything else (absent, `"2"`, `0`, `-1`, `2.5`, `NaN`, `Infinity`)
+ * reads as `1` — a pre-#2872 manifest. Liberal in what it accepts, but the
+ * normalization is a stated value rather than a silent guess: a caller can
+ * always tell v1 (`1`) from "no manifest at all" (`null`).
+ */
+function normalizeManifestVersion(raw: unknown): number {
+  if (typeof raw !== 'number') return 1;
+  if (!Number.isInteger(raw)) return 1;
+  if (raw < 1) return 1;
+  return raw;
 }
 
 function readInstallManifest(configDir: string): InstallManifest {
   const manifest = readJsonIfPresent(path.join(configDir, MANIFEST_NAME), null);
   if (!manifest || typeof manifest !== 'object') {
-    return { version: null, timestamp: null, mode: null, files: {} };
+    return {
+      version: null,
+      timestamp: null,
+      mode: null,
+      files: {},
+      manifestVersion: null,
+      runtime: null,
+      scope: null,
+    };
   }
   const m = manifest as Record<string, unknown>;
+  const rawRuntime = m.runtime;
   return {
     version: typeof m.version === 'string' ? m.version : null,
     timestamp: typeof m.timestamp === 'string' ? m.timestamp : null,
     mode: typeof m.mode === 'string' ? m.mode : null,
     files: m.files && typeof m.files === 'object' ? m.files as Record<string, string> : {},
+    manifestVersion: normalizeManifestVersion(m.manifestVersion),
+    runtime: typeof rawRuntime === 'string' && rawRuntime.trim() !== '' ? rawRuntime : null,
+    scope: isInstallScopeId(m.scope) ? m.scope : null,
   };
 }
 
@@ -1092,6 +1153,7 @@ export = {
   classifyArtifact,
   discoverInstallerMigrations,
   evaluateRemoveEmptyDir,
+  MANIFEST_SCHEMA_VERSION,
   migrationChecksum,
   planInstallerMigrations,
   readInstallManifest,
