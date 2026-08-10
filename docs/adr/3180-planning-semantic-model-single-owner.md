@@ -298,7 +298,17 @@ There are **three** completion implementations, not the two the epic recorded: `
 
 **Tier-2 consequence (Decision 3).** A phase marked complete *solely* by a ticked checkbox — no passing `*-VERIFICATION.md`, plans outstanding — **stops reporting complete from `roadmap analyze`**. The break is deliberate and ships with its own breaking-change call-out, changeset fragment and docs update in Phase 4's PR.
 
+**A missing verdict is not a passing one (decided 2026-08-10, maintainer).** `isPhaseComplete` is `verification.status === 'passed'`, so an **absent** `*-VERIFICATION.md` means **not complete** — everywhere, including `workstream list` / `status` / `progress`.
+
+This retires #2645's deliberate boundary, which kept `missing` / `unknown` / `stale` out of the failing set specifically so a verifier-disabled project would not report 0% forever. Recorded rather than absorbed silently, because the consequence is real: **a project that never runs the verifier now reports its phases incomplete.**
+
+It also closes #2645's Goodhart hole from the opposite side. That issue's symptom was that *deleting* a `*-VERIFICATION.md` **raised** the reported percentage — the metric could be improved by destroying the evidence. Under disk-strict, deleting it **lowers** completion, so the incentive inverts and the ledger's deletion-memory role is no longer load-bearing.
+
 **Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third.
+
+**Consumers that must route through the owner.** `cmdPhaseComplete`, `buildPhaseCompletionProjection`, `buildStateFrontmatter` (the three #2957 names), plus `cmdRoadmapAnalyze`, `cmdInitManager`, `cmdRoadmapUpdatePlanProgress`, `buildWorkstreamInventory`, and the prompt layer's `mvp-phase.md` — **nine re-derivations found by the guard where this section named three.**
+
+**A write-path gate is not a second predicate.** `cmdRoadmapUpdatePlanProgress` writes a completion checkbox, and completion alone does not mean every plan was executed — `readVerificationStatus`'s staleness check compares summary mtimes, never plan count. It therefore ANDs the owner's verdict with an explicit plan-coverage gate, mirroring the separate #2648 unexecuted-plan gate `cmdPhaseComplete` already carries. That composition is sanctioned; re-deriving completion beside it is not.
 
 #### 7.5 Live-plan counting — *Enforced (Phase 1), with a known representation gap*
 

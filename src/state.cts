@@ -31,6 +31,9 @@ const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontma
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import verificationMod = require('./verification.cjs');
+const { isPhaseComplete } = verificationMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1777,10 +1780,18 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
 
           for (const dir of phaseDirs) {
             const phaseDir = path.join(phasesDir, dir);
-            const { planCount, summaryCount, completed } = scanPhasePlans(phaseDir);
+            const { planCount, summaryCount } = scanPhasePlans(phaseDir);
             diskTotalPlans += planCount;
             diskTotalSummaries += summaryCount;
-            if (completed) diskCompletedPhases++;
+            // ADR-3180 §7.4 (#3186, #2957 disk-strict): "which phases are
+            // complete" is the completion question, routed through the single
+            // canonical owner (isPhaseComplete, src/verification.cts) — NOT
+            // scanPhasePlans's own `completed` field, which only answers "are
+            // all plans summarized" (a different question; see plan-scan.cts's
+            // own comment on that field). Folding this consumer onto the raw
+            // summaries-met flag was the exact "consolidate two of three and
+            // leave the third" gap §7.4's forcing function rules out.
+            if (isPhaseComplete(phaseDir).value.complete) diskCompletedPhases++;
           }
           // Count phase headings from ROADMAP using a digit-containing pattern
           // that matches both numeric phases (01, 05.1) and project-code phases

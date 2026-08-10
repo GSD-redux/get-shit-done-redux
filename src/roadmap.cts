@@ -32,7 +32,7 @@ const { planningPaths, withPlanningLock, findContextMdIn } = planningWorkspace;
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtils = require('./core-utils.cjs');
-const { countMatchedSummaries } = coreUtils;
+const { countMatchedSummaries, findUnsummarizedPlans } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, parseMustHavesBlock } = frontmatter;
@@ -591,7 +591,23 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   const phaseDir = path.join(cwd, phaseInfo!.directory);
   const completionResult = isPhaseComplete(phaseDir);
   const verificationResult = completionResult.value.verification;
-  const isComplete = completionResult.value.complete;
+  // #2648 precedent, applied at this write site (ADR-3180 §7.4 / #3186):
+  // `isPhaseComplete` deliberately carries NO plan-count precondition — the
+  // owner's `complete` is exactly `verification.status === 'passed'`, and
+  // that must stay true (disk-strict: a zero-plan phase with a passing
+  // `*-VERIFICATION.md` IS complete, #3168). But `readVerificationStatus`'s
+  // staleness check only compares SUMMARY mtimes against the verification
+  // file — it has no idea a NEW plan was added after the file was written,
+  // so a still-fresh `passed` verification says nothing about a plan added
+  // afterward. This command WRITES a checkbox and a completion date into
+  // ROADMAP.md, a materially stronger claim than "verification passed" —
+  // mirroring cmdPhaseComplete's own fail-closed plan-coverage gate
+  // (phase.cts:~1995, #2648: "a coverage gate that passes when it cannot
+  // read the plans is no gate at all"), composed explicitly here rather than
+  // folded into the predicate: complete AND all plans executed.
+  const coverageScan = scanPhasePlans(phaseDir);
+  const unsummarizedPlans = findUnsummarizedPlans(coverageScan.planFiles, coverageScan.summaryFiles);
+  const isComplete = completionResult.value.complete && unsummarizedPlans.length === 0;
   // #3057 B3: routing above is unchanged (an indeterminate staleness check
   // still routes as if nothing were stale) — this only makes the fact visible
   // to whatever reads this command's JSON output.

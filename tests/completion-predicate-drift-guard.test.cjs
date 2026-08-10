@@ -1,6 +1,18 @@
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
+// allow-test-rule: structural-regression-guard, see #3186
+// D3 below reads src/plan-scan.cts / gsd-core/bin/lib/plan-scan.cjs and
+// src/verification.cts and regex-tests them for require/import statements.
+// This asserts a DEPENDENCY-DIRECTION invariant (the owner consumes plan
+// counts, never the reverse — ADR-3180 §7.4 HARD CONSTRAINT) that has no
+// behavioral/runtime surface: `require`-ing plan-scan.cjs in-process cannot
+// distinguish "verification.cjs is absent from its dependency graph" from
+// "verification.cjs happens to already be in require.cache because an
+// earlier test in this same file required it directly" (line 36 above does
+// exactly that) — only source inspection can tell which import edge exists.
+// #3186 review finding 6(a).
+
 /**
  * Unit + whole-repo coverage for the PHASE-COMPLETION drift guard
  * (scripts/lint-completion-predicate-drift.cjs, epic #3180, issue #3186,
@@ -359,6 +371,93 @@ describe('E10 — sanitizeForReport neutralizes control bytes and bidi overrides
     const sanitized = sanitizeForReport(raw);
     assert.ok(!sanitized.includes('‮'), 'raw RLO codepoint must not survive sanitization');
     assert.ok(sanitized.includes('\\u202e'), 'RLO codepoint must be rendered as a visible \\uNNNN escape');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// E11 — #3186 review finding 4: two evasion shapes the pre-review guard
+// produced ZERO hits on, now caught.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('E11 — finding 4(a): the BLOCK form of shape (b) is now caught', () => {
+  test('if (planCount > 0) { … readVerificationStatus(…) … } is flagged (was zero hits before)', () => {
+    const text = [
+      'function fakeConsumer(planCount, phaseDir) {',
+      '  let verificationStatus = { status: \'not_required\' };',
+      '  if (planCount > 0) {',
+      '    verificationStatus = readVerificationStatus(phaseDir);',
+      '  }',
+      '  return verificationStatus;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'b');
+  });
+
+  test('an unrelated if-block (no count-gate condition) wrapping an unconditional call stays clean', () => {
+    // A generic nested-brace check (not "is this specifically an if-block
+    // whose OWN condition is a count-gate") would false-positive here.
+    const text = [
+      'function fakeConsumer(phaseDir, flag) {',
+      '  let verificationStatus = null;',
+      '  if (flag) {',
+      '    verificationStatus = readVerificationStatus(phaseDir);',
+      '  }',
+      '  return verificationStatus;',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts')), []);
+  });
+
+  test('a non-conditional wrapper (a callback passed to another function) is NOT treated as gating', () => {
+    // Regression guard for the naive "any brace nesting deeper than the
+    // function's own top level = gated" approach, which false-positived on
+    // cmdPhaseComplete's real `withPlanningLock(cwd, () => { … })` shape:
+    // an UNCONDITIONAL readVerificationStatus( call wrapped only in a
+    // callback, with an unrelated count-gate elsewhere in the function.
+    const text = [
+      'function fakeConsumer(phaseDir, retryCount) {',
+      '  if (retryCount > 0) { /* unrelated */ }',
+      '  return withPlanningLock(phaseDir, () => {',
+      '    return readVerificationStatus(phaseDir);',
+      '  });',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts')), []);
+  });
+});
+
+describe('E11 — finding 4(b): the algebraic-restatement evasion of shape (c) is now caught', () => {
+  test('summaryCount - planCount >= 0 is flagged (was zero hits before)', () => {
+    const text = [
+      'function fakeConsumer(summaryCount, planCount) {',
+      '  return summaryCount - planCount >= 0;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'c');
+  });
+
+  test('the mirrored form planCount - summaryCount <= 0 is also flagged', () => {
+    const text = [
+      'function fakeConsumer(summaryCount, planCount) {',
+      '  return planCount - summaryCount <= 0;',
+      '}',
+    ].join('\n');
+    const out = drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts'));
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].shape, 'c');
+  });
+
+  test('an unrelated count-difference comparison (not summary/plan) stays clean', () => {
+    const text = [
+      'function fakeConsumer(retryCount, maxCount) {',
+      '  return retryCount - maxCount >= 0;',
+      '}',
+    ].join('\n');
+    assert.deepStrictEqual(drift.findCompletionPredicateDrift(text, path.join('src', 'unrelated.cts')), []);
   });
 });
 

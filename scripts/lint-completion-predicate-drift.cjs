@@ -51,13 +51,27 @@
  *       unconditionally. Detected as FUNCTION-SCOPED co-occurrence (no
  *       window — Decision 4(a)'s Goodhart lesson, and Phase 5's "bounded
  *       window missed 7 of 14 copies" trap) of a count-gate ANYWHERE in the
- *       function's own body, together with a ternary- or `if`-gated call to
- *       `readVerificationStatus(` (a call that is NOT the function's
- *       unconditional top-level statement).
+ *       function's own body, together with a ternary- OR block/`if`-gated
+ *       call to `readVerificationStatus(` (a call that is NOT the function's
+ *       unconditional top-level statement) — the ternary form is a same-line
+ *       `?` before the call; the block form is a call sitting inside the
+ *       BODY of an `if (...)` whose OWN condition matches the count-gate
+ *       (`findIfCountGateBlockLines`), which also catches `if (planCount >
+ *       0) { x = readVerificationStatus(...) }` — a #3186 review finding
+ *       (4a): the prior version matched only the same-line ternary and
+ *       produced zero hits on the block form. Known, disclosed limit: a
+ *       multi-line `if` condition whose opening `{` lands on a later line
+ *       than the condition's own closing `)` is not detected (every
+ *       count-gate condition actually present in this tree is one line).
  *   (c) LOCAL RE-IMPLEMENTATION OF "COMPLETE" FROM COUNTS — a
  *       `summaryCount >= planCount`-shaped comparison (either operand
- *       order), computed locally instead of calling the owner. This is the
- *       single sharpest textual signature this epic's divergent copies
+ *       order, or the algebraic `summaryCount - planCount >= 0` restatement
+ *       and its mirror), computed locally instead of calling the owner.
+ *       Known, disclosed limit: further algebraic restatements (an
+ *       intermediate difference variable, `Math.max`/`!()`-wrapped forms,
+ *       etc.) are not reliably matchable by a bounded, non-backtracking
+ *       regex and are not attempted — see the regexes' own comment. This is
+ *       the single sharpest textual signature this epic's divergent copies
  *       share: `buildPhaseCompletionProjection`, `buildStateFrontmatter`
  *       (via `scanPhasePlans`'s own `completed` field),
  *       `cmdRoadmapAnalyze`, `cmdRoadmapUpdatePlanProgress`, and
@@ -289,6 +303,58 @@ function buildFunctionInfo(lines) {
   return { innermostAt, detect };
 }
 
+/**
+ * §7.4/#3186 review finding 4(a): the BLOCK form of shape (b)'s gate — `if
+ * (planCount > 0) { … readVerificationStatus(…) … }` — is textually
+ * indistinguishable from an unrelated `if` block by a same-line regex; the
+ * prior ternary-only `GATED_VERIFICATION_READ_RE` produced zero hits on it.
+ * Deliberately narrower than a generic "is this line nested at all" check
+ * (which would false-positive on every unrelated wrapper — a `try` block, a
+ * `withPlanningLock(cwd, () => { … })` callback, a `for` loop — none of
+ * which are a plan-count GATE): only lines inside the BODY of an `if (...)`
+ * whose OWN condition matches `COUNT_GATE_RE` are marked. Line-granularity
+ * brace bookkeeping (mirrors `buildFunctionInfo`'s own style), not a
+ * per-character brace matcher — a multi-line `if` condition whose `{` lands
+ * on a later line than `extractIfCondition`'s reported `endLine` is a known,
+ * disclosed limitation (real count-gates in this tree are one-line
+ * conditions; see the module header).
+ */
+function findIfCountGateBlockLines(lines) {
+  const { detect, braces } = scanCode(lines);
+  const gated = new Array(lines.length).fill(false);
+  const stack = []; // { openDepth } for open if-blocks whose condition is a count-gate
+  let depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const detectCode = detect[i];
+    const braceCode = braces[i];
+
+    let isCountGateIfHeader = false;
+    if (detectCode.trim()) {
+      const ifMatch = IF_OPEN_RE.exec(detectCode);
+      if (ifMatch) {
+        const startCol = ifMatch.index + ifMatch[0].length;
+        const condition = extractIfCondition(detect, i, startCol);
+        if (condition && COUNT_GATE_RE.test(condition.text)) isCountGateIfHeader = true;
+      }
+    }
+
+    const opens = (braceCode.match(/\{/g) || []).length;
+    const closes = (braceCode.match(/\}/g) || []).length;
+    depth += opens - closes;
+
+    // A line is "inside" a count-gate if-block when either a PRIOR line
+    // already opened one and it has not yet closed, or THIS line's own `if`
+    // header both matches the gate and opens its body on the same line
+    // (`if (planCount > 0) { … }` — the exact shape in the finding).
+    gated[i] = stack.length > 0 || (isCountGateIfHeader && opens > closes);
+
+    if (isCountGateIfHeader && opens > closes) stack.push({ openDepth: depth });
+
+    while (stack.length > 0 && depth < stack[stack.length - 1].openDepth) stack.pop();
+  }
+  return gated;
+}
+
 // ─── SHAPE (a): CHECKBOX-DERIVED COMPLETION ────────────────────────────────
 //
 // The `if` half of the pairing: a condition referencing a roadmap/checkbox-
@@ -399,6 +465,7 @@ function findGatedVerificationReadDrift(text, relPath, exemptFunctions) {
   const out = [];
   const lines = text.split('\n');
   const { innermostAt, detect } = buildFunctionInfo(lines);
+  const ifCountGateBlockLines = findIfCountGateBlockLines(lines);
 
   const countGateFns = new Set();
   for (let i = 0; i < lines.length; i++) {
@@ -414,7 +481,15 @@ function findGatedVerificationReadDrift(text, relPath, exemptFunctions) {
     const detectCode = detect[i];
     if (!detectCode.trim()) continue;
     if (!VERIFICATION_READ_CALL_RE.test(detectCode)) continue;
-    if (!GATED_VERIFICATION_READ_RE.test(detectCode)) continue;
+    // #3186 review finding 4(a): "gated" is EITHER a same-line ternary `?`
+    // before the call, OR the call sitting inside the BODY of an `if (...)`
+    // block whose own condition is a count-gate (`findIfCountGateBlockLines`)
+    // — the latter catches the block form (`if (planCount > 0) { …
+    // readVerificationStatus(…) … }`), which the ternary-only regex produced
+    // zero hits on.
+    const ternaryGated = GATED_VERIFICATION_READ_RE.test(detectCode);
+    const blockGated = ifCountGateBlockLines[i];
+    if (!ternaryGated && !blockGated) continue;
     const fn = innermostAt[i];
     if (!fn || !countGateFns.has(fn)) continue;
     if (exemptFunctions && exemptFunctions.has(fn)) continue;
@@ -434,6 +509,23 @@ function findGatedVerificationReadDrift(text, relPath, exemptFunctions) {
 const SUMMARY_GE_PLAN_RE = /\bsummar\w*count\w*\s*>=\s*\w*plan\w*count\w*/i;
 const PLAN_LE_SUMMARY_RE = /\bplan\w*count\w*\s*<=\s*\w*summar\w*count\w*/i;
 
+// §7.4/#3186 review finding 4(b): the literal `>=`/`<=` regexes above missed
+// the algebraic restatement `summaryCount - planCount >= 0` (and its mirror,
+// `planCount - summaryCount <= 0`) — same comparison, no literal `>=`/`<=`
+// between the two count identifiers. Widened to cover exactly these two
+// zero-compared-difference shapes; each is a single bounded alternative, no
+// nested/overlapping quantifiers.
+//
+// KNOWN, DISCLOSED LIMIT (not claimed covered): arbitrary further algebraic
+// restatements — `!(planCount > summaryCount)`, a difference stored in an
+// intermediate variable before the comparison, `Math.max(0, planCount -
+// summaryCount) === 0`, etc. — are NOT reliably detectable by a bounded,
+// non-backtracking regex and are not attempted here. This is a genuine gap,
+// not swept under "et cetera": the header above disclosed it as such rather
+// than claiming a wider net than the regexes actually cast.
+const SUMMARY_MINUS_PLAN_GE_ZERO_RE = /\bsummar\w*count\w*\s*-\s*\w*plan\w*count\w*\s*>=\s*0\b/i;
+const PLAN_MINUS_SUMMARY_LE_ZERO_RE = /\bplan\w*count\w*\s*-\s*\w*summar\w*count\w*\s*<=\s*0\b/i;
+
 function findLocalCompletionCountDerivationDrift(text, relPath, exemptFunctions) {
   const out = [];
   const lines = text.split('\n');
@@ -441,7 +533,12 @@ function findLocalCompletionCountDerivationDrift(text, relPath, exemptFunctions)
   for (let i = 0; i < lines.length; i++) {
     const detectCode = detect[i];
     if (!detectCode.trim()) continue;
-    if (!SUMMARY_GE_PLAN_RE.test(detectCode) && !PLAN_LE_SUMMARY_RE.test(detectCode)) continue;
+    if (
+      !SUMMARY_GE_PLAN_RE.test(detectCode)
+      && !PLAN_LE_SUMMARY_RE.test(detectCode)
+      && !SUMMARY_MINUS_PLAN_GE_ZERO_RE.test(detectCode)
+      && !PLAN_MINUS_SUMMARY_LE_ZERO_RE.test(detectCode)
+    ) continue;
     const fn = innermostAt[i];
     if (fn && exemptFunctions && exemptFunctions.has(fn)) continue;
     out.push({ line: i + 1, found: lines[i].trim().slice(0, MAX_REGEX_LITERAL_LEN), shape: 'c', fn: fn || null });
@@ -480,7 +577,13 @@ const PROMPT_ROADMAP_COMPLETE_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=.*\.roadmap
 const PROMPT_TRUE_TEST_RE = /==\s*['"]true['"]/;
 const PROMPT_OVERRIDE_WINDOW_LINES = 10;
 
-function findPromptCompletionDrift(text, relPath) {
+// #3186 review finding 7(b): `relPath` is unused here — this detector has no
+// per-file exemption map the way `findCompletionPredicateDrift` does (the
+// prompt layer has no FUNCTION_SCOPED_EXEMPTIONS equivalent). Kept in the
+// signature (underscore-prefixed) for parity with its sibling `find*Drift`
+// detectors' `(text, relPath, …)` shape and with `scanRepo`'s uniform
+// `finder(text, rel)` call, rather than diverging the call convention.
+function findPromptCompletionDrift(text, _relPath) {
   const out = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -600,6 +703,7 @@ module.exports = {
   findLocalCompletionCountDerivationDrift,
   findPromptCompletionDrift,
   buildFunctionInfo,
+  findIfCountGateBlockLines,
   scanCode,
   scanRepo,
   IF_OPEN_RE,
@@ -614,6 +718,8 @@ module.exports = {
   GATED_VERIFICATION_READ_RE,
   SUMMARY_GE_PLAN_RE,
   PLAN_LE_SUMMARY_RE,
+  SUMMARY_MINUS_PLAN_GE_ZERO_RE,
+  PLAN_MINUS_SUMMARY_LE_ZERO_RE,
   PROMPT_ROADMAP_COMPLETE_ASSIGN_RE,
   PROMPT_TRUE_TEST_RE,
   PROMPT_OVERRIDE_WINDOW_LINES,

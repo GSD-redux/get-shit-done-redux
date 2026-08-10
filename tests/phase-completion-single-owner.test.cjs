@@ -1,6 +1,14 @@
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
+// allow-test-rule: source-text-is-the-product, see #3186
+// F2 below reads gsd-core/workflows/mvp-phase.md and regex-tests its shell
+// content for the disk-strict OR removal (Decision 4(d)). A workflow .md
+// file's text IS the deployed prompt-layer artifact the runtime executes —
+// there is no runtime API that "runs" mvp-phase.md to observe its shell
+// logic behaviorally, so asserting on its source text tests the actual
+// deployed contract. #3186 review finding 6(b).
+
 /**
  * Phase-completion single-owner tests (epic #3180, issue #3186, ADR-3180
  * §7.4, disk-strict per #2957). Covers `.gsd/phase/refactor-3186-phase-
@@ -483,9 +491,24 @@ describe('D — the 0.x split: "are plans summarized" stays a different, legitim
     assert.notStrictEqual(scan.completed, owner.value.complete, 'the two derivations must legitimately disagree on this exact fixture');
   });
 
-  test('D4: buildWorkstreamInventory on the D1 fixture reports its own summaries-met answer, unchanged', (t) => {
+  // ADR-3180 §7.4 (#3186 review finding 3, corrected from this phase's own
+  // design doc): `buildWorkstreamInventory` was ORIGINALLY (wrongly)
+  // classified as staying on the "different question" side of the 0.x
+  // split, the same way `scanPhasePlans.completed` legitimately does. Review
+  // found it reproduced the §7.4 headline case (#3168) in a third surface —
+  // it combined a local summaries-met derivation with caller-supplied
+  // verification data to decide the SAME "is phase P complete?" question,
+  // not a different one. Corrected: the module is a pure, I/O-free
+  // projection (module header: "No I/O. No async.") that cannot call
+  // `isPhaseComplete` itself, so per Decision 4(c) the CALLER computes the
+  // owner's real verdict and passes it in via `PhaseFilesCount.complete` —
+  // `workstream-inventory.cts` does this with a real `isPhaseComplete` call
+  // in production. D4 now pins that routing directly.
+  test('D4: buildWorkstreamInventory on the D1 fixture is NOT complete when the caller supplies the owner\'s real (false) verdict', (t) => {
     const dir = buildD1Fixture(t);
     const scan = scanPhasePlans(dir);
+    const owner = isPhaseComplete(dir);
+    assert.strictEqual(owner.value.complete, false, 'fixture sanity: no *-VERIFICATION.md -> the owner says not complete');
 
     const inventory = buildWorkstreamInventory({
       name: 'default',
@@ -498,10 +521,9 @@ describe('D — the 0.x split: "are plans summarized" stays a different, legitim
           directory: '01-fixture',
           planCount: scan.planCount,
           summaryCount: scan.summaryCount,
-          // No verification data supplied -> defaults to 'missing', which is
-          // OUTSIDE FAILING_VERIFICATION_STATUSES (workstream-inventory-
-          // builder.cts's own #2645 pre-adoption posture) — the phase's
-          // status is judged purely on summaries-met, its own question.
+          // ADR-3180 §7.4 (#3186): the caller-computed owner verdict, NOT a
+          // local re-derivation from planCount/summaryCount.
+          complete: owner.value.complete,
         },
       ],
       roadmapPhaseCount: 1,
@@ -509,7 +531,39 @@ describe('D — the 0.x split: "are plans summarized" stays a different, legitim
       filesExist: { roadmap: true, state: true, requirements: false },
     });
 
-    assert.strictEqual(inventory.phases[0].status, 'complete', 'summaries-met alone still resolves this builder\'s own status field');
+    assert.strictEqual(
+      inventory.phases[0].status,
+      'in_progress',
+      'summaries-met alone no longer resolves complete — the builder routes through the caller-supplied owner verdict (#3186 fix)',
+    );
+  });
+
+  test('D5: buildWorkstreamInventory reports complete for a zero-plan phase when the caller supplies a true owner verdict (#3168 parity)', (t) => {
+    const dir = createTempDir('gsd-phase-completion-d5-');
+    t.after(() => cleanup(dir));
+    writeVerification(dir, '01', 'passed');
+    const owner = isPhaseComplete(dir);
+    assert.strictEqual(owner.value.complete, true);
+
+    const inventory = buildWorkstreamInventory({
+      name: 'default',
+      projectDir: path.dirname(dir),
+      workstreamDir: path.dirname(dir),
+      phaseDirNames: ['01-fixture'],
+      activeWorkstreamName: 'default',
+      phaseFilesCounts: [
+        { directory: '01-fixture', planCount: 0, summaryCount: 0, complete: owner.value.complete },
+      ],
+      roadmapPhaseCount: 1,
+      stateProjection: { status: 'in_progress', current_phase: '01', last_activity: null },
+      filesExist: { roadmap: true, state: true, requirements: false },
+    });
+
+    assert.strictEqual(
+      inventory.phases[0].status,
+      'complete',
+      'zero plans + a passing verification -> complete, matching isPhaseComplete (#3168) even with planCount 0',
+    );
   });
 });
 
@@ -567,6 +621,105 @@ describe('F — Tier-2 regression surface', () => {
       assert.notStrictEqual(phase1.verification_status, 'not_required', 'not_required is retired — the owner always reports a real readVerificationStatus verdict');
       assert.strictEqual(phase1.verification_status, 'missing');
       assert.strictEqual(phase1.phase_complete, false);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// G — write-path plan-coverage gate (#3186 review finding 1, #2648
+// precedent). `isPhaseComplete` deliberately has NO plan-count precondition
+// (the owner), but `roadmap update-plan-progress` WRITES a checkbox +
+// completion date into ROADMAP.md — a stronger claim than "verification
+// passed" — and must additionally refuse when a plan has no completion
+// record, exactly like `phase complete`'s own #2648 gate. Matrix rows A-F
+// never covered "plans added AFTER a still-fresh passing verification";
+// this is that row.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('G — write-path plan-coverage gate: a plan added after a still-fresh passing verification', () => {
+  test('G1: the OWNER (isPhaseComplete) reports complete — no plan-count precondition, by design', () => {
+    const dir = createTempDir('gsd-phase-completion-g1-');
+    try {
+      fs.writeFileSync(path.join(dir, '01-01-PLAN.md'), '# Plan 1');
+      fs.writeFileSync(path.join(dir, '01-01-SUMMARY.md'), '# Summary 1');
+      writeVerification(dir, '01', 'passed');
+      // A second plan lands AFTER verification passed — never summarized.
+      // The verification file is untouched, so its status stays 'passed'
+      // (readVerificationStatus's staleness check compares only SUMMARY
+      // mtimes against the verification file, never plan count).
+      fs.writeFileSync(path.join(dir, '01-02-PLAN.md'), '# Plan 2');
+
+      const owner = isPhaseComplete(dir);
+      assert.strictEqual(owner.value.verification.status, 'passed', 'fixture sanity: verification reads as still-fresh passed');
+      assert.strictEqual(owner.value.complete, true, 'the owner has no plan-count precondition by design (ADR-3180 §7.4 hard constraint) — this is not the bug');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('G2: roadmap update-plan-progress REFUSES to write completion for the identical fixture', () => {
+    const tmpDir = createTempProject();
+    try {
+      writeState(tmpDir);
+      writeRoadmap(tmpDir, [{ number: '1', name: 'Foo' }]);
+      const dir = scaffoldPhase(tmpDir, 1, { slug: 'foo', plans: 1, summaries: 1 });
+      writeVerification(dir, '01', 'passed');
+      fs.writeFileSync(path.join(dir, '01-02-PLAN.md'), '# Plan 2'); // outstanding, no summary
+
+      const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+      const result = runGsdTools('roadmap update-plan-progress 1', tmpDir);
+      assert.ok(result.success, result.error);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.complete, false, 'the write site must refuse — an outstanding plan has no completion record (#2648 precedent)');
+
+      const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+      assert.ok(!roadmapAfter.includes('[x] **Phase 1'), 'the checkbox must NOT be checked');
+      assert.ok(!/\(completed \d{4}-\d{2}-\d{2}\)/.test(roadmapAfter), 'no completion date must be stamped');
+      assert.notStrictEqual(roadmapAfter, roadmapBefore, 'the command still updates the Plans Complete / Status cells — only the completion checkbox is withheld');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('G3: phase complete agrees — refuses for the identical fixture, same reason class', () => {
+    const tmpDir = createTempProject();
+    try {
+      writeState(tmpDir);
+      writeRoadmap(tmpDir, [{ number: '1', name: 'Foo' }]);
+      const dir = scaffoldPhase(tmpDir, 1, { slug: 'foo', plans: 1, summaries: 1 });
+      writeVerification(dir, '01', 'passed');
+      fs.writeFileSync(path.join(dir, '01-02-PLAN.md'), '# Plan 2');
+
+      const updateResult = runGsdTools('roadmap update-plan-progress 1', tmpDir);
+      assert.ok(updateResult.success, updateResult.error);
+      const updateOutput = JSON.parse(updateResult.output);
+
+      const completeResult = runGsdTools('phase complete 1 --raw', tmpDir);
+      assert.strictEqual(completeResult.success, false, 'phase complete must refuse (its own #2648 gate)');
+      assert.strictEqual(updateOutput.complete, false, 'both write paths agree: incomplete');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('G4: once the outstanding plan gets its summary, both write paths agree completion proceeds', () => {
+    const tmpDir = createTempProject();
+    try {
+      writeState(tmpDir);
+      writeRoadmap(tmpDir, [{ number: '1', name: 'Foo' }]);
+      const dir = scaffoldPhase(tmpDir, 1, { slug: 'foo', plans: 2, summaries: 2 });
+      writeVerification(dir, '01', 'passed');
+
+      const result = runGsdTools('roadmap update-plan-progress 1', tmpDir);
+      assert.ok(result.success, result.error);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.complete, true, 'no outstanding plan — the gate does not withhold completion');
+
+      const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+      assert.ok(/\(completed \d{4}-\d{2}-\d{2}\)/.test(roadmapAfter), 'completion date IS stamped once plan coverage is satisfied');
     } finally {
       cleanup(tmpDir);
     }
