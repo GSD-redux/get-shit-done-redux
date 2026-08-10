@@ -156,9 +156,12 @@ Skill(skill="gsd-plan-phase", args="{PHASE} {GSD_WS}")
 
 Run plan-phase **inline** (do NOT wrap it in Agent()). The convergence orchestrator runs at depth 0 with Agent available, so inline plan-phase can spawn gsd-planner and gsd-plan-checker at depth 1 — the one level of nesting that works on Claude Code. Wrapping plan-phase in Agent() would push it to depth 1 where the Agent tool is absent, preventing it from spawning any sub-agents. Wait until plan-phase completes and PLAN.md files are committed before continuing.
 
-After plan-phase completes, verify plans were created:
+After plan-phase completes, verify plans were created. This asks "did initial
+planning write files to disk" — a planner-produced-nothing check, not
+outstanding-work counting — so it takes the PHYSICAL set (`plan_count_all`,
+`status: superseded` INCLUDED, #3218):
 ```bash
-PLAN_COUNT=$(ls ${phase_dir}/${padded_phase}-*-PLAN.md 2>/dev/null | wc -l)
+PLAN_COUNT=$(gsd_run query find-phase "${PHASE}" | jq -r '.plan_count_all // 0')
 ```
 
 If PLAN_COUNT == 0: Error — initial planning failed. Exit.

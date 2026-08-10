@@ -9,6 +9,7 @@
  *   - local/no-elapsed-assertion
  *   - local/no-raw-rmsync-in-tests
  *   - local/no-adhoc-markdown-parsing
+ *   - local/require-subprocess-timeout
  */
 
 const { test, describe } = require('node:test');
@@ -24,6 +25,7 @@ const noRawRmsyncInTests = require('../eslint-rules/no-raw-rmsync-in-tests.cjs')
 const noTautologicalAssert = require('../eslint-rules/no-tautological-assert.cjs');
 const noAdhocMarkdownParsing = require('../eslint-rules/no-adhoc-markdown-parsing.cjs');
 const noDuplicateFoldMarker = require('../eslint-rules/no-duplicate-fold-marker.cjs');
+const requireSubprocessTimeout = require('../eslint-rules/require-subprocess-timeout.cjs');
 
 const ruleTester = new RuleTester({
   languageOptions: {
@@ -1592,7 +1594,7 @@ describe('no-adhoc-markdown-parsing rule', () => {
   });
 });
 
-// ─── no-duplicate-fold-marker ────────────────────────────────────────────────
+// ─── no-duplicate-fold-marker ────────────────────────────────────────
 
 describe('no-duplicate-fold-marker rule', () => {
   const REPO_ROOT = path.join(__dirname, '..');
@@ -1960,5 +1962,147 @@ describe('no-duplicate-fold-marker rule', () => {
       }),
       { numRuns: 150, seed: 3271 },
     );
+  });
+});
+
+// ─── require-subprocess-timeout ────────────────────────────────────
+
+describe('require-subprocess-timeout rule', () => {
+  test('rule module exports a create function', () => {
+    assert.strictEqual(typeof requireSubprocessTimeout.create, 'function');
+  });
+
+  // ── INVALID cases (must error) ────────────────────────────────────────────
+
+  test('invalid: execFileSync("git", args, { cwd }) — object-literal options with no timeout key', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            const args = ['status'];
+            const cwd = '/repo';
+            execFileSync('git', args, { cwd });
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'requireSubprocessTimeout' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: execSync("npm ci", { encoding: "utf8" }) — object-literal options with no timeout key', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const { execSync } = require('node:child_process');
+            execSync('npm ci', { encoding: 'utf8' });
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'requireSubprocessTimeout' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: spawnSync with a dotted childProcess.spawnSync callee and no timeout', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const childProcess = require('node:child_process');
+            childProcess.spawnSync('git', ['log'], { cwd: '/repo', encoding: 'utf-8' });
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'requireSubprocessTimeout' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: execFileSync with NO options argument at all — categorically no timeout', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            execFileSync('git', ['status']);
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'requireSubprocessTimeout' }],
+        },
+      ],
+    });
+  });
+
+  // ── VALID cases (must NOT error) ──────────────────────────────────────────
+
+  test('valid: execFileSync("git", args, { cwd, timeout: 30000 }) — timeout key present', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            const args = ['status'];
+            const cwd = '/repo';
+            execFileSync('git', args, { cwd, timeout: 30000 });
+          `,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: options as a pre-built identifier — execFileSync("git", args, opts) is not traced', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            const args = ['status'];
+            const opts = { cwd: '/repo', timeout: 30000 };
+            execFileSync('git', args, opts);
+          `,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: same unbounded call under a tests/** filename — rule is inert outside src/*.cts', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            execFileSync('git', ['status'], { cwd: '/repo' });
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: allow-unbounded-subprocess suppression comment on the call line', () => {
+    ruleTester.run('require-subprocess-timeout', requireSubprocessTimeout, {
+      valid: [
+        {
+          code: `
+            const { execFileSync } = require('node:child_process');
+            execFileSync('git', ['status'], { cwd: '/repo' }); // allow-unbounded-subprocess: bounded by caller's own watchdog
+          `,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
   });
 });

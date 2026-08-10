@@ -21,6 +21,12 @@ import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.
 // consume it without dragging model-resolver's config-loader chain into a
 // pure read/verify surface.
 import { isAnthropicFlavoredModel } from './model-catalog.cjs';
+// #3243 — the Codex `.toml` block-range/BOM/scan primitives moved into the typed
+// IR module (Phase 3), which this reader now imports rather than defining
+// locally. Behavior is unchanged: scanTomlLines/stripBOM here are the exact
+// same lenient functions that used to live in this file — see
+// codex-agent-toml.cts's module header for the reader/writer reconciliation.
+import { stripBOM, scanTomlLines } from './codex-agent-toml.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -68,93 +74,6 @@ interface CodexModelPostureResult {
 // oversized or secret-shaped config value can never reach a report in full.
 function truncatePostureValue(value: string): string {
   return value.length > 64 ? `${value.slice(0, 64)}…` : value;
-}
-
-// The `developer_instructions` block is a TOML multi-line literal string
-// (`developer_instructions = '''...'''`) that `generateCodexAgentToml` always
-// emits after the header fields. Prompt prose inside that block discusses models
-// constantly, so a `model = ...`-shaped line inside it must never be read as a
-// live pin — but the block can legally appear anywhere in the file (a
-// hand-reordered agent can move `model` after it), and another key's *value* can
-// legally contain the literal text `developer_instructions = '''` (e.g. a
-// `description` field quoting it) without that being the real block opener. So
-// instead of truncating the file at the first textual occurrence of the marker
-// anywhere in the content, this locates the block by its anchored line-start
-// opener (`^\s*developer_instructions\s*=\s*'''`, never a mid-line/mid-value
-// match) and its closing `'''` line, and excludes only the lines between them —
-// every other line in the file, before AND after the block, is scanned.
-//
-// If no opener is found, nothing is excluded (the whole file is scanned). If the
-// block is unterminated (no closing `'''` before EOF — a malformed file), the
-// rest of the file is treated as inside the block: that is the safe direction,
-// since misreading prompt prose as a pin past a malformed block is only a
-// false positive (wastes a user's time), while the alternative — scanning past
-// an unterminated block — risks hiding a real pin inside unclosed prose. The
-// emitter always uses `'''` (a TOML literal string), never a `"""` basic
-// multi-line string, so only `'''` is treated as the block delimiter here.
-function findDeveloperInstructionsBlockRange(lines: string[]): { start: number; end: number } {
-  const openIndex = lines.findIndex((line) => /^\s*developer_instructions\s*=\s*'''/.test(line));
-  if (openIndex === -1) {
-    return { start: -1, end: -1 };
-  }
-  const afterOpenMarker = lines[openIndex].replace(/^\s*developer_instructions\s*=\s*'''/, '');
-  if (afterOpenMarker.includes("'''")) {
-    // Same-line block: developer_instructions = '''one line'''
-    return { start: openIndex, end: openIndex };
-  }
-  for (let i = openIndex + 1; i < lines.length; i++) {
-    if (lines[i].includes("'''")) {
-      return { start: openIndex, end: i };
-    }
-  }
-  return { start: openIndex, end: lines.length - 1 };
-}
-
-// Strips a leading UTF-8 BOM (U+FEFF), which fs.readFileSync(..., 'utf8') does not
-// strip on its own, and unwraps a TOML basic/literal string value's surrounding
-// quotes so `model = "sonnet"` yields `sonnet`, not `"sonnet"`.
-function stripBOM(content: string): string {
-  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
-}
-
-function unquoteTomlValue(rawValue: string): string {
-  const trimmed = rawValue.trim();
-  const quoted = trimmed.match(/^"([^"]*)"/) ?? trimmed.match(/^'([^']*)'/);
-  return quoted ? quoted[1] : trimmed;
-}
-
-interface HeaderScanResult {
-  model: string | null;
-  hasReasoningEffort: boolean;
-}
-
-// Line-oriented scan of every line OUTSIDE the `developer_instructions` block
-// (see findDeveloperInstructionsBlockRange). Full-key-name anchoring —
-// `^([A-Za-z_][\w]*)\s*=` for a bare key, or `^"([^"]*)"\s*=` / `^'([^']*)'\s*=`
-// for TOML's legal quoted-key forms, normalized to the same key name — means
-// `model_verbosity` / `model_reasoning_effort` never satisfy a `model` probe,
-// and vice versa; `#`-prefixed lines (after trimming leading whitespace) are
-// treated as comments, never live pins.
-function scanTomlLines(content: string): HeaderScanResult {
-  const lines = content.split(/\r?\n/);
-  const { start, end } = findDeveloperInstructionsBlockRange(lines);
-  let model: string | null = null;
-  let hasReasoningEffort = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (start !== -1 && i >= start && i <= end) continue;
-    const trimmed = lines[i].trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    const match = trimmed.match(/^(?:"([^"]*)"|'([^']*)'|([A-Za-z_][\w]*))\s*=\s*(.*)$/);
-    if (!match) continue;
-    const key = match[1] ?? match[2] ?? match[3];
-    const rawValue = match[4];
-    if (key === 'model') {
-      model = unquoteTomlValue(rawValue);
-    } else if (key === 'model_reasoning_effort') {
-      hasReasoningEffort = true;
-    }
-  }
-  return { model, hasReasoningEffort };
 }
 
 /**
@@ -264,23 +183,15 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // when the plain presence check above passed (e.g. .md present, .toml absent).
   // If no manifest is found the check is a no-op (graceful for claude/bundled).
   const incomplete: string[] = [];
-  const manifestPath = path.join(path.dirname(agentsDir), 'gsd-file-manifest.json');
-  let manifestFiles: Record<string, unknown> = {};
-  try {
-    const raw = fs.readFileSync(manifestPath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      'files' in parsed &&
-      typeof (parsed as Record<string, unknown>)['files'] === 'object' &&
-      (parsed as Record<string, unknown>)['files'] !== null
-    ) {
-      manifestFiles = (parsed as Record<string, Record<string, unknown>>)['files'];
-    }
-  } catch {
-    // No manifest or unreadable — completeness check is skipped
-  }
+  // #2872: the manifest read is the Installer Migration Module's, not a
+  // fourth private copy of it. Lazily required — matching this file's own
+  // capability-registry idiom — so a pure read/verify surface on the
+  // init/verify hot path takes no new static dependency.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readInstallManifest } = require('./installer-migrations.cjs') as {
+    readInstallManifest: (configDir: string) => { files: Record<string, string> };
+  };
+  const manifestFiles: Record<string, unknown> = readInstallManifest(path.dirname(agentsDir)).files;
 
   if (Object.keys(manifestFiles).length > 0) {
     for (const agent of expectedAgents) {

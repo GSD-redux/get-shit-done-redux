@@ -779,7 +779,7 @@ The installer (`bin/install.js`, ~10,700 lines) handles:
 5. **Path normalization** — Replaces `~/.claude/` paths with runtime-specific paths
 6. **Settings integration** — Registers hooks in runtime's `settings.json`
 7. **Patch backup** — Since v1.17, backs up locally modified files to `gsd-local-patches/` for `/gsd-update --reapply`
-8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall
+8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall. The manifest also records which `runtime` and which `scope` (`global`/`local`) wrote it, under a `manifestVersion` schema field, so a reader can answer "which surfaces are installed, at which scopes" without inferring it from the directory the file sits in ([ADR 2866](adr/2866-install-surface-resolution.md), #2872). Manifests written before that carry no such fields and are read without error — no reinstall is required. See [Installer Migrations → File Manifest](installer-migrations.md#file-manifest)
 9. **Uninstall mode** — `--uninstall` removes all GSD files, hooks, and settings
 
 Install-time file moves, stale-artifact cleanup, config rewrites, and user-data

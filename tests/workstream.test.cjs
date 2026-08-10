@@ -624,6 +624,12 @@ describe('getOtherActiveWorkstreams', () => {
     fs.writeFileSync(alphaPlan, '# Plan\n');
     fs.writeFileSync(betaPlan, '# Plan\n');
     fs.writeFileSync(betaSummary, '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+    // *-VERIFICATION.md is what makes beta's phase count as complete now.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'workstreams', 'beta', 'phases', '01-beta', '01-VERIFICATION.md'),
+      '---\nstatus: passed\n---\n# Verification\n',
+    );
 
     const others = getOtherActiveWorkstreams(tmpDir, 'alpha');
     assert.strictEqual(others.length, 1);
@@ -646,6 +652,9 @@ describe('workstream progress', () => {
     fs.mkdirSync(path.join(wsDir, 'phases', '01-init'), { recursive: true });
     fs.writeFileSync(path.join(wsDir, 'phases', '01-init', 'PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(wsDir, 'phases', '01-init', 'SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+    // *-VERIFICATION.md is what makes phase 01 count as complete now.
+    fs.writeFileSync(path.join(wsDir, 'phases', '01-init', '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), '# State\n**Status:** In progress\n**Current Phase:** 2\n');
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), '## Roadmap\n### Phase 1: Init\n### Phase 2: Build\n');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'feature\n');
@@ -674,6 +683,9 @@ describe('workstream progress', () => {
         fs.mkdirSync(phaseDir, { recursive: true });
         fs.writeFileSync(path.join(phaseDir, 'PLAN.md'), '# Plan\n');
         fs.writeFileSync(path.join(phaseDir, 'SUMMARY.md'), '# Summary\n');
+        // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+        // *-VERIFICATION.md is what makes each phase count as complete now.
+        fs.writeFileSync(path.join(phaseDir, `${phase.slice(0, 2)}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
       }
       fs.writeFileSync(path.join(wsDir, 'STATE.md'), '# State\n**Status:** In progress\n');
       fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), '# Roadmap\n### Phase 1: One\n');
@@ -863,6 +875,9 @@ describe('#2562 — a refused shipped marker reaches every workstream command', 
     fs.mkdirSync(path.join(wsDir, 'phases', '1-foo'), { recursive: true });
     fs.writeFileSync(path.join(wsDir, 'phases', '1-foo', '01-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(wsDir, 'phases', '1-foo', '01-SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+    // *-VERIFICATION.md is what makes phase 1 count as complete now.
+    fs.writeFileSync(path.join(wsDir, 'phases', '1-foo', '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'milestone: v2.0\nstatus: executing\n');
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
       '# Roadmap', '', '## Milestone v2.0 — Two', '', '## Progress', '',

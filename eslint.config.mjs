@@ -26,6 +26,7 @@ import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
 import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
+import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
 
 const localPlugin = {
   rules: {
@@ -46,6 +47,7 @@ const localPlugin = {
     'require-fs-op-fallback': requireFsOpFallback,
     'no-unbounded-spawn': noUnboundedSpawn,
     'no-duplicate-fold-marker': noDuplicateFoldMarker,
+    'require-subprocess-timeout': requireSubprocessTimeout,
   },
 };
 
@@ -64,6 +66,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/claude-orchestration-command-router.cjs',
       'gsd-core/bin/lib/semver-compare.cjs',
       'gsd-core/bin/lib/host-integration.cjs',
+      'gsd-core/bin/lib/host-runtime-detection.cjs',
       'gsd-core/bin/lib/handshake-serialized.cjs',
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',
@@ -171,6 +174,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/runtime-artifact-install-plan.cjs',
       'gsd-core/bin/lib/runtime-artifact-layout.cjs',
       'gsd-core/bin/lib/install-scope.cjs',
+      'gsd-core/bin/lib/installed-surface-resolver.cjs',
       'gsd-core/bin/lib/runtime-config-adapter-registry.cjs',
       'gsd-core/bin/lib/runtime-hooks-surface.cjs',
       'gsd-core/bin/lib/command-routing-hub.cjs',
@@ -200,6 +204,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/onboard-projection.cjs',
       'gsd-core/bin/lib/agent-command-router.cjs',
       'gsd-core/bin/lib/agent-install-check.cjs',
+      // ADR-2313 Phase 3 (#3243): tsc-generated runtime artifact — lint the src/codex-agent-toml.cts source.
+      'gsd-core/bin/lib/codex-agent-toml.cjs',
       'gsd-core/bin/lib/task-command-router.cjs',
       'gsd-core/bin/lib/validate-command-router.cjs',
       'gsd-core/bin/lib/workstream-inventory.cjs',
@@ -299,6 +305,11 @@ export default tseslint.config(
       // (EPERM/EBUSY/EACCES retry or a Windows platform guard). See
       // DEFECT.WINDOWS-FS-OPS in CONTEXT.md.
       'local/require-fs-op-fallback': 'error',
+      // Flag execSync/execFileSync/spawnSync without a `timeout` option — an
+      // unbounded sync subprocess hangs indefinitely on a stuck remote/large
+      // repo/missing network (DEFECT.UNBOUNDED-SUBPROCESS in CONTEXT.md).
+      // The 8 pre-existing call sites this surfaced were migrated in #2896.
+      'local/require-subprocess-timeout': 'error',
     },
   },
 
@@ -372,8 +383,9 @@ export default tseslint.config(
       // eslint-plugin-n rules
       'n/no-process-exit': 'error',
       'n/no-path-concat': 'error',
-      // Local rules — warn for now; flip to error after cleanup phases
-      'local/no-source-grep': 'warn',
+      // Promoted to error (#3313) — a fresh non-cached `npx eslint .` run found
+      // zero live violations of this rule in this glob at promotion time.
+      'local/no-source-grep': 'error',
     },
   },
 

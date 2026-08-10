@@ -556,9 +556,14 @@ gsd_run query commit "" --files .planning/codebase/*.md --amend
 <step name="offer_next">
 If `USER_SETUP_CREATED=true`: display `⚠️ USER SETUP REQUIRED` with path + env/config tasks at TOP.
 
+Get plan/summary counts for the current phase from the single owner (#3218 — LIVE
+counts, i.e. `status: superseded` plans excluded, matching this route's
+"outstanding work" question):
+
 ```bash
-(ls -1 .planning/phases/[current-phase-dir]/*-PLAN.md 2>/dev/null || true) | wc -l
-(ls -1 .planning/phases/[current-phase-dir]/*-SUMMARY.md 2>/dev/null || true) | wc -l
+PHASE_COUNTS=$(gsd_run query find-phase "${PHASE}")
+PLAN_COUNT=$(echo "$PHASE_COUNTS" | jq -r '.plan_count // 0')
+SUMMARY_COUNT=$(echo "$PHASE_COUNTS" | jq -r '.summary_count // 0')
 ```
 
 | Condition | Route | Action |

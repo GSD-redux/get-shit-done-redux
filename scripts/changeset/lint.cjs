@@ -22,6 +22,7 @@ const LINT_REASON = Object.freeze({
   OK_NO_USER_FACING_CHANGES: 'ok_no_user_facing_changes',
   FAIL_MISSING_FRAGMENT: 'fail_missing_fragment',
   FAIL_INVALID_FRAGMENT: 'fail_invalid_fragment',
+  FAIL_PR_FIELD_DRIFT: 'fail_pr_field_drift',
 });
 
 const OPT_OUT_LABEL = 'no-changelog';
@@ -53,9 +54,46 @@ function isFragment(file) {
   return /^\.changeset\/[^/]+\.md$/.test(file) && !file.endsWith('/README.md');
 }
 
-function evaluateLint({ changedFiles, labels, fragmentFailures = [] }) {
+/**
+ * DEFECT.CHANGESET-PR-FIELD-DRIFT (#3316, #3325): a fragment's `pr:` field is
+ * a guess (issue number, stacked-PR leftover) that never got backfilled to
+ * the real PR number after `gh api POST /pulls` returned it.
+ *
+ * Pure: given `prEntries` (`[{ file, pr }]`, one entry per successfully
+ * parsed changed fragment — `pr` is always a positive integer, since
+ * `parseFragment` already rejects `pr: 0` / non-numeric values as
+ * `invalid_pr` before a fragment ever reaches this function) and
+ * `realPrNumber` (the PR this run belongs to, or `null` when unknown —
+ * push/non-PR runs), returns every fragment whose `pr` disagrees with
+ * `realPrNumber`. `realPrNumber == null` always yields `[]`: with no PR
+ * event payload to compare against, there is nothing to drift-check.
+ *
+ * `pr === 0` is always silent regardless of `realPrNumber` — CONTRIBUTING.md
+ * documents `pr: 0` as the deliberate placeholder used "during initial
+ * commit" before `gh api POST /pulls` returns the real number, so it is not
+ * yet a drifted value, just an unbackfilled one. (In practice `parseFragment`
+ * already rejects `pr: 0` as `invalid_pr` before a fragment reaches this
+ * function via `main()`'s wiring — this guard documents and locks in the
+ * pure function's own contract independent of that upstream check.)
+ */
+function findPrFieldDrift(prEntries, realPrNumber) {
+  if (realPrNumber == null) return [];
+  const drift = [];
+  for (const { file, pr } of prEntries) {
+    if (pr === 0) continue;
+    if (pr !== realPrNumber) {
+      drift.push({ file, found: pr, expected: realPrNumber });
+    }
+  }
+  return drift;
+}
+
+function evaluateLint({ changedFiles, labels, fragmentFailures = [], prFieldDrift = [] }) {
   if (fragmentFailures.length > 0) {
     return { ok: false, reason: LINT_REASON.FAIL_INVALID_FRAGMENT, failures: fragmentFailures };
+  }
+  if (prFieldDrift.length > 0) {
+    return { ok: false, reason: LINT_REASON.FAIL_PR_FIELD_DRIFT, drift: prFieldDrift };
   }
   if (changedFiles.some(isFragment)) {
     return { ok: true, reason: LINT_REASON.OK_FRAGMENT_PRESENT };
@@ -78,10 +116,18 @@ function main() {
   // GitHub Actions event payload path
   const eventPath = process.env.GITHUB_EVENT_PATH;
   let labels = [];
+  // DEFECT.CHANGESET-PR-FIELD-DRIFT: the real PR number this run belongs to,
+  // read from the same event payload. `null` on a push / non-PR run (no
+  // `pull_request` in the payload, or no payload at all) — the drift check
+  // below is a no-op in that case, it never fails a push run.
+  let realPrNumber = null;
   if (eventPath && fs.existsSync(eventPath)) {
     try {
       const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
       labels = (event.pull_request?.labels || []).map((l) => l.name);
+      if (event.pull_request && Number.isInteger(event.pull_request.number)) {
+        realPrNumber = event.pull_request.number;
+      }
     } catch { /* fall through */ }
   }
   // #2988: local fallback must match the repo's integration branch (`next`),
@@ -107,6 +153,7 @@ function main() {
 
   // Validate the content of every changed fragment file.
   const fragmentFailures = [];
+  const prEntries = [];
   for (const file of changedFiles) {
     if (!isFragment(file)) continue;
     // A fragment path in the diff that no longer exists on disk was deleted in
@@ -125,10 +172,13 @@ function main() {
     const result = parseFragment(src);
     if (!result.ok) {
       fragmentFailures.push({ file, reason: result.reason, detail: result.detail });
+      continue;
     }
+    prEntries.push({ file, pr: result.fragment.pr });
   }
 
-  const verdict = evaluateLint({ changedFiles, labels, fragmentFailures });
+  const prFieldDrift = findPrFieldDrift(prEntries, realPrNumber);
+  const verdict = evaluateLint({ changedFiles, labels, fragmentFailures, prFieldDrift });
   if (process.argv.includes('--json')) {
     process.stdout.write(JSON.stringify({ ...verdict, changedFiles, labels }, null, 2) + '\n');
   } else if (verdict.ok) {
@@ -141,6 +191,13 @@ function main() {
       process.stderr.write(`  ${f.file}: ${f.reason}${detail}\n`);
     }
     process.stderr.write(`Fix the fragment(s) above before merging.\n`);
+  } else if (verdict.reason === LINT_REASON.FAIL_PR_FIELD_DRIFT) {
+    process.stderr.write(`\nERROR changeset-lint: ${verdict.reason}\n`);
+    process.stderr.write(`The following .changeset fragment(s) have a stale \`pr:\` field (DEFECT.CHANGESET-PR-FIELD-DRIFT):\n`);
+    for (const d of verdict.drift) {
+      process.stderr.write(`  ${d.file}: pr: ${d.found}, expected pr: ${d.expected}\n`);
+    }
+    process.stderr.write(`Backfill \`pr:\` with this PR's real number (see .changeset/README.md), then push again.\n`);
   } else {
     process.stderr.write(`\nERROR changeset-lint: ${verdict.reason}\n`);
     process.stderr.write(`PR touches user-facing files but does not include a .changeset/*.md fragment.\n`);
@@ -152,4 +209,4 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { evaluateLint, LINT_REASON, OPT_OUT_LABEL, isUserFacing, isFragment, DEFAULT_BASE };
+module.exports = { evaluateLint, LINT_REASON, OPT_OUT_LABEL, isUserFacing, isFragment, DEFAULT_BASE, findPrFieldDrift };

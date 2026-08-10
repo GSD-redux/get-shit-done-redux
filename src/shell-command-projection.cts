@@ -791,6 +791,7 @@ export function probeTty(opts: { platform?: string } = {}): string | null {
     const ttyPath = childProcess.execFileSync('tty', [], {
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'ignore'],
+      timeout: 5_000,
     }).trim();
     if (!ttyPath || ttyPath === 'not a tty') return null;
     return ttyPath;
