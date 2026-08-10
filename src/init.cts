@@ -35,6 +35,7 @@ import { maskIfSecret } from './secrets.cjs';
 import scanPhasePlans = require('./plan-scan.cjs');
 import { stateExtractField } from './state-document.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
+import { resolveReportedRuntime } from './host-runtime-detection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- commands.cjs is an export= CommonJS module
 import commandsMod = require('./commands.cjs');
 import { validatePath, loadTrustedGlobalRoots } from './security.cjs';
@@ -304,7 +305,8 @@ function getLatestCompletedMilestone(cwd: string): { version: string; name: stri
 
 function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<string, unknown> {
   result['project_root'] = cwd;
-  const activeRuntime = resolveRuntime(cwd);
+  // #3245: the reported agent_runtime gets a host-detection rung below the two explicit sources; every other resolveRuntime caller keeps the old ladder (ADR-2313 scope boundary).
+  const activeRuntime = resolveReportedRuntime(cwd);
   const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;
   result['missing_agents'] = agentStatus.missing_agents;

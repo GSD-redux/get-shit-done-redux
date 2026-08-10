@@ -64,6 +64,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/claude-orchestration-command-router.cjs',
       'gsd-core/bin/lib/semver-compare.cjs',
       'gsd-core/bin/lib/host-integration.cjs',
+      'gsd-core/bin/lib/host-runtime-detection.cjs',
       'gsd-core/bin/lib/handshake-serialized.cjs',
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',

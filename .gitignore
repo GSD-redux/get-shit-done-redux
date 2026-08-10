@@ -262,6 +262,7 @@ build/
 /gsd-core/bin/lib/roadmap.cjs
 /gsd-core/bin/lib/audit.cjs
 /gsd-core/bin/lib/git-base-branch.cjs
+/gsd-core/bin/lib/host-runtime-detection.cjs
 __pycache__/
 *.pyc
 .venv/

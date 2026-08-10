@@ -380,6 +380,7 @@
       "hook-bus.cjs",
       "host-integration-sdk.cjs",
       "host-integration.cjs",
+      "host-runtime-detection.cjs",
       "init-command-router.cjs",
       "init.cjs",
       "install-effort-resolver.cjs",
