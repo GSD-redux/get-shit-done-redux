@@ -888,9 +888,9 @@ continues. Drift detection cannot fail verification.
 
 ### 28. Debug System
 
-**Command:** `/gsd-debug [description]`
+**Command:** `/gsd-debug [--runtime-probes | --no-runtime-probes] [description]`
 
-**Purpose:** Systematic debugging with persistent state across context resets.
+**Purpose:** Systematic debugging with persistent state across context resets and optional, locally captured runtime evidence linked to recorded hypotheses.
 
 **Requirements:**
 - REQ-DEBUG-01: System MUST create debug session file in `.planning/debug/`
@@ -899,8 +899,16 @@ continues. Drift detection cannot fail verification.
 - REQ-DEBUG-04: System MUST require human verification before marking resolved
 - REQ-DEBUG-05: Resolved sessions MUST append to `.planning/debug/knowledge-base.md`
 - REQ-DEBUG-06: Knowledge base MUST be consulted on new debug sessions to prevent re-investigation
+- REQ-DEBUG-07: Runtime source probes MUST default to `off`; `--runtime-probes` selects opt-in `adaptive`, while `--no-runtime-probes` explicitly selects `off`
+- REQ-DEBUG-08: A valid saved runtime-evidence policy MUST survive `continue`; an explicit override MUST change only policy and preserve existing run, probe, artifact, and cleanup state
+- REQ-DEBUG-09: Adaptive source probes MUST require an exact persisted reproduction, competing hypotheses, bounded sanitized output, low perturbation risk, and durable ownership before source mutation
+- REQ-DEBUG-10: The identical reproduction MUST be used for `baseline`, `post_fix`, and final `uninstrumented_verify`
+- REQ-DEBUG-11: Session-owned source probes and capture artifacts MUST be hash/identity-verified and removed before terminal actions; cleanup failure MUST block commit, verification, abandonment, archive, and completion
+- REQ-DEBUG-12: Runtime evidence MUST remain local and add no daemon, hosted service, telemetry, network transport, SDK, or external dependency
 
 **Debug Session States:** `gathering` → `investigating` → `fixing` → `verifying` → `awaiting_human_verify` → `resolved`
+
+**Runtime Evidence States:** `not_used` → `planned` → `active` → `cleanup_pending` → `clean`, with fail-closed `cleanup_failed`
 
 ---
 
@@ -1905,6 +1913,8 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 - REQ-DIAG-01: System MUST perform full debug investigation (hypotheses, evidence, root cause)
 - REQ-DIAG-02: System MUST NOT attempt any code modifications
 - REQ-DIAG-03: System MUST produce a diagnostic report with findings and recommended fixes
+- REQ-DIAG-04: A diagnosis-only session MUST persist immutable goal `find_root_cause_only` across every continuation, checkpoint, and automatic resume
+- REQ-DIAG-05: Diagnosis-only mode MUST never offer or apply a fix, edit tracked source, install a source probe, or create a runtime capture artifact
 
 ---
 

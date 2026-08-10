@@ -78,7 +78,7 @@ If execution produced wrong output, stubbed code, or a verification failure, use
 /gsd-debug --diagnose "Phase 2 executor produced stubs instead of real code"
 ```
 
-`--diagnose` stops at root cause without touching your files. It creates a session file at `.planning/debug/<slug>.md` so you can pick up the investigation later if needed.
+`--diagnose` stops at root cause without modifying tracked source or applying a fix. It creates a session file at `.planning/debug/<slug>.md` with immutable goal `find_root_cause_only`; that read-only goal survives every continuation and automatic resume.
 
 To start a full debug session that also applies a fix:
 
@@ -87,6 +87,35 @@ To start a full debug session that also applies a fix:
 ```
 
 GSD gathers symptoms, runs a structured investigation using the scientific method, and proposes a fix. If `tdd_mode: true` is set in your config, it requires a failing test before applying any fix.
+
+### Opt in to adaptive runtime evidence
+
+Temporary source probes are off by default. Ordinary tests and passive/native evidence remain available. When those cannot distinguish competing hypotheses, opt in explicitly:
+
+```bash
+/gsd-debug --runtime-probes "Worker cache state diverges after invalidation"
+```
+
+`--runtime-probes` selects `adaptive`; it does not guarantee or force instrumentation. Before editing source, GSD must persist an exact reproduction, show that existing evidence is insufficient, bound and sanitize every observation, establish low perturbation risk for the bug class, and record exact ownership. It then reuses the identical reproduction for the instrumented `baseline`, instrumented `post_fix`, and final `uninstrumented_verify` phases.
+
+Use `--no-runtime-probes` to select `off` explicitly:
+
+```bash
+/gsd-debug --no-runtime-probes "Timing-sensitive queue failure"
+```
+
+The policy is saved in the session. A continuation retains it unless you provide an explicit override:
+
+```bash
+/gsd-debug continue worker-cache-divergence
+/gsd-debug continue worker-cache-divergence --no-runtime-probes
+```
+
+Turning probes off prevents new instrumentation but does not skip cleanup of prior session-owned state. GSD removes only ledgered probe blocks and capture artifacts, verifies ownership and the resulting diff, and refuses commits, abandonment, archival, human verification, or completion while cleanup is unproved. A cleanup failure remains resumable.
+
+Diagnosis-only sessions cannot activate structured runtime capture or source probes, so `/gsd-debug --diagnose --runtime-probes ...` is rejected. `/gsd-debug --diagnose --no-runtime-probes ...` is valid but redundant.
+
+The runtime-evidence protocol is local and self-contained. It introduces no daemon, hosted service, telemetry, network transport, SDK, or external package, and it never promotes raw application logs or general stdout/stderr into the durable session.
 
 ### Check active debug sessions
 

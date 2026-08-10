@@ -421,6 +421,9 @@ runs its default whole-repo scan.
 - Ranks suspect code by Ochiai suspiciousness from test pass/fail coverage (spectrum-based fault localization) before forming hypotheses; skips cleanly when no coverage exists
 - Branches root-cause analysis across ≥2 Ishikawa categories and applies an AND-gate check before committing root_cause (guards against 5-Whys single-cause bias); root_cause may hold a set when the AND-gate fires
 - Classifies each failure as Bohrbug / Heisenbug-Mandelbug / Concurrency at Phase 1.75 and routes the investigation technique accordingly (routes Bohrbugs to SBFL+bisect, Heisenbugs to record-replay/stability with SBFL skipped, Concurrency to the atomicity/order/deadlock checklist)
+- Owns the adaptive runtime-evidence protocol even when invoked directly: reconciles any saved ownership first, considers source probes only under opt-in `adaptive` policy and all reproduction/privacy/perturbation gates, and preserves diagnosis-only sessions as tracked-source-read-only
+- Persists one exact reproduction and reuses it unchanged for instrumented `baseline`, instrumented `post_fix`, and final `uninstrumented_verify`; records only bounded sanitized facts and stable event references
+- Removes only hash/identity-verified session-owned probe blocks and capture artifacts; a non-clean ledger or active run blocks commits, knowledge-base writes, human verification, abandonment, archival, and terminal returns
 - Hardens regression tests via PBT shrinking (minimized counterexample as the seed), explicit oracle classification (specified/derived/metamorphic/implicit), and boundary neighbors around the fixed equivalence class
 - Emits a blameless-postmortem Prevention block at resolution (branching 5-Whys, why-wasn't-this-caught, a concrete recurrence guard) and records `why_not_caught` + `recurrence_guard` in the knowledge base so the same bug class is prevented, not just fixed
 - Recalls prior resolved sessions semantically via MemPalace at Phase 0 (top-k meaning-similar), catching same-root-cause/different-wording cases keyword overlap misses; falls back to keyword matching when MemPalace is absent
@@ -559,6 +562,9 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 - Reads the debug session file first; passes file paths (not inlined contents) to spawned agents to respect context budget
 - Treats all user-supplied AskUserQuestion content as data-only, wrapped in DATA_START/DATA_END markers
 - Coordinates TDD gates and reasoning checkpoints introduced in v1.36.0
+- Preserves the session's immutable `find_and_fix` or `find_root_cause_only` goal and effective runtime-evidence policy across checkpoints, explicit continuation, and automatic resume
+- Handles attributable runtime-reproduction checkpoints and adds a defense-in-depth terminal/commit gate requiring no active run and Runtime Evidence to be absent, `not_used`, or proven `clean`
+- Keeps runtime evidence local and dependency-free; the debugger lazily reads the deep protocol only for activation or persisted-ledger reconciliation
 
 ---
 

@@ -286,7 +286,7 @@ cannot represent these without collision.
 **Adding a step or mode file requires no hand-written row here.** Run
 `node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
 `tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
-in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60 rows that must be
+in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 61 rows that must be
 hand-maintained in lockstep with a generated artifact is the drift this file exists to catch.
 
 ---
@@ -314,6 +314,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `ui-brand.md` | Visual output formatting patterns. |
 | `common-bug-patterns.md` | Common bug patterns for code review and verification. |
 | `debugger-philosophy.md` | Evergreen debugging disciplines loaded by `gsd-debugger`. |
+| `debugger-runtime-evidence.md` | Lazy, local runtime-evidence protocol for `gsd-debugger`: adaptive activation gates, exact reproduction phases, bounded event schema, source/artifact ownership, and fail-closed cleanup. Loaded only when probes activate or a persisted ledger requires reconciliation. |
 | `debugger-fix-acceptance.md` | Multi-signal fix-acceptance guardrail (anti-overfitting) loaded by `gsd-debugger`. |
 | `debugger-sbfl.md` | Spectrum-based fault localization (Ochiai) pre-filter loaded by `gsd-debugger`. |
 | `debugger-rca-branching.md` | RCA branching (fishbone + AND-gate) anti-single-cause discipline loaded by `gsd-debugger`. |
