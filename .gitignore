@@ -240,6 +240,7 @@ build/
 /gsd-core/bin/lib/onboard-projection.cjs
 /gsd-core/bin/lib/agent-command-router.cjs
 /gsd-core/bin/lib/agent-install-check.cjs
+/gsd-core/bin/lib/codex-agent-toml.cjs
 /gsd-core/bin/lib/task-command-router.cjs
 /gsd-core/bin/lib/validate-command-router.cjs
 /gsd-core/bin/lib/workstream-inventory.cjs
@@ -261,6 +262,7 @@ build/
 /gsd-core/bin/lib/roadmap.cjs
 /gsd-core/bin/lib/audit.cjs
 /gsd-core/bin/lib/git-base-branch.cjs
+/gsd-core/bin/lib/host-runtime-detection.cjs
 __pycache__/
 *.pyc
 .venv/

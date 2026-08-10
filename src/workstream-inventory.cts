@@ -30,7 +30,7 @@ const { extractFrontmatter, stripFrontmatter } = frontmatterMod;
 import { findTableWithColumns } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
-const { readVerificationStatus } = verificationMod;
+const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const { phaseKeyFromDir, phaseKeyFromProse, parentPhaseKey } = phaseIdMod;
@@ -634,7 +634,16 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const rawPhaseEntries = [...phaseDirNames].sort().map(dir => {
     const phaseDir = path.join(p.phases, dir);
     const counts = countPhaseFiles(phaseDir);
-    const verificationResult = readVerificationStatus(phaseDir);
+    // ADR-3180 §7.4 (#3186): routed through the single canonical owner
+    // (`isPhaseComplete`, src/verification.cts) instead of calling
+    // `readVerificationStatus` directly and re-deriving "is this phase
+    // complete" locally from its `.status`. `completionResult.value.complete`
+    // is threaded down to the builder below (as `PhaseFilesCount.complete`)
+    // so `buildWorkstreamInventory` — a pure, I/O-free projection that
+    // cannot call the owner itself — consumes the owner's verdict rather
+    // than re-deriving a second one from summary/plan counts.
+    const completionResult = isPhaseComplete(phaseDir);
+    const verificationResult = completionResult.value.verification;
     // #3057 B3: routing is UNCHANGED — `liveVerificationStatus` below is still
     // `.status`, exactly as before, so the ledger/rollup logic that consumes
     // it is unaffected. This only makes an indeterminate staleness check
@@ -656,6 +665,12 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       summaryCount: counts.summaryCount,
       inMilestone: isDirInCurrentMilestone(dir),
       liveVerificationStatus: verificationResult.status,
+      // ADR-3180 §7.4 (#3186): the owner's verdict, read live off disk — never
+      // ledger-adjusted (see the phaseFilesCounts map below; the ledger only
+      // ever substitutes a 'missing' status with a remembered one, and under
+      // disk-strict neither 'missing' nor 'unrecorded' is ever complete, so
+      // there is nothing for the ledger to override here).
+      complete: completionResult.value.complete,
     };
   });
 
@@ -732,6 +747,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       summaryCount: entry.summaryCount,
       inMilestone: entry.inMilestone,
       verificationStatus,
+      complete: entry.complete,
     };
   });
 

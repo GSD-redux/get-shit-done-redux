@@ -31,6 +31,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Run phases autonomously](how-to/run-phases-autonomously.md) — use autonomous mode for unattended phase execution
 - [Handle quick and fast tasks](how-to/handle-quick-and-fast-tasks.md) — use `/gsd-quick` and `/gsd-fast` for ad-hoc work outside the phase loop
 - [Configure model profiles](how-to/configure-model-profiles.md) — switch between quality, balanced, and budget model tiers
+- [Control which host runtime GSD reports](how-to/control-the-reported-host-runtime.md) — read the `agent_runtime` ladder, understand what host detection looks at, and pin the runtime when detection is not what you want
 - [Set up cross-AI review](how-to/set-up-cross-ai-review.md) — configure a second AI to review code produced by the primary agent
 - [Work in parallel with workstreams](how-to/work-in-parallel-with-workstreams.md) — run independent lines of work simultaneously using workstreams
 - [Isolate work with workspaces](how-to/isolate-work-with-workspaces.md) — use workspaces to sandbox experimental or risky changes

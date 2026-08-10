@@ -135,6 +135,57 @@ describe('init commands: agents_installed field (#1371)', () => {
     assert.deepStrictEqual(output.missing_agents, []);
   });
 
+  test('init reports codex when the session signal is present', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('init plan-phase 1 --raw', tmpDir, { CODEX_SANDBOX: 'seatbelt' });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.agent_runtime, 'codex');
+  });
+
+  test('init honors explicit config runtime over detection', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'claude' }),
+    );
+
+    const result = runGsdTools('init plan-phase 1 --raw', tmpDir, { CODEX_SANDBOX: 'seatbelt' });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.agent_runtime, 'claude');
+  });
+
+  test('init is unaffected in a non-codex session', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('init plan-phase 1 --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.agent_runtime, 'claude');
+  });
+
+  test('init honors GSD_RUNTIME over detection', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('init plan-phase 1 --raw', tmpDir, {
+      GSD_RUNTIME: 'opencode',
+      CODEX_SANDBOX: 'seatbelt',
+    });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.agent_runtime, 'opencode');
+  });
+
   test('init execute-phase includes missing_agents list when agents are missing', () => {
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
     fs.mkdirSync(phaseDir, { recursive: true });

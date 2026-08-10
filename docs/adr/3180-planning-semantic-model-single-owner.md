@@ -278,7 +278,7 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Note on #3204.** Routing `buildStateFrontmatter` through the owner will not by itself fix #3204: its defect is the discriminator one layer *above* enumeration — "is the ROADMAP's phase count safe to trust" — which misclassifies ordinary `## Overview` / `## Progress` headings as milestone sectioning. That discriminator **is** §7.1's `isMilestoneBoundedInRoadmap`. The enumeration routing and the discriminator replacement must ship together or the defect survives the consolidation.
 
-#### 7.4 Phase completion — *Required — Phase 4, blocked*
+#### 7.4 Phase completion — *Required — Phase 4 (decided: disk-strict)*
 
 **Question.** Is phase `P` complete?
 
@@ -286,9 +286,29 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Rule.** `readVerificationStatus` is called **unconditionally**. Plan count is not a precondition: a phase with zero plans and a passing `*-VERIFICATION.md` is complete. The read path and the write path share this predicate, so "`phase.complete` succeeds while `init.manager` reports incomplete" is unrepresentable for identical input.
 
-**OPEN QUESTION — does a ROADMAP checkbox override disk state? (#2957).** There are **three** completion implementations, not the two the epic recorded: `cmdPhaseComplete`, `buildPhaseCompletionProjection`, and `buildStateFrontmatter`, which computes completed phases from plan scanning alone and never consults the ROADMAP checkbox that `cmdRoadmapAnalyze` deliberately honors. Checkbox-override versus disk-strict is a **product decision**, and it is not made here.
+**DECIDED — disk state is authoritative; a ROADMAP checkbox does not override it (#2957, maintainer decision 2026-08-08).** This replaces the OPEN QUESTION this section previously carried, per §7's own rule that a behavior not stated here is not decided.
 
-**Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third, and Phase 4 must not ship before #2957 is decided — a shared predicate that silently adopts whichever semantics its author happened to hold is a product decision made by typing order.
+There are **three** completion implementations, not the two the epic recorded: `cmdPhaseComplete`, `buildPhaseCompletionProjection`, and `buildStateFrontmatter`, which computes completed phases from plan scanning alone and never consults the ROADMAP checkbox that `cmdRoadmapAnalyze` deliberately honors. The resolution:
+
+1. **A ticked ROADMAP checkbox is a human annotation with no machine authority.** `cmdRoadmapAnalyze`'s deliberate honoring of it is the **divergent** behavior here, and it is **removed** rather than generalized.
+2. `buildStateFrontmatter`'s existing plan-scanning semantics therefore become **canonical**, and all three implementations route through the one predicate.
+3. The shared predicate derives completion from plan and verification state **on disk**, per the Rule above — `readVerificationStatus` unconditionally, plan count not a precondition.
+
+**Why disk-strict.** A stale tick asserting completion over contradicting disk state is precisely the confidently-wrong answer this epic exists to remove, and it is the same failure shape as the `100`-percent aggregate (#3161): a well-formed, plausible value that no caller can distinguish from a real one.
+
+**Tier-2 consequence (Decision 3).** A phase marked complete *solely* by a ticked checkbox — no passing `*-VERIFICATION.md`, plans outstanding — **stops reporting complete from `roadmap analyze`**. The break is deliberate and ships with its own breaking-change call-out, changeset fragment and docs update in Phase 4's PR.
+
+**A missing verdict is not a passing one (decided 2026-08-10, maintainer).** `isPhaseComplete` is `verification.status === 'passed'`, so an **absent** `*-VERIFICATION.md` means **not complete** — everywhere, including `workstream list` / `status` / `progress`.
+
+This retires #2645's deliberate boundary, which kept `missing` / `unknown` / `stale` out of the failing set specifically so a verifier-disabled project would not report 0% forever. Recorded rather than absorbed silently, because the consequence is real: **a project that never runs the verifier now reports its phases incomplete.**
+
+It also closes #2645's Goodhart hole from the opposite side. That issue's symptom was that *deleting* a `*-VERIFICATION.md` **raised** the reported percentage — the metric could be improved by destroying the evidence. Under disk-strict, deleting it **lowers** completion, so the incentive inverts and the ledger's deletion-memory role is no longer load-bearing.
+
+**Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third.
+
+**Consumers that must route through the owner.** `cmdPhaseComplete`, `buildPhaseCompletionProjection`, `buildStateFrontmatter` (the three #2957 names), plus `cmdRoadmapAnalyze`, `cmdInitManager`, `cmdRoadmapUpdatePlanProgress`, `buildWorkstreamInventory`, and the prompt layer's `mvp-phase.md` — **nine re-derivations found by the guard where this section named three.**
+
+**A write-path gate is not a second predicate.** `cmdRoadmapUpdatePlanProgress` writes a completion checkbox, and completion alone does not mean every plan was executed — `readVerificationStatus`'s staleness check compares summary mtimes, never plan count. It therefore ANDs the owner's verdict with an explicit plan-coverage gate, mirroring the separate #2648 unexecuted-plan gate `cmdPhaseComplete` already carries. That composition is sanctioned; re-deriving completion beside it is not.
 
 #### 7.5 Live-plan counting — *Enforced (Phase 1), with a known representation gap*
 
@@ -377,7 +397,7 @@ One row per derivation. A blank owner is a derivation whose contract is locked (
 | Milestone windowing (§7.1) | `roadmap-parser.cts` | `lint-milestone-window-drift.cjs` | `src/` | enforced |
 | Milestone identity (§7.2) | `roadmap-parser.cts` (Phase 6) | same guard, token set widened by Phase 6 | `src/` | enforced |
 | Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced — the state writers included (#3185) |
-| Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | blocked on #2957 |
+| Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | contract decided (disk-strict, #2957); migration is Phase 4 |
 | Live-plan counting (§7.5) | `plan-scan.cts` | `lint-plan-count-drift.cjs` | `src/` | enforced |
 | Live-plan counting, prompt layer (§7.5) | — (Phase 8) | `lint-planning-prompt-drift.cjs` | `gsd-core/workflows`, `commands`, `agents`, `skills` | ratcheted, 7 sites |
 | Completion ratio (§7.6) | `phase-lifecycle.cts` | `lint-completion-ratio-drift.cjs` | `src/` | arithmetic + rule 3 enforced; rule 4 is Phase 7 |

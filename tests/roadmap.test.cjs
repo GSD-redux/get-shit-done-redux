@@ -261,6 +261,9 @@ describe('roadmap analyze command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+    // *-VERIFICATION.md is what makes phase 1 count as complete now.
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
 
     const p2 = path.join(tmpDir, '.planning', 'phases', '02-authentication');
     fs.mkdirSync(p2, { recursive: true });

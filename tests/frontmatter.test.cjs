@@ -1062,7 +1062,9 @@ function buildRoadmap(numPhases) {
 
 /**
  * Create phase dirs with full plan+summary coverage for the first `count` phases.
- * Each dir gets 1 PLAN + 1 SUMMARY so the disk-scan treats them as complete.
+ * Each dir gets 1 PLAN + 1 SUMMARY + a passing *-VERIFICATION.md so the
+ * disk-strict predicate (ADR-3180 §7.4, #3186) treats them as complete — a
+ * summary alone no longer implies completion.
  */
 function createPhaseDirs(phasesDir, count) {
   for (let i = 1; i <= count; i++) {
@@ -1070,6 +1072,7 @@ function createPhaseDirs(phasesDir, count) {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `01-PLAN.md`), `# Plan\n`);
     fs.writeFileSync(path.join(dir, `01-SUMMARY.md`), `# Summary\n`);
+    fs.writeFileSync(path.join(dir, `01-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
   }
 }
 
