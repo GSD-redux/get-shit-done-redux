@@ -198,6 +198,18 @@ describe('#2858 — shipped scripts require only shipped paths', () => {
     );
   });
 
+  test('gsd-pretest-baseline.cjs does NOT ship (repo-only CI tooling)', () => {
+    // Same class as gen-emitted-baseline.cjs above — it delegates to
+    // ../tests/helpers/emitted-runtime.cjs, which does not ship. It is
+    // repo-only CI tooling that the gsd-test runner invokes via the
+    // gsd:pretest-baseline npm script from a checkout, never from a
+    // published install. It must be excluded from the npm tarball.
+    assert.ok(
+      !shippedFiles.has('scripts/gsd-pretest-baseline.cjs'),
+      'scripts/gsd-pretest-baseline.cjs must NOT ship — it requires tests/ which does not ship (#3284)',
+    );
+  });
+
   test('a script requiring a sibling in the same shipped dir resolves as shipped (positive case)', () => {
     // Sanity: scripts/lib/cli-exit.cjs ships and is required by shipped scripts.
     // This confirms the guard's positive path works — a valid intra-shipped require
