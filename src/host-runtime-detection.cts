@@ -17,6 +17,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveExplicitRuntime } from './runtime-slash.cjs';
+import { CODEX_CONFIG_MARKER } from './update-context.cjs';
+
+export { CODEX_CONFIG_MARKER };
 
 export type DetectionSource = 'session-env' | 'config-home' | 'none';
 
@@ -49,9 +52,17 @@ export const CODEX_SESSION_ENV_SIGNALS: readonly string[] = Object.freeze([
 ]);
 
 // Evidence: learn.chatgpt.com/docs/config-file/environment-variables —
-// "Sets the root for Codex state, including config…". This reuses the
-// existing `config.toml` probe from `inferPreferredRuntime`
-// (src/update-context.cts:84).
+// "Sets the root for Codex state, including config…". The marker FILENAME
+// (`config.toml`) is single-sourced from `update-context.cts`'s
+// `inferPreferredRuntime` (imported above and re-exported for existing
+// importers) — that is the only thing shared between the two functions. The
+// TRUTHINESS RULE deliberately differs: `inferPreferredRuntime` treats a
+// bare, unchecked `CODEX_HOME` as sufficient to resolve an update context,
+// while THIS module additionally requires the marker file to exist, because
+// it is asserting session identity rather than resolving an update context
+// and needs the stronger signal. That difference is intentional and pinned
+// by a test in `tests/host-runtime-detection.test.cjs` rather than left
+// implicit.
 //
 // The DEFAULT `~/.codex/config.toml` is deliberately NEVER probed here:
 // every machine that has ever run Codex has that file, so probing it
@@ -60,36 +71,51 @@ export const CODEX_SESSION_ENV_SIGNALS: readonly string[] = Object.freeze([
 // explicitly-exported CODEX_HOME is the user designating a Codex root for
 // the CURRENT session, which is a much stronger signal.
 export const CODEX_CONFIG_HOME_ENV = 'CODEX_HOME';
-export const CODEX_CONFIG_MARKER = 'config.toml';
+
+// The degraded no-detection result. Also the fallback returned when ANY step
+// of detection throws (see the module's stated no-throw premise below).
+const NO_DETECTION: HostRuntimeDetection = { runtime: null, source: 'none', signal: null };
 
 /**
  * Detect the host runtime from process environment signals, without ever
  * consulting the explicit GSD_RUNTIME/config.json sources (those are a
  * higher-priority rung handled by resolveExplicitRuntime).
+ *
+ * Never throws: the whole body — including the raw `env[key]` reads, which a
+ * caller could supply as a throwing Proxy — is wrapped in a single guarded
+ * region that degrades to `NO_DETECTION` on any unexpected error, rather than
+ * only guarding the `fileExists` probe.
  */
 export function detectHostRuntime(deps?: DetectionDeps): HostRuntimeDetection {
-  const env = deps?.env ?? process.env;
-  const fileExists = deps?.fileExists ?? ((p: string) => fs.existsSync(p));
+  try {
+    const env = deps?.env ?? process.env;
+    const fileExists = deps?.fileExists ?? ((p: string) => fs.existsSync(p));
 
-  for (const key of CODEX_SESSION_ENV_SIGNALS) {
-    const value = env[key];
-    if (typeof value === 'string' && value.trim() !== '') {
-      return { runtime: 'codex', source: 'session-env', signal: key };
-    }
-  }
-
-  const codexHome = env[CODEX_CONFIG_HOME_ENV];
-  if (typeof codexHome === 'string' && codexHome.trim() !== '') {
-    try {
-      if (fileExists(path.join(codexHome, CODEX_CONFIG_MARKER))) {
-        return { runtime: 'codex', source: 'config-home', signal: CODEX_CONFIG_HOME_ENV };
+    for (const key of CODEX_SESSION_ENV_SIGNALS) {
+      const value = env[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        return { runtime: 'codex', source: 'session-env', signal: key };
       }
-    } catch {
-      // Swallow probe failures (EACCES etc.) and fall through to no-detection.
     }
-  }
 
-  return { runtime: null, source: 'none', signal: null };
+    const codexHome = env[CODEX_CONFIG_HOME_ENV];
+    if (typeof codexHome === 'string' && codexHome.trim() !== '') {
+      try {
+        if (fileExists(path.join(codexHome, CODEX_CONFIG_MARKER))) {
+          return { runtime: 'codex', source: 'config-home', signal: CODEX_CONFIG_HOME_ENV };
+        }
+      } catch {
+        // Swallow probe failures (EACCES etc.) and fall through to no-detection.
+      }
+    }
+
+    return NO_DETECTION;
+  } catch {
+    // A malformed `deps.env` (e.g. a throwing Proxy) must degrade like any
+    // other unreadable signal, not propagate — this function's contract is
+    // that it never throws.
+    return NO_DETECTION;
+  }
 }
 
 /**
@@ -97,8 +123,20 @@ export function detectHostRuntime(deps?: DetectionDeps): HostRuntimeDetection {
  * host-detection rung, then the 'claude' default. This is intentionally
  * separate from resolveRuntime — only init's agent_runtime reporting call
  * site uses this ladder; every other resolveRuntime caller is unaffected.
+ *
+ * Never throws: degrades to the 'claude' default on any unexpected error
+ * (e.g. a throwing `deps.env`), matching detectHostRuntime's no-throw
+ * contract.
  */
 export function resolveReportedRuntime(projectDir: string | null | undefined, deps?: DetectionDeps): string {
+  try {
+    return resolveReportedRuntimeUnsafe(projectDir, deps);
+  } catch {
+    return 'claude';
+  }
+}
+
+function resolveReportedRuntimeUnsafe(projectDir: string | null | undefined, deps?: DetectionDeps): string {
   const explicit = resolveExplicitRuntime(projectDir, deps?.env ?? process.env);
   if (explicit) return explicit;
   const detected = detectHostRuntime(deps);

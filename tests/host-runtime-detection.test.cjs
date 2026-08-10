@@ -157,6 +157,17 @@ describe('detectHostRuntime', () => {
     });
   });
 
+  test('a throwing env degrades to the none-result rather than propagating', () => {
+    // The whole detection body — not just the fileExists probe — must be
+    // throw-safe: a proxied env whose GET trap throws must degrade like any
+    // other unreadable signal (#3245 fix 4).
+    const throwingEnv = new Proxy({}, { get() { throw new Error('boom'); } });
+    assert.doesNotThrow(() => {
+      const result = detectHostRuntime({ env: throwingEnv, fileExists: () => false });
+      assert.deepStrictEqual(result, NONE_RESULT);
+    });
+  });
+
   test('the default codex home is never probed', () => {
     // Every machine that has ever run Codex has ~/.codex/config.toml, so
     // probing the DEFAULT home unconditionally would misreport a plain
@@ -302,15 +313,41 @@ describe('resolveReportedRuntime: precedence', () => {
     assert.strictEqual(result, 'kimi');
   });
 
-  test('windows-shaped CODEX_HOME joins portably', (t) => {
+  // Deliberately NOT a "windows-shaped CODEX_HOME" test computed with
+  // path.join(...) on the same POSIX host as the production code: that
+  // construction passes by definition (both sides run the identical join)
+  // and cannot catch a separator bug. This test instead proves path.join is
+  // actually being used — a hand-rolled `home + '/' + marker` concatenation
+  // would double the separator when `home` already ends in one; path.join
+  // collapses it.
+  test('probe path is joined, not concatenated', (t) => {
     const tmpDir = withProject(t);
-    const windowsHome = 'C:\\Users\\me\\.codex';
-    const spy = spyFileExists([path.join(windowsHome, 'config.toml')]);
+    const homeWithTrailingSep = path.join(os.tmpdir(), 'gsd-3245-trailing') + path.sep;
+    const spy = spyFileExists([]);
     const result = resolveReportedRuntime(tmpDir, {
-      env: { CODEX_HOME: windowsHome },
+      env: { CODEX_HOME: homeWithTrailingSep },
       fileExists: spy,
     });
-    assert.strictEqual(result, 'codex');
+    assert.strictEqual(result, 'claude');
+    assert.strictEqual(spy.calls.length, 1);
+    const probedPath = spy.calls[0];
+    assert.ok(
+      !probedPath.includes('//'),
+      `expected a normalized probe path with no doubled separator, got: ${probedPath}`,
+    );
+    assert.strictEqual(probedPath.split('/').pop(), CODEX_CONFIG_MARKER);
+  });
+
+  test('a throwing env degrades to the claude default rather than propagating', (t) => {
+    // resolveReportedRuntime's degraded answer is the 'claude' default, not
+    // the detection none-result — matching detectHostRuntime's contract one
+    // rung up the ladder (#3245 fix 4).
+    const tmpDir = withProject(t);
+    const throwingEnv = new Proxy({}, { get() { throw new Error('boom'); } });
+    assert.doesNotThrow(() => {
+      const result = resolveReportedRuntime(tmpDir, { env: throwingEnv, fileExists: () => false });
+      assert.strictEqual(result, 'claude');
+    });
   });
 
   test('detection never mutates the project config', (t) => {
@@ -336,6 +373,52 @@ describe('resolveReportedRuntime: precedence', () => {
     const viaInjectedDeps = resolveReportedRuntime(tmpDir, { env: process.env });
     assert.strictEqual(viaDefaultDeps, 'codex');
     assert.strictEqual(viaDefaultDeps, viaInjectedDeps);
+  });
+
+  test('resolveReportedRuntime never writes shared defaults or any file (#2297)', (t) => {
+    // The #2297 negative proof above only wraps detectHostRuntime, but the
+    // function that actually ships is resolveReportedRuntime (called by
+    // withProjectRoot). This sibling wraps IT, across all three outcomes on
+    // its ladder: explicit-config hit, detection hit, and the plain 'claude'
+    // default.
+    //
+    // Fixture setup (createTempProject/writeConfig, which themselves call
+    // mkdirSync/writeFileSync) runs BEFORE the mocks are installed, so the
+    // fixtures land on real disk and only resolveReportedRuntime's own
+    // behavior is under observation.
+    const explicitDir = createTempProject();
+    writeConfig(explicitDir, JSON.stringify({ runtime: 'opencode' }));
+    const detectionDir = createTempProject();
+    const defaultDir = createTempProject();
+
+    // Each mock is restored via t.after() immediately after creation — not a
+    // try/finally in the test body (CONTRIBUTING.md bans that) — so restore
+    // still runs even if an earlier assertion below throws.
+    const writeFileMock = mock.method(fs, 'writeFileSync', () => {});
+    t.after(() => writeFileMock.mock.restore());
+    const appendFileMock = mock.method(fs, 'appendFileSync', () => {});
+    t.after(() => appendFileMock.mock.restore());
+    const mkdirMock = mock.method(fs, 'mkdirSync', () => {});
+    t.after(() => mkdirMock.mock.restore());
+    t.after(() => {
+      cleanup(explicitDir);
+      cleanup(detectionDir);
+      cleanup(defaultDir);
+    });
+
+    // Outcome 1: explicit config.json runtime wins.
+    assert.strictEqual(resolveReportedRuntime(explicitDir, { env: {} }), 'opencode');
+    // Outcome 2: no explicit config; host-detection rung fires.
+    assert.strictEqual(
+      resolveReportedRuntime(detectionDir, { env: { CODEX_SANDBOX: 'seatbelt' } }),
+      'codex',
+    );
+    // Outcome 3: no explicit config, no detection signal; plain default.
+    assert.strictEqual(resolveReportedRuntime(defaultDir, { env: {} }), 'claude');
+
+    assert.strictEqual(writeFileMock.mock.callCount(), 0);
+    assert.strictEqual(appendFileMock.mock.callCount(), 0);
+    assert.strictEqual(mkdirMock.mock.callCount(), 0);
   });
 });
 
@@ -413,7 +496,26 @@ describe('parity with update-context.cjs:inferPreferredRuntime (generative-fix-d
   // detectHostRuntime (init's agent_runtime rung). This pins them to agree
   // on the CODEX_HOME signal so a future edit to one cannot silently diverge
   // from the other.
-  test('codex signal parity with inferPreferredRuntime', () => {
+  test('codex marker filename is single-sourced', () => {
+    // The ONLY thing actually shared between the two functions: the marker
+    // FILENAME. update-context.cjs is the owner; host-runtime-detection.cjs
+    // imports and re-exports it. This asserts the re-export is the same
+    // binding (strict equality), not merely an independently-matching literal.
+    assert.strictEqual(CODEX_CONFIG_MARKER, 'config.toml');
+    assert.strictEqual(CODEX_CONFIG_MARKER, updateContext.CODEX_CONFIG_MARKER);
+  });
+
+  test('detection requires the marker where inferPreferredRuntime does not', () => {
+    // THE DIVERGENCE POINT (deliberate, not a bug — see the header comment on
+    // CODEX_CONFIG_HOME_ENV in src/host-runtime-detection.cts and the "Host
+    // Runtime Detection Module" entry in CONTEXT.md). With CODEX_HOME set and
+    // NO config.toml present:
+    //   - inferPreferredRuntime resolves an UPDATE CONTEXT, where a bare
+    //     CODEX_HOME is a sufficient hint -> 'codex'.
+    //   - detectHostRuntime asserts SESSION IDENTITY and requires the
+    //     stronger marker-file signal -> no detection (null).
+    // This test exists so that difference is a recorded decision rather than
+    // an accident: it fails loudly if either side's rule ever changes.
     const dir = path.join(os.tmpdir(), 'not-a-real-codex-home');
     const env = { CODEX_HOME: dir };
 
@@ -424,9 +526,8 @@ describe('parity with update-context.cjs:inferPreferredRuntime (generative-fix-d
     });
     assert.strictEqual(inferred, 'codex');
 
-    const spy = spyFileExists([path.join(dir, 'config.toml')]);
-    const detected = detectHostRuntime({ env, fileExists: spy });
-    assert.strictEqual(detected.runtime, 'codex');
+    const detected = detectHostRuntime({ env, fileExists: () => false });
+    assert.strictEqual(detected.runtime, null);
   });
 
   test('config.toml is the shared codex marker filename', () => {

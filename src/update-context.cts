@@ -35,6 +35,13 @@ export const RUNTIME_DIRS: RuntimeDirEntry[] = [
 
 const SEMVER_PREFIX = /^\d+\.\d+\.\d+/;
 
+// Shared Codex config-root marker filename. Single-sourced here (this module
+// is the pre-existing, dependency-free owner) and re-exported by
+// host-runtime-detection.cts, whose detection rung reuses this exact probe
+// filename (though NOT the truthiness rule below — see that module's header
+// comment for the deliberate divergence).
+export const CODEX_CONFIG_MARKER = 'config.toml';
+
 function expandHome(p: string | undefined | null, home: string): string {
   if (!p) return '';
   return p.startsWith('~/') ? path.join(home, p.slice(2)) : p;
@@ -81,7 +88,7 @@ export function inferPreferredRuntime({ fs, env, preferredConfigDir }: InferPref
         fs.exists(path.join(preferredConfigDir, 'kilo.jsonc'))) return 'kilo';
     if (fs.exists(path.join(preferredConfigDir, 'opencode.json')) ||
         fs.exists(path.join(preferredConfigDir, 'opencode.jsonc'))) return 'opencode';
-    if (fs.exists(path.join(preferredConfigDir, 'config.toml'))) return 'codex';
+    if (fs.exists(path.join(preferredConfigDir, CODEX_CONFIG_MARKER))) return 'codex';
   }
   if (env['CODEX_HOME']) return 'codex';
   if (env['ANTIGRAVITY_CONFIG_DIR']) return 'antigravity';
