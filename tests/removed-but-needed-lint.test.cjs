@@ -16,12 +16,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-removed-but-needed.cjs');
 const { referencesBasename, referencesNpmLockfileDependency, findSurvivingReferences, scan } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 describe('removed-but-needed lint: referencesBasename (pure)', () => {
   test('a plain filename reference in prose is found', () => {
@@ -117,7 +118,7 @@ describe('removed-but-needed lint: the live repo (against origin/next) is clean'
  * @param {Array<{file: string, content: string|null}>} prFiles - null content deletes
  */
 function buildTempRepo(tmpDir, baseFiles, prFiles) {
-  const git = (...args) => cp.execFileSync('git', args, { cwd: tmpDir, encoding: 'utf8' });
+  const git = (...args) => gitOrThrow(args, { cwd: tmpDir });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 'test@example.com');
   git('config', 'user.name', 'Test');
@@ -179,12 +180,11 @@ describe('removed-but-needed lint: main() end-to-end wiring', () => {
       [{ file: 'package-lock.json', content: null }],
     );
     const scriptCopy = copyScriptInto(tmpDir);
-    const result = cp.spawnSync(
-      process.execPath,
+    const result = runNode(
       [scriptCopy],
-      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' }, encoding: 'utf8' },
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
     );
-    assert.equal(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}: ${result.stderr}`);
     assert.match(result.stderr, /REMOVED-BUT-NEEDED/);
   });
 
@@ -200,18 +200,17 @@ describe('removed-but-needed lint: main() end-to-end wiring', () => {
       [{ file: 'package-lock.json', content: null }],
     );
     const scriptCopy = copyScriptInto(tmpDir);
-    const result = cp.spawnSync(
-      process.execPath,
+    const result = runNode(
       [scriptCopy],
-      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' }, encoding: 'utf8' },
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
     );
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
   });
 
   test('gracefully skips (exit 0) when the base ref cannot be resolved', (t) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-removed-but-needed-e2e-noref-'));
     t.after(() => cleanup(tmpDir));
-    const git = (...args) => cp.execFileSync('git', args, { cwd: tmpDir, encoding: 'utf8' });
+    const git = (...args) => gitOrThrow(args, { cwd: tmpDir });
     git('init', '-q', '-b', 'main');
     git('config', 'user.email', 'test@example.com');
     git('config', 'user.name', 'Test');
@@ -220,12 +219,11 @@ describe('removed-but-needed lint: main() end-to-end wiring', () => {
     git('commit', '-q', '-m', 'only commit');
     const scriptCopy = copyScriptInto(tmpDir);
 
-    const result = cp.spawnSync(
-      process.execPath,
+    const result = runNode(
       [scriptCopy],
-      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'nonexistent-branch' }, encoding: 'utf8' },
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'nonexistent-branch' } },
     );
-    assert.equal(result.status, 0, `expected graceful skip (exit 0), got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 0, `expected graceful skip (exit 0), got ${result.exitCode}: ${result.stderr}`);
     assert.match(result.stdout, /skipping/);
   });
 });

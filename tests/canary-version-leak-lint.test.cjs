@@ -13,7 +13,6 @@ process.env.GSD_TEST_MODE = '1';
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -23,6 +22,7 @@ const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-canary-version-leak.cjs');
 const { isCanaryVersion, readPackageVersion } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 describe('canary-version-leak lint: isCanaryVersion (pure)', () => {
   test('a plain release version is not canary', () => {
@@ -86,8 +86,8 @@ describe('canary-version-leak lint: main() end-to-end wiring', () => {
   }
 
   test('exit 0 on a clean version (real package.json, 1.8.0)', () => {
-    const result = cp.spawnSync(process.execPath, [LINT_SCRIPT], { cwd: ROOT, encoding: 'utf8' });
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    const result = runNode([LINT_SCRIPT], { cwd: ROOT });
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
   });
 
   test('exit 1 on a fixture package.json carrying a -canary.<N> suffix (never touches the real package.json)', (t) => {
@@ -102,8 +102,8 @@ describe('canary-version-leak lint: main() end-to-end wiring', () => {
     const scriptCopy = path.join(scriptCopyDir, 'lint-canary-version-leak.cjs');
     fs.copyFileSync(LINT_SCRIPT, scriptCopy);
 
-    const result = cp.spawnSync(process.execPath, [scriptCopy], { encoding: 'utf8' });
-    assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
+    const result = runNode([scriptCopy]);
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}`);
     assert.match(result.stderr, /canary-version-leak/);
   });
 });

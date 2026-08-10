@@ -27,12 +27,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-default-flip-documentation.cjs');
 const { flatten, findDefaultValueChanges, evaluateDefaultFlipDoc, MANIFEST_PATH } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 describe('default-flip-documentation lint: flatten (pure)', () => {
   test('flattens a nested object into dot-path leaves', () => {
@@ -102,7 +103,7 @@ describe('default-flip-documentation lint: evaluateDefaultFlipDoc (pure)', () =>
 });
 
 describe('default-flip-documentation lint: main() end-to-end wiring', () => {
-  const git = (dir, ...args) => cp.execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const git = (dir, ...args) => gitOrThrow(args, { cwd: dir });
 
   function buildRepo(tmpDir, baseManifest, headManifest) {
     git(tmpDir, 'init', '-q', '-b', 'main');
@@ -132,13 +133,11 @@ describe('default-flip-documentation lint: main() end-to-end wiring', () => {
   function runWithPrBody(tmpDir, scriptCopy, prBody) {
     const eventPath = path.join(tmpDir, 'event.json');
     fs.writeFileSync(eventPath, JSON.stringify({ pull_request: { body: prBody } }));
-    return cp.spawnSync(
-      process.execPath,
+    return runNode(
       [scriptCopy],
       {
         cwd: tmpDir,
         env: { ...process.env, GITHUB_BASE_REF: 'main', GITHUB_EVENT_PATH: eventPath },
-        encoding: 'utf8',
       },
     );
   }
@@ -152,7 +151,7 @@ describe('default-flip-documentation lint: main() end-to-end wiring', () => {
       { workflow: { human_verify_mode: 'end-of-phase' } },
     );
     const result = runWithPrBody(tmpDir, scriptCopy, 'Flips the default. No migration notes.');
-    assert.equal(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}: ${result.stderr}`);
     assert.match(result.stderr, /DEFAULT-FLIP-DOCUMENTATION/);
   });
 
@@ -169,7 +168,7 @@ describe('default-flip-documentation lint: main() end-to-end wiring', () => {
       scriptCopy,
       '## Breaking Changes\n\nNew default takes effect when config.json is regenerated; opt back in with `gsd config-set workflow.human_verify_mode mid-flight`.',
     );
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
   });
 
   test('LOOKALIKE: manifest restructured/reformatted with identical resolved values does NOT fail, even with no Breaking Changes section', (t) => {
@@ -181,19 +180,18 @@ describe('default-flip-documentation lint: main() end-to-end wiring', () => {
       { workflow: { y: false, x: true }, a: 1 },
     );
     const result = runWithPrBody(tmpDir, scriptCopy, 'Pure reformat, no PR body sections at all.');
-    assert.equal(result.status, 0, `expected exit 0 (no real value change), got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 0, `expected exit 0 (no real value change), got ${result.exitCode}: ${result.stderr}`);
   });
 
   test('exit 0 and skip when there is no PR event payload (push / local run)', (t) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-default-flip-e2e-noevent-'));
     t.after(() => cleanup(tmpDir));
     const scriptCopy = buildRepo(tmpDir, { a: 1 }, { a: 2 });
-    const result = cp.spawnSync(
-      process.execPath,
+    const result = runNode(
       [scriptCopy],
-      { cwd: tmpDir, env: { ...process.env, GITHUB_BASE_REF: 'main', GITHUB_EVENT_PATH: '' }, encoding: 'utf8' },
+      { cwd: tmpDir, env: { ...process.env, GITHUB_BASE_REF: 'main', GITHUB_EVENT_PATH: '' } },
     );
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
     assert.match(result.stdout, /skipping/);
   });
 });

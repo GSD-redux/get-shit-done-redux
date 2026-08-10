@@ -17,12 +17,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-frontmatter-scalar-broad-grep.cjs');
 const { findBroadGrepsInBlock, extractBashBlocks, scan } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 describe('frontmatter-scalar-broad-grep lint: findBroadGrepsInBlock (pure)', () => {
   test('the real #586/#651 defect shape IS flagged: whole-file grep, no scope, no -m1, piped to cut|tr', () => {
@@ -124,8 +124,8 @@ describe('frontmatter-scalar-broad-grep lint: the live repo is clean', () => {
 
 describe('frontmatter-scalar-broad-grep lint: main() end-to-end wiring', () => {
   test('exit 0 on the real repo tree', () => {
-    const result = cp.spawnSync(process.execPath, [LINT_SCRIPT], { cwd: ROOT, encoding: 'utf8' });
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    const result = runNode([LINT_SCRIPT], { cwd: ROOT });
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
   });
 
   test('exit 1 on a fixture reproducing the real defect shape', (t) => {
@@ -149,8 +149,8 @@ describe('frontmatter-scalar-broad-grep lint: main() end-to-end wiring', () => {
     fs.mkdirSync(path.join(scriptCopyDir, 'lib'), { recursive: true });
     fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(scriptCopyDir, 'lib', 'cli-exit.cjs'));
 
-    const result = cp.spawnSync(process.execPath, [scriptCopy], { encoding: 'utf8' });
-    assert.equal(result.status, 1, `expected exit 1, got ${result.status}`);
+    const result = runNode([scriptCopy]);
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}`);
     assert.match(result.stderr, /FRONTMATTER-SCALAR-BROAD-GREP/);
   });
 
@@ -175,7 +175,7 @@ describe('frontmatter-scalar-broad-grep lint: main() end-to-end wiring', () => {
     fs.mkdirSync(path.join(scriptCopyDir, 'lib'), { recursive: true });
     fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(scriptCopyDir, 'lib', 'cli-exit.cjs'));
 
-    const result = cp.spawnSync(process.execPath, [scriptCopy], { encoding: 'utf8' });
-    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    const result = runNode([scriptCopy]);
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
   });
 });
