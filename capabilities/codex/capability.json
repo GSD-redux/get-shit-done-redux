@@ -42,6 +42,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "shell-var",
     "hooksSurface": "codex-hooks-json",
     "hookEvents": "claude",
@@ -87,8 +88,7 @@
       "tomlConfigInstall": true,
       "cleanupSkillSidecars": true,
       "agentTomlFiles": true,
-      "frontmatterDialect": "codex",
-      "reviewerCli": true
+      "frontmatterDialect": "codex"
     }
   },
   "reviewer": {

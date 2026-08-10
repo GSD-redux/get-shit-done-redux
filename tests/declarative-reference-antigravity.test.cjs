@@ -174,7 +174,10 @@ test('capabilities/antigravity/capability.json validates — subagentToolkit "fu
 test('antigravity descriptor declares runtime.hostBehaviors (the folded-in behaviors) + the subagentToolkit upgrade', () => {
   const hb = ANTIGRAVITY_CAP.runtime.hostBehaviors;
   assert.ok(hb && typeof hb === 'object');
-  assert.equal(hb.reviewerCli, true);
+  // `reviewerCli` was one of the folded-in behaviors originally; ADR-2782
+  // Phase 7 (#2801) removed the alias — antigravity's reviewer lane is declared
+  // by its `reviewer` body now, not by a boolean in the open hostBehaviors bag.
+  assert.equal(Object.prototype.hasOwnProperty.call(hb, 'reviewerCli'), false);
   assert.equal(hb.projectInstructionFile, 'GEMINI.md');
   assert.equal(hb.noPathRewrite, true);
   assert.equal(hb.hookPathStyle, 'raw');

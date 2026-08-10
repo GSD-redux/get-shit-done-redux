@@ -169,7 +169,7 @@ project one is reported, since that is the file you are most likely able to fix.
 | `mode` | enum | `interactive`, `yolo` | `interactive` | `yolo` auto-approves decisions; `interactive` confirms at each step |
 | `granularity` | enum | `coarse`, `standard`, `fine` | `standard` | Controls phase count: `coarse` (2-4), `standard` (4-6), `fine` (6-10) |
 | `model_profile` | enum | `quality`, `balanced`, `budget`, `adaptive`, `inherit` | `balanced` | Model tier for each agent (see [Model Profiles](#model-profiles)). `adaptive` was added per [#1713](https://github.com/open-gsd/gsd-core/issues/1713) / [#1806](https://github.com/open-gsd/gsd-core/issues/1806) and resolves the same way as the other tiers under runtime-aware profiles. |
-| `runtime` | string | `claude`, `codex`, or any string | (none) | Active runtime for [runtime-aware profile resolution](#runtime-aware-profiles-2517). When set, profile tiers (opus/sonnet/haiku) resolve to runtime-native model IDs. The resolved ID is embedded into each agent's static frontmatter at install time on `codex` and `opencode` (whose `task` / `spawn_agent` interfaces do not accept an inline `model` parameter, so editing `model_overrides` requires re-running `gsd install <runtime>` to take effect — see [Per-Agent Overrides](#per-agent-overrides)); other runtimes consume the resolver at spawn time. When unset (default), behavior is unchanged from prior versions. Added in v1.39 |
+| `runtime` | string | `claude`, `codex`, or any string | (none) | Active runtime for [runtime-aware profile resolution](#runtime-aware-profiles-2517). When set, profile tiers (opus/sonnet/haiku) resolve to runtime-native model IDs. The resolved ID is embedded into each agent's static frontmatter at install time on `opencode` (whose `spawn_agent` interface does not accept an inline `model` parameter, so editing `model_overrides` requires re-running `gsd install <runtime>` to take effect — see [Per-Agent Overrides](#per-agent-overrides)); other runtimes consume the resolver at spawn time. **`codex` is the exception: it embeds no per-tier model at all.** Codex is a passive / session-only model host ([ADR-2313](adr/2313-codex-passive-model-posture.md)) — a ChatGPT-account session exposes only its own model, so a pinned tier model returns `400 invalid_request_error` and the agent fails to spawn. Codex agents therefore inherit the session model, and only an explicit real-Codex id in `model_overrides` (e.g. `"gpt-5.6-sol"`) is written into the `.toml`. When unset (default), behavior is unchanged from prior versions. Added in v1.39; Codex behavior changed in v1.11 |
 | `model_profile_overrides.<runtime>.<tier>` | string \| object | per-runtime tier override | (none) | Override the runtime-aware tier mapping for a specific `(runtime, tier)`. Tier is one of `opus`, `sonnet`, `haiku`. Value is either a model ID string (e.g. `"gpt-5-pro"`) or `{ model, reasoning_effort }`. See [Runtime-Aware Profiles](#runtime-aware-profiles-2517). Added in v1.39 |
 | `model_policy.provider` | string | `openai`, `anthropic`, `anthropic-fable`, `google`, `qwen`, `generic` | (none) | Declares the model provider. Known providers (`openai`, `anthropic`, `anthropic-fable`, `google`, `qwen`) unlock catalog-backed presets. `generic` treats all model IDs as opaque strings — no prefix inference, no reasoning-effort defaults. `model_policy.runtime_tiers` resolves before legacy `model_profile_overrides`. See [Model Policy Presets](#model-policy-presets-model_policy--added-in-v142). Added in v1.42 ([#49](https://github.com/open-gsd/gsd-core/issues/49)) |
 | `model_policy.budget` | enum | `high`, `medium`, `low` | (none) | Selects a budget tier when using a known provider. GSD materializes the matching catalog preset into explicit tier mappings at resolve time. Ignored when `provider` is `generic` or `custom`. Added in v1.42 ([#49](https://github.com/open-gsd/gsd-core/issues/49)) |
@@ -777,6 +777,18 @@ When multiple developers rebuild the graph in the same repository, `graphify hoo
 A CI-built graph rebuilt minutes ago against an old checkout will read as
 fresh on mtime but `commit_stale: true`. Surface both when answering
 architecture questions.
+
+<a id="refactor-trigger-settings"></a>
+### Refactor-Trigger Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `refactor.trigger_enabled` | boolean | `false` | Enable the complexity-triggered refactor hook. When `true`, an `execute:post` step evaluates the complexity of the files the phase touched and writes a scoped refactor proposal if a function crosses `refactor.complexity_threshold` or jumps past `refactor.complexity_jump_delta`. Opt-in; when `false` the hook never runs. Added in v1.10.0 (#1953) |
+| `refactor.complexity_threshold` | number | `15` | Absolute per-function complexity above which a refactor proposal is surfaced. Semantics match ESLint's `complexity: {max: N}` — the trigger is strictly greater, so a score of exactly `N` does not trigger. Default `15` follows SonarSource's default; ESLint's own default is `20` and radon's rank C begins at `11`. Raise it if proposals feel like noise. Added in v1.10.0 |
+| `refactor.complexity_jump_delta` | number | `5` | Complexity growth above which a refactor proposal is surfaced even when the absolute threshold is not reached. Measured against the function's anchor — the score recorded the last time the function was consciously dispositioned (`refactor accept`/`refactor decline`) — so it accumulates across phases and catches slow creep the absolute threshold would miss. Strictly greater, as with the threshold. Added in v1.10.0 |
+| `refactor.trigger_strict` | boolean | `false` | Record an untriaged refactor proposal as an open `deviation` entry in the broken-windows ledger, so it becomes a tracked task that must be resolved before ship. Off by default and deliberately so: a blocking complexity number is a metric an executor can satisfy by splitting one coherent function into two incoherent ones, so the entry clears on the proposal being dispositioned (`gsd-tools refactor accept\|decline`), never on the score improving. Ship blocking is the broken-windows capability's existing `ship:pre` gate — enable it separately with `workflow.windows_enforce`. With broken-windows absent, strict mode still records the proposal locally and says so; it cannot block on its own. Enabling `refactor.trigger_strict` without also enabling `workflow.windows_enforce` (or with broken-windows not installed) surfaces a typed `refactor_strict_not_enforcing` warning on every triggering `refactor evaluate`, naming the exact remediation. Advisory mode (the default) surfaces the same proposal and tracks nothing. Added in v1.10.0 |
+
+See [ADR-1953](adr/1953-complexity-triggered-refactor.md) for the design rationale, including why the anchor moves only on disposition and never on the score improving.
 
 ### Usage
 
@@ -1517,6 +1529,18 @@ The intent is the same as the Claude profile tiers -- use a stronger model for p
 | `false` (default) | Returns Claude aliases (`opus`, `sonnet`, `haiku`) | Claude Code with native Anthropic API |
 | `true` | Maps aliases to full Claude model IDs (`claude-opus-4-8`) | Claude Code with API that requires full IDs |
 | `"omit"` | Returns empty string (runtime picks its default) | Non-Claude runtimes (Codex, OpenCode, Antigravity CLI, Kilo) |
+
+### The `tier` Field
+
+`node gsd-tools.cjs query resolve-model <agent> --pick tier` returns the tier GSD resolved for that agent, independent of `resolve_model_ids`: `opus` | `sonnet` | `haiku` | `fable` | `inherit` | `unknown`. It is also emitted as a `tier` key in the command's full JSON output.
+
+`tier` is computed above the `resolve_model_ids: "omit"` gate, so it stays meaningful exactly where `model` does not — every non-Claude install (blank under `"omit"`) and any install where the runtime's tier map substitutes a name (e.g. `gpt-5.6-luna` for the haiku tier on Codex).
+
+`tier` accounts for every step that can change which tier runs, including a `model_policy` preset — a preset resolves after the profile tier and can dispatch a different one, so `model_policy: {provider: anthropic, budget: low}` under a `balanced` profile reports `haiku`, not `sonnet`.
+
+**Honesty semantics:** a `model_overrides` pin naming a known alias or a mappable full Claude id reports that alias; a pin to an unmappable raw model id reports `unknown`; a policy-resolved model that maps to no alias — including every non-Claude runtime, where the policy model is passed through verbatim — reports `unknown` rather than falling back to the profile tier; `model_profile: inherit` reports `inherit`; an agent with no catalog entry reports `unknown`. `tier` never guesses, so treat `unknown` and `inherit` as *cannot tell*, never as *adequate*.
+
+**One limit:** a `model_profile_overrides.<runtime>.<tier>` entry that repoints a tier at another tier's model makes `tier` report the tier that was asked for, not the tier of the model that answers.
 
 ### Runtime-Aware Profiles (#2517)
 
