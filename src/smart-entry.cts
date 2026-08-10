@@ -47,7 +47,7 @@ import phaseLifecycle = require('./phase-lifecycle.cjs');
 const { deriveProgressFromRoadmap } = phaseLifecycle;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateDocument = require('./state-document.cjs');
-const { stateExtractField } = stateDocument;
+const { stateFieldValue } = stateDocument;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseId = require('./phase-id.cjs');
 const { comparePhaseNum, extractPhaseToken, normalizePhaseName, phaseTokenMatches } = phaseId;
@@ -139,14 +139,6 @@ export const SITUATIONS: readonly Situation[] = Object.freeze([
 ]);
 
 // ─── Detection ─────────────────────────────────────────────────────────────────
-
-/** Frontmatter scalar helper: prefer YAML frontmatter, fall back to body field. */
-function fmScalar(fm: Record<string, unknown>, body: string, key: string, bodyField: string): string | null {
-  const v = fm[key];
-  if (typeof v === 'string' && v.trim()) return v.trim();
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  return stateExtractField(body, bodyField);
-}
 
 /** Read a scalar value from a nested frontmatter object (e.g. progress.total_phases). */
 function fmScalarKey(obj: unknown, key: string): string | null {
@@ -324,26 +316,34 @@ export function detectSignals(cwd: string, now: () => number = Date.now): SmartE
   //   - body prose:         `Phase: 3`, `**Status:** verifying`, `Total Phases: 5`
   // Read each field across every form, scalar-first then nested then body, so
   // the classifier works on real STATE.md files written by current GSD.
-  const statusRaw = fmScalar(fm, body, 'status', 'Status');
-  const pausedAtRaw = fmScalar(fm, body, 'paused_at', 'Paused At');
-  const lastActivityRaw = fmScalar(fm, body, 'last_activity', 'Last Activity');
+  const statusRaw = stateFieldValue(fm, body, 'status', 'Status').value;
+  const pausedAtRaw = stateFieldValue(fm, body, 'paused_at', 'Paused At').value;
+  const lastActivityRaw = stateFieldValue(fm, body, 'last_activity', 'Last Activity').value;
 
   // current_phase: scalar fm → nested (none) → body "Current Phase" → body "Phase".
   // The body `Phase:` field is the canonical location in prose-form STATE.md
   // (e.g. "Phase: 3" or "Phase: 3 — ui-review"); parse the leading number.
+  // #3187 / ADR-3180 Amendment 3 ("0.x split"): this read is DELIBERATELY
+  // unscoped — smart-entry classifies `gsd next` routing over the whole body,
+  // whereas state.cts's copies of this same field scope it to `## Current
+  // Position` (#1776/#2956). Those are two different questions sharing a
+  // name; folding the scoped read in here would silently change smart-entry's
+  // routing, an undisclosed Tier-2 change (design's Rejected #3). Both owner
+  // calls below intentionally pass the unscoped `body`, never a Current-
+  // Position slice.
   const currentPhaseRaw =
-    fmScalar(fm, body, 'current_phase', 'Current Phase') ??
-    stateExtractField(body, 'Phase');
+    stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ??
+    stateFieldValue(fm, body, null, 'Phase').value;
 
   // total_phases & percent: nested `progress:` object takes precedence in the
   // nested schema; scalar fm / body fields cover the flat schema.
   const progressFm = typeof fm.progress === 'object' ? fm.progress : null;
   const totalPhasesRaw: string | null =
     fmScalarKey(progressFm, 'total_phases') ??
-    fmScalar(fm, body, 'total_phases', 'Total Phases');
+    stateFieldValue(fm, body, 'total_phases', 'Total Phases').value;
   const progressRaw: string | null =
     fmScalarKey(progressFm, 'percent') ??
-    fmScalar(fm, body, 'progress', 'Progress');
+    stateFieldValue(fm, body, 'progress', 'Progress').value;
 
   // Blockers list: `- <text>` items under a `## Blockers` heading.
   const blockers: string[] = [];

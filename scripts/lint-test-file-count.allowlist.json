@@ -56,9 +56,10 @@
         "runtime-artifact-layout-descriptor-drive.test.cjs",
         "runtime-artifact-layout-install-profiles.test.cjs",
         "runtime-artifact-layout-surface.test.cjs",
+        "runtime-artifact-layout-trigger-surface.test.cjs",
         "runtime-artifact-layout.test.cjs"
       ],
-      "issue": "TBD"
+      "issue": "2871"
     },
     "security": {
       "files": [
@@ -73,6 +74,7 @@
       "files": [
         "state-acquirestatelock-non-eexist.test.cjs",
         "state-command-cutover.test.cjs",
+        "state-field-drift.test.cjs",
         "state-prune.test.cjs",
         "state-rebuild-cli.test.cjs",
         "state-rebuild.test.cjs",

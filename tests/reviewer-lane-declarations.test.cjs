@@ -267,13 +267,16 @@ describe('B. The six existing runtime capabilities', () => {
    * vice versa) — together these catch "the sibling edit corrupted this
    * body" without requiring line-for-line duplication.
    */
+  // #2871 Phase 2 added `triggerPrecedence` (required-with-default) to every
+  // runtime body — a real, deliberate key-set change, not drift. Reflected
+  // here in sorted position, same as every other key in these snapshots.
   const EXPECTED_RUNTIME_KEYS = {
-    antigravity: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
-    claude: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'harnessIsolationFlag', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
-    codex: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'orchestratorExec', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
-    cursor: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'harnessIsolationFlag', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
-    opencode: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'extensionEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'orchestratorExec', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
-    qwen: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'writesSharedSettings'],
+    antigravity: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    claude: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'harnessIsolationFlag', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    codex: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'orchestratorExec', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    cursor: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'harnessIsolationFlag', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    opencode: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'extensionEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'orchestratorExec', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    qwen: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
   };
 
   test('runtimeBodiesAreUnchangedByLaneDeclaration', () => {

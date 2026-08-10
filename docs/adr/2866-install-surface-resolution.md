@@ -3,8 +3,50 @@
 - **Status:** Accepted
 - **Date:** 2026-08-09
 - **Issue:** [#2866](https://github.com/open-gsd/gsd-core/issues/2866) (epic); Phase 0 tracked by [#2869](https://github.com/open-gsd/gsd-core/issues/2869)
-- **Amends:** [ADR-3660](3660-runtime-artifact-layout-module.md) (widens the Runtime Artifact Layout Module from placement-only to placement **+** trigger resolution) and [ADR-1016](1016-runtime-capability-descriptor.md) (adds one axis — host trigger precedence — to its closed descriptor vocabulary). Neither is superseded; both remain `Accepted` and live, and both carry the reciprocal `Amended by` field. The decision is recorded now; the modules change at Phase 2 — see [Reciprocal amendment notes](#reciprocal-amendment-notes).
+- **Amends:** [ADR-3660](3660-runtime-artifact-layout-module.md) (widens the Runtime Artifact Layout Module from placement-only to placement **+** trigger resolution) and [ADR-1016](1016-runtime-capability-descriptor.md) (adds one axis — host trigger precedence — to its closed descriptor vocabulary). Neither is superseded; both remain `Accepted` and live, and both carry the reciprocal `Amended by` field. Both widenings shipped in Phase 2 ([#2871](https://github.com/open-gsd/gsd-core/issues/2871)) — see [Reciprocal amendment notes](#reciprocal-amendment-notes).
 - **Relationship to prior work:** *completes* [ADR-58](58-runtime-install-policy-module.md) rather than revising it (its rollout's cleanup step never landed); preserves [ADR-1508](1508-runtime-artifact-conversion-module.md)'s dependency direction (installer/layout → conversion, never upward); Phase 3's manifest schema bump is [ADR-0008](0008-installer-migration-module.md) territory; Phase 2's schema change is additive-with-default per [ADR-894](894-capability-declaration-format.md). Like the adapters it touches, this ADR sits **beneath** [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (EoS) — it widens one negotiated surface of the Host-Integration Interface; it does not re-answer how GSD meets a host.
+
+## Amendment (2026-08-10): `agents` is not a trigger-bearing kind — claude's disjointness is `commands` vs `skills`, not `commands, agents` vs `skills`
+
+**Phase 2 (#2871) found, while implementing `resolveTriggerSurface`, that the Context table above
+(row `claude`) and this ADR's own prose both mis-describe claude's local scope.** `local=[commands,
+agents]` is correct as a *placement* fact — both kinds are emitted locally — but the row's label,
+"the only runtime whose scopes emit **disjoint trigger-bearing kinds**", overstates it: `agents` is
+not trigger-bearing at all.
+
+- [`docs/reference/host-integration-capability-matrix.md`](../reference/host-integration-capability-matrix.md)
+  already models `command` and `dispatch` as two **separate** interface points — `command` is
+  "slash-command routing and invocation", `dispatch` is "subagent/multi-agent dispatch". Claude's
+  own row cites `dispatch.namedDispatch: true` with the evidence `agents: { … subagent_type:
+  block.inp }`: an agent is invoked through the Agent/Task tool's `subagent_type`, not by a user
+  typing `/gsd-<name>`.
+- `_copyStaged` (`install-engine.cts:404-493`) never applies `kind.prefix` to an `agents` kind — the
+  filename passes through verbatim (L474-483). An agent stem carries `gsd-` because the *source
+  file* is named `gsd-planner.md`, a filesystem convention, not a trigger registration.
+
+**Consequence for this ADR:** the claude row's shape is `global=[skills]`, `local=[commands,
+agents]` unchanged (placement), but the trigger-bearing collision it describes is strictly
+**`commands` vs `skills`** — `agents` plays no part in it. `resolveTriggerSurface`
+(`runtime-artifact-layout.cts`, Phase 2) returns `commands` and `skills` only; `agents` and
+`kimi-agents` are absent from its output entirely.
+
+**#2218 itself is unaffected by this correction.** Claude global emits `skills`; claude local emits
+`commands`; both derive from the same `commands/gsd/*.md` stems, so the entire local `/gsd-*`
+**trigger** surface is still fully shadowed exactly as this ADR's Context section describes — "the
+whole local surface vanishes rather than merely being overridden" remains true as written, because
+it is scoped to the `/gsd-*` trigger surface, and that surface never included `agents` in the first
+place. What changes is precision, not outcome: the local *agents* surface (subagent dispatch) is a
+different interface point, is not shadowed by the global skills install, and this ADR should not
+have implied it was.
+
+This correction is also why `windsurf`'s row above reads correctly without amendment: its
+`global=[agents]` already correctly describes "no command trigger" (agents were never counted as
+one), which is exactly the case Phase 2's test suite locks in as "windsurf must not report a shadow
+it does not have."
+
+No decision in this ADR changes as a result — Phase 2's `resolveTriggerSurface` signature, the
+`triggerPrecedence` axis, and the phase map above were all designed against the corrected model.
+See `.gsd/phase/feat-2871-trigger-resolution/40-design.md` for the full analysis.
 
 ## Context
 
@@ -111,7 +153,7 @@ Recorded explicitly, because an ADR that quietly ratifies these would be launder
 
 [ADR-3660](3660-runtime-artifact-layout-module.md) and [ADR-1016](1016-runtime-capability-descriptor.md) each carry an `Amended by: ADR-2866` back-reference, added in this same PR — the corpus's established practice for an amendment relation ([ADR-1016](1016-runtime-capability-descriptor.md) already carries the equivalent field for [ADR-2782](2782-reviewer-lane-capability-surface.md)). A one-way pointer is the failure mode this corpus has actually suffered: a reader landing on the amended file learns nothing about the decision that moved it.
 
-Each back-reference states **when the widening takes effect** — the decision is recorded now (this ADR is `Accepted`); the shipped modules still resolve placement only until Phase 2 ([#2871](https://github.com/open-gsd/gsd-core/issues/2871)) lands. Recording the relation without that timing note would tell a reader the layout module already resolves triggers, which would be false for four phases.
+Each back-reference states **when the widening takes effect** — the decision was recorded when this ADR became `Accepted`, while the shipped modules still resolved placement only until Phase 2 ([#2871](https://github.com/open-gsd/gsd-core/issues/2871)) landed; both back-references now describe a widening that has actually shipped. Recording the relation without that timing note would have told a reader the layout module already resolved triggers before it did, which would have been false for four phases.
 
 *Mechanical note for future readers:* `scripts/gen-adr-index.cjs` tracks only `Supersedes`/`Subsumes` and their inverses. **`Amends` is not machine-checked in either direction** — the back-links above are a convention this ADR honors deliberately, not something the gate would have caught had they been omitted.
 

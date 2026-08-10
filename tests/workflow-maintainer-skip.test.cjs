@@ -7,6 +7,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const yaml = require('js-yaml');
+
+const { evaluateIssueLink, ISSUE_LINK_REASON } = require('../scripts/require-issue-link-policy.cjs');
 
 const MAINTAINER_SKIP_EXPR = 'contains(fromJSON(\'["OWNER","MEMBER","COLLABORATOR"]\'), github.event.pull_request.author_association) == false';
 
@@ -261,26 +264,65 @@ describe('PR policy workflow maintainer carve-outs', () => {
 });
 
 describe('Require Issue Link back-merge automation carve-out', () => {
-  test('the fail step is skipped for same-repo auto-backmerge PRs', () => {
+  // #3211 moved the whole verdict — including the #1389 backmerge carve-out —
+  // out of the YAML `if:` and into scripts/require-issue-link-policy.cjs
+  // (evaluateIssueLink), renaming the step from `check`/`found` to
+  // `policy`/`ok`. The old assertions here measured the carve-out's PREVIOUS
+  // location (raw `startsWith(github.head_ref, ...)` / `head.repo.full_name`
+  // text inside the workflow's `if:`) and went stale once that logic
+  // relocated — the property they guarded still holds, just not at that
+  // text. This test locks the property at its new home: (a)+(b) assert the
+  // workflow now delegates to the policy module at the correct step-level
+  // `if:`, (c) asserts the carve-out itself BEHAVIORALLY against the real
+  // module, and (d) keeps the bootstrap fallback's legacy grep locked so the
+  // introducing-PR path (before the module exists on the base branch) is
+  // never silently open.
+  test('the backmerge carve-out survives the move into the policy module', () => {
     const workflow = readWorkflow('.github/workflows/require-issue-link.yml');
 
-    // Auto-backmerge PRs (chore/backmerge-main-to-next-*) map to no issue, and a
-    // `Closes #N` would pollute the released CHANGELOG. The fail step must carve
-    // them out — keyed on the workflow-authored branch name AND same-repo
-    // identity so a fork PR cannot forge the exemption (#1389).
-    assert.match(
-      workflow,
-      /startsWith\(github\.head_ref, 'chore\/backmerge-main-to-next-'\)/
-    );
-    assert.match(
-      workflow,
-      /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/
+    // (a) The failing step's `if:` is keyed on the policy output and is
+    // STEP-level, not job-level. A job-level `if:` would make the required
+    // "Issue link required" check report `skipped` instead of `success` on
+    // an exempt PR, which blocks branch protection (#1389).
+    assert.match(workflow, /if: steps\.policy\.outputs\.ok != 'true'/);
+
+    const doc = yaml.load(workflow);
+    assert.equal(
+      doc.jobs['check-issue-link'].if,
+      undefined,
+      'job-level `if:` would report "skipped" on an exempt PR and block branch protection (#1389)'
     );
 
-    // The carve-out must live on the failing step's `if:` alongside the
-    // found=='false' check (step-level, so the required check still reports
-    // SUCCESS rather than a branch-protection-blocking "skipped").
-    assert.match(workflow, /steps\.check\.outputs\.found == 'false'/);
+    // (b) The workflow delegates the verdict to the policy module.
+    assert.match(workflow, /node scripts\/require-issue-link-policy\.cjs/);
+
+    // (c) The carve-out itself still holds — asserted BEHAVIORALLY against
+    // the real module rather than by grepping YAML, since the verdict no
+    // longer lives in the YAML text at all.
+    const backmergeArgs = {
+      prBody: 'Automated backmerge.',
+      headRef: 'chore/backmerge-main-to-next-20260101',
+      changedFiles: ['src/a.cts'],
+      changedFilesTotal: 1,
+    };
+    assert.equal(
+      evaluateIssueLink({ ...backmergeArgs, sameRepo: true }).reason,
+      ISSUE_LINK_REASON.OK_BACKMERGE_EXEMPT
+    );
+    // #1389 anti-forgery: a fork must not be able to forge the exemption by
+    // branch name alone — dropping the `sameRepo` conjunct would let a fork
+    // PR name its branch `chore/backmerge-main-to-next-*` and bypass the
+    // issue-link requirement entirely.
+    assert.equal(
+      evaluateIssueLink({ ...backmergeArgs, sameRepo: false }).reason,
+      ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE
+    );
+
+    // (d) The bootstrap fallback (used only on the PR that first introduces
+    // the policy module, before it exists on the base branch) still carries
+    // the legacy closing-keyword grep, so the gate is never silently open
+    // during the changeover.
+    assert.match(workflow, /\(closes\|fixes\|resolves\)/);
   });
 });
 

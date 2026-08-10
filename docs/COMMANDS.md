@@ -1736,6 +1736,29 @@ node gsd-tools.cjs roadmap upgrade --convention milestone-prefixed --apply  # ap
 
 ## State Management Commands
 
+### `validate agents`
+
+Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture.
+
+**Prerequisites:** GSD installed for a runtime
+**Produces:** Installed / missing / incomplete agent lists, plus a `codex_posture` report
+
+```bash
+node gsd-tools.cjs validate agents
+```
+
+`codex_posture` is populated only when the active runtime is `codex`; on every other runtime it reports `not_codex` and reads nothing from disk. It is **read-only** — it reports violations and never edits your files.
+
+| Violation reason | Meaning |
+|---|---|
+| `anthropic_flavored_model` | The `.toml` pins a GSD tier alias (`opus`, `sonnet`, `haiku`, `fable`) or a `claude-*` id. Codex rejects these — the agent fails to spawn with a 400 |
+| `orphaned_reasoning_effort` | A `model_reasoning_effort` with no `model`, leaving the model following your Codex session while the effort follows GSD ([#838](https://github.com/open-gsd/gsd-core/issues/838)) |
+| `unreadable` | The file could not be read. Other agents are still checked |
+
+Presence and posture are separate verdicts: a missing agent is reported in `missing`, not as a posture violation. See [ADR-2313](adr/2313-codex-passive-model-posture.md) for the posture itself, and [How to recover and troubleshoot](how-to/recover-and-troubleshoot.md#if-codex-agents-fail-to-spawn-with-a-400-about-an-unsupported-model) for the symptom-led walkthrough.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
@@ -1746,6 +1769,17 @@ Detect drift between STATE.md and the actual filesystem.
 ```bash
 node gsd-tools.cjs state validate
 ```
+
+The report also carries a `scope` field reporting whether the drift derivation could actually run:
+
+| `scope` | Meaning |
+|---|---|
+| `complete` | The derivation ran over usable input — a resolvable phase, a readable disk scan. `valid`/`warnings`/`drift` are a real answer. |
+| `truncated` | Part of the input was cut short (e.g. the phase's plan/summary scan hit its cap) — the answer may be incomplete. |
+| `unscoped` | `Current Phase` could not be resolved from either frontmatter or body — there was nothing to scope the disk lookup to, so the derivation never ran. |
+| `unreadable` | The frontmatter parse or a filesystem read (the phases directory scan) failed — the derivation could not consult its input. |
+
+`valid` is **not** routed from `scope`: `valid` still means "no drift warnings were found," and `scope` says whether the scan could actually run. A freshly-initialized project reports `{valid:true, warnings:[], drift:{}, scope:'unscoped'}` — nothing was wrong, and the phase could not be checked. See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) for how to act on each `scope` value.
 
 ---
 
@@ -1803,6 +1837,21 @@ Record state transition after plan-phase completes (Planned/Ready to execute).
 
 ```bash
 node gsd-tools.cjs state planned-phase --phase 3 --plans 2
+```
+
+---
+
+### `state complete-phase [--phase N]`
+
+Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `Last Activity`, and `## Current Position` fields. `--phase` is optional; when omitted, the phase is resolved from STATE.md's `Current Phase`/`Phase` fields (frontmatter `current_phase` preferred, falling back to the body).
+
+**Idempotency guard (#3489):** if STATE.md's canonical current phase already names a phase distinct from the one being marked complete — including when that phase lives only in frontmatter `current_phase`, not the body — the command is a no-op (`idempotent: true`) rather than rolling STATE.md back to the requested phase's moment-of-completion. If the frontmatter cannot be parsed at all, the command refuses outright (`Unable to read STATE.md frontmatter; refusing to run complete-phase to avoid a destructive rollback`) instead of guessing.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** Updated `STATE.md` marking the resolved phase complete, or a no-op when the guard determines the phase was already superseded
+
+```bash
+node gsd-tools.cjs state complete-phase --phase 3
 ```
 
 ---

@@ -625,13 +625,11 @@ function _syncGsdDir(stagedDir: string, destDir: string, kind: ArtifactKind | st
     // from install and orphaned the installed gsd-*.md files, and the unscoped
     // prune deleted user-owned command files.
     //
-    // NOTE: the destName rule below intentionally mirrors bin/install.js
-    // `_copyStaged` (the `namespacedByDir` decision). Keep them in sync.
-    const destLast = (typeof kind === 'object' && kind !== null && kind.destSubpath)
-      ? path.basename(kind.destSubpath)
-      : '';
-    const prefixStem = kindPrefix ? kindPrefix.replace(/-$/, '') : '';
-    const namespacedByDir = kindName === 'commands' && destLast === prefixStem;
+    // Single source of truth: runtimeArtifactLayout.isNamespacedByDir (#2871
+    // Phase 2 review finding — this rule previously drifted independently
+    // across install-engine.cts / surface.cts / runtime-artifact-layout.cts).
+    const kindDestSubpath = (typeof kind === 'object' && kind !== null && kind.destSubpath) ? kind.destSubpath : '';
+    const namespacedByDir = runtimeArtifactLayout.isNamespacedByDir(kindName, kindDestSubpath, kindPrefix);
 
     const stagedFiles = fs.readdirSync(stagedDir).filter(f => f.endsWith('.md'));
     const stagedDestNames = new Set<string>();
