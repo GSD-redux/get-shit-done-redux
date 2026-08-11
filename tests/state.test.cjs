@@ -12724,3 +12724,183 @@ const HEX_RE = /^[0-9a-f]{4,40}$/i;
     assert.strictEqual(r.commits_behind, 0);
   });
 });
+// ─────────────────────────────────────────────────────────────────────────────
+// #3231: `state add-decision` resolves the phase from STATE.md's own frontmatter
+// and body when `--phase` is omitted, instead of persisting a literal `[Phase ?]`.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const { describe, test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+
+  describe('#3231 add-decision resolves phase from STATE.md when --phase is omitted', () => {
+    let tmpDir;
+
+    beforeEach(() => { tmpDir = createTempProject(); });
+    afterEach(() => { cleanup(tmpDir); });
+
+    const statePathIn = (d) => path.join(d, '.planning', 'STATE.md');
+
+    // Write a STATE.md verbatim, bypassing the project scaffold, so each test
+    // controls exactly which rung of the resolution ladder is populated.
+    const writeState = (d, content) => fs.writeFileSync(statePathIn(d), content);
+
+    const addDecision = (d, args) => {
+      const result = runGsdTools(['state', 'add-decision', ...args], d);
+      assert.ok(result.success, `add-decision must succeed, got: ${result.error}`);
+      return JSON.parse(result.output);
+    };
+
+    // Assert on the persisted file, not only the JSON echo — the defect in #3231
+    // is that the placeholder is written to disk permanently.
+    const persistedDecisions = (d) =>
+      fs.readFileSync(statePathIn(d), 'utf-8')
+        .split(/\r?\n/)
+        .filter(l => l.startsWith('- [Phase '));
+
+    test('frontmatter current_phase resolves the entry when --phase is omitted', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 3',
+        'current_phase_name: Sourcing Coverage',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Dedup threshold set to 0.85 by sweep']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase 3]: Dedup threshold set to 0.85 by sweep',
+        'omitted --phase must resolve from frontmatter current_phase, not render "?"',
+      );
+      assert.deepStrictEqual(
+        persistedDecisions(tmpDir),
+        ['- [Phase 3]: Dedup threshold set to 0.85 by sweep'],
+        'the resolved phase must be what lands in STATE.md',
+      );
+    });
+
+    test('explicit --phase wins over a resolvable frontmatter current_phase', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 3',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--phase', '7', '--summary', 'Explicit wins']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase 7]: Explicit wins',
+        'an explicitly passed --phase must never be overridden by the resolved value',
+      );
+      assert.deepStrictEqual(persistedDecisions(tmpDir), ['- [Phase 7]: Explicit wins']);
+    });
+
+    test('body "Current Phase" field resolves when frontmatter carries no current_phase', () => {
+      writeState(tmpDir, [
+        '# GSD State',
+        '',
+        '## Configuration',
+        'Current Phase: 2',
+        'Status: Executing',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Body field rung']);
+
+      assert.strictEqual(parsed.decision, '- [Phase 2]: Body field rung');
+    });
+
+    test('prose "Phase:" under ## Current Position resolves, preserving a non-integer id', () => {
+      writeState(tmpDir, [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 04.1 of 7',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Prose rung']);
+
+      // Phase ids are not always integers — 04.1 must survive verbatim, not be
+      // parsed to 4 or to 4.1.
+      assert.strictEqual(parsed.decision, '- [Phase 04.1]: Prose rung');
+    });
+
+    // Counter-test (TESTING-STANDARDS.md contract 6): assert the specific
+    // degraded verdict. When no rung resolves, the entry must still read
+    // "?" — an unknown phase stays visibly unknown and is never guessed.
+    test('CONTROL: no phase resolvable from any rung still writes a literal "?"', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Unresolvable stays unknown']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase ?]: Unresolvable stays unknown',
+        'with no frontmatter current_phase, no body "Current Phase" field and no prose Phase line, the entry must degrade to "?" — not to a default, an empty string, or a guessed number',
+      );
+      assert.deepStrictEqual(persistedDecisions(tmpDir), ['- [Phase ?]: Unresolvable stays unknown']);
+    });
+
+    // Counter-test: a non-scalar frontmatter value is not a phase. stateFieldValue's
+    // scalar guard must reject it and the ladder must continue past it, landing on
+    // "?" here rather than serialising "[object Object]" or "3,4".
+    test('CONTROL: non-scalar frontmatter current_phase is unresolvable, not stringified', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase:',
+        '  - 3',
+        '  - 4',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Non-scalar is not a phase']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase ?]: Non-scalar is not a phase',
+        'a list-valued current_phase must be treated as unresolvable, consistent with the scalar guard used elsewhere',
+      );
+    });
+  });
+}
