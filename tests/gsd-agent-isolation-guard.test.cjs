@@ -944,16 +944,26 @@ describe('#2486 regression: inspect-dispatch-isolation is the side-effect-free r
     test(`inspect REJECTS the recording-only argument ${flag}`, (t) => {
       const dir = createTempProject('gsd-2486-inspect-args-');
       t.after(() => cleanup(dir));
+      // --json-errors so the assertion is on the TYPED reason, not on human
+      // prose: swapping ERROR_REASON.USAGE for UNKNOWN would keep a message
+      // regex green while breaking every machine consumer (#2486 review,
+      // round-9 Minor 4).
       const result = runGsdTools(
-        ['query', 'inspect-dispatch-isolation', '--raw', flag, value],
+        ['query', 'inspect-dispatch-isolation', '--raw', flag, value, '--json-errors'],
         dir,
         { GSD_RUNTIME: 'claude', HOME: dir },
       );
       assert.equal(result.success, false, `${flag} must be a usage error, not a silently ignored argument`);
+      const envelope = JSON.parse(result.error.trim().split('\n').filter(Boolean).pop());
+      assert.equal(
+        envelope.reason,
+        'usage',
+        `${flag}: must be typed as a usage error — got ${JSON.stringify(envelope.reason)}`,
+      );
       assert.match(
-        `${result.error || ''}${result.output || ''}`,
+        envelope.message || '',
         /recording-only/,
-        `${flag}: the error must say why the argument has no read-path meaning`,
+        `${flag}: the message must say why the argument has no read-path meaning`,
       );
       assert.equal(fs.existsSync(sentinelFile(dir)), false, 'a rejected inspection still records nothing');
     });

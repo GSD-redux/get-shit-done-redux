@@ -89,9 +89,10 @@ models per agent.
 
 **Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. Sentinel-free is the exact claim: the shared CLI bootstrap still runs, but nothing it does can block a dispatch. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on.
 
-A resolver failure is not a capability verdict, so track it separately — same shape as
-`references/dispatch-isolation-gate.md` (#2652 review). Settings still fails closed when
-unresolved, but says so instead of claiming the runtime declares no primitive:
+A failed query is not a capability verdict, so track the two apart: settings still fails closed, but
+says so instead of claiming the runtime declares no primitive. The verb fail-closes an unknown
+runtime to `none` and exits 0, so `ISOLATION_RESOLVED=false` means only "the query did not answer"
+(#2486 review):
 
 ```bash
 _ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
@@ -136,12 +137,12 @@ Context Warnings, Research Qs
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
 
-**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same negotiation those guards resolve (via the sentinel-free `inspect-dispatch-isolation` verb), which fail-closes an unknown, undeclared, or `undocumented` value to `none`. The rule this flow enforces is one-directional: **never persist a value the isolation gate would fail closed on.** **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
+**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584): `harness-worktree` (the host isolates each executor) and `orchestrator-worktree` (GSD drives the worktrees) both run parallel; `none` fails closed on an explicit `true`. Branch on the same negotiation the execution gate resolves, via the sentinel-free `inspect-dispatch-isolation` verb, which fail-closes unknown/undeclared/`undocumented` to `none`. The rule is one-directional: **never persist a value the isolation gate would fail closed on.** **Do not add a runtime-name test here.** Branch on `$ISOLATION`:
 
-**Scope (#2486 review, Major 1).** This holds against the capability-based isolation gate (`references/dispatch-isolation-gate.md`), not yet against every execution surface: `quick.md` is not on the capability seam and still gates on the runtime name, so an `orchestrator-worktree` host can be offered a `true` that `/gsd:quick` rejects as fatal, W024 silent because isolation is not `none`. #2728 converts that surface. This PR does not widen the gap — the `≠ none` branch below is unchanged behavior.
+**Scope (#2486 review).** This holds against the capability-based execution gate, not yet against every surface: `quick.md` still gates on the runtime name, so an `orchestrator-worktree` host can be offered a `true` that `/gsd:quick` rejects as fatal, W024 silent because isolation is not `none`. #2728 converts that surface. This PR does not widen the gap — the `≠ none` branch below is unchanged behavior.
 
-- **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): no change — present the Worktrees question exactly as already written in the block below. This branch adds nothing for these runtimes; the `none` branch is the entirety of the #2486 behavior change.
-- **If `ISOLATION` = `none`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
+- **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): present the Worktrees question exactly as written below — unchanged behavior. The `none` branch is the entirety of the #2486 change.
+- **If `ISOLATION` = `none`:** replace the question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
 
 ```
 {
@@ -155,11 +156,11 @@ Context Warnings, Research Qs
 }
 ```
 
-**When `ISOLATION_RESOLVED` is `false`,** keep this same branch — failing closed on a capability GSD could not resolve is still right, since persisting an unjustified `true` is the one outcome that must never happen. Keep both `label`s, the option count and the never-write-`true` rule; only replace the phrase "This runtime declares no executor-isolation primitive" in each `description` with "GSD could not resolve this runtime's executor-isolation capability", so the menu reports what actually happened instead of a verdict it never reached.
+**When `ISOLATION_RESOLVED` is `false`,** keep this branch — failing closed on an unresolved capability is still right — with both `label`s, the option count and the never-write-`true` rule intact. But report what happened, not a verdict never reached. Throughout this branch (both `description`s, the pre-selection rationale, the explicit-`true` notice), replace "this runtime declares no executor-isolation primitive (dispatch.isolation: none)" with "GSD could not resolve this runtime's executor-isolation capability"; in the notice replace "fail closed on this value" with "cannot be checked against this value"; and drop the pre-selection parenthetical claiming absence already resolves to `false` here.
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply to this question when `ISOLATION` is `none` (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent — `$USE_WORKTREES_CURRENT` is empty, the no-`--default` read's absent signal (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
+  Pre-selection: the generic "current values pre-selected" rule does not apply when `ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "Leave unchanged" only when the key is absent (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal — nothing to repair, since absence already resolves to `false` here). Otherwise pre-select "No (Recommended)": both when the value is `false` and when it is an explicit non-false value — the broken-inheritance case the notice below covers. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default in the numbered list.
 
   Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
 

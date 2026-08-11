@@ -1606,6 +1606,78 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       }
     });
 
+    // #2486 round-9 review, Major 3: the source-text pins above assert only
+    // that ISOLATION_RESOLVED is *mentioned*, so flipping the shipped block's
+    // `ISOLATION_RESOLVED=true` to `false` left every one of them green. What
+    // has to be pinned is the BRANCH: a resolver that answered and a resolver
+    // that failed must produce different W024 text, because the whole point is
+    // to stop reporting a failed query as a capability verdict. This test
+    // drives the shipped block twice and fails on the mutation.
+    test('W024 distinguishes a declared none from an unresolvable query (behavioral, #2486 Major 3)', { skip: NO_BASH }, (t) => {
+      const scratch = createTempDir('gsd-w024-provenance-');
+      t.after(() => cleanupDir(scratch));
+      const src = readFileNormalized(
+        path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
+      );
+      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
+        .map(m => m[1])
+        .find(b => b.includes('W024:'));
+      assert.ok(block, 'health.md: no ```bash block containing the W024 diagnostic');
+
+      // `resolves` false = the inspect call exits non-zero, the real shape of a
+      // shim that cannot resolve. The worktrees key is an explicit true in both
+      // runs, so the ONLY difference is whether the capability query answered.
+      const runBlock = (resolves) => {
+        const harness = [
+          'set -u',
+          'gsd_run() {',
+          '  case "$*" in',
+          resolves
+            ? "    *inspect-dispatch-isolation*) printf 'none' ;;"
+            : '    *inspect-dispatch-isolation*) return 1 ;;',
+          "    *\"config-get workflow.use_worktrees\"*) printf 'true' ;;",
+          "    *) printf '' ;;",
+          '  esac; }',
+          block,
+        ].join('\n');
+        const scriptPath = path.join(scratch, `w024-resolves-${resolves}.sh`);
+        fs.writeFileSync(scriptPath, harness);
+        const res = runHook(scriptPath, [], { interpreter: 'bash' });
+        assert.equal(res.outcome, 'exited', `block did not complete: ${res.stderr || ''}`);
+        assert.equal(res.exitCode, 0, `block exited ${res.exitCode}: ${res.stderr}`);
+        return res.stdout;
+      };
+
+      const resolved = runBlock(true);
+      const unresolved = runBlock(false);
+
+      // Both must warn — an explicit true is worth reporting either way.
+      assert.match(resolved, /W024:/, 'a resolved none with an explicit true must still warn');
+      assert.match(unresolved, /W024:/, 'an unresolvable capability with an explicit true must still warn');
+
+      // ...but they must not say the same thing.
+      assert.notEqual(
+        resolved.trim(),
+        unresolved.trim(),
+        'W024 emitted identical text whether or not the capability resolved — that is the Major 3 conflation',
+      );
+      assert.match(
+        unresolved,
+        /could not resolve/i,
+        'the unresolved branch must report that the query failed, not assert a capability verdict',
+      );
+      assert.doesNotMatch(
+        unresolved,
+        /declares no executor-isolation primitive|has no usable executor-isolation primitive/i,
+        'the unresolved branch must NOT claim the runtime has no primitive — nothing established that',
+      );
+      assert.doesNotMatch(
+        resolved,
+        /could not resolve/i,
+        'the resolved branch must state the capability finding, not a resolution failure',
+      );
+    });
+
     test('W024 is documented consistently across health.md and both config references', () => {
       // The rename W020 -> W024 landed in health.md only; the two docs kept
       // saying W020, which collides with a code src/verify.cts already emits.
