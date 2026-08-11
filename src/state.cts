@@ -1460,6 +1460,34 @@ function parseProsePhaseField(value: string | null): { phase: string | null; nam
   return parsePhaseFromProse(value);
 }
 
+function resolveStatePhase(fm: Record<string, unknown>, body: string): {
+  phase: string | null;
+  name: string | null;
+  sources: {
+    frontmatter: string | null;
+    legacy_current_phase: string | null;
+    current_position_phase: string | null;
+  };
+} {
+  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
+  const frontmatterRaw = stateFieldValue(fm, body, 'current_phase', null).value;
+  const legacyRaw = stateFieldValue(fm, currentPositionScope, null, 'Current Phase').value;
+  const currentPositionRaw = stateFieldValue(fm, currentPositionScope, null, 'Phase').value;
+  const sources = {
+    frontmatter: parseProsePhaseField(frontmatterRaw).phase,
+    legacy_current_phase: parseProsePhaseField(legacyRaw).phase,
+    current_position_phase: parseProsePhaseField(currentPositionRaw).phase,
+  };
+  const prosePhase = parseProsePhaseField(currentPositionRaw);
+  return {
+    phase: sources.frontmatter ?? sources.legacy_current_phase ?? sources.current_position_phase,
+    name: stateFieldValue(fm, body, 'current_phase_name', null).value
+      ?? stateFieldValue(fm, currentPositionScope, null, 'Current Phase Name').value
+      ?? prosePhase.name,
+    sources,
+  };
+}
+
 function parseProseLastActivityField(value: string | null): { date: string | null; description: string | null } {
   if (!value) return { date: null, description: null };
   const match = value.match(/^(\d{4}-\d{2}-\d{2})(?:\s+[—-]{1,2}\s+(.+))?$/);
@@ -1499,10 +1527,9 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   // so it is scopeable exactly like Stopped At under ## Session. Fall back to
   // full-body search only when no ## Current Position section exists, so files
   // with no section heading keep their current behaviour.
-  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
-  const prosePhase = parseProsePhaseField(stateFieldValue(fm, currentPositionScope, null, 'Phase').value);
-  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase.phase;
-  const currentPhaseName = stateFieldValue(fm, body, 'current_phase_name', 'Current Phase Name').value ?? prosePhase.name;
+  const resolvedPhase = resolveStatePhase(fm, body);
+  const currentPhase = resolvedPhase.phase;
+  const currentPhaseName = resolvedPhase.name;
   const totalPhasesRaw = stateFieldValue(fm, body, 'total_phases', 'Total Phases').value;
   const currentPlan = stateFieldValue(fm, body, 'current_plan', 'Current Plan').value;
   const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
@@ -3008,28 +3035,53 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   let scope: planningScopeMod.Scope = initialScope;
 
   const status = stateFieldValue(fm, body, 'status', 'Status').value || '';
-  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+  const resolvedPhase = resolveStatePhase(fm, body);
+  const currentPhase = resolvedPhase.phase;
   const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
   const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
 
   const phasesDir = planningPaths(cwd).phases;
 
   if (currentPhase === null) {
-    // #3162: nothing to scope the disk lookup to — the derivation cannot run
-    // at all. Distinct from "ran, found nothing to warn about" (scope stays
-    // COMPLETE elsewhere in this function).
-    if (scope === SCOPE.COMPLETE) scope = SCOPE.UNSCOPED;
-  } else if (fs.existsSync(phasesDir)) {
-    const normalized = currentPhase.replace(/\s+of\s+\d+.*/, '').trim();
-    try {
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const phaseDir = entries.find(e => e.isDirectory() && e.name.startsWith(normalized.replace(/^0+/, '').padStart(2, '0')));
-      if (phaseDir) {
-        const phaseDirPath = path.join(phasesDir, phaseDir.name);
-        const { planCount: diskPlans, summaryCount: diskSummaries, scope: planScanScope } = scanPhasePlans(phaseDirPath);
-        if (planScanScope !== SCOPE.COMPLETE && scope === SCOPE.COMPLETE) {
-          scope = planScanScope;
-        }
+    warnings.push('Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value');
+    drift['phase_reference'] = { reason: 'unresolved', selected: null, sources: resolvedPhase.sources };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  const selectedPhaseKey = phaseKeyFromToken(currentPhase);
+  if (Object.values(resolvedPhase.sources).some(source => source !== null && phaseKeyFromToken(source) !== selectedPhaseKey)) {
+    warnings.push(`Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`);
+    drift['phase_reference'] = { reason: 'conflict', selected: currentPhase, sources: resolvedPhase.sources };
+  }
+  if (!fs.existsSync(phasesDir)) {
+    warnings.push(`Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'missing_root', selected: currentPhase };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  let phaseDirPath: string;
+  try {
+    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name) === selectedPhaseKey);
+    if (!phaseDir) {
+      warnings.push(`Cannot validate phase drift: no phase directory matches phase ${currentPhase}`);
+      drift['phase_directory'] = { reason: 'not_found', selected: currentPhase };
+      output({ valid: false, warnings, drift, scope }, raw, undefined);
+      return;
+    }
+    phaseDirPath = path.join(phasesDir, phaseDir.name);
+  } catch {
+    warnings.push(`Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  try {
+    const scan = scanPhasePlans(phaseDirPath);
+    if (scan.scope !== SCOPE.COMPLETE) {
+      throw new Error('phase plan scan is incomplete');
+    }
+    const { planCount: diskPlans, summaryCount: diskSummaries } = scan;
 
         // Check plan count mismatch
         if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
@@ -3061,20 +3113,10 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
             warnings.push(`All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`);
           }
         }
-      }
-      // else: phase resolved, but no matching directory on disk — a real
-      // answer (row 22), not a look failure. scope stays COMPLETE.
-    } catch {
-      // #3162/#2245: previously a silent best-effort swallow. The disk-scan
-      // failure (readdirSync/scanPhasePlans) means drift detection for this
-      // phase could not run this pass — that degrade is kept (validate still
-      // does not crash), but is now visible via `scope` instead of being
-      // indistinguishable from a clean pass.
-      scope = SCOPE.UNREADABLE;
-    }
+  } catch {
+    warnings.push(`Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
   }
-  // else: phasesDir itself does not exist — a real answer (no phases on disk
-  // yet), not a look failure. scope stays COMPLETE.
 
   const valid = warnings.length === 0;
   output({ valid, warnings, drift, scope }, raw, undefined);

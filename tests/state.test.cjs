@@ -3688,8 +3688,28 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
     const output = JSON.parse(raw);
-    assert.strictEqual(output.valid, true, 'the previous silent degrade must not crash or fabricate a warning');
-    assert.strictEqual(output.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(output.valid, false, 'an unreadable directory must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
+  });
+
+  test('B6b: unreadable selected phase directory fails closed', (t) => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['# Project State', '', '**Status:** Executing Phase 1', '**Current Phase:** 1', ''].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const originalReaddirSync = fs.readdirSync;
+    mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (p === phaseDir) throw new Error('EACCES: permission denied, scandir');
+      return originalReaddirSync.call(fs, p, ...rest);
+    });
+    t.after(() => mock.restoreAll());
+
+    const output = JSON.parse(captureStdout(() => stateLib.cmdStateValidate(tmpDir, false)));
+    assert.strictEqual(output.valid, false, 'an unreadable selected phase must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
   });
 
   test('B7: one unreadable verification file does not abort the scan', (t) => {
