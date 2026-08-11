@@ -10,6 +10,7 @@ pr: 2867
 - `missing_phase_details` classifies each checklist entry on its own bracket. Two entries sharing a phase token across different brackets previously shared one verdict, decided by which was written first, so a real phase listed under an icebox entry's token was silently dropped from the report.
 - `phase_id_convention` resolves against the workstream being read. A workstream that declares its own convention is no longer overridden by the root config, and `--workstream foo` now agrees with `GSD_WORKSTREAM=foo`; workstream progress rollups resolve the convention instead of assuming legacy, so a bracket workstream's phase count comes from its ROADMAP rather than falling back to its directory count.
 - `validate health` gains an advisory W021 for opted-in projects: one sub-check flags a phase whose bracket milestone disagrees with its enclosing section, the other flags a phase heading not yet migrated to bracket form.
+- `state validate` resolves bracket phase directories, so its drift scan actually runs on a bracket project instead of reporting `no phase directory matches` — and `valid: false` — for a directory that is plainly on disk.
 
 Every widened read engages only when the resolved `phase_id_convention` is `bracket`; a project that has not opted in compiles the same patterns it did before. `"bracket"` is a read-path opt-in until the migrator and write path land — valid values are documented in `docs/CONFIGURATION.md`.
 
