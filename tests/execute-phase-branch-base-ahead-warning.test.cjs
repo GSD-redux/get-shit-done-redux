@@ -35,3 +35,24 @@ describe('#2639 — handle_branching warns when local is ahead of origin', () =>
     );
   });
 });
+
+describe('#3158 — handle_branching warns before committing on the base branch', () => {
+  const text = fs.existsSync(WORKFLOW) ? fs.readFileSync(WORKFLOW, 'utf8') : '';
+
+  test('the none strategy compares the current branch to the resolved base branch', () => {
+    assert.ok(text.length > 0, 'execute-phase.md must exist');
+    const noneBranch = text.match(/\*\*"none":\*\*([\s\S]*?)(?=\*\*"phase" or "milestone":\*\*)/);
+    assert.ok(noneBranch, 'handle_branching must retain a dedicated none-strategy branch');
+    assert.match(noneBranch[1], /git branch --show-current/, 'none strategy must read the current branch');
+    assert.match(noneBranch[1], /query git\.base-branch/, 'none strategy must resolve the configured base branch');
+    assert.match(noneBranch[1], /\$C.*\$B|\$B.*\$C/, 'none strategy must compare the current branch with the base branch');
+  });
+
+  test('the base-branch warning is explicit and does not refuse the documented none strategy', () => {
+    assert.ok(text.length > 0, 'execute-phase.md must exist');
+    const noneBranch = text.match(/\*\*"none":\*\*([\s\S]*?)(?=\*\*"phase" or "milestone":\*\*)/);
+    assert.ok(noneBranch, 'handle_branching must retain a dedicated none-strategy branch');
+    assert.match(noneBranch[1], /WARNING:.*base branch/i, 'none strategy must warn before commits land on the base branch');
+    assert.doesNotMatch(noneBranch[1], /exit\s+1|refus/i, 'none strategy must warn rather than reject the documented current-branch behavior');
+  });
+});

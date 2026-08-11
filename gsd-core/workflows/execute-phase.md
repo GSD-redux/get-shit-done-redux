@@ -280,7 +280,13 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 <step name="handle_branching">
 Check `branching_strategy` from init:
 
-**"none":** Skip, continue on current branch.
+**"none":** Continue. Before plan commits:
+
+```bash
+B=$(gsd_run query git.base-branch 2>/dev/null||echo main)
+C=$(git branch --show-current)
+[ "$C" != "$B" ]||echo "WARNING: base branch '$B' will receive commits; switch if unintended." >&2
+```
 
 **"phase" or "milestone":** Use pre-computed `branch_name` from init.
 

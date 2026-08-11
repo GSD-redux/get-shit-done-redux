@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "execute-phase.md": "#3158: branching_strategy 'none' now warns before phase commits when the current branch resolves to the base branch, so users can switch to a feature branch while doing so is still cheap."
+  }
+}
