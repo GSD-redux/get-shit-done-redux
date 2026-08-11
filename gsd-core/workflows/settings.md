@@ -87,10 +87,26 @@ configure `model_overrides` manually in .planning/config.json to target specific
 models per agent.
 ```
 
-**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **side-effect-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on:
+**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. Sentinel-free is the exact claim: the shared CLI bootstrap still runs, but nothing it does can block a dispatch. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on.
+
+A resolver failure is not a capability verdict, so track it separately — same shape as
+`references/dispatch-isolation-gate.md` (#2652 review). Settings still fails closed when
+unresolved, but says so instead of claiming the runtime declares no primitive:
 
 ```bash
-ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")
+_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_ISOLATION_RAW" ]; then
+  ISOLATION=none
+  ISOLATION_RESOLVED=false      # no verdict learned — not the same as "declares none"
+else
+  ISOLATION="$_ISOLATION_RAW"
+  ISOLATION_RESOLVED=true
+fi
+case "$ISOLATION" in
+  harness-worktree|orchestrator-worktree|none) ;;
+  *) ISOLATION=none; ISOLATION_RESOLVED=false ;;   # out of vocabulary is not a verdict either
+esac
 USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
 ```
 
@@ -120,7 +136,9 @@ Context Warnings, Research Qs
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
 
-**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same negotiation those guards resolve (via the side-effect-free `inspect-dispatch-isolation` verb) — which fail-closes an unknown, undeclared, or `undocumented` value to `none` — so this flow and the execution guards always reach the same verdict: never persist a value the guards would fail closed on. **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
+**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same negotiation those guards resolve (via the sentinel-free `inspect-dispatch-isolation` verb), which fail-closes an unknown, undeclared, or `undocumented` value to `none`. The rule this flow enforces is one-directional: **never persist a value the isolation gate would fail closed on.** **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
+
+**Scope (#2486 review, Major 1).** This holds against the capability-based isolation gate (`references/dispatch-isolation-gate.md`), not yet against every execution surface: `quick.md` is not on the capability seam and still gates on the runtime name, so an `orchestrator-worktree` host can be offered a `true` that `/gsd:quick` rejects as fatal, W024 silent because isolation is not `none`. #2728 converts that surface. This PR does not widen the gap — the `≠ none` branch below is unchanged behavior.
 
 - **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): no change — present the Worktrees question exactly as already written in the block below. This branch adds nothing for these runtimes; the `none` branch is the entirety of the #2486 behavior change.
 - **If `ISOLATION` = `none`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
@@ -136,6 +154,8 @@ Context Warnings, Research Qs
   ]
 }
 ```
+
+**When `ISOLATION_RESOLVED` is `false`,** keep this same branch — failing closed on a capability GSD could not resolve is still right, since persisting an unjustified `true` is the one outcome that must never happen. Keep both `label`s, the option count and the never-write-`true` rule; only replace the phrase "This runtime declares no executor-isolation primitive" in each `description` with "GSD could not resolve this runtime's executor-isolation capability", so the menu reports what actually happened instead of a verdict it never reached.
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 

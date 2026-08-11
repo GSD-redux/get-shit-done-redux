@@ -82,7 +82,7 @@ Parse JSON output:
 - `repairable_count`: Number of auto-fixable issues
 - `repairs_performed[]`: Actions taken if --repair was used
 
-**Isolation/worktrees compatibility check (#2486):** the SDK is runtime-neutral, so this check runs here, using the same negotiation the execution-workflow guards use. It catches a config that carries an explicit `workflow.use_worktrees: true` on a runtime whose declared `dispatch.isolation` is `none` (e.g. inherited from a worktree-capable install sharing the repo) — a value `/gsd:execute-phase` and `/gsd:quick` fail closed on. The gate is the **declared capability, not the runtime name** (#2584), and the resolver fail-closes unknown/undeclared/`undocumented` values to `none`. Use `inspect-dispatch-isolation`, the **side-effect-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a read-only diagnostic must not be able to stamp a sentinel the isolation guards then enforce against real dispatches:
+**Isolation/worktrees compatibility check (#2486):** the SDK is runtime-neutral, so this check runs here, using the same negotiation the execution-workflow guards use. It catches a config that carries an explicit `workflow.use_worktrees: true` on a runtime whose declared `dispatch.isolation` is `none` (e.g. inherited from a worktree-capable install sharing the repo) — a value `/gsd:execute-phase` and `/gsd:quick` fail closed on. The gate is the **declared capability, not the runtime name** (#2584), and the resolver fail-closes unknown/undeclared/`undocumented` values to `none`. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a read-only diagnostic must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. "Sentinel-free" is the precise claim and the only one this check depends on: like every `gsd-tools` invocation, inspection still runs the shared CLI bootstrap, which may self-heal a stale `.planning/active-workstream` pointer or rebuild compiled modules. Those are pre-existing, verb-independent, and cannot block a dispatch; writing the sentinel can:
 
 The worktrees read deliberately carries no `--default`/fallback, exactly as `settings.md` does
 it: W024's claim is that the config **sets** the key to a non-false value, so an absent key
@@ -92,11 +92,34 @@ correct only on an emit where `_stampNonClaudeRuntimeDefaults` happened to rewri
 `--default false`, and wrong on the un-stamped source/Claude emit. The `[ -n … ]` guard below
 removes that dependency on stamping entirely (#2486 review, Major 1).
 
+A resolver failure is **not** a capability verdict. `|| echo "none"` would collapse "this runtime
+declares no primitive" and "we could not find out" into the same value, and W024's text asserts the
+former — telling a Claude Code user their runtime declares no executor-isolation primitive, which is
+false. Track resolution separately and say which one actually happened, exactly as the execution-side
+gate does (`references/dispatch-isolation-gate.md`, #2652 review).
+
 ```bash
-ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")
+_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_ISOLATION_RAW" ]; then
+  ISOLATION=none
+  ISOLATION_RESOLVED=false      # no verdict learned — not the same as "declares none"
+else
+  ISOLATION="$_ISOLATION_RAW"
+  ISOLATION_RESOLVED=true
+fi
+case "$ISOLATION" in
+  harness-worktree|orchestrator-worktree|none) ;;
+  *) ISOLATION=none; ISOLATION_RESOLVED=false ;;   # out of vocabulary is not a verdict either
+esac
+
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
 if [ "$ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
-  echo "W024: config.json sets workflow.use_worktrees to a non-false value, but this runtime declares no executor-isolation primitive (dispatch.isolation: none) — /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or remove the key from .planning/config.json so the runtime default (false) applies."
+  if [ "$ISOLATION_RESOLVED" = "true" ]; then
+    echo "W024: config.json sets workflow.use_worktrees to a non-false value, but this runtime declares no executor-isolation primitive (dispatch.isolation: none) — /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or remove the key from .planning/config.json so the runtime default (false) applies."
+  else
+    echo "W024: config.json sets workflow.use_worktrees to a non-false value, and GSD could not resolve this runtime's executor-isolation capability ('gsd_run query inspect-dispatch-isolation' failed or returned nothing) — so it cannot tell whether /gsd:execute-phase and /gsd:quick will fail closed on that value. This is a report of an unverifiable config, NOT a finding that the runtime declares no primitive. Fix: re-run once the gsd-tools shim resolves; if the warning persists, run /gsd:settings and answer No to Worktrees."
+  fi
 fi
 ```
 

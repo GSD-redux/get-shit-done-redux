@@ -1808,9 +1808,35 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // diagnostic. A health check that records a phase:null/plan:null
     // sentinel can hard-block every executor dispatch for the sentinel's
     // lifetime, across sessions sharing the main checkout. Inspection
-    // surfaces call this verb instead: identical negotiation (shared
-    // implementation, cannot drift), zero writes. It takes no
-    // --force-isolation/--phase/--plan — those exist only to be recorded.
+    // surfaces call this verb instead. Two claims, both narrower than
+    // "side-effect-free", and both exactly true (#2486 review, Majors 2 & 4):
+    //
+    //  1. SENTINEL-FREE, not write-free. This route writes nothing itself, and
+    //     in particular never writes .gsd/dispatch-isolation-sentinel.json —
+    //     the only write that can hard-block a later executor dispatch. It is
+    //     NOT a claim of total filesystem purity: like every gsd-tools
+    //     invocation, it runs the shared bootstrap and active-workstream
+    //     resolution first, and getActiveWorkstream self-heals (unlinks) a
+    //     stale or invalid pointer. That is pre-existing, verb-independent,
+    //     and harmless to dispatch.
+    //
+    //  2. SHARED NEGOTIATION, for the arguments this verb accepts. Both verbs
+    //     call resolveDispatchIsolationDecision, so the natural resolution
+    //     cannot drift. It is NOT a claim of byte-identical output for every
+    //     argv: routeDispatchIsolation applies --force-isolation AFTER the
+    //     shared helper returns, so the same argv could otherwise yield
+    //     'none' there and the declared capability here. Rather than let a
+    //     caller receive a silently different answer, this verb REJECTS the
+    //     recording-only knobs outright — they exist to be recorded, and a
+    //     read has nothing to record.
+    const RECORDING_ONLY_ARGS = ['--force-isolation', '--phase', '--plan'];
+    const rejected = RECORDING_ONLY_ARGS.filter((flag) => args.indexOf(flag) !== -1);
+    if (rejected.length > 0) {
+      error(
+        `inspect-dispatch-isolation: ${rejected.join(', ')} ${rejected.length === 1 ? 'is a' : 'are'} recording-only argument${rejected.length === 1 ? '' : 's'} and cannot be used on the inspection verb — it resolves the runtime's DECLARED capability and records nothing. Use 'query dispatch-isolation' if you need the override applied and the decision recorded.`,
+        ERROR_REASON.USAGE,
+      );
+    }
     const { runtimeId, isolation, exec, harnessFlag } = resolveDispatchIsolationDecision({ args, cwd });
     if (args.indexOf('--json') !== -1) {
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);

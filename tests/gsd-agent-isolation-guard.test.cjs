@@ -934,36 +934,131 @@ describe('#2486 regression: inspect-dispatch-isolation is the side-effect-free r
     }
   });
 
-  test('inspect ignores --force-isolation/--phase/--plan — recording knobs have no read-path meaning', (t) => {
-    const dir = createTempProject('gsd-2486-inspect-args-');
+  // #2486 review, Major 4: silently IGNORING these was the defect. The
+  // recording verb applies --force-isolation after the shared helper returns,
+  // so accepting-and-ignoring it here means the same argv yields 'none' from
+  // dispatch and the declared capability from inspect — a caller gets a
+  // different answer with no signal. Rejecting turns that into a loud usage
+  // error. This test fails if the verb ever goes back to accepting them.
+  for (const [flag, value] of [['--force-isolation', 'none'], ['--phase', '9'], ['--plan', 'p1']]) {
+    test(`inspect REJECTS the recording-only argument ${flag}`, (t) => {
+      const dir = createTempProject('gsd-2486-inspect-args-');
+      t.after(() => cleanup(dir));
+      const result = runGsdTools(
+        ['query', 'inspect-dispatch-isolation', '--raw', flag, value],
+        dir,
+        { GSD_RUNTIME: 'claude', HOME: dir },
+      );
+      assert.equal(result.success, false, `${flag} must be a usage error, not a silently ignored argument`);
+      assert.match(
+        `${result.error || ''}${result.output || ''}`,
+        /recording-only/,
+        `${flag}: the error must say why the argument has no read-path meaning`,
+      );
+      assert.equal(fs.existsSync(sentinelFile(dir)), false, 'a rejected inspection still records nothing');
+    });
+  }
+
+  test('the divergence that rejection prevents: dispatch DOES honour --force-isolation', (t) => {
+    // Pins the asymmetry that makes rejection necessary rather than pedantic.
+    // If a future edit moved the override into the shared helper, inspect could
+    // safely accept the flag — and this test would still pass, correctly, while
+    // the rejection tests above would then be the ones to revisit.
+    const dir = createTempProject('gsd-2486-force-divergence-');
     t.after(() => cleanup(dir));
-    const result = runGsdTools(
-      ['query', 'inspect-dispatch-isolation', '--raw', '--force-isolation', 'none', '--phase', '9', '--plan', 'p1'],
+    const dispatched = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--force-isolation', 'none'],
       dir,
       { GSD_RUNTIME: 'claude', HOME: dir },
     );
-    assert.equal(result.success, true, result.error);
-    assert.equal(result.output.trim(), 'harness-worktree', 'declared capability wins — force is a recording concept');
-    assert.equal(fs.existsSync(sentinelFile(dir)), false, 'and still nothing recorded');
+    assert.equal(dispatched.success, true, dispatched.error);
+    assert.equal(dispatched.output.trim(), 'none', 'force is honoured on the recording verb');
+
+    const inspected = runGsdTools(
+      ['query', 'inspect-dispatch-isolation', '--raw'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(inspected.success, true, inspected.error);
+    assert.equal(
+      inspected.output.trim(),
+      'harness-worktree',
+      'inspection reports the DECLARED capability, which is what the two would disagree on',
+    );
   });
 
-  test('--json shape matches the recording verb: { runtime, isolation, exec, harnessFlag }', (t) => {
-    const dir = createTempProject('gsd-2486-inspect-json-');
-    t.after(() => cleanup(dir));
-    const result = runGsdTools(
+  // #2486 review, Minor 5: asserting inspection against a HANDWRITTEN key list
+  // does not test parity at all — changing the recording verb's JSON
+  // independently would leave it green. Compare against the real thing.
+  test('--json shape matches the recording verb, compared against its actual output', (t) => {
+    const inspectDir = createTempProject('gsd-2486-inspect-json-');
+    const dispatchDir = createTempProject('gsd-2486-dispatch-json-');
+    t.after(() => cleanup(inspectDir));
+    t.after(() => cleanup(dispatchDir));
+
+    const inspected = runGsdTools(
       ['query', 'inspect-dispatch-isolation', '--json'],
-      dir,
-      { GSD_RUNTIME: 'cursor', HOME: dir },
+      inspectDir,
+      { GSD_RUNTIME: 'cursor', HOME: inspectDir },
     );
-    assert.equal(result.success, true, result.error);
-    const parsed = JSON.parse(result.output);
+    assert.equal(inspected.success, true, inspected.error);
+    const inspectedJson = JSON.parse(inspected.output);
+
+    // Separate project dir: the recording verb writes a sentinel, and the
+    // inspection assertion below must not be able to see it.
+    const dispatched = runGsdTools(
+      ['query', 'dispatch-isolation', '--json'],
+      dispatchDir,
+      { GSD_RUNTIME: 'cursor', HOME: dispatchDir },
+    );
+    assert.equal(dispatched.success, true, dispatched.error);
+    const dispatchedJson = JSON.parse(dispatched.output);
+
     assert.deepEqual(
-      Object.keys(parsed).sort(),
-      ['exec', 'harnessFlag', 'isolation', 'runtime'],
+      Object.keys(inspectedJson).sort(),
+      Object.keys(dispatchedJson).sort(),
       'consumers written against the recording verb JSON must be able to switch verbatim',
     );
-    assert.equal(parsed.runtime, 'cursor');
-    assert.equal(parsed.isolation, 'harness-worktree');
-    assert.equal(fs.existsSync(sentinelFile(dir)), false, 'no sentinel from a --json inspection either');
+    assert.deepEqual(
+      inspectedJson,
+      dispatchedJson,
+      'same runtime, same declared capability — every field must agree, not just the key set',
+    );
+    assert.equal(inspectedJson.runtime, 'cursor');
+    assert.equal(inspectedJson.isolation, 'harness-worktree');
+    assert.equal(fs.existsSync(sentinelFile(inspectDir)), false, 'no sentinel from a --json inspection either');
+    assert.equal(fs.existsSync(sentinelFile(dispatchDir)), true, 'control: the recording verb DID write one');
+  });
+
+  // #2486 review, Minor 5 (second half): the registry parity test compares raw
+  // isolation only, so it never exercises the orchestrator `exec` branch that
+  // --cwd-target populates. Compare the full JSON there too.
+  test('parity holds on the orchestrator exec branch (--cwd-target), not just raw isolation', (t) => {
+    const inspectDir = createTempProject('gsd-2486-inspect-cwd-');
+    const dispatchDir = createTempProject('gsd-2486-dispatch-cwd-');
+    t.after(() => cleanup(inspectDir));
+    t.after(() => cleanup(dispatchDir));
+
+    const inspected = runGsdTools(
+      ['query', 'inspect-dispatch-isolation', '--json', '--cwd-target', 'wt'],
+      inspectDir,
+      { GSD_RUNTIME: 'codex', HOME: inspectDir },
+    );
+    assert.equal(inspected.success, true, inspected.error);
+    const dispatched = runGsdTools(
+      ['query', 'dispatch-isolation', '--json', '--cwd-target', 'wt'],
+      dispatchDir,
+      { GSD_RUNTIME: 'codex', HOME: dispatchDir },
+    );
+    assert.equal(dispatched.success, true, dispatched.error);
+
+    const inspectedJson = JSON.parse(inspected.output);
+    assert.deepEqual(
+      inspectedJson,
+      JSON.parse(dispatched.output),
+      'the exec branch must resolve identically on both verbs',
+    );
+    assert.equal(inspectedJson.isolation, 'orchestrator-worktree', 'precondition: codex is the orchestrator-worktree case');
+    assert.ok(inspectedJson.exec, 'precondition: this branch actually populates exec, so the comparison means something');
   });
 });

@@ -1321,7 +1321,17 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   // gate. Round 4: `inspect-dispatch-isolation`, the side-effect-free inspection verb —
   // the recording `dispatch-isolation` verb stamps the executor-dispatch sentinel as an
   // unconditional #3045 side effect, which an inspection surface must never do.
-  const ISOLATION_LINE = 'ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")';
+  // Round 9 (#2486 review, Major 3): this used to pin the single-line
+  // `ISOLATION=$(… || echo "none")` read. That shape was the defect — `|| echo
+  // "none"` collapses "this runtime declares no primitive" into "the resolver
+  // failed", and both surfaces then assert the former, which is false. The
+  // canonical read now captures the raw value and tracks whether a verdict was
+  // actually learned, exactly as references/dispatch-isolation-gate.md does.
+  // Pinned as two invariants rather than one long literal so that reformatting
+  // the block does not fail the test while a semantic regression still does.
+  const ISOLATION_LINE = '_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)';
+  const ISOLATION_RESOLVED_FLAG = 'ISOLATION_RESOLVED';
+  const ISOLATION_COLLAPSING_FALLBACK = /inspect-dispatch-isolation --raw 2>\/dev\/null \|\| echo/;
   const readWorkflow = (wf) =>
     fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
 
@@ -1389,6 +1399,16 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         assert.ok(
           src.includes(ISOLATION_LINE),
           `${wf}: missing the canonical inspect-dispatch-isolation read (fail-closes unknown/undocumented to none)`,
+        );
+        // Major 3: fail-closed is right; reporting the failure AS a capability
+        // verdict is not. Both surfaces must be able to tell the two apart.
+        assert.ok(
+          src.includes(ISOLATION_RESOLVED_FLAG),
+          `${wf}: must track ISOLATION_RESOLVED — a resolver failure is not a declaration of 'none' (#2486 review, Major 3)`,
+        );
+        assert.ok(
+          !ISOLATION_COLLAPSING_FALLBACK.test(src),
+          `${wf}: '|| echo "none"' on the inspect read collapses "could not resolve" into "declares none" — capture the raw value and branch on ISOLATION_RESOLVED instead`,
         );
         // #2486 round 4 (B1): the RECORDING resolver is dispatch-only. On
         // current next, `query dispatch-isolation` persists its decision to
