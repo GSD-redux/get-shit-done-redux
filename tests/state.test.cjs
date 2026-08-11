@@ -12902,5 +12902,45 @@ const HEX_RE = /^[0-9a-f]{4,40}$/i;
         'a list-valued current_phase must be treated as unresolvable, consistent with the scalar guard used elsewhere',
       );
     });
+
+    // #1776, re-confirmed against #3208 while rebasing this PR onto next.
+    //
+    // `resolveStatePhase` (#3208, behind snapshot/validate) scopes its prose
+    // rung with `matchCurrentPositionSection(body) ?? body`. On this exact
+    // fixture that fallback selects "7" off the historical table — verified
+    // live: `state validate --raw` reports `drift.phase_directory.selected:
+    // "7"`. That is tolerable for a command reporting to a human who is already
+    // reading the output.
+    //
+    // It is not tolerable here. add-decision PERSISTS the phase into a record
+    // that outlives the session, so a stale guess becomes durable and silent.
+    // The two ladders differ on purpose; this pins that.
+    test('a historical Phase row outside Current Position must not resolve (#1776)', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Verification History',
+        '',
+        '| Field | Value |',
+        '|---|---|',
+        '| Phase | 7 |',
+        '',
+        '## Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = addDecision(tmpDir, ['--summary', 'Stale table must not win']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase ?]: Stale table must not win',
+        'the prose rung is scoped to ## Current Position; a | Phase | N | row in a historical table is not this document\'s current phase',
+      );
+    });
   });
 }
