@@ -47,12 +47,14 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
-const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
-const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
+const { createTempDir, createTempProject, runGsdTools, cleanup } = require('./helpers.cjs');
+const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS, readSentinel } = require('../hooks/lib/isolation-sentinel.js');
+const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-agent-isolation-guard.js');
 
@@ -91,6 +93,20 @@ function runHook(payload, cwd, extraEnv = {}) {
     timeoutMs: PROBE_TIMEOUT_MS,
   });
   return toLegacyResult(r);
+}
+
+/**
+ * #3045 follow-up (folded from tests/fix-3045-dispatch-isolation-resolver.test.cjs,
+ * #3333 wave 1): sentinel-file path/read helpers for the WRITE-side coverage
+ * below, which drives the real `gsd-tools.cjs query dispatch-isolation` CLI
+ * (routeDispatchIsolation) rather than the guard hook.
+ */
+function sentinelFile(dir) {
+  return path.join(dir, SENTINEL_RELATIVE_PATH);
+}
+
+function readSentinelRaw(dir) {
+  return JSON.parse(fs.readFileSync(sentinelFile(dir), 'utf-8'));
 }
 
 function agentPayload(overrides = {}) {
@@ -324,77 +340,59 @@ describe('gsd-agent-isolation-guard.js: #3045 BLOCKER regression — sentinel is
     cleanup(useWorktreesFalseProject);
   });
 
-  test('sentinel says isolation=none -> ALLOW even though registry resolves harness-worktree (the BLOCKER)', () => {
+  test('sentinel says isolation=none -> ALLOW even though registry resolves harness-worktree (the BLOCKER)', (t) => {
     writeSentinel(harnessProject, { isolation: 'none' });
-    try {
-      const r = runHook(agentPayload(), harnessProject); // no isolation param on the dispatch
-      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(r.stdout, '');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(agentPayload(), harnessProject); // no isolation param on the dispatch
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '');
   });
 
-  test('sentinel says isolation=orchestrator-worktree -> ALLOW', () => {
+  test('sentinel says isolation=orchestrator-worktree -> ALLOW', (t) => {
     writeSentinel(harnessProject, { isolation: 'orchestrator-worktree' });
-    try {
-      const r = runHook(agentPayload(), harnessProject);
-      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(r.stdout, '');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(agentPayload(), harnessProject);
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '');
   });
 
-  test('sentinel says isolation=harness-worktree + dispatch missing the flag -> DENY', () => {
+  test('sentinel says isolation=harness-worktree + dispatch missing the flag -> DENY', (t) => {
     writeSentinel(harnessProject, { isolation: 'harness-worktree', harnessFlag: 'isolation="worktree"' });
-    try {
-      const r = runHook(agentPayload(), harnessProject);
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(agentPayload(), harnessProject);
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
   });
 
-  test('sentinel says isolation=harness-worktree + dispatch carries the flag -> ALLOW', () => {
+  test('sentinel says isolation=harness-worktree + dispatch carries the flag -> ALLOW', (t) => {
     writeSentinel(harnessProject, { isolation: 'harness-worktree', harnessFlag: 'isolation="worktree"' });
-    try {
-      const r = runHook(
-        agentPayload({ tool_input: { subagent_type: 'gsd-executor', isolation: 'worktree' } }),
-        harnessProject
-      );
-      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(
+      agentPayload({ tool_input: { subagent_type: 'gsd-executor', isolation: 'worktree' } }),
+      harnessProject
+    );
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
   });
 
-  test('STALE sentinel (older than SENTINEL_STALE_MS) is ignored -> falls back to registry (DENY, harness-worktree still applies)', () => {
+  test('STALE sentinel (older than SENTINEL_STALE_MS) is ignored -> falls back to registry (DENY, harness-worktree still applies)', (t) => {
     // The stale sentinel LIES (says none) — proving the fallback re-derives
     // from the registry instead of trusting it is exactly the point.
     writeSentinel(harnessProject, { isolation: 'none', writtenAt: Date.now() - (SENTINEL_STALE_MS + 60000) });
-    try {
-      const r = runHook(agentPayload(), harnessProject);
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(agentPayload(), harnessProject);
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
   });
 
-  test('MALFORMED sentinel (invalid JSON) is treated as stale, never fatal -> falls back to registry (DENY)', () => {
+  test('MALFORMED sentinel (invalid JSON) is treated as stale, never fatal -> falls back to registry (DENY)', (t) => {
     const sentinelPath = path.join(harnessProject, SENTINEL_RELATIVE_PATH);
     fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
     fs.writeFileSync(sentinelPath, '{ this is not valid json');
-    try {
-      const r = runHook(agentPayload(), harnessProject);
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-      assert.equal(r.stderr.length > 0, true, 'must not crash — a clean block reason, not a stack trace');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(agentPayload(), harnessProject);
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
+    assert.equal(r.stderr.length > 0, true, 'must not crash — a clean block reason, not a stack trace');
   });
 
   test('no sentinel + workflow.use_worktrees=false -> ALLOW (project-level opt-out, case (a) from the BLOCKER)', () => {
@@ -474,25 +472,22 @@ describe('gsd-agent-isolation-guard.js: #3045 BLOCKER 2 — default-install fail
     cleanup(unconfiguredHarnessProject);
   });
 
-  test('part A: fresh sentinel confirms harness-worktree but carries NO harness_flag, and the runtime is not confidently resolvable -> DENY (was ALLOW pre-fix)', () => {
+  test('part A: fresh sentinel confirms harness-worktree but carries NO harness_flag, and the runtime is not confidently resolvable -> DENY (was ALLOW pre-fix)', (t) => {
     // This is the exact BLOCKER 2 regression: previously this branch fell
     // through to the "not confident -> none" degrade and ALLOWED the
     // dispatch to run unisolated, on the DEFAULT-INSTALL path (no `runtime`
     // key in config.json — gsd-core/templates/config.json's shipped shape —
     // and no ~/.gsd/defaults.json runtime either).
     writeSentinel(unconfiguredHarnessProject, { isolation: 'harness-worktree', harnessFlag: null });
-    try {
-      const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: unconfiguredHarnessProject });
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — must DENY, not silently allow`);
-      const out = JSON.parse(r.stdout);
-      assert.equal(out.decision, 'block');
-      assert.match(out.reason, /cannot verify|harness_flag/i);
-    } finally {
-      cleanup(path.join(unconfiguredHarnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(unconfiguredHarnessProject, '.gsd')));
+    const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: unconfiguredHarnessProject });
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — must DENY, not silently allow`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.decision, 'block');
+    assert.match(out.reason, /cannot verify|harness_flag/i);
   });
 
-  test('part B: ~/.gsd/defaults.json runtime (installer-persisted, #2395) is now a confident signal — makes the default install enforce', () => {
+  test('part B: ~/.gsd/defaults.json runtime (installer-persisted, #2395) is now a confident signal — makes the default install enforce', (t) => {
     // No sentinel at all here — pure conservative-fallback path. Before this
     // fix, an unconfigured project (no config.json runtime key, the COMMON
     // scaffold shape) always fell back to 'none'/allow regardless of what the
@@ -501,32 +496,26 @@ describe('gsd-agent-isolation-guard.js: #3045 BLOCKER 2 — default-install fail
     // already writes for every non-Claude install) is read as confidently as
     // GSD_RUNTIME or config.json's own key.
     const home = mkProject('gsd-aig-b2-home-');
-    try {
-      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
-      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'claude' }));
+    t.after(() => cleanup(home));
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'claude' }));
 
-      const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: home });
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — defaults.json runtime must be enforced`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-    } finally {
-      cleanup(home);
-    }
+    const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: home });
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — defaults.json runtime must be enforced`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
   });
 
-  test('part B (negative control): a project WITH its own config.json runtime key still wins over defaults.json', () => {
+  test('part B (negative control): a project WITH its own config.json runtime key still wins over defaults.json', (t) => {
     const home = mkProject('gsd-aig-b2-home2-');
-    try {
-      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
-      // defaults.json says a runtime with NO harness-worktree capability;
-      // config.json's own `runtime: claude` must take precedence.
-      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'windsurf' }));
+    t.after(() => cleanup(home));
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    // defaults.json says a runtime with NO harness-worktree capability;
+    // config.json's own `runtime: claude` must take precedence.
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'windsurf' }));
 
-      const r = runHook(agentPayload(), harnessProject, { HOME: home });
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-    } finally {
-      cleanup(home);
-    }
+    const r = runHook(agentPayload(), harnessProject, { HOME: home });
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
   });
 });
 
@@ -542,47 +531,38 @@ describe('gsd-agent-isolation-guard.js: #3045 SECURITY F2 — sentinel bound to 
     cleanup(harnessProject);
   });
 
-  test('a fresh "none" sentinel for a DIFFERENT phase than this dispatch is not applied — falls through to conservative fallback and DENIES', () => {
+  test('a fresh "none" sentinel for a DIFFERENT phase than this dispatch is not applied — falls through to conservative fallback and DENIES', (t) => {
     // Sentinel legitimately recorded 'none' for phase 1 (e.g. a submodule
     // degrade). This dispatch's own description names phase 2 — the guard
     // must not reuse phase 1's stale-but-fresh "none" to authorize it.
     writeSentinel(harnessProject, { isolation: 'none', phase: '1', plan: 'plan-a' });
-    try {
-      const r = runHook(
-        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
-        harnessProject,
-      );
-      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — mismatched sentinel must not silently allow`);
-      assert.equal(JSON.parse(r.stdout).decision, 'block');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(
+      agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
+      harnessProject,
+    );
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — mismatched sentinel must not silently allow`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
   });
 
-  test('a fresh sentinel for the SAME phase/plan as this dispatch is applied normally (positive control)', () => {
+  test('a fresh sentinel for the SAME phase/plan as this dispatch is applied normally (positive control)', (t) => {
     writeSentinel(harnessProject, { isolation: 'none', phase: '2', plan: 'plan-b' });
-    try {
-      const r = runHook(
-        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
-        harnessProject,
-      );
-      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(
+      agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
+      harnessProject,
+    );
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
   });
 
-  test('a dispatch whose description does not match the expected shape does not itself trigger a mismatch (best-effort extraction)', () => {
+  test('a dispatch whose description does not match the expected shape does not itself trigger a mismatch (best-effort extraction)', (t) => {
     writeSentinel(harnessProject, { isolation: 'none', phase: '2', plan: 'plan-b' });
-    try {
-      const r = runHook(
-        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'some other free-form text' } }),
-        harnessProject,
-      );
-      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const r = runHook(
+      agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'some other free-form text' } }),
+      harnessProject,
+    );
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
   });
 });
 
@@ -613,39 +593,284 @@ describe('gsd-agent-isolation-guard.js: #3045 MAJOR — clock seam boundary cove
     return { now: () => nowMs };
   }
 
-  test('sentinel exactly at SENTINEL_STALE_MS - 1 is still FRESH (trusted)', () => {
+  test('sentinel exactly at SENTINEL_STALE_MS - 1 is still FRESH (trusted)', (t) => {
     const writtenAt = 1_000_000;
     writeSentinel(harnessProject, { isolation: 'none', writtenAt });
-    try {
-      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS - 1) });
-      assert.equal(state.isolation, 'none', 'still within the trust window — must use the sentinel, not the registry fallback');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS - 1) });
+    assert.equal(state.isolation, 'none', 'still within the trust window — must use the sentinel, not the registry fallback');
   });
 
-  test('sentinel exactly AT SENTINEL_STALE_MS is STALE (age > threshold is the only fresh condition)', () => {
+  test('sentinel exactly AT SENTINEL_STALE_MS is STALE (age > threshold is the only fresh condition)', (t) => {
     const writtenAt = 1_000_000;
     writeSentinel(harnessProject, { isolation: 'none', writtenAt });
-    try {
-      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS) });
-      // Registry fallback for this project resolves harness-worktree (claude,
-      // no workflow.use_worktrees:false) — proves the sentinel's 'none' was
-      // NOT trusted at exactly the boundary.
-      assert.equal(state.isolation, 'harness-worktree');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS) });
+    // Registry fallback for this project resolves harness-worktree (claude,
+    // no workflow.use_worktrees:false) — proves the sentinel's 'none' was
+    // NOT trusted at exactly the boundary.
+    assert.equal(state.isolation, 'harness-worktree');
   });
 
-  test('sentinel at SENTINEL_STALE_MS + 1 is STALE', () => {
+  test('sentinel at SENTINEL_STALE_MS + 1 is STALE', (t) => {
     const writtenAt = 1_000_000;
     writeSentinel(harnessProject, { isolation: 'none', writtenAt });
-    try {
-      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS + 1) });
-      assert.equal(state.isolation, 'harness-worktree');
-    } finally {
-      cleanup(path.join(harnessProject, '.gsd'));
-    }
+    t.after(() => cleanup(path.join(harnessProject, '.gsd')));
+    const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS + 1) });
+    assert.equal(state.isolation, 'harness-worktree');
+  });
+});
+
+// Folded from tests/fix-3045-dispatch-isolation-resolver.test.cjs (#3333 wave
+// 1, test-only consolidation — no behavior change). These describe blocks
+// cover the sentinel WRITE side: `gsd-tools.cjs query dispatch-isolation`
+// (routeDispatchIsolation) persists the resolved isolation decision as an
+// unconditional side effect of resolving it, and `record-dispatch-isolation`
+// (routeRecordDispatchIsolation) is the explicit fallback/testable primitive
+// sharing the same atomic-write implementation. Every test here drives the
+// REAL gsd-tools.cjs CLI (via runGsdTools) and asserts on the sentinel file
+// it actually wrote, parsed as JSON.
+describe('#3045 CORE REDESIGN — dispatch-isolation records as an unconditional side effect', () => {
+  test('a plain --raw query with no explicit isolation-record verb still writes the sentinel', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    assert.equal(fs.existsSync(sentinelFile(dir)), false, 'precondition: no sentinel yet');
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--phase', '7'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.output.trim(), 'harness-worktree');
+
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'harness-worktree');
+    assert.equal(sentinel.harness_flag, 'isolation="worktree"');
+    assert.equal(sentinel.phase, '7');
+    assert.equal(sentinel.plan, null);
+    assert.equal(typeof sentinel.written_at, 'number');
+  });
+
+  test('--json output and the recorded sentinel agree on isolation + harnessFlag', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--json', '--phase', '3', '--plan', 'plan-b'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    const parsed = JSON.parse(result.output);
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, parsed.isolation);
+    assert.equal(sentinel.harness_flag, parsed.harnessFlag);
+    assert.equal(sentinel.phase, '3');
+    assert.equal(sentinel.plan, 'plan-b');
+  });
+
+  test('--force-isolation none overrides a naturally-resolved harness-worktree host and clears harnessFlag', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--phase', '4', '--force-isolation', 'none'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    // routeDispatchIsolation's own stdout still reflects the FORCED value.
+    assert.equal(result.output.trim(), 'none');
+
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'none');
+    assert.equal(sentinel.harness_flag, null);
+  });
+
+  test('an invalid --force-isolation value is ignored, not applied', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--force-isolation', 'bogus-mode'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.output.trim(), 'harness-worktree');
+    assert.equal(readSentinelRaw(dir).isolation, 'harness-worktree');
+  });
+
+  test('#3045 BLOCKER 1 — a later, plan-scoped call overwrites an earlier phase-only sentinel atomically', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    // Phase-level resolve (as the "Resolve ISOLATION" step performs it).
+    runGsdTools(['query', 'dispatch-isolation', '--raw', '--phase', '9'], dir, { GSD_RUNTIME: 'claude', HOME: dir });
+    assert.equal(readSentinelRaw(dir).plan, null);
+
+    // Per-plan gate degrades THIS plan to sequential (submodule intersection).
+    const r = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--phase', '9', '--plan', 'plan-sub', '--force-isolation', 'none'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(r.success, true, r.error);
+
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'none', 'the plan-scoped degrade must win over the stale phase-level record');
+    assert.equal(sentinel.plan, 'plan-sub');
+    assert.equal(sentinel.phase, '9');
+  });
+
+  test('the sentinel round-trips through the real reader (hooks/lib/isolation-sentinel.js)', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--phase', '2', '--plan', 'p1'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    const read = readSentinel(dir);
+    assert.equal(read.present, true);
+    assert.equal(read.stale, false);
+    assert.equal(read.malformed, false);
+    assert.equal(read.isolation, 'harness-worktree');
+    assert.equal(read.harnessFlag, 'isolation="worktree"');
+    assert.equal(read.phase, '2');
+    assert.equal(read.plan, 'p1');
+  });
+});
+
+describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor real registry value + generalized parsing)', () => {
+  test('record-dispatch-isolation --harness-flag=--worktree persists the REAL cursor registry value verbatim', (t) => {
+    const cursorFlag = runtimes.cursor.runtime.harnessIsolationFlag;
+    assert.equal(cursorFlag, '--worktree', 'precondition: registry shape assumed by this test');
+
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'record-dispatch-isolation', '--isolation', 'harness-worktree', `--harness-flag=${cursorFlag}`, '--phase', '1'],
+      dir,
+      { HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.harness_flag, cursorFlag);
+  });
+
+  test('record-dispatch-isolation --harness-flag=<bare-flag> persists ANY bare-CLI-flag-shaped value verbatim (parser is not Cursor-specific)', (t) => {
+    // A prior draft of this test asserted `runtimes.windsurf.runtime.harnessIsolationFlag
+    // === '--worktree'`, assuming Windsurf's registry entry mirrors Cursor's.
+    // It does not: Windsurf's `hostIntegration.dispatch.isolation` is 'none'
+    // and it declares NO `harnessIsolationFlag` at all — per ADR-1239
+    // (docs/adr/1239-gsd-embeddable-orchestration-engine.md:247,250),
+    // `pi`/`zcode`/`windsurf` "genuinely cannot benefit and correctly stay
+    // none" because they lack named/concurrent subagent dispatch, so there is
+    // no per-dispatch isolation flag for Windsurf to record. That was a wrong
+    // test expectation (a fabricated registry precondition), not a production
+    // defect — corrected here to prove the `--harness-flag=<value>` parser
+    // generalizes to any bare-CLI-flag-shaped value, not merely Cursor's
+    // specific '--worktree' string (which the sub-test above already pins).
+    assert.equal(
+      runtimes.windsurf.runtime.harnessIsolationFlag,
+      undefined,
+      'precondition: windsurf declares no harnessIsolationFlag (isolation: "none", ADR-1239)',
+    );
+
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'record-dispatch-isolation', '--isolation', 'harness-worktree', '--harness-flag=--isolated', '--phase', '1'],
+      dir,
+      { HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(readSentinelRaw(dir).harness_flag, '--isolated');
+  });
+
+  test('the legacy space-separated form still rejects a value that looks like another flag (unchanged, regression pin)', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'record-dispatch-isolation', '--isolation', 'harness-worktree', '--harness-flag', '--worktree', '--phase', '1'],
+      dir,
+      { HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(readSentinelRaw(dir).harness_flag, null, 'space form must not swallow a value shaped like a flag');
+  });
+
+  test('record-dispatch-isolation still errors with usage text when --isolation is missing', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(['query', 'record-dispatch-isolation'], dir, { HOME: dir });
+    assert.equal(result.success, false);
+    assert.match(result.error, /Usage: record-dispatch-isolation/);
+  });
+
+  test('record-dispatch-isolation accepts --plan and records it', (t) => {
+    const dir = createTempProject('gsd-3045-resolver-');
+    t.after(() => cleanup(dir));
+    const result = runGsdTools(
+      ['query', 'record-dispatch-isolation', '--isolation', 'none', '--phase', '5', '--plan', 'plan-x'],
+      dir,
+      { HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'none');
+    assert.equal(sentinel.phase, '5');
+    assert.equal(sentinel.plan, 'plan-x');
+  });
+});
+
+describe('#3045 MINOR — writer/reader sentinel path derivation now agrees for a linked worktree without its own .planning/', () => {
+  function git(args, cwd) {
+    gitOrThrow(args, { cwd });
+  }
+
+  test('a sentinel written from a linked worktree (via --cwd) is found by readSentinel() called with that SAME worktree path', (t) => {
+    const mainRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3045-minor-main-'));
+    const wtParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3045-minor-wtparent-'));
+    t.after(() => {
+      cleanup(mainRepo);
+      cleanup(wtParent);
+    });
+    git(['init'], mainRepo);
+    git(['config', 'user.email', 'test@test.com'], mainRepo);
+    git(['config', 'user.name', 'Test'], mainRepo);
+    git(['config', 'commit.gpgsign', 'false'], mainRepo);
+    fs.writeFileSync(path.join(mainRepo, 'README.md'), 'placeholder\n');
+    git(['add', '-A'], mainRepo);
+    git(['commit', '-m', 'initial commit'], mainRepo);
+
+    // .planning/ is created AFTER the commit — uncommitted/untracked, the
+    // documented shape where a linked worktree does NOT get its own copy
+    // (git worktree only checks out tracked files).
+    fs.mkdirSync(path.join(mainRepo, '.planning'));
+    fs.writeFileSync(path.join(mainRepo, '.planning', 'config.json'), JSON.stringify({}));
+
+    const linked = path.join(wtParent, 'linked');
+    git(['worktree', 'add', linked, '-b', 'gsd-3045-minor-branch'], mainRepo);
+    assert.equal(fs.existsSync(path.join(linked, '.planning')), false, 'precondition: linked worktree has no own .planning/');
+
+    // Write FROM the linked worktree path — mirrors an orchestrator
+    // running in a linked worktree calling `dispatch-isolation`.
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--cwd', linked, '--phase', '1'],
+      mainRepo,
+      { GSD_RUNTIME: 'claude', HOME: mainRepo },
+    );
+    assert.equal(result.success, true, result.error);
+
+    // The writer resolved up to the MAIN worktree (findProjectRoot(resolveMainWorktreeCwd(...))) —
+    // the sentinel must NOT exist at the linked worktree's own (nonexistent) .gsd/.
+    assert.equal(fs.existsSync(sentinelFile(linked)), false, 'writer must not have written under the linked worktree itself');
+    assert.equal(fs.existsSync(sentinelFile(mainRepo)), true, 'writer must have resolved up to the main worktree');
+
+    // The READER, given the raw linked-worktree cwd (exactly what a guard
+    // hook receives as data.cwd / workspace_roots[i]), must derive the SAME
+    // root the writer did and find the sentinel — this is the MINOR fix.
+    const read = readSentinel(linked);
+    assert.equal(read.present, true, 'reader must resolve the linked worktree up to the main worktree, same as the writer');
+    assert.equal(read.stale, false);
+    assert.equal(read.isolation, 'harness-worktree');
   });
 });

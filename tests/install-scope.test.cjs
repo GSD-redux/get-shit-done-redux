@@ -23,7 +23,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { toPosixPath } = require('./helpers.cjs');
 
-const { resolveScope, isGlobalScope } = require('../gsd-core/bin/lib/install-scope.cjs');
+const { resolveScope, isGlobalScope, SCOPE_ORDER, scopeRank } = require('../gsd-core/bin/lib/install-scope.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { createRuntimeArtifactInstallPlan } = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
 
@@ -276,5 +276,31 @@ describe('isGlobalScope', () => {
       () => isGlobalScope('project'),
       (err) => err instanceof TypeError && /global/i.test(err.message) && /local/i.test(err.message),
     );
+  });
+});
+
+describe('SCOPE_ORDER (#2872 review finding — single source of the scope axis ordering)', () => {
+  // `runtime-artifact-layout.cts` and `installed-surface-resolver.cts` both
+  // consume this constant instead of each re-declaring their own
+  // `['global', 'local']` literal (the "generative fix divergence" class
+  // recorded in this repo's CLAUDE.md). Locking the exact value here is what
+  // makes a future re-declaration in either consumer fail somewhere, rather
+  // than silently drifting.
+  test('is exactly [\'global\', \'local\']', () => {
+    assert.deepStrictEqual(SCOPE_ORDER, ['global', 'local']);
+  });
+
+  test('is frozen', () => {
+    assert.strictEqual(Object.isFrozen(SCOPE_ORDER), true);
+  });
+
+  // Derives the expected order from scopeRank rather than hardcoding
+  // ['global', 'local'] a second time: this fails if someone reorders
+  // SCOPE_ORDER without changing the ranks, and equally fails if someone
+  // changes the ranks without reordering SCOPE_ORDER — the two can never
+  // silently drift apart.
+  test('is sorted by scopeRank descending', () => {
+    const expected = [...SCOPE_ORDER].sort((a, b) => scopeRank(b) - scopeRank(a));
+    assert.deepStrictEqual(SCOPE_ORDER, expected);
   });
 });

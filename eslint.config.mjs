@@ -174,6 +174,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/runtime-artifact-install-plan.cjs',
       'gsd-core/bin/lib/runtime-artifact-layout.cjs',
       'gsd-core/bin/lib/install-scope.cjs',
+      'gsd-core/bin/lib/installed-surface-resolver.cjs',
       'gsd-core/bin/lib/runtime-config-adapter-registry.cjs',
       'gsd-core/bin/lib/runtime-hooks-surface.cjs',
       'gsd-core/bin/lib/command-routing-hub.cjs',

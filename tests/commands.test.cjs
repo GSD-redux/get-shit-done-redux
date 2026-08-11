@@ -969,6 +969,56 @@ describe('current-timestamp command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// cmdCurrentTimestamp exact-value tests (#3314 — ADR-456 subprocess clock pin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('current-timestamp command — exact value under GSD_NOW_MS pin', () => {
+  let tmpDir;
+  // Pinned instant with a non-zero millisecond fraction so the 'full' format
+  // assertion can't accidentally pass against a truncated value.
+  const PINNED_MS = 1_700_000_000_123; // 2023-11-14T22:13:20.123Z
+  const PIN_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_MS) };
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('date format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp date', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().split('T')[0];
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('filename format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp filename', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().replace(/:/g, '-').replace(/\..+/, '');
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('full format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp full', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
+  });
+
+  test('default format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cmdListTodos tests (CMD-02)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2476,15 +2526,46 @@ describe('_wsParseRetryAfter (#308)', () => {
     assert.strictEqual(_wsParseRetryAfter('120000'), 60000);
   });
 
-  test('future HTTP-date → value in (0, 60000]', () => {
-    const futureDate = new Date(Date.now() + 5000).toUTCString();
-    const v = _wsParseRetryAfter(futureDate);
-    assert.ok(typeof v === 'number' && v > 0 && v <= 60000, `expected (0,60000], got ${v}`);
+  // ADR-456 §(a) reachability rule: this function is required directly
+  // (in-process), so t.mock.timers reaches it without any production change —
+  // it patches the global `Date` that `Date.now()` reads from regardless of
+  // whether the SUT goes through realClock. Fixed, second-aligned pin so the
+  // HTTP-date's whole-second precision doesn't round the expected value away.
+  const PINNED_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+
+  test('future HTTP-date 5s ahead → exactly 5000 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const futureDate = new Date(PINNED_MS + 5000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(futureDate), 5000);
   });
 
-  test('past HTTP-date → 0', () => {
-    const pastDate = new Date(Date.now() - 5000).toUTCString();
+  test('past HTTP-date 5s behind → exactly 0 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const pastDate = new Date(PINNED_MS - 5000).toUTCString();
     assert.strictEqual(_wsParseRetryAfter(pastDate), 0);
+  });
+
+  test('boundary: HTTP-date 59s ahead → 59000, not clamped', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 59_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 59_000);
+  });
+
+  test('boundary: HTTP-date 60s ahead → 60000, at cap exactly', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 60_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
+  });
+
+  test('boundary: HTTP-date 61s ahead → clamped to 60000', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 61_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
   });
 
   test('"garbage" → null', () => {

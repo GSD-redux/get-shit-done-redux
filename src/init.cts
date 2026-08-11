@@ -1332,7 +1332,7 @@ function cmdInitQuick(
   options: Record<string, unknown> = {},
 ): void {
   const config = loadConfig(cwd);
-  const now = new Date();
+  const now = new Date(realClock.now());
   const slug = description ? generateSlugInternal(description)?.substring(0, 40) : null;
 
   const yy = String(now.getFullYear()).slice(-2);
@@ -2280,7 +2280,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
         else if (hasContext) diskStatus = 'discussed';
         else diskStatus = 'empty';
 
-        const nowMs = Date.now();
+        const nowMs = realClock.now();
         let newestMtime = 0;
         for (const f of phaseFiles) {
           try {

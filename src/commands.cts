@@ -199,7 +199,7 @@ function cmdGenerateSlug(text: string | undefined, raw: boolean): void {
 }
 
 function cmdCurrentTimestamp(format: string | undefined, raw: boolean): void {
-  const now = new Date();
+  const now = new Date(realClock.now());
   let result: string;
 
   switch (format) {

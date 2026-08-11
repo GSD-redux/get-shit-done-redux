@@ -154,6 +154,11 @@ const PKG_VERSION = require('../../package.json').version;
 // that cause hash drift between local (PKG_VERSION=1.x.x) and CI (PKG_VERSION=1.x.x-rc.N):
 // the PKG_VERSION normalization below replaces only the *current* version, but
 // CHANGELOG.md references prior-release versions, so the normalized hash diverges.
+// gsd-file-manifest.json's exclusion was revisited deliberately for #2872: the
+// manifest gained `manifestVersion`/`runtime`/`scope` fields, all of which are
+// deterministic and would not by themselves force an exclusion, but `timestamp`
+// — the original reason this file is volatile — is unchanged by #2872, so the
+// exclusion still holds for exactly the same reason it always has.
 const VOLATILE_FILES = new Set([
   'gsd-file-manifest.json',
   'gsd-install-state.json',
