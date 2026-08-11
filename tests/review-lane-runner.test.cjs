@@ -704,3 +704,307 @@ describe('runner — #3086: spawn errorCode surfaced in err file', () => {
       'legitimate stderr should still be written');
   });
 });
+
+// Folded from tests/fix-2494-review-claude-gemini-empty-guard.test.cjs (#3334/H3).
+//
+// #2494 — a failed reviewer lane must be diagnosable, never a silent drop. Before the fix, gemini
+// and claude sent stderr to `/dev/null` and wrote nothing on failure. A failed lane — CLI missing,
+// unauthenticated, rate-limited, crashed, any exit that writes no stdout — left a zero-byte file
+// that `write_reviews` rendered as "a reviewer that ran cleanly with nothing to report", silently
+// dropping a lane from the cross-AI consensus while `present_results` reported success. The policy
+// is uniform across every lane now rather than fixed per-leg, so these assertions run over the
+// whole spawn roster instead of the two legs the issue named.
+describe('#2494 — a failed lane writes a diagnosable stub, not a zero-byte file', () => {
+  /** Lanes whose empty-output policy is the shared stub (antigravity owns its own diagnostics). */
+  const STUB_LANES = REVIEWER_LANES.filter(
+    (l) => l.transport === 'spawn' && l.emptyOutput === 'stub-with-stderr',
+  );
+
+  function planFor(slug) {
+    const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+    const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: RUN, repoRoot: ROOT });
+    assert.equal(r.ok, true, `${slug} failed to resolve`);
+    return r.plan;
+  }
+
+  function deps(spawnResult, files = {}) {
+    return {
+      files,
+      // `kimi-code` declares a `command-capability` probe, so the runner spawns `--help` BEFORE the
+      // review. Answer that separately or the probe fails and the lane never reaches the invocation
+      // this test is about.
+      spawn: (binary, argv) =>
+        argv && argv.length === 1 && argv[0] === '--help'
+          ? { status: 0, stdout: '--output-format', stderr: '' }
+          : spawnResult,
+      httpJson: async () => ({ ok: true, status: 200, body: '{}' }),
+      readFile: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; },
+      writeFile: (p, c) => { files[p] = c; },
+      exists: (p) => p in files,
+      hasBinary: () => true,
+      configGet: () => undefined,
+      homeDir: '/home/u',
+      warn: () => {},
+    };
+  }
+
+  for (const lane of STUB_LANES) {
+    test(`${lane.slug}: a lane that exits non-zero with no stdout is stubbed`, async () => {
+      const p = planFor(lane.slug);
+      const d = deps({ status: 127, stdout: '', stderr: 'command not found' });
+      const r = await runLane(p, d, { repoRoot: ROOT });
+
+      assert.equal(r.stubbed, true, 'a failed lane must be reported as stubbed');
+      const review = d.files[p.reviewPath];
+      assert.ok(review !== undefined, 'a review file must exist after a failed lane');
+      assert.notStrictEqual(review.trim(), '', 'the review file must not be empty');
+      assert.ok(
+        review.includes('failed or returned empty output'),
+        'the stub must be distinguishable from a real review',
+      );
+    });
+
+    test(`${lane.slug}: stderr is captured to a .err sidecar, never discarded`, async () => {
+      // The sidecar is the difference between "this lane failed" and "this lane failed BECAUSE…".
+      // Without it every failure mode looks identical to every other.
+      const p = planFor(lane.slug);
+      const d = deps({ status: 1, stdout: '', stderr: 'HTTP 429 rate limited' });
+      await runLane(p, d, { repoRoot: ROOT });
+
+      assert.equal(d.files[p.errPath], 'HTTP 429 rate limited', 'stderr must reach the sidecar');
+      assert.ok(
+        d.files[p.reviewPath].includes('HTTP 429 rate limited'),
+        'and must be surfaced in the stub, where a reader will actually see it',
+      );
+      assert.ok(p.reviewPath.endsWith('.md'), 'review output path unchanged');
+    });
+  }
+
+  test('a successful review passes through untouched', async () => {
+    const p = planFor('gemini');
+    const d = deps({ status: 0, stdout: 'Looks good.\n', stderr: '' });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+
+    assert.equal(r.stubbed, false);
+    assert.ok(d.files[p.reviewPath].includes('Looks good.'));
+    assert.ok(
+      !d.files[p.reviewPath].includes('failed or returned empty output'),
+      'a real review must never carry the failure header',
+    );
+  });
+
+  test('no lane sends stderr to /dev/null — the sidecar is unconditional', async () => {
+    // The original defect in one line, asserted over the whole roster rather than the two legs the
+    // issue named: the policy is uniform now, and a future lane must not be able to opt out.
+    for (const lane of STUB_LANES) {
+      const p = planFor(lane.slug);
+      const d = deps({ status: 0, stdout: 'ok', stderr: 'a warning' });
+      await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(d.files[p.errPath], 'a warning', `${lane.slug} discarded stderr`);
+    }
+  });
+});
+
+// Folded from tests/fix-2605-review-local-server-empty-guard.test.cjs (#3334/H3).
+//
+// #2605 — the local OpenAI-compatible lanes (ollama / lm_studio / llama.cpp) dropped silently. The
+// original defects, all of which made a failed lane indistinguishable from a clean empty review:
+// bare `curl -s` suppressed curl's own error text; the response was piped straight into `jq` so the
+// BODY — where an OpenAI-compatible server puts its error JSON on an HTTP 4xx/5xx while curl still
+// exits 0 — was discarded unread; nothing was written when content was empty, so the file never
+// existed and `write_reviews` omitted the section entirely; and a whitespace-only reply passed the
+// byte-counting `[ ! -s … ]` guard as a successful review.
+describe('#2605 local OpenAI-compatible lanes produce diagnosable output', () => {
+  const HTTP_LANES = REVIEWER_LANES.filter((l) => l.transport === 'openai-http');
+
+  function planFor(slug, config = {}) {
+    const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+    const r = resolveLanePlan({ lane, configGet: (k) => config[k], runDir: RUN, repoRoot: ROOT });
+    assert.equal(r.ok, true);
+    return r.plan;
+  }
+
+  /**
+   * These lanes declare an `http-reachable` probe, so the runner performs a GET on /v1/models BEFORE
+   * the chat call. The stub must answer that separately — otherwise the lane is reported unreachable
+   * and never reaches the invocation these tests are actually about.
+   */
+  function reachableThen(chatResponse) {
+    return async (url, opts) =>
+      opts.method === 'GET'
+        ? { ok: true, status: 200, body: JSON.stringify({ data: [{ id: 'stub-model' }] }) }
+        : (typeof chatResponse === 'function' ? chatResponse(url, opts) : chatResponse);
+  }
+
+  function deps(httpJson, files = { [`${RUN}/gsd-review-prompt.md`]: 'PLAN' }) {
+    const warnings = [];
+    return {
+      files,
+      warnings,
+      spawn: () => ({ status: 0, stdout: '', stderr: '' }),
+      httpJson,
+      readFile: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; },
+      writeFile: (p, c) => { files[p] = c; },
+      exists: (p) => p in files,
+      hasBinary: () => true,
+      configGet: () => undefined,
+      homeDir: '/home/u',
+      warn: (m) => warnings.push(m),
+    };
+  }
+
+  const okBody = (content) => ({
+    ok: true, status: 200, body: JSON.stringify({ choices: [{ message: { content } }] }),
+  });
+
+  for (const lane of HTTP_LANES) {
+    test(`${lane.slug}: an unreachable endpoint produces a stub carrying the transport error`, async () => {
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen({ ok: false, status: 0, body: '', error: 'ECONNREFUSED' }));
+      const r = await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(r.stubbed, true);
+      assert.ok(d.files[p.reviewPath].includes('ECONNREFUSED'),
+        'the transport error must be visible — bare `curl -s` used to swallow it');
+    });
+
+    test(`${lane.slug}: an HTTP error body is preserved in the stub`, async () => {
+      // The body is the ONLY evidence on a 4xx/5xx: such a server returns its error JSON there and
+      // curl still exits 0, so stderr is empty. The old pipe into jq discarded it.
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen({ ok: false, status: 404, body: '{"error":"model not found"}' }));
+      await runLane(p, d, { repoRoot: ROOT });
+      assert.ok(d.files[p.reviewPath].includes('Raw response body:'));
+      assert.ok(d.files[p.reviewPath].includes('model not found'));
+    });
+
+    test(`${lane.slug}: an empty 200 response still produces a file`, async () => {
+      // Previously nothing was written, so the file never existed, write_reviews omitted the
+      // section, and the result was indistinguishable from the reviewer never being selected.
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen(okBody('')));
+      const r = await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(r.stubbed, true);
+      assert.ok(d.files[p.reviewPath] !== undefined, 'a file must exist even on an empty reply');
+      assert.ok(d.files[p.reviewPath].includes('failed or returned empty output'));
+    });
+
+    test(`${lane.slug}: a whitespace-only response is empty, not a successful review`, async () => {
+      // `[ ! -s … ]` counted BYTES, so "   " passed as a real review.
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen(okBody('   \n\t ')));
+      const r = await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(r.stubbed, true);
+    });
+
+    test(`${lane.slug}: a reply that is exactly an echo option is NOT misclassified`, async () => {
+      // `echo "$VAR"` would write 0 bytes for `-n`/`-e`/`-E`. Nothing here goes through echo, so
+      // this is structurally impossible now — locked anyway.
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen(okBody('-n')));
+      const r = await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(r.stubbed, false);
+      assert.ok(d.files[p.reviewPath].includes('-n'));
+      assert.ok(!d.files[p.reviewPath].includes('failed or returned empty output'));
+    });
+
+    test(`${lane.slug}: a successful review passes through untouched`, async () => {
+      const p = planFor(lane.slug);
+      const d = deps(reachableThen(okBody('## Findings\nreal review')));
+      const r = await runLane(p, d, { repoRoot: ROOT });
+      assert.equal(r.stubbed, false);
+      assert.ok(d.files[p.reviewPath].includes('## Findings'));
+      assert.ok(!d.files[p.reviewPath].includes('failed or returned empty output'));
+    });
+  }
+
+  // NOTE: 'a served-model mismatch is warned about, not silently accepted' (originally in
+  // fix-2605-review-local-server-empty-guard.test.cjs) was DROPPED here as a genuine duplicate of
+  // "runner — openai-compatible handler > a served-model mismatch warns without failing the review"
+  // above: same lane (lm_studio), same call path (runOpenAiCompatible directly), same assertion
+  // shape (review content + a warning naming both the served and asked-for model), differing only
+  // in the literal string labels used for the mismatched model names.
+
+  test('neither jq nor curl is required by any of these lanes', () => {
+    // The dependency is gone, not merely satisfied: parsing is JSON.parse and the request is
+    // in-process. `jq` is absent on stock Windows/Git-Bash (#2589), which gated these lanes.
+    for (const lane of HTTP_LANES) {
+      assert.deepStrictEqual([...lane.requiresBinaries], [], `${lane.slug} still declares a binary`);
+    }
+  });
+});
+
+// Folded from tests/fix-2794-review-qwen-empty-guard.test.cjs (#3334/H3).
+//
+// #2794 — the qwen reviewer leg was the last one still sending stderr to /dev/null. Every other lane
+// captured stderr to a `.err` sidecar and appended it to the stub (#2494/#2605); qwen wrote a bare
+// "failed or returned empty output." with no diagnostic at all, so a missing binary, an auth prompt
+// and a rate-limit were indistinguishable from each other AND from a clean empty review.
+describe('#2794 qwen reviewer stderr capture', () => {
+  function planFor(slug) {
+    const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+    const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: RUN, repoRoot: ROOT });
+    assert.equal(r.ok, true);
+    return r.plan;
+  }
+
+  function deps(spawnResult, files = {}, hasBinary = () => true) {
+    return {
+      files,
+      spawn: () => spawnResult,
+      httpJson: async () => ({ ok: true, status: 200, body: '{}' }),
+      readFile: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; },
+      writeFile: (p, c) => { files[p] = c; },
+      exists: (p) => p in files,
+      hasBinary,
+      configGet: () => undefined,
+      homeDir: '/home/u',
+      warn: () => {},
+    };
+  }
+
+  test('writes the review on success', async () => {
+    const p = planFor('qwen');
+    const d = deps({ status: 0, stdout: '## Qwen findings\nall good\n', stderr: '' });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.stubbed, false);
+    assert.ok(d.files[p.reviewPath].includes('## Qwen findings'));
+  });
+
+  test('a failed lane surfaces its stderr in the review stub', async () => {
+    const p = planFor('qwen');
+    const d = deps({ status: 1, stdout: '', stderr: 'auth required: run `qwen login`' });
+    await runLane(p, d, { repoRoot: ROOT });
+    assert.ok(d.files[p.reviewPath].includes('auth required'),
+      'the diagnostic must reach the review, not just the sidecar');
+    assert.equal(d.files[p.errPath], 'auth required: run `qwen login`');
+  });
+
+  test('a silently empty lane still produces a diagnosable stub', async () => {
+    const p = planFor('qwen');
+    const d = deps({ status: 0, stdout: '', stderr: '' });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.stubbed, true);
+    assert.ok(d.files[p.reviewPath].includes('failed or returned empty output'));
+  });
+
+  test('a missing qwen binary reports unavailable rather than an empty review', async () => {
+    // Stronger than the original: the lane is now reported with a TYPED reason before it is ever
+    // spawned, instead of producing a stub that looked the same as every other failure.
+    const p = planFor('qwen');
+    const d = deps({ status: 0, stdout: '', stderr: '' }, {}, () => false);
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'missing_binary');
+    assert.equal(d.files[p.reviewPath], undefined, 'no review file for a lane that never ran');
+  });
+
+  test('the sidecar is structural — no lane can opt out of it', async () => {
+    // The #2794 defect was one lane diverging from a convention every other lane followed. There is
+    // no per-lane place to diverge any more; this asserts that directly.
+    for (const lane of REVIEWER_LANES.filter((l) => l.transport === 'spawn')) {
+      const p = planFor(lane.slug);
+      assert.ok(p.errPath.endsWith('.err'), `${lane.slug} must declare a stderr sidecar`);
+      assert.notEqual(p.errPath, '/dev/null');
+    }
+  });
+});
