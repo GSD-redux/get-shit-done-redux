@@ -162,18 +162,18 @@ Context Warnings, Research Qs
 |---|---|---|
 | `{FINDING}` | this runtime has no usable executor-isolation primitive | GSD could not resolve this runtime's executor-isolation capability |
 | `{CONSEQUENCE}` | execution fails closed on an explicit true | GSD cannot tell whether execution will accept an explicit true |
-| `{ABSENCE}` | absent, it already resolves to false on this runtime | absent, it is the safe state until the capability resolves |
+| `{ABSENCE}` | absent, it resolves to false wherever this emit stamped that default | absent, it is the safe state until the capability resolves |
 
 Failing closed is right in both columns — never write `workflow.use_worktrees: true` from this branch either way. Only the explanation changes.
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply when `ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "Leave unchanged" only when the key is absent (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal — `{ABSENCE}`, so there is nothing to repair). Otherwise pre-select "No (Recommended)": both when the value is `false` and when it is an explicit non-false value — the broken-inheritance case the notice below covers. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a config this runtime cannot honor. In TEXT_MODE, mark that option as the default in the numbered list.
+  Pre-selection: the generic "current values pre-selected" rule does not apply when `ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "Leave unchanged" only when the key is absent (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal — `{ABSENCE}`, so there is nothing to repair). Otherwise pre-select "No (Recommended)": both when the value is `false` and when it is an explicit non-false value — the broken-inheritance case the notice below covers. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a value this branch could not justify. In TEXT_MODE, mark that option as the default in the numbered list.
 
   Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
 
 ```
-Note: .planning/config.json currently sets workflow.use_worktrees: true.
+Note: the project config currently sets workflow.use_worktrees: true.
 {FINDING}, so {CONSEQUENCE}. Choose "No" to repair it for this runtime, or
 "Leave unchanged" to keep it for a worktree-capable install that shares this
 config.

@@ -1391,7 +1391,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     // scoped entirely to the `ISOLATION = none` branch (below), which needs
     // nothing from any sibling PR; the `!= none` path is base behavior unchanged.
 
-    test('settings.md and health.md resolve isolation with the side-effect-free inspection read', () => {
+    test('settings.md and health.md resolve isolation with the sentinel-free inspection read', () => {
       // allow-test-rule: source-text-is-the-product (#2486)
       // Workflow .md text IS what the runtime loads — asserting on it tests the deployed contract.
       for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
@@ -1697,7 +1697,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       );
       // Both branches must still route the user to the same repair.
       for (const [name, out] of [['resolved', resolved], ['unresolved', unresolved]]) {
-        assert.match(out, /\/gsd:settings/, `${name}: W024 must name the repair command`);
+        assert.match(out, /[/$]gsd[:-]settings/, `${name}: W024 must name the repair command`);
       }
     });
 
