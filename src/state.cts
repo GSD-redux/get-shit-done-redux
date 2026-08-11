@@ -3032,7 +3032,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   // site sees. Pass statePath so a truncated STATE.md is named in the #1882
   // diagnostic rather than reported under a content digest.
   const { fm, body, scope: initialScope } = readStateFrontmatterScoped(content, statePath);
-  let scope: planningScopeMod.Scope = initialScope;
+  const scope: planningScopeMod.Scope = initialScope;
 
   const status = stateFieldValue(fm, body, 'status', 'Status').value || '';
   const resolvedPhase = resolveStatePhase(fm, body);

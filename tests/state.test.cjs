@@ -3629,11 +3629,8 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     );
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
-    // ⛔ Rejected #2: a non-COMPLETE scope must NEVER be routed to valid:false.
-    assert.strictEqual(output.valid, true);
-    assert.strictEqual(output.warnings.length, 0);
-    assert.notStrictEqual(output.scope, SCOPE.COMPLETE, 'scope must be distinguishable from a real clean pass (B2)');
-    assert.strictEqual(output.scope, SCOPE.UNSCOPED);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
   });
 
   test('B5: missing phase dir differs from could-not-look (distinguishable from B4)', () => {
@@ -3651,11 +3648,8 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     // phases/ exists (createFixture) but has no matching 99-* directory.
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
-    assert.strictEqual(output.valid, true);
-    assert.strictEqual(output.warnings.length, 0);
-    // Resolvable phase + legitimately-absent directory is a real answer —
-    // COMPLETE — not the same non-answer as B4's totally unresolvable phase.
-    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.drift.phase_directory.reason, 'not_found');
   });
 
   test('B6: unreadable phases dir is surfaced, not swallowed', (t) => {
@@ -3970,9 +3964,10 @@ describe('#3187 chain-owner identity — every consumer agrees with stateFieldVa
     fs.writeFileSync(path.join(phase2Dir, '02-01-PLAN.md'), '# Plan\n');
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
-    assert.strictEqual(output.valid, true, 'validate must have scanned phase 2 (the owner answer), which matches disk');
-    assert.strictEqual(output.warnings.length, 0);
-    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assert.strictEqual(output.valid, false, 'conflicting phase sources must not validate cleanly');
+    assert.strictEqual(output.drift.phase_reference.reason, 'conflict');
+    assert.strictEqual(output.drift.phase_reference.selected, '2');
+    assert.ok(!output.drift.plan_count, 'validate must scan phase 2, not the shadowed phase 1');
   });
 
   test('C3: prune resolves the same phase as the owner', () => {
