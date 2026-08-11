@@ -23,11 +23,14 @@ import planScan = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningRoot, getActiveWorkstream } = planningWorkspace;
-import { stateExtractField } from './state-document.cjs';
+import { stateFieldValue } from './state-document.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
+import frontmatterMod = require('./frontmatter.cjs');
+const { extractFrontmatter, stripFrontmatter } = frontmatterMod;
 import { findTableWithColumns } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
-const { readVerificationStatus } = verificationMod;
+const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const { phaseKeyFromDir, phaseKeyFromProse, parentPhaseKey } = phaseIdMod;
@@ -78,11 +81,26 @@ function workstreamsRoot(cwd: string): string {
   return path.join(planningRoot(cwd), 'workstreams');
 }
 
-function countRoadmapPhases(roadmapPath: string, fallbackCount: number): number {
+/**
+ * #3185 (ADR-3180 Decision 1): count the phases the CURRENT milestone
+ * declares, not every `Phase` heading in the file.
+ *
+ * This previously matched `^#{2,4}\s+Phase\s+…` across the whole ROADMAP with
+ * no milestone window and no sentinel filter, so it counted 999.* backlog and
+ * Phase 0 headings and spanned every milestone the document had ever had.
+ * `getMilestonePhaseFilter` already computes exactly this number for the
+ * scoped window (`phaseCount`, sentinel-filtered), and `inspectWorkstream` in
+ * this same file already passes a resolved `currentVersion` to it — this
+ * function was the sibling copy that never got the fix.
+ */
+function countRoadmapPhases(roadmapPath: string, fallbackCount: number, cwd?: string, ws?: string | null, versionOverride?: string | null): number {
   try {
-    const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-    const matches = roadmapContent.match(/^#{2,4}\s+Phase\s+[\w][\w.-]*/gm);
-    return matches ? matches.length : fallbackCount;
+    if (!fs.existsSync(roadmapPath)) return fallbackCount;
+    if (!cwd) return fallbackCount;
+    const filter = getMilestonePhaseFilter(cwd, versionOverride ?? null, null, ws ?? null);
+    // A pass-all degrade (phaseCount 0) means the window declared no phases —
+    // fall back rather than reporting a confident zero.
+    return filter.phaseCount > 0 ? filter.phaseCount : fallbackCount;
   } catch {
     return fallbackCount;
   }
@@ -420,12 +438,29 @@ function writeVerificationLedger(wsDir: string, ledger: VerificationLedger): voi
 function readStateProjection(statePath: string): StateProjection {
   try {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+    // #3187: route Status/Current Phase/Last Activity through the single
+    // #1760 fallback-chain owner (state-document.cjs's stateFieldValue)
+    // instead of a frontmatter-blind stateExtractField(stateContent, …) call,
+    // mirroring cmdStateValidate/cmdStateSnapshot — a STATE.md whose fields
+    // live only in frontmatter is no longer projected as absent here.
+    const fm = extractFrontmatter(stateContent, statePath) as Record<string, unknown>;
+    const body = stripFrontmatter(stateContent);
     return {
-      status: stateExtractField(stateContent, 'Status') || 'unknown',
-      current_phase: stateExtractField(stateContent, 'Current Phase'),
-      last_activity: stateExtractField(stateContent, 'Last Activity'),
+      status: stateFieldValue(fm, body, 'status', 'Status').value || 'unknown',
+      current_phase: stateFieldValue(fm, body, 'current_phase', 'Current Phase').value,
+      last_activity: stateFieldValue(fm, body, 'last_activity', 'Last Activity').value,
     };
   } catch {
+    // Read/parse failure (missing file, permission fault, etc.) degrades to
+    // an all-unknown projection — unchanged. Not widened to also carry a
+    // `scope` here: doing so would ripple `StateProjection`
+    // (workstream-inventory-builder.cjs) and every consumer of this
+    // read-only rollup — the design doc's blast-radius table rates
+    // `readStateProjection` "low"/Tier-2, and this call site's migration is
+    // scoped to routing the fallback chain, not to widening the return type.
+    // The existing all-unknown degrade already distinguishes "could not
+    // read" from any real field value; only its scope-vs-absence *reason*
+    // stays uncaptured, same as before this change.
     return {
       status: 'unknown',
       current_phase: null,
@@ -599,7 +634,16 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const rawPhaseEntries = [...phaseDirNames].sort().map(dir => {
     const phaseDir = path.join(p.phases, dir);
     const counts = countPhaseFiles(phaseDir);
-    const verificationResult = readVerificationStatus(phaseDir);
+    // ADR-3180 §7.4 (#3186): routed through the single canonical owner
+    // (`isPhaseComplete`, src/verification.cts) instead of calling
+    // `readVerificationStatus` directly and re-deriving "is this phase
+    // complete" locally from its `.status`. `completionResult.value.complete`
+    // is threaded down to the builder below (as `PhaseFilesCount.complete`)
+    // so `buildWorkstreamInventory` — a pure, I/O-free projection that
+    // cannot call the owner itself — consumes the owner's verdict rather
+    // than re-deriving a second one from summary/plan counts.
+    const completionResult = isPhaseComplete(phaseDir);
+    const verificationResult = completionResult.value.verification;
     // #3057 B3: routing is UNCHANGED — `liveVerificationStatus` below is still
     // `.status`, exactly as before, so the ledger/rollup logic that consumes
     // it is unaffected. This only makes an indeterminate staleness check
@@ -621,6 +665,12 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       summaryCount: counts.summaryCount,
       inMilestone: isDirInCurrentMilestone(dir),
       liveVerificationStatus: verificationResult.status,
+      // ADR-3180 §7.4 (#3186): the owner's verdict, read live off disk — never
+      // ledger-adjusted (see the phaseFilesCounts map below; the ledger only
+      // ever substitutes a 'missing' status with a remembered one, and under
+      // disk-strict neither 'missing' nor 'unrecorded' is ever complete, so
+      // there is nothing for the ledger to override here).
+      complete: completionResult.value.complete,
     };
   });
 
@@ -697,6 +747,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       summaryCount: entry.summaryCount,
       inMilestone: entry.inMilestone,
       verificationStatus,
+      complete: entry.complete,
     };
   });
 
@@ -717,7 +768,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   // declares in its Progress table but never scaffolded — the heading-only
   // count drops them, even when other headings exist. Union the declared rows
   // with the phase directories so neither source can silently shrink it.
-  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length);
+  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length, cwd, name, currentVersion);
   if (!scoped && progressRows.length > 0) {
     const union = new Set(progressRows.map(row => row.key));
     for (const entry of phaseFilesCounts) union.add(entry.phaseKey);

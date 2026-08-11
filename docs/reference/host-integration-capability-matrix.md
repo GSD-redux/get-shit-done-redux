@@ -48,6 +48,23 @@ consumed verbatim by `gen:capability-registry` and validated by `capability-vali
 | `state` | Filesystem/state I/O capability. |
 | `artifact` | Artifact delivery (skills, commands) surface capability. |
 
+### Trigger precedence (#2871 Phase 2 — adjacent to, not part of, `hostIntegration`)
+
+`runtime.triggerPrecedence` (an ordered list of trigger-bearing kind names, highest priority
+first) is declared as a sibling of `hostIntegration` in `capability.json`'s `runtime` body, not
+inside it — it is not researched per-CLI documentation the way the axes above are, so it carries
+no per-host `Source`/`Evidence` row. Only `commands` and `skills` are members of the vocabulary;
+`agents`/`kimi-agents` are excluded because they are not trigger-bearing (a `/gsd-<name>` a user
+types) — an agent is invoked through named/`subagent_type` dispatch, the separate `dispatch`
+interface point above, never through the `command` interface point. Every shipped runtime
+descriptor declares the same value, `["skills", "commands"]` (skills wins a same-scope collision),
+matching `capability-validator.cjs`'s `DEFAULT_TRIGGER_PRECEDENCE` — the axis is
+required-with-default (absence resolves to that default) so a third-party descriptor authored
+before this phase keeps validating unchanged. `runtime-artifact-layout.cts`'s
+`resolveTriggerSurface` reads it to decide the winner among same-trigger candidates once scope
+rank (Install Scope Module) has already been applied. See CONTEXT.md's Runtime Artifact Layout
+Module entry and `.gsd/phase/feat-2871-trigger-resolution/40-design.md`.
+
 ---
 
 ## claude

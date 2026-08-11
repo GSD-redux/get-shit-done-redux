@@ -84,6 +84,55 @@ Only an `Accepted` ADR is owed the back-link. A `Proposed` ADR's claim is **pros
 
 An H1 of `# ADR-0175: …` in a file named `218-*.md` is a rename that never finished. The id in the title must match the filename's prefix.
 
+### 5. A trailing H1 status bracket must agree with the `Status` field
+
+Many ADRs restate their status in the H1 — `# ADR-1610: … [Accepted]`. That bracket is the first thing a reader sees, and the index strips it when rendering the title, so a stale one used to be invisible to everyone but the reader it misled.
+
+If the H1 ends in a bracket holding a status token, it must name the **same** status as the `Status` field. Comparison is case-insensitive and against the parsed *token*, so `[Superseded]` agrees with `Status: Superseded by [ADR-0174](0174-retire-gsd-sdk-package-boundary.md) (2026-05-23)`.
+
+A trailing bracket that is **not** a status token — `[Draft]`, `[WIP]` — is treated as part of the title and left alone. If you want a bracket the gate ignores, do not spell it like a status.
+
+### 6. Every relative link resolves
+
+A link whose target does not exist on disk fails the check, naming the file, the line, and the unresolved target. This covers every markdown file in this directory, including this README and any file whose name breaks the convention above.
+
+| Written as | Treated as |
+|---|---|
+| `[t](900-beta.md)`, `[t](../prd/)` | resolved — a directory counts |
+| `[t](900-beta.md#section)` | the **file** is resolved; the `#fragment` is not checked |
+| `[t](https://…)`, `[t](mailto:…)`, `[t](//host/x)` | out of scope — absolute destinations are never fetched |
+| `[t](#lifecycle-rules)` | out of scope — a same-document anchor is not a file reference |
+| `[t](/docs/adr/x.md)` | resolved against the repository root, as GitHub does |
+| a link inside a ``` fence or `` `backticks` `` | **not a link** — markdown does not render one there, so it is never resolved |
+| `[text][ref]` reference-style, `<a href>`, bare autolinks | not supported; write an inline link |
+
+Two consequences worth stating outright:
+
+- **Case matters, on every platform.** `[t](0001-Alpha.md)` pointing at `0001-alpha.md` fails even on macOS and Windows, because it 404s on github.com and reds the Linux CI lane. The failure names the entry it found so the fix is obvious.
+- **A link to a generated or ignored path fails.** Nothing here consults `.gitignore`; the question is only whether a reader following the link lands somewhere. Cite the hand-authored source rather than the build artifact.
+
+### If the gate rejects something you wrote
+
+Reproduce it locally first — it is the same command CI runs, and it names the file, the line, and the target:
+
+```bash
+node scripts/gen-adr-index.cjs --check
+```
+
+Then work from the `reason`:
+
+| What it says | What to do |
+|---|---|
+| `does not resolve — no such file or directory at …` | Fix the path. It is relative to `docs/adr/`, so a sibling ADR is just `900-slug.md`. If the target genuinely does not exist yet, drop the link rather than leaving it pointing nowhere. |
+| `…Did you mean X? — link targets are case-sensitive on github.com` | Match the on-disk name exactly. Your machine may open the file regardless; github.com and the Linux CI lane will not. |
+| `escapes the repository` | The path resolves outside the repo. Link something inside it, or use an absolute URL — those are out of scope and never checked. |
+| `is a symlink that escapes the repository` | An ADR file itself is a symlink pointing outside the repo. Commit a real file. |
+| `H1 status bracket […] contradicts the Status field (…)` | Update whichever of the two is stale so they agree. The `Status` field is authoritative; the bracket is a restatement for the reader. |
+
+**A link that is an example, not a destination, belongs in backticks.** The gate skips fenced blocks and inline code entirely, because markdown does not render a link there. That is the escape hatch for illustrative syntax — the table above is written that way, which is why it does not fail this check. An indented code block (four spaces) is *not* skipped; use backticks.
+
+To consume the result from a script rather than by eye, use `--json` (below) and branch on each violation's stable `reason` code.
+
 ### Ratifying a stale `Proposed`
 
 A stale `Proposed` is not cosmetic: it tells contributors and agents that live architecture is an unbuilt idea. Fix it — but on evidence, not vibes.
@@ -110,9 +159,26 @@ A stale `Proposed` is not cosmetic: it tells contributors and agents that live a
 node scripts/gen-adr-index.cjs            # print the index
 node scripts/gen-adr-index.cjs --write    # regenerate it into this file
 node scripts/gen-adr-index.cjs --check    # CI: fail if stale or invalid
+node scripts/gen-adr-index.cjs --json     # same checks, machine-readable report
 ```
 
 After adding an ADR, or changing any ADR's status or relations, run `--write` and commit the result. `npm run lint:generated-sync` runs `--check` in CI, so a missing or stale row fails the build rather than rotting silently.
+
+`--json` runs the same validation as `--check` and writes a report to stdout instead of prose to stderr, with the same exit code. Each violation carries a stable `reason` code, so a tool consuming this never has to pattern-match an error message:
+
+```json
+{
+  "ok": false,
+  "adrCount": 76,
+  "indexStale": false,
+  "violations": [
+    { "file": "2704-example.md", "line": 41, "reason": "link_unresolved",
+      "target": "reference/x.md", "resolved": "docs/adr/reference/x.md" }
+  ]
+}
+```
+
+An unrecognized flag is rejected rather than ignored.
 
 This replaces a hand-maintained table that had drifted to **40 of 65 ADRs** — the entire capability family and EoS itself were missing from it, which is precisely why the ADRs a reader most needed were the ones they could not find.
 
@@ -120,7 +186,7 @@ This replaces a hand-maintained table that had drifted to **40 of 65 ADRs** — 
 
 <!-- ADR-INDEX:START — generated by scripts/gen-adr-index.cjs; do not edit by hand -->
 
-### Active decisions (56)
+### Active decisions
 
 These govern the system as it stands. Cite these.
 
@@ -174,16 +240,21 @@ These govern the system as it stands. Cite these.
 | [ADR-2143](2143-markdown-table-and-mutation-consolidation.md) | Markdown Table Model, Bounded Mutation, and Fail-Loud Consolidation (#1372 part 2) | Accepted | — |
 | [ADR-2164](2164-statusline-scope-boundary.md) | Statusline draws its data boundary at local, read-only sources | Accepted | — |
 | [ADR-2207](2207-status-field-lifecycle-ownership.md) | STATE.md `Status` lifecycle — phase-completion writes an intermediate state; milestone-close owns termination | Accepted | — |
+| [ADR-2313](2313-codex-passive-model-posture.md) | Codex Adopts the Passive / Session-Only Model Posture | Accepted | — |
 | [ADR-2346](2346-command-dispatch-completion.md) | Command Dispatch Completion | Accepted | — |
+| [ADR-2363](2363-capability-instruction-surface-trust.md) | A capability's skill body is an instruction surface — trusted, unscanned, and disclosed | Accepted | — |
 | [ADR-2619](2619-observability-shareable-diagnostics.md) | Observability and shareable diagnostics — wire the dispatch seam, add the outbound trust boundary | Accepted | — |
 | [ADR-2629](2629-phase-effort-estimation-calibration.md) | Phase effort is estimated against a calibrated smart-zone budget, not a static heuristic | Accepted | — |
 | [ADR-2719](2719-emitted-artifact-attribution.md) | Emitted-artifact attribution — replace the committed parity fixtures with a computed conservation law | Accepted | — |
 | [ADR-2782](2782-reviewer-lane-capability-surface.md) | Reviewer Lane — the cross-AI reviewer handoff becomes a declared capability surface | Accepted | — |
+| [ADR-2866](2866-install-surface-resolution.md) | Install-surface resolution — the install pipeline resolves `(runtime × scope × trigger)` as a value | Accepted | — |
 | [ADR-2966](2966-loop-qa-walk.md) | Test the five-step loop as a continuous walk, not isolated points | Accepted | — |
+| [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md) | A payload-carried `error` key is a degraded result, not a fault | Accepted | — |
 | [ADR-3180](3180-planning-semantic-model-single-owner.md) | Planning Semantic Model — Single Owner per Derivation | Accepted | — |
+| [ADR-3212](3212-lexical-seam-consolidation.md) | The Lexical Seam — Safe Pattern Construction, Line-Terminator Normalization, and Tokenizer-First Stateful Grammars | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
 
-### Proposed (9)
+### Proposed
 
 Decided in principle, not yet ratified. Do not cite as settled architecture.
 
@@ -197,9 +268,10 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1213](1213-capability-state-writer.md) | Capability write side — the Capability State Writer | Proposed | — |
 | [ADR-1606](1606-prohibition-enforcement-verify-seam.md) | prohibition-enforcement verify-time seam | Proposed | — |
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
+| [ADR-1953](1953-complexity-triggered-refactor.md) | Complexity-triggered refactor — the loop measures the entropy it just added | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
 
-### Superseded, Retired, and Legacy (8)
+### Superseded, Retired, and Legacy
 
 Historical record. **Do not follow these** — each names what replaced it, or why it was retired.
 
@@ -214,7 +286,7 @@ Historical record. **Do not follow these** — each names what replaced it, or w
 | [ADR-2264](2264-golden-parity-redesign.md) | Redesign golden-install-parity — single-source manifest builder + split invariant | Superseded | [ADR-2719](2719-emitted-artifact-attribution.md) |
 | [ADR-3524](3524-cjs-sdk-hard-seam.md) | CJS↔SDK hard seam — one source of truth per Shared Module | Superseded | [ADR-0174](0174-retire-gsd-sdk-package-boundary.md) |
 
-_73 ADRs. Generated by `scripts/gen-adr-index.cjs` — run `--write` after adding or restatusing an ADR._
+_Generated by `scripts/gen-adr-index.cjs` — run `--write` after adding or restatusing an ADR._
 
 <!-- ADR-INDEX:END -->
 

@@ -30,7 +30,7 @@
  * 18 affected emitted paths.
  */
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -66,6 +66,10 @@ const {
   reconcileFamilies,
   safeDirArgs,
   measuredPackageVersion,
+  WORKTREE_TIMEOUT_MS,
+  BUILD_LIB_TIMEOUT_MS,
+  BUILD_TIMEOUT_MS,
+  CHUNK_TIMEOUT_CEILING_MS,
 } = require('./helpers/emitted-runtime.cjs');
 
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
@@ -2345,7 +2349,7 @@ test('an unreadable baseline surfaces an error', () => {
 test(
   'buildBaselineAtRef resolves a baseline via the in-job build even when the generator '
   + 'script is absent at the ref (#2767 regression)',
-  { timeout: 300_000 },
+  { timeout: 480_000 },
   (t) => {
     // Mirrors "differential attribution over the real tree": install output is
     // platform-specific on Windows, and this drives the same heavy worktree +
@@ -3005,7 +3009,7 @@ test('property: reported added/dropped are exactly the set differences', () => {
 // the working-tree fixtures, which would be whatever this PR's author regenerated;
 // comparing against those would be vacuous.
 
-test('differential attribution over the real tree', { timeout: 900_000 }, async (t) => {
+test('differential attribution over the real tree', { timeout: 480_000 }, async (t) => {
   if (process.platform === 'win32') {
     // Mirrors the golden harness: install output is platform-specific on Windows
     // (backslash paths), so parity is asserted on macOS + Linux. An explicit t.skip,
@@ -3426,4 +3430,71 @@ test('measuredPackageVersion: resolves this checkout\'s version with no repoRoot
   } finally {
     cleanup(unreadableRoot);
   }
+});
+
+// ── #3271: the timeout ladder must escalate inward-out ──────────────────────────
+//
+// Three nested bounds govern this file's two heavy tests: the per-STEP bound inside
+// buildBaselineAtRef, the per-TEST timeout node:test enforces, and the whole-CHUNK
+// timeout in scripts/run-tests.cjs. They only produce a useful failure if they fire
+// in that order. When the step bound was raised to the chunk ceiling, the chunk won
+// the race and the failure arrived as an opaque "no failed step" kill — the clean
+// per-step message was built and then made unreachable in the same change.
+describe('#3271: emitted-runtime-bounds', () => {
+  const PER_TEST_TIMEOUT_MS = 480_000;
+
+  test('the step bound fires before the per-test timeout', () => {
+    assert.ok(
+      BUILD_TIMEOUT_MS < PER_TEST_TIMEOUT_MS,
+      `step bound ${BUILD_TIMEOUT_MS}ms must be under the per-test timeout ${PER_TEST_TIMEOUT_MS}ms, ` +
+      'or node:test kills the test before buildBaselineAtRef can say which step stalled',
+    );
+  });
+
+  test('the per-test timeout fires before the whole-chunk timeout', () => {
+    assert.ok(
+      PER_TEST_TIMEOUT_MS < CHUNK_TIMEOUT_CEILING_MS,
+      `per-test timeout ${PER_TEST_TIMEOUT_MS}ms must be under the chunk ceiling ` +
+      `${CHUNK_TIMEOUT_CEILING_MS}ms (scripts/run-tests.cjs:973), or the chunk is killed first ` +
+      'and the failure is reported with no failing step at all',
+    );
+  });
+
+  test('a realistic full build still fits inside the per-test timeout', () => {
+    // Steps 1 and 2 measured at 15.1s and 19.8s on the remote runner. Their own
+    // bounds (60s + 180s) are worst-case ceilings, not expected cost; asserting on
+    // the SUM of all three ceilings would demand a per-test timeout larger than the
+    // chunk allows and lock in an impossible ladder.
+    const realisticPreamble = 60_000;
+    assert.ok(
+      BUILD_TIMEOUT_MS + realisticPreamble < PER_TEST_TIMEOUT_MS,
+      'the generator bound plus a realistic worktree+build preamble must fit inside the per-test timeout',
+    );
+  });
+
+  test('the declared bounds are the ones this file actually uses', () => {
+    // Guards the drift this ladder depends on: if a call site's literal timeout is
+    // edited without updating PER_TEST_TIMEOUT_MS, the two tests above keep passing
+    // while the real ladder is inverted. Asserted behaviorally against the helper's
+    // exported values rather than by scanning source text.
+    assert.equal(WORKTREE_TIMEOUT_MS, 60_000);
+    assert.equal(BUILD_LIB_TIMEOUT_MS, 180_000);
+    assert.equal(BUILD_TIMEOUT_MS, 360_000);
+    assert.equal(CHUNK_TIMEOUT_CEILING_MS, 600_000);
+  });
+
+  test('a failing step names itself and its elapsed time', () => {
+    // The message is the only channel that survives into the remote runner's
+    // failures.json — its captured `output` field comes back empty. A bare
+    // "spawnSync ETIMEDOUT" cost four separate experiments to re-derive what the
+    // throw already had.
+    let thrown;
+    assert.throws(
+      () => buildBaselineAtRef('refs/heads/definitely-not-a-real-ref-3271'),
+      (err) => { thrown = err; return true; },
+    );
+    assert.match(thrown.message, /git-worktree-add failed after [\d.]+s/);
+    assert.match(thrown.message, /Step timings: git-worktree-add=FAILED@[\d.]+s/);
+    assert.match(thrown.message, /bounds: worktree 60000ms, build:lib 180000ms, generator 360000ms/);
+  });
 });

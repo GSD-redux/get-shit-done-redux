@@ -12,8 +12,14 @@
 const _require: NodeRequire = require;
 const path = _require('node:path') as typeof import('node:path');
 
+// #2870: InstallScope is owned by install-scope.cts, not re-declared here.
+// `isGlobalScope` centralizes the `scope === 'global'` boolean projection
+// this module needs at `_computePathPrefix`'s `isGlobal: boolean` boundary
+// (see the module-level doc comment on `isGlobalScope` for why the
+// projection is centralized rather than eliminated).
+import { isGlobalScope, type InstallScope } from './install-scope.cjs';
+
 type ArtifactKindName = 'commands' | 'agents' | 'skills' | 'kimi-agents';
-type InstallScope = 'local' | 'global';
 
 interface ResolvedProfile {
   name?: string;
@@ -181,7 +187,11 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
   const homedirFn: () => string = homedir ?? (() => os.homedir());
   const resolvedTarget = posixNormalize(path.resolve(layout.configDir));
   const homeDir = posixNormalize(homedirFn());
-  const isGlobal = scope === 'global';
+  // #2870: `scope` above is already the module-owned `InstallScope` value
+  // (`layout.scope ?? 'global'`, defaulted before this point, so it is never
+  // `undefined` here) — `isGlobalScope` projects it to the boolean
+  // `_computePathPrefix`'s existing `isGlobal: boolean` API requires.
+  const isGlobal = isGlobalScope(scope);
   const isOpencode = layout.runtime === 'opencode';
   const isWindowsHost = (platform ?? process.platform) === 'win32';
   const pathPrefix = conversionExports._computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir });

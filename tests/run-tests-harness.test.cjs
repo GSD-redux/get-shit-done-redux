@@ -22,7 +22,7 @@ const path = require('path');
 
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, CONFIG_LOCATION_ENV_KEYS } = require('./helpers.cjs');
 
 const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
 
@@ -1412,10 +1412,17 @@ describe('bug #969 B — runGsdTools kill-signal discrimination', () => {
    * We test the identical logic paths using a tiny timeout.
    */
   function runGsdToolsWithTimeout(args, cwd, env, timeoutMs) {
+    // The session-identity subset stays a local literal on purpose: this helper
+    // mirrors the production one to prove its CONTRACT, so it must not simply
+    // re-import what it is testing. The config-LOCATION keys are the exception —
+    // they are a safety scrub rather than part of the contract under test, and a
+    // hand-copied list of them is the #2665 drift this change exists to end. So
+    // spread the canonical derived set (tests/helpers.cjs) and keep the rest local.
     const TEST_ENV_BASE = {
       GSD_SESSION_KEY: '',
       CODEX_THREAD_ID: '',
       CLAUDE_SESSION_ID: '',
+      ...Object.fromEntries(CONFIG_LOCATION_ENV_KEYS.map((k) => [k, ''])),
     };
     try {
       let result;

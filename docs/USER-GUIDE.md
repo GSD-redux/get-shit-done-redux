@@ -319,7 +319,7 @@ Ideas that aren't ready for active planning go into the backlog using 999.x numb
 /gsd-capture --backlog "Mobile responsive"     # Creates 999.2-mobile-responsive/
 ```
 
-Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready.
+Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready. Backlog directories (and the `0-*` pre-milestone directory some projects carry) are excluded from `/gsd-progress`, `/gsd-stats`, and phase listings for the current milestone — they stay out of the active phase sequence for counting purposes too, not just for planning.
 
 **Review and promote** with `/gsd-review-backlog` — it shows all backlog items and lets you promote (move to active sequence), keep (leave in backlog), or remove (delete).
 
@@ -560,6 +560,8 @@ claude --dangerously-skip-permissions
 
 **Default-on.** The plan drift guard (`plan_review.source_grounding: true`) runs during plan review and verifies that every symbol your plans cite — decorators, classes, functions, CLI flags — actually exists in your source tree at review time. This catches hallucinated names before any execution agent runs.
 
+**Two axes, one switch.** The same guard also runs a cross-artifact fact-drift pass: when ROADMAP.md, PLAN.md, STATE.md and CONTEXT.md state the *same* fact in contradictory ways — a phase marked complete in one and in progress in the other, a success criterion the plan restates with a different outcome, a term used against its CONTEXT.md definition — you get an advisory finding in REVIEWS.md naming both locations and which one is authoritative. It keys on contradicting *knowledge*, not on similar-looking text, so a plan that simply restates a criterion in its own words is not flagged. The findings never block convergence.
+
 **What it catches:**
 
 - Functions referenced in a PLAN.md step that don't exist in source
@@ -641,6 +643,8 @@ node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" state validate          # Detect
 node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" state sync --verify     # Preview changes
 node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" state sync              # Reconstruct STATE.md
 ```
+
+`state validate`'s report carries a `scope` field alongside `valid` — `valid:true` means no drift was found, but `scope` says whether the check could actually run at all (a phase that could not be resolved, or an unreadable frontmatter/phases directory, reports `valid:true` too, because there was nothing to flag). See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) before treating a passing `state validate` as "clean."
 
 ### A Command Looks Frozen After "Spawning..."
 
@@ -965,7 +969,7 @@ To disable parallel execution entirely: `/gsd-settings` → set `parallelization
 | Phase went wrong                     | `git revert` the phase commits, then re-plan                             |
 | Need to change scope                 | `/gsd-phase` (default), `/gsd-phase --insert`, or `/gsd-phase --remove`  |
 | Something broke                      | `/gsd-debug "description"` (add `--diagnose` for analysis without fixes) |
-| STATE.md out of sync                 | `state validate` then `state sync`                                       |
+| STATE.md out of sync                 | `state validate` then `state sync` — check the report's `scope` field, not just `valid` ([interpret results](how-to/interpret-state-validate-results.md)) |
 | Workflow state seems corrupted       | `/gsd-forensics`                                                         |
 | Quick targeted fix                   | `/gsd-quick`                                                             |
 | Plan doesn't match your vision       | `/gsd-discuss-phase [N]` then re-plan                                    |

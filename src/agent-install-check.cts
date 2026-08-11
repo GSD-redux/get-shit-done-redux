@@ -16,6 +16,17 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
+// #3242 — model-catalog is a genuine leaf (only node:path + its own JSON), which is
+// exactly why Phase 1 (#3241) moved isAnthropicFlavoredModel there: this module can
+// consume it without dragging model-resolver's config-loader chain into a
+// pure read/verify surface.
+import { isAnthropicFlavoredModel } from './model-catalog.cjs';
+// #3243 — the Codex `.toml` block-range/BOM/scan primitives moved into the typed
+// IR module (Phase 3), which this reader now imports rather than defining
+// locally. Behavior is unchanged: scanTomlLines/stripBOM here are the exact
+// same lenient functions that used to live in this file — see
+// codex-agent-toml.cts's module header for the reader/writer reconciliation.
+import { stripBOM, scanTomlLines } from './codex-agent-toml.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -24,6 +35,45 @@ interface AgentsInstalledResult {
   incomplete_agents: string[];
   agents_dir: string;
   agent_runtime: string;
+}
+
+/**
+ * Frozen reason enum for {@link checkCodexModelPosture}. Per CONTRIBUTING's
+ * typed-IR rule ("Error / status / reason → a frozen enum"): callers and tests
+ * assert on these wire values, never on prose. Adding a member is a deliberate
+ * three-way coordinated change — enum, emitting site, and the enum-lock test.
+ */
+const POSTURE_REASON = Object.freeze({
+  ANTHROPIC_FLAVORED_MODEL: 'anthropic_flavored_model',
+  ORPHANED_REASONING_EFFORT: 'orphaned_reasoning_effort',
+  UNREADABLE: 'unreadable',
+  NOT_CODEX: 'not_codex',
+  AGENTS_DIR_MISSING: 'agents_dir_missing',
+});
+
+type PostureReason = (typeof POSTURE_REASON)[keyof typeof POSTURE_REASON];
+
+interface PostureViolation {
+  agent: string;
+  file: string;
+  reason: PostureReason;
+  value?: string;
+}
+
+interface CodexModelPostureResult {
+  ok: boolean;
+  violations: PostureViolation[];
+  checked: string[];
+  agents_dir: string;
+  agent_runtime: string;
+  reason?: PostureReason;
+}
+
+// Matches the value-truncation convention in bin/install.js's
+// _warnCodexModelOverrideDropped: values over 64 chars are capped so an
+// oversized or secret-shaped config value can never reach a report in full.
+function truncatePostureValue(value: string): string {
+  return value.length > 64 ? `${value.slice(0, 64)}…` : value;
 }
 
 /**
@@ -133,23 +183,15 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // when the plain presence check above passed (e.g. .md present, .toml absent).
   // If no manifest is found the check is a no-op (graceful for claude/bundled).
   const incomplete: string[] = [];
-  const manifestPath = path.join(path.dirname(agentsDir), 'gsd-file-manifest.json');
-  let manifestFiles: Record<string, unknown> = {};
-  try {
-    const raw = fs.readFileSync(manifestPath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      'files' in parsed &&
-      typeof (parsed as Record<string, unknown>)['files'] === 'object' &&
-      (parsed as Record<string, unknown>)['files'] !== null
-    ) {
-      manifestFiles = (parsed as Record<string, Record<string, unknown>>)['files'];
-    }
-  } catch {
-    // No manifest or unreadable — completeness check is skipped
-  }
+  // #2872: the manifest read is the Installer Migration Module's, not a
+  // fourth private copy of it. Lazily required — matching this file's own
+  // capability-registry idiom — so a pure read/verify surface on the
+  // init/verify hot path takes no new static dependency.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readInstallManifest } = require('./installer-migrations.cjs') as {
+    readInstallManifest: (configDir: string) => { files: Record<string, string> };
+  };
+  const manifestFiles: Record<string, unknown> = readInstallManifest(path.dirname(agentsDir)).files;
 
   if (Object.keys(manifestFiles).length > 0) {
     for (const agent of expectedAgents) {
@@ -186,7 +228,123 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   };
 }
 
+/**
+ * Validate Codex `.toml` agent files for Anthropic-flavored `model` pins and
+ * orphaned `model_reasoning_effort` values (ADR-2313 D6, #3242).
+ *
+ * A new sibling export to {@link checkAgentsInstalled}, deliberately — that
+ * function carries 33 upstream dependents and cyclomatic complexity 25, so this
+ * posture check gets zero new branches there (see 40-design.md "Rejected" #1).
+ * Presence is `checkAgentsInstalled`'s job; this function's job starts only once
+ * the runtime is confirmed `codex` and only inspects posture, never presence.
+ *
+ * Read-only: detects, never repairs (repair is Phase 3, #3243).
+ *
+ * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for local-install discovery
+ */
+function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexModelPostureResult {
+  // Short-circuit BEFORE any filesystem access: a non-codex runtime must never
+  // have its agents directory resolved or a stray .toml inspected, however
+  // violating that file's contents would be if it were ever read (#3242 row 25).
+  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+  if (resolvedRuntime !== 'codex') {
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: '',
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.NOT_CODEX,
+    };
+  }
+
+  const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
+  if (!fs.existsSync(agentsDir)) {
+    // Presence is checkAgentsInstalled's job — an absent agents dir here is a
+    // distinct, non-violating outcome, not a failure of this check.
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: agentsDir,
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.AGENTS_DIR_MISSING,
+    };
+  }
+
+  // Skip symlinks — matches cmdEffortSync's existing idiom in commands.cts
+  // ("Skip symlinks — only write regular files..."). Here the risk is reading
+  // (not writing) through a symlink: readFileSync follows symlinks, so an
+  // agents-dir symlink pointing at an arbitrary file would let that target's
+  // contents be echoed into this function's `value` field. A symlinked agent
+  // file is a structural install choice (checkAgentsInstalled's territory),
+  // not a model-content posture defect, so it is silently excluded from
+  // `checked` rather than reported as a distinct violation — same shape as
+  // cmdEffortSync, which silently drops symlinks from its file list rather
+  // than inventing a new skip/violation reason.
+  const tomlFiles = fs
+    .readdirSync(agentsDir)
+    .filter((entry) => {
+      if (!entry.endsWith('.toml')) return false;
+      try {
+        return fs.lstatSync(path.join(agentsDir, entry)).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+
+  const checked: string[] = [];
+  const violations: PostureViolation[] = [];
+
+  for (const entry of tomlFiles) {
+    const agentName = entry.slice(0, -'.toml'.length);
+    const filePath = path.join(agentsDir, entry);
+    checked.push(agentName);
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      // Never throws, never silently skips — an unreadable file is reported and
+      // the loop continues checking the rest (40-design.md "Rejected" #5).
+      violations.push({ agent: agentName, file: filePath, reason: POSTURE_REASON.UNREADABLE });
+      continue;
+    }
+
+    const { model, hasReasoningEffort } = scanTomlLines(stripBOM(raw));
+
+    if (model !== null && isAnthropicFlavoredModel(model)) {
+      violations.push({
+        agent: agentName,
+        file: filePath,
+        reason: POSTURE_REASON.ANTHROPIC_FLAVORED_MODEL,
+        value: truncatePostureValue(model),
+      });
+    } else if (model === null && hasReasoningEffort) {
+      // #838 coupling: a reasoning-effort pin with no model pin means Codex
+      // inherits the session model while the effort pin silently disagrees.
+      violations.push({
+        agent: agentName,
+        file: filePath,
+        reason: POSTURE_REASON.ORPHANED_REASONING_EFFORT,
+      });
+    }
+  }
+
+  return {
+    ok: violations.length === 0,
+    violations,
+    checked,
+    agents_dir: agentsDir,
+    agent_runtime: resolvedRuntime,
+  };
+}
+
 export = {
   getAgentsDir,
   checkAgentsInstalled,
+  checkCodexModelPosture,
+  POSTURE_REASON,
 };

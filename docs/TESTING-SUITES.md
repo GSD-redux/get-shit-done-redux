@@ -55,6 +55,45 @@ identity ratchet (`npm run lint:regression-names`, part of `npm run lint:ci`):
   `docs/INVENTORY.md`) must be regenerated **after** rebasing, never carried
   through a rebase.
 
+### A folded suite may appear only once per host
+
+When a standalone file is folded into its owning module's test file, the moved
+suite is wrapped in a self-contained block carrying a marker:
+
+```javascript
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/bug-376-claude-js-hook-gsd-rewriter.test.cjs — …
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:bug-376-claude-js-hook-gsd-rewriter (…)", () => { … });
+}
+```
+
+Because the block is self-contained, a **second verbatim copy in the same host
+parses, registers, and passes — twice.** Nothing in a green suite reports it.
+[#3271](https://github.com/open-gsd/gsd-core/issues/3271) found 25 such copies
+(~5,800 lines) across three install suites, all from a single stale-base
+re-application during the consolidation epic. The cost is not only wasted CI on
+every lane: it is a `DEFECT.GENERATIVE-FIX` trap, because a contributor fixing
+one of those regressions edits the copy they found and leaves the other
+asserting the old behavior, with the suite still green.
+
+`local/no-duplicate-fold-marker` (`eslint-rules/no-duplicate-fold-marker.cjs`,
+error under `tests/**/*.cjs`) reports the second and every later occurrence of a
+`folded:<marker>` title in one file, naming the line the first occurrence sits
+on. **When it fires, delete the copy it points at** — the two blocks are the
+same suite, so the fix is removal, never an `eslint-disable`.
+
+It keys on the whitespace-delimited token after `folded:`, which matters in both
+directions. A narrower key that stops at `.` would collide
+`feat-443-effort-fast-mode.integration` with `feat-443-effort-fast-mode` — two
+genuinely distinct suites that coexist in `tests/model-resolver.test.cjs`. Keying
+on the *whole* title instead would let a re-fold under a different batch label
+slip through, which is exactly the shape #3271 took. Titles without a `folded:`
+prefix, non-literal titles, and the same marker appearing in two *different* host
+files are all left alone.
+
 The ratchet deliberately covers only `bug-*`. Files named `feat-NNNN-*` /
 `enh-NNNN-*` are *feature* test files — one (or one per suite) per feature is
 the sanctioned layout (see the #443 strategy below), not a one-off regression
@@ -218,6 +257,47 @@ working-tree diff. CI does not use it — CI selection is the rule table in
 disagree, trust (and fix) the rule table.
 
 Unknown suites exit non-zero with the list of valid suites. Empty suites (e.g. `--suite security` before any security-tagged file exists) exit `0` with a `no tests in suite "..."` notice on stderr so CI lanes don't go red while a suite is being populated.
+
+## The live-config hermeticity guard
+
+Every `run-tests.cjs` invocation snapshots GSD's own install footprint in each
+live runtime config directory before the suite and re-checks it afterwards. It
+exists because the failure it catches is silent by construction: a test that
+resolves a config directory from the ambient environment instead of a sandbox
+writes into *your real* `~/.claude` (or `$GSD_HOME/.gsd`, or a Kimi
+`config.toml`), and nothing reports it. CI cannot catch this class at all —
+CI never has `CLAUDE_CONFIG_DIR` and friends set.
+
+The guard watches only what GSD unambiguously owns — its top-level install
+footprint plus `gsd-`-prefixed children of directories shared with the host
+agent — never whole config roots, because a host agent legitimately writing
+`history.jsonl` mid-run would make the guard cry wolf, and a guard that cries
+wolf gets switched off.
+
+Two environment variables control it:
+
+| Variable | Effect |
+|---|---|
+| `GSD_STRICT_LIVE_CONFIG_GUARD=1` | A detected write **fails the run**. Set on the Linux/macOS lanes of every CI job that runs the suite. |
+| `GSD_SKIP_LIVE_CONFIG_GUARD=1` | Skips the check entirely. |
+
+Unset, the guard **reports and does not fail** — deliberately, not timidly. On
+its first CI run it surfaced pre-existing leaks on the Windows lane, where
+`os.homedir()` reads `USERPROFILE` and ~190 test sites sandbox `HOME` alone.
+Those are real and worth fixing, but they are a different defect class, and a
+brand-new gate that instantly reds an unrelated lane gets reverted rather than
+obeyed. Windows lanes therefore stay report-only until that sweep lands; this
+repo has the pattern already, in the `local/no-source-grep` ESLint rule that
+shipped at `warn` and was promoted to `error` after its cleanup (ADR 452).
+
+`GSD_SKIP_LIVE_CONFIG_GUARD` is a bypass on a safety check, so it is documented
+here rather than left to be discovered in the source: an undocumented bypass is
+one people eventually set without knowing what they turned off. If you need it
+routinely, that is a bug report, not a workflow.
+
+Reported paths are labelled `CREATED`, `MODIFIED`, `DELETED`, or `UNVERIFIED`.
+`UNVERIFIED` means a scan bound was hit and the path could not be attested
+either way — it is never the same as clean.
 
 ## CI matrix
 

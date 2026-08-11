@@ -43,6 +43,12 @@ const { evaluatePredicate } = gatePredicateEval;
 import apiCoverageMod = require('./api-coverage.cjs');
 const { detectApiIntegration, validateCoverageMatrix } = apiCoverageMod;
 import { execTool, platformReadSync, posixNormalize } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -133,13 +139,13 @@ function gateEnabled(projectDir: string): boolean {
 
 function loadPlanContents(phaseDir: string): string[] {
   if (!fs.existsSync(phaseDir)) return [];
-  try {
-    return fs.readdirSync(phaseDir)
-      .filter((entry) => /-PLAN\.md$/.test(entry))
-      .map((entry) => readIfExists(path.join(phaseDir, entry)));
-  } catch {
-    return [];
-  }
+  // #3183 (lint-plan-count-drift): source live plan files from the single
+  // owner (scanPhasePlans) instead of a local `-PLAN.md` readdirSync filter
+  // — picks up bare PLAN.md and nested plans/, and excludes plans marked
+  // `status: superseded`, which the prior root-only exact-suffix filter did
+  // neither for.
+  return scanPhasePlans(phaseDir).planFiles
+    .map((entry) => readIfExists(path.join(phaseDir, entry)));
 }
 
 const DESIGNATED_HEADINGS_RE = /^#{1,6}\s+(?:must[_ ]haves?|truths?|tasks?|objective)\b/i;
@@ -358,6 +364,7 @@ function recentCommitMessages(projectDir: string): string {
       encoding: 'utf-8',
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
+      timeout: 15_000,
     });
   } catch {
     return '';
@@ -434,8 +441,11 @@ function cmdDecisionCoverageVerify(projectDir: string, args: string[], raw: bool
   }
 
   const planContents = loadPlanContents(phaseDir);
+  // #3183 (lint-plan-count-drift): same single-owner sourcing as
+  // loadPlanContents above — scanPhasePlans's summaryFiles instead of a
+  // local `-SUMMARY.md` readdirSync filter.
   const summaryParts = fs.existsSync(phaseDir)
-    ? fs.readdirSync(phaseDir).filter((entry) => /-SUMMARY\.md$/.test(entry)).map((entry) => readIfExists(path.join(phaseDir, entry)))
+    ? scanPhasePlans(phaseDir).summaryFiles.map((entry) => readIfExists(path.join(phaseDir, entry)))
     : [];
   const haystack = [
     planContents.join('\n\n'),
@@ -654,6 +664,7 @@ function computeUiSafetyGate(projectDir: string, phase: string): {
       encoding: 'utf-8',
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
+      timeout: 10_000,
     });
     hasUiFiles = changed.split('\n').some((f) =>
       f.trim() && (UI_FILE_EXTENSIONS_RE.test(f) || UI_PATH_PATTERNS_RE.test(f)),
@@ -757,7 +768,9 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   const tddPlanFiles: string[] = [];
   if (phaseDir) {
     try {
-      const files = fs.readdirSync(phaseDir).filter(f => f.endsWith('-PLAN.md'));
+      // #3183: canonical plan set (root+nested, superseded-excluded) from the
+      // single owner, rather than a root-only hand-rolled readdirSync filter.
+      const files = scanPhasePlans(phaseDir).planFiles;
       for (const file of files) {
         const planPath = path.join(phaseDir, file);
         const content = readIfExists(planPath);
@@ -810,7 +823,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const redCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^test(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       red = redCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }
@@ -818,7 +831,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const greenCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^feat(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       green = greenCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }
@@ -826,7 +839,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const refactorCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^refactor(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       refactor = refactorCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }
@@ -1394,12 +1407,26 @@ function isRealReadFailure(err: unknown): boolean {
 function readPhaseScope(projectDir: string, phaseDir: string, phaseNumber: string): PhaseScopeRead {
   const chunks: string[] = [];
   let readError: string | null = null;
-  try {
-    const entries = fs.readdirSync(phaseDir, { withFileTypes: true });
-    const plans = entries
-      .filter((e) => e.isFile() && /-PLAN\.md$/i.test(e.name))
-      .map((e) => e.name)
-      .sort();
+  // A MISSING phase directory is fine (no plans yet → fall through to the
+  // roadmap). Checked up front (rather than via a readdirSync catch) because
+  // #3183 (lint-plan-count-drift) now sources the plan-file list from the
+  // single owner (scanPhasePlans) instead of a local `-PLAN\.md$` readdirSync
+  // filter — picks up bare PLAN.md and nested plans/, and excludes
+  // superseded plans, none of which the prior root-only exact-suffix filter
+  // did.
+  if (fs.existsSync(phaseDir)) {
+    const scan = scanPhasePlans(phaseDir);
+    if (scan.scope === SCOPE.UNREADABLE) {
+      // Directory exists but scanPhasePlans's own readdirSync(phaseDir) call
+      // failed (EACCES/EIO race) — a real read failure the gate must not
+      // silently pass (#2365 review), mirroring the prior isRealReadFailure
+      // branch below for the readdirSync-throws case.
+      return {
+        text: '',
+        readError: 'could not read the phase directory: scanPhasePlans reported scope UNREADABLE',
+      };
+    }
+    const plans = [...scan.planFiles].sort();
     for (const p of plans) {
       try {
         chunks.push(fs.readFileSync(path.join(phaseDir, p), 'utf8'));
@@ -1410,16 +1437,6 @@ function readPhaseScope(projectDir: string, phaseDir: string, phaseNumber: strin
           readError = `could not read ${p}: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
-    }
-  } catch (err) {
-    // A MISSING phase directory is fine (no plans yet → fall through to the
-    // roadmap). A directory that exists but cannot be enumerated (EACCES/EIO)
-    // is a real read failure the gate must not silently pass (#2365 review).
-    if (isRealReadFailure(err)) {
-      return {
-        text: '',
-        readError: `could not read the phase directory: ${err instanceof Error ? err.message : String(err)}`,
-      };
     }
   }
   if (readError) return { text: chunks.join('\n\n'), readError };

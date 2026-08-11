@@ -69,6 +69,8 @@ build/
 /tsconfig.build.tsbuildinfo
 /gsd-core/bin/lib/commonjs-marker.cjs
 /gsd-core/bin/lib/broken-windows.cjs
+/gsd-core/bin/lib/complexity-trigger.cjs
+/gsd-core/bin/lib/refactor-trigger-command-router.cjs
 /gsd-core/bin/lib/host-integration.cjs
 /gsd-core/bin/lib/host-integration-sdk.cjs
 /gsd-core/bin/lib/host-integration-adapters/imperative-hook-bus.cjs
@@ -192,9 +194,12 @@ build/
 /gsd-core/bin/lib/worktree-base-ref.cjs
 /gsd-core/bin/lib/worktree-safety.cjs
 /gsd-core/bin/lib/planning-workspace.cjs
+/gsd-core/bin/lib/planning-scope.cjs
 /gsd-core/bin/lib/command-roster.cjs
 /gsd-core/bin/lib/runtime-artifact-conversion.cjs
 /gsd-core/bin/lib/runtime-artifact-layout.cjs
+/gsd-core/bin/lib/install-scope.cjs
+/gsd-core/bin/lib/installed-surface-resolver.cjs
 /gsd-core/bin/lib/runtime-config-adapter-registry.cjs
 /gsd-core/bin/lib/runtime-hooks-surface.cjs
 /gsd-core/bin/lib/command-routing-hub.cjs
@@ -236,6 +241,7 @@ build/
 /gsd-core/bin/lib/onboard-projection.cjs
 /gsd-core/bin/lib/agent-command-router.cjs
 /gsd-core/bin/lib/agent-install-check.cjs
+/gsd-core/bin/lib/codex-agent-toml.cjs
 /gsd-core/bin/lib/task-command-router.cjs
 /gsd-core/bin/lib/validate-command-router.cjs
 /gsd-core/bin/lib/workstream-inventory.cjs
@@ -257,6 +263,7 @@ build/
 /gsd-core/bin/lib/roadmap.cjs
 /gsd-core/bin/lib/audit.cjs
 /gsd-core/bin/lib/git-base-branch.cjs
+/gsd-core/bin/lib/host-runtime-detection.cjs
 __pycache__/
 *.pyc
 .venv/

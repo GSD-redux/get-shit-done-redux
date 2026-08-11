@@ -154,6 +154,11 @@ const PKG_VERSION = require('../../package.json').version;
 // that cause hash drift between local (PKG_VERSION=1.x.x) and CI (PKG_VERSION=1.x.x-rc.N):
 // the PKG_VERSION normalization below replaces only the *current* version, but
 // CHANGELOG.md references prior-release versions, so the normalized hash diverges.
+// gsd-file-manifest.json's exclusion was revisited deliberately for #2872: the
+// manifest gained `manifestVersion`/`runtime`/`scope` fields, all of which are
+// deterministic and would not by themselves force an exclusion, but `timestamp`
+// — the original reason this file is volatile — is unchanged by #2872, so the
+// exclusion still holds for exactly the same reason it always has.
 const VOLATILE_FILES = new Set([
   'gsd-file-manifest.json',
   'gsd-install-state.json',
@@ -520,7 +525,15 @@ function simulateHookCopy(hooksSrc, hooksDest) {
 /** Build a clean env for spawned installer processes.
  *  Must strip GSD_TEST_MODE so the child runs the real install, not the no-op guard. */
 function installerEnv(overrides = {}) {
-  const env = { ...process.env, ...overrides };
+  // #3156: delegate to the ONE canonical raw-installer-spawn env rather than
+  // carrying a second shape of it. The installer writes GSD's own user store to
+  // <home>/.gsd/defaults.json through os.homedir() DIRECTLY
+  // (bin/install.js writeNonClaudeDefaults, #2834), which reads no GSD variable,
+  // so no config-location scrub can reach it — only a sandboxed HOME can. Every
+  // caller that already passes an explicit { HOME, USERPROFILE } still wins:
+  // overrides spread last.
+  const { installSpawnEnv } = require('../helpers.cjs');
+  const env = installSpawnEnv(overrides);
   delete env.GSD_TEST_MODE;
   return env;
 }

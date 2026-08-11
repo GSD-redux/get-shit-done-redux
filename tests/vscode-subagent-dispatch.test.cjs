@@ -21,6 +21,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const extension = require('../vscode/extension.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -74,6 +76,12 @@ test('registerSubagentDispatch: available:false (fail-soft) when vscode.workspac
 test('REACHABILITY: a background-eligible dispatchAsSubagent call at depth 0 dispatches through the shared hub and returns REAL output', async () => {
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const result = JSON.parse(await extension.dispatchAsSubagent({
       family: 'progress', subcommand: 'json', cwd: dir, depth: 0,
     }));

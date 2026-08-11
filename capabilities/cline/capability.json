@@ -32,6 +32,7 @@
       ],
       "local": []
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "cline-rules",
     "sandboxTier": "none",

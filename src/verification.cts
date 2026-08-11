@@ -37,12 +37,16 @@ import phaseId = require('./phase-id.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import scanPhasePlans = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
+import planningScopeMod = require('./planning-scope.cjs');
 import { execGit } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 
 const { output, error } = io;
 const { extractPhaseToken } = phaseId;
 const { extractFrontmatter } = frontmatterMod;
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -506,6 +510,78 @@ function readVerificationStatus(
   };
 }
 
+interface IsPhaseCompleteDeps {
+  fs?: FsLike;
+  /** Injectable per-phase clean-commit-time resolver, threaded through to readVerificationStatus. */
+  phaseCleanCommitTimesMs?: PhaseCleanCommitTimesFn;
+  /** Runtime whose command surface next_command is projected into (#2617). */
+  runtime?: string;
+  /** Phase number appended to the routed command (#2617). */
+  phaseNumber?: string;
+}
+
+interface PhaseCompletionValue {
+  complete: boolean;
+  verification: VerificationStatusResult;
+}
+
+/**
+ * isPhaseComplete — the single canonical owner of "is phase P complete?"
+ * (ADR-3180 §7.4, Decision 1). Sited beside readVerificationStatus, which it
+ * wraps.
+ *
+ * DISK-STRICT (#2957, maintainer decision 2026-08-08; ADR-3180 §7.4 amended
+ * af92fd4c9): readVerificationStatus is called UNCONDITIONALLY here — plan
+ * count is NOT a precondition. A phase with zero plans and a passing
+ * `*-VERIFICATION.md` is complete (#3168). A ROADMAP checkbox has no machine
+ * authority and is never consulted — this function never reads ROADMAP.md.
+ *
+ * `complete` is exactly `verification.status === 'passed'`. `verification`
+ * carries the FULL routing result (status/next_action/next_command), so a
+ * caller can distinguish a failing verdict (`gaps_found`/`human_needed`/
+ * `stale`/`unknown`) from an absent one (`missing`) — both are "not
+ * complete", but they are not the same non-answer.
+ *
+ * `scope` is UNREADABLE when `phaseDir` itself could not be listed — this is
+ * INDEPENDENT of readVerificationStatus's own no-throw fail-open contract for
+ * a missing `*-VERIFICATION.md` file (a well-formed answer,
+ * `verification.status === 'missing'`, scope COMPLETE): a caller must not
+ * read `value.complete: false` here as a confident "not complete" the way it
+ * can for a genuinely-checked missing file.
+ *
+ * Does NOT import scanPhasePlans / plan-scan.cjs — the owner consumes plan
+ * counts from its caller when a caller needs them for a different question
+ * (e.g. buildPhaseCompletionProjection's own `implementation_complete`); it
+ * never re-derives or requires them itself.
+ */
+function isPhaseComplete(
+  phaseDir: string,
+  deps: IsPhaseCompleteDeps = {},
+): { value: PhaseCompletionValue; scope: Scope } {
+  const fsImpl: FsLike = deps.fs ?? fs;
+  let readable = true;
+  try {
+    fsImpl.readdirSync(phaseDir);
+  } catch {
+    readable = false;
+  }
+
+  const verification = readVerificationStatus(phaseDir, {
+    fs: deps.fs,
+    phaseCleanCommitTimesMs: deps.phaseCleanCommitTimesMs,
+    runtime: deps.runtime,
+    phaseNumber: deps.phaseNumber,
+  });
+
+  return {
+    value: {
+      complete: verification.status === 'passed',
+      verification,
+    },
+    scope: readable ? SCOPE.COMPLETE : SCOPE.UNREADABLE,
+  };
+}
+
 /**
  * CLI command handler: resolve phaseDir against cwd, call readVerificationStatus,
  * emit via io.output().
@@ -530,5 +606,6 @@ export = {
   defaultPhaseCleanCommitTimesMs,
   findStaleVerificationSummary,
   readVerificationStatus,
+  isPhaseComplete,
   cmdVerificationStatus,
 };

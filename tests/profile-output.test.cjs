@@ -12,7 +12,13 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const {
+  runGsdTools,
+  createTempProject,
+  createTempGitProject,
+  cleanup,
+  withIsolatedProcessState,
+} = require('./helpers.cjs');
 
 const {
   PROFILING_QUESTIONS,
@@ -182,6 +188,50 @@ describe('write-profile command', () => {
     assert.ok(result.success, `Failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.strictEqual(out.profile_path, path.join(codexHome, 'gsd-core', 'USER-PROFILE.md'));
+  });
+
+  test('#2665: ambient CLAUDE_CONFIG_DIR cannot escape a HOME-only sandbox', () => {
+    // The defect: TEST_ENV_BASE blanked session-identity vars but none of the
+    // config-LOCATION vars, and the dot-home resolver is env-first. So an
+    // ambient CLAUDE_CONFIG_DIR in the DEVELOPER'S shell beat `{ HOME: tmpDir }`
+    // and the suite wrote into their real config directory. Setting it on the
+    // PARENT process is the actual vector — passing it in the per-call env
+    // argument would test nothing, because that path was never broken.
+    const analysis = {
+      profile_version: '1.0',
+      dimensions: { communication_style: { rating: 'terse-direct', confidence: 'HIGH' } },
+    };
+    const analysisPath = path.join(tmpDir, 'analysis.json');
+    fs.writeFileSync(analysisPath, JSON.stringify(analysis));
+
+    const ambientConfigDir = path.join(tmpDir, 'ambient-live-config');
+    fs.mkdirSync(ambientConfigDir, { recursive: true });
+
+    const out = withIsolatedProcessState(() => {
+      process.env.CLAUDE_CONFIG_DIR = ambientConfigDir;
+      const result = runGsdTools(
+        ['write-profile', '--input', analysisPath, '--raw'],
+        tmpDir,
+        { HOME: tmpDir }
+      );
+      assert.ok(result.success, `Failed: ${result.error}`);
+      return JSON.parse(result.output);
+    });
+
+    assert.deepStrictEqual(
+      fs.readdirSync(ambientConfigDir),
+      [],
+      'a call site that sandboxes HOME must not write into an ambient CLAUDE_CONFIG_DIR'
+    );
+    // Containment via path.relative, not startsWith: startsWith(ambientConfigDir)
+    // also matches a SIBLING like `<tmp>/ambient-live-config-2`, so it can report
+    // a false leak. A path is inside the dir iff the relative path neither escapes
+    // with '..' nor is absolute.
+    const rel = path.relative(ambientConfigDir, out.profile_path);
+    assert.ok(
+      rel.startsWith('..') || path.isAbsolute(rel),
+      `profile must not resolve under the ambient config dir, got: ${out.profile_path}`
+    );
   });
 
   test('errors when --input is missing', () => {

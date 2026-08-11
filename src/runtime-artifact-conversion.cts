@@ -25,6 +25,10 @@ import runtimeNamePolicy = require('./runtime-name-policy.cjs');
 const { getDirName } = runtimeNamePolicy;
 import capabilityRegistry = require('./capability-registry.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
+// #2870: install-scope.cts is a leaf-tier sibling (imports only
+// runtime-homes.cjs + node builtins, never this module) — no cycle. See the
+// isGlobal sites below for why the boolean projection is centralized here too.
+import { isGlobalScope } from './install-scope.cjs';
 
 // #1383: resolve GSD's version WITHOUT a top-level
 // `require('../../../package.json')`. That require ran at module load on every
@@ -2862,7 +2866,10 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
-  const isGlobal = scope === 'global';
+  // #2870: `scope` is defaulted to 'global' above, so it is never undefined
+  // here, and every reachable caller passes 'global' | 'local' | undefined —
+  // isGlobalScope's throw-on-out-of-union case is unreachable at this site.
+  const isGlobal = isGlobalScope(scope);
   const isOpencode = false;  // #2087: opencode installs via the combined-family engine path, never through the generic rewrite
   const isWindowsHost = platform === 'win32';
   const pathPrefix = computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir });
@@ -2900,7 +2907,10 @@ function rewriteStagedCommandBodies(stagedDir, opts) {
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
-  const isGlobal = scope === 'global';
+  // #2870: `scope` is defaulted to 'global' above, so it is never undefined
+  // here, and every reachable caller passes 'global' | 'local' | undefined —
+  // isGlobalScope's throw-on-out-of-union case is unreachable at this site.
+  const isGlobal = isGlobalScope(scope);
   const isOpencode = false;  // #2087: opencode installs via the combined-family engine path, never through the generic rewrite
   const isWindowsHost = platform === 'win32';
   const pathPrefix = computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir });

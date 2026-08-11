@@ -241,9 +241,13 @@ describe('roadmap analyze command', () => {
   });
 
   test('parses phases with goals and disk status', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): no version token — no STATE.md exists to
+    // resolve which milestone "v1.0" names, so a version-bearing title here
+    // would window as UNSCOPED (§7.1 row 4), not the free-form COMPLETE
+    // window this test's disk-status counting depends on.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0
+      `# Roadmap
 
 ### Phase 1: Foundation
 **Goal:** Set up infrastructure
@@ -261,6 +265,9 @@ describe('roadmap analyze command', () => {
     fs.mkdirSync(p1, { recursive: true });
     fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+    // *-VERIFICATION.md is what makes phase 1 count as complete now.
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
 
     const p2 = path.join(tmpDir, '.planning', 'phases', '02-authentication');
     fs.mkdirSync(p2, { recursive: true });

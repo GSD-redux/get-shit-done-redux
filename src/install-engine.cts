@@ -32,6 +32,12 @@ import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
 import { ensureCommonJsMarker } from './commonjs-marker.cjs';
+// #2870: InstallScope is owned by install-scope.cts, not re-declared here.
+// `isGlobalScope` centralizes the `scope === 'global'` boolean projection
+// this module's two remaining re-derivation sites need (see the
+// module-level doc comment on `isGlobalScope` for why the projection is
+// centralized rather than eliminated).
+import { isGlobalScope, type InstallScope } from './install-scope.cjs';
 
 const { processAttribution } = runtimeArtifactConversion;
 // resolveRuntimeArtifactLayout: accessed via module ref (not destructured) so
@@ -455,9 +461,10 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
   const entries = fs.readdirSync(stagedDir, { withFileTypes: true });
   // For commands: apply prefix unless the destSubpath's last segment already
   // represents the GSD namespace (e.g. 'commands/gsd' → last segment 'gsd').
-  const destLast = path.basename(kind.destSubpath);
-  const prefixStem = kind.prefix ? kind.prefix.replace(/-$/, '') : '';
-  const namespacedByDir = kind.kind === 'commands' && destLast === prefixStem;
+  // Single source of truth: runtimeArtifactLayout.isNamespacedByDir (#2871
+  // Phase 2 review finding — this rule previously drifted independently
+  // across install-engine.cts / surface.cts / runtime-artifact-layout.cts).
+  const namespacedByDir = runtimeArtifactLayout.isNamespacedByDir(kind.kind, kind.destSubpath, kind.prefix);
 
   for (const entry of entries) {
     if (!entry.isFile()) continue;
@@ -475,12 +482,14 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
       destName = _agentExt
         ? entry.name.replace(/\.md$/, _agentExt)
         : entry.name;
-    } else if (namespacedByDir) {
-      // Directory is the namespace; don't double-prefix the filename
-      destName = entry.name;
     } else {
-      // Flat commands directory (e.g. command/ for opencode/kilo)
-      destName = `${kind.prefix}${stem}.md`;
+      // Commands: filename composition (namespacedByDir ? `${stem}.md` :
+      // `${prefix}${stem}.md`) is single-sourced with resolveTriggerSurface's
+      // destPath prediction via composeCommandFilename (#2871 Phase 2 review
+      // finding). Byte-identical to the prior separate namespacedByDir/flat
+      // branches — see that helper's doc comment for why the namespacedByDir
+      // case reconstructing `${stem}.md` is always exactly `entry.name`.
+      destName = runtimeArtifactLayout.composeCommandFilename(namespacedByDir, kind.prefix, stem);
     }
 
     fs.copyFileSync(path.join(stagedDir, entry.name), path.join(destDir, destName));
@@ -673,7 +682,15 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
   // to the same location (#1423). Using migrateLegacyDevPreferencesToSkill here
   // (which would redirect to skills/) conflicts with the test contract for local installs.
   const _lu = _hostBehaviors(runtime).legacyCommandsGsdUninstall;
-  const isLegacyCommandsGsd = _lu === true || (_lu === 'global' && scope === 'global');
+  // #2870: `scope` keeps its exported `string = 'global'` signature (no
+  // signature change), but every real caller — `uninstallRuntimeArtifacts`'s
+  // own required `scope` param, always fed a validated 'global' | 'local'
+  // literal by bin/install.js's scope-resolution ternary, plus every direct
+  // test call site — only ever supplies 'global' or 'local'. The existing
+  // `= 'global'` default already reproduces today's behavior for an omitted
+  // scope, so the cast below is safe: `isGlobalScope` never sees a value
+  // outside its union here.
+  const isLegacyCommandsGsd = _lu === true || (_lu === 'global' && isGlobalScope(scope as InstallScope));
   if (isLegacyCommandsGsd) {
     const legacyCommandsGsd = path.join(configDir, 'commands', 'gsd');
     if (fs.existsSync(legacyCommandsGsd)) {
@@ -1280,7 +1297,12 @@ function installOpencodeFamilyArtifacts(
   behaviors: any = {},
   capabilityRegistry?: any,
 ): void {
-  const isGlobal = scope === 'global';
+  // #2870: `scope` keeps its exported required `string` signature (no
+  // signature change). It is always the `installRuntimeArtifacts`-forwarded
+  // 'global' | 'local' literal produced by bin/install.js's scope-resolution
+  // ternary (both real call sites and every test call site), so the cast is
+  // safe: `isGlobalScope` never sees a value outside its union here.
+  const isGlobal = isGlobalScope(scope as InstallScope);
   // findInstallSourceRoot resolves DIRECTLY to the commands/gsd source dir
   // (via the .gsd-source marker or a walk-up from __dirname) — every other
   // call site in runtime-artifact-layout.cts feeds its return value straight
