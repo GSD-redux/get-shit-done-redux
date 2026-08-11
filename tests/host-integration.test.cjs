@@ -35,6 +35,7 @@ const {
   _HOST_INTEGRATION_VOCAB,
   validateCapability,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -1950,5 +1951,554 @@ describe('#2627 dispatch-isolation CLI route', () => {
     assert.equal(pi.isolation, 'none');
     assert.equal(pi.exec, null);
     assert.equal(pi.harnessFlag, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2652 — dispatch-site parity: isolation is decided by the negotiated
+// dispatch.isolation capability, never by a runtime id.
+//
+// #2584 migrated the phase scheduler off `RUNTIME != "claude"` but left quick.md
+// and diagnose-issues.md behind, so Codex — which declares orchestrator-worktree
+// — was refused isolation it had negotiated. That is this repo's
+// DEFECT.GENERATIVE-FIX-DIVERGENCE shape: parallel surfaces reading one contract,
+// one migrated and the others silently stale. This guard fails when any dispatch
+// site reintroduces a runtime-name test around its isolation decision.
+// ---------------------------------------------------------------------------
+// Scan workflows AND the reference fragments they inline: scheduler branches that
+// mutate USE_WORKTREES live in gsd-core/references/ too (execute-phase-wave-guard,
+// execute-phase-between-wave-reset), and a workflows-only scan misses them.
+// Shared by both #2652 and #2728 suites below — a second, hand-listed copy is how
+// the degrade scan silently narrowed to three files (round-7 review, Major 6).
+const SCAN_ROOTS = [
+  path.join(REPO_ROOT, 'gsd-core', 'workflows'),
+  path.join(REPO_ROOT, 'gsd-core', 'references'),
+];
+
+function collectMarkdown(dir) {
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectMarkdown(full));
+    else if (entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
+}
+
+describe('#2652 dispatch-site parity — isolation gates on capability, not runtime id', () => {
+  const ISOLATION_TOKEN = /USE_WORKTREES|ISOLATION|isolation="worktree"|harnessFlag/;
+
+  // Any shape that reads RUNTIME as a branch condition. Line-based matching missed
+  // multiline `&&`, [[ ]], case, `test`, and JS-template forms, so match the RUNTIME
+  // test itself and then look for an isolation token within the following window.
+  //
+  // Operand ORDER is not fixed either: `[ "claude" != "$RUNTIME" ]` is the same gate
+  // written backwards, and hand-written left-only patterns let it through. Each
+  // comparison shape is therefore generated in both orders from a single template, so
+  // a new shape cannot be added in one order and forgotten in the other.
+  const RT = '"?\\$\\{?RUNTIME\\}?"?';   // $RUNTIME / "$RUNTIME" / "${RUNTIME}"
+  const JS_RT = 'RUNTIME';                // bare identifier inside a ${…} template
+  const QLIT = '["\'][a-z-]+["\']';       // "claude"
+  const LIT = '["\']?[a-z-]+["\']?';      // claude / "claude"  ([[ ]] permits bare)
+
+  /** One comparison shape → two regexes, operands in either order. */
+  const bothOrders = (tpl, a, b) => [
+    new RegExp(tpl.replace('%L', a).replace('%R', b)),
+    new RegExp(tpl.replace('%L', b).replace('%R', a)),
+  ];
+
+  const RUNTIME_TESTS = [
+    ...bothOrders('\\[\\s*%L\\s*(?:!=|==?)\\s*%R\\s*\\]', RT, QLIT),        // [ "$RUNTIME" = "x" ]
+    ...bothOrders('\\[\\[\\s*%L\\s*(?:!=|==?)\\s*%R\\s*\\]\\]', RT, LIT),   // [[ "$RUNTIME" == x ]]
+    ...bothOrders('\\btest\\s+%L\\s*(?:!=|=)\\s*%R', RT, QLIT),             // test "$RUNTIME" = "x"
+    ...bothOrders('\\$\\{\\s*%L\\s*(?:===|!==|==|!=)\\s*%R', JS_RT, QLIT),  // ${RUNTIME === "x" ? ...}
+    /\bcase\s+"?\$\{?RUNTIME\}?"?\s+in\b/,                                  // case "$RUNTIME" in (no reversed form)
+  ];
+
+  const WINDOW = 400; // chars after the RUNTIME test to look for an isolation decision
+
+  function isolationGateOffenders(text, label) {
+    const hits = [];
+    for (const re of RUNTIME_TESTS) {
+      const global = new RegExp(re.source, 'g');
+      let m;
+      while ((m = global.exec(text)) !== null) {
+        const window = text.slice(m.index, m.index + WINDOW);
+        if (ISOLATION_TOKEN.test(window)) {
+          const line = text.slice(0, m.index).split('\n').length;
+          hits.push(`${label}:${line}: ${m[0].trim()}`);
+        }
+      }
+    }
+    return hits;
+  }
+
+  const dispatchSites = SCAN_ROOTS.flatMap(collectMarkdown).filter(f =>
+    ISOLATION_TOKEN.test(fs.readFileSync(f, 'utf-8')),
+  );
+
+  test('the scan covers the known dispatch sites (guards against a vacuous pass)', () => {
+    const rel = dispatchSites.map(f => path.relative(REPO_ROOT, f).replace(/\\/g, '/'));
+    // Assert identities, not just a count: a count survives the scan silently
+    // drifting off the files that actually matter.
+    for (const required of [
+      'gsd-core/workflows/quick.md',
+      'gsd-core/workflows/diagnose-issues.md',
+      'gsd-core/workflows/execute-plan.md',
+      'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md',
+    ]) {
+      assert.ok(rel.includes(required), `dispatch-site scan must cover ${required}; found ${rel.length} files`);
+    }
+  });
+
+  // #2652 review: executor-isolation-dispatch.md declared
+  // references/dispatch-isolation-gate.md canonical while keeping the OLDER
+  // collapsing resolver inline — `|| echo "none"`, no ISOLATION_RESOLVED — so a
+  // transient shim failure aborted /gsd:execute-phase telling a Claude or
+  // Cursor user their runtime "declares no executor-isolation primitive". Still
+  // fail-closed, so not an unsafe-dispatch hole, but the correction this PR is
+  // about was unwired at one of the five sites. Nothing caught it: the emitted
+  // coverage in install.test.cjs checks the REFERENCE, not each site's own copy.
+  test('every site that inlines the resolver uses the non-collapsing shape', () => {
+    // A site "inlines the resolver" only if it ASSIGNS from it. The other
+    // dispatch sites @-reference the gate and merely re-record a degrade
+    // (`--force-isolation …` with no assignment), which carries no verdict of
+    // its own — matching those too would flag files that have nothing to fix.
+    const INLINE_RESOLVE = /\w+=\$\(gsd_run query dispatch-isolation --raw/;
+    // Dedupe: SCAN_ROOTS already yields the gate reference, so appending it
+    // again made `length >= 2` satisfiable by the gate alone — the executor
+    // site could drop out of the predicate entirely and this would still pass.
+    const candidates = [...new Set(
+      [...dispatchSites, path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md')]
+        .filter(f => fs.existsSync(f))
+        .map(f => path.resolve(f)),
+    )];
+    const inliners = candidates
+      .map(f => ({ rel: path.relative(REPO_ROOT, f).replace(/\\/g, '/'), text: fs.readFileSync(f, 'utf-8') }))
+      .filter(({ text }) => INLINE_RESOLVE.test(text));
+
+    // Pin identities, not a count. A count cannot tell "the executor site was
+    // fixed" from "the executor site stopped matching the predicate".
+    assert.deepEqual(
+      inliners.map(i => i.rel).sort(),
+      [
+        'gsd-core/references/dispatch-isolation-gate.md',
+        'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md',
+      ],
+      'the set of files inlining the resolver changed — a new inliner needs the same treatment, and a missing one means the predicate stopped seeing it',
+    );
+
+    for (const { rel, text } of inliners) {
+      // Any assignment target, not just ISOLATION — `_ISOLATION_RAW=$(… || echo
+      // "none")` restores the identical defect while leaving ISOLATION_RESOLVED
+      // in the file, so a name-specific pattern passes on a broken block.
+      assert.doesNotMatch(
+        text,
+        /\w+=\$\(gsd_run query dispatch-isolation --raw[^\n]*\|\|[^\n]*echo/,
+        `${rel}: collapses a resolver failure straight to none — that reports "declares no primitive" for a host that simply could not be queried`,
+      );
+      assert.match(
+        text,
+        /ISOLATION_RESOLVED=false/,
+        `${rel}: inlines the resolver but never records that no verdict was learned`,
+      );
+      assert.match(
+        text,
+        /could not resolve this runtime's executor-isolation capability/,
+        `${rel}: has no distinct message for the unresolved case, so both outcomes read as a capability verdict`,
+      );
+    }
+  });
+
+  test('the detector flags every known runtime-gate shape (discrimination proof)', () => {
+    // Each of these slipped past the original same-line, single-bracket detector.
+    const mutations = {
+      'single bracket, same line':
+        'if [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]; then',
+      'multiline &&':
+        'if [ "$RUNTIME" != "claude" ] && \\\n   [ "$USE_WORKTREES" != "false" ]; then',
+      'double bracket':
+        'if [[ "$RUNTIME" == claude ]]; then\n  USE_WORKTREES=false\nfi',
+      'nested, later assignment':
+        'if [ "$RUNTIME" = "codex" ]; then\n  echo hi\n  ISOLATION=none\nfi',
+      'case statement':
+        'case "$RUNTIME" in\n  claude) USE_WORKTREES=true ;;\nesac',
+      'js template':
+        '${RUNTIME === "claude" ? \'isolation="worktree",\' : \'\'}',
+      'test builtin':
+        'if test "$RUNTIME" = "claude"; then\n  ISOLATION=harness-worktree\nfi',
+      // Reversed operands — the same gate written backwards. Every one of these
+      // evaded the original left-only patterns (#2728 review, Minor).
+      'reversed single bracket':
+        'if [ "claude" != "$RUNTIME" ] && [ "$USE_WORKTREES" != "false" ]; then',
+      'reversed double bracket':
+        'if [[ claude == "$RUNTIME" ]]; then\n  USE_WORKTREES=false\nfi',
+      'reversed test builtin':
+        'if test "claude" = "$RUNTIME"; then\n  ISOLATION=harness-worktree\nfi',
+      'reversed js template':
+        '${"claude" === RUNTIME ? \'isolation="worktree",\' : \'\'}',
+    };
+    for (const [name, snippet] of Object.entries(mutations)) {
+      assert.equal(
+        isolationGateOffenders(snippet, 'mutation').length >= 1,
+        true,
+        `detector must flag the "${name}" reintroduction — otherwise the guard below proves nothing`,
+      );
+    }
+  });
+
+  test('the detector flags generated shell-comparison permutations (property)', () => {
+    // The mutation table above is 11 hand-picked cases; this generates the cross
+    // product of the axes an author actually varies — bracket form, operator,
+    // operand order, quoting, spacing, runtime id. A permutation the hand-written
+    // patterns miss shows up here rather than in production (#2728 review, Nit).
+    fc.assert(
+      fc.property(
+        fc.constantFrom('[', '[[', 'test'),
+        fc.constantFrom('=', '==', '!='),
+        fc.boolean(),                                    // reversed operands?
+        fc.constantFrom('"$RUNTIME"', '$RUNTIME', '"${RUNTIME}"'),
+        fc.constantFrom('claude', 'codex', 'kimi-code'),
+        fc.boolean(),                                    // quote the literal?
+        fc.constantFrom('', ' '),                        // extra padding
+        (form, op, reversed, rtTok, id, quoted, pad) => {
+          // `test` has no `==` form and never takes brackets; bare literals are
+          // only legal inside [[ ]].
+          if (form === 'test' && op === '==') return true;
+          const lit = quoted || form !== '[[' ? `"${id}"` : id;
+          const [l, r] = reversed ? [lit, rtTok] : [rtTok, lit];
+          const cond = `${l}${pad} ${op} ${pad}${r}`;
+          const snippet = form === 'test'
+            ? `if test ${cond}; then\n  ISOLATION=none\nfi`
+            : `if ${form} ${cond} ${form === '[[' ? ']]' : ']'}; then\n  ISOLATION=none\nfi`;
+          return isolationGateOffenders(snippet, 'prop').length >= 1;
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  test('a RUNTIME read with no isolation decision nearby is NOT flagged (no false positive)', () => {
+    const benign = 'RUNTIME=$(gsd_run query config-get runtime --raw)\necho "runtime is $RUNTIME"';
+    assert.deepEqual(isolationGateOffenders(benign, 'benign'), []);
+  });
+
+  test('no dispatch site gates isolation on a runtime id', () => {
+    const offenders = [];
+    for (const file of dispatchSites) {
+      offenders.push(
+        ...isolationGateOffenders(
+          fs.readFileSync(file, 'utf-8'),
+          path.relative(REPO_ROOT, file).replace(/\\/g, '/'),
+        ),
+      );
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'isolation must be resolved from `gsd_run query dispatch-isolation` (see ' +
+        'gsd-core/references/dispatch-isolation-gate.md), never from a RUNTIME comparison:\n' +
+        offenders.join('\n'),
+    );
+  });
+
+  // #2728 review Blocker — the ISOLATION_TOKEN regex above treats
+  // `isolation="worktree"` as a legitimate isolation marker, so the runtime-gate
+  // detector cannot catch a *conditional* keyed on that literal. But the literal
+  // is Claude Code's own rendering of {harnessFlag}; Cursor's rendering is
+  // `--worktree`, so any post-dispatch step gated on the literal is a silent
+  // no-op for a correctly-isolated Cursor run (quick.md's manifest append and
+  // worktree merge-back were exactly this — isolated work never merged, never
+  // cleaned up). Post-dispatch bookkeeping must key on the negotiated ISOLATION
+  // value instead (dispatch-isolation-gate.md's "never hardcode" rule).
+  const LITERAL_CONDITION = /\bIf\b[^.\n]*`isolation="worktree"`/g;
+
+  function literalConditionOffenders(text, label) {
+    const hits = [];
+    let m;
+    const re = new RegExp(LITERAL_CONDITION.source, 'g');
+    while ((m = re.exec(text)) !== null) {
+      const line = text.slice(0, m.index).split('\n').length;
+      hits.push(`${label}:${line}: ${m[0].trim()}`);
+    }
+    return hits;
+  }
+
+  test('the literal-condition detector flags the pre-fix quick.md shapes (discrimination proof)', () => {
+    const preFix = {
+      'manifest append':
+        'If the executor ran with `isolation="worktree"`, append its returned metadata to `QUICK_WORKTREE_MANIFEST` before cleanup.',
+      'worktree cleanup':
+        '1. **Worktree cleanup:** If the executor ran with `isolation="worktree"`, merge the worktree branch back and clean up:',
+    };
+    for (const [name, snippet] of Object.entries(preFix)) {
+      assert.equal(
+        literalConditionOffenders(snippet, 'mutation').length,
+        1,
+        `detector must flag the pre-fix "${name}" conditional — otherwise the guard below proves nothing`,
+      );
+    }
+    // Explanatory prose that merely *names* the literal (no conditional) stays legal.
+    assert.deepEqual(
+      literalConditionOffenders(
+        'Claude Code\'s `isolation="worktree"` forks new worktrees from `origin/HEAD`.',
+        'benign',
+      ),
+      [],
+    );
+  });
+
+  test('no dispatch site conditions post-dispatch behavior on the Claude-rendered literal', () => {
+    const offenders = [];
+    for (const file of dispatchSites) {
+      offenders.push(
+        ...literalConditionOffenders(
+          fs.readFileSync(file, 'utf-8'),
+          path.relative(REPO_ROOT, file).replace(/\\/g, '/'),
+        ),
+      );
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'post-dispatch steps must key on `ISOLATION = "harness-worktree"`, never on ' +
+        'Claude Code\'s rendered `isolation="worktree"` literal (a Cursor dispatch renders ' +
+        '`--worktree` and would silently skip these steps):\n' + offenders.join('\n'),
+    );
+  });
+
+  test('quick.md post-dispatch bookkeeping keys on the negotiated ISOLATION value', () => {
+    const quick = fs.readFileSync(
+      path.join(REPO_ROOT, 'gsd-core', 'workflows', 'quick.md'), 'utf-8',
+    );
+    assert.match(
+      quick,
+      /If the executor ran isolated \(`ISOLATION = "harness-worktree"` at dispatch\), append its returned/,
+      'the QUICK_WORKTREE_MANIFEST append must be gated on ISOLATION',
+    );
+    assert.match(
+      quick,
+      /\*\*Worktree cleanup:\*\* If the executor ran isolated \(`ISOLATION = "harness-worktree"` at dispatch\)/,
+      'the worktree merge-back/cleanup must be gated on ISOLATION',
+    );
+    assert.match(
+      quick,
+      /If `ISOLATION` was not `"harness-worktree"` at dispatch[^\n]*skip this step/,
+      'the cleanup skip clause must mirror the same ISOLATION gate (USE_WORKTREES stays true on an isolated Cursor run)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2728 review BLOCKER (B1/B2/B3) — a degrade must re-RECORD, not just reassign.
+//
+// Every isolation degrade in a dispatch site is decided in SHELL, where
+// `routeDispatchIsolation` cannot see it. That resolver persists whatever it
+// resolved to the run-scoped sentinel as an unconditional side effect (#3045
+// CORE REDESIGN, hooks/lib/isolation-sentinel.js), so a degrade that only
+// reassigns `$ISOLATION` leaves the sentinel asserting `harness-worktree`
+// while the dispatch correctly omits the harness flag. The shipped PreToolUse
+// guard reads the sentinel at the instant of the `Agent()` call and denies the
+// mismatch with exit 2 — the work does not run unisolated, it does not run.
+//
+// WHY THIS ASSERTS THE RECORDED VALUE, NOT `$ISOLATION`: asserting the local
+// variable is precisely what let this class through. `$ISOLATION` was already
+// correct at all three sites — `none` — and the defect was entirely in what
+// reached the sentinel. So these tests execute each workflow's own degrade
+// block under a `gsd_run` stub that captures every call, and assert on the
+// value the workflow PUSHED THROUGH THE WRITE PATH.
+// ---------------------------------------------------------------------------
+describe('#2728 B1 — isolation degrades re-record through the single write path', () => {
+  const { runHook } = require('./helpers/process-seam.cjs');
+  // Class-norm timeout, not a local literal (CONTRIBUTING: class-norm
+  // timeouts live in tests/helpers/timeouts.cjs). This harness is a short
+  // shell probe against a gsd_run stub — exactly the PROBE class.
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+  const os = require('node:os');
+
+  const WORKFLOWS = path.join(REPO_ROOT, 'gsd-core', 'workflows');
+
+  /**
+   * Pull the fenced ```bash block containing `marker` out of a workflow.
+   *
+   * DEFECT.WINDOWS-CRLF-TEST-PORTABILITY: the captured body is handed to
+   * `bash` below, so it must be CRLF-free. A `\r?\n` fence regex is NOT
+   * sufficient — it only protects the delimiter match, leaving embedded `\r`
+   * on every line of the body, which bash treats as part of the token
+   * (helpers.cjs documents exactly this trap). Normalize at the READ
+   * boundary so everything downstream is LF-only by construction.
+   */
+  function bashBlockContaining(file, marker) {
+    const text = readFileNormalized(file);
+    for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
+      if (m[1].includes(marker)) return m[1];
+    }
+    assert.fail(`no \`\`\`bash block containing ${JSON.stringify(marker)} in ${file}`);
+  }
+
+  /**
+   * Run a degrade block with the base-check forced to fire, under a `gsd_run`
+   * stub that logs its argv. Returns every `dispatch-isolation` call the block
+   * made, in order — i.e. the writes that would have hit the sentinel.
+   */
+  function recordedWrites(block) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-degrade-'));
+    const log = path.join(dir, 'calls.log');
+    // The stub answers the base-check `true` so the degrade path is TAKEN;
+    // every other query returns empty. It logs the full argv of each call.
+    const harness = [
+      'set -u',
+      `gsd_run() { printf '%s\\n' "$*" >> ${JSON.stringify(log)};`,
+      '  case "$*" in',
+      '    *"worktree.base-check"*"shouldDegrade"*) printf true ;;',
+      '    *"worktree.base-check"*"message"*) printf "base diverged" ;;',
+      '    *) printf "" ;;',
+      '  esac; }',
+      'ISOLATION=harness-worktree',
+      'USE_WORKTREES=true',
+      'RUNTIME=claude',
+      'PHASE_NUMBER=7',
+      block,
+      // Prove the local variable was ALSO correct, so a failure below can only
+      // mean the recording is missing — not that the degrade itself misfired.
+      'printf "FINAL_LOCAL=%s\\n" "$ISOLATION"',
+    ].join('\n');
+
+    // Through the process seam, never a hand-rolled spawnSync (CONTRIBUTING
+    // "Spawning a subprocess: use the process seam"). `runHook` documents
+    // `interpreter: 'bash'` for running a shell script, so the harness is
+    // written to a file rather than passed as `-c`. Bounded by construction
+    // (DEFECT.UNBOUNDED-SUBPROCESS): pure shell against a `gsd_run` stub — no
+    // git, no network, no real CLI — so it completes in milliseconds.
+    const scriptPath = path.join(dir, 'degrade-harness.sh');
+    fs.writeFileSync(scriptPath, harness);
+    const res = runHook(scriptPath, [], { interpreter: 'bash', timeoutMs: PROBE_TIMEOUT_MS });
+    if (res.outcome !== 'exited') {
+      cleanup(dir);
+      assert.fail(`degrade block did not complete: outcome=${res.outcome} ${res.stderr || ''}`);
+    }
+    assert.equal(res.exitCode, 0, `degrade block exited ${res.exitCode}: ${res.stderr}`);
+    assert.match(res.stdout, /FINAL_LOCAL=none/, 'the degrade must set $ISOLATION=none locally');
+
+    const calls = fs.existsSync(log)
+      ? fs.readFileSync(log, 'utf-8').split(/\r?\n/).filter(Boolean)
+      : [];
+    cleanup(dir);
+    return calls.filter(c => c.includes('dispatch-isolation'));
+  }
+
+  /** The isolation mode the last write pushed, or null if nothing was written. */
+  function recordedIsolation(block) {
+    const writes = recordedWrites(block);
+    if (writes.length === 0) return null;
+    const last = writes[writes.length - 1];
+    const m = last.match(/--force-isolation\s+(\S+)/);
+    return m ? m[1] : null;
+  }
+
+  const DEGRADE_SITES = [
+    {
+      label: 'quick.md #1941 base-check degrade',
+      file: path.join(WORKFLOWS, 'quick.md'),
+      marker: '_QUICK_SHOULD_DEGRADE',
+    },
+    {
+      label: 'diagnose-issues.md #2649 base-check degrade',
+      file: path.join(WORKFLOWS, 'diagnose-issues.md'),
+      marker: '_DIAG_SHOULD_DEGRADE',
+    },
+  ];
+
+  for (const site of DEGRADE_SITES) {
+    test(`${site.label} records none, not just the local variable`, () => {
+      const block = bashBlockContaining(site.file, site.marker);
+      assert.equal(
+        recordedIsolation(block),
+        'none',
+        `${site.label}: $ISOLATION degraded to none but the block never pushed that ` +
+          'through `query dispatch-isolation --force-isolation`. The sentinel still ' +
+          'asserts harness-worktree, so the #3045 PreToolUse guard denies the dispatch ' +
+          'with exit 2. Re-record immediately after the degrade.',
+      );
+    });
+  }
+
+  test('the harness detects a degrade that only reassigns (fail-first proof)', () => {
+    // Strip the re-record from the shipped block. If the assertion above can
+    // still pass against this, it is not testing what it claims to test.
+    const block = bashBlockContaining(
+      path.join(WORKFLOWS, 'quick.md'), '_QUICK_SHOULD_DEGRADE',
+    );
+    const preFix = block
+      .split('\n')
+      .filter(l => !l.includes('--force-isolation'))
+      .join('\n');
+
+    assert.notEqual(preFix, block, 'the shipped block must contain a --force-isolation re-record');
+    assert.equal(
+      recordedIsolation(preFix),
+      null,
+      'the pre-fix shape must record NOTHING — otherwise these tests prove nothing. ' +
+        'Note $ISOLATION is `none` in BOTH shapes: that is exactly why asserting the ' +
+        'local variable would have passed on the defect.',
+    );
+  });
+
+  test('every dispatch-site degrade block re-records before the block ends', () => {
+    // Coverage guard: a NEW degrade site added later cannot silently skip the
+    // re-record. Scans the shipped shell rather than a hand-listed set.
+    const offenders = [];
+    // DERIVED, not hand-listed. The previous revision named three files, so a
+    // degrade added anywhere else passed a check whose name claims "every"
+    // (#2728 round-7 review, Major 6). Scan every workflow and reference.
+    const scan = SCAN_ROOTS.flatMap(collectMarkdown);
+    assert.ok(
+      scan.length > 10,
+      `the degrade scan collected only ${scan.length} files — the walk is broken, not the tree`,
+    );
+
+    // Wave sites re-record PER PLAN, not inline: `execute-phase-wave-guard.md` and
+    // `execute-phase-between-wave-reset.md` degrade `USE_WORKTREES=false` together
+    // with `ISOLATION=none`, and `per-plan-worktree-gate.md` seeds
+    // `USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"` and pushes `--force-isolation none`
+    // before each plan's dispatch. That is a real re-record, just delegated — so
+    // these two are exempt. The exemption is ASSERTED below rather than assumed,
+    // so deleting the delegate fails this test instead of silently widening a hole.
+    const DELEGATED_TO_PER_PLAN_GATE = new Set([
+      'gsd-core/references/execute-phase-wave-guard.md',
+      'gsd-core/references/execute-phase-between-wave-reset.md',
+    ]);
+    const perPlanGate = readFileNormalized(
+      path.join(WORKFLOWS, 'execute-phase', 'steps', 'per-plan-worktree-gate.md'),
+    );
+    assert.ok(
+      perPlanGate.includes('USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"') &&
+        perPlanGate.includes('--force-isolation none'),
+      'per-plan-worktree-gate.md no longer inherits USE_WORKTREES and re-records `none`, so the ' +
+        'wave degrade sites above are no longer covered by delegation — either restore the ' +
+        'delegate or make those sites re-record inline',
+    );
+
+    for (const file of scan) {
+      const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
+      if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
+      const text = readFileNormalized(file);
+      for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
+        const block = m[1];
+        if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
+        if (!block.includes('--force-isolation')) {
+          const line = text.slice(0, m.index).split(/\r?\n/).length;
+          offenders.push(`${rel}:${line}`);
+        }
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'these shell blocks degrade $ISOLATION to none without re-recording it through ' +
+        '`query dispatch-isolation --force-isolation` — the #3045 guard will deny the ' +
+        'resulting dispatch:\n' + offenders.join('\n'),
+    );
   });
 });

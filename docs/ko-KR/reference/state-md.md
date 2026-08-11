@@ -45,6 +45,7 @@ current_phase: "4"
 current_phase_name: Observability
 current_plan: "3"
 last_updated: "2026-06-01T12:34:56.789Z"
+state_head: 4f3c2b1a9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b
 last_activity: "2026-06-01"
 stopped_at: "Phase 4 P3 execution complete"
 paused_at: null
@@ -71,6 +72,7 @@ paused_at: null
 | `current_phase_name` | string | 페이즈에 이름이 있는 경우 | 본문 `Current Phase Name:` 필드에서 추출된 페이즈 이름. |
 | `current_plan` | string | 플랜이 진행 중인 경우 | 본문 `Current Plan:` 필드에서 추출된 플랜 번호. |
 | `last_updated` | ISO-8601 타임스탬프 | 항상 (쓰기 시) | 마지막 `syncStateFrontmatter` 호출의 타임스탬프. `realClock.nowIso()`에 의해 기록됩니다. |
+| `state_head` | string (40-char sha) | On write, when the project's own git repo resolves | Full commit sha STATE.md was written against (#2573). Omitted entirely outside a git repo, or when the resolved repo is not the project's own — an unverifiable stamp degrades to absent rather than asserting provenance the file does not have. Recomputed on every write and never carried forward. |
 | `last_activity` | string | 본문에 설정된 경우 | 본문 `Last Activity:` 필드에서 추출된 마지막 활동 날짜. |
 | `stopped_at` | string | 중단점이 기록된 경우 | 마지막으로 완료된 작업의 설명. 아카이브 산문과의 매칭을 피하기 위해 `## Session` 본문 섹션으로 범위가 제한됩니다. |
 | `paused_at` | string | 프로젝트가 일시 정지된 경우 | 일시 정지 지점에 대한 자유형 설명. 일시 정지 상태가 아닐 때는 없거나 `null`. |

@@ -54,6 +54,13 @@ describe('#2138 ship.md track_shipping pushes the ship-note onto the PR branch',
     );
   });
 
+  test('the ship-note step handles wedged PRs caused by skip-token or required status checks', () => {
+    assert.ok(
+      /mergeStateStatus|BLOCKED|trigger CI/.test(step),
+      'track_shipping must include self-healing or check handling for wedged PRs (#2783)',
+    );
+  });
+
   test('the ship-note commit still records the phase + PR number in STATE', () => {
     assert.ok(
       /ship phase \$\{PHASE_NUMBER\}.*PR #\$\{PR_NUMBER\}/.test(step),
