@@ -64,6 +64,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "none",
     "extensionEvents": "kilo",

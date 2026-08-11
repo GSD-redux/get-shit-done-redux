@@ -8,6 +8,13 @@
  */
 
 import { splitTableRow } from './markdown-table.cjs';
+import { clampPercentFromFraction } from './phase-lifecycle.cjs';
+import { collectSection } from './markdown-sectionizer.cjs';
+import type { HeadingToken } from './markdown-sectionizer.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 
 // Internal helpers
 function escapeRegex(str: string): string {
@@ -231,6 +238,112 @@ export function stateExtractField(content: string, fieldName: string): string | 
   return null;
 }
 
+/**
+ * Single owner of the #1760 STATE.md field-extraction fallback chain: "read
+ * field F, preferring the YAML frontmatter scalar, falling back to the body
+ * field." Added for #3187 (epic #3180, ADR-3180 §7.7) to collapse three
+ * independent re-derivations of this chain — `src/smart-entry.cts`'s
+ * `fmScalar` closure, and `src/state.cts`'s `cmdStateSnapshot` and
+ * `cmdStatePrune` — onto one function, per ADR-3180 Decision 1 ("keep N
+ * copies with a parity test" is rejected: a parity test proves today's
+ * agreement, not that copy N+1 won't happen).
+ *
+ * Takes ALREADY-PARSED `fm` and `body` rather than raw STATE.md content: the
+ * heaviest caller, `cmdStateSnapshot`, reads roughly ten fields off one parse
+ * and must not re-parse frontmatter per field.
+ *
+ * `stateExtractField` (above) is deliberately left untouched — it has 20
+ * direct callers and a CRITICAL blast radius (ADR-3180 §7.7's Rejected #1) —
+ * so this function is additive: it calls `stateExtractField` rather than
+ * replacing it or changing its signature.
+ *
+ * Fallback ladder (unchanged from every prior copy this replaces):
+ *   1. `fm[fmKey]` is a non-empty (post-`.trim()`) string → that trimmed
+ *      string.
+ *   2. `fm[fmKey]` is a `number` or `boolean` → `String(fm[fmKey])`, so `0`
+ *      and `false` are VALUES, not absence.
+ *   3. Anything else (`null`, `undefined`, an object, an array, or an
+ *      empty/whitespace-only string) → fall through to
+ *      `stateExtractField(body, bodyField)`.
+ *
+ * `fmKey === null` skips steps 1–2 outright: for a caller whose chain has no
+ * frontmatter side for this particular field (e.g. `state.cts`'s body-only
+ * `Last Activity` / `Last activity` case-variant pair, which sits inside a
+ * function that DOES own a ladder for its other fields, so per this phase's
+ * function-scoped guard it must still route through this owner).
+ * `bodyField === null` skips step 3: for a caller whose "no frontmatter
+ * value" case falls through to an already-computed value instead of a fresh
+ * extractor call (e.g. `cmdStateSnapshot`'s `last_activity`, which falls to
+ * its already-parsed prose date rather than re-extracting the body).
+ *
+ * `scope` reports whether the chain ran over inputs it could actually
+ * consult (ADR-3180 Decision 2/§7.7 — mirrors `scanPhasePlans`'s
+ * scope-carrying result in `plan-scan.cts`; see `planning-scope.cjs`). This
+ * function's own ladder always runs to completion on whatever `fm`/`body` it
+ * is given, INCLUDING when the answer is `null` — a genuinely absent field is
+ * a real answer, not a failure to look (§7.7 behavior table row 4). So
+ * `scope` defaults to `SCOPE.COMPLETE` and is only ever something else when
+ * the CALLER passes `opts.scope`, because only the caller knows whether an
+ * input it handed in was itself degraded — e.g. `fm` came back `{}` from an
+ * unterminated frontmatter fence (`extractFrontmatter` swallows that parse
+ * failure), or `body` is an unscoped whole-document fallback because a
+ * required `## Current Position` section was not found (#2956). This
+ * function never invents a new `SCOPE` member — the enum is frozen at
+ * COMPLETE/TRUNCATED/UNSCOPED/UNREADABLE (`planning-scope.cjs`).
+ *
+ * #1760 is the fallback chain's origin.
+ */
+export function stateFieldValue(
+  fm: Record<string, unknown>,
+  body: string,
+  fmKey: string | null,
+  bodyField: string | null,
+  opts?: { scope?: Scope },
+): { value: string | null; scope: Scope } {
+  const v = fmKey === null ? undefined : fm[fmKey];
+  let value: string | null;
+  if (typeof v === 'string' && v.trim()) {
+    value = v.trim();
+  } else if (typeof v === 'number' || typeof v === 'boolean') {
+    value = String(v);
+  } else {
+    value = bodyField === null ? null : stateExtractField(body, bodyField);
+  }
+  return { value, scope: opts?.scope ?? SCOPE.COMPLETE };
+}
+
+/**
+ * Match the "Current Position" section body from a STATE.md body. #2956: this
+ * is the Phase analogue of state.cts's matchSessionSection. `Phase` canonically
+ * lives under `## Current Position` (gsd-core/templates/state.md), so — like
+ * Stopped At / Paused At under `## Session` — it must be extracted from THAT
+ * section, not from the first `Phase:` / `**Phase:**` line anywhere in the
+ * body. Without the scope, a historical `Phase:` line in an archive section
+ * silently shadows the real one on every read/write, and because callers use
+ * this for routing (state.cts's current_phase) and for drift detection
+ * (gsd-tools.cjs's `drift-guard phase-status` CLI seam), a stale match either
+ * routes work to the wrong phase or fabricates a drift finding.
+ *
+ * Level-flexible: the canonical template uses an h2 `## Current Position`, the
+ * bootstrap template an h3 `### Current Position` (templates/state.md). Both
+ * must match — mirroring how matchSessionSection recognises `## Session` and
+ * `## Session Continuity`. Exact 'current position' text match (case-
+ * insensitive) excludes unrelated headings. Built on the `collectSection`
+ * seam, so it inherits that seam's CRLF tolerance (#2444 fix).
+ *
+ * This is the single owner of the scope — state.cts's private
+ * `matchCurrentPositionSection` delegates here rather than duplicating the
+ * logic, so the two consumers cannot drift apart.
+ *
+ * Returns the section body, or null (caller falls back to full-body search).
+ */
+export function stateCurrentPositionSlice(body: string): string | null {
+  const isCurrentPosition = (h: HeadingToken): boolean =>
+    (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
+  const section = collectSection(body, isCurrentPosition, { levelBounded: true });
+  return section ? section.body : null;
+}
+
 export function stateReplaceField(content: string, fieldName: string, newValue: string): string | null {
   const escaped = escapeRegex(fieldName);
   // Bold inline format: **FieldName:** value
@@ -291,12 +404,25 @@ export function normalizeStateStatus(status: string | null | undefined, pausedAt
   return normalizedStatus;
 }
 
+/**
+ * ADR-3180 §7.6 rule 4 (#3217): `scope` is the `listMilestonePhaseDirs`-owner
+ * discriminator for the phase/plan set these four counts were derived from.
+ * A caller that cannot vouch for `scope === SCOPE.COMPLETE` must pass the
+ * scope it actually has — this function refuses to compose a percentage
+ * from counts whose scope says they are not a trustworthy answer, returning
+ * `null` (never `0`; see the module's already-existing "no data" `null`
+ * below, which this generalizes) exactly like its pre-existing "no data"
+ * case. `scope` is REQUIRED (no default) so a caller cannot silently opt out
+ * of rule 4 by omission.
+ */
 export function computeProgressPercent(
   completedPlans: number | null,
   totalPlans: number | null,
   completedPhases: number | null,
-  totalPhases: number | null
+  totalPhases: number | null,
+  scope: Scope
 ): number | null {
+  if (scope !== SCOPE.COMPLETE) return null;
   const hasPlanData = totalPlans !== null && totalPlans > 0 && completedPlans !== null;
   const hasPhaseData = totalPhases !== null && totalPhases > 0 && completedPhases !== null;
   if (!hasPlanData && !hasPhaseData)
@@ -305,7 +431,7 @@ export function computeProgressPercent(
   // cannot track through intermediate boolean variables).
   const planFraction = hasPlanData ? (completedPlans ?? 0) / (totalPlans ?? 1) : 1;
   const phaseFraction = hasPhaseData ? (completedPhases ?? 0) / (totalPhases ?? 1) : 1;
-  return Math.min(100, Math.round(Math.min(planFraction, phaseFraction) * 100));
+  return clampPercentFromFraction(Math.min(planFraction, phaseFraction));
 }
 
 export function shouldPreserveExistingProgress(existingProgress: unknown, derivedProgress: unknown): boolean {

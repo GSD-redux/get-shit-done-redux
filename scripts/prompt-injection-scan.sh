@@ -129,6 +129,14 @@ ALLOWLIST=(
   # asserts nothing: it is the payload the guard is required to catch, carried
   # as test DATA. Same class as the read-injection-scanner suites above.
   'tests/kimi-payload-field-shadowing.security.test.cjs'
+  # Phase-ID grammar regression tests exercise `RegExp.prototype.exec` via
+  # `re.exec('<phase-id>')` against fixtures like 'MANIFOLD-64-auth' / 'CK-64-auth'.
+  # The scanner's `exec('` code-execution pattern matches that benign method call,
+  # not an attack vector — same DEFECT.PROMPT-INJECTION-SCAN-COLLISION class as the
+  # test fixtures above. Pre-existing content (16 such calls on `next`); it surfaces
+  # here only because #2573's W024 `state_head` assertions make the file appear in
+  # the changed-file set the diff-mode scan walks.
+  'tests/health-validation.test.cjs'
 )
 
 is_allowlisted() {

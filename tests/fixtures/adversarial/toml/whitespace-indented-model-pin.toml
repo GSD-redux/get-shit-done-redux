@@ -1,0 +1,6 @@
+name = "gsd-tester"
+description = "Runs the project test suite and reports failures"
+  model   =  "sonnet"
+developer_instructions = '''
+Run the test suite and report failures with file:line references.
+'''

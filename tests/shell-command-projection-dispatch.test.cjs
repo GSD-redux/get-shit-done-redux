@@ -134,6 +134,12 @@ describe('dispatchGsdCommand', () => {
   });
 
   test('a valid read-only family/subcommand dispatches for real and returns ok:true + non-empty stdout', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const result = dispatchGsdCommand({ family: 'progress', subcommand: 'json', cwd: tmpDir });
     assert.equal(result.ok, true, `expected ok:true, got: ${JSON.stringify(result)}`);
     assert.equal(typeof result.stdout, 'string');

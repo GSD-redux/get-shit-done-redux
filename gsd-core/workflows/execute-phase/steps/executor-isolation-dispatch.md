@@ -7,6 +7,11 @@ resolution and its fail-closed guard.
 
 ## Resolve ISOLATION
 
+The resolution rule is shared with every other dispatch site — see
+@gsd-core/references/dispatch-isolation-gate.md, the canonical statement of the
+`ISOLATION`-not-`RUNTIME` contract (#2652). This fragment keeps the wave-specific
+extras (`worktree.reap-orphans`, the `worktree.base-check` auto-degrade) inline below.
+
 Run this in the config-gate step, right after `RUNTIME`/`USE_WORKTREES` are read.
 
 ```bash
@@ -20,16 +25,33 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 # threads the phase identifier into that same atomic write (mode + harnessFlag
 # + phase together — see hooks/lib/isolation-sentinel.js for how the guards
 # consume it).
-ISOLATION=$(gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" 2>/dev/null || echo "none")
+# Keep the resolver's own failure DISTINGUISHABLE from a genuine `none`, exactly
+# as references/dispatch-isolation-gate.md does — this site declares that gate
+# canonical, so it must not carry the older collapsing shape. Both outcomes fail
+# closed, which is right, but only one of them may claim the host declared no
+# primitive (#2652 review).
+_ISOLATION_RAW=$(gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_ISOLATION_RAW" ]; then
+  ISOLATION=none
+  ISOLATION_RESOLVED=false      # fail closed, but we did NOT learn a verdict
+else
+  ISOLATION="$_ISOLATION_RAW"
+  ISOLATION_RESOLVED=true
+fi
 case "$ISOLATION" in
   harness-worktree|orchestrator-worktree|none) ;;
-  *) ISOLATION=none ;;
+  *) ISOLATION=none; ISOLATION_RESOLVED=false ;;   # out of vocabulary is not a verdict either
 esac
 
 # Project-level opt-out wins on every host; a host with no primitive fails closed.
 [ "$USE_WORKTREES" = "false" ] && ISOLATION=none
 if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then
-  echo "FATAL: runtime '$RUNTIME' declares no executor-isolation primitive (dispatch.isolation=none) — executors would run unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
+  if [ "$ISOLATION_RESOLVED" = "true" ]; then
+    echo "FATAL: runtime '$RUNTIME' declares no executor-isolation primitive (dispatch.isolation=none) — executors would run unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
+  else
+    echo "FATAL: could not resolve this runtime's executor-isolation capability — 'gsd_run query dispatch-isolation' failed or returned nothing, so GSD cannot tell whether isolation is available. Refusing to dispatch rather than guess (a guard that cannot verify must not answer 'safe'). Re-run once the gsd-tools shim resolves, or set workflow.use_worktrees=false to run sequentially on purpose." >&2
+  fi
   exit 1
 fi
 
@@ -154,7 +176,8 @@ CREATE_JSON=$(gsd_run query worktree.create \
   --path "$WT_PATH" \
   --branch "$WT_BRANCH" \
   --base "$EXPECTED_BASE" \
-  --root "$ORCH_ROOT" 2>&1) || {
+  --root "$ORCH_ROOT" \
+  --files "$PLAN_FILES" 2>&1) || {
     echo "FATAL: worktree create failed for plan {plan_number}: $CREATE_JSON" >&2
     exit 1
   }
@@ -180,6 +203,8 @@ if [ "$EXEC_OK" != "true" ]; then
 fi
 ```
 
+`--files` carries the plan's declared `files_modified` (the same `PLAN_FILES` the per-plan worktree gate extracts) so this backend routes through the SAME advisory scope-conformance check the Claude worktree path uses at merge (#2596) — one validation, both backends. It is advisory and never blocks; omitting it just skips the check.
+
 `worktree create` records the entry in `$WAVE_WORKTREE_MANIFEST` itself, so **do not** call `worktree.record-agent` for these plans — that verb is the harness-path counterpart, used because the harness creates the worktree behind GSD's back. Double-recording is deduped by path+branch, but the create verb is the single writer here.
 
 Spawn `EXEC_JSON`'s `command` + `args` as a background process with its working directory set to `EXEC_JSON.cwd`. The `cwd` is returned for **every** host, including those whose descriptor has no cwd flag (`cwdFlag: null`) and therefore bind through the process's own working directory — always set it, never assume the flag did the job. Wait for all spawned executors in the wave before merging.
@@ -188,5 +213,5 @@ The executor never touches `STATE.md`/`ROADMAP.md`, and that guard needs no new 
 
 Merge-back, validation, and cleanup are the **existing** gauntlet, unchanged: the serialized `worktree.cleanup-wave` merge loop that stops the wave and retains the worktree on conflict, and manifest-only cleanup (never glob-inferred). Because the manifest shape is identical, the orchestrator path reuses it verbatim.
 
-> **Declared-scope conformance (#2596):** ADR-1239 specifies that *both* isolation adapters route their merge through a check that each plan branch's committed diff stayed inside its declared `files_modified` scope. That check does not exist yet for either adapter (it is tracked as #2596). When it lands it must be wired into this path **and** the harness path together.
+> **Declared-scope conformance (#2596):** ADR-1239 specifies that *both* isolation adapters route their merge through a check that each plan branch's committed diff stayed inside its declared `files_modified` scope. That check now exists, advisory-first, and is wired into **both** paths: this one passes `--files "$PLAN_FILES"` to `worktree create` above, the harness path passes it to `worktree record-agent`, and `cleanup-wave` runs the one comparison for both. A path outside the declared scope is reported in the result's `warnings` array; it does not block the merge. Promotion to a hard gate is a separate, disclosed change.
 

@@ -1096,4 +1096,11 @@ module.exports = {
   makeFileWeigher,
   packChunks,
   DEFAULT_TIMINGS_PATH,
+  // Exported so callers (tests/ci-test-scope.test.cjs) can assert the
+  // suite-token resolution contract in-process rather than through a timed
+  // subprocess spawn. Pure selection logic only — no behavior change.
+  parseArgs,
+  selectExplicitFiles,
+  selectFiles,
+  walkTestFiles,
 };

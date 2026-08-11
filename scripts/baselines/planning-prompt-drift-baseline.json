@@ -1,0 +1,4 @@
+{
+  "$comment": "ADR-3180 Decision 4(e) ratchet, owned by Phase 8 (#3218). See scripts/lint-planning-prompt-drift.cjs. SHRINK-ONLY: entries are removed as sites migrate to the gsd-core CLI; new or changed entries fail lint:ci. `count` is the number of byte-identical (file, text) occurrences acknowledged at this site — a run producing fewer fails as a partial migration, more fails as an unacknowledged new copy. Emptied by #3218: all 6 recorded sites (7 occurrences) migrated to `gsd_run query find-phase` — see gsd-core/workflows/{execute-plan,plan-phase,plan-review-convergence,progress}.md.",
+  "entries": []
+}

@@ -49,6 +49,13 @@ test('install-shared.cjs exports the canonical buildParityManifest + exclusion c
     'VOLATILE_FILES must be a Set'
   );
   assert.ok(
+    installShared.VOLATILE_FILES.has('gsd-file-manifest.json'),
+    "VOLATILE_FILES must keep 'gsd-file-manifest.json' excluded (#2872 acceptance " +
+    'criterion: the manifest gained manifestVersion/runtime/scope, but its `timestamp` ' +
+    'field is unchanged and still varies per install — if this ever stops being true, ' +
+    'the golden fixtures start hashing a per-install timestamp)'
+  );
+  assert.ok(
     installShared.HOOK_CONFIG_FILES instanceof Set,
     'HOOK_CONFIG_FILES must be a Set'
   );

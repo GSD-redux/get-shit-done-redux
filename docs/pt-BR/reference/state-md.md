@@ -45,6 +45,7 @@ current_phase: "4"
 current_phase_name: Observability
 current_plan: "3"
 last_updated: "2026-06-01T12:34:56.789Z"
+state_head: 4f3c2b1a9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b
 last_activity: "2026-06-01"
 stopped_at: "Phase 4 P3 execution complete"
 paused_at: null
@@ -71,6 +72,7 @@ paused_at: null
 | `current_phase_name` | string | Quando uma fase tem nome | Nome da fase extraído do campo `Current Phase Name:` do corpo. |
 | `current_plan` | string | Quando um plano está em andamento | Número do plano extraído do campo `Current Plan:` do corpo. |
 | `last_updated` | timestamp ISO-8601 | Sempre (na escrita) | Timestamp da última chamada a `syncStateFrontmatter`; escrito por `realClock.nowIso()`. |
+| `state_head` | string (40-char sha) | On write, when the project's own git repo resolves | Full commit sha STATE.md was written against (#2573). Omitted entirely outside a git repo, or when the resolved repo is not the project's own — an unverifiable stamp degrades to absent rather than asserting provenance the file does not have. Recomputed on every write and never carried forward. |
 | `last_activity` | string | Quando definido no corpo | Data da última atividade, extraída do campo `Last Activity:` do corpo. |
 | `stopped_at` | string | Quando um ponto de parada foi registrado | Descrição da última ação concluída; limitada à seção `## Session` do corpo para evitar correspondência com prosa de arquivo. |
 | `paused_at` | string | Quando o projeto está pausado | Descrição de forma livre do ponto de pausa; ausente ou `null` quando não pausado. |

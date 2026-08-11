@@ -1821,6 +1821,196 @@ describe('phase add with project_code', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// find-phase scalar counts (#3218, phase 8 of epic #3180 — ADR-3180 §7.5)
+//
+// Additive to `plans[]`/`summaries[]` (matrix A9): `plan_count`/`summary_count`
+// mirror `roadmap.analyze`'s naming for the LIVE set (status:superseded
+// excluded); `plan_count_all` is the PHYSICAL set — every canonically-named
+// plan file on disk, status:superseded included — named to echo
+// `scanPhasePlans`'s own `allPlanFiles` field so a reader can trace it back to
+// its source. See 40-design.md's "Per-site set" table and Amendment 1.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('find-phase scalar counts (#3218)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writePlan(phaseDir, n, { superseded = false } = {}) {
+    const body = superseded
+      ? ['---', 'status: superseded', '---', '', '# Plan (retired)', ''].join('\n')
+      : ['# Plan', ''].join('\n');
+    fs.writeFileSync(path.join(phaseDir, `03-${n}-PLAN.md`), body);
+  }
+
+  function writeSummary(phaseDir, n) {
+    fs.writeFileSync(path.join(phaseDir, `03-${n}-SUMMARY.md`), '# Summary\n');
+  }
+
+  test('A1: happy path — 3 plans, 2 summaries, none superseded: live 3 / 2, physical 3', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01');
+    writePlan(phaseDir, '02');
+    writePlan(phaseDir, '03');
+    writeSummary(phaseDir, '01');
+    writeSummary(phaseDir, '02');
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.plan_count, 3);
+    assert.strictEqual(output.summary_count, 2);
+    assert.strictEqual(output.plan_count_all, 3);
+  });
+
+  test('A2 (#2349 case): all 3 plans status:superseded — live 0, physical 3', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01', { superseded: true });
+    writePlan(phaseDir, '02', { superseded: true });
+    writePlan(phaseDir, '03', { superseded: true });
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    // 0 live plans is a REAL answer here (every plan superseded), not "the
+    // planner produced nothing" — that read is exactly what plan_count_all
+    // exists to prevent at the sites that ask the disk-existence question.
+    assert.strictEqual(output.plan_count, 0);
+    assert.strictEqual(output.summary_count, 0);
+    assert.strictEqual(output.plan_count_all, 3);
+  });
+
+  test('A3: 1 of 3 superseded — live 2, physical 3', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01');
+    writePlan(phaseDir, '02');
+    writePlan(phaseDir, '03', { superseded: true });
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.plan_count, 2);
+    assert.strictEqual(output.plan_count_all, 3);
+  });
+
+  test('A6: zero plans — live 0, physical 0 (boundary)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.plan_count, 0);
+    assert.strictEqual(output.summary_count, 0);
+    assert.strictEqual(output.plan_count_all, 0);
+  });
+
+  test('A7: phase directory absent — defined verdict, no crash, counts are null (not a fabricated 0)', () => {
+    const result = runGsdTools('find-phase 99', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.found, false);
+    // null, not 0 — a fabricated 0 here would read identically to "phase
+    // exists with zero plans" (A2/A6), which is a real, distinct answer.
+    assert.strictEqual(output.plan_count, null);
+    assert.strictEqual(output.summary_count, null);
+    assert.strictEqual(output.plan_count_all, null);
+  });
+
+  // A8 (phase dir unreadable): NOT separately testable — cmdFindPhase's own
+  // fs.readdirSync(phaseDir) throw is caught by the SAME per-searchDir
+  // try/catch that produces the A7 not-found result (src/phase.cts, the loop
+  // around scanPhasePlans), so an unreadable phase dir and a missing one are
+  // indistinguishable at this seam and both land on the same `notFound`
+  // object this A7 test already covers (counts null, not a fabricated 0 —
+  // "surfaced, not silently 0"). Root-safe fs-failure injection would need
+  // `mock.method` on `fs.readdirSync`, but that only affects the test's own
+  // process, and `cmdFindPhase`'s output goes through `writeAllSync(1, ...)` —
+  // this file's own `capturePhaseComplete` helper (above) documents why
+  // intercepting fd 1 in-process is unsafe on the remote matrix, so this
+  // command is only exercised via the real `runGsdTools` subprocess, which
+  // cannot see an in-process fs mock. Same unreachable-path shape already
+  // recorded for the #2648 plan-coverage gate's B1 case (see the NOTE above
+  // `describe('phase complete plan-coverage gate (#2648)')`).
+
+  test('A9 (regression): plans[]/summaries[] arrays are unchanged by the new scalars', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01');
+    writeSummary(phaseDir, '01');
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(output.plans, ['03-01-PLAN.md']);
+    assert.deepStrictEqual(output.summaries, ['03-01-SUMMARY.md']);
+  });
+
+  test('A10: live and physical counts are separately addressable — distinct keys, both present', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01', { superseded: true });
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.ok('plan_count' in output && 'plan_count_all' in output, 'both keys must be present');
+    assert.notStrictEqual(output.plan_count, output.plan_count_all, 'must actually differ in this fixture');
+    assert.strictEqual(output.plan_count, 0);
+    assert.strictEqual(output.plan_count_all, 1);
+  });
+
+  // ── B: parity with the other owners of the same question ──────────────────
+
+  test('B1/B2: find-phase counts equal scanPhasePlans().planFiles/allPlanFiles length for the same phase', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01');
+    writePlan(phaseDir, '02', { superseded: true });
+
+    const result = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const planScanMod = require('../gsd-core/bin/lib/plan-scan.cjs');
+    const scan = planScanMod.scanPhasePlans(phaseDir);
+    assert.strictEqual(output.plan_count, scan.planFiles.length, 'B1: plan_count == planFiles.length');
+    assert.strictEqual(output.plan_count_all, scan.allPlanFiles.length, 'B2: plan_count_all == allPlanFiles.length');
+  });
+
+  test('B3: find-phase plan_count agrees with roadmap.analyze plan_count for the same phase', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '- [ ] Phase 3: API', '', '### Phase 3: API', '**Goal:** Build API', '', '---', ''].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePlan(phaseDir, '01');
+    writePlan(phaseDir, '02');
+
+    const findResult = runGsdTools('find-phase 03', tmpDir);
+    assert.ok(findResult.success, `find-phase failed: ${findResult.error}`);
+    const findOutput = JSON.parse(findResult.output);
+
+    const roadmapResult = runGsdTools('roadmap analyze', tmpDir);
+    assert.ok(roadmapResult.success, `roadmap.analyze failed: ${roadmapResult.error}`);
+    const roadmapOutput = JSON.parse(roadmapResult.output);
+    const phase3 = roadmapOutput.phases.find((p) => String(p.number) === '3' || p.number === 3);
+    assert.ok(phase3, 'roadmap.analyze must report phase 3');
+    assert.strictEqual(findOutput.plan_count, phase3.plan_count, 'find-phase and roadmap.analyze must agree');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase add-batch command (#2165)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5905,6 +6095,15 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       fs.writeFileSync(path.join(phase4Dir, `04-${padded}-PLAN.md`), `plan ${i}`, 'utf8');
       fs.writeFileSync(path.join(phase4Dir, `04-${padded}-SUMMARY.md`), `summary ${i}`, 'utf8');
     }
+    // Disk-strict completion (ADR-3180 §7.4, #3186): Phase 4 is already
+    // shipped per the ROADMAP checklist/table above — a passing
+    // *-VERIFICATION.md is what actually makes it count as complete now
+    // (runSdkQuery's writePassedVerificationForPhase only covers the phase
+    // under test, phase 5, not this already-complete phase 4 fixture).
+    fs.writeFileSync(
+      path.join(phase4Dir, '04-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
 
     const phase6Dir = path.join(phasesDir, '06-integration');
     fs.mkdirSync(phase6Dir, { recursive: true });

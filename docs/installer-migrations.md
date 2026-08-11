@@ -88,8 +88,47 @@ record.
 
 ### File Manifest
 
-The existing manifest remains the ownership baseline. It records the installed
-GSD version, install mode, and hashes for distribution-owned files.
+`gsd-file-manifest.json` remains the ownership baseline. It records the
+installed GSD version, install mode, the runtime and scope that wrote it, and
+hashes for distribution-owned files.
+
+```json
+{
+  "manifestVersion": 2,
+  "version": "1.9.2",
+  "timestamp": "2026-08-10T00:00:00.000Z",
+  "mode": "full",
+  "runtime": "claude",
+  "scope": "local",
+  "files": {
+    "gsd-core/VERSION": "sha256-hex…",
+    "commands/gsd-plan-phase.md": "sha256-hex…"
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `manifestVersion` | Schema version of **this document**. Absent ⇒ version 1, a manifest written before #2872. |
+| `version` | The GSD **package** version that wrote the manifest — *not* the schema version. The two are separate fields on purpose. |
+| `timestamp` | ISO-8601 write time. |
+| `mode` | `full` or `minimal`. |
+| `runtime` | The runtime this install targeted (`claude`, `codex`, …). Added in schema 2. |
+| `scope` | `global` or `local`. Added in schema 2. |
+| `files` | Relative path → SHA-256, for distribution-owned files only. |
+
+`runtime` and `scope` (#2872, [ADR-2866](adr/2866-install-surface-resolution.md))
+exist so a reader can answer *"which surfaces are installed, at which scopes,
+for which runtimes"* without inferring it from the directory the file happened
+to be found in. Before schema 2, a global and a local install wrote two
+manifests to two directories that were never merged and never cross-read.
+
+**A schema-1 manifest is read without error and never requires a reinstall.**
+`readInstallManifest` reports `manifestVersion: 1` with `runtime: null` and
+`scope: null`, and every consumer treats the absence of those fields as
+"not declared", never as "not installed". A `manifestVersion` written by a
+*newer* GSD is reported verbatim rather than rejected — two GSD versions on one
+machine is a supported state — so consumers branch on `>= 2`, never `=== 2`.
 
 The invariant is strict:
 
@@ -99,27 +138,33 @@ The invariant is strict:
 
 ### Install State
 
-The installer writes an install-state file next to the manifest.
-
-Required fields:
+The installer writes `gsd-install-state.json` next to the manifest. It carries
+migration bookkeeping only — the runtime, scope, version and mode of the
+install live in the file manifest above, not here.
 
 ```json
 {
-  "schema": 1,
-  "runtime": "codex",
-  "scope": "global",
-  "installed_version": "1.50.0",
-  "install_mode": "full",
-  "applied_migrations": [
+  "schemaVersion": 1,
+  "appliedMigrations": [
     {
       "id": "2026-05-11-codex-hooks-layout",
-      "package_version": "1.50.0",
+      "packageVersion": "1.50.0",
       "checksum": "sha256:...",
-      "applied_at": "2026-05-11T00:00:00.000Z"
+      "appliedAt": "2026-05-11T00:00:00.000Z"
     }
   ]
 }
 ```
+
+> **Corrected 2026-08-10 (#2872).** This section previously documented five
+> fields — `schema`, `runtime`, `scope`, `installed_version`, `install_mode` —
+> in snake_case. None of them were ever written: `InstallState`
+> (`src/installer-migrations.cts`) has only ever been
+> `{ schemaVersion, appliedMigrations }`, in camelCase. The stale schema was
+> load-bearing in the wrong direction — a reader trusting it would have
+> concluded that install scope and runtime were already recorded on disk, which
+> is the exact premise [ADR-2866](adr/2866-install-surface-resolution.md) was
+> written to fix.
 
 The checksum is calculated from the migration definition.
 

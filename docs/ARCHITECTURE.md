@@ -779,7 +779,7 @@ The installer (`bin/install.js`, ~10,700 lines) handles:
 5. **Path normalization** — Replaces `~/.claude/` paths with runtime-specific paths
 6. **Settings integration** — Registers hooks in runtime's `settings.json`
 7. **Patch backup** — Since v1.17, backs up locally modified files to `gsd-local-patches/` for `/gsd-update --reapply`
-8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall
+8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall. The manifest also records which `runtime` and which `scope` (`global`/`local`) wrote it, under a `manifestVersion` schema field, so a reader can answer "which surfaces are installed, at which scopes" without inferring it from the directory the file sits in ([ADR 2866](adr/2866-install-surface-resolution.md), #2872). Manifests written before that carry no such fields and are read without error — no reinstall is required. See [Installer Migrations → File Manifest](installer-migrations.md#file-manifest)
 9. **Uninstall mode** — `--uninstall` removes all GSD files, hooks, and settings
 
 Install-time file moves, stale-artifact cleanup, config rewrites, and user-data
@@ -791,6 +791,8 @@ installs, classifying known runtime install surfaces before later migrations
 remove or rewrite anything.
 
 The plan drift guard (`plan_review.source_grounding`) — which verifies symbol references in generated plans against live source before execution — is specified in [ADR 22](adr/22-plan-drift-guard.md).
+
+The same switch gates a second, cross-artifact axis: a fact-drift pass that compares the *same* fact as stated in `ROADMAP.md`, `PLAN.md`, `STATE.md` and `CONTEXT.md` and reports contradictions (a phase status, a success criterion, a requirement ID, a glossary term) with both locations and the authoritative side named. Where the source-grounding axis grounds a plan against code, this one grounds the planning artifacts against each other. It keys on contradicting knowledge rather than similar-looking text, and is advisory only — it never sets `hardBlock` and never contributes to the convergence counts.
 
 ### Platform Handling
 

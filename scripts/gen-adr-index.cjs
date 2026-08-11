@@ -23,6 +23,7 @@
  *   node scripts/gen-adr-index.cjs              # print the index to stdout
  *   node scripts/gen-adr-index.cjs --write      # rewrite the index in README.md
  *   node scripts/gen-adr-index.cjs --check      # exit 1 if stale or invalid
+ *   node scripts/gen-adr-index.cjs --json       # --check semantics; JSON report on stdout
  */
 
 const fs = require('node:fs');
@@ -53,6 +54,61 @@ const END_MARKER = '<!-- ADR-INDEX:END -->';
  * conflate the two: grep the naming rule in README.md, not this enum.
  */
 const STATUSES = ['Accepted', 'Proposed', 'Superseded', 'Legacy', 'Retired'];
+
+/**
+ * Stable reason codes for every lifecycle violation this gate can emit.
+ * Tests assert via `assert.equal(record.reason, REASON.X)` (or `.some(...)`
+ * over the `--json` `violations` array) rather than regex-matching stderr
+ * prose — see CONTRIBUTING.md "Prohibited: Raw Text Matching on Test
+ * Outputs" and the worked example in `bin/verify-reapply-patches.cjs`.
+ *
+ * Adding a reason is a deliberate three-part change: a new entry here, the
+ * emitting `add(...)` call site, and the corpus test that locks
+ * `Object.keys(REASON).sort()` — so a new violation class cannot ship
+ * without its own typed identity.
+ */
+const REASON = Object.freeze({
+  FILENAME_INVALID: 'filename_invalid',
+  STATUS_MISSING: 'status_missing',
+  STATUS_INVALID: 'status_invalid',
+  STATUS_BRACKET_MISMATCH: 'status_bracket_mismatch',
+  ID_MISMATCH: 'id_mismatch',
+  SUPERSEDED_NO_SUCCESSOR: 'superseded_no_successor',
+  SUPERSEDED_BARE_ID: 'superseded_bare_id',
+  RELATION_LINK_MISSING: 'relation_link_missing',
+  RELATION_BARE_ID_MISSING: 'relation_bare_id_missing',
+  RELATION_BARE_ID_UNLINKED: 'relation_bare_id_unlinked',
+  RELATION_ASYMMETRIC: 'relation_asymmetric',
+  LINK_UNRESOLVED: 'link_unresolved',
+  LINK_ESCAPES_REPO: 'link_escapes_repo',
+  LINK_ESCAPES_REPO_SYMLINK: 'link_escapes_repo_symlink',
+  DIRENT_UNREADABLE: 'dirent_unreadable',
+  DIRENT_ESCAPES_REPO_SYMLINK: 'dirent_escapes_repo_symlink',
+});
+
+/**
+ * The H1 trailing-bracket vocabulary, derived from `STATUSES` — not a second
+ * hand-written literal. Before this PR, `parseAdr`'s title strip carried its
+ * own copy of these five tokens, and nothing asserted the two lists agreed:
+ * a textbook `DEFECT.GENERATIVE-FIX` instance (a generated surface and its
+ * hand-authored source drifting apart with no parity check). A 6th status
+ * added to `STATUSES` now covers the bracket for free, and the corpus's
+ * parity test iterates the real exported array rather than a copy.
+ */
+/**
+ * Escape a string for literal inclusion inside a dynamic RegExp alternation.
+ * Defence-in-depth, not a live-bug fix: `STATUSES` is a static array literal
+ * today, so nothing in it can currently carry a regex metacharacter. But
+ * nothing enforces that it STAYS static — if a future change ever derives it
+ * from external input (a config file, a corpus scan), an unescaped `join('|')`
+ * would let a status token break out of the alternation it is meant to be one
+ * branch of.
+ */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const STATUS_BRACKET_RE = new RegExp(String.raw`\s*\[(${STATUSES.map(escapeRegExp).join('|')})\]\s*$`, 'i');
 
 /**
  * Header fields that assert a lifecycle relation.
@@ -113,12 +169,114 @@ function canonicalId(raw) {
 /** The documented filename shape: `<issue#>-<kebab-slug>.md`. */
 const ADR_FILENAME_RE = /^[0-9]+-[a-z0-9-]+\.md$/;
 
-function adrFiles() {
-  return fs
-    .readdirSync(ADR_DIR)
-    .filter((f) => f.endsWith('.md') && f !== 'README.md')
-    .filter((f) => fs.statSync(path.join(ADR_DIR, f)).isFile())
+/**
+ * Whole-segment containment test: true if `abs` is NOT inside `root`.
+ *
+ * The SINGLE copy of this predicate. Before this PR it was hand-written
+ * inline in two places (the lexical pre-stat check in `validateLinks` and the
+ * post-realpath escape check in `existsCaseExact`) with no shared name; a
+ * third copy for `markdownFilesInAdrDir`'s own symlink check would have made
+ * three. All three call sites now share this one function.
+ *
+ * `rel.startsWith('..')` alone would also match an in-repo path whose first
+ * segment merely BEGINS with two dots (`..hidden.md`), and a false "escapes
+ * the repository" on a valid path is a worse failure than a miss — hence the
+ * whole-segment `rel === '..' || rel.startsWith('..' + sep)` form.
+ */
+function escapesRoot(abs, root) {
+  const rel = path.relative(root, abs);
+  return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+}
+
+/**
+ * `fs.realpathSync(ROOT)`, tolerant of an unreadable/vanished ROOT (degrades
+ * to the lexical ROOT itself rather than throwing — callers still get a
+ * usable comparison root, just without symlink-normalization on hosts where
+ * ROOT itself sits under a symlinked ancestor, e.g. macOS's /var -> /private/var).
+ */
+function realRootOrFallback() {
+  try {
+    return fs.realpathSync(ROOT);
+  } catch {
+    return ROOT;
+  }
+}
+
+/**
+ * Whether `joined` (a `*.md` dirent directly under docs/adr/) should be
+ * treated as an ADR file: a regular file, or a symlink that resolves to a
+ * regular file WITHOUT leaving the repository. Applies the same rule to which
+ * FILES are read as `validateLinks` already applies to which link TARGETS
+ * resolve — a symlink escaping the repo is never followed and its content is
+ * never touched (no `statSync`/`readFileSync` past the `lstatSync`/
+ * `realpathSync` calls below), because `parseAdr` and `validateLinks` both
+ * read the FULL body of every accepted file and echo fragments into stderr.
+ */
+function isAcceptedAdrEntry(joined, realRoot) {
+  let lst;
+  try {
+    lst = fs.lstatSync(joined);
+  } catch {
+    return false; // vanished / unreadable
+  }
+  if (lst.isFile()) return true;
+  if (!lst.isSymbolicLink()) return false;
+
+  let real;
+  try {
+    real = fs.realpathSync(joined);
+  } catch {
+    return false; // broken symlink
+  }
+  if (escapesRoot(real, realRoot)) return false; // escapes the repository
+
+  try {
+    return fs.statSync(real).isFile();
+  } catch {
+    return false; // vanished between realpath and stat (TOCTOU)
+  }
+}
+
+/**
+ * Every markdown file directly under docs/adr/, README.md included.
+ *
+ * Single source of the traversal rule: `adrFiles()` is this minus README.md
+ * (which is the index, not an ADR), and the link-resolution pass is this
+ * unfiltered (the generated index can point nowhere too). Two hand-copied
+ * readdir filters would drift the moment either grew a rule — the exact
+ * DEFECT.GENERATIVE-FIX shape this gate now enforces against the corpus.
+ */
+function markdownFilesInAdrDir() {
+  let entries;
+  try {
+    entries = fs.readdirSync(ADR_DIR);
+  } catch {
+    // An unreadable docs/adr/ itself degrades to "no files" here — the caller
+    // (validate/validateLinks) surfaces the real problem elsewhere; this
+    // traversal helper must never throw a raw fs error up into `runMain`,
+    // which would print `err.stack` (absolute host paths) to public CI logs.
+    entries = [];
+  }
+  const realRoot = realRootOrFallback();
+  return entries
+    .filter((f) => f.endsWith('.md'))
+    .filter((f) => {
+      try {
+        return isAcceptedAdrEntry(path.join(ADR_DIR, f), realRoot);
+      } catch {
+        // A `*.md` dirent that cannot be classified — most commonly a broken
+        // symlink — is excluded here rather than crashing the caller. It is
+        // not silently dropped from the gate: `validateLinks` diffs this
+        // filtered list against the raw `readdirSync` listing and reports
+        // the exclusion as its own violation, naming the file.
+        return false;
+      }
+    })
     .sort();
+}
+
+function adrFiles() {
+  return markdownFilesInAdrDir().filter((f) => f !== 'README.md');
 }
 
 /**
@@ -192,6 +350,409 @@ function bareAdrRefs(text) {
   return out;
 }
 
+/**
+ * Mask code (fenced blocks and inline spans) so link resolution never reads a
+ * `[…](…)` sequence that markdown does not render as a link. The corpus has
+ * two real examples of this: `mod[entry.router]({ args, cwd, raw, error })`
+ * inside a ``` fence, and `` `require(module)[router]()` `` inline — both
+ * ordinary JavaScript, neither a link.
+ *
+ * The output is the SAME LENGTH as the input, with every masked character
+ * replaced by a single space and every newline left untouched — so a finding
+ * computed against the masked text still names the correct 1-indexed line
+ * (Kernighan's Law: keep the debug surface honest rather than deleting text).
+ */
+function maskCode(text) {
+  // Capturing split keeps the line terminators as their own array elements
+  // (even indices are line content, odd indices are the terminator that
+  // followed), so the rebuild below never has to guess LF vs CRLF.
+  const parts = String(text).split(/(\r?\n)/);
+
+  // null outside a fence; otherwise the marker char ('`' or '~') and the
+  // length of the run that opened it — both are load-bearing for closing:
+  // only the SAME char with a run length >= the opener's closes the fence.
+  let fence = null;
+
+  for (let i = 0; i < parts.length; i += 2) {
+    const line = parts[i];
+
+    if (fence) {
+      // Whichever way this line resolves, it is code: the closing fence line
+      // is still a fence delimiter, not prose.
+      const closeRe = fence.char === '`' ? /^ {0,3}(`{3,})\s*$/ : /^ {0,3}(~{3,})\s*$/;
+      const close = line.match(closeRe);
+      parts[i] = ' '.repeat(line.length);
+      if (close && close[1].length >= fence.len) fence = null;
+      continue;
+    }
+
+    const open = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (open) {
+      fence = { char: open[1][0], len: open[1].length };
+      parts[i] = ' '.repeat(line.length);
+      continue;
+    }
+
+    parts[i] = maskInlineCodeSpans(line);
+  }
+
+  return parts.join('');
+}
+
+/**
+ * Mask backtick-delimited inline code spans within a single line (fences are
+ * handled by the caller, per-line, before this runs — a span never crosses a
+ * newline). CommonMark's rule: a run of N backticks opens a span, closed by
+ * the NEXT run of exactly N backticks; a run of any other length in between
+ * is part of the span's content, not a delimiter. An opening run with no
+ * matching close is literal text, not a span.
+ *
+ * LINEAR, not the naive per-opener rescan this replaced: the old
+ * implementation, for every backtick run, rescanned the entire remainder of
+ * the line looking for a same-length closer. A line of strictly-ascending-
+ * length backtick runs (nothing ever closes) forced a near-full rescan per
+ * run — measured ~O(n^1.6) and unbounded (34ms/50KB -> 220ms/200KB ->
+ * 1.76s/800KB on adversarial input). This version scans the line ONCE to
+ * collect every backtick run as `{start, end, len}`, then walks that run
+ * list left to right with a per-length cursor (`byLen`/`cursor` below) that
+ * only ever advances forward — so finding "the next run of equal length" is
+ * amortized O(1) per step and the whole pass is O(line length).
+ *
+ * Behavior is identical to the rescan version for every input: once an
+ * opener at run `r` is paired with the next same-length run `r'`, every run
+ * strictly between them is consumed as span content and is never
+ * reconsidered as its own delimiter — exactly what the old code did by
+ * jumping `i` straight to the close and never revisiting the interior.
+ */
+function maskInlineCodeSpans(line) {
+  const runs = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (i < line.length && line[i] === '`') i += 1;
+    runs.push({ start, end: i, len: i - start });
+  }
+  if (runs.length === 0) return line;
+
+  // Every run's index, grouped by length, in left-to-right order (already
+  // sorted — `runs` was built in scan order).
+  const byLen = new Map();
+  for (let idx = 0; idx < runs.length; idx += 1) {
+    const len = runs[idx].len;
+    if (!byLen.has(len)) byLen.set(len, []);
+    byLen.get(len).push(idx);
+  }
+  const cursor = new Map(); // len -> next unexamined index into byLen.get(len)
+
+  const spans = []; // [start, end) ranges to mask, in order, non-overlapping
+  let r = 0;
+  while (r < runs.length) {
+    const len = runs[r].len;
+    const candidates = byLen.get(len);
+    let c = cursor.get(len) || 0;
+    // Skip past any candidate at or before `r`: `r` itself, or an index
+    // already consumed as interior content of an earlier matched span (a run
+    // inside a completed span is never revisited — same as the rescan
+    // version never re-examining a delimiter it has already masked over).
+    while (c < candidates.length && candidates[c] <= r) c += 1;
+    if (c < candidates.length) {
+      const closeIdx = candidates[c];
+      spans.push([runs[r].start, runs[closeIdx].end]);
+      cursor.set(len, c + 1);
+      r = closeIdx + 1;
+    } else {
+      cursor.set(len, c);
+      r += 1; // no closer of equal length anywhere ahead — literal text
+    }
+  }
+
+  let out = '';
+  let pos = 0;
+  for (const [s, e] of spans) {
+    out += line.slice(pos, s) + ' '.repeat(e - s);
+    pos = e;
+  }
+  out += line.slice(pos);
+  return out;
+}
+
+/**
+ * Every inline `[text](dest)` / `![alt](dest)` link or image in `text`, with
+ * code masked out first so a code-shaped bracket/paren sequence is never
+ * misread as a link (see `maskCode`).
+ *
+ * `[^\][\n]*` for the link-text class deliberately excludes BOTH bracket
+ * characters, not just `]` — so `[see [1]](x.md)` does not match (nested
+ * brackets are out of the inline-links-only scope this gate supports) and a
+ * regex character class in prose like `[A-Z][A-Z0-9_]` cannot be misread as
+ * one either. Reference-style links (`[text][ref]`) are correspondingly not
+ * supported: the corpus has zero reference definitions to resolve against.
+ *
+ * Returns `{ line, target }` per match — `line` is 1-indexed, `target` is the
+ * RAW parenthesized capture, untrimmed and unresolved; callers normalize.
+ */
+function extractLinks(text) {
+  const masked = maskCode(String(text));
+  const lines = masked.split(/\r?\n/);
+  const out = [];
+  const re = /!?\[[^\][\n]*\]\(([^()\n]*)\)/g;
+  for (let i = 0; i < lines.length; i += 1) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(lines[i])) !== null) {
+      out.push({ line: i + 1, target: m[1] });
+    }
+  }
+  return out;
+}
+
+/**
+ * Case-exact existence of `abs` (which MUST already be verified inside ROOT
+ * by the caller — LEXICALLY, via `path.relative`). Walks each path segment
+ * against a cached, real `readdirSync` listing of its parent rather than
+ * calling `fs.existsSync(abs)` directly: existsSync resolves through the OS's
+ * case-folding rules, which pass on macOS/Windows for a link that 404s on
+ * github.com and reds the Linux CI lane — every platform must agree, so
+ * resolution never trusts the filesystem's own case sensitivity (or lack
+ * of it).
+ *
+ * SYMLINK ESCAPE (the reason this function is more than a readdir loop): the
+ * caller's containment check is purely lexical string math on `abs` — it
+ * proves nothing about what is actually ON DISK at each segment. But
+ * `readdirSync` FOLLOWS symlinks at the OS level while walking further down a
+ * path. A contributor can commit `docs/adr/x -> /etc` (a symlink; Linux CI
+ * lanes, including fork PRs, preserve symlinks) plus an ADR linking
+ * `[t](x/passwd)`: the caller's lexical check sees `docs/adr/x/passwd`, which
+ * LOOKS repo-internal, and this walk would then list the real external
+ * directory — and the "Did you mean X?" hint below is built from exactly that
+ * listing, so a wrong-case probe (`[t](x/PASSWD)`) would echo a real filename
+ * from OUTSIDE the repo into PUBLIC CI LOGS on a fork PR. So every segment is
+ * lstat'd, and a symlink is realpath'd and re-checked against the REAL root,
+ * BEFORE this walk ever descends into or reads what it points at.
+ *
+ * `dirCache` is a Map<directory, Set<entryName>|null> (null = unreadable),
+ * built and owned by the caller so repeated links into the same directory
+ * cost one `readdirSync` total, not one per link.
+ *
+ * `realRoot` is `fs.realpathSync(ROOT)`, computed ONCE by the caller (never
+ * per-segment/per-link here) and passed in — ROOT itself may sit under a
+ * symlinked path (macOS's `/var` -> `/private/var`), so comparing a
+ * realpath'd descendant against a non-realpath'd ROOT would misclassify every
+ * legitimate path on such a host as an escape.
+ *
+ * Returns `{ exists, hint, escaped }`. `escaped: true` means a symlink
+ * resolved outside `realRoot`; in that case `exists` is `false` and `hint` is
+ * ALWAYS `null` — the caller must report a distinct "escapes" message and
+ * never fall back to the generic "does not resolve" wording or a hint, both
+ * of which would leak into the escape's own disclosure hazard.
+ */
+function existsCaseExact(abs, dirCache, realRoot) {
+  const rel = path.relative(ROOT, abs);
+  if (rel === '') return { exists: true, hint: null, escaped: false }; // ROOT itself
+
+  const segments = rel.split(path.sep);
+  let dir = ROOT;
+  for (const seg of segments) {
+    let entries = dirCache.get(dir);
+    if (entries === undefined) {
+      try {
+        entries = new Set(fs.readdirSync(dir));
+      } catch {
+        entries = null;
+      }
+      dirCache.set(dir, entries);
+    }
+    if (!entries || !entries.has(seg)) {
+      const hint = entries ? [...entries].find((e) => e.toLowerCase() === seg.toLowerCase()) : null;
+      return { exists: false, hint: hint || null, escaped: false };
+    }
+
+    const joined = path.join(dir, seg);
+
+    // `entries.has(seg)` above proved a directory ENTRY named `seg` exists —
+    // it says nothing about what that entry IS. Check before descending.
+    let lst;
+    try {
+      lst = fs.lstatSync(joined);
+    } catch {
+      // Vanished between readdir and lstat (TOCTOU race) — degrade to "does
+      // not resolve", never throw.
+      return { exists: false, hint: null, escaped: false };
+    }
+
+    if (lst.isSymbolicLink()) {
+      let real;
+      try {
+        real = fs.realpathSync(joined);
+      } catch {
+        // Broken symlink — degrade to "does not resolve", never throw.
+        return { exists: false, hint: null, escaped: false };
+      }
+      if (escapesRoot(real, realRoot)) {
+        // No further readdirSync down this path, and no hint: both would
+        // disclose facts about a directory outside the repo.
+        return { exists: false, hint: null, escaped: true };
+      }
+      dir = real; // resolves inside the repo — continue the walk from there.
+      continue;
+    }
+
+    dir = joined;
+  }
+  return { exists: true, hint: null, escaped: false };
+}
+
+/**
+ * The link-resolution pass: every inline link/image target in every `*.md`
+ * file directly under `docs/adr/` — INCLUDING README.md (the generated index
+ * can point nowhere too) and files that fail the naming convention (their
+ * naming violation is reported separately by `partitionAdrFiles`, but a
+ * reader still follows their links). Non-recursive, matching `adrFiles()`.
+ *
+ * Errors are reported through the same `add(file, msg)` channel `validate`
+ * uses elsewhere, keeping the `${file}: ${msg}` prefix uniform — but the
+ * "file" half of that prefix is `${file}:${line}` here, so the emitted line
+ * reads `<file>:<line>: <prose>` (a literal colon immediately before the line
+ * number, compiler-diagnostic style) rather than `<file>: <line>: <prose>`.
+ */
+function validateLinks(add) {
+  const files = markdownFilesInAdrDir();
+
+  // Computed ONCE per pass, never per-link/per-dirent: see existsCaseExact's
+  // doc comment for why comparing against the REAL root (not the lexical
+  // ROOT constant) is required to avoid false escapes when the repo checkout
+  // itself sits under a symlinked ancestor (e.g. macOS's /var -> /private/var).
+  const realRoot = realRootOrFallback();
+
+  // Report any `*.md` dirent that `markdownFilesInAdrDir` silently excluded —
+  // because it could not be stat'd (e.g. a broken symlink) OR because it IS a
+  // symlink that resolves outside the repository — so it surfaces as a gate
+  // finding instead of quietly vanishing from the index. Reading the
+  // directory again here (rather than threading a second return value
+  // through `markdownFilesInAdrDir`) keeps that function's contract
+  // (`string[]`) simple for its other callers. Wrapped in try/catch for the
+  // same reason as inside `markdownFilesInAdrDir`: an unreadable ADR_DIR
+  // degrades to "nothing more to report" here, never a crash.
+  let dirents;
+  try {
+    dirents = fs.readdirSync(ADR_DIR);
+  } catch {
+    dirents = [];
+  }
+  const included = new Set(files);
+  const BROKEN_MSG = 'could not be read (broken symlink?) and was excluded from the index. Remove it or fix its target.';
+  for (const f of dirents) {
+    if (!f.endsWith('.md') || included.has(f)) continue;
+    const joined = path.join(ADR_DIR, f);
+    let lst;
+    try {
+      lst = fs.lstatSync(joined);
+    } catch {
+      add(f, BROKEN_MSG, { reason: REASON.DIRENT_UNREADABLE, line: null });
+      continue;
+    }
+    if (!lst.isSymbolicLink()) {
+      // Not a symlink and still excluded — some other legitimate reason
+      // (e.g. it's a directory literally named `*.md`), not unreadable.
+      continue;
+    }
+    let real;
+    try {
+      real = fs.realpathSync(joined);
+    } catch {
+      add(f, BROKEN_MSG, { reason: REASON.DIRENT_UNREADABLE, line: null });
+      continue;
+    }
+    if (escapesRoot(real, realRoot)) {
+      // Distinct message from the broken-symlink one above, and — same
+      // discipline as the link-target escape below — no path or hint from
+      // outside the repo is ever included: only the in-repo dirent name.
+      add(
+        f,
+        'is a symlink that escapes the repository and was excluded from the index. Point it at a file inside docs/adr/, or remove it.',
+        { reason: REASON.DIRENT_ESCAPES_REPO_SYMLINK, line: null },
+      );
+      continue;
+    }
+    // Resolves inside the repo but is not a regular file (e.g. a symlink to
+    // a directory) — a legitimate exclusion, not a disclosure hazard.
+  }
+
+  const dirCache = new Map();
+
+  for (const file of files) {
+    const text = fs.readFileSync(path.join(ADR_DIR, file), 'utf8');
+
+    for (const { line, target: rawTarget } of extractLinks(text)) {
+      let t = String(rawTarget).trim();
+
+      if (t.startsWith('<') && t.endsWith('>')) {
+        t = t.slice(1, -1).trim();
+      } else {
+        // A link title: `dest "Title"` / `dest 'Title'`. Drop it, keep dest.
+        const titled = t.match(/^(\S+)\s+(?:"[^"]*"|'[^']*')$/);
+        if (titled) t = titled[1];
+      }
+
+      if (t === '' || t.startsWith('#') || t.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(t)) {
+        continue; // empty, same-document anchor, protocol-relative, or any URI scheme — out of scope
+      }
+
+      t = t.split('#')[0];
+      if (t === '') continue; // was only a fragment
+
+      try {
+        t = decodeURIComponent(t);
+      } catch {
+        // Malformed escape (e.g. "%zz"): resolve the raw, non-decoded text
+        // rather than throwing — an unresolvable literal is still reportable.
+      }
+
+      const abs = t.startsWith('/') ? path.resolve(ROOT, t.slice(1)) : path.resolve(ADR_DIR, t);
+
+      // Containment BEFORE any filesystem call: never `stat` outside ROOT.
+      const rel = path.relative(ROOT, abs);
+      if (escapesRoot(abs, ROOT)) {
+        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository. Link a path inside the repo.`, {
+          reason: REASON.LINK_ESCAPES_REPO,
+          file,
+          line,
+          target: rawTarget,
+        });
+        continue;
+      }
+
+      const { exists, hint, escaped } = existsCaseExact(abs, dirCache, realRoot);
+      if (escaped) {
+        // A symlink under the (lexically in-repo) target path resolves
+        // outside the repository. Distinct message from the generic
+        // "does not resolve" below, and — deliberately — no hint: the hint
+        // itself would be the disclosure (see existsCaseExact's doc comment).
+        add(`${file}:${line}`, `link "${rawTarget}" escapes the repository via a symlink. Link a path inside the repo.`, {
+          reason: REASON.LINK_ESCAPES_REPO_SYMLINK,
+          file,
+          line,
+          target: rawTarget,
+        });
+        continue;
+      }
+      if (!exists) {
+        const relFromRoot = rel.split(path.sep).join('/');
+        const hintSuffix = hint ? ` Did you mean ${hint}? — link targets are case-sensitive on github.com.` : '';
+        add(
+          `${file}:${line}`,
+          `link "${rawTarget}" does not resolve — no such file or directory at ${relFromRoot}.${hintSuffix}`,
+          { reason: REASON.LINK_UNRESOLVED, file, line, target: rawTarget, resolved: relFromRoot },
+        );
+      }
+    }
+  }
+}
+
 function parseAdr(file) {
   const full = path.join(ADR_DIR, file);
   const text = fs.readFileSync(full, 'utf8');
@@ -205,12 +766,19 @@ function parseAdr(file) {
   const displayId = rawId;
 
   const h1 = (lines.find((l) => /^#\s/.test(l)) || '').replace(/^#\s+/, '').trim();
+
+  // Capture the trailing status bracket against the RAW h1, before the title
+  // strip below discards it. This is the value the H1-vs-Status comparison in
+  // `validate` checks against — the strip alone throws the information away.
+  const bracketMatch = h1.match(STATUS_BRACKET_RE);
+  const bracketStatus = bracketMatch ? bracketMatch[1] : null;
+
   // Title as displayed: drop a leading "ADR-123 — " / "ADR-123: " prefix and a
   // trailing "[Proposed]"-style status bracket, both of which the index renders
   // from structured fields instead.
   const title = h1
     .replace(/^ADR[-\s]?0*\d+\s*(?:[—:-]\s*)?/i, '')
-    .replace(/\s*\[(?:Proposed|Accepted|Superseded|Legacy|Retired)\]\s*$/i, '')
+    .replace(STATUS_BRACKET_RE, '')
     .trim();
 
   const declaredIdMatch = h1.match(/^ADR[-\s]?0*(\d+)\b/i);
@@ -252,7 +820,7 @@ function parseAdr(file) {
     relations[kind].out.push({ field: `## ${kind === 'supersedes' ? 'Supersedes' : 'Subsumes'} section`, value: '', links: sections[kind], bare: [] });
   }
 
-  return { file, fileId, displayId, title, declaredId, statusRaw, statusToken, relations, text };
+  return { file, fileId, displayId, title, declaredId, statusRaw, statusToken, bracketStatus, relations, text };
 }
 
 function buildCorpus() {
@@ -269,26 +837,64 @@ function buildCorpus() {
 
 function validate({ adrs, byFile, byId, nonConforming }) {
   const errors = [];
-  const add = (file, msg) => errors.push(`${file}: ${msg}`);
+  const violations = [];
+  // `record` carries the STRUCTURED half of every violation — `reason` plus
+  // whatever typed fields a `--json` consumer needs (line, target, resolved,
+  // expected/actual, status, …) — kept alongside, never instead of, the
+  // human `${file}: ${msg}` line: a large pre-existing test suite asserts on
+  // that string verbatim and is out of scope to migrate. `record` may supply
+  // its own `file` (spread AFTER the outer `file`) so link-violation records
+  // carry the plain filename as a field distinct from the human message's
+  // `<file>:<line>` prefix string.
+  const add = (file, msg, record) => {
+    errors.push(`${file}: ${msg}`);
+    violations.push({ file, ...record });
+  };
 
   for (const f of nonConforming) {
     add(
       f,
       'filename does not match the `<issue#>-<kebab-slug>.md` convention, so it cannot appear in the index. ' +
         'Rename it (see docs/adr/README.md "Naming Convention"), or move it out of docs/adr/ if it is not an ADR.',
+      { reason: REASON.FILENAME_INVALID, line: null },
     );
   }
 
   for (const a of adrs) {
     if (!a.statusToken) {
-      add(a.file, 'no `- **Status:** <Token>` field found in the header block.');
+      add(a.file, 'no `- **Status:** <Token>` field found in the header block.', {
+        reason: REASON.STATUS_MISSING,
+        line: null,
+      });
       continue;
     }
     if (!STATUSES.includes(a.statusToken)) {
-      add(a.file, `status "${a.statusToken}" is not one of ${STATUSES.join(' | ')} (full line: "${a.statusRaw}").`);
+      add(a.file, `status "${a.statusToken}" is not one of ${STATUSES.join(' | ')} (full line: "${a.statusRaw}").`, {
+        reason: REASON.STATUS_INVALID,
+        line: null,
+        status: a.statusToken,
+      });
+    } else if (
+      // Only compare when the status token is itself valid — an already-invalid
+      // token gets its own report above, and piling a bracket-disagreement
+      // message on top of it would be a second complaint about the same defect.
+      a.bracketStatus &&
+      a.bracketStatus.toLowerCase() !== a.statusToken.toLowerCase()
+    ) {
+      add(
+        a.file,
+        `H1 status bracket [${a.bracketStatus}] contradicts the Status field (${a.statusToken}). ` +
+          'Update the H1 bracket (or the Status field) so they agree — a stale bracket is the first thing a reader sees.',
+        { reason: REASON.STATUS_BRACKET_MISMATCH, line: null, expected: a.statusToken, actual: a.bracketStatus },
+      );
     }
     if (a.declaredId && a.declaredId !== a.fileId) {
-      add(a.file, `H1 declares ADR-${a.declaredId} but the filename says ${a.fileId}. The id must match the filename.`);
+      add(a.file, `H1 declares ADR-${a.declaredId} but the filename says ${a.fileId}. The id must match the filename.`, {
+        reason: REASON.ID_MISMATCH,
+        line: null,
+        expected: a.fileId,
+        actual: a.declaredId,
+      });
     }
 
     // A Superseded ADR must point at its successor by FILE LINK.
@@ -296,13 +902,19 @@ function validate({ adrs, byFile, byId, nonConforming }) {
       const links = a.relations.supersedes.in.flatMap((r) => r.links);
       if (links.length === 0) {
         const bare = a.relations.supersedes.in.flatMap((r) => r.bare);
-        add(
-          a.file,
-          bare.length
-            ? `status is Superseded and mentions ADR-${bare.join('/')} but not as a markdown link to the file. ` +
-              'Bare ids are ambiguous (ADR-0010 and ADR-0011 each resolve to multiple files) — link the target file.'
-            : 'status is Superseded but names no successor. Write `Superseded by [ADR-N](N-slug.md)`.',
-        );
+        if (bare.length) {
+          add(
+            a.file,
+            `status is Superseded and mentions ADR-${bare.join('/')} but not as a markdown link to the file. ` +
+              'Bare ids are ambiguous (ADR-0010 and ADR-0011 each resolve to multiple files) — link the target file.',
+            { reason: REASON.SUPERSEDED_BARE_ID, line: null, bare },
+          );
+        } else {
+          add(a.file, 'status is Superseded but names no successor. Write `Superseded by [ADR-N](N-slug.md)`.', {
+            reason: REASON.SUPERSEDED_NO_SUCCESSOR,
+            line: null,
+          });
+        }
       }
     }
 
@@ -311,7 +923,14 @@ function validate({ adrs, byFile, byId, nonConforming }) {
       for (const dir of ['out', 'in']) {
         for (const rel of a.relations[kind][dir]) {
           for (const l of rel.links) {
-            if (!byFile.has(l)) add(a.file, `"${rel.field}" links "${l}", which does not exist in docs/adr/.`);
+            if (!byFile.has(l)) {
+              add(a.file, `"${rel.field}" links "${l}", which does not exist in docs/adr/.`, {
+                reason: REASON.RELATION_LINK_MISSING,
+                line: null,
+                field: rel.field,
+                target: l,
+              });
+            }
           }
           // The synthetic relation lifted out of the Status line is already covered by
           // the dedicated Superseded check above; reporting it again just duplicates.
@@ -328,13 +947,24 @@ function validate({ adrs, byFile, byId, nonConforming }) {
             if (linkedIds.has(b)) continue;
             const candidates = byId.get(b) || [];
             if (candidates.length === 0) {
-              add(a.file, `"${rel.field}" names ADR-${b}, which does not exist in docs/adr/. If it is an ISSUE number, write "#${b}" — not "ADR-${b}".`);
+              add(
+                a.file,
+                `"${rel.field}" names ADR-${b}, which does not exist in docs/adr/. If it is an ISSUE number, write "#${b}" — not "ADR-${b}".`,
+                { reason: REASON.RELATION_BARE_ID_MISSING, line: null, field: rel.field, target: b },
+              );
             } else {
               add(
                 a.file,
                 `"${rel.field}" names ADR-${b} without a file link` +
                   (candidates.length > 1 ? ` (ambiguous — resolves to ${candidates.length} files: ${candidates.map((c) => c.file).join(', ')})` : '') +
                   '. Link the target file so the relation is checkable.',
+                {
+                  reason: REASON.RELATION_BARE_ID_UNLINKED,
+                  line: null,
+                  field: rel.field,
+                  target: b,
+                  candidates: candidates.map((c) => c.file),
+                },
               );
             }
           }
@@ -376,13 +1006,19 @@ function validate({ adrs, byFile, byId, nonConforming }) {
             target,
             `${a.file} declares ${claim}, but this ADR does not record it. ` +
               `Add \`- **${needed}:** [ADR-${a.displayId}](${a.file})\` so a reader of THIS file learns the decision moved on.`,
+            { reason: REASON.RELATION_ASYMMETRIC, line: null, source: a.file, kind, neededField: needed },
           );
         }
       }
     }
   }
 
-  return errors;
+  // Link resolution reads the directory directly rather than the parsed
+  // `adrs` list — it must ALSO cover README.md and naming-violation files,
+  // neither of which is in `adrs` (see `validateLinks`'s own doc comment).
+  validateLinks(add);
+
+  return { errors, violations };
 }
 
 const GROUPS = [
@@ -442,7 +1078,17 @@ function renderIndex(corpus) {
     const rows = corpus.adrs.filter(g.match).sort((x, y) => Number(x.fileId) - Number(y.fileId));
     if (rows.length === 0) continue;
 
-    out.push(`### ${g.heading} (${rows.length})`, '', g.blurb, '');
+    // No row count in the heading: it is a numeric cell inside the generated
+    // region, shared by every ADR-adding PR. Two PRs that add different ADRs
+    // touch different table rows and merge cleanly — but both rewrite this
+    // same count line, so whichever lands second gets a stale local --check
+    // pass and a red CI --check against the merged tree (#3251). Same failure
+    // mode CHANGELOG.md and drift-acks already solved by moving to per-PR
+    // fragment files (.changeset/, tests/emitted-drift-acks/); here the fix is
+    // simpler still — the count carries no verification value (--check
+    // regenerates and diffs the whole region regardless) and is trivially
+    // derivable by counting the table rows. Do not add it back.
+    out.push(`### ${g.heading}`, '', g.blurb, '');
     const isHistorical = g.heading.startsWith('Superseded');
     // "Read first" points at the broader ADR that now frames this one. It is how a
     // reader of a still-Accepted component decision (e.g. the runtime descriptor)
@@ -464,8 +1110,12 @@ function renderIndex(corpus) {
     out.push('');
   }
 
+  // No total ADR count either, for the same reason as the per-group heading
+  // count above: it is a second shared mutable cell in the generated region
+  // that every ADR-adding PR would rewrite, guaranteeing the identical merge
+  // race (#3251). Leave it out; the count is derivable by reading the table.
   out.push(
-    `_${corpus.adrs.length} ADRs. Generated by \`scripts/gen-adr-index.cjs\` — run \`--write\` after adding or restatusing an ADR._`,
+    `_Generated by \`scripts/gen-adr-index.cjs\` — run \`--write\` after adding or restatusing an ADR._`,
     '',
     END_MARKER,
   );
@@ -484,13 +1134,52 @@ function spliceIntoReadme(readme, index) {
   return readme.slice(0, start) + index + readme.slice(end + END_MARKER.length);
 }
 
+/**
+ * Parse CLI flags from `argv` (already sliced to just the flags, i.e.
+ * `process.argv.slice(2)`). Supports `--write`, `--check`, `--json` in any
+ * order. FAIL-CLOSED on an unrecognized flag: silently falling through to
+ * the no-flags "print the index" behavior would mask a typo (e.g.
+ * `--jsno`) as a clean run instead of failing loudly, so any argument that
+ * is not one of the three recognized flags throws `ExitError(1, …)` naming
+ * the offender rather than being ignored.
+ */
+function parseArgs(argv) {
+  const opts = { write: false, check: false, json: false };
+  for (const arg of argv) {
+    if (arg === '--write') opts.write = true;
+    else if (arg === '--check') opts.check = true;
+    else if (arg === '--json') opts.json = true;
+    else throw new ExitError(1, `unknown flag: ${arg}\nRecognized flags: --write, --check, --json.`);
+  }
+  return opts;
+}
+
 function main() {
-  const [, , flag] = process.argv;
+  const { write, check, json } = parseArgs(process.argv.slice(2));
 
   const corpus = buildCorpus();
-  const errors = validate(corpus);
+  const { errors, violations } = validate(corpus);
+  const index = renderIndex(corpus);
 
-  if (errors.length > 0 && flag !== '--write') {
+  if (json) {
+    // `--json` implies `--check` semantics (`--check --json` is identical to
+    // `--json` alone) but emits a single JSON document to stdout instead of
+    // the human stderr report, and writes nothing to stderr at all. Unlike
+    // the human `--check` path below — which short-circuits on lifecycle
+    // violations and never even reads README.md to check staleness — the
+    // JSON report always computes BOTH facts (`violations` and
+    // `indexStale`) independently, since a consumer parsing the document
+    // needs the complete picture in one shot rather than one violation
+    // class masking the other.
+    const readme = fs.readFileSync(README_PATH, 'utf8');
+    const expected = spliceIntoReadme(readme, index);
+    const indexStale = expected !== readme;
+    const ok = violations.length === 0 && !indexStale;
+    process.stdout.write(JSON.stringify({ ok, adrCount: corpus.adrs.length, indexStale, violations }) + '\n');
+    return ok ? 0 : 1;
+  }
+
+  if (errors.length > 0 && !write) {
     process.stderr.write(
       `docs/adr/ has ${errors.length} lifecycle violation(s).\n` +
         'See docs/adr/README.md "Lifecycle rules" for the contract.\n\n',
@@ -500,9 +1189,19 @@ function main() {
     throw new ExitError(1);
   }
 
-  const index = renderIndex(corpus);
-
-  if (flag === '--check') {
+  // `--write` takes precedence over a co-supplied `--check`: neither
+  // combination is part of this CLI's documented contract (the flags exist
+  // to be used one at a time, or as `--check --json`), so this is an
+  // arbitrary-but-safe tiebreak rather than a specified behavior.
+  if (write) {
+    const readme = fs.readFileSync(README_PATH, 'utf8');
+    fs.writeFileSync(README_PATH, spliceIntoReadme(readme, index));
+    process.stdout.write(`Wrote ADR index into ${README_PATH} (${corpus.adrs.length} ADRs).\n`);
+    if (errors.length > 0) {
+      process.stderr.write(`\n${errors.length} lifecycle violation(s) remain — --check will fail:\n\n`);
+      for (const e of errors) process.stderr.write(`  ✗ ${e}\n`);
+    }
+  } else if (check) {
     const readme = fs.readFileSync(README_PATH, 'utf8');
     const expected = spliceIntoReadme(readme, index);
     if (expected !== readme) {
@@ -512,17 +1211,14 @@ function main() {
       throw new ExitError(1);
     }
     process.stdout.write(`docs/adr/README.md index is up to date (${corpus.adrs.length} ADRs).\n`);
-  } else if (flag === '--write') {
-    const readme = fs.readFileSync(README_PATH, 'utf8');
-    fs.writeFileSync(README_PATH, spliceIntoReadme(readme, index));
-    process.stdout.write(`Wrote ADR index into ${README_PATH} (${corpus.adrs.length} ADRs).\n`);
-    if (errors.length > 0) {
-      process.stderr.write(`\n${errors.length} lifecycle violation(s) remain — --check will fail:\n\n`);
-      for (const e of errors) process.stderr.write(`  ✗ ${e}\n`);
-    }
   } else {
     process.stdout.write(index + '\n');
   }
 }
 
-runMain(main);
+// Guarded: `require`-ing this module (the test suite imports STATUSES and
+// the pure scanner directly) must not also run the generator as a side
+// effect of loading it.
+if (require.main === module) runMain(main);
+
+module.exports = { STATUSES, REASON, extractLinks, maskCode };

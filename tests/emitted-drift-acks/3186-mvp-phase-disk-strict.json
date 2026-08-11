@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "mvp-phase.md": "#3186 (epic #3180 Phase 4, ADR-3180 §7.4, disk-strict per #2957 maintainer decision): removes the `PHASE_COMPLETE` ROADMAP-checkbox override this workflow ORed into its completion check (`if [[ \"$DISK_STATUS\" == \"complete\" || \"$PHASE_COMPLETE\" == \"true\" ]]`) — a ticked checkbox is a human annotation with no machine authority, and the prompt layer was one of the (previously undiscovered) sites still trusting it. The `PHASE_COMPLETE=$(...jq -r '.roadmap_complete // false')` assignment line is deleted outright; `DISK_STATUS` alone (already routed through the canonical `isPhaseComplete` owner via `roadmap.analyze`) now decides completion. Growth is a 4-line explanatory comment documenting why the OR was removed and that this is the same predicate the read and write paths share — the deleted assignment line and the shortened `if` condition are smaller than what they replace, so the net +233 bytes is entirely the comment, not new control flow. See ADR-3180 §7.4 Decision 4(d) (the prompt layer is in scope) and the design doc `.gsd/phase/refactor-3186-phase-completion-predicate/40-design.md` row `mvp-phase.md:49`."
+  }
+}

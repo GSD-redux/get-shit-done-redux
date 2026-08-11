@@ -596,10 +596,10 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
  *                   (`loadRegistry({ includeInstalled: true })`); only its
  *                   `capabilities` map is read. A cap contributes a lane iff it
  *                   carries an object `reviewer` body with a non-empty,
- *                   grammar-valid `slug`. The `role:"runtime"` legacy
- *                   `reviewerCli` alias contributes NO lane here — it has no lane
- *                   descriptor, and the selection roster (`deriveReviewerSlugs`)
- *                   is a separate surface.
+ *                   grammar-valid `slug`. The `role:"runtime"` `reviewerCli`
+ *                   alias never contributed a lane here, and as of #2801 it no
+ *                   longer contributes to the selection roster
+ *                   (`deriveReviewerSlugs`) either — the two surfaces now agree.
  * @returns A NEW array: first-party lanes (in order) followed by accepted overlay
  *          lanes (in registry iteration order). Callers must not mutate it.
  */

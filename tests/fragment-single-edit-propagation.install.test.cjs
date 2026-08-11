@@ -49,7 +49,7 @@
  * Cleanup is via `t.after()` (never `try/finally` in the test body).
  */
 
-const { test } = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -58,9 +58,15 @@ const { spawnSync } = require('node:child_process');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
-const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { cleanup, createTempDir, readFileNormalized } = require('./helpers.cjs');
 const { RUNTIME_META, installerEnv } = require('./helpers/install-shared.cjs');
-const { buildOverlayRepo, REPO_ROOT } = require('./helpers/overlay-repo.cjs');
+const {
+  buildOverlayRepo,
+  REPO_ROOT,
+  placeVanishableLeaf,
+  linkOrCopyFile,
+  isMissingPath,
+} = require('./helpers/overlay-repo.cjs');
 // Read each generator's own typed reason enum (never invent/regex a reason
 // string) — rows 7 and 12 assert the REAL code below. gen-registry.cjs,
 // gen-adr-index.cjs, gen-capability-matrix.cjs, gen-inventory-manifest.cjs
@@ -1288,4 +1294,102 @@ test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', {
     // safety net (idempotent on an already-removed path).
     cleanup(install.root);
   }
+});
+
+describe('#3271: an overlay source that vanishes mid-walk', () => {
+  test('a leaf whose source is GONE is skipped, not fatal', () => {
+    const dir = createTempDir('gsd-3271-vanish-');
+    try {
+      const missing = path.join(dir, 'never-existed.js');
+      let attempts = 0;
+      const placed = placeVanishableLeaf(missing, () => {
+        attempts += 1;
+        const err = new Error(`ENOENT: no such file or directory, link '${missing}'`);
+        err.code = 'ENOENT';
+        throw err;
+      });
+      assert.equal(placed, false, 'a source that left the tree is not part of the snapshot');
+      assert.equal(attempts, 1, 'no retry when the path is genuinely gone');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('a leaf mid-atomic-replace is retried once and placed', () => {
+    // The real shape: scripts/build-hooks.js unlinks and renames, so the name is
+    // briefly absent and then live again. The first attempt sees ENOENT; by the
+    // time we re-examine, the successor is in place.
+    const dir = createTempDir('gsd-3271-replace-');
+    try {
+      const src = path.join(dir, 'gsd-config-reload.js');
+      fs.writeFileSync(src, 'module.exports = 1;\n');
+      let attempts = 0;
+      const placed = placeVanishableLeaf(src, () => {
+        attempts += 1;
+        if (attempts === 1) {
+          const err = new Error('ENOENT: no such file or directory, link');
+          err.code = 'ENOENT';
+          throw err;
+        }
+      });
+      assert.equal(placed, true);
+      assert.equal(attempts, 2, 'exactly one retry — no spin, no sleep');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('a non-ENOENT failure still propagates', () => {
+    const dir = createTempDir('gsd-3271-eacces-');
+    try {
+      assert.throws(
+        () => placeVanishableLeaf(dir, () => {
+          const err = new Error('EACCES: permission denied');
+          err.code = 'EACCES';
+          throw err;
+        }),
+        /EACCES/,
+        'only a vanished source is tolerable; every other error is a real defect',
+      );
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('linkOrCopyFile survives a real ENOENT from linkSync when the source is live', () => {
+    // Monkeypatch fs.linkSync to fail ENOENT exactly once, then restore in a
+    // finally. Mode-bit tricks are not used on purpose: root bypasses 0o000, so
+    // such a test passes with zero coverage under root Docker/CI.
+    const dir = createTempDir('gsd-3271-link-');
+    const realLinkSync = fs.linkSync;
+    try {
+      const src = path.join(dir, 'src.js');
+      const dest = path.join(dir, 'dest.js');
+      fs.writeFileSync(src, 'contents\n');
+      let calls = 0;
+      fs.linkSync = (...args) => {
+        calls += 1;
+        if (calls === 1) {
+          const err = new Error('ENOENT: no such file or directory, link');
+          err.code = 'ENOENT';
+          throw err;
+        }
+        return realLinkSync(...args);
+      };
+      assert.equal(linkOrCopyFile(src, dest), true);
+      assert.equal(calls, 2);
+      assert.equal(fs.readFileSync(dest, 'utf8'), 'contents\n');
+    } finally {
+      fs.linkSync = realLinkSync;
+      cleanup(dir);
+    }
+  });
+
+  test('isMissingPath accepts only ENOENT', () => {
+    assert.equal(isMissingPath(Object.assign(new Error('x'), { code: 'ENOENT' })), true);
+    assert.equal(isMissingPath(Object.assign(new Error('x'), { code: 'EACCES' })), false);
+    assert.equal(isMissingPath(Object.assign(new Error('x'), { code: 'EXDEV' })), false);
+    assert.equal(isMissingPath(new Error('plain')), false);
+    assert.equal(isMissingPath(null), false);
+  });
 });

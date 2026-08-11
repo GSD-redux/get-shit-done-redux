@@ -147,14 +147,22 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
   };
 
   // ── Defect 3: verification-gated completeness (builder unit) ─────────────────
+  // ADR-3180 §7.4 (#3186 review finding 3): `complete` is now the CALLER-
+  // computed owner verdict (`isPhaseComplete`), passed in per phase via
+  // `PhaseFilesCount.complete` — the builder no longer re-derives it from
+  // `verificationStatus` + counts. These builder-unit fixtures pass
+  // `complete` directly (mirroring what `workstream-inventory.cts` computes
+  // from a real `isPhaseComplete(phaseDir)` call in production); `verificationStatus`
+  // stays on the fixture only because the `PhaseFilesCount` type still carries
+  // it (informational, unconsumed by `status`).
   test('builder: SUMMARY≥PLAN but a human_needed verdict is NOT complete', () => {
     const inv = buildWorkstreamInventory({
       ...BUILDER_BASE,
       name: 'ws',
       phaseDirNames: ['1-a', '2-b'],
       phaseFilesCounts: [
-        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
-        { directory: '2-b', planCount: 4, summaryCount: 4, inMilestone: true, verificationStatus: 'human_needed' },
+        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
+        { directory: '2-b', planCount: 4, summaryCount: 4, inMilestone: true, verificationStatus: 'human_needed', complete: false },
       ],
       roadmapPhaseCount: 2,
       currentMilestonePhaseCount: 2,
@@ -164,19 +172,25 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
     assert.equal(inv.progress_percent, 50);
   });
 
-  test('builder: missing/unknown verdict still counts complete (no verifier-off regression)', () => {
+  // ADR-3180 §7.4 (#3186 review finding 3): disk-strict retires this
+  // tolerance. `isPhaseComplete` requires `verification.status === 'passed'`
+  // UNCONDITIONALLY — a 'missing' verdict (no `*-VERIFICATION.md`, e.g. a
+  // verifier-disabled project) is never complete, matching `roadmap analyze`
+  // / `init manager` / `phase complete` exactly. Disclosed in this phase's
+  // changeset.
+  test('builder: a missing verdict is NOT complete (verifier-off tolerance retired, disk-strict)', () => {
     const inv = buildWorkstreamInventory({
       ...BUILDER_BASE,
       name: 'ws',
       phaseDirNames: ['1-a'],
       phaseFilesCounts: [
-        { directory: '1-a', planCount: 2, summaryCount: 2, inMilestone: true, verificationStatus: 'missing' },
+        { directory: '1-a', planCount: 2, summaryCount: 2, inMilestone: true, verificationStatus: 'missing', complete: false },
       ],
       roadmapPhaseCount: 1,
       currentMilestonePhaseCount: 1,
     });
-    assert.equal(inv.phases[0].status, 'complete');
-    assert.equal(inv.progress_percent, 100);
+    assert.equal(inv.phases[0].status, 'in_progress');
+    assert.equal(inv.progress_percent, 0);
   });
 
   // ── Defect 2: denominator includes declared-but-unscaffolded phases (builder) ─
@@ -186,8 +200,8 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
       name: 'ws',
       phaseDirNames: ['1-a', '2-b'], // phase 3 declared for the milestone but never scaffolded
       phaseFilesCounts: [
-        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
-        { directory: '2-b', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
+        { directory: '2-b', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
       ],
       roadmapPhaseCount: 2,
       currentMilestonePhaseCount: 3,
@@ -204,8 +218,8 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
       name: 'ws',
       phaseDirNames: ['1-old', '2-cur'],
       phaseFilesCounts: [
-        { directory: '1-old', planCount: 3, summaryCount: 3, inMilestone: false, verificationStatus: 'passed' },
-        { directory: '2-cur', planCount: 2, summaryCount: 0, inMilestone: true, verificationStatus: 'missing' },
+        { directory: '1-old', planCount: 3, summaryCount: 3, inMilestone: false, verificationStatus: 'passed', complete: true },
+        { directory: '2-cur', planCount: 2, summaryCount: 0, inMilestone: true, verificationStatus: 'missing', complete: false },
       ],
       roadmapPhaseCount: 2,
       currentMilestonePhaseCount: 1,
@@ -678,18 +692,21 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
       milestoneShipped: false,
       phaseDirNames: ['1-a', '2-b', '3-c'],
       phaseFilesCounts: [
-        { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
-        { directory: '2-b', phaseKey: '02', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
-        { directory: '3-c', phaseKey: '03', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
+        { directory: '2-b', phaseKey: '02', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
+        { directory: '3-c', phaseKey: '03', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed', complete: true },
       ],
       roadmapPhaseCount: 3,
       currentMilestonePhaseCount: 2,
     }), /invariant violated/);
   });
 
-  // The builder hand-lists the verdicts that disqualify a phase from `complete`.
-  // Pin it to the verifier's own vocabulary so a new emitted status cannot land
-  // without a decision here.
+  // ADR-3180 §7.4 (#3186 review finding 3): the builder no longer hand-lists
+  // disqualifying verdicts itself (`FAILING_VERIFICATION_STATUSES` is
+  // retired) — it trusts the caller-supplied `complete` boolean entirely.
+  // The vocabulary pin now lives at the OWNER (`isPhaseComplete`,
+  // `complete: verification.status === 'passed'`), mirrored here for every
+  // verifier status other than 'passed'.
   test('parity: every verifier status other than passed blocks completeness', () => {
     const nonPassing = VERIFIER_STATUSES.filter(s => s !== 'passed');
     assert.ok(nonPassing.length > 0, 'guard: the verifier must emit a non-passing status');
@@ -704,7 +721,7 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
         milestoneShipped: false,
         phaseDirNames: ['1-a'],
         phaseFilesCounts: [
-          { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: status },
+          { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: status, complete: status === 'passed' },
         ],
         roadmapPhaseCount: 1,
         currentMilestonePhaseCount: 1,
@@ -1089,9 +1106,15 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.equal(after.progress_percent, 0);
   });
 
-  // Row 3 — criterion 2: verifier-disabled projects (no report ever written)
-  // must still be able to reach 100%.
-  test('a phase that was never verified still reaches complete (#2645, criterion 2)', () => {
+  // Row 3 — SUPERSEDED by ADR-3180 §7.4 (#3186, disk-strict): #2645's
+  // criterion 2 ("verifier-disabled projects must still reach 100%") is
+  // exactly the site-local tolerance disk-strict retires. `complete` now
+  // routes through the single canonical owner (`isPhaseComplete`), which
+  // requires `verification.status === 'passed'` UNCONDITIONALLY — a phase
+  // with NO `*-VERIFICATION.md` reads 'missing', never complete, regardless
+  // of how many plans it has summarized. Disclosed in this phase's
+  // changeset.
+  test('a phase that was never verified is NOT complete (disk-strict; #2645 criterion 2 retired)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-never' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1101,15 +1124,15 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
     const inv = inspectWorkstream(tmpDir, 'ws-2645-never', { active: null });
     assert.ok(inv);
-    assert.equal(inv.phases[0].status, 'complete');
-    assert.equal(inv.completed_phases, 1);
-    assert.equal(inv.progress_percent, 100);
+    assert.equal(inv.phases[0].status, 'in_progress');
+    assert.equal(inv.completed_phases, 0);
+    assert.equal(inv.progress_percent, 0);
   });
 
-  // Row 4 — criterion 3: same on-disk shape as row 3 (no file), across TWO
-  // reads, must behave IDENTICALLY — the ledger must not newly gate a phase
-  // that was simply never verified in the first place.
-  test('a not-yet-verified phase is not newly gated by the ledger (#2645, criterion 3)', () => {
+  // Row 4 — SUPERSEDED by ADR-3180 §7.4: same on-disk shape as row 3 (no
+  // file), across TWO reads — disk-strict requires this to behave
+  // IDENTICALLY (never complete) both times, not just consistently.
+  test('a not-yet-verified phase reads NOT complete on every read (disk-strict; #2645 criterion 3 retired)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-not-yet' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1119,14 +1142,21 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
     const first = inspectWorkstream(tmpDir, 'ws-2645-not-yet', { active: null });
     const second = inspectWorkstream(tmpDir, 'ws-2645-not-yet', { active: null });
-    assert.equal(first.progress_percent, 100);
-    assert.equal(second.progress_percent, 100, 'a second read must not change the outcome');
-    assert.equal(second.phases[0].status, 'complete');
+    assert.equal(first.progress_percent, 0);
+    assert.equal(second.progress_percent, 0, 'a second read must not change the outcome');
+    assert.equal(second.phases[0].status, 'in_progress');
   });
 
-  // Row 5 — recovery: a genuinely re-verified phase must not be pinned by an
-  // earlier failing verdict the ledger remembers.
-  test('a re-verified passed phase is not pinned by an earlier failing ledger entry (#2645)', () => {
+  // Row 5 — the FIRST half (a genuine re-verify counts) is unchanged. The
+  // SECOND half is SUPERSEDED by ADR-3180 §7.4: `isPhaseComplete` reads
+  // fresh off disk, UNCONDITIONALLY, with no memory — the ledger's "hold the
+  // newest real verdict after the file is deleted" behavior is structurally
+  // incompatible with a single owner that never consults a ledger. Deleting
+  // ANY `*-VERIFICATION.md` (passing or failing) now uniformly reads
+  // 'missing' → not complete, matching `roadmap analyze` / `init manager` /
+  // `phase complete` for the identical disk state. Disclosed in this
+  // phase's changeset.
+  test('a re-verified passed phase counts complete; deleting the report afterward is NOT complete (disk-strict; #2645 memory retired)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-recover' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1140,12 +1170,14 @@ describe('#2645 — deleting a verification report must not raise completeness',
     const reverified = inspectWorkstream(tmpDir, 'ws-2645-recover', { active: null });
     assert.equal(reverified.phases[0].status, 'complete', 'a genuine re-verify must count');
 
-    // Delete the now-passing report — the ledger's newest real verdict is
-    // 'passed', which is not in the failing set, so this must stay complete.
+    // Delete the now-passing report — the owner reads fresh off disk every
+    // time; no ledger memory feeds into `complete` anymore, so this reads
+    // 'missing' → not complete, exactly like every other disk-strict
+    // consumer for the same disk state.
     fs.unlinkSync(verificationFilePath(wsDir, '1-foo'));
     const afterDelete = inspectWorkstream(tmpDir, 'ws-2645-recover', { active: null });
-    assert.equal(afterDelete.phases[0].status, 'complete',
-      'the ledger must hold the newest verdict, not an earlier failing one');
+    assert.equal(afterDelete.phases[0].status, 'in_progress',
+      'disk-strict: a deleted verification file is never complete, regardless of what was previously observed');
   });
 
   // Row 6 — criterion 4: the ledger must not live inside the phase directory
@@ -1171,10 +1203,17 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.ok(fs.existsSync(ledgerPath), 'removing the phase directory must not remove the ledger');
   });
 
-  // Row 7 — Bug #2445 dedup safety: a stale duplicate directory sharing the
-  // same phase key must not be able to clobber the WINNING (newest)
-  // directory's ledger entry with its own stale/leftover verdict.
-  test('a stale duplicate directory cannot clobber the ledger entry of the live directory (#2645)', () => {
+  // Row 7 — Bug #2445 dedup safety (winner SELECTION, still real): a stale
+  // duplicate directory sharing the same phase key must never be the one
+  // whose live verdict the rollup counts. SUPERSEDED for the DELETION half
+  // by ADR-3180 §7.4: `isPhaseComplete` reads the WINNING directory fresh
+  // off disk on every call, unconditionally — once its report is deleted,
+  // the winner's own live read is 'missing', so this phase key correctly
+  // stops counting as complete (no ledger memory left to "remember" the
+  // pre-deletion 'passed'). The winner-selection guarantee itself (the stale
+  // duplicate's gaps_found never contaminates the live directory's result)
+  // still holds and is still what this test pins.
+  test('a stale duplicate directory never contaminates the live directory (winner selection; #2645 memory retired)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-dupe' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1192,31 +1231,27 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
     const before7 = inspectWorkstream(tmpDir, 'ws-2645-dupe', { active: null });
     assert.ok(before7);
-    assert.equal(before7.completed_phases, 1, 'the winning (newest) directory is passed');
+    assert.equal(before7.completed_phases, 1, 'the winning (newest) directory is passed — the stale duplicate never won selection');
 
-    // Delete the WINNING directory's report. If the stale directory's
-    // gaps_found had clobbered the ledger, this phase key would now
-    // incorrectly read gaps_found and never recover. It must instead read
-    // the winning directory's own remembered 'passed'.
+    // Delete the WINNING directory's report. Disk-strict: the winner's own
+    // live read is now 'missing', so this phase key stops counting complete
+    // — but it must NOT flip to the stale duplicate's gaps_found either
+    // (that would be a DIFFERENT bug: the stale directory winning selection).
     fs.unlinkSync(path.join(liveDir, '01-VERIFICATION.md'));
 
     const after7 = inspectWorkstream(tmpDir, 'ws-2645-dupe', { active: null });
     assert.ok(after7);
-    assert.equal(after7.completed_phases, 1,
-      "the ledger must remember the WINNING directory's passed verdict, not the stale duplicate's gaps_found");
+    assert.equal(after7.completed_phases, 0,
+      'disk-strict: the winning directory\'s own deleted report is not complete — no ledger memory papers over it');
+    assert.equal(after7.phases.find(p => p.directory === '1-foo').status, 'in_progress');
   });
 
   // Row 8 — boundary: an EXACT mtime tie between two same-keyed directories.
   // The builder's own tie-break (`rollupDirByKey`) walks
   // `[...phaseDirNames].sort()` and keeps the incumbent on a tie
   // (first-in-sort-order wins, since only a STRICTLY newer mtime replaces
-  // it). The ledger's winner selection must walk the SAME sorted order so
-  // the two deterministically agree on which directory wins — not merely
-  // "some directory wins" (a prior version of this test asserted only
-  // `completed_phases === 0 || 1`, which is true regardless of agreement and
-  // caught nothing; both `01-foo-a`/`01-foo-b` sort deterministically, so the
-  // outcome here is not a coin flip).
-  test('an exact mtime tie resolves the ledger winner by sort order, matching the builder (#2645)', () => {
+  // it). SUPERSEDED for the deletion half by ADR-3180 §7.4 — see Row 7.
+  test('an exact mtime tie resolves the winner by sort order, matching the builder (#2645 memory retired)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-tie' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1224,8 +1259,8 @@ describe('#2645 — deleting a verification report must not raise completeness',
     ]));
     const tieTime = new Date('2025-06-01T00:00:00Z');
     // '01-foo-a' sorts before '01-foo-b' — with equal mtimes, BOTH the
-    // builder's rollup and the ledger's winner selection must keep the
-    // incumbent '01-foo-a' (passed), never adopt '01-foo-b' (gaps_found).
+    // builder's rollup and the winner selection must keep the incumbent
+    // '01-foo-a' (passed), never adopt '01-foo-b' (gaps_found).
     const dirA = writePhase(wsDir, '01-foo-a', { plans: 1, summaries: 1, verification: 'passed' });
     fs.utimesSync(dirA, tieTime, tieTime);
     const dirB = writePhase(wsDir, '01-foo-b', { plans: 1, summaries: 1, verification: 'gaps_found' });
@@ -1239,44 +1274,29 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.equal(inv.completed_phases, 1,
       'the sort-order incumbent (01-foo-a, passed) must be the one the builder counts complete');
 
-    // Concrete cross-check that the LEDGER's winner selection agrees with the
-    // builder's, not just that this run's numbers happen to match: delete
-    // 01-foo-a's report (unlink bumps the directory's mtime — restore it to
-    // the exact tie value so the SECOND read still sees a genuine tie, not a
-    // newest-mtime win). If the ledger's winner selection had instead picked
-    // 01-foo-b (the bug this test guards — unsorted iteration disagreeing
-    // with the builder's sorted `rollupDirByKey`), this phase key's
-    // remembered verdict would be 'gaps_found' and the phase would flip to
-    // in_progress. It must instead stay complete, because the ledger
-    // remembers 01-foo-a's 'passed' — the same directory the builder uses.
+    // Delete 01-foo-a's report (unlink bumps the directory's mtime — restore
+    // it to the exact tie value so the SECOND read still sees a genuine tie,
+    // not a newest-mtime win). Disk-strict: the incumbent's own live read is
+    // now 'missing', so completed_phases must drop to 0 — it must NOT flip
+    // to 01-foo-b's gaps_found winning selection instead (that would be the
+    // sort-order-disagreement bug this test also guards).
     fs.unlinkSync(path.join(dirA, '01-VERIFICATION.md'));
     fs.utimesSync(dirA, tieTime, tieTime); // restore the tie the unlink disturbed
     const afterDelete = inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null });
-    assert.equal(afterDelete.completed_phases, 1,
-      "the ledger must have remembered the sort-order incumbent's 'passed' verdict, not the other directory's gaps_found");
+    assert.equal(afterDelete.completed_phases, 0,
+      'disk-strict: the sort-order incumbent\'s own deleted report is not complete, and 01-foo-b never wins selection instead');
   });
 
-  // Row 9 — property: whatever sequence of REAL verdicts is observed for a
-  // phase key, once the file goes missing the ledger must replay exactly the
-  // LAST one observed — never an earlier one, never a synthesized value.
-  //
-  // #2645 review: `'stale'` is deliberately EXCLUDED here, not merely
-  // forgotten. Writing a literal `status: stale` frontmatter value does NOT
-  // round-trip as `'stale'` — `readVerificationStatus`
-  // (`src/verification.cts`) explicitly excludes `'stale'` from its raw-file
-  // routing lookup (`rawStatus !== 'stale'`) and falls through to the
-  // "Unknown value" branch, returning `'unknown'` instead. A genuine
-  // `'stale'` verdict is only reachable via `findStaleVerificationSummary`'s
-  // mtime comparison (a SUMMARY file newer than the VERIFICATION file), not
-  // by writing the word into the file. Including `'stale'` in this array
-  // without accounting for that would silently substitute `'unknown'` on
-  // every iteration and still pass (both are non-failing) — a docstring
-  // claiming "real verdicts" coverage it does not actually exercise.
-  // `'stale'` handling is explicitly out of scope for this issue (#2348) and
-  // is not gated by `FAILING_VERIFICATION_STATUSES` either way.
-  test('property: the ledger always replays the most recently observed real verdict after deletion (#2645)', () => {
+  // Row 9 — SUPERSEDED by ADR-3180 §7.4 (#3186, disk-strict): the ledger's
+  // "replay the last real verdict after deletion" memory is retired —
+  // `isPhaseComplete` reads fresh off disk, unconditionally, every call.
+  // The property this test now pins is simpler and STRONGER than the
+  // #2645-era one: whatever sequence of REAL verdicts was observed, once
+  // the file goes missing the phase is NEVER complete — full stop, not
+  // "unless the last real verdict was passed/unknown". Disclosed in this
+  // phase's changeset.
+  test('property: after the report goes missing, the phase is NEVER complete regardless of prior history (disk-strict; #2645 memory retired)', () => {
     const REAL_STATUSES = ['passed', 'gaps_found', 'human_needed', 'unknown'];
-    const FAILING = new Set(['gaps_found', 'human_needed']);
     fc.assert(fc.property(
       fc.array(fc.constantFrom(...REAL_STATUSES), { minLength: 1, maxLength: 6 }),
       (sequence) => {
@@ -1289,18 +1309,15 @@ describe('#2645 — deleting a verification report must not raise completeness',
         const dir = writePhase(wsDir, '1-foo', { plans: 1, summaries: 1 });
         const reportPath = path.join(dir, '01-VERIFICATION.md');
 
-        let lastReal = null;
         for (const status of sequence) {
           fs.writeFileSync(reportPath, `---\nstatus: ${status}\n---\n`);
           inspectWorkstream(tmpDir, wsName, { active: null }); // observe
-          lastReal = status;
         }
         fs.unlinkSync(reportPath);
 
         const inv = inspectWorkstream(tmpDir, wsName, { active: null });
-        const expectComplete = !FAILING.has(lastReal);
-        assert.equal(inv.phases[0].status === 'complete', expectComplete,
-          `after observing ${JSON.stringify(sequence)} then deleting, status must reflect the last real verdict (${lastReal})`);
+        assert.equal(inv.phases[0].status, 'in_progress',
+          `disk-strict: after observing ${JSON.stringify(sequence)} then deleting the report, the phase must never be complete`);
 
         cleanup(wsDir);
       },
@@ -1391,19 +1408,15 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.ok(fs.existsSync(ledgerPath), 'a read that observes a real verdict must recreate/self-heal the ledger');
   });
 
-  // Row 14 — the DISCLOSED, ACCEPTED residual gap, pinned deliberately so it
-  // is never mistaken for a silent regression: deleting the report AND the
-  // ledger TOGETHER, after a failing verdict was already observed and
-  // recorded, returns this phase key to the pre-adoption `'absent'` ledger
-  // state — indistinguishable, by design, from a workstream that never used
-  // the verifier at all (criteria 2/3 require exactly that indistinguishability
-  // for a workstream that HASN'T adopted the ledger). This is the "prospective
-  // only" limitation named in the changeset: any durable store that must fail
-  // OPEN when wholly absent (to avoid gating every pre-existing project on
-  // upgrade) has this property at its own root. The bar is raised from "delete
-  // one file" to "delete two files in two different directories, one of which
-  // this issue's own reproduction never needed to touch" — not eliminated.
-  test('deleting the report AND the ledger together reopens the pre-adoption window (documented, not a regression) (#2645)', () => {
+  // Row 14 — SUPERSEDED by ADR-3180 §7.4 (#3186, disk-strict): the
+  // "prospective only" residual gap this row used to document (removing
+  // BOTH files reopens the pre-adoption 'absent' window, which USED to be
+  // allowed to complete because criteria 2/3 tolerated a never-verified
+  // phase) no longer exists — criteria 2/3 themselves are retired (Rows 3/4
+  // above). Deleting the report and/or the ledger, in any combination, now
+  // uniformly reads 'missing' → not complete. There is no residual gap left
+  // to disclose for this row.
+  test('deleting the report AND the ledger together is still NOT complete (disk-strict; #2645 residual gap closed)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-delete-both' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1420,9 +1433,8 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
     const inv = inspectWorkstream(tmpDir, 'ws-2645-delete-both', { active: null });
     assert.ok(inv);
-    assert.equal(inv.phases[0].status, 'complete',
-      'documented limitation: removing BOTH files returns this phase to the pre-adoption/never-verified state — ' +
-      'this is the accepted "prospective only" boundary, not a bug in this fix');
+    assert.equal(inv.phases[0].status, 'in_progress',
+      'disk-strict: removing both files still reads \'missing\' — never complete, regardless of ledger adoption state');
   });
 
   // Row 11 — fault injection per CONTRIBUTING.md: read-only target directory

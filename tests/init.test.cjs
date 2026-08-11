@@ -1714,6 +1714,80 @@ describe('cmdInitQuick', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// cmdInitQuick quick_id exact-value tests (#3314 — ADR-456 subprocess clock pin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('cmdInitQuick quick_id — exact value under GSD_NOW_MS+TZ pin', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Computes the expected quick_id independently from the SAME algorithm
+  // documented in src/init.cts's cmdInitQuick — NOT copy-pasted from its
+  // runtime output — so this test can actually catch a broken implementation.
+  function expectedQuickId(ms) {
+    const d = new Date(ms);
+    const yy = String(d.getFullYear()).slice(-2);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const dateStr = yy + mm + dd;
+    const secondsSinceMidnight = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+    const timeBlocks = Math.floor(secondsSinceMidnight / 2);
+    const timeEncoded = timeBlocks.toString(36).padStart(3, '0');
+    return dateStr + '-' + timeEncoded;
+  }
+
+  test('quick_id: exact value for pinned instant', () => {
+    const PINNED_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+    const result = runGsdTools('init quick "pinned task"', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_MS), TZ: 'UTC',
+    });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.quick_id, expectedQuickId(PINNED_MS));
+  });
+
+  test('boundary: two calls in the same 2s block share quick_id (documented collision, not a bug)', () => {
+    const BLOCK_START_MS = 1_700_000_000_000; // aligned so +0 and +1000 fall in the same 2s block
+    const r1 = runGsdTools('init quick "task a"', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(BLOCK_START_MS), TZ: 'UTC',
+    });
+    const r2 = runGsdTools('init quick "task b"', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(BLOCK_START_MS + 1000), TZ: 'UTC',
+    });
+    assert.ok(r1.success && r2.success);
+    const o1 = JSON.parse(r1.output);
+    const o2 = JSON.parse(r2.output);
+    assert.strictEqual(o1.quick_id, expectedQuickId(BLOCK_START_MS));
+    assert.strictEqual(o2.quick_id, expectedQuickId(BLOCK_START_MS + 1000));
+    assert.strictEqual(o1.quick_id, o2.quick_id, 'both instants are in the same 2-second block and must share a quick_id');
+  });
+
+  test('boundary: two calls straddling a 2s block edge get different quick_id', () => {
+    const BEFORE_EDGE_MS = 1_700_000_000_000; // even second → block boundary at +2000ms
+    const AFTER_EDGE_MS = BEFORE_EDGE_MS + 2000;
+    const r1 = runGsdTools('init quick "task a"', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(BEFORE_EDGE_MS), TZ: 'UTC',
+    });
+    const r2 = runGsdTools('init quick "task b"', tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: String(AFTER_EDGE_MS), TZ: 'UTC',
+    });
+    assert.ok(r1.success && r2.success);
+    const o1 = JSON.parse(r1.output);
+    const o2 = JSON.parse(r2.output);
+    assert.strictEqual(o1.quick_id, expectedQuickId(BEFORE_EDGE_MS));
+    assert.strictEqual(o2.quick_id, expectedQuickId(AFTER_EDGE_MS));
+    assert.notStrictEqual(o1.quick_id, o2.quick_id, 'instants 2000ms apart cross a 2-second block edge and must differ');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cmdInitMapCodebase (INIT-05)
 // ─────────────────────────────────────────────────────────────────────────────
 

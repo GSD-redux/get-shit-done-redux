@@ -702,11 +702,24 @@ describe('execute-phase: inter-wave worktree base re-check (#1369)', () => {
     assert.ok(refIdx < step1Idx, 'wave-guard @-reference must appear before step 1');
   });
 
-  test('step 0.5 guards on RUNTIME=claude (worktree isolation is Claude Code-specific)', () => {
+  // #2652: previously required `RUNTIME = "claude"`, encoding the pre-#2584 premise
+  // that worktree isolation is Claude-specific. #2584 replaced that with the
+  // negotiated dispatch.isolation capability — Cursor declares harness-worktree too,
+  // and the harness fork-base caching this guard exists for is a property of the
+  // isolation model, not of the runtime name.
+  test('step 0.5 guards on the negotiated capability, not a runtime id', () => {
     const content = fs.readFileSync(WAVE_GUARD_PATH, 'utf-8');
     assert.ok(
-      content.includes('RUNTIME') && (content.includes('"claude"') || content.includes("'claude'")),
-      'step 0.5 must guard on RUNTIME=claude'
+      content.includes('ISOLATION') && content.includes('harness-worktree'),
+      'step 0.5 must guard on ISOLATION = harness-worktree'
+    );
+    assert.ok(
+      !/\[\s*"\$RUNTIME"\s*=/.test(content),
+      'step 0.5 must NOT branch on a RUNTIME literal (#2584/#2652)'
+    );
+    assert.ok(
+      content.includes('ISOLATION=none'),
+      'degrade must clear ISOLATION as well as USE_WORKTREES — dispatch reads ISOLATION (#2652)'
     );
   });
 
@@ -780,11 +793,21 @@ describe('execute-phase: between-wave manifest reset (#1369, #3384)', () => {
     assert.ok(refPtr < idx8, 'between-wave @-reference must appear before step 8');
   });
 
-  test('step 7c guards on RUNTIME=claude for worktree-specific operations', () => {
+  // #2652: see the step 0.5 note above — migrated from the runtime-name premise to
+  // the negotiated dispatch.isolation capability.
+  test('step 7c guards on the negotiated capability, not a runtime id', () => {
     const content = fs.readFileSync(BETWEEN_WAVE_PATH, 'utf-8');
     assert.ok(
-      content.includes('RUNTIME') && (content.includes('"claude"') || content.includes("'claude'")),
-      'step 7c must guard on RUNTIME=claude'
+      content.includes('ISOLATION') && content.includes('harness-worktree'),
+      'step 7c must guard on ISOLATION = harness-worktree'
+    );
+    assert.ok(
+      !/\[\s*"\$RUNTIME"\s*=/.test(content),
+      'step 7c must NOT branch on a RUNTIME literal (#2584/#2652)'
+    );
+    assert.ok(
+      content.includes('ISOLATION=none'),
+      'degrade must clear ISOLATION as well as USE_WORKTREES — dispatch reads ISOLATION (#2652)'
     );
   });
 });

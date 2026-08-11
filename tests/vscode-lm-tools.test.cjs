@@ -19,6 +19,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const pkg = require('../vscode/package.json');
 const extension = require('../vscode/extension.js');
@@ -32,7 +34,15 @@ class FakeToolResult {
   constructor(parts) { this.parts = parts; }
 }
 
-function mockVscodeLm() {
+// `workspaceCwd`: createLanguageModelTool's invoke() resolves cwd via
+// resolveWorkspaceCwd(vscode) — vscode.workspace.workspaceFolders[0].uri.fsPath
+// — NOT via a `cwd` field on the invoke() options object (LanguageModelToolInvocationOptions
+// has no such field on the real API; see extension.js's #2103 FIX comment on
+// createLanguageModelTool). A test that wants a real dispatch to run against a
+// fixture directory must mock workspace.workspaceFolders here, not pass
+// `{ cwd }` in the options object handed to invoke() (that field is simply
+// never read).
+function mockVscodeLm(workspaceCwd) {
   const registered = [];
   return {
     lm: {
@@ -41,6 +51,9 @@ function mockVscodeLm() {
         return { dispose() {} };
       },
     },
+    workspace: workspaceCwd
+      ? { workspaceFolders: [{ uri: { fsPath: workspaceCwd } }] }
+      : undefined,
     LanguageModelTextPart: FakeTextPart,
     LanguageModelToolResult: FakeToolResult,
     registered,
@@ -89,11 +102,20 @@ test('REACHABILITY (desktop): registerLanguageModelTools registers every manifes
 test('REACHABILITY (desktop): gsd_progress tool.invoke() dispatches through the hub and returns REAL output', async () => {
   const dir = createTempDir();
   try {
-    const mock = mockVscodeLm();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+    // The LM tool's invoke() resolves cwd via vscode.workspace.workspaceFolders
+    // (resolveWorkspaceCwd), not via an options.cwd field — pass the fixture
+    // dir through the mock's workspace so dispatch actually runs against it.
+    const mock = mockVscodeLm(dir);
     extension.registerLanguageModelTools(mock, { subscriptions: [] });
     const progressTool = mock.registered.find((r) => r.name === 'gsd_progress');
     assert.ok(progressTool, 'gsd_progress must be registered');
-    const result = await progressTool.impl.invoke({ input: {}, cwd: dir }, {});
+    const result = await progressTool.impl.invoke({ input: {} }, {});
     assert.ok(result instanceof FakeToolResult, 'invoke must return a LanguageModelToolResult');
     assert.ok(Array.isArray(result.parts) && result.parts.length === 1);
     assert.ok(result.parts[0] instanceof FakeTextPart, 'result part must be a LanguageModelTextPart');
@@ -107,11 +129,14 @@ test('REACHABILITY (desktop): gsd_progress tool.invoke() dispatches through the 
 test('REACHABILITY (desktop): gsd_plan_phase tool.invoke() forwards the "phase" input through dispatch (real, not UnknownCommand)', async () => {
   const dir = createTempDir();
   try {
-    const mock = mockVscodeLm();
+    // The LM tool's invoke() resolves cwd via vscode.workspace.workspaceFolders
+    // (resolveWorkspaceCwd), not via an options.cwd field — pass the fixture
+    // dir through the mock's workspace so dispatch actually runs against it.
+    const mock = mockVscodeLm(dir);
     extension.registerLanguageModelTools(mock, { subscriptions: [] });
     const planPhaseTool = mock.registered.find((r) => r.name === 'gsd_plan_phase');
     assert.ok(planPhaseTool);
-    const result = await planPhaseTool.impl.invoke({ input: { phase: 'nonexistent-phase-8675309' }, cwd: dir }, {});
+    const result = await planPhaseTool.impl.invoke({ input: { phase: 'nonexistent-phase-8675309' } }, {});
     const parsed = JSON.parse(result.parts[0].text);
     // Real dispatch reaches gsd-tools.cjs and returns a structured "phase not
     // found" response (proves the engine was reached) — not the manifest's
@@ -126,10 +151,13 @@ test('REACHABILITY (desktop): gsd_plan_phase tool.invoke() forwards the "phase" 
 test('gsd_workstreams tool.invoke() dispatches through the hub and returns REAL output', async () => {
   const dir = createTempDir();
   try {
-    const mock = mockVscodeLm();
+    // The LM tool's invoke() resolves cwd via vscode.workspace.workspaceFolders
+    // (resolveWorkspaceCwd), not via an options.cwd field — pass the fixture
+    // dir through the mock's workspace so dispatch actually runs against it.
+    const mock = mockVscodeLm(dir);
     extension.registerLanguageModelTools(mock, { subscriptions: [] });
     const wsTool = mock.registered.find((r) => r.name === 'gsd_workstreams');
-    const result = await wsTool.impl.invoke({ input: {}, cwd: dir }, {});
+    const result = await wsTool.impl.invoke({ input: {} }, {});
     const parsed = JSON.parse(result.parts[0].text);
     assert.ok('workstreams' in parsed || 'mode' in parsed, 'expected a real workstream list response shape');
   } finally {

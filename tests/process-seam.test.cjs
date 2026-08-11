@@ -794,3 +794,32 @@ describe('runGsdTools adapter (process-seam parity)', () => {
     );
   });
 });
+
+describe('#3271: hook fan-out timeout class', () => {
+  const {
+    PROBE_TIMEOUT_MS: PROBE,
+    HOOK_FANOUT_TIMEOUT_MS: HOOK_FANOUT,
+    INSTALL_TIMEOUT_MS: INSTALL,
+  } = require('./helpers/timeouts.cjs');
+
+  test('a hook fan-out is bounded above a bare probe and below a full install', () => {
+    // The ordering IS the claim: a hook that shells out several times is heavier
+    // than reading back a version string and lighter than running bin/install.js.
+    // CI recorded a Windows timeout at exactly the probe bound (PR #3285,
+    // windows-latest node 22 shard 2/3) while every other lane passed the same
+    // commit — the bound was sized for the wrong class.
+    assert.ok(PROBE < HOOK_FANOUT, `probe ${PROBE}ms must be under hook fan-out ${HOOK_FANOUT}ms`);
+    assert.ok(HOOK_FANOUT < INSTALL, `hook fan-out ${HOOK_FANOUT}ms must be under install ${INSTALL}ms`);
+  });
+
+  test('the fan-out bound clears the duration that actually timed out', () => {
+    // Observed: 15040ms, censored at the 15000ms probe bound, so the real need is
+    // unknown and above it. A bound that merely matched the observation would be
+    // the same defect again.
+    const OBSERVED_TIMEOUT_MS = 15040;
+    assert.ok(
+      HOOK_FANOUT >= OBSERVED_TIMEOUT_MS * 3,
+      `hook fan-out ${HOOK_FANOUT}ms must clear the censored ${OBSERVED_TIMEOUT_MS}ms observation with real margin`,
+    );
+  });
+});

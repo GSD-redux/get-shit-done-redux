@@ -364,6 +364,7 @@ function recentCommitMessages(projectDir: string): string {
       encoding: 'utf-8',
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
+      timeout: 15_000,
     });
   } catch {
     return '';
@@ -663,6 +664,7 @@ function computeUiSafetyGate(projectDir: string, phase: string): {
       encoding: 'utf-8',
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
+      timeout: 10_000,
     });
     hasUiFiles = changed.split('\n').some((f) =>
       f.trim() && (UI_FILE_EXTENSIONS_RE.test(f) || UI_PATH_PATTERNS_RE.test(f)),
@@ -821,7 +823,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const redCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^test(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       red = redCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }
@@ -829,7 +831,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const greenCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^feat(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       green = greenCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }
@@ -837,7 +839,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
     try {
       const refactorCommit = execFileSync(
         'git', ['log', '--oneline', `--grep=^refactor(${planId}):`, '--', '.'],
-        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true },
+        { cwd: projectDir, encoding: 'utf-8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 },
       );
       refactor = refactorCommit.trim().length > 0;
     } catch { /* git unavailable or no match */ }

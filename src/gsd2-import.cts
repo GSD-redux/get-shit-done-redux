@@ -24,6 +24,7 @@ import path from 'node:path';
 import { platformWriteSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -373,7 +374,9 @@ function buildStateMd(phaseMap: PhaseMapEntry[]): string {
   const currentEntry = phaseMap.find(p => !p.slice.done);
   const totalPhases = phaseMap.length;
   const donePhases = phaseMap.filter(p => p.slice.done).length;
-  const pct = totalPhases > 0 ? Math.round((donePhases / totalPhases) * 100) : 0;
+  // ADR-3180 D7: one owner for completion percent. clampPercent's 100 ceiling is
+  // unreachable here (donePhases is a subset of totalPhases) — the value is unchanged.
+  const pct = clampPercent(donePhases, totalPhases);
 
   const currentPhaseNum = currentEntry ? zeroPad(currentEntry.phaseNum) : zeroPad(totalPhases);
   const currentSlug = currentEntry ? slugify(currentEntry.slice.title) : 'complete';

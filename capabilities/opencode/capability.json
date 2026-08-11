@@ -59,6 +59,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "none",
     "extensionEvents": "opencode",
@@ -109,8 +110,7 @@
       "skipHomePrefixSubstitution": true,
       "skipSettingsUi": true,
       "skipUpdateBannerCommand": true,
-      "skipCodexSkillsManifest": true,
-      "reviewerCli": true
+      "skipCodexSkillsManifest": true
     }
   },
   "reviewer": {
