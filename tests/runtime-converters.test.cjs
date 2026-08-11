@@ -1497,9 +1497,18 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       );
       // Round 2: in the broken-inheritance case (explicit non-false value) the
       // pre-selected default must be the repair, not "Leave unchanged".
+      // Round-5 review: this used to pin `Pre-select "Leave unchanged" only
+      // when the key is absent`. That assumed an absent key is already safe,
+      // which holds only on an emit that stamped the default to false —
+      // execute-phase/quick/diagnose read it as `|| echo "true"` otherwise. The
+      // recommended default must now be the explicit repair in every case.
       assert.ok(
-        src.includes('Pre-select "Leave unchanged" only when the key is absent'),
-        'settings.md: "Leave unchanged" may be the default only when there is nothing to repair',
+        src.includes('Pre-select "No (Recommended)" in every case, including an absent key'),
+        'settings.md: the recommended default must be the explicit false — an absent key is safe only on a stamped emit',
+      );
+      assert.ok(
+        !/Pre-select "Leave unchanged" only when the key is absent/.test(src),
+        'settings.md: the old absent-key-is-safe pre-selection rule is falsified on un-stamped emits (#2486 round-5 review)',
       );
       assert.ok(
         src.includes('when it is an explicit non-false value — the broken-inheritance case'),
@@ -1697,7 +1706,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       );
       // Both branches must still route the user to the same repair.
       for (const [name, out] of [['resolved', resolved], ['unresolved', unresolved]]) {
-        assert.match(out, /[/$]gsd[:-]settings/, `${name}: W024 must name the repair command`);
+        assert.match(out, /(?:\/gsd[:-]settings|\$gsd-settings)\b/, `${name}: W024 must name the repair command`);
       }
     });
 
