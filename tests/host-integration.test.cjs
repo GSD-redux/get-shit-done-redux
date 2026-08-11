@@ -2065,21 +2065,37 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
     // dispatch sites @-reference the gate and merely re-record a degrade
     // (`--force-isolation …` with no assignment), which carries no verdict of
     // its own — matching those too would flag files that have nothing to fix.
-    const INLINE_RESOLVE = /(?:_ISOLATION_RAW|ISOLATION)=\$\(gsd_run query dispatch-isolation --raw/;
-    const inliners = [...dispatchSites, path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md')]
-      .filter(f => fs.existsSync(f))
+    const INLINE_RESOLVE = /\w+=\$\(gsd_run query dispatch-isolation --raw/;
+    // Dedupe: SCAN_ROOTS already yields the gate reference, so appending it
+    // again made `length >= 2` satisfiable by the gate alone — the executor
+    // site could drop out of the predicate entirely and this would still pass.
+    const candidates = [...new Set(
+      [...dispatchSites, path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md')]
+        .filter(f => fs.existsSync(f))
+        .map(f => path.resolve(f)),
+    )];
+    const inliners = candidates
       .map(f => ({ rel: path.relative(REPO_ROOT, f).replace(/\\/g, '/'), text: fs.readFileSync(f, 'utf-8') }))
       .filter(({ text }) => INLINE_RESOLVE.test(text));
 
-    assert.ok(
-      inliners.length >= 2,
-      `expected the gate reference and at least one dispatch site to inline the resolver; found ${inliners.length}`,
+    // Pin identities, not a count. A count cannot tell "the executor site was
+    // fixed" from "the executor site stopped matching the predicate".
+    assert.deepEqual(
+      inliners.map(i => i.rel).sort(),
+      [
+        'gsd-core/references/dispatch-isolation-gate.md',
+        'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md',
+      ],
+      'the set of files inlining the resolver changed — a new inliner needs the same treatment, and a missing one means the predicate stopped seeing it',
     );
 
     for (const { rel, text } of inliners) {
+      // Any assignment target, not just ISOLATION — `_ISOLATION_RAW=$(… || echo
+      // "none")` restores the identical defect while leaving ISOLATION_RESOLVED
+      // in the file, so a name-specific pattern passes on a broken block.
       assert.doesNotMatch(
         text,
-        /ISOLATION=\$\(gsd_run query dispatch-isolation --raw[^\n]*\|\| echo "none"\)/,
+        /\w+=\$\(gsd_run query dispatch-isolation --raw[^\n]*\|\|[^\n]*echo/,
         `${rel}: collapses a resolver failure straight to none — that reports "declares no primitive" for a host that simply could not be queried`,
       );
       assert.match(
