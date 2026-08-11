@@ -5156,10 +5156,28 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
     emit({ valid: false, warnings, scope });
     return;
   }
+  // #612: #3208 replaced this lookup's `startsWith` prefix test with the
+  // canonical key comparison — which is the right surface, and is exactly why it
+  // now needs the convention. `phaseKeyFromDir` refuses to read a bracket
+  // directory without an explicit signal (a bracket dir is string-
+  // indistinguishable from the legacy letter-prefixed-decimal family, ADR-2121),
+  // so un-threaded it returns the WHOLE dir name as the key —
+  // `GSD.02-05-delta` -> `GSD.02-5-DELTA` — while `selectedPhaseKey` is the bare
+  // `05` that `parsePhaseFromProse` yields. The two sides of one comparison were
+  // derived under different conventions, which is #2562's defect class and the
+  // thing this file's other three `phaseKeyFromDir` call sites already thread
+  // against. Un-threaded, a bracket repo whose phase directory plainly exists
+  // reports `no phase directory matches phase 05` and `valid: false` — a
+  // wrong-and-confident answer on precisely the repos this convention supports.
+  // Resolved here rather than reusing a caller's value because cmdStateValidate
+  // has no other convention-dependent read. Non-bracket conventions (null,
+  // 'milestone-prefixed', unresolvable) are byte-identical to the un-threaded
+  // call by construction: `extractPhaseToken` branches only on `=== 'bracket'`.
+  const validateConvention = resolvePhaseIdConvention(cwd);
   let phaseDirPath: string;
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name) === selectedPhaseKey);
+    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name, validateConvention) === selectedPhaseKey);
     if (!phaseDir) {
       warnings.push(stateDiagnostic(
         'S004',

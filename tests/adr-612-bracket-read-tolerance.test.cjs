@@ -1030,3 +1030,125 @@ ${MALFORMED.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}`, 'bracket');
     assert.equal(validate.phaseTokenFromDir('GSD.02-01-real-work', 'bracket'), '01');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#612 PR-2: state validate resolves bracket phase DIRECTORIES', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-validate-dir-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  /**
+   * #3208 (merged to next as part of "resolve active state phase before drift
+   * scan") rewrote cmdStateValidate's directory lookup from a `startsWith`
+   * prefix test to the canonical `phaseKeyFromDir(...) === selectedPhaseKey`
+   * comparison. That is the correct surface — and it is exactly why the lookup
+   * now needs the resolved convention, which the rewrite does not pass.
+   *
+   * `phaseKeyFromDir` deliberately refuses to read a bracket directory without
+   * an explicit signal (ADR-2121: a bracket dir is string-indistinguishable
+   * from the legacy letter-prefixed-decimal family), so un-threaded it returns
+   * the whole dir name as the key — `GSD.02-05-real-work` -> `GSD.02-5-REAL-WORK`
+   * — while the STATE side is the bare `05` that `parsePhaseFromProse` yields.
+   * Both sides of one comparison derived under different conventions is #2562's
+   * defect class, and this file's other three `phaseKeyFromDir` call sites
+   * already thread against it.
+   *
+   * Observable symptom without the thread: a bracket repo whose phase directory
+   * plainly exists reports `valid: false` and "no phase directory matches phase
+   * 05" — wrong-and-confident on precisely the repos the convention supports,
+   * and drift detection (plan-count mismatch, verification status) never runs.
+   *
+   * The legacy twin below is the byte-identity control: threading a non-bracket
+   * convention must change nothing, since `extractPhaseToken` branches only on
+   * `=== 'bracket'`.
+   */
+  const BRK = `# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 05: Real work
+**Goal:** a
+`;
+  const LEG = `# Roadmap
+
+## v2.0: Current
+
+### Phase 05: Real work
+**Goal:** a
+`;
+
+  // STATE.md asserts 3 plans; disk carries 1. The drift warning is the PROOF
+  // the scan actually ran — a lookup that fails to find the directory returns
+  // before it, so "no plan_count drift reported" and "drift never ran" are
+  // distinguishable here rather than both reading as silence.
+  const STATE = `---
+gsd_state_version: '1.0'
+milestone: v2.0
+current_phase: '05'
+status: executing
+total_plans_in_phase: 3
+---
+# Project State
+
+## Current Position
+**Phase:** 05 — Real work
+`;
+
+  const seed = (roadmap, convention, dir) => {
+    write(roadmap, convention);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), STATE, 'utf-8');
+    const q = path.join(tmpDir, '.planning', 'phases', dir);
+    fs.mkdirSync(q, { recursive: true });
+    fs.writeFileSync(path.join(q, '05-01-PLAN.md'), '# plan\n', 'utf-8');
+  };
+
+  const validateState = () => {
+    const r = runGsdTools(['state', 'validate', '--json'], tmpDir);
+    return JSON.parse(r.output);
+  };
+
+  test('a bracket phase directory is FOUND — no phantom "no phase directory matches"', () => {
+    seed(BRK, 'bracket', 'GSD.02-05-real-work');
+    const out = validateState();
+    assert.equal(out.drift.phase_directory, undefined,
+      'the directory exists and must resolve; a phase_directory drift entry means the lookup missed it');
+    assert.ok(
+      !out.warnings.some(w => /no phase directory matches/.test(w)),
+      `bracket dir GSD.02-05-real-work must match phase 05, got: ${JSON.stringify(out.warnings)}`);
+  });
+
+  test('and the drift scan actually RUNS — plan-count mismatch is reported', () => {
+    seed(BRK, 'bracket', 'GSD.02-05-real-work');
+    const out = validateState();
+    assert.deepEqual(out.drift.plan_count, { state: 3, disk: 1 },
+      'resolving the directory must let the plan-count drift check run');
+  });
+
+  test('and that answer equals its flat-legacy twin exactly', () => {
+    seed(BRK, 'bracket', 'GSD.02-05-real-work');
+    const bracket = validateState();
+    cleanup(tmpDir);
+    tmpDir = createTempProject('adr-612-validate-dir-leg-');
+    seed(LEG, undefined, '05-real-work');
+    const legacy = validateState();
+    assert.deepEqual(bracket.drift, legacy.drift,
+      'bracket must validate exactly as the legacy twin does');
+    assert.deepEqual(legacy.drift.plan_count, { state: 3, disk: 1 },
+      'and the twin is the right answer, not a shared wrong one');
+  });
+
+  test('a NON-bracket repo is unaffected by the threaded convention', () => {
+    seed(LEG, undefined, '05-real-work');
+    const out = validateState();
+    assert.equal(out.drift.phase_directory, undefined);
+    assert.deepEqual(out.drift.plan_count, { state: 3, disk: 1 });
+  });
+
+  test('a genuinely absent phase directory still reports not_found on bracket', () => {
+    // Non-vacuity guard: the thread must not make the lookup match ANYTHING.
+    seed(BRK, 'bracket', 'GSD.02-09-unrelated');
+    const out = validateState();
+    assert.equal(out.drift.phase_directory.reason, 'not_found');
+    assert.equal(out.valid, false);
+  });
+});
