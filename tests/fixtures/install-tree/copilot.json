@@ -72,6 +72,7 @@
   "gsd-core/references/debugger-semantic-recall.md",
   "gsd-core/references/debugger-techniques.md",
   "gsd-core/references/decimal-phase-calculation.md",
+  "gsd-core/references/dispatch-isolation-gate.md",
   "gsd-core/references/doc-conflict-engine.md",
   "gsd-core/references/domain-probes.md",
   "gsd-core/references/edge-probe-fixtures/01-round-half-even/expected-coverage.json",

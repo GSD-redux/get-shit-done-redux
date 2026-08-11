@@ -166,6 +166,29 @@ the same canonical sentinel predicate `phases list` uses — previously its own
 regex excluded `999` but not `0`, so a `0-*` directory could be destroyed on
 this irreversible path.
 
+### `find-phase` plan/summary counts (live vs physical)
+
+`find-phase`'s JSON carries the existing `plans[]` / `summaries[]` arrays
+**unchanged**, plus three additive scalar fields:
+
+| Field | Set | Answers |
+|---|---|---|
+| `plan_count` | live — `status: superseded` plans excluded | "how much outstanding work is left in this phase?" (same set as `plans[]`) |
+| `summary_count` | live | same, for `summaries[]` |
+| `plan_count_all` | physical — every canonically-named plan file on disk, superseded included | "what has the planner actually written to disk?" |
+
+Naming mirrors `roadmap analyze`'s existing `plan_count`/`summary_count`, and the
+`_all` suffix echoes the underlying `scanPhasePlans` field it is drawn from.
+**Pick by the question you're asking, not by which number looks bigger:** a
+phase where every plan is `status: superseded` correctly reports `plan_count: 0`
+— that is a real "nothing outstanding" answer, not a bug — while
+`plan_count_all` still reports the physical count, so a check for "did the
+planner produce anything at all" doesn't misread a fully-superseded phase as
+untouched.
+
+When the phase can't be resolved, all three fields are `null`, not `0` — a
+fabricated `0` would read identically to a genuinely empty phase.
+
 ### Phase SUMMARY artifact check
 
 A phase `SUMMARY.md` asserts which files the phase created or modified. On

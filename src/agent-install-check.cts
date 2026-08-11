@@ -183,23 +183,15 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // when the plain presence check above passed (e.g. .md present, .toml absent).
   // If no manifest is found the check is a no-op (graceful for claude/bundled).
   const incomplete: string[] = [];
-  const manifestPath = path.join(path.dirname(agentsDir), 'gsd-file-manifest.json');
-  let manifestFiles: Record<string, unknown> = {};
-  try {
-    const raw = fs.readFileSync(manifestPath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      'files' in parsed &&
-      typeof (parsed as Record<string, unknown>)['files'] === 'object' &&
-      (parsed as Record<string, unknown>)['files'] !== null
-    ) {
-      manifestFiles = (parsed as Record<string, Record<string, unknown>>)['files'];
-    }
-  } catch {
-    // No manifest or unreadable — completeness check is skipped
-  }
+  // #2872: the manifest read is the Installer Migration Module's, not a
+  // fourth private copy of it. Lazily required — matching this file's own
+  // capability-registry idiom — so a pure read/verify surface on the
+  // init/verify hot path takes no new static dependency.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readInstallManifest } = require('./installer-migrations.cjs') as {
+    readInstallManifest: (configDir: string) => { files: Record<string, string> };
+  };
+  const manifestFiles: Record<string, unknown> = readInstallManifest(path.dirname(agentsDir)).files;
 
   if (Object.keys(manifestFiles).length > 0) {
     for (const agent of expectedAgents) {
