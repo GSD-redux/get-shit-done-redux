@@ -25,16 +25,33 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 # threads the phase identifier into that same atomic write (mode + harnessFlag
 # + phase together — see hooks/lib/isolation-sentinel.js for how the guards
 # consume it).
-ISOLATION=$(gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" 2>/dev/null || echo "none")
+# Keep the resolver's own failure DISTINGUISHABLE from a genuine `none`, exactly
+# as references/dispatch-isolation-gate.md does — this site declares that gate
+# canonical, so it must not carry the older collapsing shape. Both outcomes fail
+# closed, which is right, but only one of them may claim the host declared no
+# primitive (#2652 review).
+_ISOLATION_RAW=$(gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_ISOLATION_RAW" ]; then
+  ISOLATION=none
+  ISOLATION_RESOLVED=false      # fail closed, but we did NOT learn a verdict
+else
+  ISOLATION="$_ISOLATION_RAW"
+  ISOLATION_RESOLVED=true
+fi
 case "$ISOLATION" in
   harness-worktree|orchestrator-worktree|none) ;;
-  *) ISOLATION=none ;;
+  *) ISOLATION=none; ISOLATION_RESOLVED=false ;;   # out of vocabulary is not a verdict either
 esac
 
 # Project-level opt-out wins on every host; a host with no primitive fails closed.
 [ "$USE_WORKTREES" = "false" ] && ISOLATION=none
 if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then
-  echo "FATAL: runtime '$RUNTIME' declares no executor-isolation primitive (dispatch.isolation=none) — executors would run unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
+  if [ "$ISOLATION_RESOLVED" = "true" ]; then
+    echo "FATAL: runtime '$RUNTIME' declares no executor-isolation primitive (dispatch.isolation=none) — executors would run unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
+  else
+    echo "FATAL: could not resolve this runtime's executor-isolation capability — 'gsd_run query dispatch-isolation' failed or returned nothing, so GSD cannot tell whether isolation is available. Refusing to dispatch rather than guess (a guard that cannot verify must not answer 'safe'). Re-run once the gsd-tools shim resolves, or set workflow.use_worktrees=false to run sequentially on purpose." >&2
+  fi
   exit 1
 fi
 

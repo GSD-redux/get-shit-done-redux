@@ -2052,6 +2052,49 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
     }
   });
 
+  // #2652 review: executor-isolation-dispatch.md declared
+  // references/dispatch-isolation-gate.md canonical while keeping the OLDER
+  // collapsing resolver inline — `|| echo "none"`, no ISOLATION_RESOLVED — so a
+  // transient shim failure aborted /gsd:execute-phase telling a Claude or
+  // Cursor user their runtime "declares no executor-isolation primitive". Still
+  // fail-closed, so not an unsafe-dispatch hole, but the correction this PR is
+  // about was unwired at one of the five sites. Nothing caught it: the emitted
+  // coverage in install.test.cjs checks the REFERENCE, not each site's own copy.
+  test('every site that inlines the resolver uses the non-collapsing shape', () => {
+    // A site "inlines the resolver" only if it ASSIGNS from it. The other
+    // dispatch sites @-reference the gate and merely re-record a degrade
+    // (`--force-isolation …` with no assignment), which carries no verdict of
+    // its own — matching those too would flag files that have nothing to fix.
+    const INLINE_RESOLVE = /(?:_ISOLATION_RAW|ISOLATION)=\$\(gsd_run query dispatch-isolation --raw/;
+    const inliners = [...dispatchSites, path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md')]
+      .filter(f => fs.existsSync(f))
+      .map(f => ({ rel: path.relative(REPO_ROOT, f).replace(/\\/g, '/'), text: fs.readFileSync(f, 'utf-8') }))
+      .filter(({ text }) => INLINE_RESOLVE.test(text));
+
+    assert.ok(
+      inliners.length >= 2,
+      `expected the gate reference and at least one dispatch site to inline the resolver; found ${inliners.length}`,
+    );
+
+    for (const { rel, text } of inliners) {
+      assert.doesNotMatch(
+        text,
+        /ISOLATION=\$\(gsd_run query dispatch-isolation --raw[^\n]*\|\| echo "none"\)/,
+        `${rel}: collapses a resolver failure straight to none — that reports "declares no primitive" for a host that simply could not be queried`,
+      );
+      assert.match(
+        text,
+        /ISOLATION_RESOLVED=false/,
+        `${rel}: inlines the resolver but never records that no verdict was learned`,
+      );
+      assert.match(
+        text,
+        /could not resolve this runtime's executor-isolation capability/,
+        `${rel}: has no distinct message for the unresolved case, so both outcomes read as a capability verdict`,
+      );
+    }
+  });
+
   test('the detector flags every known runtime-gate shape (discrimination proof)', () => {
     // Each of these slipped past the original same-line, single-bracket detector.
     const mutations = {
