@@ -38,7 +38,7 @@ try {
   else process.env.GSD_TEST_MODE = savedTestMode;
 }
 
-const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, rewriteLegacyManagedNodeHookCommands, resolveNodeRunner } = installExports || {};
+const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, rewriteLegacyManagedNodeHookCommands, resolveNodeRunner, copyWithPathReplacement } = installExports || {};
 
 const {
   installRuntimeArtifacts,
@@ -1357,3 +1357,72 @@ describe('#1924: preserveUserArtifacts helper exists in install.js', () => {
 });
   });
 }
+
+// ─── #3333 — copyWithPathReplacement TOCTOU: source vanishes mid-copy ────────
+//
+// copyWithPathReplacement enumerates srcDir via readdirSync, then later reads
+// (or copies) each listed entry. A filesystem is not transactional: the file
+// readdirSync named can be deleted by a concurrent process before the loop
+// reaches it, throwing an unhandled ENOENT and crashing the whole install.
+// This is not hypothetical — tests/planning-prompt-drift.test.cjs writes a
+// throwaway fixture directly into the real, shared gsd-core/workflows/ and
+// deletes it in t.after(); a concurrently-running install path that lists
+// that directory can observe the fixture in its readdirSync snapshot but hit
+// ENOENT reading it once the writer's cleanup fires. Confirmed crash from a
+// real remote gsd-test run:
+//   Error: ENOENT: no such file or directory, open
+//   '/work/gsd-core/workflows/zzz-e5-drift-fixture.md'
+//       at Object.readFileSync (node:fs:441:20)
+//       at copyWithPathReplacement (/work/bin/install.js:7888:24)
+
+describe('#3333 regression: copyWithPathReplacement tolerates a source file vanishing mid-copy (TOCTOU)', () => {
+  test('a .md file deleted between readdirSync and read is skipped, siblings still copied, no crash', (t) => {
+    assert.strictEqual(typeof copyWithPathReplacement, 'function',
+      'copyWithPathReplacement must be exported from bin/install.js');
+
+    const srcDir = createTempDir('gsd-3333-src-');
+    const destRoot = createTempDir('gsd-3333-dest-');
+    t.after(() => {
+      cleanup(srcDir);
+      cleanup(destRoot);
+    });
+
+    fs.writeFileSync(path.join(srcDir, 'alpha.md'), '# alpha\n');
+    fs.writeFileSync(path.join(srcDir, 'vanish.md'), '# vanish\n');
+    fs.writeFileSync(path.join(srcDir, 'beta.md'), '# beta\n');
+
+    const vanishPath = path.join(srcDir, 'vanish.md');
+
+    // Deterministically inject the race at its true origin point: readdirSync
+    // (called inside copyWithPathReplacement) returns the snapshot that still
+    // includes 'vanish.md', but the file is removed from disk immediately
+    // after that snapshot is taken and before the entry loop reaches it — the
+    // same shape as a concurrent test suite's t.after() cleanup firing mid-copy.
+    const origReaddirSync = fs.readdirSync;
+    fs.readdirSync = function (dir, opts) {
+      const result = origReaddirSync.call(fs, dir, opts);
+      if (dir === srcDir) {
+        try { fs.unlinkSync(vanishPath); } catch { /* already gone */ }
+      }
+      return result;
+    };
+    t.after(() => { fs.readdirSync = origReaddirSync; });
+
+    const destDir = path.join(destRoot, 'out');
+
+    assert.doesNotThrow(() => {
+      copyWithPathReplacement(srcDir, destDir, '~/.claude/', 'claude', false, false, destRoot);
+    }, 'copyWithPathReplacement must not throw when a listed source file vanishes before it is read (#3333)');
+
+    assert.ok(fs.existsSync(path.join(destDir, 'alpha.md')),
+      'alpha.md (unaffected sibling before the vanished entry) must still be copied');
+    assert.strictEqual(fs.readFileSync(path.join(destDir, 'alpha.md'), 'utf8'), '# alpha\n');
+
+    assert.ok(fs.existsSync(path.join(destDir, 'beta.md')),
+      'beta.md (unaffected sibling after the vanished entry) must still be copied');
+    assert.strictEqual(fs.readFileSync(path.join(destDir, 'beta.md'), 'utf8'), '# beta\n');
+
+    assert.ok(!fs.existsSync(path.join(destDir, 'vanish.md')),
+      'vanish.md destination must not exist — the vanished source must be skipped, not partially written');
+  });
+});
