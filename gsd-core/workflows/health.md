@@ -98,7 +98,7 @@ the former — telling a Claude Code user their runtime declares no executor-iso
 which is false. Track the two apart and report which one happened.
 
 Know the limit of that signal (#2486 review): the verb itself fail-closes an unknown, undeclared or
-out-of-vocabulary runtime to `none` and exits 0, so `ISOLATION_RESOLVED=true` means "the query
+out-of-vocabulary runtime — and any internal resolution error — to `none` and exits 0, so `ISOLATION_RESOLVED=true` means "the query
 answered", not "the runtime published a declaration". W024's resolved-case wording below is
 therefore written to be true of every path that reaches it — a declared `none` and an
 internally-fail-closed `none` alike. Distinguishing those two would need the verb to report
@@ -122,7 +122,7 @@ esac
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
 if [ "$ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
   if [ "$ISOLATION_RESOLVED" = "true" ]; then
-    echo "W024: config.json sets workflow.use_worktrees to a non-false value, but this runtime has no usable executor-isolation primitive — dispatch.isolation resolves to none, either declared or fail-closed from an unknown/undeclared value — so /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or remove the key from .planning/config.json so the runtime default (false) applies."
+    echo "W024: config.json sets workflow.use_worktrees to a non-false value, but this runtime has no usable executor-isolation primitive — dispatch.isolation resolves to none, declared as none, or fail-closed because the capability could not be determined — so /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or remove the key from .planning/config.json so the runtime default (false) applies."
   else
     echo "W024: config.json sets workflow.use_worktrees to a non-false value, and GSD could not resolve this runtime's executor-isolation capability ('gsd_run query inspect-dispatch-isolation' failed or returned nothing) — so it cannot tell whether /gsd:execute-phase and /gsd:quick will fail closed on that value. This is a report of an unverifiable config, NOT a finding that the runtime declares no primitive. Fix: re-run once the gsd-tools shim resolves; if the warning persists, run /gsd:settings and answer No to Worktrees."
   fi

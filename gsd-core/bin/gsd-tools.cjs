@@ -1733,7 +1733,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     try {
       // Deliberately `resolveRuntime`, NOT `resolveActiveRuntime`/`loadConfig`:
       // loadConfig normalizes and rewrites legacy keys back to disk, and this
-      // resolver backs the side-effect-free `inspect-dispatch-isolation` verb,
+      // resolver backs the sentinel-free `inspect-dispatch-isolation` verb,
       // which must never write. resolveRuntime reads config.json directly.
       //
       // KNOWN LIMITATION, tracked separately: resolveRuntime stops at
@@ -1799,7 +1799,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   }
 
   function routeInspectDispatchIsolation({ args, cwd, raw }) {
-    // #2486: side-effect-free sibling of `dispatch-isolation` for INSPECTION
+    // #2486: sentinel-free sibling of `dispatch-isolation` for INSPECTION
     // surfaces — /gsd:health's W024 check and /gsd:settings' Worktrees
     // branching. The dispatch verb above intentionally records its resolved
     // decision to the isolation sentinel as an unconditional side effect

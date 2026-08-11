@@ -1326,7 +1326,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   // "none"` collapses "this runtime declares no primitive" into "the resolver
   // failed", and both surfaces then assert the former, which is false. The
   // canonical read now captures the raw value and tracks whether a verdict was
-  // actually learned, exactly as references/dispatch-isolation-gate.md does.
+  // actually learned, the same shape the execution-side isolation gate uses.
   // Pinned as two invariants rather than one long literal so that reformatting
   // the block does not fail the test while a semantic regression still does.
   const ISOLATION_LINE = '_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)';
@@ -1676,6 +1676,29 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         /could not resolve/i,
         'the resolved branch must state the capability finding, not a resolution failure',
       );
+      // Round-3 review: asserting only "differs and omits the other phrase"
+      // would stay green if the resolved text were replaced with anything at
+      // all. Pin what it must positively say — the capability finding and the
+      // consequence a user acts on.
+      assert.match(
+        resolved,
+        /no usable executor-isolation primitive/i,
+        'the resolved branch must state the capability finding it actually reached',
+      );
+      assert.match(
+        resolved,
+        /fail closed/i,
+        'the resolved branch must state the consequence — that is what makes W024 actionable',
+      );
+      assert.match(
+        resolved,
+        /use_worktrees/,
+        'the resolved branch must name the offending key',
+      );
+      // Both branches must still route the user to the same repair.
+      for (const [name, out] of [['resolved', resolved], ['unresolved', unresolved]]) {
+        assert.match(out, /\/gsd:settings/, `${name}: W024 must name the repair command`);
+      }
     });
 
     test('W024 is documented consistently across health.md and both config references', () => {

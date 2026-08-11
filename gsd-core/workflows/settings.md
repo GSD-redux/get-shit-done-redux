@@ -90,8 +90,8 @@ models per agent.
 **Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. Sentinel-free is the exact claim: the shared CLI bootstrap still runs, but nothing it does can block a dispatch. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on.
 
 A failed query is not a capability verdict, so track the two apart: settings still fails closed, but
-says so instead of claiming the runtime declares no primitive. The verb fail-closes an unknown
-runtime to `none` and exits 0, so `ISOLATION_RESOLVED=false` means only "the query did not answer"
+says so instead of claiming the runtime declares no primitive. The verb fail-closes an unknown runtime — or an
+internal resolution error — to `none` and exits 0, so `ISOLATION_RESOLVED=false` means only "the query did not answer"
 (#2486 review):
 
 ```bash
@@ -150,27 +150,33 @@ Context Warnings, Research Qs
   header: "Worktrees",
   multiSelect: false,
   options: [
-    { label: "No (Recommended)", description: "Write use_worktrees: false. This runtime declares no executor-isolation primitive, so parallel plans run sequentially and execution fails closed on an explicit true." },
-    { label: "Leave unchanged", description: "Do not write the key. Absent, it already resolves to false on this runtime; an existing explicit value is kept intact (e.g. for a worktree-capable install sharing this config)." }
+    { label: "No (Recommended)", description: "Write use_worktrees: false. {FINDING}, so parallel plans run sequentially and {CONSEQUENCE}." },
+    { label: "Leave unchanged", description: "Do not write the key. {ABSENCE}; an existing explicit value is kept intact (e.g. for a worktree-capable install sharing this config)." }
   ]
 }
 ```
 
-**When `ISOLATION_RESOLVED` is `false`,** keep this branch — failing closed on an unresolved capability is still right — with both `label`s, the option count and the never-write-`true` rule intact. But report what happened, not a verdict never reached. Throughout this branch (both `description`s, the pre-selection rationale, the explicit-`true` notice), replace "this runtime declares no executor-isolation primitive (dispatch.isolation: none)" with "GSD could not resolve this runtime's executor-isolation capability"; in the notice replace "fail closed on this value" with "cannot be checked against this value"; and drop the pre-selection parenthetical claiming absence already resolves to `false` here.
+**The three placeholders** carry the only difference between a capability GSD resolved and one it could not, so no text in this branch ever asserts a verdict that was not reached. Substitute them everywhere they appear — the two `description`s above, the pre-selection rationale, and the notice — from whichever column applies:
+
+| | `ISOLATION_RESOLVED=true` | `ISOLATION_RESOLVED=false` |
+|---|---|---|
+| `{FINDING}` | this runtime has no usable executor-isolation primitive | GSD could not resolve this runtime's executor-isolation capability |
+| `{CONSEQUENCE}` | execution fails closed on an explicit true | GSD cannot tell whether execution will accept an explicit true |
+| `{ABSENCE}` | absent, it already resolves to false on this runtime | absent, it is the safe state until the capability resolves |
+
+Failing closed is right in both columns — never write `workflow.use_worktrees: true` from this branch either way. Only the explanation changes.
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply when `ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "Leave unchanged" only when the key is absent (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal — nothing to repair, since absence already resolves to `false` here). Otherwise pre-select "No (Recommended)": both when the value is `false` and when it is an explicit non-false value — the broken-inheritance case the notice below covers. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default in the numbered list.
+  Pre-selection: the generic "current values pre-selected" rule does not apply when `ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "Leave unchanged" only when the key is absent (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal — `{ABSENCE}`, so there is nothing to repair). Otherwise pre-select "No (Recommended)": both when the value is `false` and when it is an explicit non-false value — the broken-inheritance case the notice below covers. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a config this runtime cannot honor. In TEXT_MODE, mark that option as the default in the numbered list.
 
-  Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
+  Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
 
 ```
-Note: .planning/config.json currently sets workflow.use_worktrees: true. This
-runtime declares no executor-isolation primitive (dispatch.isolation: none), so
-/gsd:execute-phase and /gsd:quick fail closed on this value. Choose "No" to
-repair it for this runtime, or "Leave unchanged" to keep it for a worktree-capable
-install that shares this config (this runtime's commands will keep failing until
-it is set to false here).
+Note: .planning/config.json currently sets workflow.use_worktrees: true.
+{FINDING}, so {CONSEQUENCE}. Choose "No" to repair it for this runtime, or
+"Leave unchanged" to keep it for a worktree-capable install that shares this
+config.
 ```
 
 ```
