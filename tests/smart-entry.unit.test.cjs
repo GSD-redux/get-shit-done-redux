@@ -846,6 +846,43 @@ describe('smart-entry: stale_activity honors the template\'s "date — descripti
     );
   });
 
+  // #2571 (round-10, fail-first): a leading real date followed by a
+  // WHITESPACE/COLON separator and an ordinary description — no zone designator.
+  // The pre-fix fallback guard ("/^\\s*[A-Za-z]/", return null on any letter)
+  // could not tell a named zone from a plain word, so it failed open on exactly
+  // these and silently re-opened #2570 for hand-edited STATE.md that omits the
+  // template em dash. The narrowed guard reconstructs from the leading date;
+  // only a zone-shaped remainder (short all-caps run) still fails open.
+  //
+  // Fail-first and host-independent: `2026-06-08` is ~54 days before FIXED_NOW,
+  // so the reconstructed UTC-midnight instant reads stale on any host; the
+  // pre-fix guard returns null -> not-stale, inverting the verdict.
+  // The last two lead with an all-caps tech acronym on a BARE date: a zone
+  // qualifies a clock time, so a date with no time-of-day carries no zone hazard
+  // and must reconstruct. A time-agnostic all-caps guard would fail open on these.
+  for (const value of [
+    'last_activity: 2026-06-08 caught up on backlog', // space + lowercase
+    'last_activity: 2026-06-08\tfixed the login bug', // tab + lowercase
+    'last_activity: 2026-06-08 Milestone two executed', // space + Capitalised word
+    'last_activity: 2026-06-08: reviewed the PR queue', // colon separator
+    'last_activity: 2026-06-08 CI green, shipped it', // bare date + acronym lead
+    'last_activity: 2026-06-08 API refactor complete', // bare date + acronym lead
+  ]) {
+    test(`#2571: a plain description after "${value.slice(29, 45)}…" reads stale, not fail-open`, () => {
+      const stateMd = ['---', 'status: executing', value, '---', '', '# Project State', '', 'Phase: 1', ''].join(
+        '\n',
+      );
+      const dir = track(makeProject({ state: stateMd, roadmap: true }));
+      const signals = detectSignals(dir, FIXED_NOW);
+      assert.equal(
+        signals.stale_activity,
+        true,
+        'a leading real date with a non-zone description suffix must reconstruct and read ' +
+          'stale, not fail open the way the "any letter" guard did',
+      );
+    });
+  }
+
   // CONTRIBUTING.md QA Matrix: "Mixed CRLF/LF newlines" for frontmatter parsing
   // changes. No live defect — the fallback branch trims before matching — but
   // the standard asks for the fixture, and this pins it.

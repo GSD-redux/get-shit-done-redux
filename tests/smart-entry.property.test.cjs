@@ -112,12 +112,30 @@ const dateOffsetHours = (hours) =>
  * timestamp and legitimately change the parsed instant, which is not the
  * contract this asserts.
  */
-const descriptionSuffix = fc
+const dashSuffix = fc
   .tuple(
     fc.constantFrom(' — ', ' - ', '  —  '),
     fc.string({ minLength: 1, maxLength: 60 }).filter((s) => !s.includes('\n')),
   )
   .map(([sep, text]) => `${sep}${text}`);
+
+/**
+ * #2571: the separators a hand edit uses WITHOUT the em dash — a bare space, a
+ * tab, a colon. The pre-fix fallback guard failed open on any letter-leading
+ * remainder, so these silently re-opened #2570 while the dash-only generator
+ * above could not reach the shape. The description text is forced to lead with a
+ * lowercase letter (`x`) so it is unambiguously a description and never a zone
+ * designator — an all-caps leading run IS genuinely zone-ambiguous and correctly
+ * fails open, which property (f) covers separately.
+ */
+const plainSeparatorSuffix = fc
+  .tuple(
+    fc.constantFrom(' ', '\t', ': '),
+    fc.string({ minLength: 0, maxLength: 59 }).filter((s) => !s.includes('\n')),
+  )
+  .map(([sep, text]) => `${sep}x${text}`);
+
+const descriptionSuffix = fc.oneof(dashSuffix, plainSeparatorSuffix);
 
 describe('smart-entry stale_activity — properties (#2570)', () => {
   test('(a) a stale date reads stale regardless of the description suffix', () => {

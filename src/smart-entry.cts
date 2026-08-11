@@ -190,6 +190,31 @@ const ISO_LEADING_RE =
   /^(\d{4})-(\d{2})-(\d{2})((?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/;
 
 /**
+ * A NAMED timezone designator at the start of the un-reconstructable remainder
+ * (#2571). ISO_LEADING_RE's offset group captures only `Z` / `±HH:MM`, so a
+ * named zone (GMT, EST, ...) is not in the leading token — it sits here.
+ * Reconstructing the token without it would let Date.parse read the time as
+ * LOCAL, shifting the instant by the host's offset (a wrong, host-dependent
+ * value), so a zone-shaped remainder must fail open (ADR-227).
+ *
+ * The shape is a short all-caps run (2–5 letters) that stands alone — the
+ * negative lookahead excludes the first letter of a Capitalised word like
+ * "Milestone", and an optional trailing offset is subsumed because the leading
+ * all-caps run already matches. Everything else — a lowercase or Capitalised
+ * description, a separator — is describable text and is reconstructed from the
+ * leading date.
+ *
+ * Consulted ONLY when the leading token captured a time-of-day (see the caller):
+ * a zone designator qualifies a clock time, so a BARE date can carry no zone
+ * hazard — reconstructing it is always just that date's UTC midnight, whatever
+ * trails it. Gating on the time keeps a description that merely opens with a
+ * tech acronym ("2026-06-08 CI green", "API refactor") on the reconstruct path
+ * instead of failing open. The prior "any letter" guard was too liberal — it
+ * failed open on every letter-led description and re-opened #2570.
+ */
+const ZONE_DESIGNATOR_RE = /^\s*[A-Z]{2,5}(?![A-Za-z])/;
+
+/**
  * True only when y/m/d name a date that actually exists on the calendar.
  *
  * `Date.parse` validates shape but not value: it rolls an out-of-range day
@@ -228,20 +253,18 @@ function parseActivityTimestamp(raw: string | null): number | null {
     // shifting the instant by the host's UTC offset.
     const whole = Date.parse(trimmed);
     if (!Number.isNaN(whole)) return whole;
-    // Whole-string failed: the value carries a suffix the engine can't read
-    // as one instant (#2570). Before reconstructing from the token, guard the
-    // hazard the comment above names: ISO_LEADING_RE's offset group captures
-    // only `Z` / `+-HH:MM`, so a NAMED zone (GMT, EST, ...) is NOT in `time` --
-    // it sits in the trailing remainder. Reconstructing without it and letting
-    // Date.parse read the result as LOCAL time would shift the instant by the
-    // host's UTC offset: a wrong, host-dependent value. A named zone shows up
-    // as an alphabetic token after the matched date/time; the #2570 template
-    // suffix (" -- description") starts with a separator instead. So if the
-    // remainder begins with a letter we cannot preserve its zone -- fail open
-    // to null (ADR-227: never propagate a wrong instant; null is the base's
-    // not-stale default) rather than compute a plausible-but-wrong one.
+    // Whole-string failed: the value carries a suffix the engine can't read as
+    // one instant (#2570). Reconstruct from the leading token UNLESS the remainder
+    // is a named zone the token dropped (GMT, EST, ...): reconstructing without it
+    // reads the time as LOCAL and shifts the instant by the host's offset, so a
+    // zone-shaped remainder fails open (ADR-227: never propagate a wrong instant;
+    // null is the base's not-stale default). An ordinary description -- the #2570
+    // template's " -- description", or a hand edit's bare-space/tab/colon suffix --
+    // carries no zone and IS reconstructed. See ZONE_DESIGNATOR_RE for the shape;
+    // the earlier "any letter" guard failed open on every description and re-opened
+    // #2570 for whitespace-separated suffixes.
     const rest = trimmed.slice(iso[0].length);
-    if (/^\s*[A-Za-z]/.test(rest)) return null;
+    if (time && ZONE_DESIGNATOR_RE.test(rest)) return null;
     const ms = Date.parse(`${year}-${month}-${day}${time}`);
     return Number.isNaN(ms) ? null : ms;
   }
