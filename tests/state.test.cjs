@@ -1774,13 +1774,22 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Status:** Active\n'
     );
+    // #3233: give the scan a plan so totalPlans > 0 clears the zero-plans
+    // no-op guard and this test reaches the 'Progress field not found' branch
+    // it is named for (otherwise the guard fires first and the branch is uncovered).
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01');
+    fs.mkdirSync(phase01Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase01Dir, '01-01-PLAN.md'), '# Plan\n');
 
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, false, 'updated should be false');
-    assert.ok(output.reason !== undefined, 'should have a reason');
+    assert.ok(
+      /Progress field not found/i.test(String(output.reason)),
+      `should be the 'Progress field not found' reason; got: ${output.reason}`
+    );
   });
 
   // ── #2177: frontmatter `progress:` key must not shadow the body Progress: line ──
