@@ -26,7 +26,7 @@
 - There is **no** `gsd-core/src/` or `sdk/src/` TypeScript tree. There is
   **no** TS→CJS transpilation pipeline. There is **no**
   `tests/cjs-ts-parity.test.cjs`. The only parity test is
-  `tests/issue-498-package-identity.test.cjs`, scoped to the one baked file: it
+  `tests/package-identity.test.cjs`, scoped to the one baked file: it
   regenerates from `package.json` and asserts the committed output is not stale.
 - `tsconfig.lint.json` exists with `allowJs` + `checkJs`, but it is **not**
   wired into `eslint.config.mjs`. The `.cjs` config block (`eslint.config.mjs`
@@ -174,4 +174,4 @@ build artifact?** Three models:
 - Superseded shared-module seam: `3524-cjs-sdk-hard-seam.md`
 - Tracking issue: [#457](https://github.com/open-gsd/gsd-core/issues/457)
 - Value-baking precedent (distinct technique): `scripts/generate-package-identity.cjs`,
-  `tests/issue-498-package-identity.test.cjs`
+  `tests/package-identity.test.cjs`
