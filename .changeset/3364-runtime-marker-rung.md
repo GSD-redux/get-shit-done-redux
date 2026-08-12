@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 3382
+---
+**Non-Claude installs no longer resolve as Claude** — `resolveRuntime` read `GSD_RUNTIME > config.runtime > 'claude'` and never consulted the per-install `.gsd-runtime` marker the installer writes, so a Cursor/Codex/Kimi install whose `.planning/config.json` carried no `runtime` key — every config `config-new-project` writes — resolved to `claude`. Every downstream consumer then believed it: dispatch isolation reported `harness-worktree`, worktree guidance recommended a mode the host cannot honor, and capability state resolved `~/.claude`. The marker is now a rung in both resolution ladders — below the explicit sources in `resolveRuntime`, and below host detection in `resolveReportedRuntime`, since the marker says what a tree was installed for while a live session signal says what is running now. The second rung fixes `/gsd-init`, which reports through that ladder into the agent-install check: a Kimi install previously reported `agent_runtime: "claude"` with all 34 agents missing, because Kimi's layout was read as Claude's. #2446 fixed the installer side of #2395; this fixes the resolver side. (#3364)
