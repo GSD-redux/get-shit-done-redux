@@ -83,44 +83,45 @@ describe('#498 regression: update.md backup uses GSD_DIR, not the removed LOCAL_
 // through the whole update flow (version check + install) while leaving the
 // default @latest path unchanged.
 
-const { test: __t815 } = require('node:test');
-const assert815 = require('node:assert/strict');
-const fs815 = require('node:fs');
-const path815 = require('node:path');
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const ROOT815 = path815.join(__dirname, '..');
-const WF = fs815.readFileSync(path815.join(ROOT815, 'gsd-core', 'workflows', 'update.md'), 'utf8');
-const CMD = fs815.readFileSync(path815.join(ROOT815, 'commands', 'gsd', 'update.md'), 'utf8');
+const ROOT815 = path.join(__dirname, '..');
+const WF = fs.readFileSync(path.join(ROOT815, 'gsd-core', 'workflows', 'update.md'), 'utf8');
+const CMD = fs.readFileSync(path.join(ROOT815, 'commands', 'gsd', 'update.md'), 'utf8');
 
-__t815('issue #815: workflow parses --next/--rc into a TAG channel', () => {
-  assert815.match(WF, /--next/);
-  assert815.match(WF, /--rc/);
-  assert815.match(WF, /TAG="next"/);
-  assert815.match(WF, /TAG="latest"/);
+test('issue #815: workflow parses --next/--rc into a TAG channel', () => {
+  assert.match(WF, /--next/);
+  assert.match(WF, /--rc/);
+  assert.match(WF, /TAG="next"/);
+  assert.match(WF, /TAG="latest"/);
 });
 
-__t815('issue #815: version check threads the tag through check-latest-version.cjs', () => {
+test('issue #815: version check threads the tag through check-latest-version.cjs', () => {
   // The script path is double-quoted in the shell command, so the line is:
   //   node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG"
   // The closing " on the script path sits between .cjs and --json.
-  assert815.match(WF, /check-latest-version\.cjs"? --json --tag "\$TAG"/);
+  assert.match(WF, /check-latest-version\.cjs"? --json --tag "\$TAG"/);
 });
 
-__t815('issue #815: install uses the selected tag, not a hardcoded @latest', () => {
+test('issue #815: install uses the selected tag, not a hardcoded @latest', () => {
   const robust = WF.match(/npx -y --package=@opengsd\/gsd-core@"\$TAG" -- gsd-core/g) || [];
-  assert815.ok(robust.length >= 3, `expected >=3 tag-parameterized npx invocations, found ${robust.length}`);
-  assert815.doesNotMatch(WF, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
+  assert.ok(robust.length >= 3, `expected >=3 tag-parameterized npx invocations, found ${robust.length}`);
+  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
     'install lines must not hardcode @latest once --next exists');
-  assert815.doesNotMatch(WF, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
+  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
     'install lines must use the $TAG variable, never a hardcoded dist-tag literal');
 });
 
-__t815('issue #815: command documents --next/--rc and routes it to the update workflow', () => {
-  assert815.match(CMD, /--next/);
-  assert815.match(CMD, /--rc/);
-  assert815.match(CMD, /argument-hint:.*--next/);
+test('issue #815: command documents --next/--rc and routes it to the update workflow', () => {
+  assert.match(CMD, /--next/);
+  assert.match(CMD, /--rc/);
+  assert.match(CMD, /argument-hint:.*--next/);
 });
-
+  });
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2470-update-md-claude-path.test.cjs — consolidation epic #1969 (B4 #1973)
@@ -230,7 +231,5 @@ __t3130('bug #3130: update.md has >=3 robust npx invocations (--package= + -- se
     `Expected >=3 robust npx invocations in update.md, found ${robust.length}`,
   );
 });
-  });
-}
   });
 }

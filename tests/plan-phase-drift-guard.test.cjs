@@ -1742,6 +1742,8 @@ describe('runtime wiring for #2492 gates', () => {
     );
   });
 });
+  });
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/issue-2762-plan-reviews-chunked.test.cjs — H3 Wave 6 (#3338)
@@ -1809,7 +1811,5 @@ test('§8.5.2 crash-resume (non-reviews) still skips written plans (#2762 negati
     'crash-resume (non-reviews) must still skip plans with valid frontmatter (resume safety preserved) (#2762)'
   );
 });
-  });
-}
   });
 }
