@@ -102,6 +102,46 @@ describe('validate consistency command', () => {
     );
   });
 
+  test('#3225: sentinel phase dirs (999/0) do not warn; real orphans still do', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n### Phase 1: A\n`
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    // Sentinel dirs — never-on-roadmap by convention (SENTINEL_RANGES=[0,999]).
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999-interim'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '0-drafts'), { recursive: true });
+    // A real orphan (non-sentinel) that SHOULD still warn.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-orphan'), { recursive: true });
+
+    const result = runGsdTools('validate consistency', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const sentinelWarnings = output.warnings.filter(
+      w => w.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w)
+    );
+    assert.strictEqual(
+      sentinelWarnings.length, 0,
+      `sentinel phase dirs must not warn; got: ${JSON.stringify(sentinelWarnings)}`
+    );
+    // Negative space: the real orphan must still warn.
+    assert.ok(
+      output.warnings.some(w => w.includes('disk but not in ROADMAP') && /02\b/.test(w)),
+      `expected a warning for the real orphan 02; got: ${JSON.stringify(output.warnings)}`
+    );
+    // #3225 (review finding): a sentinel dir must NOT produce a spurious
+    // "Gap in phase numbering: N → 999" either (the gap check builds its integer
+    // sequence from diskPhases and would otherwise include 999).
+    const sentinelGaps = output.warnings.filter(
+      w => w.includes('Gap in phase numbering') && /999\b/.test(w)
+    );
+    assert.strictEqual(
+      sentinelGaps.length, 0,
+      `sentinel 999 must not create a spurious numbering gap; got: ${JSON.stringify(sentinelGaps)}`
+    );
+  });
+
   test('warns about gaps in phase numbering', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),

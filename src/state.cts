@@ -804,6 +804,27 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
 
+  // #3233: zero plans in the current-milestone phases means there is nothing to
+  // measure — most often the milestone was just closed and its phases archived
+  // (.planning/phases/ empty, but scope COMPLETE — "a real empty"). clampPercent
+  // maps 0/0 to 0%, which would clobber the shipped Progress record (e.g.
+  // [██████████] 100% → [░░░░░░░░░░] 0%). No-op instead, mirroring the
+  // scope-withhold above and computeProgressPercent's null-for-empty contract
+  // ("nothing to measure" ≠ "0% done"). The legitimate 0% case (plans exist,
+  // none summarized → clampPercent(0, N>0) = 0) is unaffected: totalPlans > 0.
+  if (totalPlans === 0) {
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — no plans found in current-milestone phases (0 plans). ` +
+      `STATE.md's Progress field was left unchanged (milestone archived?).\n`
+    );
+    output(
+      { updated: false, reason: 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)' },
+      raw,
+      'false',
+    );
+    return;
+  }
+
   const percent = clampPercent(totalSummaries, totalPlans);
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
