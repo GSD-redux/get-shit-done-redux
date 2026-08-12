@@ -1779,7 +1779,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     // the SHIPPED block so the predicate is proven by behavior — Major 1 would
     // have been caught by any one of these cases.
     test('W025 fires only on an explicit non-false key under isolation=none (behavioral, #2486 Major 2)', { skip: NO_BASH }, (t) => {
-      const scratch = createTempDir('gsd-w024-');
+      const scratch = createTempDir('gsd-w025-');
       t.after(() => cleanupDir(scratch));
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
@@ -1807,7 +1807,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
           '  esac; }',
           block,
         ].join('\n');
-        const scriptPath = path.join(scratch, `w024-${isolation}-${worktreesOut || 'absent'}.sh`);
+        const scriptPath = path.join(scratch, `w025-${isolation}-${worktreesOut || 'absent'}.sh`);
         fs.writeFileSync(scriptPath, harness);
         const res = runHook(scriptPath, [], { interpreter: 'bash' });
         assert.equal(
@@ -1852,7 +1852,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     // to stop reporting a failed query as a capability verdict. This test
     // drives the shipped block twice and fails on the mutation.
     test('W025 distinguishes a declared none from an unresolvable query (behavioral, #2486 Major 3)', { skip: NO_BASH }, (t) => {
-      const scratch = createTempDir('gsd-w024-provenance-');
+      const scratch = createTempDir('gsd-w025-provenance-');
       t.after(() => cleanupDir(scratch));
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
@@ -1878,7 +1878,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
           '  esac; }',
           block,
         ].join('\n');
-        const scriptPath = path.join(scratch, `w024-resolves-${resolves}.sh`);
+        const scriptPath = path.join(scratch, `w025-resolves-${resolves}.sh`);
         fs.writeFileSync(scriptPath, harness);
         const res = runHook(scriptPath, [], { interpreter: 'bash' });
         assert.equal(res.outcome, 'exited', `block did not complete: ${res.stderr || ''}`);

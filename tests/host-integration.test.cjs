@@ -2486,14 +2486,22 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     // their `ISOLATION=none` is a local fail-closed value with no recording to
     // do — and re-recording from a diagnostic is the exact defect #2486
     // removed (a health check that stamps a phase:null sentinel hard-blocks
-    // every later executor dispatch). Asserted, not assumed, in the same shape
-    // as the delegation exemption above: if either surface ever reaches for the
-    // RECORDING verb, these assertions fail and it has to earn its exemption
-    // again rather than silently keeping it.
+    // every later executor dispatch).
+    //
+    // The exemption is PER BLOCK, not per file. A file-wide skip would mean a
+    // real dispatch block added to either file later inherits the exemption and
+    // silently escapes a guard whose name promises "every dispatch site" — the
+    // same hole the hand-listed revision had. A block earns the exemption only
+    // by resolving through the inspection verb AND containing no dispatch
+    // primitive; the file-level assertions below are a precondition on top of
+    // that, so reaching for the recording verb anywhere in the file revokes it.
     const INSPECTION_SURFACES = new Set([
       'gsd-core/workflows/health.md',
       'gsd-core/workflows/settings.md',
     ]);
+    // Anything that actually hands work to an executor. A block carrying one of
+    // these is a dispatch site whatever file it lives in.
+    const DISPATCH_PRIMITIVE = /Agent\(|harnessFlag|HARNESS_FLAG|isolation="worktree"|query dispatch-isolation/;
     for (const rel of INSPECTION_SURFACES) {
       const text = readFileNormalized(path.join(REPO_ROOT, rel));
       assert.ok(
@@ -2509,11 +2517,15 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     for (const file of scan) {
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
       if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
-      if (INSPECTION_SURFACES.has(rel)) continue;
       const text = readFileNormalized(file);
       for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
         const block = m[1];
         if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
+        if (
+          INSPECTION_SURFACES.has(rel)
+          && /query inspect-dispatch-isolation/.test(block)
+          && !DISPATCH_PRIMITIVE.test(block)
+        ) continue;
         if (!block.includes('--force-isolation')) {
           const line = text.slice(0, m.index).split(/\r?\n/).length;
           offenders.push(`${rel}:${line}`);
