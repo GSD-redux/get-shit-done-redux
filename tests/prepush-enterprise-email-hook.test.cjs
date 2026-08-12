@@ -11,8 +11,12 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_PATH = path.join(ROOT, '.githooks', 'pre-push');
 
-// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+// #3271: class-norm timeout, HOOK_FANOUT_TIMEOUT_MS not a per-suite value — see
+// helpers/timeouts.cjs. This file is the fan-out class: the hook runs under
+// `bash` and shells to a mock `git` that is itself a bash script, so a single
+// runHook call is several nested spawns, not the single short probe the base
+// PROBE_TIMEOUT_MS class describes.
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Write a mock bash script to a .sh file in tmpDir and return its absolute path.
@@ -60,7 +64,7 @@ exit 1
           GSD_BLOCKED_AUTHOR_REGEX: '@example-corp\\.com$',
         },
         input: 'refs/heads/pr refs-local-sha refs/heads/pr refs-remote-sha\n',
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       });
       throwIfFailed(r, `bash ${HOOK_PATH}`);
     }, /Push blocked: commit author email matched local blocked regex/);
@@ -93,7 +97,7 @@ exit 1
         GSD_BLOCKED_AUTHOR_REGEX: '@example-corp\\.com$',
       },
       input: 'refs/heads/pr refs-local-sha refs/heads/pr refs-remote-sha\n',
-      timeoutMs: PROBE_TIMEOUT_MS,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     throwIfFailed(r, `bash ${HOOK_PATH}`);
   });

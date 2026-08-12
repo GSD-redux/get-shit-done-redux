@@ -161,24 +161,31 @@ Runtime capabilities describe how GSD projects its artefacts onto one host CLI. 
 
 ### `hostBehaviors`
 
-`runtime.hostBehaviors` is an **open, unvalidated bag** of per-host behavior switches consumed directly by installer and runtime-adaptation code. Unlike every axis in the table above, it is **not covered by any schema**: the key `hostBehaviors` appears zero times in `scripts/gen-capability-registry.cjs` and zero times in `scripts/registry-schema.cjs`. An unknown key inside `hostBehaviors` is neither rejected nor warned about — it is simply ignored by any code path that does not look for it by name.
+`runtime.hostBehaviors` is a **closed vocabulary** of per-host behavior switches consumed directly by installer and runtime-adaptation code. A key outside the vocabulary is **ignored, with a non-fatal warning** naming the capability and the key; it is never a validation error, so a manifest authored against a newer GSD degrades visibly instead of failing the build of a repo that merely reads it.
 
-58 distinct keys are declared across the shipped runtime manifests; most are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
+Adding a key is a reviewed first-party change, which is [ADR-1016](../adr/1016-runtime-capability-descriptor.md)'s intended friction rather than an obstacle: the runtime descriptor expresses every per-host difference as a value over a closed vocabulary, and a host needing a new shape gets a named primitive rather than an open escape hatch.
+
+> **History.** `hostBehaviors` went unvalidated until [#2801](https://github.com/open-gsd/gsd-core/issues/2801), and this page previously described it as a deliberate open seam sanctioned by ADR-1016. That attribution was wrong — ADR-1016 does not mention `hostBehaviors` at all. See the [ADR-1016 amendment](../adr/1016-runtime-capability-descriptor.md#amendment-2026-08-09-hostbehaviors-is-closed-2801).
+
+The vocabulary holds 59 keys; 39 of them are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
 
 | Key | Capabilities declaring it |
 |---|---|
 | `reapplyCommand` | 9 |
 | `skipSharedHooksInstall` | 8 |
-| `reviewerCli` | 6 |
 | `frontmatterDialect` | 5 |
 | `hyphenNameAgentBody` | 3 |
 | `legacyCommandsGsdInstallMigration` | 3 |
+| `legacyCommandsGsdUninstall` | 3 |
+| `nativePlugin` | 3 |
 | `skipUpdateBannerCommand` | 3 |
 | `verificationStyle` | 3 |
 
-**`reviewerCli` is deprecated.** It is a boolean that historically marked a runtime capability as also being a reviewer lane. It is now a **derived legacy alias**, retained for one release so an out-of-tree runtime descriptor that still sets it keeps working. A declared `reviewer` body (see below) takes precedence over the alias, and a capability declaring both contributes **one** slug, not two. `reviewerCli` is superseded by the `reviewer` body; its removal is tracked by issue #2801. It is currently set by 6 capabilities: `antigravity`, `claude`, `codex`, `cursor`, `opencode`, `qwen`.
+**`reviewerCli` has been removed.** It was a boolean that marked a runtime capability as also being a reviewer lane. [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) replaced it with the [`reviewer` body](#reviewer-body-role-reviewer-or-on-any-role); it survived one release (1.9.0 → 1.10.0) as a derived legacy alias and was deleted in Phase 7 ([#2801](https://github.com/open-gsd/gsd-core/issues/2801)). No shipped capability declares it.
 
-See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime body is a closed 8-axis plus 4 install-surface vocabulary; `hostBehaviors` is the deliberate open seam beside it) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body and the `reviewerCli` alias's deprecation).
+**If your out-of-tree manifest still sets it:** nothing crashes and nothing else about your capability changes — it simply contributes no reviewer lane, and the registry reports a non-fatal warning naming the capability. The warning reaches you at build time on stderr, and at install time through the overlay loader's diagnostics. To restore the lane, declare a `reviewer` body; [Ship a reviewer lane in your capability](../how-to/ship-a-reviewer-lane.md) is the migration path, and the field reference is below.
+
+See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime descriptor is a closed vocabulary; its 2026-08-09 amendment closes `hostBehaviors` too) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body, and D9 retires the `reviewerCli` alias).
 
 For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016-runtime-capability-descriptor.md).
 
@@ -207,7 +214,7 @@ All 12 shipped lane declarations carry all 13 fields below.
 | `flags` | string[] | User-facing CLI flags that select this lane. A lane may declare more than one — `antigravity` declares `--antigravity` and `--agy`. 12 lanes declare 13 flags in total. |
 | `transport` | closed enum | `spawn` \| `openai-http`. |
 | `probe` | object | Availability check. `probe.kind` is a closed enum: `command-exists` \| `command-capability` \| `http-reachable`. `command-capability` additionally takes `binary`, `needle`, and a **required** `timeoutMs` — it exists because a bare binary name can be ambiguous (`kimi` is claimed by both the Kimi Code CLI and the legacy Python `kimi-cli`), and the timeout bound is mandatory because an unbounded `--help \| grep` probe is this repo's named Unbounded Subprocesses defect. |
-| `invoke` | object | Shape is selected by `transport`. For `spawn`: `binary`, `args[]`, `promptChannel` (`stdin` \| `argv` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `outputArg` (required when `outputChannel` is `file-arg`), `modelArg` (string or `null`), `effortChannel` (`none` \| `argv` \| `env`). For `openai-http`: `hostConfigKey`, `defaultHost`, `path`, `modelDiscovery` (`none` \| `first-from-models-endpoint`), `fallbackModel`, `effortChannel`. `args` supports the `{{model}}`, `{{prompt}}`, `{{effort}}`, and `{{output}}` placeholders. |
+| `invoke` | object | Shape is selected by `transport`. For `spawn`: `binary`, `args[]`, `promptChannel` (`stdin` \| `argv` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `outputArg` (required when `outputChannel` is `file-arg`), `modelArg` (string or `null`), `effortChannel` (`none` \| `argv` \| `env`), `env` (optional; an object of environment name/value pairs, string values only, merged over the inherited environment for that one spawn — keys must match the portable environment-name grammar `[A-Za-z_][A-Za-z0-9_]*`, which is a portability policy rather than an OS limit, and `__proto__` is refused because it would be dropped before reaching the child). For `openai-http`: `hostConfigKey`, `defaultHost`, `path`, `modelDiscovery` (`none` \| `first-from-models-endpoint`), `fallbackModel`, `effortChannel`. `args` supports the `{{model}}`, `{{prompt}}`, `{{effort}}`, and `{{output}}` placeholders. **Every field in this object is disclosed at install and bound to the consent signature** — `env` and `defaultHost` by name in the consent prompt, the rest through a residual, so any change to a declared `invoke` field forces re-consent. `env` additionally **refuses execution-primitive names** — `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `GIT_SSH_COMMAND`, `JAVA_TOOL_OPTIONS` and siblings, matched case-insensitively (Windows environment lookup is). A lane needing a specific executable declares an absolute `binary` rather than reshaping the child's `PATH`. That denylist is defence in depth and not the boundary: it cannot be complete against an arbitrary child, and disclosure runs before validation, so install-time consent — which shows every declared pair and warns on execution-primitive names — is what actually gates them. |
 | `timeoutFloorMs` | number | Measured per-lane floor. Lane divergence here is real and correct — the descriptor's job is to declare divergence in one place, not to promise uniformity. |
 | `emptyOutput` | closed enum | `stub-with-stderr` \| `handler-owned`. |
 | `reviewsSection` | string | The `REVIEWS.md` heading this lane renders under. Must be unique across the merged roster. |

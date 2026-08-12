@@ -17,7 +17,11 @@ import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
 const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings } = roadmapParserModule;
@@ -32,13 +36,13 @@ const { planningPaths, withPlanningLock, findContextMdIn } = planningWorkspace;
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtils = require('./core-utils.cjs');
-const { countMatchedSummaries } = coreUtils;
+const { countMatchedSummaries, findUnsummarizedPlans } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, parseMustHavesBlock } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
-const { readVerificationStatus } = verificationMod;
+const { isPhaseComplete } = verificationMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -411,7 +415,14 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
       hasContext = counts.hasContext;
       hasResearch = counts.hasResearch;
 
-      if (summaryCount >= planCount && planCount > 0) diskStatus = 'complete';
+      // ADR-3180 §7.4 (issue #3186, disk-strict, #3168 fix): route "is this
+      // phase complete" through the canonical owner (`isPhaseComplete`),
+      // which calls readVerificationStatus UNCONDITIONALLY — plan count is
+      // NOT a precondition, so a zero-plan phase with a passing
+      // `*-VERIFICATION.md` reports complete here too, not just via
+      // `phase.complete`.
+      const completionResult = isPhaseComplete(path.join(phasesDir, dirMatch));
+      if (completionResult.value.complete) diskStatus = 'complete';
       else if (summaryCount > 0) diskStatus = 'partial';
       else if (planCount > 0) diskStatus = 'planned';
       else if (hasResearch) diskStatus = 'researched';
@@ -419,20 +430,23 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
       else diskStatus = 'empty';
     }
 
-    // Check ROADMAP checkbox status.
-    // #3537: padding-tolerant fragment — the heading discovered above may use
-    // a different padding than the summary-bullet checkbox below it (mixed
-    // padding inside one ROADMAP is legal and seen in real projects).
+    // Check ROADMAP checkbox status. #3537: padding-tolerant fragment — the
+    // heading discovered above may use a different padding than the
+    // summary-bullet checkbox below it (mixed padding inside one ROADMAP is
+    // legal and seen in real projects).
+    //
+    // ADR-3180 §7.4 (disk-strict, #2957, maintainer decision 2026-08-08):
+    // `roadmapComplete` is reported below as metadata ONLY — it carries NO
+    // machine authority over `diskStatus`. The override that used to trust a
+    // ticked checkbox over disk file structure is DELETED, not generalized
+    // (#2957: "a ticked ROADMAP checkbox is a human annotation with no
+    // machine authority"). A phase marked complete solely by a ticked
+    // checkbox — no passing `*-VERIFICATION.md`, plans outstanding — now
+    // reports incomplete; this is the deliberate Tier-2 break (ADR-3180 §7.4
+    // Decision 3).
     const checkboxPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+${phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i');
     const checkboxMatch = content.match(checkboxPattern);
     const roadmapComplete = checkboxMatch ? checkboxMatch[1] === 'x' : false;
-
-    // If roadmap marks phase complete, trust that over disk file structure.
-    // Phases completed before GSD tracking (or via external tools) may lack
-    // the standard PLAN/SUMMARY pairs but are still done.
-    if (roadmapComplete && diskStatus !== 'complete') {
-      diskStatus = 'complete';
-    }
 
     phases.push({
       number: phaseNum,
@@ -483,6 +497,38 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const detailPhases = new Set(phases.map(p => p.number));
   const missingDetails = [...checklistPhases].filter(p => !detailPhases.has(p) && !isSentinelPhaseId(p));
 
+  // #3217 (ADR-3180 §7.6 rules 3-4): `progress_percent` used to accumulate
+  // `totalPlans`/`totalSummaries` above — a heading-matched enumeration
+  // (`phasePattern` over the milestone-windowed `content`) paired against
+  // `_phaseDirNames`, a DELIBERATELY unscoped physical directory listing
+  // (see its own comment above: it is a heading->directory lookup index,
+  // not a milestone enumeration). That set is not the same set
+  // `listMilestonePhaseDirs` scopes for `query progress` / `stats` (#3185
+  // Phase 3), so `progress_percent` could silently diverge from both siblings
+  // on the same project (rule 3). Route `progress_percent`'s own
+  // numerator/denominator through the single scoped owner instead — mirrors
+  // cmdProgressRender/cmdStats's own aggregation — and withhold the
+  // percentage entirely when THAT scope is not COMPLETE (rule 4), never
+  // returning `0` for "could not compute". This does not touch `total_plans`
+  // / `total_summaries` / `phases` / `completed_phases` above — those stay
+  // the heading-matched detail view; only `progress_percent`'s own inputs
+  // move onto the scoped owner.
+  let scopedTotalPlans = 0;
+  let scopedTotalSummaries = 0;
+  let progressScope: Scope = SCOPE.UNREADABLE;
+  try {
+    const { value: progressDirs, scope: scopedResult } = listMilestonePhaseDirs(phasesDir, { cwd });
+    progressScope = scopedResult;
+    for (const dir of progressDirs) {
+      const scan = scanPhasePlans(path.join(phasesDir, dir));
+      scopedTotalPlans += scan.planCount;
+      scopedTotalSummaries += scan.summaryCount;
+    }
+  } catch { /* progressScope stays the pessimistic SCOPE.UNREADABLE default */ }
+  const progressPercent = progressScope === SCOPE.COMPLETE
+    ? clampPercent(scopedTotalSummaries, scopedTotalPlans)
+    : null;
+
   const result = {
     milestones,
     phases,
@@ -490,7 +536,24 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     completed_phases: completedPhases,
     total_plans: totalPlans,
     total_summaries: totalSummaries,
-    progress_percent: clampPercent(totalSummaries, totalPlans),
+    progress_percent: progressPercent,
+    // #3217 finding 2: `progress_percent` is gated by a SECOND, independently
+    // computed `listMilestonePhaseDirs` scope (`progressScope` above) — not
+    // by the top-level `scope` field, which describes the heading-windowing
+    // identity `phases`/`total_plans`/`total_summaries`/`completed_phases`
+    // were built from. Those two scopes can legitimately disagree (e.g.
+    // `scope: "complete"` alongside a genuinely unreadable phases directory),
+    // and per the documented contract "scope tells you whether the counts
+    // are trustworthy", a consumer seeing `progress_percent: null` needs a
+    // field to tell WHY without reading source. Exposing `progress_scope`
+    // (rather than reconciling the two scopes into one, or re-deriving
+    // `total_plans`/`phases`/etc. from the scoped set) preserves the
+    // deliberate, already-documented choice a few lines up: `phases`/
+    // `total_plans`/`total_summaries`/`completed_phases` stay the
+    // heading-matched detail view (`_phaseDirNames` is a lookup index, not a
+    // milestone enumeration — see its comment); only `progress_percent`'s own
+    // inputs move onto the scoped owner.
+    progress_scope: progressScope,
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,
@@ -570,10 +633,34 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   // completion date until the phase's verification status is 'passed', matching
   // cmdPhaseComplete's gate (phase.cts:1436). Previously the checkbox fired the
   // moment the last plan summary landed — before gsd-verifier had verified.
+  //
+  // ADR-3180 §7.4 (issue #3186, disk-strict): routed through the canonical
+  // owner (`isPhaseComplete`) instead of hand-rolling `summaryCount >=
+  // planCount && verificationPassed` locally — the owner calls
+  // readVerificationStatus UNCONDITIONALLY, so `isComplete` here always
+  // agrees with `roadmap analyze` / `init manager` / `phase complete` for
+  // the same phase (ADR-3180 §7.4's headline: one predicate for the read
+  // path and the write path).
   const phaseDir = path.join(cwd, phaseInfo!.directory);
-  const verificationResult = readVerificationStatus(phaseDir);
-  const verificationPassed = verificationResult.status === 'passed';
-  const isComplete = summaryCount >= planCount && verificationPassed;
+  const completionResult = isPhaseComplete(phaseDir);
+  const verificationResult = completionResult.value.verification;
+  // #2648 precedent, applied at this write site (ADR-3180 §7.4 / #3186):
+  // `isPhaseComplete` deliberately carries NO plan-count precondition — the
+  // owner's `complete` is exactly `verification.status === 'passed'`, and
+  // that must stay true (disk-strict: a zero-plan phase with a passing
+  // `*-VERIFICATION.md` IS complete, #3168). But `readVerificationStatus`'s
+  // staleness check only compares SUMMARY mtimes against the verification
+  // file — it has no idea a NEW plan was added after the file was written,
+  // so a still-fresh `passed` verification says nothing about a plan added
+  // afterward. This command WRITES a checkbox and a completion date into
+  // ROADMAP.md, a materially stronger claim than "verification passed" —
+  // mirroring cmdPhaseComplete's own fail-closed plan-coverage gate
+  // (phase.cts:~1995, #2648: "a coverage gate that passes when it cannot
+  // read the plans is no gate at all"), composed explicitly here rather than
+  // folded into the predicate: complete AND all plans executed.
+  const coverageScan = scanPhasePlans(phaseDir);
+  const unsummarizedPlans = findUnsummarizedPlans(coverageScan.planFiles, coverageScan.summaryFiles);
+  const isComplete = completionResult.value.complete && unsummarizedPlans.length === 0;
   // #3057 B3: routing above is unchanged (an indeterminate staleness check
   // still routes as if nothing were stale) — this only makes the fact visible
   // to whatever reads this command's JSON output.

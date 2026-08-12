@@ -1,0 +1,6 @@
+name = "gsd-analyst"
+description = "Summarizes structured data for the sprint report"
+model_verbosity = "low"
+developer_instructions = '''
+Summarize the input dataset. Keep the response terse and factual.
+'''

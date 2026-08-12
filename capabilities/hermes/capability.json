@@ -41,6 +41,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "claude",

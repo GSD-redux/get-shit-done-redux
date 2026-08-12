@@ -62,6 +62,18 @@ describe('ADR-1769 substrate: field-classification table', () => {
     assert.strictEqual(cls && cls.preservation, 'preserve-always');
   });
 
+  test('state_head is free / derive (ADR-1769 §4 — ambient git read, refreshed every write; #2573)', () => {
+    // `state_head` records the commit STATE.md was written against. It is not
+    // body-derived, disk-derived, or curated — it is an ambient external read
+    // recomputed on every write, exactly like `last_updated` (realClock.nowIso()).
+    // ADR-1769 §4: "Each STATE.md field has a row." The per-transition guard in
+    // transitionCore only checks the keys a transition declares, so an
+    // unregistered field would slip through silently — this test is the check.
+    const cls = getFieldClassification('state_head');
+    assert.strictEqual(cls && cls.source, 'free');
+    assert.strictEqual(cls && cls.preservation, 'derive');
+  });
+
   test('table covers every frontmatter key emitted by buildStateFrontmatter (codex Phase 1 review)', () => {
     // Verified against src/state.cts:1633-1653 (buildStateFrontmatter emit block).
     const requiredFields = [
@@ -77,6 +89,7 @@ describe('ADR-1769 substrate: field-classification table', () => {
       'last_updated',
       'last_activity',
       'last_activity_desc',
+      'state_head',
       'progress',
       'progress.total_phases',
       'progress.completed_phases',

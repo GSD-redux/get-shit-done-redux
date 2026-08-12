@@ -934,21 +934,30 @@ test('codex emit stamps its own runtime default into the runtime-resolution line
   );
 });
 
-test('codex emit defaults workflow.use_worktrees to false', () => {
+test('codex emit leaves workflow.use_worktrees at the true default — isolation is negotiated, not stamped (#1515 premise superseded by #2584/#2652)', () => {
+  // #1515 stamped `--default false` here because worktree isolation *was*
+  // Claude Code's isolation="worktree" spawn parameter, so a Codex install that
+  // resolved use_worktrees=true would have run unisolated while believing it was
+  // isolated. #2584 removed that premise: Codex declares
+  // `dispatch.isolation: orchestrator-worktree`, meaning GSD creates the
+  // worktree itself and spawns `codex exec --cd <worktree>` — supported, not
+  // unsafe. Keeping the stamp would resolve USE_WORKTREES=false before
+  // dispatch-isolation is consulted, re-deciding isolation by runtime name,
+  // which is the exact defect #2652 removes. The safety property #1515 protects
+  // is now held by the isolation gate's fail-closed resolution, not by a
+  // name-scoped install-time default.
   const line =
     'USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")\n';
   const out = conversion._applyRuntimeRewrites(line, 'codex', '$HOME/.codex/', true, undefined);
-  assert.ok(
-    out.includes('config-get workflow.use_worktrees --default false --raw'),
-    `Expected 'config-get workflow.use_worktrees --default false --raw' in output; got:\n${out}`,
+  assert.strictEqual(
+    conversion._negotiatedDispatchIsolation('codex'),
+    'orchestrator-worktree',
+    'codex must declare orchestrator-worktree for this expectation to hold',
   );
-  assert.ok(
-    out.includes('|| echo "false")'),
-    `Expected '|| echo "false")' in output; got:\n${out}`,
-  );
-  assert.ok(
-    !out.includes('|| echo "true")'),
-    `Expected '|| echo "true")' to be fully rewritten; got:\n${out}`,
+  assert.strictEqual(
+    out,
+    line,
+    `Expected the use_worktrees read to survive codex emit untouched; got:\n${out}`,
   );
 });
 
@@ -986,12 +995,17 @@ test('regression: every edited workflow gets codex-stamped (source↔engine pari
   for (const wf of WORKFLOWS) {
     const src = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
     const out = conversion._applyRuntimeRewrites(src, 'codex', '$HOME/.codex/', true, undefined);
-    // No un-stamped claude/true resolution line may survive codex emit on ANY surface.
+    // No un-stamped claude runtime line may survive codex emit on ANY surface.
     assert.ok(!out.includes(CLAUDE_RUNTIME), `${wf}: residual un-stamped runtime read — engine regex no longer matches source line (parity drift)`);
-    assert.ok(!out.includes(TRUE_WT), `${wf}: residual un-stamped use_worktrees read — parity drift`);
     // If the source HAS such a read, the codex form must be present.
     if (src.includes(CLAUDE_RUNTIME)) assert.ok(out.includes(CODEX_RUNTIME), `${wf}: runtime read not stamped to codex`);
-    if (src.includes(TRUE_WT)) assert.ok(out.includes(FALSE_WT), `${wf}: use_worktrees read not defaulted to false`);
+    // #2652: codex declares orchestrator-worktree, so the use_worktrees read is
+    // left for `gsd_run query dispatch-isolation` to decide at run time — the
+    // install-time `--default false` stamp would pre-empt that negotiation.
+    if (src.includes(TRUE_WT)) {
+      assert.ok(out.includes(TRUE_WT), `${wf}: use_worktrees read was stamped away for a runtime that negotiates worktree isolation (#2652)`);
+      assert.ok(!out.includes(FALSE_WT), `${wf}: codex gained the --default false use_worktrees stamp (#2652)`);
+    }
   }
 });
 
@@ -1036,11 +1050,16 @@ test('property: codex stamping is idempotent on resolution lines (#1515)', () =>
 'use strict';
 /**
  * Regression tests for #1521: every non-Claude runtime stamps its own runtime
- * identity + workflow.use_worktrees=false into emitted workflows.
+ * identity into emitted workflows, and stamps workflow.use_worktrees=false
+ * where its negotiated dispatch.isolation is `none`.
  *
- * GSD's worktree isolation relies on Claude Code's isolation="worktree" spawn
- * parameter, which no other runtime honors. #1519 (Codex-only fix) is
- * generalized here to ALL non-Claude runtimes.
+ * #1519 (Codex-only fix) was generalized here to ALL non-Claude runtimes on the
+ * premise that GSD's worktree isolation was Claude Code's isolation="worktree"
+ * spawn parameter, which no other runtime honored. #2584 replaced that premise
+ * with the negotiated `dispatch.isolation` capability, and #2652 scoped the
+ * use_worktrees stamp to match: a host declaring harness-worktree or
+ * orchestrator-worktree keeps the `true` default, because stamping it false
+ * pre-empts the negotiation and re-decides isolation by runtime name.
  *
  * All tests assert on the SUT's RETURN VALUE (engine output), not raw file reads,
  * except the parity integration test which carries the allow-test-rule exemption.
@@ -1068,13 +1087,14 @@ const FALSE_WT_LINE = 'config-get workflow.use_worktrees --default false --raw 2
 // Parity across ALL non-Claude runtimes × all 5 workflows
 // ---------------------------------------------------------------------------
 
-test('parity: every non-Claude runtime stamps its own runtime default and use_worktrees=false on all workflows (#1521)', () => {
+test('parity: every non-Claude runtime stamps its own runtime default, and use_worktrees=false only where isolation negotiates to none (#1521, #2652)', () => {
   // allow-test-rule: pending-migration-to-typed-ir [#3090]
   // `out` is _applyRuntimeRewrites's engine-transformed shell text, not shipped
   // source — substring-matching it is the "Rendered file" row CONTRIBUTING
   // requires a typed-IR builder for. No such IR exists yet for the shell
   // rewrite output; production change out of scope here. Tracked under #3090.
   for (const rt of NON_CLAUDE) {
+    const isolation = conversion._negotiatedDispatchIsolation(rt);
     for (const wf of WORKFLOWS) {
       const src = fs.readFileSync(
         path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
@@ -1088,12 +1108,6 @@ test('parity: every non-Claude runtime stamps its own runtime default and use_wo
         `${rt}/${wf}: residual un-stamped claude runtime read — _stampNonClaudeRuntimeDefaults not applied`,
       );
 
-      // No un-stamped use_worktrees=true line may survive
-      assert.ok(
-        !out.includes(TRUE_WT_LINE),
-        `${rt}/${wf}: residual un-stamped use_worktrees=true read — _stampNonClaudeRuntimeDefaults not applied`,
-      );
-
       // If the source had a runtime read, the output must have --default <rt>
       if (src.includes(CLAUDE_RUNTIME_LINE)) {
         assert.ok(
@@ -1102,14 +1116,212 @@ test('parity: every non-Claude runtime stamps its own runtime default and use_wo
         );
       }
 
-      // If the source had a use_worktrees read, the output must have --default false
-      if (src.includes(TRUE_WT_LINE)) {
+      if (!src.includes(TRUE_WT_LINE)) continue;
+
+      // #2652: the use_worktrees=false stamp is scoped to the runtimes whose
+      // negotiated dispatch.isolation really is `none`. A host that declares
+      // harness-worktree (cursor) or orchestrator-worktree (codex, opencode,
+      // kimi, kimi-code) must keep the unstamped `true` default, or the stamp
+      // resolves USE_WORKTREES=false before dispatch-isolation is consulted and
+      // the runtime is judged by its name after all.
+      if (isolation === 'none') {
+        assert.ok(
+          !out.includes(TRUE_WT_LINE),
+          `${rt}/${wf}: residual un-stamped use_worktrees=true read — _stampNonClaudeRuntimeDefaults not applied`,
+        );
         assert.ok(
           out.includes(FALSE_WT_LINE),
           `${rt}/${wf}: use_worktrees line not defaulted to false`,
         );
+      } else {
+        assert.ok(
+          out.includes(TRUE_WT_LINE),
+          `${rt}/${wf}: declares dispatch.isolation=${isolation} but the use_worktrees read was stamped away — the install-time default pre-empts the negotiated capability (#2652)`,
+        );
+        assert.ok(
+          !out.includes(FALSE_WT_LINE),
+          `${rt}/${wf}: declares dispatch.isolation=${isolation} but gained the --default false stamp`,
+        );
       }
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #2652: the stamp's scope is the negotiated capability, not the runtime name
+// ---------------------------------------------------------------------------
+
+test('regression #2652: _stampNonClaudeRuntimeDefaults leaves use_worktrees alone for every runtime that negotiates a worktree isolation', () => {
+  const line =
+    'USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")\n';
+
+  // The set is derived from the registry, not hand-listed, so a newly declared
+  // worktree host is covered the moment it lands — the same reason
+  // NON_CLAUDE_RUNTIMES is derived rather than literal (#1521).
+  const declaresWorktree = NON_CLAUDE.filter(
+    (rt) => conversion._negotiatedDispatchIsolation(rt) !== 'none',
+  );
+  const declaresNone = NON_CLAUDE.filter(
+    (rt) => conversion._negotiatedDispatchIsolation(rt) === 'none',
+  );
+
+  // Both arms must be non-empty or the test proves nothing about either.
+  assert.ok(
+    declaresWorktree.length > 0,
+    'no non-Claude runtime negotiates a worktree isolation — the regression this pins is unreachable',
+  );
+  assert.ok(
+    declaresNone.length > 0,
+    'every non-Claude runtime negotiates a worktree isolation — the false stamp is dead code',
+  );
+
+  for (const rt of declaresWorktree) {
+    assert.strictEqual(
+      conversion._stampNonClaudeRuntimeDefaults(line, rt),
+      line,
+      `${rt}: negotiates ${conversion._negotiatedDispatchIsolation(rt)} but its use_worktrees default was stamped false at install time, so dispatch-isolation-gate.md resolves ISOLATION=none regardless of what it declared (#2652)`,
+    );
+  }
+
+  for (const rt of declaresNone) {
+    assert.ok(
+      conversion._stampNonClaudeRuntimeDefaults(line, rt).includes(FALSE_WT_LINE),
+      `${rt}: negotiates none, so the false default must still be stamped (#1521)`,
+    );
+  }
+});
+
+test('regression #2652: _negotiatedDispatchIsolation fails closed on an undeclared or unknown runtime', () => {
+  // Mirrors routeDispatchIsolation's fail-closed contract (ADR-1239): anything
+  // outside the closed vocabulary resolves to `none`, so the #1521 stamp — and
+  // the workflows' isolation gate — degrade to sequential rather than to an
+  // unisolated dispatch that believes it is isolated.
+  for (const unknown of ['not-a-runtime', '', 'CLAUDE', '__proto__']) {
+    assert.strictEqual(
+      conversion._negotiatedDispatchIsolation(unknown),
+      'none',
+      `${JSON.stringify(unknown)}: expected fail-closed 'none'`,
+    );
+  }
+
+  // A registry-known host whose declared value is the `undocumented` sentinel
+  // (or absent) is out of vocabulary and must degrade the same way.
+  const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+  const undocumented = NON_CLAUDE.filter((rt) => {
+    const declared = registry?.runtimes?.[rt]?.runtime?.hostIntegration?.dispatch?.isolation;
+    return declared === 'undocumented' || declared == null;
+  });
+  assert.ok(undocumented.length > 0, 'no runtime declares the undocumented sentinel — nothing to pin');
+  for (const rt of undocumented) {
+    assert.strictEqual(conversion._negotiatedDispatchIsolation(rt), 'none', `${rt}: undocumented must degrade to none`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #2652 review round-5/6 Major 1 — PARITY with the runtime resolver.
+//
+// `_negotiatedDispatchIsolation` (install time, this module) and
+// `routeDispatchIsolation` (dispatch time, gsd-core/bin/gsd-tools.cjs) are two
+// implementations of ONE rule: what isolation may this host negotiate. They
+// read the same inputs — the capability registry and `resolveOrchestratorExec`
+// — but duplicate the DECISION on top of them, on two surfaces (the install
+// engine and the CLI query hub) with no call edge between them. So neither
+// symbol appears in the other's impact graph and no static analysis sees the
+// duplication. Divergence would be silent, and its consequence is the #2652
+// defect returning by the back door: the installer stamping
+// `use_worktrees=false` for a host the resolver would have granted a worktree
+// (or the reverse — an unstamped host whose dispatch then refuses).
+//
+// The assertion is therefore behavioral on BOTH sides: the resolver leg drives
+// the REAL CLI and reads its actual stdout.
+// ---------------------------------------------------------------------------
+
+test('regression #2652: _negotiatedDispatchIsolation agrees with the routeDispatchIsolation CLI for every registered runtime', () => {
+  const { runGsdTools, createTempProject, cleanup: cleanupDir } = require('./helpers.cjs');
+  const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+  const RUNTIME_IDS = Object.keys(registry.runtimes).sort();
+
+  // Install time cannot know the worktree a future dispatch will target, so
+  // `_negotiatedDispatchIsolation` probes the orchestrator descriptor with a
+  // placeholder. The CLI is asked BOTH ways, because the two calls are both real:
+  //
+  //   --cwd-target <probe>  the executor-spawn call, which resolves the descriptor.
+  //                         Same question install time asks; must match exactly.
+  //   (no --cwd-target)     the FIRST call every dispatch site makes — the
+  //                         `Resolve ISOLATION` block in dispatch-isolation-gate.md.
+  //                         It skips descriptor resolution, so it can only differ
+  //                         from install time for an orchestrator host whose
+  //                         descriptor does not resolve. No such host exists today
+  //                         and that is worth pinning: if one lands, the install
+  //                         stamps `use_worktrees=false` while the workflow gate
+  //                         still reports `orchestrator-worktree` — the #2652 split
+  //                         brain, in the one shape the target-bound leg cannot see.
+  const PROBE_TARGET = '/gsd-orchestrator-worktree-probe';
+
+  const dir = createTempProject('gsd-2652-parity-');
+  try {
+    const disagreements = [];
+    const seen = new Set();
+    for (const rt of RUNTIME_IDS) {
+      const res = runGsdTools(
+        ['query', 'dispatch-isolation', '--json', '--cwd-target', PROBE_TARGET],
+        dir,
+        { GSD_RUNTIME: rt, HOME: dir },
+      );
+      assert.equal(res.success, true, `${rt}: dispatch-isolation query failed: ${res.error}`);
+      const parsed = JSON.parse(res.output);
+
+      // Guard the guard: if resolveRuntime normalized `rt` to some other id, the
+      // comparison below would be pinning the wrong host and silently pass.
+      assert.equal(
+        parsed.runtime,
+        rt,
+        `${rt}: the CLI resolved runtime "${parsed.runtime}" instead — parity would be measured against the wrong host`,
+      );
+
+      const gateRes = runGsdTools(
+        ['query', 'dispatch-isolation', '--raw'],
+        dir,
+        { GSD_RUNTIME: rt, HOME: dir },
+      );
+      assert.equal(gateRes.success, true, `${rt}: no-target dispatch-isolation query failed: ${gateRes.error}`);
+      const gateIsolation = gateRes.output.trim();
+
+      const installTime = conversion._negotiatedDispatchIsolation(rt);
+      seen.add(installTime);
+      if (installTime !== parsed.isolation) {
+        disagreements.push(
+          `${rt}: install-time _negotiatedDispatchIsolation → "${installTime}", ` +
+            `dispatch-time routeDispatchIsolation (--cwd-target) → "${parsed.isolation}"`,
+        );
+      }
+      if (installTime !== gateIsolation) {
+        disagreements.push(
+          `${rt}: install-time _negotiatedDispatchIsolation → "${installTime}", ` +
+            `workflow-gate routeDispatchIsolation (no --cwd-target) → "${gateIsolation}"`,
+        );
+      }
+    }
+
+    assert.deepEqual(
+      disagreements,
+      [],
+      'the install-time and dispatch-time isolation resolvers disagree. One of them was ' +
+        'changed without the other (DEFECT.GENERATIVE-FIX-DIVERGENCE): the installer and the ' +
+        'dispatch gate would then make opposite isolation decisions for the same host.\n' +
+        disagreements.join('\n'),
+    );
+
+    // A parity check over a set that only ever answers `none` proves nothing —
+    // both legs could be stubbed to a constant and still agree.
+    for (const mode of ['harness-worktree', 'orchestrator-worktree', 'none']) {
+      assert.ok(
+        seen.has(mode),
+        `no registered runtime resolves to "${mode}" — the parity above never exercised that branch`,
+      );
+    }
+  } finally {
+    cleanupDir(dir);
   }
 });
 
@@ -1196,21 +1408,38 @@ test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized 
   // #2584 Phase 3 (#2627): execute-phase.md graduated PAST the `!= "claude"`
   // guard — worktree isolation there is now keyed on the negotiated
   // `dispatch.isolation` capability, so no runtime name appears in its guard at
-  // all. quick.md and diagnose-issues.md still use the #1521 generalized form
-  // (they do not negotiate isolation), so they keep asserting it.
-  const GUARD_WORKFLOWS = ['quick.md', 'diagnose-issues.md'];
+  // all.
+  //
+  // #2652: quick.md and diagnose-issues.md have now graduated too. This block
+  // previously asserted they still carried the #1521 generalized form, with a
+  // comment noting "they do not negotiate isolation" — i.e. the test knowingly
+  // pinned the un-migrated state #2652 was filed about. They negotiate now, so
+  // they are held to the same capability-keyed contract as execute-phase.md.
+  const GUARD_WORKFLOWS = ['quick.md', 'diagnose-issues.md', 'execute-phase.md'];
   for (const wf of GUARD_WORKFLOWS) {
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
       'utf8',
     );
     assert.ok(
-      src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
-      `${wf}: expected generalized guard [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]`,
+      !src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
+      `${wf}: worktree isolation must branch on dispatch.isolation, not on != "claude" (#2584/#2652)`,
     );
     assert.ok(
       !src.includes('[ "$RUNTIME" = "codex" ] && [ "$USE_WORKTREES" != "false" ]'),
-      `${wf}: found Codex-specific guard — should have been generalized to != "claude"`,
+      `${wf}: found Codex-specific guard — isolation is a negotiated capability (#2584/#2652)`,
+    );
+  }
+
+  // The two migrated sites must actually negotiate, not merely drop the guard.
+  for (const wf of ['quick.md', 'diagnose-issues.md']) {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
+      'utf8',
+    );
+    assert.ok(
+      src.includes('query dispatch-isolation'),
+      `${wf}: must resolve ISOLATION via \`gsd_run query dispatch-isolation\` (#2652)`,
     );
   }
 

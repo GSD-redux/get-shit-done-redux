@@ -74,20 +74,24 @@ export function formatGsdSlash(commandName: unknown, runtime: unknown): unknown 
 }
 
 /**
- * Resolve the effective runtime for a project directory.
+ * Resolve the explicit runtime for a project directory, from the two
+ * explicit sources only — no default is applied.
  *
- *   process.env.GSD_RUNTIME  >  config.runtime  >  per-install `.gsd-runtime`
- *   marker  >  'claude'   (marker rung added #2486)
+ *   env.GSD_RUNTIME  >  config.runtime  >  null
  *
- * Mirrors the precedence already used by profile-output.cjs and the rest of
- * the runtime resolution chain. Returns a lowercased string so downstream
- * comparisons can be case-blind.
+ * Returns null when neither explicit source is set, so a caller can
+ * distinguish "config said claude" from "nothing was set" (needed by
+ * #3245's host-detection rung, which must only run when this returns null).
  *
  * @param projectDir - path to the project directory, or null/undefined
- * @returns the resolved runtime name
+ * @param env - environment variables to read GSD_RUNTIME from; defaults to process.env
+ * @returns the resolved runtime name, or null if neither source is set
  */
-export function resolveRuntime(projectDir: string | null | undefined): string {
-  const envRuntime = resolveRuntimeNameFromCandidates(process.env['GSD_RUNTIME']);
+export function resolveExplicitRuntime(
+  projectDir: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const envRuntime = resolveRuntimeNameFromCandidates(env['GSD_RUNTIME']);
   if (envRuntime) return envRuntime;
   if (projectDir) {
     try {
@@ -110,18 +114,41 @@ export function resolveRuntime(projectDir: string | null | undefined): string {
       // runtime output formatting.
     }
   }
-  // #2486: the per-install marker rung. Without it, a real non-Claude install
-  // whose `.planning/config.json` carries no `runtime` key — which is EVERY
-  // config `config-new-project` writes — resolved to 'claude'. Every consumer
-  // then believed it was on Claude: the isolation gate reported
-  // `harness-worktree`, `/gsd:settings` recommended Worktrees and `/gsd:health`
-  // stayed quiet, which is the #2486 defect itself. The rung lives HERE, in the
-  // one canonical resolver, rather than in a single call site — a per-consumer
-  // fix forks precedence, so `dispatch-should-flatten` and `resolve-dispatch-type`
-  // would answer 'claude' while the isolation query answered 'cursor' for the
-  // same install. Marker read is a bare file read: no config normalization, no
-  // writes (see the loadConfig note above — that side effect is exactly what an
-  // inspection surface must not have).
+  return null;
+}
+
+/**
+ * Resolve the effective runtime for a project directory.
+ *
+ *   process.env.GSD_RUNTIME  >  config.runtime  >  per-install `.gsd-runtime`
+ *   marker  >  'claude'
+ *
+ * The marker rung (#3364) sits BELOW both explicit sources and ABOVE the
+ * default. Without it, a real non-Claude install whose `.planning/config.json`
+ * carries no `runtime` key — which is every config `config-new-project` writes
+ * — resolved to 'claude', so every consumer believed it was on Claude: the
+ * isolation gate reported `harness-worktree`, `/gsd:settings` recommended
+ * Worktrees and `/gsd:health` stayed quiet. #2446 fixed the installer side of
+ * #2395 but never taught the resolver to read what it persists.
+ *
+ * The rung lives HERE, in the one canonical resolver, rather than in a call
+ * site: a per-consumer fix forks precedence, so `dispatch-should-flatten` and
+ * `resolve-dispatch-type` would answer 'claude' while the isolation query
+ * answered 'cursor' for the same install.
+ *
+ * Deliberately NOT inside `resolveExplicitRuntime`: that function's null return
+ * is the signal #3245's host-detection rung keys on, and the marker is an
+ * install-time identity, not one of the two explicit per-session sources.
+ * Placing it here leaves `resolveReportedRuntime`'s ladder byte-for-byte
+ * unchanged. The marker read is a bare file read — no config normalization, no
+ * writes.
+ *
+ * @param projectDir - path to the project directory, or null/undefined
+ * @returns the resolved runtime name
+ */
+export function resolveRuntime(projectDir: string | null | undefined): string {
+  const explicit = resolveExplicitRuntime(projectDir);
+  if (explicit) return explicit;
   const marker = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
   if (marker) return marker;
   return 'claude';

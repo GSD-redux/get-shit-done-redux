@@ -45,6 +45,11 @@ const {
 } = installProfiles;
 import { CLUSTERS } from './clusters.cjs';
 import type { ClusterMap } from './clusters.cjs';
+// #2870: `isGlobalScope` centralizes the `scope === 'global'` boolean
+// projection `applySurface` needs at `_computePathPrefix`'s `isGlobal:
+// boolean` boundary (see its doc comment in install-scope.cts for why the
+// projection is centralized rather than eliminated).
+import { isGlobalScope } from './install-scope.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import runtimeArtifactLayout = require('./runtime-artifact-layout.cjs');
 const { findInstallSourceRoot } = runtimeArtifactLayout;
@@ -369,7 +374,17 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
   const _homedirFn: () => string = opts?.homedir ?? (() => os.homedir());
   const _resolvedTarget = posixNormalize(path.resolve(layout.configDir));
   const _homeDir = posixNormalize(_homedirFn());
-  const _isGlobal = (layout.scope ?? 'global') === 'global';
+  // #2870: same judgment as createRuntimeArtifactInstallPlan's identical
+  // line — `layout.scope` is already the resolved scope value on the
+  // `Layout` this function received. `layout.scope` is optional, so the
+  // pre-existing `?? 'global'` default is kept ahead of the call: it must
+  // run BEFORE `isGlobalScope`, because `isGlobalScope(undefined)` throws
+  // (unlike the old inline `undefined === 'global'`, which silently
+  // evaluated to `false`) — the default is what makes an undefined scope
+  // resolve to `'global'` here, exactly as it did before. `isGlobalScope`
+  // then projects the defaulted value to the boolean `_computePathPrefix`'s
+  // existing `isGlobal: boolean` API requires.
+  const _isGlobal = isGlobalScope(layout.scope ?? 'global');
   const _isOpencode = layout.runtime === 'opencode';
   const _isWindowsHost = (opts?.platform ?? process.platform) === 'win32';
   const _pathPrefix = runtimeArtifactConversion._computePathPrefix({ isGlobal: _isGlobal, isOpencode: _isOpencode, isWindowsHost: _isWindowsHost, resolvedTarget: _resolvedTarget, homeDir: _homeDir });
@@ -610,13 +625,11 @@ function _syncGsdDir(stagedDir: string, destDir: string, kind: ArtifactKind | st
     // from install and orphaned the installed gsd-*.md files, and the unscoped
     // prune deleted user-owned command files.
     //
-    // NOTE: the destName rule below intentionally mirrors bin/install.js
-    // `_copyStaged` (the `namespacedByDir` decision). Keep them in sync.
-    const destLast = (typeof kind === 'object' && kind !== null && kind.destSubpath)
-      ? path.basename(kind.destSubpath)
-      : '';
-    const prefixStem = kindPrefix ? kindPrefix.replace(/-$/, '') : '';
-    const namespacedByDir = kindName === 'commands' && destLast === prefixStem;
+    // Single source of truth: runtimeArtifactLayout.isNamespacedByDir (#2871
+    // Phase 2 review finding — this rule previously drifted independently
+    // across install-engine.cts / surface.cts / runtime-artifact-layout.cts).
+    const kindDestSubpath = (typeof kind === 'object' && kind !== null && kind.destSubpath) ? kind.destSubpath : '';
+    const namespacedByDir = runtimeArtifactLayout.isNamespacedByDir(kindName, kindDestSubpath, kindPrefix);
 
     const stagedFiles = fs.readdirSync(stagedDir).filter(f => f.endsWith('.md'));
     const stagedDestNames = new Set<string>();

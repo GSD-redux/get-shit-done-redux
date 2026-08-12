@@ -6,13 +6,22 @@
  * GSD Tools Tests - State
  */
 
-const { test, describe, beforeEach, afterEach } = require('node:test');
+const { test, describe, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runGsdTools, createTempDir, createTempProject, cleanup } = require('./helpers.cjs');
-const { createFixture } = require('./fixtures/index.cjs');
+const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
+// #3187 (ADR-3180 §7.7) matrix sections B/C: in-process access to the chain
+// owner and its raw inputs, needed to compute the "owner's answer" a
+// consumer's OBSERVABLE output is compared against (Decision 4c) — never the
+// owner's return value against itself.
+const stateLib = require('../gsd-core/bin/lib/state.cjs');
+const stateDocument = require('../gsd-core/bin/lib/state-document.cjs');
+const frontmatterLib = require('../gsd-core/bin/lib/frontmatter.cjs');
+const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
+const workstreamInventory = require('../gsd-core/bin/lib/workstream-inventory.cjs');
 
 function writePassedVerification(tmpDir, phaseDirName, paddedPhase) {
   fs.writeFileSync(
@@ -21,6 +30,48 @@ function writePassedVerification(tmpDir, phaseDirName, paddedPhase) {
   );
 }
 
+/**
+ * Run `fn` while capturing every fd-1 write a `cmdState*` handler's
+ * `output()` performs (it writes via a raw `fs.writeSync(1, ...)`, never
+ * `console.log`/`process.stdout.write`). Standalone helper with no test
+ * context, so the try/finally restore is CONTRIBUTING-compliant (mirrors
+ * `tests/state-rebuild-cli.test.cjs`'s identical helper — needed here too
+ * because the #3187 B6/B7 IO-failure-injection rows require `mock.method`
+ * on `fs`, which only intercepts an IN-PROCESS call; a `runGsdTools`
+ * subprocess would not observe the parent process's mock).
+ */
+function captureStdout(fn) {
+  const chunks = [];
+  const original = fs.writeSync;
+  fs.writeSync = (fd, data, offset, length) => {
+    if (fd !== 1) return original(fd, data, offset, length);
+    const chunk = Buffer.isBuffer(data)
+      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+      : String(data);
+    chunks.push(chunk);
+    return Buffer.byteLength(chunk, 'utf8');
+  };
+  try {
+    fn();
+  } finally {
+    fs.writeSync = original;
+  }
+  return chunks.join('');
+}
+
+function readShippedStateTemplateBody(replacements) {
+  const templatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md');
+  const template = fs.readFileSync(templatePath, 'utf-8');
+  const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/);
+  assert.ok(fencedDocument, 'gsd-core/templates/state.md must contain a fenced markdown document');
+
+  let body = fencedDocument[1];
+  for (const [target, replacement] of replacements) {
+    assert.ok(body.includes(target), `shipped state template must contain replacement target: ${target}`);
+    body = body.replace(target, replacement);
+  }
+  return body;
+}
 describe('state-snapshot command', () => {
   let tmpDir;
 
@@ -604,6 +655,11 @@ describe('state json command', () => {
   });
 
   test('builds frontmatter on-the-fly from body when no frontmatter exists', () => {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the body-Progress-field fallback this
+    // test exercises is withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       `# Project State
@@ -1627,6 +1683,11 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
   beforeEach(() => {
     tmpDir = createFixture();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and state update-progress withholds
+    // (updated:false) instead of computing a percent.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2016,6 +2077,11 @@ describe('milestone-scoped phase counting in frontmatter', () => {
       // Add a plan to each
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan');
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a plan+summary count no
+      // longer implies "complete" — only a passing *-VERIFICATION.md does. Both
+      // milestone phases (5 and 6) get one so this test still exercises milestone
+      // SCOPING, not the (now-separate) completion predicate.
+      if (i === 5 || i === 6) writePassedVerification(tmpDir, `${padded}-phase-${i}`, padded);
     }
 
     // Write a STATE.md and trigger a write that will sync frontmatter
@@ -2033,7 +2099,7 @@ describe('milestone-scoped phase counting in frontmatter', () => {
 
     const output = JSON.parse(jsonResult.output);
     assert.strictEqual(Number(output.progress.total_phases), 2, 'should count only milestone phases (5 and 6), not all 6');
-    assert.strictEqual(Number(output.progress.completed_phases), 2, 'both milestone phases have summaries');
+    assert.strictEqual(Number(output.progress.completed_phases), 2, 'both milestone phases have a passing verification');
   });
 
   test('total_phases includes ROADMAP phases without directories', () => {
@@ -2059,6 +2125,10 @@ describe('milestone-scoped phase counting in frontmatter', () => {
       fs.mkdirSync(phaseDir, { recursive: true });
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan');
       fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): give each of the 4
+      // phases-with-directories a passing verification so this test still
+      // exercises ROADMAP-vs-disk SCOPING, not the completion predicate.
+      writePassedVerification(tmpDir, `${padded}-phase-${i}`, padded);
     }
 
     fs.writeFileSync(
@@ -2074,7 +2144,7 @@ describe('milestone-scoped phase counting in frontmatter', () => {
 
     const output = JSON.parse(jsonResult.output);
     assert.strictEqual(Number(output.progress.total_phases), 6, 'should count all 6 ROADMAP phases, not just 4 with directories');
-    assert.strictEqual(Number(output.progress.completed_phases), 4, 'only 4 phases have summaries');
+    assert.strictEqual(Number(output.progress.completed_phases), 4, 'only 4 phases have a passing verification');
   });
 
   test('without ROADMAP counts all phases (pass-all filter)', () => {
@@ -2274,6 +2344,11 @@ describe('progress counters correct after plan execution (#1589)', () => {
 
   beforeEach(() => {
     tmpDir = createFixture();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the disk-derived percent this describe
+    // exercises is withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2300,6 +2375,12 @@ describe('progress counters correct after plan execution (#1589)', () => {
     fs.writeFileSync(path.join(phase02Dir, '02-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phase02Dir, '02-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phase02Dir, '02-02-SUMMARY.md'), '# Summary\n');
+
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing *-VERIFICATION.md
+    // is what makes a phase complete now, not plan/summary parity — this test is
+    // about percent DERIVATION, so give both phases one.
+    writePassedVerification(tmpDir, '01-foundation', '01');
+    writePassedVerification(tmpDir, '02-api', '02');
 
     // Body Progress: still says 0% (stale — never updated by update-progress)
     fs.writeFileSync(
@@ -2377,6 +2458,14 @@ describe('progress counters correct after plan execution (#1589)', () => {
     fs.writeFileSync(path.join(phase04Dir, '04-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phase04Dir, '04-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phase04Dir, '04-02-SUMMARY.md'), '# Summary\n');
+
+    // Disk-strict completion (ADR-3180 §7.4, #3186): give all 4 phases a
+    // passing verification so this test still exercises the STALE-FRONTMATTER
+    // rebuild, not the (now-separate) completion predicate.
+    writePassedVerification(tmpDir, '01-phase', '01');
+    writePassedVerification(tmpDir, '02-phase', '02');
+    writePassedVerification(tmpDir, '03-phase', '03');
+    writePassedVerification(tmpDir, '04-phase', '04');
 
     // Write STATE.md with stale frontmatter matching the bug report exactly
     fs.writeFileSync(
@@ -3116,6 +3205,233 @@ describe('state validate command', () => {
     cleanup(tmpDir);
   });
 
+  test('template frontmatter phase reaches passed-verification drift on disk', () => {
+    const stateContent = readShippedStateTemplateBody([
+      ['status: planning', ['current_phase: 2', 'status: executing'].join('\n')],
+      ['Phase: [X] of [Y] ([Phase name])', 'Phase: 2 of 2 (State Validation Drift Diagnostics)'],
+      ['Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]', 'Status: Executing Phase 2'],
+    ]);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-state-validation-drift-diagnostics');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePassedVerification(tmpDir, '02-state-validation-drift-diagnostics', '02');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'passed verification must invalidate executing state');
+    assert.ok(output.warnings.length > 0, 'passed verification drift must emit a warning');
+    assert.deepStrictEqual(
+      output.drift.verification_status,
+      { state_status: 'executing', verification: 'passed' },
+      'template frontmatter phase must reach the existing disk-backed verification drift check',
+    );
+  });
+
+  test('template-equivalent phase identities remain clean without disk drift', () => {
+    const stateContent = readShippedStateTemplateBody([
+      ['status: planning', ['current_phase: 2', 'status: planning'].join('\n')],
+      ['Phase: [X] of [Y] ([Phase name])', 'Phase: 02 of 2 (State Validation Drift Diagnostics)'],
+      ['Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]', 'Status: Planning'],
+    ]);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+    fs.mkdirSync(
+      path.join(tmpDir, '.planning', 'phases', '02-state-validation-drift-diagnostics'),
+      { recursive: true },
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true, 'equivalent phase identities without disk drift must stay valid');
+    assert.deepStrictEqual(output.warnings, [], 'clean control must not emit warnings');
+    assert.deepStrictEqual(output.drift, {}, 'clean control must not report drift');
+  });
+
+  test('legacy Current Phase fallback reaches passed-verification drift on disk', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 2',
+        '**Status:** Executing Phase 2',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-legacy'), { recursive: true });
+    writePassedVerification(tmpDir, '02-legacy', '02');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'legacy phase fallback must expose verification drift');
+    assert.deepStrictEqual(
+      output.drift.verification_status,
+      { state_status: 'Executing Phase 2', verification: 'passed' },
+    );
+  });
+
+  test('Current Position Phase fallback reaches passed-verification drift on disk', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 of 2 (State Validation Drift Diagnostics)',
+        'Status: Executing Phase 2',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-canonical'), { recursive: true });
+    writePassedVerification(tmpDir, '02-canonical', '02');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'canonical phase fallback must expose verification drift');
+    assert.deepStrictEqual(
+      output.drift.verification_status,
+      { state_status: 'Executing Phase 2', verification: 'passed' },
+    );
+  });
+
+  test('frontmatter phase wins conflicts and scans its selected directory', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase: 2',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 1 of 2 (Foundation)',
+        'Status: Executing Phase 2',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-state-validation'), { recursive: true });
+    writePassedVerification(tmpDir, '02-state-validation', '02');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'conflicting sources must invalidate the result');
+    assert.strictEqual(output.drift.phase_reference.reason, 'conflict');
+    assert.strictEqual(output.drift.phase_reference.selected, '2');
+    assert.strictEqual(output.drift.phase_reference.sources.frontmatter, '2');
+    assert.strictEqual(output.drift.phase_reference.sources.current_position_phase, '1');
+    assert.deepStrictEqual(
+      output.drift.verification_status,
+      { state_status: 'executing', verification: 'passed' },
+      'disk evidence must come from the authoritative frontmatter phase',
+    );
+  });
+
+  test('missing phase sources fail closed with phase-reference drift', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['# Project State', '', 'Status: Planning', ''].join('\n'),
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'missing phase source must not validate cleanly');
+    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
+    assert.strictEqual(output.drift.phase_reference.selected, null);
+    assert.ok(output.warnings.some(warning => /phase/i.test(warning)), 'warning must identify phase resolution');
+  });
+
+  test('non-scalar frontmatter phase fails closed without a body fallback', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase:',
+        '  nested: 2',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'non-scalar phase source must not validate cleanly');
+    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
+    assert.strictEqual(output.drift.phase_reference.sources.frontmatter, null);
+  });
+
+  test('missing phases root fails closed with phase-directory drift', () => {
+    cleanup(tmpDir);
+    tmpDir = createFixture({ planning: false, projectDoc: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: 2', 'status: planning', '---', '', '# Project State', ''].join('\n'),
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'missing phases root must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'missing_root');
+    assert.ok(output.warnings.some(warning => /director/i.test(warning)), 'warning must identify the missing directory');
+  });
+
+  test('missing canonical phase-directory match fails closed', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: 2', 'status: planning', '---', '', '# Project State', ''].join('\n'),
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'missing phase-directory match must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'not_found');
+    assert.strictEqual(output.drift.phase_directory.selected, '2');
+  });
+
+  test('crafted path-like phase cannot scan verification evidence outside phases root', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase: ../outside',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+      ].join('\n'),
+    );
+    const outsideDir = path.join(tmpDir, '.planning', 'outside');
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(outsideDir, '02-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Outside verification', ''].join('\n'),
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'crafted phase reference must fail closed');
+    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
+    assert.ok(!output.drift.verification_status, 'outside-root verification evidence must not be scanned');
+  });
+
   test('STATE says executing + VERIFICATION.md shows passed emits warning', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
@@ -3177,11 +3493,647 @@ describe('state validate command', () => {
     assert.strictEqual(output.warnings.length, 0, 'Should have no warnings');
   });
 
+  test('archived "Current Phase:" line does not trigger false-positive conflict when frontmatter is correct', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ncurrent_phase: 2\n---\n# Project State\n\n## Current Position\n**Phase:** 2\n\n## Archive\n**Current Phase:** 1 (completed last week)\n`
+    );
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-core');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true, 'Should be valid, legacy extractor should not read the archive');
+    assert.strictEqual(output.warnings.length, 0, 'Should have no phase_reference conflict warnings');
+  });
+
   test('missing STATE.md returns graceful error', () => {
     const result = runGsdTools('state validate', tmpDir);
     assert.ok(result.success, 'Should not crash');
     const output = JSON.parse(result.output);
     assert.ok(output.error, 'Should return error field');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3187 (ADR-3180 §7.7) — matrix section B: `state validate`'s scope field,
+// including the #3162 headline regression and #1255 frontmatter shadowing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3187 state validate — scope field (matrix section B)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('B1: validate detects drift when phase is frontmatter-only (#3162 regression — must fail before the fix)', () => {
+    // Phase lives ONLY in frontmatter; the body has no `Current Phase` field
+    // at all. Pre-#3187, cmdStateValidate read `Current Phase` off the body
+    // only, resolved null, and the ENTIRE drift block was skipped —
+    // "could not look" was output-identical to "looked, all clean"
+    // ({valid:true, warnings:[], drift:{}}).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase: 2',
+        '---',
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 2',
+        '**Total Plans in Phase:** 5',
+        '**Current Plan:** 1',
+        '',
+      ].join('\n'),
+    );
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-core');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '02-02-PLAN.md'), '# Plan\n');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    // The RIGHT reason to fail before the fix: valid was true and no
+    // plan-count warning was ever generated, not a crash.
+    assert.strictEqual(output.valid, false, 'STATE.md says 5 plans, disk has 2 — drift must be reported');
+    assert.ok(output.warnings.some((w) => /plan.*count|count.*mismatch/i.test(w)));
+    assert.deepEqual(output.drift.plan_count, { state: 5, disk: 2 });
+    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+  });
+
+  test('B2: validate passes cleanly when it actually looked (frontmatter-only phase, counts match)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase: 2',
+        '---',
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 2',
+        '**Total Plans in Phase:** 2',
+        '**Current Plan:** 1',
+        '',
+      ].join('\n'),
+    );
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-core');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '02-02-PLAN.md'), '# Plan\n');
+
+    const result = runGsdTools('state validate', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true);
+    assert.strictEqual(output.warnings.length, 0);
+    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+  });
+
+  test('B3: validate still detects body-resolved drift (regression guard, unchanged today)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 3',
+        '**Current Plan:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    assert.ok(output.warnings.some((w) => /plan.*count|count.*mismatch/i.test(w)));
+    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+  });
+
+  test('B4: unresolvable phase is not reported as clean (distinguishable from B2)', () => {
+    // Neither frontmatter nor body carries a Current Phase field anywhere.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['# Project State', '', '**Status:** Planning', ''].join('\n'),
+    );
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
+  });
+
+  test('B5: missing phase dir differs from could-not-look (distinguishable from B4)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 99',
+        '**Current Phase:** 99',
+        '**Total Plans in Phase:** 2',
+        '',
+      ].join('\n'),
+    );
+    // phases/ exists (createFixture) but has no matching 99-* directory.
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.drift.phase_directory.reason, 'not_found');
+  });
+
+  test('B6: unreadable phases dir is surfaced, not swallowed', (t) => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    const originalReaddirSync = fs.readdirSync;
+    mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (p === phasesDir) {
+        const err = new Error('EACCES: permission denied, scandir');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.call(fs, p, ...rest);
+    });
+    t.after(() => mock.restoreAll());
+
+    const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
+    const output = JSON.parse(raw);
+    assert.strictEqual(output.valid, false, 'an unreadable directory must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
+  });
+
+  test('B6b: unreadable selected phase directory fails closed', (t) => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['# Project State', '', '**Status:** Executing Phase 1', '**Current Phase:** 1', ''].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const originalReaddirSync = fs.readdirSync;
+    mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (p === phaseDir) throw new Error('EACCES: permission denied, scandir');
+      return originalReaddirSync.call(fs, p, ...rest);
+    });
+    t.after(() => mock.restoreAll());
+
+    const output = JSON.parse(captureStdout(() => stateLib.cmdStateValidate(tmpDir, false)));
+    assert.strictEqual(output.valid, false, 'an unreadable selected phase must not validate cleanly');
+    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
+  });
+
+  test('B7: one unreadable verification file does not abort the scan', (t) => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    const brokenPath = path.join(phaseDir, '01-A-VERIFICATION.md');
+    const okPath = path.join(phaseDir, '01-B-VERIFICATION.md');
+    fs.writeFileSync(brokenPath, ['---', 'status: passed', '---', ''].join('\n'));
+    fs.writeFileSync(okPath, ['---', 'status: passed', '---', ''].join('\n'));
+
+    const originalReadFileSync = fs.readFileSync;
+    mock.method(fs, 'readFileSync', (p, ...rest) => {
+      if (p === brokenPath) {
+        const err = new Error('EACCES: permission denied, open');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...rest);
+    });
+    t.after(() => mock.restoreAll());
+
+    const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
+    const output = JSON.parse(raw);
+    // Per-file swallow (#2245 audit) is unchanged: the other verification
+    // file is still consulted, so its drift still fires, and the whole
+    // scan is NOT degraded to UNREADABLE just because one file 404s.
+    // Asserted on the structured `drift` field (CONTRIBUTING.md's "Prohibited:
+    // Raw Text Matching on Test Outputs"), not a `warnings` prose regex —
+    // `drift.verification_status` is a typed record, not free-form text.
+    assert.deepStrictEqual(output.drift.verification_status, { state_status: 'Executing Phase 1', verification: 'passed' });
+    assert.strictEqual(output.scope, SCOPE.COMPLETE);
+  });
+
+  test('B8: absent STATE.md unchanged', () => {
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.error, 'STATE.md not found');
+    assert.strictEqual(output.scope, undefined);
+  });
+
+  test('B9: binary STATE.md still fails loud (existing #2701 path unchanged, no scope key added)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), Buffer.from('# State\0\0\0binary'));
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.warnings.length, 1);
+    assert.strictEqual(output.scope, undefined, 'the #2701 early return is explicitly unchanged — no scope key');
+  });
+
+  test('B10: json and default output agree (validate has no distinct raw-text mode; --raw is a no-op for it)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const withoutFlag = runGsdTools('state validate', tmpDir).output;
+    const withRaw = runGsdTools('state validate --raw', tmpDir).output;
+    assert.deepEqual(JSON.parse(withoutFlag), JSON.parse(withRaw));
+  });
+
+  test('B11: plan-count boundary 0/1/2 — no false drift when counts match, real drift when they do not', () => {
+    for (const n of [0, 1, 2]) {
+      const dir = createFixture();
+      fs.writeFileSync(
+        path.join(dir, '.planning', 'STATE.md'),
+        [
+          '# Project State',
+          '',
+          '**Status:** Executing Phase 1',
+          '**Current Phase:** 1',
+          `**Total Plans in Phase:** ${n}`,
+          '',
+        ].join('\n'),
+      );
+      const phaseDir = path.join(dir, '.planning', 'phases', '01-setup');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= n; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-${String(i).padStart(2, '0')}-PLAN.md`), '# Plan\n');
+      }
+      const output = JSON.parse(runGsdTools('state validate', dir).output);
+      assert.strictEqual(output.valid, true, `n=${n} matching disk must be valid`);
+      assert.strictEqual(output.warnings.length, 0, `n=${n} matching disk must have no warnings`);
+      assert.strictEqual(output.scope, SCOPE.COMPLETE);
+      cleanup(dir);
+    }
+
+    for (const n of [0, 1, 2]) {
+      const dir = createFixture();
+      fs.writeFileSync(
+        path.join(dir, '.planning', 'STATE.md'),
+        [
+          '# Project State',
+          '',
+          '**Status:** Executing Phase 1',
+          '**Current Phase:** 1',
+          `**Total Plans in Phase:** ${n}`,
+          '',
+        ].join('\n'),
+      );
+      const phaseDir = path.join(dir, '.planning', 'phases', '01-setup');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= n + 1; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-${String(i).padStart(2, '0')}-PLAN.md`), '# Plan\n');
+      }
+      const output = JSON.parse(runGsdTools('state validate', dir).output);
+      assert.strictEqual(output.valid, false, `n=${n} vs disk n+1 must be flagged`);
+      // Asserted on the structured `drift.plan_count` record rather than a
+      // `warnings` prose regex (CONTRIBUTING.md's "Prohibited: Raw Text
+      // Matching on Test Outputs") — `drift` is typed, `warnings` is free-form.
+      assert.deepStrictEqual(output.drift.plan_count, { state: n, disk: n + 1 });
+      cleanup(dir);
+    }
+  });
+
+  test('B12: a thrown extractFrontmatter degrades scope to UNREADABLE (frontmatter-parse catch, distinct from B6\'s phases-dir-scan-failure catch)', (t) => {
+    // extractFrontmatter is documented never to throw (src/frontmatter.cts
+    // has no `throw` in its extraction path), so this catch is a defensive
+    // branch normally unreachable through any real STATE.md content. Drive
+    // it directly by mocking the frontmatter module's export — since
+    // src/state.cts destructures `extractFrontmatter` out of the frontmatter
+    // module at REQUIRE time (`const { extractFrontmatter } = frontmatter;`),
+    // mocking the already-cached `frontmatterLib.extractFrontmatter` has no
+    // effect on a state.cjs module instance that was required BEFORE the
+    // mock was installed (its local binding already captured the original
+    // function). Busting state.cjs's own require-cache entry and re-requiring
+    // it AFTER the mock is installed forces its destructuring to capture the
+    // mocked function instead — the top-level `stateLib` binding used by
+    // every other test in this file is untouched throughout (a fresh module
+    // instance is a distinct exports object).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Executing Phase 1',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const stateCjsPath = require.resolve('../gsd-core/bin/lib/state.cjs');
+    delete require.cache[stateCjsPath];
+    mock.method(frontmatterLib, 'extractFrontmatter', () => {
+      throw new Error('simulated frontmatter parse failure');
+    });
+    t.after(() => {
+      mock.restoreAll();
+      delete require.cache[stateCjsPath];
+    });
+    const freshStateLib = require(stateCjsPath);
+
+    const raw = captureStdout(() => freshStateLib.cmdStateValidate(tmpDir, false));
+    const output = JSON.parse(raw);
+    assert.strictEqual(output.valid, true, 'a frontmatter-parse failure must not crash or fabricate a warning');
+    assert.strictEqual(output.scope, SCOPE.UNREADABLE, 'a thrown extractFrontmatter must degrade scope, exactly like B6\'s phases-dir failure');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3187 (ADR-3180 §7.7, Decision 4c) — matrix section C: identity tests
+// asserted at each CONSUMER's observable output vs the chain owner's answer
+// for the SAME input, never the owner's return value against itself.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3187 chain-owner identity — every consumer agrees with stateFieldValue (matrix section C)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('C1: snapshot output matches the chain owner', () => {
+    const content = [
+      '---',
+      'current_phase: 3',
+      'status: verifying',
+      '---',
+      '# Project State',
+      '',
+      '**Current Phase:** 1', // shadowed by frontmatter — must NOT win
+      '**Status:** Planning', // shadowed by frontmatter — must NOT win
+      '**Total Plans in Phase:** 4',
+      '**Current Plan:** 2',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const output = JSON.parse(runGsdTools('state-snapshot', tmpDir).output);
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+
+    assert.strictEqual(output.current_phase, stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value);
+    assert.strictEqual(output.status, stateDocument.stateFieldValue(fm, body, 'status', 'Status').value);
+    assert.strictEqual(String(output.total_plans_in_phase), stateDocument.stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value);
+    assert.strictEqual(output.current_plan, stateDocument.stateFieldValue(fm, body, 'current_plan', 'Current Plan').value);
+  });
+
+  test('C2: validate resolves the same phase as the owner', () => {
+    const content = [
+      '---',
+      'current_phase: 2',
+      '---',
+      '# Project State',
+      '',
+      '**Current Phase:** 1', // shadowed — must NOT be the phase validate scans against
+      '**Status:** Executing Phase 2',
+      '**Total Plans in Phase:** 1',
+      '**Current Plan:** 1',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    const ownerPhase = stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+    assert.strictEqual(ownerPhase, '2', 'sanity: owner must resolve frontmatter phase 2, not shadowed body phase 1');
+
+    // Phase 1 (the wrong/shadowed candidate) gets a MISMATCHING disk count;
+    // phase 2 (the owner's actual answer) gets a MATCHING disk count. Only
+    // observable if validate scanned the owner's phase, not the shadowed one.
+    const phase1Dir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phase1Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase1Dir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phase1Dir, '01-02-PLAN.md'), '# Plan\n');
+
+    const phase2Dir = path.join(tmpDir, '.planning', 'phases', '02-core');
+    fs.mkdirSync(phase2Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase2Dir, '02-01-PLAN.md'), '# Plan\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false, 'conflicting phase sources must not validate cleanly');
+    assert.strictEqual(output.drift.phase_reference.reason, 'conflict');
+    assert.strictEqual(output.drift.phase_reference.selected, '2');
+    assert.ok(!output.drift.plan_count, 'validate must scan phase 2, not the shadowed phase 1');
+  });
+
+  test('C3: prune resolves the same phase as the owner', () => {
+    const content = [
+      '---',
+      'current_phase: 7',
+      '---',
+      '# Project State',
+      '',
+      '**Current Phase:** 2', // shadowed
+      '**Status:** Executing Phase 7',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    const ownerPhase = stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+    assert.strictEqual(ownerPhase, '7');
+
+    const keepRecent = 2;
+    const output = JSON.parse(runGsdTools(`state prune --keep-recent ${keepRecent} --dry-run`, tmpDir).output);
+    assert.strictEqual(output.cutoff_phase, Number(ownerPhase) - keepRecent);
+  });
+
+  test('C4: smart-entry matches the owner under its own (deliberately unscoped) declared read', () => {
+    const content = [
+      '---',
+      'current_phase: 5',
+      '---',
+      '# Project State',
+      '',
+      '**Current Phase:** 1', // shadowed
+      '**Status:** Executing Phase 5',
+      '**Total Phases:** 8',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    // smart-entry's own declared read is deliberately UNSCOPED over the whole
+    // body (design's Rejected #3 — an explicit, written exemption, not a
+    // silent fold) — same fm/body inputs, same fallback shape, just with the
+    // body-only `Phase` prose step it also declares.
+    const ownerPhaseRaw =
+      stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ??
+      stateDocument.stateFieldValue(fm, body, null, 'Phase').value;
+
+    const output = JSON.parse(runGsdTools('smart-entry --json', tmpDir).output);
+    assert.strictEqual(output.signals.current_phase, parseInt(ownerPhaseRaw, 10));
+  });
+
+  test('C5: workstream projection matches the owner', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-c5' });
+    // Divergent frontmatter vs. body (mirrors C3/C4): frontmatter says 4,
+    // body says 1. `readStateProjection` (Derivation A site 6) is now routed
+    // through `stateFieldValue`, so this proves the consumer actually
+    // resolves the frontmatter-tier value rather than merely agreeing with
+    // the owner on a fixture where the two tiers could never disagree.
+    const content = [
+      '---',
+      'current_phase: 4',
+      '---',
+      '# Project State',
+      '',
+      '**Current Phase:** 1', // shadowed
+      '**Status:** Executing Phase 4',
+      '',
+    ].join('\n');
+    const statePath = path.join(wsDir, 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    const ownerPhase = stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+    assert.strictEqual(ownerPhase, '4');
+
+    const inv = workstreamInventory.inspectWorkstream(tmpDir, 'ws-c5');
+    assert.ok(inv, 'inspectWorkstream should find the seeded workstream');
+    assert.strictEqual(inv.current_phase, ownerPhase);
+  });
+
+  test('C6: idempotency guard matches the owner', () => {
+    // Divergent frontmatter vs. body (mirrors C3/C4): frontmatter says 5,
+    // body says 1. `resolvePhaseIdForCompletePhase` / the complete-phase
+    // idempotency guard (Derivation A site 5) is now routed through
+    // `stateFieldValue`, so this proves the guard actually resolves the
+    // frontmatter-tier value 5 (not the shadowed body value 1) when deciding
+    // whether the requested phase 3 has already been superseded.
+    const content = [
+      '---',
+      'current_phase: 5',
+      '---',
+      '# Project State',
+      '',
+      '**Status:** in-progress',
+      '**Current Phase:** 1', // shadowed
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    const ownerPhase = stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+    assert.strictEqual(ownerPhase, '5');
+
+    const output = JSON.parse(runGsdTools(['state', 'complete-phase', '--phase', '3'], tmpDir).output);
+    assert.strictEqual(output.idempotent, true, 'requested phase 3 precedes the owner-resolved current phase 5 (from frontmatter, not the shadowed body value 1), so the guard must fire');
+  });
+
+  test('C7: every consumer agrees on the same STATE.md', () => {
+    const content = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 6',
+      '**Current Phase:** 6',
+      '**Total Plans in Phase:** 2',
+      '**Current Plan:** 1',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, content);
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '06-final');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '06-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '06-02-PLAN.md'), '# Plan\n');
+
+    const fm = frontmatterLib.extractFrontmatter(content, statePath);
+    const body = frontmatterLib.stripFrontmatter(content);
+    const ownerPhase = stateDocument.stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+    assert.strictEqual(ownerPhase, '6');
+
+    // C1: state snapshot
+    const snapshot = JSON.parse(runGsdTools('state-snapshot', tmpDir).output);
+    assert.strictEqual(snapshot.current_phase, ownerPhase);
+
+    // C2: state validate (indirect — valid+no-warnings only holds if phase 6 was used)
+    const validate = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(validate.valid, true);
+    assert.strictEqual(validate.warnings.length, 0);
+    assert.strictEqual(validate.scope, SCOPE.COMPLETE);
+
+    // C3: state prune (cutoff_phase + keepRecent must equal the owner phase)
+    const keepRecent = 2;
+    const prune = JSON.parse(runGsdTools(`state prune --keep-recent ${keepRecent} --dry-run`, tmpDir).output);
+    assert.strictEqual(prune.cutoff_phase + keepRecent, Number(ownerPhase));
+
+    // C4: smart-entry
+    const smartEntry = JSON.parse(runGsdTools('smart-entry --json', tmpDir).output);
+    assert.strictEqual(smartEntry.signals.current_phase, Number(ownerPhase));
+
+    // C6: complete-phase idempotency guard (no frontmatter in this fixture,
+    // so this row does not exercise the frontmatter tier — see C6's own test
+    // for that divergent-frontmatter case).
+    const complete = JSON.parse(runGsdTools(['state', 'complete-phase', '--phase', '3'], tmpDir).output);
+    assert.strictEqual(complete.idempotent, true);
+
+    // C5 (workstream inventory) is intentionally NOT folded into this
+    // cross-consumer fixture: it reads a structurally different path
+    // (`.planning/workstreams/<name>/STATE.md`), so it cannot be "the same
+    // STATE.md" as the root-level consumers above without contradicting the
+    // literal same-input premise this row is about. See C5's own test.
   });
 });
 
@@ -7094,6 +8046,55 @@ describe('bug #3489: state complete-phase must be idempotent', () => {
     assert.notEqual(payload.idempotent, true, 'first completion must not be flagged idempotent');
     assert.ok(Array.isArray(payload.updated) && payload.updated.length > 0, 'expected non-empty updated list');
   });
+
+  test('a thrown extractFrontmatter refuses complete-phase rather than risking a destructive rollback (#3489)', (t) => {
+    // The fail-closed refusal this exercises: if the frontmatter half of the
+    // chain cannot be consulted, `existingCurrentPhase` could read as null
+    // even though the project's true current phase lives only in that
+    // unreadable frontmatter, which would let the idempotency guard above
+    // fail OPEN and re-run an already-completed phase. cmdStateCompletePhase
+    // refuses outright instead. extractFrontmatter is documented never to
+    // throw for real STATE.md content, so this is driven directly by
+    // mocking the frontmatter module's export — see B12's identical
+    // require-cache-busting rationale in tests/state.test.cjs (state.cts
+    // destructures `extractFrontmatter` at require time, so mocking the
+    // already-required `frontmatterLib` export has no effect on the
+    // top-level `stateLib` binding; a fresh module instance, required AFTER
+    // the mock is installed, is needed to observe it).
+    const stateMd = [
+      '# State',
+      '',
+      '**Status:** in-progress',
+      '**Current Phase:** 03',
+      '**Last Activity:** 2026-05-13',
+      '',
+    ].join('\n');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, stateMd, 'utf8');
+    const before = fs.readFileSync(statePath, 'utf8');
+
+    const stateCjsPath = require.resolve('../gsd-core/bin/lib/state.cjs');
+    delete require.cache[stateCjsPath];
+    mock.method(frontmatterLib, 'extractFrontmatter', () => {
+      throw new Error('simulated frontmatter parse failure');
+    });
+    t.after(() => {
+      mock.restoreAll();
+      delete require.cache[stateCjsPath];
+    });
+    const freshStateLib = require(stateCjsPath);
+
+    const raw = captureStdout(() => freshStateLib.cmdStateCompletePhase(tmpDir, false, '03'));
+    const output = JSON.parse(raw);
+    assert.match(
+      output.error || '',
+      /refusing to run complete-phase/i,
+      `expected the #3489 refuse-path error, got: ${raw}`,
+    );
+
+    const after = fs.readFileSync(statePath, 'utf8');
+    assert.equal(after, before, 'STATE.md must not be rewritten when frontmatter could not be read');
+  });
 });
   });
 }
@@ -9238,7 +10239,12 @@ function writeStateFile(tmpDir, overrides = {}) {
  * filter includes them (avoids needing a milestone header to count phases).
  */
 function writeRoadmap(tmpDir, phaseNums) {
-  const lines = ['## Roadmap v1.0'];
+  // #3217 (ADR-3180 §7.6 rule 4): no version token — none of this helper's
+  // callers write a STATE.md `milestone:` field, so a `vX.Y`-bearing heading
+  // here would window as UNSCOPED (§7.1 row 4: "has versioned milestones,
+  // but no version resolved"), not the free-form COMPLETE window the
+  // percent/count assertions below depend on.
+  const lines = ['## Roadmap'];
   for (const n of phaseNums) {
     lines.push('', `### Phase ${n}: Phase ${n}`);
   }
@@ -9281,6 +10287,10 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, planFile), '# Plan\n');
         fs.writeFileSync(path.join(plansDir, summaryFile), '# Summary\n');
       }
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+      // *-VERIFICATION.md is what makes a phase complete, not plan/summary
+      // parity — this test is about nested plans/ COUNTING, not the predicate.
+      writePassedVerification(tmpDir, phaseSlug, `0${phase}`);
     }
 
     writeRoadmap(tmpDir, [1, 2]);
@@ -9295,7 +10305,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 6, 'total_plans must count nested plans/ files (2 phases × 3 plans)');
     assert.strictEqual(Number(progress.completed_plans), 6, 'completed_plans must count nested summary files (2 phases × 3 summaries)');
-    assert.strictEqual(Number(progress.completed_phases), 2, 'completed_phases: both phases have summaries >= plans');
+    assert.strictEqual(Number(progress.completed_phases), 2, 'completed_phases: both phases have a passing verification');
   });
 
   test('counts PLAN-NN-slug form (bare PLAN- prefix, no phase prefix)', () => {
@@ -9333,6 +10343,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phaseDir, '01-02-SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes the phase complete now.
+    writePassedVerification(tmpDir, '01-init', '01');
 
     writeRoadmap(tmpDir, [1]);
     writeStateFile(tmpDir, { phase: '01' });
@@ -9346,7 +10359,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 2, 'flat layout: top-level *-PLAN.md files counted');
     assert.strictEqual(Number(progress.completed_plans), 2, 'flat layout: top-level *-SUMMARY.md files counted');
-    assert.strictEqual(Number(progress.completed_phases), 1, 'flat layout: phase complete when summaries >= plans');
+    assert.strictEqual(Number(progress.completed_phases), 1, 'flat layout: phase complete with a passing verification');
   });
 
   test('no double-count when both top-level and nested plan files coexist', () => {
@@ -9389,6 +10402,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     // One top-level plan
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes the phase complete now.
+    writePassedVerification(tmpDir, '01-init', '01');
 
     writeRoadmap(tmpDir, [1]);
     writeStateFile(tmpDir, { phase: '01' });
@@ -9402,7 +10418,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 1, 'empty plans/ must not add phantom plan count');
     assert.strictEqual(Number(progress.completed_plans), 1, 'empty plans/ must not affect summary count');
-    assert.strictEqual(Number(progress.completed_phases), 1, 'phase complete: 1 summary >= 1 plan');
+    assert.strictEqual(Number(progress.completed_phases), 1, 'phase complete with a passing verification');
   });
 
   test('PLAN-OUTLINE.md files are excluded from nested plan count', () => {
@@ -9476,6 +10492,9 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, `${num}-PLAN-${pad}-task${p}.md`), '# Plan\n');
         fs.writeFileSync(path.join(plansDir, `${num}-SUMMARY-${pad}-task${p}.md`), '# Summary\n');
       }
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      writePassedVerification(tmpDir, `0${num}-phase-${num}`, `0${num}`);
     }
 
     writeRoadmap(tmpDir, [1, 2]);
@@ -9490,7 +10509,7 @@ describe('buildStateFrontmatter nested plans/ layout (#3257)', () => {
     const progress = JSON.parse(jsonResult.output).progress;
     assert.strictEqual(Number(progress.total_plans), 7, 'reporter scenario: total_plans must be 7');
     assert.strictEqual(Number(progress.completed_plans), 7, 'reporter scenario: completed_plans must be 7');
-    assert.strictEqual(Number(progress.completed_phases), 2, 'reporter scenario: both phases complete');
+    assert.strictEqual(Number(progress.completed_phases), 2, 'reporter scenario: both phases have a passing verification');
     assert.strictEqual(Number(progress.percent), 100, 'reporter scenario: 100% when all plans have summaries');
   });
 });
@@ -9727,6 +10746,13 @@ describe('cmdStateSync nested plans/ layout (#3257)', () => {
         fs.writeFileSync(path.join(plansDir, `1-SUMMARY-${pad}-t.md`), '# Summary\n');
       }
     }
+    // Disk-strict completion (ADR-3180 §7.4, #3186): a passing *-VERIFICATION.md
+    // is what makes a phase complete now, not plan/summary counts alone. Phase
+    // 01-alpha is the one this test intends to be "complete" (fully planned and
+    // summarized), so give it a passing verification too — otherwise completed
+    // phases = 0 and no Progress change is emitted, which isn't what this test
+    // (nested plans/ summing correctly) is about.
+    writePassedVerification(tmpDir, '01-alpha', '01');
 
     const stateContent = [
       '# Project State',
@@ -9739,6 +10765,11 @@ describe('cmdStateSync nested plans/ layout (#3257)', () => {
       '',
     ].join('\n');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent, 'utf-8');
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token)
+    // is COMPLETE scope for windowing (§7.1) — without this, an absent
+    // ROADMAP.md is UNREADABLE and the Progress: field this test asserts on
+    // is withheld ("milestone phase scope is unreadable, not COMPLETE").
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
 
     const result = runGsdTools('state sync', tmpDir);
     assert.ok(result.success, `state sync failed: ${result.error}`);
@@ -10000,6 +11031,10 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
     fs.mkdirSync(phase2);
     fs.writeFileSync(path.join(phase2, '02-1-PLAN.md'), '---\nphase: 2\nplan: 1\n---\n# Plan\n');
     fs.writeFileSync(path.join(phase2, '02-1-SUMMARY.md'), '---\nstatus: complete\n---\n# Summary\n');
+    // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+    // *-VERIFICATION.md makes a phase complete now — this test is about CACHE
+    // invalidation, not the completion predicate, so give phase 2 one.
+    fs.writeFileSync(path.join(phase2, '02-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
 
     // Second write in the SAME process — must see the new phase
     const content2 = fs.readFileSync(statePath, 'utf-8');
@@ -10859,9 +11894,12 @@ describe('bug #1446 — state sync writes corrected (lower) total_phases', () =>
       const dir = path.join(planning, 'phases', d);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
-      // Mark 01 and 02 as complete (2 summaries)
+      // Mark 01 and 02 as complete: disk-strict completion (ADR-3180 §7.4,
+      // #3186) requires a passing *-VERIFICATION.md, not just a summary — a
+      // summary alone no longer implies completion.
       if (d !== '03-gamma') {
         fs.writeFileSync(path.join(dir, 'PLAN-SUMMARY.md'), '# Summary\n', 'utf-8');
+        fs.writeFileSync(path.join(dir, `${d.slice(0, 2)}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
       }
     }
   });
@@ -10884,10 +11922,14 @@ describe('bug #1446 — state sync writes corrected (lower) total_phases', () =>
       3,
       `total_phases must be corrected to 3 (derived), not kept at 10 (stale). Got ${state.progress.total_phases}`,
     );
-    // completed_phases ratchet still works: existing 2 ≥ disk-derived → keep 2
-    assert.ok(
-      state.progress.completed_phases >= 2,
-      `completed_phases must be at least 2 (ratchet). Got ${state.progress.completed_phases}`,
+    // Disk-strict (ADR-3180 §7.4, #3186): completed_phases is recomputed from
+    // disk on every sync (resync=true bypasses the curated-progress ratchet),
+    // so it must equal the number of phases with a passing *-VERIFICATION.md
+    // (01 and 02), not a preserved/ratcheted stale frontmatter value.
+    assert.equal(
+      state.progress.completed_phases,
+      2,
+      `completed_phases must be 2 (01 and 02 have a passing verification). Got ${state.progress.completed_phases}`,
     );
   });
 });
@@ -10971,6 +12013,11 @@ function seedProject(prefix, roadmap, completeDirs) {
     if (completeDirs.includes(d)) {
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): a passing
+      // *-VERIFICATION.md is what makes a phase complete now, not a summary
+      // alone — this suite is about RETIRED-phase exclusion, not the
+      // completion predicate itself.
+      fs.writeFileSync(path.join(dir, `${d}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
   }
   return tmpDir;
@@ -11108,6 +12155,9 @@ function seedFromSpecs(prefix, specs) {
     if (s.shipped) {
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      fs.writeFileSync(path.join(dir, `${s.dir}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
   }
   return tmpDir;
@@ -11197,6 +12247,9 @@ describe('bug #1514 — retired exclusion across phase shapes', () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
       fs.writeFileSync(path.join(dir, 'SUMMARY.md'), '# Summary\n', 'utf-8');
+      // Disk-strict completion (ADR-3180 §7.4, #3186): only a passing
+      // *-VERIFICATION.md makes a phase complete now.
+      fs.writeFileSync(path.join(dir, `${d}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
     tmpDir = tmp;
     const result = runGsdTools(['state', 'json'], tmpDir);
@@ -11293,3 +12346,381 @@ describe('bug #2440 — shouldPreserveExistingProgress does not ratchet total_pl
 });
   });
 }
+
+// ─── #2573: state_head commit provenance on the write seam ───────────────────
+
+describe('syncStateFrontmatter — state_head commit provenance (#2573)', () => {
+  const { runGit } = require('./helpers/process-seam.cjs');
+  const { syncStateFrontmatter } = require('../gsd-core/bin/lib/state.cjs');
+  const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const { createTempGitProject: mkGit } = require('./helpers.cjs');
+
+  const dirs = [];
+  const track = (d) => { dirs.push(d); return d; };
+  afterEach(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  const MINIMAL_STATE = [
+    '---',
+    'status: executing',
+    '---',
+    '',
+    '# Session State',
+    '',
+    'Status: executing',
+    '',
+  ].join('\n');
+
+  test('stamps state_head with the full HEAD sha of the project repo', () => {
+    const dir = track(mkGit('gsd-2573-'));
+    const head = runGit(['rev-parse', 'HEAD'], { cwd: dir }).stdout.trim();
+
+    const synced = syncStateFrontmatter(MINIMAL_STATE, dir);
+    const fm = extractFrontmatter(synced);
+
+    assert.strictEqual(fm.state_head, head,
+      'state_head must record the commit STATE.md was written against');
+  });
+
+  test('omits state_head entirely when the project is not a git repo (degrade, never throw)', () => {
+    // trek-e's approval condition 3: degrade to no-signal rather than throwing
+    // when the commit is unresolvable. A non-repo is the canonical case.
+    const dir = track(createTempProject('gsd-2573-nogit-'));
+
+    let synced;
+    assert.doesNotThrow(() => { synced = syncStateFrontmatter(MINIMAL_STATE, dir); },
+      'a non-git project must not throw');
+    const fm = extractFrontmatter(synced);
+
+    assert.ok(!('state_head' in fm),
+      `state_head must be absent outside a git repo, got ${JSON.stringify(fm.state_head)}`);
+  });
+
+  test('drops a PRE-EXISTING state_head when the commit becomes unresolvable (never carried forward)', () => {
+    // The omission test above feeds MINIMAL_STATE, which has no pre-existing
+    // state_head — so it never reaches the #2202 carry-forward loop, which
+    // copies any key absent from derivedFm straight back from the old file.
+    // This fixture DOES carry a stamp, so it exercises that branch.
+    //
+    // state-transition.cts classifies state_head as { preservation: 'derive' }:
+    // "Never preserved: a stale stamp would claim STATE.md was written against
+    // a commit it wasn't." A carried-forward value contradicts that contract and
+    // asserts provenance the file no longer has.
+    const STAMPED_STATE = [
+      '---',
+      'status: executing',
+      'state_head: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '---',
+      '',
+      '# Session State',
+      '',
+      'Status: executing',
+      '',
+    ].join('\n');
+
+    const dir = track(createTempProject('gsd-2573-stale-stamp-'));
+
+    let synced;
+    assert.doesNotThrow(() => { synced = syncStateFrontmatter(STAMPED_STATE, dir); },
+      'a non-git project must not throw even with a pre-existing stamp');
+    const fm = extractFrontmatter(synced);
+
+    assert.ok(!('state_head' in fm),
+      `a stale state_head must be DROPPED, not carried forward, when the commit is unresolvable — got ${JSON.stringify(fm.state_head)}`);
+  });
+
+  test('restamps state_head to the new HEAD after a commit (freshness proxy resets on write)', () => {
+    // Goodhart guard, asserted rather than assumed: the counter resets as a
+    // side effect of ANY state write, so state_head means "written at this
+    // commit", never "STATE's content is accurate". Pinning it here so nobody
+    // later builds a gate on the derived commit distance.
+    const dir = track(mkGit('gsd-2573-restamp-'));
+    const first = extractFrontmatter(syncStateFrontmatter(MINIMAL_STATE, dir)).state_head;
+
+    fs.writeFileSync(path.join(dir, 'unrelated.txt'), 'change\n');
+    runGit(['add', '-A'], { cwd: dir });
+    runGit(['commit', '-m', 'unrelated'], { cwd: dir });
+    const second = extractFrontmatter(syncStateFrontmatter(MINIMAL_STATE, dir)).state_head;
+
+    const head = runGit(['rev-parse', 'HEAD'], { cwd: dir }).stdout.trim();
+    assert.notStrictEqual(second, first, 'a new commit must produce a new state_head');
+    assert.strictEqual(second, head, 'state_head must track the current HEAD');
+  });
+
+  test('carries a body-absent last_activity forward instead of dropping it (#2622 B1)', () => {
+    // #2622 B1: the #2202 carry-forward loop skips `source: 'free'` fields
+    // (state_head) so an unresolvable stamp is never re-asserted — but it must
+    // NOT skip `last_activity` ({source:'body', preservation:'derive'}). When the
+    // body carries no "Last activity:" line, buildStateFrontmatter omits the
+    // field, and the existing frontmatter value has to survive: dropping it is
+    // silent frontmatter data loss and would defeat #2570's staleness signal
+    // downstream. A non-git project keeps this on the carry-forward path
+    // (state_head is simply absent) and needs no subprocess.
+    const STATE_WITH_ACTIVITY = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-01-15',
+      '---',
+      '',
+      '# Session State',
+      '',
+      'Status: executing',
+      '',
+    ].join('\n');
+
+    const dir = track(createTempProject('gsd-2622-b1-'));
+    const fm = extractFrontmatter(syncStateFrontmatter(STATE_WITH_ACTIVITY, dir));
+
+    assert.strictEqual(fm.last_activity, '2026-01-15',
+      'a body-absent last_activity must carry forward, not be dropped by the state_head narrowing');
+  });
+});
+
+
+// ─── #2573: property invariants for the state_head fence ─────────────────────
+//
+// `state_head` is read from disk and then passed to git AS AN ARGUMENT, which
+// makes this a parser with a security-relevant fence — the class the repo's
+// testing standards require fast-check coverage for. Example-based tests pin
+// the shapes we thought of; these pin the invariant for the ones we didn't.
+
+describe('readStateHeadFreshness — property invariants (#2573)', () => {
+  const fc = require('./helpers/fast-check-setup.cjs');
+  const { runGit } = require('./helpers/process-seam.cjs');
+  const { after } = require('node:test');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { cleanup } = require('./helpers.cjs');
+  const { readStateHeadFreshness } = require('../gsd-core/bin/lib/state.cjs');
+
+  const propDirs = [];
+  after(() => { while (propDirs.length) cleanup(propDirs.pop()); });
+
+  function gitRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-prop-'));
+    propDirs.push(dir);
+    runGit(['init', '-q'], { cwd: dir });
+    runGit(['config', 'user.email', 't@t.com'], { cwd: dir });
+    runGit(['config', 'user.name', 'T'], { cwd: dir });
+    runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    runGit(['add', '-A'], { cwd: dir });
+    runGit(['commit', '-q', '-m', 'seed'], { cwd: dir });
+    return dir;
+  }
+
+const HEX_RE = /^[0-9a-f]{4,40}$/i;
+
+  const repo = gitRepo();
+
+  test('(a) total function — never throws for arbitrary input', () => {
+    fc.assert(
+      fc.property(fc.anything(), (value) => {
+        readStateHeadFreshness(repo, value);
+        return true;
+      }),
+    );
+  });
+
+  test('(b) fence — non-hex input never yields a stamp', () => {
+    fc.assert(
+      fc.property(fc.string(), (s) => {
+        const r = readStateHeadFreshness(repo, s);
+        if (HEX_RE.test(s.trim())) return true; // valid shape: out of scope here
+        return r.state_head === null && r.commits_behind === null && r.commit_stale === null;
+      }),
+    );
+  });
+
+  test('(c) tri-state integrity — unknown never reads as known-fresh', () => {
+    fc.assert(
+      fc.property(fc.string(), (s) => {
+        const r = readStateHeadFreshness(repo, s);
+        const validTri = r.commit_stale === null || r.commit_stale === true || r.commit_stale === false;
+        const unknownIsNull = r.commits_behind === null ? r.commit_stale === null : true;
+        const agreement = typeof r.commits_behind === 'number'
+          ? r.commit_stale === (r.commits_behind > 0)
+          : true;
+        return validTri && unknownIsNull && agreement;
+      }),
+    );
+  });
+
+  test('(d) no git-argument injection — dash-led values are rejected by the fence', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('--all', '-n', '--not', '--output=/tmp/pwn', '--help', '-- --all'),
+        fc.string(),
+        (flag, tail) => {
+          const r = readStateHeadFreshness(repo, `${flag}${tail}`);
+          return r.state_head === null && r.commits_behind === null && r.commit_stale === null;
+        },
+      ),
+    );
+  });
+
+  test('(f) a NON-ANCESTOR stamp resolves to unknown, never to "known fresh"', () => {
+    // `rev-list --count A..B` exits 0 with "0" when A is unreachable from B, so
+    // reset --hard / rebase / squash / force-push past the stamp used to render
+    // as commit_stale:false — "known fresh" for a codebase that was rewound.
+    // That collapses the exact unknown-vs-fresh distinction the tri-state exists
+    // to preserve, so a non-ancestor stamp must come back null.
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-nonanc-'));
+    propDirs.push(d);
+    const g = (argv) => runGit(argv, { cwd: d }).stdout;
+    g(['init', '-q']); g(['config', 'user.email', 't@t.com']); g(['config', 'user.name', 'T']);
+    g(['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(d, 'a.txt'), 'a\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'base']);
+    const base = g(['rev-parse', 'HEAD']).trim();
+    fs.writeFileSync(path.join(d, 'b.txt'), 'b\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'c1']);
+    const tip = g(['rev-parse', 'HEAD']).trim();
+    g(['reset', '--hard', '-q', base]);
+
+    const r = readStateHeadFreshness(d, tip);
+    assert.strictEqual(r.commits_behind, null, 'a non-ancestor stamp has no meaningful distance');
+    assert.strictEqual(r.commit_stale, null, 'unknown must NOT report as false ("known fresh")');
+  });
+
+  test('(e) a real HEAD sha always resolves to zero commits behind', () => {
+    const head = runGit(['rev-parse', 'HEAD'], { cwd: repo }).stdout.trim();
+    const r = readStateHeadFreshness(repo, head);
+    assert.strictEqual(r.commits_behind, 0);
+    assert.strictEqual(r.commit_stale, false);
+    assert.strictEqual(r.state_head, head.slice(0, 7));
+  });
+
+  test('(g) a project whose nearest .git is an ANCESTOR repo resolves to unknown, never "known fresh"', () => {
+    // #2573 degrade path D5. `git rev-parse HEAD` walks UP from cwd to the
+    // nearest enclosing .git — nothing pins that repo to the project. A GSD
+    // project living under an unrelated repo (a dotfiles/notes checkout, or the
+    // outer workspace of a planning.sub_repos layout) measures its freshness
+    // against a repo it has no relationship to.
+    //
+    // The stamp below IS that ancestor repo's HEAD, so pre-fix the ancestry
+    // check passes, rev-list returns 0, and the tri-state reports
+    // commit_stale:false — "known fresh" for a directory that is not in that
+    // repo at all. Same invariant violation as (f), reached by another route.
+    const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-ancestor-'));
+    propDirs.push(outer);
+    const g = (argv) => runGit(argv, { cwd: outer }).stdout;
+    g(['init', '-q']); g(['config', 'user.email', 't@t.com']); g(['config', 'user.name', 'T']);
+    g(['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(outer, 'unrelated.txt'), 'x\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'outer']);
+    const outerHead = g(['rev-parse', 'HEAD']).trim();
+
+    // The project itself is NOT a git repo — it merely sits inside one.
+    const project = path.join(outer, 'nested-project');
+    fs.mkdirSync(path.join(project, '.planning'), { recursive: true });
+
+    const r = readStateHeadFreshness(project, outerHead);
+    assert.strictEqual(r.commit_stale, null,
+      'a stamp resolved against an ancestor repo is UNKNOWN — it must not report false ("known fresh")');
+    assert.strictEqual(r.commits_behind, null,
+      'distance measured against an unrelated repo is not a meaningful count');
+  });
+
+  test('(h) a SYMLINKED project path still resolves — repo pinning compares identity, not spelling', () => {
+    // Guard against over-tightening (g). `git rev-parse --show-toplevel` reports
+    // the REAL path while the project root arrives as the caller spelled it, and
+    // those differ routinely: macOS temp dirs (/var/folders → /private/var/folders),
+    // any symlinked checkout, Windows casing. A raw string compare would report a
+    // perfectly normal project as unknown — the inverse of the bug (g) fixes, and
+    // exactly what broke the macOS and Windows CI shards.
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-symreal-'));
+    propDirs.push(realDir);
+    const g = (argv) => runGit(argv, { cwd: realDir }).stdout;
+    g(['init', '-q']); g(['config', 'user.email', 't@t.com']); g(['config', 'user.name', 'T']);
+    g(['config', 'commit.gpgsign', 'false']);
+    fs.mkdirSync(path.join(realDir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(realDir, 'a.txt'), 'a\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'base']);
+    const head = g(['rev-parse', 'HEAD']).trim();
+
+    const linkDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-symlink-')), 'proj');
+    propDirs.push(path.dirname(linkDir));
+    try {
+      fs.symlinkSync(realDir, linkDir, 'dir');
+    } catch {
+      return; // symlink creation unavailable (e.g. unprivileged Windows) — nothing to assert
+    }
+
+    const r = readStateHeadFreshness(linkDir, head);
+    assert.strictEqual(r.commit_stale, false,
+      'a symlinked project path is the SAME repo — it must resolve, not degrade to unknown');
+    assert.strictEqual(r.commits_behind, 0);
+  });
+
+  test('(i) a sub_repos workspace resolves to unknown even though it owns its own repo', () => {
+    // #2573 D5, sub_repos flavor. (g) covers the case where the project owns NO
+    // .git. This is the harder one: the outer workspace owns BOTH .planning/ and
+    // its own repo, so projectOwnsItsRepo passes — yet every code commit lands in
+    // a nested child repo and the outer HEAD never advances.
+    //
+    // Pre-fix that stamps the outer HEAD, --is-ancestor passes trivially,
+    // rev-list counts 0, and the tri-state reports commit_stale:false — "known
+    // fresh" — no matter how far the children have moved. That is a WRONG answer,
+    // not a missing one: the same invariant (g) protects, reached by a third
+    // route. docs/CONFIGURATION.md describes sub_repos as scoping work per
+    // sub-repo "instead of treating the outer repo as a monorepo", so an outer
+    // wrapper that is itself a repo is a supported layout, not a contrived one.
+    const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-subrepos-'));
+    propDirs.push(outer);
+    const g = (argv) => runGit(argv, { cwd: outer }).stdout;
+    g(['init', '-q']); g(['config', 'user.email', 't@t.com']); g(['config', 'user.name', 'T']);
+    g(['config', 'commit.gpgsign', 'false']);
+    fs.mkdirSync(path.join(outer, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(outer, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['frontend'] } }, null, 2),
+    );
+    fs.writeFileSync(path.join(outer, 'wrapper.txt'), 'x\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'outer']);
+    const outerHead = g(['rev-parse', 'HEAD']).trim();
+
+    // A separately tracked child repo — where the real work happens. The outer
+    // repo is deliberately NOT advanced past `outerHead` afterwards, which is
+    // precisely the topology that makes the stale reading look fresh.
+    const child = path.join(outer, 'frontend');
+    fs.mkdirSync(child, { recursive: true });
+    const gc = (argv) => runGit(argv, { cwd: child }).stdout;
+    gc(['init', '-q']); gc(['config', 'user.email', 't@t.com']); gc(['config', 'user.name', 'T']);
+    gc(['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(child, 'app.js'), 'let a = 1;\n');
+    gc(['add', '-A']); gc(['commit', '-q', '-m', 'child']);
+
+    const r = readStateHeadFreshness(outer, outerHead);
+    assert.strictEqual(r.commit_stale, null,
+      'a sub_repos workspace cannot substantiate a freshness claim from the outer ' +
+      'HEAD — it must report unknown, never false ("known fresh")');
+    assert.strictEqual(r.commits_behind, null,
+      'a distance measured against the wrapper repo is not a meaningful count');
+  });
+
+  test('(j) a plain single-repo project is NOT degraded by the sub_repos check', () => {
+    // Over-tightening guard for (i), mirroring what (h) does for (g). An empty or
+    // absent sub_repos must leave the normal path untouched — a check that
+    // degraded every project to unknown would "pass" (i) while destroying the
+    // feature, which is the failure mode this pins.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-plain-'));
+    propDirs.push(dir);
+    const g = (argv) => runGit(argv, { cwd: dir }).stdout;
+    g(['init', '-q']); g(['config', 'user.email', 't@t.com']); g(['config', 'user.name', 'T']);
+    g(['config', 'commit.gpgsign', 'false']);
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: [] } }, null, 2),
+    );
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    g(['add', '-A']); g(['commit', '-q', '-m', 'base']);
+    const head = g(['rev-parse', 'HEAD']).trim();
+
+    const r = readStateHeadFreshness(dir, head);
+    assert.strictEqual(r.commit_stale, false,
+      'an empty sub_repos list is a normal single-repo project — it must resolve');
+    assert.strictEqual(r.commits_behind, 0);
+  });
+});

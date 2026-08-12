@@ -97,11 +97,13 @@ if (require.main === module) {
   process.stdin.on('end', () => {
     const input = chunks.join('');
     const result = checkUiPresence(input);
+    // eslint-disable-next-line n/no-process-exit -- CLI entry point (require.main===module): async stdin handler, nothing else terminates the process (#3059)
     process.exit(result.hasUI ? 0 : 1);
   });
 
   process.stdin.on('error', (err) => {
     process.stderr.write(`ERROR: ui-safety-gate.cjs stdin read failed: ${err.message}\n`);
+    // eslint-disable-next-line n/no-process-exit -- CLI entry point (require.main===module): async stdin handler, nothing else terminates the process (#3059)
     process.exit(2);
   });
 }

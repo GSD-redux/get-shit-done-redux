@@ -25,6 +25,8 @@ import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-
 import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs';
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
+import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
+import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
 
 const localPlugin = {
   rules: {
@@ -44,6 +46,8 @@ const localPlugin = {
     'normalize-path-in-content': normalizePathInContent,
     'require-fs-op-fallback': requireFsOpFallback,
     'no-unbounded-spawn': noUnboundedSpawn,
+    'no-duplicate-fold-marker': noDuplicateFoldMarker,
+    'require-subprocess-timeout': requireSubprocessTimeout,
   },
 };
 
@@ -62,6 +66,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/claude-orchestration-command-router.cjs',
       'gsd-core/bin/lib/semver-compare.cjs',
       'gsd-core/bin/lib/host-integration.cjs',
+      'gsd-core/bin/lib/host-runtime-detection.cjs',
       'gsd-core/bin/lib/handshake-serialized.cjs',
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',
@@ -87,6 +92,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/code-review-flags.cjs',
       'gsd-core/bin/lib/context-utilization.cjs',
       'gsd-core/bin/lib/broken-windows.cjs',
+      'gsd-core/bin/lib/complexity-trigger.cjs',
+      // issue #1953: tsc-generated runtime artifact — lint the src/refactor-trigger-command-router.cts source.
+      'gsd-core/bin/lib/refactor-trigger-command-router.cjs',
       'gsd-core/bin/lib/api-coverage.cjs',
       'gsd-core/bin/lib/artifacts.cjs',
       'gsd-core/bin/lib/assumption-delta.cjs',
@@ -165,6 +173,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/runtime-artifact-conversion.cjs',
       'gsd-core/bin/lib/runtime-artifact-install-plan.cjs',
       'gsd-core/bin/lib/runtime-artifact-layout.cjs',
+      'gsd-core/bin/lib/install-scope.cjs',
+      'gsd-core/bin/lib/installed-surface-resolver.cjs',
       'gsd-core/bin/lib/runtime-config-adapter-registry.cjs',
       'gsd-core/bin/lib/runtime-hooks-surface.cjs',
       'gsd-core/bin/lib/command-routing-hub.cjs',
@@ -194,6 +204,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/onboard-projection.cjs',
       'gsd-core/bin/lib/agent-command-router.cjs',
       'gsd-core/bin/lib/agent-install-check.cjs',
+      // ADR-2313 Phase 3 (#3243): tsc-generated runtime artifact — lint the src/codex-agent-toml.cts source.
+      'gsd-core/bin/lib/codex-agent-toml.cjs',
       'gsd-core/bin/lib/task-command-router.cjs',
       'gsd-core/bin/lib/validate-command-router.cjs',
       'gsd-core/bin/lib/workstream-inventory.cjs',
@@ -293,6 +305,11 @@ export default tseslint.config(
       // (EPERM/EBUSY/EACCES retry or a Windows platform guard). See
       // DEFECT.WINDOWS-FS-OPS in CONTEXT.md.
       'local/require-fs-op-fallback': 'error',
+      // Flag execSync/execFileSync/spawnSync without a `timeout` option — an
+      // unbounded sync subprocess hangs indefinitely on a stuck remote/large
+      // repo/missing network (DEFECT.UNBOUNDED-SUBPROCESS in CONTEXT.md).
+      // The 8 pre-existing call sites this surfaced were migrated in #2896.
+      'local/require-subprocess-timeout': 'error',
     },
   },
 
@@ -323,8 +340,22 @@ export default tseslint.config(
 
   // ── gsd-core/bin/**/*.cjs + scripts/**/*.cjs ───────────────────────────
   // CommonJS Node files: js.recommended + eslint-plugin-n + local plugin rules
+  // eslint-rules/**, bin/lib/**, pi/**, examples/**, vscode/*.js, .kilo/plugins/*.js,
+  // and .opencode/plugins/*.js were previously unmatched by every glob in this config
+  // (drift guard scripts/lint-eslint-glob-coverage.cjs, #3059). All are CommonJS
+  // (require/module.exports); folded into this block rather than duplicated.
   {
-    files: ['gsd-core/bin/**/*.cjs', 'scripts/**/*.cjs'],
+    files: [
+      'gsd-core/bin/**/*.cjs',
+      'scripts/**/*.cjs',
+      'eslint-rules/**/*.cjs',
+      'bin/lib/**/*.cjs',
+      'pi/**/*.cjs',
+      'examples/**/*.cjs',
+      'vscode/*.js',
+      '.kilo/plugins/*.js',
+      '.opencode/plugins/*.js',
+    ],
     plugins: {
       n: pluginN,
       local: localPlugin,
@@ -352,9 +383,53 @@ export default tseslint.config(
       // eslint-plugin-n rules
       'n/no-process-exit': 'error',
       'n/no-path-concat': 'error',
-      // Local rules — warn for now; flip to error after cleanup phases
-      'local/no-source-grep': 'warn',
+      // Promoted to error (#3313) — a fresh non-cached `npx eslint .` run found
+      // zero live violations of this rule in this glob at promotion time.
+      'local/no-source-grep': 'error',
     },
+  },
+
+  // ── hooks/**/*.js — enforcement hooks (#3059) ──────────────────────────────
+  {
+    files: ['hooks/**/*.js', 'hooks/**/*.cjs'],
+    plugins: { n: pluginN, local: localPlugin },
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
+    rules: {
+      ...js.configs.recommended.rules,
+      'no-var': 'error',
+      'prefer-const': 'warn',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-useless-escape': 'warn',
+      'n/no-path-concat': 'error',
+      // n/no-process-exit is deliberately OFF for hooks ONLY.
+      //
+      // A hook is a standalone process whose ENTIRE contract is its exit code: the
+      // harness reads exit 2 as "deny". `process.exitCode = N; return;` is not
+      // equivalent — it lets execution continue past the denial, and several exits
+      // here are load-bearing in a way that makes that a behavior change, not a
+      // refactor:
+      //   - stdin-timeout guards (e.g. hooks/gsd-read-guard.js, gsd-cursor-subagent-stop.js)
+      //     fire from a setTimeout where NOTHING else terminates the process if stdin
+      //     never closes;
+      //   - hooks/gsd-worktree-path-guard.js exits from a nested `if` whose fallthrough
+      //     would otherwise reach a different unconditional exit;
+      //   - hooks/gsd-write-guard.js:159-175 documents that pipe writes are async on
+      //     Windows, so it deliberately does fs.writeSync(1/2, ...) BEFORE process.exit(2)
+      //     to avoid truncation.
+      // ADR-0012 and ADR-0174 scope the "never calls process.exit" convention to the
+      // Command Routing Hub (src/command-routing-hub.cts), not to hooks. Rewriting 89
+      // call sites in enforcement hooks to satisfy a rule aimed at libraries would trade
+      // a real behavior risk for a cosmetic win. See .gsd/phase/chore-3059-eslint-glob-coverage-guard/40-design.md.
+      'n/no-process-exit': 'off',
+    },
+  },
+
+  // ── root *.mjs config files (#3059) ────────────────────────────────────────
+  {
+    files: ['*.mjs'],
+    languageOptions: { sourceType: 'module', globals: { ...globals.node } },
+    rules: { ...js.configs.recommended.rules },
   },
 
   // ── tests/**/*.test.cjs ─────────────────────────────────────────────────────
@@ -401,6 +476,9 @@ export default tseslint.config(
       // exemption surface. The only sanctioned escapes are an explicit `timeout` on
       // a raw spawn or the `// allow-spawn-timeout-ceiling: <reason>` marker.
       'local/no-unbounded-spawn': 'error',
+      // Ban a consolidation-epic folded suite appearing twice in one host file (#3271).
+      // A second copy runs the same tests twice on every lane and drifts silently.
+      'local/no-duplicate-fold-marker': 'error',
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',

@@ -63,7 +63,7 @@ try {
 // (e.g., gsd-intel-*.js) must be ignored to avoid permanent stale warnings (#1750)
 // MANAGED_HOOKS is imported from ./managed-hooks-registry.cjs above.
 
-let staleHooks = [];
+const staleHooks = [];
 if (configDir) {
   // #3023: the bundle's directory name is runtime-descriptor-driven (pi stages
   // it as `gsd-hooks/`), so deriving it as `<configDir>/hooks` silently scanned

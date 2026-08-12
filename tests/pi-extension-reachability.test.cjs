@@ -18,6 +18,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const gsdPiExtension = require('../pi/gsd.cjs');
 const { _internals } = require('../pi/gsd.cjs');
@@ -62,6 +64,12 @@ test('REACHABILITY: the /gsd handler dispatches a real family through gsd-tools.
   gsdPiExtension(pi);
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const result = await pi._recorded.commands['gsd'].handler('progress json', { cwd: dir });
     // #2991: handler returns { content: [{ type: 'text', text }] } (Pi's display shape), not a bare string.
     assert.ok(result && Array.isArray(result.content) && result.content[0].type === 'text',
@@ -95,6 +103,11 @@ test('REACHABILITY: the gsd_invoke tool dispatches through the engine and return
   gsdPiExtension(pi);
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): see the /gsd handler reachability test
+    // above — a bare temp dir has no ROADMAP.md (UNREADABLE), withholding
+    // `percent`.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const result = await pi._recorded.tools['gsd_invoke'].execute(
       'call-1',
       { family: 'progress', subcommand: 'json' },

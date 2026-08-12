@@ -46,23 +46,38 @@ describe('quick: pre-dispatch worktree base re-check (#1941)', () => {
     assert.ok(content.includes('#1941'), 'quick.md must reference #1941');
   });
 
-  test('degrade check sets USE_WORKTREES=false when shouldDegrade is true', () => {
+  test('degrade check clears BOTH USE_WORKTREES and ISOLATION when shouldDegrade is true', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
     const baseCheckIdx = content.indexOf('worktree.base-check');
-    const block = content.slice(baseCheckIdx, baseCheckIdx + 600);
+    const block = content.slice(baseCheckIdx, baseCheckIdx + 900);
+    assert.ok(block.includes('shouldDegrade'), 'degrade check must branch on shouldDegrade');
+    // Both must move together (#2652). Dispatch keys on ISOLATION while the prompt
+    // guard and worktree manifest key on USE_WORKTREES; clearing only one dispatches
+    // an isolated executor with no base guard and no manifest, then blocks in cleanup
+    // looking for a manifest that was never initialized.
+    assert.ok(block.includes('USE_WORKTREES=false'), 'degrade must set USE_WORKTREES=false');
     assert.ok(
-      block.includes('shouldDegrade') && block.includes('USE_WORKTREES=false'),
-      'degrade check must override USE_WORKTREES=false when shouldDegrade is true'
+      block.includes('ISOLATION=none'),
+      'degrade must ALSO set ISOLATION=none — dispatch reads ISOLATION, so clearing only ' +
+        'USE_WORKTREES still passes the harness isolation flag (#2652)'
     );
   });
 
-  test('degrade check guards on RUNTIME=claude (worktree isolation is Claude Code-specific)', () => {
+  // #2652: this assertion previously required `RUNTIME = "claude"`, encoding the
+  // pre-#2584 premise that worktree isolation is Claude-specific. #2584 replaced
+  // that with the negotiated dispatch.isolation capability, so the guard now keys
+  // on the capability — Cursor also declares harness-worktree.
+  test('degrade check guards on the negotiated capability, not a runtime id', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
     const baseCheckIdx = content.indexOf('worktree.base-check');
-    const block = content.slice(Math.max(0, baseCheckIdx - 200), baseCheckIdx + 200);
+    const block = content.slice(Math.max(0, baseCheckIdx - 300), baseCheckIdx + 200);
     assert.ok(
-      block.includes('RUNTIME') && (block.includes('"claude"') || block.includes("'claude'")),
-      'degrade check must guard on RUNTIME=claude'
+      block.includes('ISOLATION') && block.includes('harness-worktree'),
+      'degrade check must guard on ISOLATION = harness-worktree'
+    );
+    assert.ok(
+      !/\[\s*"\$RUNTIME"\s*=/.test(block),
+      'degrade check must NOT branch on a RUNTIME literal (#2584/#2652)'
     );
   });
 

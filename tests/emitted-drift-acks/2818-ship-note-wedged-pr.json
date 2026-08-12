@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "ship.md": "#2783: the ship-note protocol adds a bounded merge-state poll and an empty recovery commit when a skip token leaves a PR blocked with no checks."
+  }
+}

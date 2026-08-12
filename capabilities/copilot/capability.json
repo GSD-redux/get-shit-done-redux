@@ -58,6 +58,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "copilot-inline",
     "sandboxTier": "none",
