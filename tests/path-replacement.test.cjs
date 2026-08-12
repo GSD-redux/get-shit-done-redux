@@ -541,8 +541,11 @@ describe('#3133: global Claude @-references resolve on tilde, not $HOME', () => 
   });
 
   test('row 9 — global Claude @-ref preserves the full tail path', () => {
+    // Deeper subpath than row 1 — ensures the @-ref normalization does not
+    // truncate the tail. (No `$` anchor: a realistic @-ref line ends with `\n`.)
     const src = '@~/.claude/gsd-core/references/ui-brand.md\n';
     const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
-    assert.match(out, /@~\/\.claude\/gsd-core\/references\/ui-brand\.md$/, `tail must be intact; got:\n${out}`);
+    assert.match(out, /@~\/\.claude\/gsd-core\/references\/ui-brand\.md/, `tail must be intact; got:\n${out}`);
+    assert.doesNotMatch(out, /@\$HOME/, `no @$HOME; got:\n${out}`);
   });
 });
