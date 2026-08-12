@@ -16,7 +16,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveExplicitRuntime } from './runtime-slash.cjs';
+import { resolveExplicitRuntime, readInstallRuntimeMarker } from './runtime-slash.cjs';
+import { resolveRuntimeNameFromCandidates } from './runtime-name-policy.cjs';
 import { CODEX_CONFIG_MARKER } from './update-context.cjs';
 
 export { CODEX_CONFIG_MARKER };
@@ -141,5 +142,17 @@ function resolveReportedRuntimeUnsafe(projectDir: string | null | undefined, dep
   if (explicit) return explicit;
   const detected = detectHostRuntime(deps);
   if (detected.runtime) return detected.runtime;
+  // #3364: below detection, above the default. The install marker is a weaker
+  // signal than a live session signal — an exported CODEX_HOME says what the
+  // user is running RIGHT NOW, while the marker only says what this tree was
+  // installed for — but it is a far stronger signal than assuming Claude.
+  // Without this rung the marker fixes every `resolveRuntime` consumer and
+  // still leaves this one broken: init passes the reported runtime into
+  // checkAgentsInstalled, so a Kimi install with a neutral project config
+  // reported `agent_runtime: "claude"` and all 34 agents missing, because
+  // Kimi's YAML/prompt layout was read as Claude's. #3364 names agent-install
+  // checks among the consumers it is filed to fix, so this ladder is in scope.
+  const marker = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
+  if (marker) return marker;
   return 'claude';
 }

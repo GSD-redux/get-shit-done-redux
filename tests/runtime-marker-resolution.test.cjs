@@ -131,6 +131,53 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     );
   });
 
+  // #3364 review: the rung in `resolveRuntime` fixes every consumer that calls
+  // it, and still left init broken — init reports through
+  // `resolveReportedRuntime`, a DIFFERENT ladder that goes explicit > host
+  // detection > default and never touched the marker. It feeds
+  // checkAgentsInstalled, so a Kimi install with a neutral project config
+  // reported agent_runtime "claude" and every agent missing, because Kimi's
+  // layout was read as Claude's. #3364 names agent-install checks among the
+  // consumers it exists to fix, so this ladder is in scope.
+  test('init reports the installed runtime, not claude, on a marker-only install', (t) => {
+    const installDir = realInstall(t, 'kimi');
+    const proj = neutralProject(t);
+
+    const res = query(installDir, proj, ['init', 'quick', 'marker rung reporting', '--raw']);
+    assert.equal(res.exitCode, 0, `init quick failed: ${res.stderr}`);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(
+      parsed.agent_runtime,
+      'kimi',
+      'init reported claude on a kimi install — the marker reaches resolveRuntime but not the reported-runtime ladder, so agent-install checks inspect the wrong layout',
+    );
+  });
+
+  // The companion invariant: a LIVE session signal must still outrank the
+  // marker. The marker says what this tree was installed for; an exported
+  // CODEX_HOME says what the user is running right now.
+  test('host detection still outranks the marker in the reported ladder', (t) => {
+    const installDir = realInstall(t, 'kimi');
+    const proj = neutralProject(t);
+
+    // CODEX_SANDBOX is a bare session-env signal (CODEX_SESSION_ENV_SIGNALS).
+    // CODEX_HOME would NOT do: that branch additionally probes for a
+    // config.toml under it, which a kimi install tree does not have, so it
+    // would fall through to the marker and the test would pass vacuously.
+    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir, CODEX_SANDBOX: '1' };
+    delete env.GSD_RUNTIME;
+    const res = runNode(
+      [path.join(installDir, 'gsd-core', 'bin', 'gsd-tools.cjs'), 'init', 'quick', 'session signal wins', '--raw'],
+      { cwd: proj, env, timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    assert.equal(res.exitCode, 0, `init quick failed: ${res.stderr}`);
+    assert.equal(
+      JSON.parse(res.stdout).agent_runtime,
+      'codex',
+      'an exported CODEX_HOME is a current-session signal and must outrank the install marker',
+    );
+  });
+
   test('model-resolver and runtime-slash share ONE marker read', () => {
     // The read moved to runtime-slash; model-resolver imports it. Two
     // implementations with two caches is the divergence shape this avoids.
