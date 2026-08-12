@@ -2671,7 +2671,7 @@ function cmdInitDocsUpdate(cwd: string, raw: boolean, options: Record<string, un
  * `state:chunked-mode`/`state:plan-strategy-converge`). This DELIBERATELY
  * does not replace `update.md`'s own `parse_update_channel` case-statement
  * (`TAG="next"`/`TAG="latest"`) — issue #815's regression test
- * (`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+ * (`tests/update-workflow.test.cjs`) asserts that literal
  * case-statement text stays in `update.md` verbatim (the npm dist-tag
  * selection has to run in the workflow's own shell before any `gsd_run`
  * round-trip), so `next_channel` exists purely to gate the `channel-banner`

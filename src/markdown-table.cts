@@ -326,36 +326,50 @@ export function updateTableCell(
 ): Result<string> {
   const lines = splitLinesWithOffsets(tableText);
 
+  // #3255: pick the first VALID table whose columns include `column`. The prior
+  // code bound to the FIRST table of any shape and returned 'unknown column' if
+  // that one lacked the column — so a section holding a summary table above the
+  // target (e.g. ## Traceability: a phase-summary table, then the requirement
+  // rows) never reached the target table. Scan for the first valid table that
+  // carries the column; if none does but a valid table exists, still return
+  // 'unknown column' (single-table behaviour unchanged). Track the first
+  // malformation reason so a lone malformed table keeps its specific error.
   let headerIdx = -1;
+  let columns: string[] = [];
+  let firstValidIdx = -1;
+  let firstMalformedReason: string | null = null;
+  const recordMalformed = (reason: string): void => {
+    if (firstMalformedReason === null && firstValidIdx === -1) firstMalformedReason = reason;
+  };
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].line.trim();
-    if (trimmed.startsWith('|') && trimmed.indexOf('|', 1) !== -1) {
+    if (!trimmed.startsWith('|') || trimmed.indexOf('|', 1) === -1) continue;
+    const delimiterLine = lines[i + 1]?.line;
+    if (delimiterLine === undefined || !delimiterLine.trim().startsWith('|')) {
+      recordMalformed('missing delimiter row');
+      continue;
+    }
+    const candidateRanges = splitTableRowRanges(lines[i].line, lines[i].start);
+    const candidateColumns = candidateRanges.map((r) => unescapeCellText(tableText.slice(r.start, r.end)));
+    const delimiterCells = splitTableRow(delimiterLine);
+    if (!isDelimiterRow(delimiterCells)) {
+      recordMalformed('missing delimiter row');
+      continue;
+    }
+    if (delimiterCells.length !== candidateColumns.length) {
+      recordMalformed('delimiter/header column count mismatch');
+      continue;
+    }
+    if (firstValidIdx === -1) firstValidIdx = i;
+    if (candidateColumns.includes(column)) {
       headerIdx = i;
+      columns = candidateColumns;
       break;
     }
   }
   if (headerIdx === -1) {
-    return { ok: false, reason: 'no table found' };
-  }
-
-  const delimiterLine = lines[headerIdx + 1]?.line;
-  if (delimiterLine === undefined || !delimiterLine.trim().startsWith('|')) {
-    return { ok: false, reason: 'missing delimiter row' };
-  }
-
-  const headerRanges = splitTableRowRanges(lines[headerIdx].line, lines[headerIdx].start);
-  const columns = headerRanges.map((r) => unescapeCellText(tableText.slice(r.start, r.end)));
-
-  const delimiterCells = splitTableRow(delimiterLine);
-  if (!isDelimiterRow(delimiterCells)) {
-    return { ok: false, reason: 'missing delimiter row' };
-  }
-  if (delimiterCells.length !== columns.length) {
-    return { ok: false, reason: 'delimiter/header column count mismatch' };
-  }
-
-  if (!columns.includes(column)) {
-    return { ok: false, reason: `unknown column: ${column}` };
+    if (firstValidIdx !== -1) return { ok: false, reason: `unknown column: ${column}` };
+    return { ok: false, reason: firstMalformedReason ?? 'no table found' };
   }
   const targetColIdx = columns.indexOf(column);
 

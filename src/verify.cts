@@ -46,7 +46,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -1442,12 +1442,17 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const diskPhases = collectDiskPhases(planBase);
 
   for (const p of roadmapPhases) {
+    // #3225: sentinel phase ids are never-on-roadmap by convention.
+    if (isSentinelPhaseId(p)) continue;
     if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
       warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
     }
   }
 
   for (const p of diskPhases) {
+    // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+    // never-on-roadmap; it must not warn here (same guard as cmdValidateHealth).
+    if (isSentinelPhaseId(p)) continue;
     const variants = phaseVariants(p);
     if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
       warnings.push(`Phase ${p} exists on disk but not in ROADMAP.md`);
@@ -1457,7 +1462,10 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   if (config.phase_naming !== 'custom') {
     const integerPhases = [...diskPhases]
-      .filter((p) => !p.includes('.'))
+      // #3225: exclude sentinel phase ids (999.x/0.x) — they are never part of the
+      // sequential numbering, so a 999-interim dir must not produce a spurious
+      // "Gap in phase numbering: N → 999".
+      .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
       .map((p) => parseInt(p, 10))
       .sort((a, b) => a - b);
 
@@ -2031,6 +2039,9 @@ function cmdValidateHealth(
     const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent);
 
     for (const p of roadmapPhases) {
+      // #3225: sentinel phase ids (999.x/0.x) are never-on-roadmap by convention;
+      // a sentinel heading shouldn't demand a directory.
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       const existsOnDisk = [...variants].some((v) => diskPhases.has(v));
       if (!existsOnDisk) {
@@ -2046,6 +2057,11 @@ function cmdValidateHealth(
     }
 
     for (const p of activeDiskPhases) {
+      // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+      // never-on-roadmap; it must not trigger W007 ("Add to roadmap or remove
+      // directory" — both wrong for a sentinel). Mirrors the isSentinelPhaseId
+      // guard phase.cts has at 10+ sites (#2786/#2949).
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
         addIssue(
