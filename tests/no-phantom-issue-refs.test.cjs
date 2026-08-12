@@ -131,6 +131,45 @@ test('walk() skips broken symlinks and does not throw ENOENT (#1545)', (t) => {
   }
 });
 
+test('walk() does not scan ambient .claude/.planning content (#3321)', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nophantom-ambient-'));
+  try {
+    fs.writeFileSync(path.join(fixture, 'real.md'), '# real, no phantom refs\n');
+
+    const claudeDir = path.join(fixture, '.claude', 'worktrees', 'some-agent-worktree');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'offender.md'), '#94729 sentinel phantom ref\n');
+
+    const planningDir = path.join(fixture, '.planning', 'notes');
+    fs.mkdirSync(planningDir, { recursive: true });
+    fs.writeFileSync(path.join(planningDir, 'offender.md'), '#94729 sentinel phantom ref\n');
+
+    const found = walk(fixture, []).map((f) => path.relative(fixture, f));
+
+    assert.ok(found.includes('real.md'), 'walk() must still include real.md at fixture root');
+    assert.ok(
+      !found.some((f) => f.startsWith('.claude' + path.sep)),
+      'walk() must NOT descend into .claude/',
+    );
+    assert.ok(
+      !found.some((f) => f.startsWith('.planning' + path.sep)),
+      'walk() must NOT descend into .planning/',
+    );
+
+    // Prove the offending content WOULD have matched if scanned -- i.e. this isn't a vacuous
+    // "no file happened to match" pass. Use a test-local sentinel, never the module PHANTOM.
+    const sentinelRe = buildRefRe(['94729']);
+    const offenderContent = fs.readFileSync(path.join(claudeDir, 'offender.md'), 'utf8');
+    assert.ok(
+      sentinelRe.test(offenderContent),
+      'sanity: sentinel ref pattern must actually match the offender content',
+    );
+  } finally {
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- local cleanup in standalone guard test; no helpers import available (would introduce a test-dep cycle)
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test('buildRefRe() boundaries — empty list is inert, single/double entries match exactly', () => {
   assert.strictEqual(buildRefRe([]), null, 'empty list must build no regex');
 
