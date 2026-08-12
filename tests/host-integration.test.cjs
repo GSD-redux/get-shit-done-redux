@@ -2480,40 +2480,15 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
         'delegate or make those sites re-record inline',
     );
 
-    // #2486: the runtime-neutral DIAGNOSTICS are not dispatch sites. They
-    // resolve isolation through the sentinel-free `inspect-dispatch-isolation`
-    // verb precisely so a read-only surface can never stamp the sentinel, so
-    // their `ISOLATION=none` is a local fail-closed value with no recording to
-    // do — and re-recording from a diagnostic is the exact defect #2486
-    // removed (a health check that stamps a phase:null sentinel hard-blocks
-    // every later executor dispatch).
-    //
-    // The exemption is PER BLOCK, not per file. A file-wide skip would mean a
-    // real dispatch block added to either file later inherits the exemption and
-    // silently escapes a guard whose name promises "every dispatch site" — the
-    // same hole the hand-listed revision had. A block earns the exemption only
-    // by resolving through the inspection verb AND containing no dispatch
-    // primitive; the file-level assertions below are a precondition on top of
-    // that, so reaching for the recording verb anywhere in the file revokes it.
-    const INSPECTION_SURFACES = new Set([
-      'gsd-core/workflows/health.md',
-      'gsd-core/workflows/settings.md',
-    ]);
-    // Anything that actually hands work to an executor. A block carrying one of
-    // these is a dispatch site whatever file it lives in.
-    const DISPATCH_PRIMITIVE = /Agent\(|harnessFlag|HARNESS_FLAG|isolation="worktree"|query dispatch-isolation/;
-    for (const rel of INSPECTION_SURFACES) {
-      const text = readFileNormalized(path.join(REPO_ROOT, rel));
-      assert.ok(
-        text.includes('query inspect-dispatch-isolation'),
-        `${rel} is exempted as an inspection surface but does not resolve through inspect-dispatch-isolation`,
-      );
-      assert.ok(
-        !/query dispatch-isolation/.test(text),
-        `${rel} is exempted as an inspection surface but calls the RECORDING verb — either it must not, or it must re-record like a dispatch site`,
-      );
-    }
-
+    // #2486 note: the runtime-neutral diagnostics (health.md, settings.md)
+    // resolve isolation for a READ, not a dispatch, and deliberately name their
+    // state `INSPECTED_ISOLATION` rather than `ISOLATION`. That keeps them out
+    // of this scan by construction. An earlier revision exempted those two
+    // files instead; the exemption was file-wide, so any real dispatch block
+    // added to either one would have inherited it and escaped a guard whose
+    // name promises "every dispatch site" (#2486 review). Renaming the variable
+    // removes the carve-out entirely — a diagnostic that ever writes a literal
+    // `ISOLATION=none` is caught here like any other site.
     for (const file of scan) {
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
       if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
@@ -2521,11 +2496,6 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
       for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
         const block = m[1];
         if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
-        if (
-          INSPECTION_SURFACES.has(rel)
-          && /query inspect-dispatch-isolation/.test(block)
-          && !DISPATCH_PRIMITIVE.test(block)
-        ) continue;
         if (!block.includes('--force-isolation')) {
           const line = text.slice(0, m.index).split(/\r?\n/).length;
           offenders.push(`${rel}:${line}`);

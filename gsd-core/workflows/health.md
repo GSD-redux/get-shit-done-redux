@@ -98,30 +98,30 @@ the former — telling a Claude Code user their runtime declares no executor-iso
 which is false. Track the two apart and report which one happened.
 
 Know the limit of that signal (#2486 review): the verb itself fail-closes an unknown, undeclared or
-out-of-vocabulary runtime — and any internal resolution error — to `none` and exits 0, so `ISOLATION_RESOLVED=true` means "the query
+out-of-vocabulary runtime — and any internal resolution error — to `none` and exits 0, so `INSPECTED_RESOLVED=true` means "the query
 answered", not "the runtime published a declaration". W025's resolved-case wording below is
 therefore written to be true of every path that reaches it — a declared `none` and an
 internally-fail-closed `none` alike. Distinguishing those two would need the verb to report
 provenance, which is out of scope here.
 
 ```bash
-_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
+_INSPECTED_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
 _ISOLATION_RC=$?
-if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_ISOLATION_RAW" ]; then
-  ISOLATION=none
-  ISOLATION_RESOLVED=false      # no verdict learned — not the same as "declares none"
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_INSPECTED_RAW" ]; then
+  INSPECTED_ISOLATION=none
+  INSPECTED_RESOLVED=false      # no verdict learned — not the same as "declares none"
 else
-  ISOLATION="$_ISOLATION_RAW"
-  ISOLATION_RESOLVED=true
+  INSPECTED_ISOLATION="$_INSPECTED_RAW"
+  INSPECTED_RESOLVED=true
 fi
-case "$ISOLATION" in
+case "$INSPECTED_ISOLATION" in
   harness-worktree|orchestrator-worktree|none) ;;
-  *) ISOLATION=none; ISOLATION_RESOLVED=false ;;   # out of vocabulary is not a verdict either
+  *) INSPECTED_ISOLATION=none; INSPECTED_RESOLVED=false ;;   # out of vocabulary is not a verdict either
 esac
 
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
-if [ "$ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
-  if [ "$ISOLATION_RESOLVED" = "true" ]; then
+if [ "$INSPECTED_ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
+  if [ "$INSPECTED_RESOLVED" = "true" ]; then
     echo "W025: the project config sets workflow.use_worktrees to a non-false value, but this runtime has no usable executor-isolation primitive — dispatch.isolation resolves to none, declared as none, or fail-closed because the capability could not be determined — so /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or set workflow.use_worktrees: false in the project config (the active workstream's config.json when one is active). Set it explicitly rather than deleting the key — an absent key resolves to false only on an emit whose default was stamped to false, and to true otherwise."
   else
     echo "W025: the project config sets workflow.use_worktrees to a non-false value, and GSD could not resolve this runtime's executor-isolation capability ('gsd_run query inspect-dispatch-isolation' failed or returned nothing) — so it cannot tell whether /gsd:execute-phase and /gsd:quick will fail closed on that value. This is a report of an unverifiable config, NOT a finding that the runtime declares no primitive. Fix: re-run once the gsd-tools shim resolves; if the warning persists, run /gsd:settings and answer No to Worktrees."

@@ -1558,8 +1558,8 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   // actually learned, the same shape the execution-side isolation gate uses.
   // Pinned as two invariants rather than one long literal so that reformatting
   // the block does not fail the test while a semantic regression still does.
-  const ISOLATION_LINE = '_ISOLATION_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)';
-  const ISOLATION_RESOLVED_FLAG = 'ISOLATION_RESOLVED';
+  const ISOLATION_LINE = '_INSPECTED_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)';
+  const ISOLATION_RESOLVED_FLAG = 'INSPECTED_RESOLVED';
   const ISOLATION_COLLAPSING_FALLBACK = /inspect-dispatch-isolation --raw 2>\/dev\/null \|\| echo/;
   const readWorkflow = (wf) =>
     fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
@@ -1631,6 +1631,18 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         );
         // Major 3: fail-closed is right; reporting the failure AS a capability
         // verdict is not. Both surfaces must be able to tell the two apart.
+        // #2486 review: the diagnostics name their state INSPECTED_ISOLATION,
+        // not ISOLATION. That is load-bearing, not cosmetic — #2728's
+        // "every dispatch-site degrade block re-records" guard scans for a
+        // literal `ISOLATION=none` in any workflow bash block, and a read-only
+        // surface has no sentinel to re-record. Naming the read differently
+        // keeps these files out of that scan BY CONSTRUCTION; the alternative
+        // was exempting the two files, which silently covered any future
+        // dispatch block added to them.
+        assert.ok(
+          !/^\s*ISOLATION=/m.test(src),
+          `${wf}: a read-only diagnostic must not assign the dispatch-site variable name ISOLATION — use INSPECTED_ISOLATION so #2728's re-record guard does not have to carve out this file`,
+        );
         assert.ok(
           src.includes(ISOLATION_RESOLVED_FLAG),
           `${wf}: must track ISOLATION_RESOLVED — a resolver failure is not a declaration of 'none' (#2486 review, Major 3)`,
@@ -1652,7 +1664,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
           `${wf}: calls the RECORDING dispatch-isolation verb — inspection surfaces must use inspect-dispatch-isolation, which never writes the sentinel`,
         );
         assert.ok(
-          src.includes('"$ISOLATION" = "none"') || src.includes('`ISOLATION` = `none`'),
+          src.includes('"$INSPECTED_ISOLATION" = "none"') || src.includes('`INSPECTED_ISOLATION` = `none`'),
           `${wf}: must gate on ISOLATION = none, the only value that cannot honor worktrees`,
         );
       }
