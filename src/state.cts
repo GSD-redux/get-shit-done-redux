@@ -27,7 +27,7 @@ const { planningDir, planningPaths } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -2361,6 +2361,12 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
       }
     }
   }
+
+  // #3257: propagate full-line frontmatter comments from the extracted source onto the
+  // rebuilt derivedFm (buildStateFrontmatter + the Object.keys carry-forward above both
+  // skip the Symbol-keyed channel, so without this the comments would be lost here even
+  // though parseYamlRegion/reconstructFrontmatter preserve them in isolation).
+  propagateCommentChannel(existingFm as unknown as Frontmatter, derivedFm as unknown as Frontmatter);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;
