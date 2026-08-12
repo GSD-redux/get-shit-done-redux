@@ -1397,6 +1397,10 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           killSignal: 'SIGKILL',
           maxBuffer: 64 * 1024 * 1024,
           shell: false, // argv array only — never a shell string (no interpolation of config values)
+          // #2483: a lane's declared env pairs merged OVER this process's environment, for this
+          // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
+          // into the orchestrating session or into the next lane.
+          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
         });
         return {
           status: r.status,

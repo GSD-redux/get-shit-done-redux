@@ -1133,3 +1133,184 @@ the same discipline 8.5 imposes on the rules themselves.
 **No recorded decision governed this seam.** `recall_decision` returns nothing for the health
 diagnostic surface — the condition that made Phase 0 necessary, and the reason Decision 8 is locked
 before Phase 10 rather than settled inside it.
+
+### Amendment 7 — Phase 7 (#3217) validation: the contract held, on the second pass
+
+**§7.6 rule 4 is now enforced.** A percentage is withheld (never rendered as a fabricated `0`) at
+every consumer this phase reached: `roadmap analyze --json`'s `progress_percent`, `stats --raw`'s
+`percent`/`plan_percent`, `query progress --raw`'s `percent`, `state json --raw`'s
+`progress.percent`, and `state update-progress --raw`'s write. Rule 2's negative space — a **real**
+`0` under a `COMPLETE` scope — is unaffected and still renders (matrix rows B1–B6).
+
+**This phase was parked once and resumed after an isolated adversarial review, and the review
+caught something a same-authorship pass would not have.** The first pass shipped rule 4 at
+`computeProgressPercent` (§7.6's own "cheapest site" precedent) and at `cmdRoadmapAnalyze`'s new
+`progressScope`-gated accumulation, but left `state.cts::buildStateFrontmatter` hardcoding
+`SCOPE.COMPLETE` behind a written-reason comment ("threading it through would mean restructuring
+the `_diskScanCache` shared shape, which is out of this phase's named sites"). The review rejected
+the comment as a gate — "the whole finding is that a comment is not a gate" — and the restructuring
+was done: `_diskScanCache`'s cached shape gained a `phaseDirScope: Scope` field carrying
+`listMilestonePhaseDirs`'s real scope, threaded to the `computeProgressPercent` call site in place
+of the hardcode. **A second defect surfaced only by tracing the fix through**, not named in the
+original finding: the same function's prose fallback (`progressRaw.match(/(\d+)%/)`, reading a
+`Progress: N%` line already written to STATE.md's body) fires whenever the scoped call returns
+`null`, so a non-`COMPLETE` scope would still have surfaced a stale prose percentage through that
+second path even after the hardcode was fixed. That fallback now also gates on
+`diskScope === SCOPE.COMPLETE`, matching the pre-existing `milestoneUnbounded` guard already beside
+it (#1761). **Generalized lesson, in the same family as Amendment 5's "any numeric window in a drift
+guard is a Goodhart target": a rule-4 fix at one output expression is not enough when a fallback
+expression sits beside it and shares the same "no data" `null` sentinel — every path that can
+produce the observable output must be re-checked, not just the primary one.**
+
+**A second, independent scope was found ungoverned at `cmdRoadmapAnalyze` and is now exposed, not
+reconciled.** `roadmap analyze --json` computes `progress_percent` from its own
+`listMilestonePhaseDirs` call (`progressScope`) — correctly, per rule 3 — while `total_plans` /
+`total_summaries` / `phases` / `completed_phases` stay derived from the heading-matched
+`_phaseDirNames` scan that the top-level `scope` field (windowing identity) describes. Two `Scope`
+values governed one JSON object and only one was named. Of the three options the review posed
+(expose the second scope; reconcile the two into one; re-derive the phases/counts fields from the
+same scoped set as the percentage), this phase **exposes** it as a new `progress_scope` field rather
+than reconciling or re-deriving. Reconciling or re-deriving would have undone the phase's own
+already-recorded, deliberate choice a few lines above it in the same function — "this does not touch
+`total_plans` / `total_summaries` / `phases` / `completed_phases` … only `progress_percent`'s own
+inputs move onto the scoped owner" — which exists because `_phaseDirNames` is a heading→directory
+**lookup index**, not a milestone enumeration, and filtering it through `listMilestonePhaseDirs`
+would scope the same set twice (the same shape Decision 4a's exemption already covers for that
+variable). Exposing the field that governs the null is the minimal change that satisfies the
+invariant the review named: *a consumer must be able to tell WHY a percentage is absent from the
+JSON alone.*
+
+**A third, minor finding — `state update-progress`'s silent no-op — is resolved as accept-with-
+disclosure, not silence.** The command already left `STATE.md` untouched on a non-`COMPLETE` scope;
+the gap was that the only signal was a JSON `reason` field most callers do not read. It now also
+writes a `[gsd-tools] WARNING:` line to stderr, matching the convention this same file already uses
+for a comparable silent field-update no-op (`stateReplaceFieldWithFallback`, `state.cts:553`) rather
+than inventing a second warning shape.
+
+**The guard question was re-litigated, not skipped.** Issue #3217 asked for
+`lint-completion-ratio-drift.cjs` to be extended to "catch a percentage rendered from counts whose
+scope was not consulted." A narrow, syntactic candidate — a call to `listMilestonePhaseDirs(...)`
+whose `.value` is read while `.scope` is never bound in the same function — was prototyped against
+the real tree and produced real false positives: `src/milestone.cts:697,753,881` legitimately read
+only `.value` from that call for milestone **archiving**, unrelated to percentage rendering at all.
+"Was this scope consulted before rendering a percentage" is a data-flow question, not a syntactic
+one, and no syntactic proxy distinguishes those two call shapes. Per Amendment 4a's standing rule —
+build and run before scope is fixed, state what the guard actually found — the candidate was dropped
+rather than shipped with an exemption list that would have hollowed it out on the sites it exists to
+catch. **The existing arithmetic guard (rules 1–2) is unchanged and still reports an earned `0`** on
+the real tree (test row E3); the real enforcement for rule 4 is the behavioral identity-at-the-
+surface suite this phase adds (`tests/completion-ratio-scope-withholding.test.cjs`, matrix rows
+A1–A11, B1–B6, C1–C3, D1–D4, E1–E4), per Decision 4(b)/(c) — asserted at each consumer's observable
+output, never at a helper's return value, so a percentage post-filtered after the fact cannot pass
+as one never withheld.
+
+**What this phase does NOT close, left with a written reason rather than silently dropped:**
+
+- **Workstream inventory (matrix row A8).** `buildWorkstreamInventory`
+  (`src/workstream-inventory-builder.cts`) carries a pre-ADR-3180 bespoke boolean
+  (`milestoneScoped`), not the frozen `SCOPE` enum, and cannot distinguish `TRUNCATED` from
+  `UNSCOPED` from `UNREADABLE`. Migrating it honestly requires widening
+  `WorkstreamInventory.progress_percent` from `number` to `number | null` — a return-type
+  re-architecture the design doc names as out of scope for this phase — or reusing the bespoke
+  boolean as a `Scope` stand-in, which is the same textual-proxy-for-a-data-flow-property this
+  amendment's guard section rejects one paragraph up. Left un-migrated with the reason recorded at
+  the field's own definition site.
+- **`cmdStateSync`'s own `SCOPE.COMPLETE` hardcode (`state.cts`, `cmdStateSync`), found but not
+  named in the original review.** This is a *third* site sharing buildStateFrontmatter's pattern —
+  a raw `fs.readdirSync(phasesDir, ...)` listing, never routed through `listMilestonePhaseDirs`,
+  carries its own written-reason comment for staying on `SCOPE.COMPLETE`. It was not named as a
+  finding and the design's consumer map does not list `cmdStateSync` among the sites this phase
+  owns. It is lower-risk than the fixed sites: an unreadable `phasesDir` (this finding's own
+  reproduction shape) already hits `cmdStateSync`'s own `fs.readdirSync` `catch` block, which exits
+  via the pre-existing `{ synced: true, changes: [], dry_run }` early return **before** any percent
+  is computed — so the specific defect this phase closes elsewhere does not reproduce here. Recorded
+  rather than silently left for a reader to independently rediscover; migrating it fully (adding rule
+  3's window-scoping, not just rule 4's withholding) is out of this phase's named scope.
+
+**Rebase note.** This phase's implementation predates Phase 4 (#3186, the disk-strict completion
+predicate) landing on `next`. Rebasing onto `next` after Phase 4 merged produced **no conflicts**,
+though Phase 4 turned out to touch two of the same functions this phase's fix reaches —
+`buildStateFrontmatter` and `cmdStateSync` — swapping each one's `diskCompletedPhases` count from
+`scanPhasePlans(...).completed` (answers "are all plans summarized", a different question, per
+§7.4/#2957) to the canonical `isPhaseComplete(...).value.complete`. Those hunks land in the
+phase-directory completion-counting loop in each function; this phase's own hunks land at the
+`listMilestonePhaseDirs` destructure, the `_diskScanCache` shape, and the `computeProgressPercent`
+call site further down the same functions — non-overlapping line ranges, which is why the automatic
+merge succeeded with no manual resolution.
+
+**Tier-2, re-derived for Phase 7 (mirrors Amendment 5's per-phase table convention):**
+
+| Command surface | Output change |
+|---|---|
+| `roadmap analyze --json` | `progress_percent` becomes `number \| null`; gains a new `progress_scope` field naming the scope that governs it, separate from the top-level `scope` |
+| `stats --raw` | `percent` and `plan_percent` become `number \| null` |
+| `query progress --raw` | `percent` becomes `number \| null` |
+| `state json --raw` | `progress.percent` is omitted (not `0`, not `null`) rather than rendered when the underlying scope is not `COMPLETE` |
+| `state update-progress --raw` | unchanged wire shape (`updated: false` was already the non-write signal); gains a `[gsd-tools] WARNING:` stderr line on skip |
+
+**Guard roster (§7.6 row), as amended.** The original body's row is not edited in place, per
+Amendment 6's own precedent; read with this correction: `lint-completion-ratio-drift.cjs`'s scan
+surface and mechanism are **unchanged** (arithmetic rules 1–2 only, `src/` scan surface) — rule 4 is
+enforced by the behavioral suite named above, not by an extension to this guard. §7.6's status line
+("rule 4 Required — Phase 7") and the Status bullet "Rule 4 — Phase 7 (#3217)… is not implemented
+anywhere" are superseded by this amendment: rule 4 is enforced at every site Phase 7 named, with the
+two written exceptions above.
+
+### Amendment 8 — a BLOCKER correction to Amendment 7's `cmdStateSync` claim: TRUNCATED and UNSCOPED row 4 DID reproduce
+
+**Amendment 7's second "what this phase does NOT close" bullet is wrong and is corrected here, not
+silently rewritten** — per Amendment 6's own append-only precedent, that bullet's body is left
+untouched above; this amendment records what independent, empirical reproduction on fresh fixture
+copies actually found.
+
+Amendment 7 claimed `cmdStateSync`'s hardcoded `SCOPE.COMPLETE` was "lower-risk than the fixed
+sites" because "an unreadable `phasesDir` (this finding's own reproduction shape) already hits
+`cmdStateSync`'s own `fs.readdirSync` `catch` block… so the specific defect this phase closes
+elsewhere does not reproduce here." That checked only the `UNREADABLE` row. It did not check
+`TRUNCATED` or `UNSCOPED`, and on those rows the claim is false: `cmdStateSync`'s disk scan
+(`entries`, `state.cts` ~3113) enumerates `phasesDir` successfully — it is readable — but the scan is
+**unfiltered by the real milestone window** (it only excludes retired phase numbers, #1514), and the
+percent gate hardcoded `SCOPE.COMPLETE` regardless of what the real window's scope was. Reproduced on
+fresh, independent fixture copies (`listMilestonePhaseDirs` called directly to confirm the real
+scope, matching each surface's own derivation):
+
+| fixture | real scope | `state sync` (pre-fix) |
+|---|---|---|
+| TRUNCATED (milestone heading found, window empty, document has phases elsewhere — row 8) | `truncated` | **wrote a fabricated `0%` → `100%`** |
+| UNSCOPED row 4 (no milestone asserted, ROADMAP has versioned headings) | `unscoped` | **wrote a fabricated `0%` → `100%`** |
+| UNSCOPED row 5 (asserted version, no matching heading) | `unscoped` | skipped — but only because the orthogonal `milestoneBounded` (#1761) guard happens to intercept this specific row first, not because `cmdStateSync` itself was scope-aware |
+
+Worse than a wrong read: this is a **write** path, and on the TRUNCATED fixture it persisted a
+self-contradictory `STATE.md` in one write — the body's `Progress:` line got the fabricated `100%`
+while the frontmatter's `progress:` block, built in the same `writeStateMd` call by the already-fixed
+`buildStateFrontmatter`, correctly omitted `percent`. That cross-surface disagreement inside a single
+file is the exact defect class this epic exists to remove.
+
+**Fixed the same way as the two sites Amendment 7 named**: `cmdStateSync` now calls
+`listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr })` — reusing the same
+`syncRoadmapRaw`/`syncRoadmapScope` already parsed in the function for the disk-scan totals — and
+withholds (pushing a `Progress: skipped — …(#3217)` entry to `changes`, mirroring the `#1761`
+skip-message convention already at that call site) whenever the real scope is not `COMPLETE`. The
+`milestoneBounded` (#1761) guard is unchanged and still fires first on row 5; a genuine `0` under a
+real `COMPLETE` scope still writes. Re-reproduced post-fix: all three rows above now agree with
+`state json` / `roadmap analyze` / `stats` / `query progress` on the same fixture — all withhold
+together, none renders a number, and the control (`COMPLETE`) fixture still writes its earned
+percentage.
+
+**Generalized lesson — the second instance of this pattern in this epic (see Amendment 5's own
+"Goodhart target" lesson for the first).** A "does not reproduce" claim was too generous a second
+time: it checked the row named in the ORIGINAL finding (`UNREADABLE`) and stopped, rather than
+checking every row the same code path could plausibly hit. A written-reason comment recording "I
+checked X and it's fine" is not evidence about Y and Z unless Y and Z were checked too — the same
+"a comment is not a gate" principle Amendment 7 itself invoked against `buildStateFrontmatter`'s
+original hardcode applies equally to a comment that scopes its own non-reproduction claim too
+narrowly.
+
+**Tier-2, additional (mirrors Amendment 7's own table):**
+
+| Command surface | Output change |
+|---|---|
+| `state sync --raw` | on a non-`COMPLETE` scope: no `Progress:` body rewrite; `changes` gains a `Progress: skipped — …(#3217)` entry instead. A genuine `0` under `COMPLETE` is unaffected. |
+
+`.changeset/bold-otters-scope.md` is updated to disclose this write-path change alongside the two
+Amendment 7 already recorded.

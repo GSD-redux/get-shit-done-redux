@@ -1,0 +1,5 @@
+---
+type: Changed
+pr: 2493
+---
+**The `claude` reviewer in `/gsd:review` no longer inherits your CLAUDE.md or auto-memory** — the lane now declares `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (CLAUDE.md loading and auto-memory are independently-toggled mechanisms, so each gets its own variable), merged into that one spawn's environment, so it reviews the same self-contained prompt the gemini and codex reviewers already receive. It was previously the only reviewer additionally seeing your global CLAUDE.md, the project CLAUDE.md, and Claude Code auto-memory — a context asymmetry against the workflow's own independent-review premise, and a measured ~4k extra input tokens per spawn. Carried as declared lane data (`invoke.env`, ADR-2782), not a bespoke handler; nothing reaches the orchestrating session or any other lane in the run. Affects `/gsd:review` (and the convergence flow that reuses it) invoked from a non-Claude-Code runtime; inside Claude Code the claude reviewer already self-skips for independence. (#2483)

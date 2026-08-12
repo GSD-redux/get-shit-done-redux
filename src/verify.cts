@@ -46,7 +46,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, matchPhaseDirs, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -62,7 +62,18 @@ const { determinePhaseStatus } = commandsMod;
 
 const { planningDir, planningRoot } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
-const { writeStateMd } = stateMod;
+const { writeStateMd, readStateHeadFreshness } = stateMod;
+
+/**
+ * W024 (#2573) threshold — how many commits STATE.md may lag HEAD before
+ * `validate.health` mentions it.
+ *
+ * Deliberately coarse. `state_head` restamps on every state write, so a small
+ * count is normal for any active project; firing near zero would make health
+ * noisy for healthy projects without telling anyone anything. This is a
+ * freshness proxy, not a drift measurement — see readStateHeadFreshness.
+ */
+const STATE_HEAD_ADVISORY_COMMITS = 20;
 const { MODEL_PROFILES } = modelProfilesMod;
 
 // Unused but imported for structural parity
@@ -1475,12 +1486,17 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const diskPhases = collectDiskPhases(planBase);
 
   for (const p of roadmapPhases) {
+    // #3225: sentinel phase ids are never-on-roadmap by convention.
+    if (isSentinelPhaseId(p)) continue;
     if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
       warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
     }
   }
 
   for (const p of diskPhases) {
+    // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+    // never-on-roadmap; it must not warn here (same guard as cmdValidateHealth).
+    if (isSentinelPhaseId(p)) continue;
     const variants = phaseVariants(p);
     if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
       warnings.push(`Phase ${p} exists on disk but not in ROADMAP.md`);
@@ -1490,7 +1506,10 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   if (config.phase_naming !== 'custom') {
     const integerPhases = [...diskPhases]
-      .filter((p) => !p.includes('.'))
+      // #3225: exclude sentinel phase ids (999.x/0.x) — they are never part of the
+      // sequential numbering, so a 999-interim dir must not produce a spurious
+      // "Gap in phase numbering: N → 999".
+      .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
       .map((p) => parseInt(p, 10))
       .sort((a, b) => a - b);
 
@@ -1686,6 +1705,29 @@ function cmdValidateHealth(
     repairs.push('regenerateState');
   } else {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+
+    // W024 (#2573): STATE.md commit-age freshness. Advisory ONLY — it appends
+    // to warnings[] and never touches `status`, the repair set, or any existing
+    // count. Silent when the stamp is absent or unresolvable: "unknown" is not
+    // a finding. The threshold is deliberately coarse so an ordinary project
+    // stays quiet — firing on every project would change health's observable
+    // "clean" state for anything gating on it.
+    {
+      const fm = extractFrontmatter(stateContent) as Record<string, unknown>;
+      const freshness = readStateHeadFreshness(cwd, fm['state_head']);
+      if (
+        freshness.commits_behind !== null &&
+        freshness.commits_behind >= STATE_HEAD_ADVISORY_COMMITS
+      ) {
+        addIssue(
+          'warning',
+          'W024',
+          `STATE.md was written ${freshness.commits_behind} commits ago (at ${freshness.state_head}) — treat its contents as approximate`,
+          'Re-read the current phase artifacts before relying on STATE.md, or run a GSD command that refreshes it',
+        );
+      }
+    }
+
     const phaseRefs = [
       ...stateContent.matchAll(new RegExp(`[Pp]hase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})`, 'g')),
     ].map(
@@ -2023,6 +2065,9 @@ function cmdValidateHealth(
     const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent);
 
     for (const p of roadmapPhases) {
+      // #3225: sentinel phase ids (999.x/0.x) are never-on-roadmap by convention;
+      // a sentinel heading shouldn't demand a directory.
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       const existsOnDisk = [...variants].some((v) => diskPhases.has(v))
         || matchPhaseDirs(allDirNames, normalizePhaseName(p)).matches.length > 0;
@@ -2039,6 +2084,11 @@ function cmdValidateHealth(
     }
 
     for (const [p, dirsForToken] of activeDiskEntries) {
+      // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+      // never-on-roadmap; it must not trigger W007 ("Add to roadmap or remove
+      // directory" — both wrong for a sentinel). Mirrors the isSentinelPhaseId
+      // guard phase.cts has at 10+ sites (#2786/#2949).
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       if ([...variants].some((v) => fullRoadmapPhaseVariants.has(v))) continue;
       if (dirsForToken.every((d) => claimedDirs.has(d))) continue;
@@ -2805,6 +2855,7 @@ export = {
   cmdValidateAgents,
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
+  STATE_HEAD_ADVISORY_COMMITS,
   // Test seam (#1883): listMilestoneArchiveDirs is private and exercised through
   // the validate command, which runs in a subprocess — an fs monkeypatch in the
   // test process cannot reach it. Exposed under a leading underscore so the

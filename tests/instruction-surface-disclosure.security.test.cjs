@@ -890,6 +890,84 @@ describe('N. Consent-prompt injection safety', () => {
     }
   });
 
+  // #2483 — the PARITY test above is hand-maintained, and that is its one structural weakness: its
+  // payload manifest enumerates the lane fields that existed when it was written, so a field added
+  // to the renderer LATER is simply absent from the payload and the guard passes over it vacuously.
+  // This PR adds three such fields — `invoke.env`, `invoke.defaultHost` and `probe.binary` — each
+  // manifest-supplied and each reaching a consent-prompt line, so each carries the same #3248
+  // escaping obligation as every field the block above covers.
+  //
+  // Measured before writing this: with the lane `env` line rendered RAW (the pre-#3248 form), the
+  // entire 948-test lane/capability/trust-disclosure suite stayed green. The escaping was real and
+  // completely unguarded.
+  //
+  // Two manifests are required because the two lane shapes render disjoint lines: `defaultHost` is
+  // emitted only on the openai-http branch, `env`/`probe` only reach a line on a lane that declares
+  // them. The probe binary must DIFFER from the dispatch binary or its line does not render at all.
+  test('PARITY — reviewer-lane env, defaultHost and probe binary are escaped too (#2483)', () => {
+    const payload = 'a\nb\u001b[2Kc';
+    const spawnManifest = {
+      id: 'x',
+      reviewer: {
+        slug: payload,
+        transport: 'spawn',
+        invoke: { binary: payload, args: [payload], env: { [payload]: payload } },
+        handler: payload,
+        probe: { binary: `${payload}-probe`, kind: 'command-capability' },
+      },
+    };
+    const httpManifest = {
+      id: 'x',
+      reviewer: {
+        slug: payload,
+        transport: 'openai-http',
+        invoke: { hostConfigKey: payload, defaultHost: payload },
+      },
+    };
+
+    for (const manifest of [spawnManifest, httpManifest]) {
+      const summary = trust.summarizeDisclosure(trust.discloseExecutableSurfaces(manifest));
+      for (const line of summary) {
+        assert.equal(
+          FORBIDDEN_IN_RENDERED_LINE.test(line),
+          false,
+          `rendered line must contain no forbidden character: ${JSON.stringify(line)}`,
+        );
+      }
+    }
+
+    // NON-VACUITY — asserted on the TYPED disclosure object and on structural line counts, never by
+    // substring-matching rendered prose (CONTRIBUTING.md § "Prohibited: Raw Text Matching on Test
+    // Outputs"; the section header above also promises structural assertions only, and a prose match
+    // here would make that promise false). Two legs, because they answer different halves:
+    //   (a) the fixtures actually populate the typed fields, so the render conditions are reachable;
+    //   (b) each field contributes exactly one line, so the sweep above had something to sweep.
+    const spawnLane = trust.discloseExecutableSurfaces(spawnManifest).reviewerLanes[0];
+    assert.equal(Object.keys(spawnLane.env).length, 1, 'fixture must populate the lane env');
+    assert.notEqual(
+      spawnLane.probeBinary,
+      spawnLane.binary,
+      'the probe line renders only when the probe binary differs from the dispatch binary',
+    );
+    const httpLane = trust.discloseExecutableSurfaces(httpManifest).reviewerLanes[0];
+    assert.notEqual(httpLane.defaultHost, '', 'fixture must populate defaultHost');
+
+    const lineCount = (m) => trust.summarizeDisclosure(trust.discloseExecutableSurfaces(m)).length;
+    const withoutEnv = structuredClone(spawnManifest);
+    delete withoutEnv.reviewer.invoke.env;
+    const withoutProbe = structuredClone(spawnManifest);
+    delete withoutProbe.reviewer.probe;
+    const withoutDefaultHost = structuredClone(httpManifest);
+    delete withoutDefaultHost.reviewer.invoke.defaultHost;
+    assert.equal(lineCount(spawnManifest) - lineCount(withoutEnv), 1, 'env contributes one line');
+    assert.equal(lineCount(spawnManifest) - lineCount(withoutProbe), 1, 'probe contributes one line');
+    assert.equal(
+      lineCount(httpManifest) - lineCount(withoutDefaultHost),
+      1,
+      'defaultHost contributes one line',
+    );
+  });
+
   test('the disclosure OBJECT stays verbatim', () => {
     // Escaping is a RENDERING concern only. The object must stay verbatim because
     // `disclosureSignature` and any consumer reasoning about identity depend on the declared

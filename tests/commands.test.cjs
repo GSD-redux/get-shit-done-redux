@@ -523,9 +523,12 @@ describe('progress command', () => {
   });
 
   test('renders JSON progress', () => {
+    // #3217: no version token — genuinely free-form, so windowing scope is
+    // COMPLETE (§7.1) rather than UNSCOPED (a title merely mentioning "v1.0"
+    // with no STATE.md milestone pointer cannot be windowed to that version).
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -545,9 +548,10 @@ describe('progress command', () => {
   });
 
   test('renders bar format', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0\n`
+      `# Roadmap\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
     fs.mkdirSync(p1, { recursive: true });
@@ -576,9 +580,10 @@ describe('progress command', () => {
   });
 
   test('does not crash when summaries exceed plans (orphaned SUMMARY.md)', () => {
+    // #3217: no version token — see 'renders JSON progress' above.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap v1.0 MVP\n`
+      `# Roadmap MVP\n`
     );
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
     fs.mkdirSync(p1, { recursive: true });
@@ -960,6 +965,56 @@ describe('current-timestamp command', () => {
 
     // The router should call commands.cmdCurrentTimestamp directly.
     // (Verified behaviorally by the 'current-timestamp command' tests above.)
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cmdCurrentTimestamp exact-value tests (#3314 — ADR-456 subprocess clock pin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('current-timestamp command — exact value under GSD_NOW_MS pin', () => {
+  let tmpDir;
+  // Pinned instant with a non-zero millisecond fraction so the 'full' format
+  // assertion can't accidentally pass against a truncated value.
+  const PINNED_MS = 1_700_000_000_123; // 2023-11-14T22:13:20.123Z
+  const PIN_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(PINNED_MS) };
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('date format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp date', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().split('T')[0];
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('filename format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp filename', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const expected = new Date(PINNED_MS).toISOString().replace(/:/g, '-').replace(/\..+/, '');
+    assert.strictEqual(output.timestamp, expected);
+  });
+
+  test('full format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp full', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
+  });
+
+  test('default format: exact value for pinned instant', () => {
+    const result = runGsdTools('current-timestamp', tmpDir, PIN_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.timestamp, new Date(PINNED_MS).toISOString());
   });
 });
 
@@ -1392,7 +1447,7 @@ describe('commit command', () => {
     const logCount = gitOrThrow(['log', '--oneline'], { cwd: tmpDir }).trim().split('\n').length;
     assert.strictEqual(logCount, 2, 'should have 2 commits (initial + amended)');
   });
-  test('creates strategy branch before first commit when branching_strategy is milestone (#3079: no switch)', () => {
+  test('#3207: creates AND switches to the milestone branch before first commit', () => {
     // Configure milestone branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1417,15 +1472,17 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the branch should be CREATED but NOT switched to.
+    // #3207: the branch should be CREATED and HEAD switched to it, so the first
+    // milestone-scoped commit lands on the milestone branch (#1278 intent). The
+    // prior #3079 no-switch behavior regressed this for fresh creates.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/v1.0-initial-release', '#3079: must NOT switch to the milestone branch');
-    // Verify the branch WAS created (exists as a ref)
-    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/v1.0-initial-release'], { cwd: tmpDir });
-    assert.ok(branchExists.trim(), 'milestone branch should be created even without switching');
+    assert.strictEqual(branch, 'gsd/v1.0-initial-release', '#3207: must switch to the milestone branch');
+    // The commit must be reachable on the milestone branch (HEAD is on it).
+    const committedFile = gitOrThrow(['show', 'HEAD:.planning/test-context.md'], { cwd: tmpDir });
+    assert.ok(committedFile.includes('# Context'), 'milestone commit must land on the milestone branch');
   });
 
-  test('creates strategy branch before first commit when branching_strategy is phase (#3079: no switch)', () => {
+  test('#3207: creates AND switches to the phase branch before first commit', () => {
     // Configure phase branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1454,14 +1511,16 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the branch should be CREATED but NOT switched to. The commit
-    // lands on the current branch (master/main), and the phase branch exists
-    // as a ref but HEAD did not move.
+    // #3207: the branch should be CREATED and HEAD switched to it, so the first
+    // phase-scoped commit lands on the phase branch (#1278 intent). The prior
+    // #3079 no-switch behavior regressed this for fresh creates.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/phase-01-setup', '#3079: must NOT switch to the phase branch');
-    // Verify the branch WAS created (exists as a ref)
-    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-01-setup'], { cwd: tmpDir });
-    assert.ok(branchExists.trim(), 'phase branch should be created even without switching');
+    assert.strictEqual(branch, 'gsd/phase-01-setup', '#3207: must switch to the phase branch');
+    // The commit must be reachable on the phase branch (HEAD is on it).
+    const committedFile = gitOrThrow(
+      ['show', 'HEAD:.planning/phases/01-setup/01-CONTEXT.md'], { cwd: tmpDir }
+    );
+    assert.ok(committedFile.includes('# Context'), 'phase commit must land on the phase branch');
   });
 
   test('decimal phase numbers are captured correctly in branching strategy', () => {
@@ -1493,9 +1552,9 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: verify branch is created but NOT switched to (decimal phase)
+    // #3207: the branch should be CREATED and HEAD switched to it (decimal phase).
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3079: must NOT switch to the phase branch');
+    assert.strictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3207: must switch to the decimal phase branch');
     // Verify the correct branch name was resolved (not integer-only)
     const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-45.14-golden-capture'], { cwd: tmpDir });
     assert.ok(branchExists.trim(), 'decimal phase branch should be created (45.14, not 14)');
@@ -1555,14 +1614,20 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the commit no longer switches to the phase branch. The phase-07
-    // branch should be CREATED (resolving correctly to 07, not the archived 02),
-    // but the commit lands on the current branch.
+    // #3207: the commit now CREATES and SWITCHES to the phase branch. The
+    // resolved branch is phase-07 (correct, not the archived 02), and HEAD
+    // moves onto it so the phase's work accumulates there.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(
       branch,
       'gsd/phase-02-archived-phase',
       `must NOT be on the archived phase-02 branch (got ${branch})`
+    );
+    // #3207: HEAD must land on the CORRECT freshly-created phase-07 branch.
+    assert.strictEqual(
+      branch,
+      'gsd/phase-07-active-phase',
+      `must switch onto the correct phase-07 branch (got ${branch})`
     );
     // Verify the correct phase-07 branch was created (not the archived 02)
     const phase07Exists = gitOrThrow(
@@ -1645,6 +1710,96 @@ describe('commit command', () => {
     assert.ok(
       /Warning: resolved.*branch .* already exists/.test(stderr),
       `expected a non-silent warning on stderr when the resolved branch already exists; got stderr=${stderr}`
+    );
+  });
+
+  // #3207 AC3: the fresh-create path must NOT be silent. Pre-fix the first
+  // phase-scoped commit produced no output at all, so the divergence between
+  // "phase branch exists" and "phase work is on it" started invisibly. The fix
+  // logs the create+switch on stderr.
+  test('#3207: fresh phase-branch create is non-silent (logs create+switch)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    // Observe stderr on the success path via the process seam (execFileSync
+    // discards stderr on success — same reason the #2539 test uses runNode).
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const proc = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): add context',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(proc, 'gsd-tools commit (#3207 non-silent fixture)');
+    const stderr = proc.stderr || '';
+
+    // The fresh create must announce itself — not the "already exists" wording
+    // (that belongs to the existing-branch path) but a create+switch notice.
+    assert.ok(
+      /created.*switched|switched.*created/i.test(stderr) ||
+        /phase-01-setup/i.test(stderr),
+      `expected a non-silent create+switch notice on stderr; got stderr=${stderr}`
+    );
+  });
+
+  // #3207 AC5: once the first commit has switched HEAD onto the phase branch,
+  // a second phase-scoped commit must NOT emit the misleading "already exists"
+  // warning — the currentBranch === branchName guard skips the block entirely.
+  test('#3207: second phase commit does not re-warn once HEAD is on the phase branch', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    const { TOOLS_PATH } = require('./helpers.cjs');
+
+    // First commit — fresh create, switches onto the phase branch.
+    const first = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): first',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(first, 'gsd-tools commit (#3207 first)');
+    const branchAfterFirst = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(branchAfterFirst, 'gsd/phase-01-setup', 'first commit must switch onto the phase branch');
+
+    // Second commit — HEAD is already on the phase branch, so the block is
+    // skipped and NO "already exists" warning should appear.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '02-NOTES.md'), '# Notes\n'
+    );
+    const second = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): second',
+      '--files', '.planning/phases/01-setup/02-NOTES.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(second, 'gsd-tools commit (#3207 second)');
+    const secondStderr = second.stderr || '';
+    assert.ok(
+      !/already exists/i.test(secondStderr),
+      `second commit must not re-warn once on the phase branch; got stderr=${secondStderr}`
     );
   });
 });
@@ -2005,6 +2160,12 @@ describe('stats command', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version token
+    // anywhere) is COMPLETE scope for windowing (§7.1) — without this, an
+    // absent ROADMAP.md is UNREADABLE and stats withholds `percent`/counts.
+    // Individual tests below that write their own ROADMAP.md content
+    // overwrite this baseline.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
   });
 
   afterEach(() => {
@@ -2114,6 +2275,11 @@ describe('stats command', () => {
     fs.writeFileSync(path.join(p2, '15-01-SUMMARY.md'), '# Summary');
     fs.writeFileSync(path.join(p2, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
+    // #3217 (ADR-3180 §7.6 rule 4): no `vX.Y` token in the milestone heading
+    // — the ROADMAP has no STATE.md milestone pointer, so a real version
+    // token here would resolve to UNSCOPED (§7.1 row 4: "has versioned
+    // milestones, but no version resolved"), not the free-form COMPLETE
+    // window this test's counting assertions depend on.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       `# Roadmap
@@ -2122,7 +2288,7 @@ describe('stats command', () => {
 - [x] **Phase 15: Proof Generation**
 - [ ] **Phase 16: Multi-Claim Verification & UX**
 
-## Milestone v1.0 Growth
+## Milestone Growth
 
 ### Phase 14: Auth Hardening
 **Goal:** Improve auth checks
@@ -2460,15 +2626,46 @@ describe('_wsParseRetryAfter (#308)', () => {
     assert.strictEqual(_wsParseRetryAfter('120000'), 60000);
   });
 
-  test('future HTTP-date → value in (0, 60000]', () => {
-    const futureDate = new Date(Date.now() + 5000).toUTCString();
-    const v = _wsParseRetryAfter(futureDate);
-    assert.ok(typeof v === 'number' && v > 0 && v <= 60000, `expected (0,60000], got ${v}`);
+  // ADR-456 §(a) reachability rule: this function is required directly
+  // (in-process), so t.mock.timers reaches it without any production change —
+  // it patches the global `Date` that `Date.now()` reads from regardless of
+  // whether the SUT goes through realClock. Fixed, second-aligned pin so the
+  // HTTP-date's whole-second precision doesn't round the expected value away.
+  const PINNED_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+
+  test('future HTTP-date 5s ahead → exactly 5000 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const futureDate = new Date(PINNED_MS + 5000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(futureDate), 5000);
   });
 
-  test('past HTTP-date → 0', () => {
-    const pastDate = new Date(Date.now() - 5000).toUTCString();
+  test('past HTTP-date 5s behind → exactly 0 (deterministic)', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const pastDate = new Date(PINNED_MS - 5000).toUTCString();
     assert.strictEqual(_wsParseRetryAfter(pastDate), 0);
+  });
+
+  test('boundary: HTTP-date 59s ahead → 59000, not clamped', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 59_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 59_000);
+  });
+
+  test('boundary: HTTP-date 60s ahead → 60000, at cap exactly', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 60_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
+  });
+
+  test('boundary: HTTP-date 61s ahead → clamped to 60000', (t) => {
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+    const d = new Date(PINNED_MS + 61_000).toUTCString();
+    assert.strictEqual(_wsParseRetryAfter(d), 60_000);
   });
 
   test('"garbage" → null', () => {

@@ -136,6 +136,15 @@ export interface SpawnInvoke {
   /** `null` when the lane accepts no model override. */
   modelArg: string | null;
   effortChannel: EffortChannel;
+  /**
+   * Per-invocation environment pairs, merged over the inherited environment at spawn time (#2483).
+   * Declared data, not a handler (D6): the pairs are static per lane. Scoped to the one spawn —
+   * the orchestrating session's environment is never mutated. First-party lanes only today: the
+   * resolver sees exactly `REVIEWER_LANES`, so no third-party manifest can reach this field; if
+   * manifest lanes are ever wired to execute, `env` must join the trust disclosure
+   * (`capability-trust`) before it is honored there.
+   */
+  env?: Readonly<Record<string, string>>;
 }
 
 export interface HttpInvoke {
@@ -261,6 +270,15 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       ...SPAWN_STDIN_STDOUT,
       modelArg: '--model',
       effortChannel: 'argv',
+      // #2483: without these the claude leg is the only reviewer that additionally inherits the
+      // invoking user's global CLAUDE.md, the project CLAUDE.md, and Claude Code auto-memory —
+      // a context asymmetry against the independent-review premise (gemini sees only the
+      // assembled prompt; codex runs --ephemeral). Both flags, not just the first: CLAUDE.md
+      // loading and auto-memory are independently-toggled mechanisms, and an environment
+      // exporting CLAUDE_CODE_DISABLE_AUTO_MEMORY=0 forces auto-memory back ON — the explicit
+      // pair is robust against that. Applies when /gsd:review runs from a non-Claude-Code host;
+      // inside Claude Code the claude lane self-skips for independence.
+      env: { CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
     },
     timeoutFloorMs: 1_200_000,
     emptyOutput: 'stub-with-stderr',

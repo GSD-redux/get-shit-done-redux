@@ -420,5 +420,105 @@ describe('Route 0: resume_incomplete_phase invariant (#160)', () => {
         'Route 0 in progress.md must use plans-without-summaries predicate consistent with determine_next_action Route 4'
       );
     });
+
+    // ── #3218 D3: the dead-route contract test ─────────────────────────────
+    //
+    // Pre-#3218 this jq'd `.plans` / `.summaries` ARRAYS off a `.phases[]`
+    // entry from `roadmap.analyze`, which has NEVER emitted those keys — it
+    // emits `plan_count`/`summary_count` SCALARS (src/roadmap.cts). The `//
+    // []` fallback always fired, so PLAN_COUNT/SUMMARY_COUNT were always 0
+    // and this predicate never fired at all (a permanently dead route, not
+    // merely a wrong number). This test pins the CONTRACT so a consumer can
+    // never again invent a shape the producer lacks: it reads the actual
+    // `.phases[]` entry the real `roadmap.analyze` CLI emits for a phase with
+    // outstanding work, and proves progress.md's Route 0 jq expression reads
+    // real, non-fallback-triggering data from it.
+    test('D3 contract: Route 0 reads the SAME keys roadmap.analyze actually emits (plan_count/summary_count scalars, not plans/summaries arrays)', (t) => {
+      const content = fs.readFileSync(progressMdPath, 'utf8');
+      const route0Start = content.indexOf('Step 0: Resume-incomplete-phase');
+      const route0End = content.indexOf('Step 1:', route0Start);
+      const route0Block = content.slice(route0Start, route0End);
+
+      // The fix: read the scalars the producer actually emits.
+      assert.match(
+        route0Block,
+        /jq '\.plan_count \/\/ 0'/,
+        'Route 0 must read .plan_count (the scalar roadmap.analyze emits), not .plans (an array it never emits)',
+      );
+      assert.match(
+        route0Block,
+        /jq '\.summary_count \/\/ 0'/,
+        'Route 0 must read .summary_count (the scalar roadmap.analyze emits), not .summaries (an array it never emits)',
+      );
+
+      // Negative proof: the pre-#3218 dead-route shape (`(.plans // []) |
+      // length`) must not have crept back in.
+      assert.doesNotMatch(
+        route0Block,
+        /\(\.plans \/\/ \[\]\)/,
+        'Route 0 must not read the never-emitted `.plans` array',
+      );
+      assert.doesNotMatch(
+        route0Block,
+        /\(\.summaries \/\/ \[\]\)/,
+        'Route 0 must not read the never-emitted `.summaries` array',
+      );
+
+      // Contract proof against the REAL producer: build a real roadmap.analyze
+      // JSON via the shipped CLI for a phase with plans > summaries, then run
+      // progress.md's literal jq expression against a synthesized `.phases[]`
+      // entry from it — proving PLAN_COUNT/SUMMARY_COUNT come back non-zero
+      // (Route 0 CAN fire), not permanently 0 (the bug this closes).
+      const { execFileSync } = require('node:child_process');
+      let jqAvailable = false;
+      try { execFileSync('jq', ['--version'], { stdio: 'ignore', timeout: 10000, killSignal: 'SIGKILL' }); jqAvailable = true; } catch { /* no jq on PATH */ }
+      if (!jqAvailable) { t.skip('jq not on PATH — this contract test applies progress.md\'s literal jq expression to real roadmap.analyze JSON; the source-text assertions above still validate the fix'); return; }
+
+      const { createTempProject, cleanup } = require('./helpers.cjs');
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '- [ ] Phase 1: Foundation', '', '### Phase 1: Foundation', '**Goal:** Setup', '', '---', ''].join('\n'),
+      );
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+      // No SUMMARY.md — 2 plans, 0 summaries: plans > summaries.
+
+      const toolsBin = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+      const roadmapJson = execFileSync(process.execPath, [toolsBin, 'roadmap', 'analyze'], {
+        cwd: tmpDir,
+        encoding: 'utf8',
+        timeout: 60000,
+      });
+      const phase1 = JSON.parse(roadmapJson).phases.find((p) => String(p.number) === '1');
+      assert.ok(phase1, 'roadmap.analyze must report phase 1');
+
+      // Apply progress.md's ACTUAL jq expressions (extracted verbatim above)
+      // to the real per-phase JSON object, exactly as `echo "$PHASE_DATA" |
+      // jq '...'` does in the workflow.
+      const planCountOut = execFileSync('jq', ['-r', '.plan_count // 0'], {
+        input: JSON.stringify(phase1),
+        encoding: 'utf8',
+        timeout: 10000,
+        killSignal: 'SIGKILL',
+      }).trim();
+      const summaryCountOut = execFileSync('jq', ['-r', '.summary_count // 0'], {
+        input: JSON.stringify(phase1),
+        encoding: 'utf8',
+        timeout: 10000,
+        killSignal: 'SIGKILL',
+      }).trim();
+
+      assert.strictEqual(planCountOut, '2', 'PLAN_COUNT must reflect the real 2 plans on disk, not a fallback 0');
+      assert.strictEqual(summaryCountOut, '0', 'SUMMARY_COUNT must reflect the real 0 summaries on disk');
+      assert.ok(
+        Number(planCountOut) > Number(summaryCountOut),
+        'Route 0 predicate (plans > summaries) must be true for this fixture — proving the route CAN fire post-fix',
+      );
+    });
   });
 });

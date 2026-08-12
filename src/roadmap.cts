@@ -17,7 +17,11 @@ import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
 const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings } = roadmapParserModule;
@@ -493,6 +497,38 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const detailPhases = new Set(phases.map(p => p.number));
   const missingDetails = [...checklistPhases].filter(p => !detailPhases.has(p) && !isSentinelPhaseId(p));
 
+  // #3217 (ADR-3180 §7.6 rules 3-4): `progress_percent` used to accumulate
+  // `totalPlans`/`totalSummaries` above — a heading-matched enumeration
+  // (`phasePattern` over the milestone-windowed `content`) paired against
+  // `_phaseDirNames`, a DELIBERATELY unscoped physical directory listing
+  // (see its own comment above: it is a heading->directory lookup index,
+  // not a milestone enumeration). That set is not the same set
+  // `listMilestonePhaseDirs` scopes for `query progress` / `stats` (#3185
+  // Phase 3), so `progress_percent` could silently diverge from both siblings
+  // on the same project (rule 3). Route `progress_percent`'s own
+  // numerator/denominator through the single scoped owner instead — mirrors
+  // cmdProgressRender/cmdStats's own aggregation — and withhold the
+  // percentage entirely when THAT scope is not COMPLETE (rule 4), never
+  // returning `0` for "could not compute". This does not touch `total_plans`
+  // / `total_summaries` / `phases` / `completed_phases` above — those stay
+  // the heading-matched detail view; only `progress_percent`'s own inputs
+  // move onto the scoped owner.
+  let scopedTotalPlans = 0;
+  let scopedTotalSummaries = 0;
+  let progressScope: Scope = SCOPE.UNREADABLE;
+  try {
+    const { value: progressDirs, scope: scopedResult } = listMilestonePhaseDirs(phasesDir, { cwd });
+    progressScope = scopedResult;
+    for (const dir of progressDirs) {
+      const scan = scanPhasePlans(path.join(phasesDir, dir));
+      scopedTotalPlans += scan.planCount;
+      scopedTotalSummaries += scan.summaryCount;
+    }
+  } catch { /* progressScope stays the pessimistic SCOPE.UNREADABLE default */ }
+  const progressPercent = progressScope === SCOPE.COMPLETE
+    ? clampPercent(scopedTotalSummaries, scopedTotalPlans)
+    : null;
+
   const result = {
     milestones,
     phases,
@@ -500,7 +536,24 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     completed_phases: completedPhases,
     total_plans: totalPlans,
     total_summaries: totalSummaries,
-    progress_percent: clampPercent(totalSummaries, totalPlans),
+    progress_percent: progressPercent,
+    // #3217 finding 2: `progress_percent` is gated by a SECOND, independently
+    // computed `listMilestonePhaseDirs` scope (`progressScope` above) — not
+    // by the top-level `scope` field, which describes the heading-windowing
+    // identity `phases`/`total_plans`/`total_summaries`/`completed_phases`
+    // were built from. Those two scopes can legitimately disagree (e.g.
+    // `scope: "complete"` alongside a genuinely unreadable phases directory),
+    // and per the documented contract "scope tells you whether the counts
+    // are trustworthy", a consumer seeing `progress_percent: null` needs a
+    // field to tell WHY without reading source. Exposing `progress_scope`
+    // (rather than reconciling the two scopes into one, or re-deriving
+    // `total_plans`/`phases`/etc. from the scoped set) preserves the
+    // deliberate, already-documented choice a few lines up: `phases`/
+    // `total_plans`/`total_summaries`/`completed_phases` stay the
+    // heading-matched detail view (`_phaseDirNames` is a lookup index, not a
+    // milestone enumeration — see its comment); only `progress_percent`'s own
+    // inputs move onto the scoped owner.
+    progress_scope: progressScope,
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,

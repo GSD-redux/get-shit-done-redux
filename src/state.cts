@@ -20,7 +20,7 @@ const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFro
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
-import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath } from './shell-command-projection.cjs';
+import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath, execGit } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir, planningPaths } = planningWorkspace;
@@ -36,11 +36,16 @@ const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateTransitionMod = require('./state-transition.cjs');
+
+// #2573 D5: used to pin `git rev-parse` to the project's own repo. Imports only
+// node builtins, so it introduces no cycle on this path.
+import { findProjectRoot } from './project-root.cjs';
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
@@ -177,6 +182,12 @@ const _diskScanCache = new Map<string, {
   totalPlans: number;
   completedPlans: number;
   milestoneBounded: boolean;
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): the real `listMilestonePhaseDirs`
+  // scope for `allMatchingDirs` below, threaded through the cache so the
+  // percent computation at the bottom of buildStateFrontmatter can gate on it
+  // instead of hardcoding SCOPE.COMPLETE. Distinct from `milestoneBounded`
+  // (a heading-existence guard, #1761) — this one is disk-readability.
+  phaseDirScope: Scope;
 }>();
 
 // Track all lock files held by this process so they can be removed on exit.
@@ -756,6 +767,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: Scope = SCOPE.UNREADABLE;
 
   {
     // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
@@ -764,12 +776,53 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // excluded sentinels, unlike the owner). The owner already handles an
     // absent phasesDir as a real empty, so the fs.existsSync guard folds
     // into it.
-    const phaseDirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
+    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
     for (const dir of phaseDirs) {
       const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
       totalSummaries += summaryCount;
     }
+  }
+
+  // #3217 (ADR-3180 §7.6 rule 4): a non-COMPLETE scope means the counts
+  // above are not a trustworthy answer — do not write a percentage derived
+  // from them into STATE.md at all (A7). This is the write path, so
+  // "withhold" means "make no edit" rather than emitting a null value.
+  if (phaseScope !== SCOPE.COMPLETE) {
+    // #3217 finding 3 (decided: surface a warning, not silent-only
+    // disclosure): the JSON `reason` field alone is easy for a caller to
+    // never read, and STATE.md's Progress field goes stale with no
+    // user-visible signal beyond it. Mirrors the established
+    // `[gsd-tools] WARNING:` stderr convention this file already uses
+    // (stateReplaceFieldWithFallback above) for a comparable silent no-op.
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — phase scope is ${phaseScope}, not complete. ` +
+      `STATE.md's Progress field was left unchanged.\n`
+    );
+    output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+    return;
+  }
+
+  // #3233: zero plans in the current-milestone phases means there is nothing to
+  // measure — most often the milestone was just closed and its phases archived
+  // (.planning/phases/ empty, but scope COMPLETE — "a real empty"). clampPercent
+  // maps 0/0 to 0%, which would clobber the shipped Progress record (e.g.
+  // [██████████] 100% → [░░░░░░░░░░] 0%). No-op instead, mirroring the
+  // scope-withhold above and computeProgressPercent's null-for-empty contract
+  // ("nothing to measure" ≠ "0% done"). The legitimate 0% case (plans exist,
+  // none summarized → clampPercent(0, N>0) = 0) is unaffected: totalPlans > 0.
+  if (totalPlans === 0) {
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — no plans found in current-milestone phases (0 plans). ` +
+      `STATE.md's Progress field was left unchanged (milestone archived?).\n`
+    );
+    output(
+      { updated: false, reason: 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)' },
+      raw,
+      'false',
+    );
+    return;
   }
 
   const percent = clampPercent(totalSummaries, totalPlans);
@@ -1432,6 +1485,34 @@ function parseProsePhaseField(value: string | null): { phase: string | null; nam
   return parsePhaseFromProse(value);
 }
 
+function resolveStatePhase(fm: Record<string, unknown>, body: string): {
+  phase: string | null;
+  name: string | null;
+  sources: {
+    frontmatter: string | null;
+    legacy_current_phase: string | null;
+    current_position_phase: string | null;
+  };
+} {
+  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
+  const frontmatterRaw = stateFieldValue(fm, body, 'current_phase', null).value;
+  const legacyRaw = stateFieldValue(fm, currentPositionScope, null, 'Current Phase').value;
+  const currentPositionRaw = stateFieldValue(fm, currentPositionScope, null, 'Phase').value;
+  const sources = {
+    frontmatter: parseProsePhaseField(frontmatterRaw).phase,
+    legacy_current_phase: parseProsePhaseField(legacyRaw).phase,
+    current_position_phase: parseProsePhaseField(currentPositionRaw).phase,
+  };
+  const prosePhase = parseProsePhaseField(currentPositionRaw);
+  return {
+    phase: sources.frontmatter ?? sources.legacy_current_phase ?? sources.current_position_phase,
+    name: stateFieldValue(fm, body, 'current_phase_name', null).value
+      ?? stateFieldValue(fm, currentPositionScope, null, 'Current Phase Name').value
+      ?? prosePhase.name,
+    sources,
+  };
+}
+
 function parseProseLastActivityField(value: string | null): { date: string | null; description: string | null } {
   if (!value) return { date: null, description: null };
   const match = value.match(/^(\d{4}-\d{2}-\d{2})(?:\s+[—-]{1,2}\s+(.+))?$/);
@@ -1471,10 +1552,9 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   // so it is scopeable exactly like Stopped At under ## Session. Fall back to
   // full-body search only when no ## Current Position section exists, so files
   // with no section heading keep their current behaviour.
-  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
-  const prosePhase = parseProsePhaseField(stateFieldValue(fm, currentPositionScope, null, 'Phase').value);
-  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase.phase;
-  const currentPhaseName = stateFieldValue(fm, body, 'current_phase_name', 'Current Phase Name').value ?? prosePhase.name;
+  const resolvedPhase = resolveStatePhase(fm, body);
+  const currentPhase = resolvedPhase.phase;
+  const currentPhaseName = resolvedPhase.name;
   const totalPhasesRaw = stateFieldValue(fm, body, 'total_phases', 'Total Phases').value;
   const currentPlan = stateFieldValue(fm, body, 'current_plan', 'Current Plan').value;
   const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
@@ -1706,6 +1786,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // #1761 read-path: set from cached.milestoneBounded inside the disk-scan
   // block; consumed at the percent computation to mirror the cmdStateSync guard.
   let milestoneUnbounded = false;
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): the real listMilestonePhaseDirs
+  // scope for the disk-scanned counts below, set from cached.phaseDirScope
+  // when a fresh disk scan runs. SCOPE.COMPLETE is the correct default here
+  // — NOT a rule-4 hardcode — for the cases where no disk scan happens at all
+  // (no cwd, or phasesDir absent): totalPhases/totalPlans then come straight
+  // from the pre-existing frontmatter fields parsed above, a path this phase
+  // does not touch and which predates listMilestonePhaseDirs entirely.
+  let diskScope: Scope = SCOPE.COMPLETE;
 
   if (cwd) {
     try {
@@ -1738,7 +1826,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           // CURRENT (stored) milestone" — routed through the canonical owner
           // instead of a hand-rolled readdirSync + isDirInMilestone filter
           // (which also never excluded sentinels, unlike the owner).
-          const allMatchingDirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null }).value;
+          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null });
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
@@ -1865,6 +1953,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
               completedPlans: diskTotalSummaries,
+              phaseDirScope,
             };
           })();
           _diskScanCache.set(cwd, cached);
@@ -1874,6 +1963,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
         totalPlans = cached.totalPlans;
         completedPlans = cached.completedPlans;
         milestoneUnbounded = cached.milestoneBounded === false;
+        diskScope = cached.phaseDirScope;
       }
       /* best-effort (#2245 audit): this is a READ path building STATE.md's
        * display frontmatter. The real throw source is fs.readdirSync(phasesDir)
@@ -1890,11 +1980,30 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // ROADMAP-declared-but-unrealized future phases cap the reported completion
   // instead of a false 100% from plan-only coverage (#3242 Bug B).
   // Falls back to the body Progress: field only when no plan files exist on disk.
-  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases);
+  // #3217 (ADR-3180 §7.6 rule 4, finding 1): computeProgressPercent requires
+  // a `Scope` for its own rule-4 gate. `diskScope` is the real
+  // `listMilestonePhaseDirs` scope threaded through `_diskScanCache`
+  // (`phaseDirScope` above) when a fresh disk scan ran — an UNREADABLE
+  // phases dir now withholds here exactly as it does at every sibling
+  // surface, closing the cross-surface disagreement the isolated review
+  // caught. When no disk scan ran at all (no cwd, or phasesDir absent)
+  // `diskScope` keeps its SCOPE.COMPLETE default, preserving this
+  // function's pre-existing behavior on that (unrelated, pre-dating
+  // listMilestonePhaseDirs) fallback path. This call site also keeps its own
+  // orthogonal `milestoneUnbounded` null-out below (#1761) — a different
+  // guard (ROADMAP heading boundedness, not disk readability).
+  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, diskScope);
   // #1761 read-path: when the milestone can't be bounded, percent would be
   // derived from a conflated/understated total — skip it (mirror cmdStateSync).
   if (milestoneUnbounded) progressPercent = null;
-  if (progressPercent === null && progressRaw && !milestoneUnbounded) {
+  // #3217 finding 1 (follow-on): a non-COMPLETE diskScope must withhold the
+  // percentage EVERYWHERE, including this prose fallback — without the
+  // `diskScope === SCOPE.COMPLETE` guard, a stale/existing "Progress: N%"
+  // body line would silently defeat computeProgressPercent's rule-4 null,
+  // re-introducing a rendered percentage on the exact scope this phase
+  // withholds for (this is how the reviewer's UNREADABLE-phases fixture
+  // could still surface a number even after the scope threading above).
+  if (progressPercent === null && progressRaw && !milestoneUnbounded && diskScope === SCOPE.COMPLETE) {
     const pctMatch = progressRaw.match(/(\d+)%/);
     if (pctMatch) progressPercent = parseInt(pctMatch[1], 10);
   }
@@ -1914,6 +2023,12 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   fm['last_updated'] = realClock.nowIso();
   if (lastActivity) fm['last_activity'] = lastActivity;
   if (lastActivityDesc) fm['last_activity_desc'] = lastActivityDesc;
+  // #2573: stamp the commit this STATE.md was written against, so consumers can
+  // report how far the codebase has moved since. Omitted entirely outside a git
+  // repo — an absent field reads as "unknown", which is the honest answer and
+  // keeps every consumer's tri-state intact (see readStateHeadFreshness).
+  const stateHead = readGitHeadSha(cwd);
+  if (stateHead) fm['state_head'] = stateHead;
 
   const progress: Record<string, unknown> = {};
   if (totalPhases !== null) progress['total_phases'] = totalPhases;
@@ -1924,6 +2039,186 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   if (Object.keys(progress).length > 0) fm['progress'] = progress;
 
   return fm;
+}
+
+// ─── state_head commit provenance (#2573) ────────────────────────────────────
+//
+// STATE.md records the commit it was written against (`state_head`); consumers
+// derive how many commits the codebase has moved since. This mirrors the shipped
+// graphify commit-staleness contract (src/graphify.cts, #3170) rather than
+// inventing a second vocabulary: `commits_behind` is a count, and `commit_stale`
+// is TRI-STATE — null means "we don't know" (no git, no stamp, unresolvable
+// commit), which is deliberately distinct from false ("known fresh").
+//
+// IMPORTANT — this is a freshness PROXY, never a drift measurement.
+// `rev-list state_head..HEAD` counts every commit in between, including ones
+// that never touched anything STATE.md describes. And because `state_head`
+// restamps on EVERY state write, a low count means "something wrote STATE
+// recently", NOT "STATE's content is accurate". Consumers must word it as
+// approximate and must never gate on it.
+
+/** Strict hash fence before any value from disk reaches a git argument. */
+const STATE_HEAD_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+/**
+ * Resolve the project's current HEAD sha, or null when unavailable.
+ * Bounded + non-interactive via execGit (10s timeout, GIT_TERMINAL_PROMPT=0);
+ * a non-repo, missing git, or timeout degrades to null rather than throwing.
+ */
+/**
+ * Does the project root carry its own git repository?
+ *
+ * #2573 D5. `git rev-parse HEAD` walks UP from cwd and stops at the FIRST
+ * enclosing `.git`. So the repo that answered is the project's own exactly when
+ * the project root itself carries a `.git` entry — a directory for a normal
+ * clone, a file for a worktree or submodule, both of which `existsSync` accepts.
+ * If it does not, the answer necessarily came from an ancestor repo and the
+ * stamp would assert provenance the project cannot claim.
+ *
+ * Deliberately a filesystem-identity check rather than comparing
+ * `--show-toplevel` against the project root as strings. That comparison is
+ * unreliable across platforms — macOS resolves temp dirs through
+ * `/private/var/…`, Windows adds 8.3 short names and separator/case variance —
+ * and an over-strict compare degrades healthy projects to "unknown", which is
+ * the very failure this check exists to prevent, inverted. No path spelling is
+ * involved here at all.
+ */
+function projectOwnsItsRepo(projectRoot: string): boolean {
+  try {
+    return fs.existsSync(path.join(projectRoot, '.git'));
+  } catch {
+    return false;
+  }
+}
+
+function readGitHeadSha(cwd: string | undefined): string | null {
+  if (!cwd) return null;
+  // #2573 degrade path D5. `git rev-parse HEAD` walks UP from cwd to the nearest
+  // enclosing `.git`, and nothing pins that repo to the project. A GSD project
+  // living inside an unrelated checkout — a dotfiles/notes repo, or the outer
+  // workspace of a `planning.sub_repos` layout where all code commits land in
+  // the sub-repos — would otherwise measure freshness against a repo it has no
+  // relationship to, and report `commit_stale: false` ("known fresh") while
+  // doing it. Unverified provenance must degrade to unknown, never to fresh.
+  //
+  // TWO independent conditions must hold before a stamp is trustworthy, and both
+  // are checked below because either alone is insufficient:
+  //   1. the project root owns a `.git` (else an ancestor repo answered), and
+  //   2. the project is not a `sub_repos` workspace (else the repo that answers
+  //      is the outer wrapper, whose HEAD does not move when the code does).
+  // KNOWN LIMITATION, by design: in a `sub_repos` workspace this feature reports
+  // unknown rather than measuring the children. Per-child freshness needs a
+  // defined aggregate across N histories and is out of scope for this increment.
+  //
+  // `--show-toplevel HEAD` answers both in ONE spawn, so pinning costs no extra
+  // subprocess on this path (the caller holds the STATE lock).
+  let projectRoot: string;
+  try {
+    projectRoot = findProjectRoot(cwd);
+  } catch {
+    return null; // cannot prove which repo would answer → unknown
+  }
+  if (!projectOwnsItsRepo(projectRoot)) return null;
+
+  // #2573 D5, sub_repos flavor. Owning a `.git` is necessary but NOT sufficient.
+  // In a `planning.sub_repos` workspace the outer directory can legitimately own
+  // BOTH `.planning/` and its own repo while every code commit lands in a nested
+  // child repo — `docs/CONFIGURATION.md` describes sub_repos as scoping work per
+  // sub-repo "instead of treating the outer repo as a monorepo". The outer HEAD
+  // then never advances, so `merge-base --is-ancestor` passes trivially and
+  // `rev-list` counts 0: the stamp would report `commit_stale: false`, i.e.
+  // "known fresh", while the code it describes has moved arbitrarily far.
+  //
+  // That is a WRONG answer, not a missing one, and it is the same invariant the
+  // ancestor-repo check above exists to protect: a freshness claim the project
+  // cannot substantiate must degrade to unknown, never to fresh. Measuring the
+  // children instead would mean picking one HEAD out of N unrelated histories
+  // (or inventing an aggregate), which is a design question beyond this
+  // increment — so this scopes to the honest tri-state and declines to answer.
+  // Deliberately keyed on the DECLARED config rather than probing the filesystem
+  // for nested `.git` entries: the declaration is what the workspace asserts
+  // about itself, and a probe would spuriously fire on a vendored dependency.
+  try {
+    const subRepos = (loadConfig(projectRoot) as { sub_repos?: unknown }).sub_repos;
+    if (Array.isArray(subRepos) && subRepos.length > 0) return null;
+  } catch {
+    return null; // cannot read the layout → cannot claim provenance → unknown
+  }
+
+  const r = execGit(['rev-parse', 'HEAD'], { cwd });
+  if (r.exitCode !== 0) return null;
+
+  const sha = r.stdout.trim();
+  return STATE_HEAD_HASH_RE.test(sha) ? sha : null;
+}
+
+interface StateHeadFreshness {
+  /** The recorded stamp, short form, or null when absent/malformed. */
+  state_head: string | null;
+  /** Current HEAD, short form, or null outside a resolvable repo. */
+  current_commit: string | null;
+  /** Commits between the stamp and HEAD; null when either end is unknown. */
+  commits_behind: number | null;
+  /** Tri-state: null = unknown, false = known fresh, true = moved since. */
+  commit_stale: boolean | null;
+}
+
+/**
+ * Derive the commit-age freshness signal from a recorded `state_head`.
+ *
+ * Single source of truth for the derivation — `validate.health` (W024) and
+ * smart-entry both consume this rather than re-deriving it, so the tri-state
+ * and the hash fence cannot drift apart between surfaces.
+ *
+ * Never throws: every unresolvable input degrades to nulls.
+ */
+function readStateHeadFreshness(
+  cwd: string | undefined,
+  stateHead: unknown,
+): StateHeadFreshness {
+  const raw = (typeof stateHead === 'string' ? stateHead : '').trim();
+  const stamp = STATE_HEAD_HASH_RE.test(raw) ? raw : null;
+  const head = readGitHeadSha(cwd);
+
+  let commitsBehind: number | null = null;
+  let commitStale: boolean | null = null;
+  if (stamp && head && cwd) {
+    // The stamp must be an ANCESTOR of HEAD before a distance means anything.
+    // `rev-list --count A..B` exits 0 with "0" when A is not reachable from B —
+    // which is what a `reset --hard` to an earlier commit, a rebase or squash
+    // that drops the stamped commit, or a force-push rewriting history all
+    // produce. Without this guard those cases report `commit_stale: false`,
+    // i.e. "known fresh", for a codebase that was actually rewound past the
+    // stamp — collapsing the exact unknown-vs-fresh distinction this tri-state
+    // exists to preserve. A non-ancestor stamp is UNKNOWN, so it stays null.
+    const ancestry = execGit(['merge-base', '--is-ancestor', stamp, head], { cwd });
+    if (ancestry.exitCode === 0) {
+      const r = execGit(['rev-list', '--count', `${stamp}..${head}`], { cwd });
+      if (r.exitCode === 0) {
+        const n = parseInt(r.stdout.trim(), 10);
+        if (Number.isFinite(n)) {
+          commitsBehind = n;
+          // #2573 D4 — deliberately RAW, not thresholded. `commit_stale` means
+          // exactly what its contract says: the codebase has moved since the
+          // stamp. Applying an advisory threshold here would make the field lie
+          // at n < threshold, and W024 needs the true count to threshold on.
+          // Alarm-fatigue is handled at the ALARMING surface, not the
+          // derivation: W024 (the only user-visible consumer) fires at
+          // STATE_HEAD_ADVISORY_COMMITS, which absorbs the `commit_docs: true`
+          // off-by-one. Smart-entry re-exports the raw tri-state as advisory
+          // JSON and is not consumed by classify().
+          commitStale = n > 0;
+        }
+      }
+    }
+  }
+
+  return {
+    state_head: stamp ? stamp.slice(0, 7) : null,
+    current_commit: head ? head.slice(0, 7) : null,
+    commits_behind: commitsBehind,
+    commit_stale: commitStale,
+  };
 }
 
 function syncStateFrontmatter(content: string, cwd: string | undefined, authoritativeFm?: Record<string, unknown>): string {
@@ -2024,9 +2319,28 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
   // Schema-owned keys (already in derivedFm from buildStateFrontmatter + the
   // preserve guards above) still win.
   for (const key of Object.keys(existingFm)) {
-    if (!(key in derivedFm) && existingFm[key] !== undefined) {
-      derivedFm[key] = existingFm[key];
-    }
+    if (key in derivedFm || existingFm[key] === undefined) continue;
+
+    // #2573: a `source: 'free'` field is the writer's word on every write and
+    // carries no preservation (see the FieldSource doc). When buildStateFrontmatter
+    // omits it — `state_head` outside a git repo, per its `if (stateHead)` guard —
+    // carrying the old value forward would re-assert provenance the file no longer
+    // has: a stale state_head would claim STATE.md was written against a commit it
+    // wasn't, contradicting its own ADR-1769 row.
+    //
+    // Narrow the skip to `source: 'free'`, NOT every `derive` row. `last_activity`
+    // ({source:'body'}) and the `progress.*` rows ({source:'disk'}) are also
+    // `derive`, but they are body/disk-sourced and MUST still carry forward when
+    // the writer omits them this pass — dropping `last_activity` here is silent
+    // frontmatter data loss and would defeat #2570's staleness fix downstream.
+    // `last_updated` and `gsd_state_version` are the only other `free` rows and are
+    // both produced unconditionally by buildStateFrontmatter, so this loop never
+    // reaches them; `state_head` is the sole field the skip governs. Consult the
+    // table rather than naming fields, so the policy stays single-sourced.
+    const classification = stateTransitionMod.getFieldClassification(key);
+    if (classification && classification.source === 'free') continue;
+
+    derivedFm[key] = existingFm[key];
   }
 
   // #2567: guard the information-losing direction — a stale archive
@@ -2948,31 +3262,56 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   // site sees. Pass statePath so a truncated STATE.md is named in the #1882
   // diagnostic rather than reported under a content digest.
   const { fm, body, scope: initialScope } = readStateFrontmatterScoped(content, statePath);
-  let scope: planningScopeMod.Scope = initialScope;
+  const scope: planningScopeMod.Scope = initialScope;
 
   const status = stateFieldValue(fm, body, 'status', 'Status').value || '';
-  const currentPhase = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value;
+  const resolvedPhase = resolveStatePhase(fm, body);
+  const currentPhase = resolvedPhase.phase;
   const totalPlansRaw = stateFieldValue(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
   const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
 
   const phasesDir = planningPaths(cwd).phases;
 
   if (currentPhase === null) {
-    // #3162: nothing to scope the disk lookup to — the derivation cannot run
-    // at all. Distinct from "ran, found nothing to warn about" (scope stays
-    // COMPLETE elsewhere in this function).
-    if (scope === SCOPE.COMPLETE) scope = SCOPE.UNSCOPED;
-  } else if (fs.existsSync(phasesDir)) {
-    const normalized = currentPhase.replace(/\s+of\s+\d+.*/, '').trim();
-    try {
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const phaseDir = entries.find(e => e.isDirectory() && e.name.startsWith(normalized.replace(/^0+/, '').padStart(2, '0')));
-      if (phaseDir) {
-        const phaseDirPath = path.join(phasesDir, phaseDir.name);
-        const { planCount: diskPlans, summaryCount: diskSummaries, scope: planScanScope } = scanPhasePlans(phaseDirPath);
-        if (planScanScope !== SCOPE.COMPLETE && scope === SCOPE.COMPLETE) {
-          scope = planScanScope;
-        }
+    warnings.push('Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value');
+    drift['phase_reference'] = { reason: 'unresolved', selected: null, sources: resolvedPhase.sources };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  const selectedPhaseKey = phaseKeyFromToken(currentPhase);
+  if (Object.values(resolvedPhase.sources).some(source => source !== null && phaseKeyFromToken(source) !== selectedPhaseKey)) {
+    warnings.push(`Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`);
+    drift['phase_reference'] = { reason: 'conflict', selected: currentPhase, sources: resolvedPhase.sources };
+  }
+  if (!fs.existsSync(phasesDir)) {
+    warnings.push(`Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'missing_root', selected: currentPhase };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  let phaseDirPath: string;
+  try {
+    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name) === selectedPhaseKey);
+    if (!phaseDir) {
+      warnings.push(`Cannot validate phase drift: no phase directory matches phase ${currentPhase}`);
+      drift['phase_directory'] = { reason: 'not_found', selected: currentPhase };
+      output({ valid: false, warnings, drift, scope }, raw, undefined);
+      return;
+    }
+    phaseDirPath = path.join(phasesDir, phaseDir.name);
+  } catch {
+    warnings.push(`Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
+    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    return;
+  }
+  try {
+    const scan = scanPhasePlans(phaseDirPath);
+    if (scan.scope !== SCOPE.COMPLETE) {
+      throw new Error('phase plan scan is incomplete');
+    }
+    const { planCount: diskPlans, summaryCount: diskSummaries } = scan;
 
         // Check plan count mismatch
         if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
@@ -3004,20 +3343,10 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
             warnings.push(`All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`);
           }
         }
-      }
-      // else: phase resolved, but no matching directory on disk — a real
-      // answer (row 22), not a look failure. scope stays COMPLETE.
-    } catch {
-      // #3162/#2245: previously a silent best-effort swallow. The disk-scan
-      // failure (readdirSync/scanPhasePlans) means drift detection for this
-      // phase could not run this pass — that degrade is kept (validate still
-      // does not crash), but is now visible via `scope` instead of being
-      // indistinguishable from a clean pass.
-      scope = SCOPE.UNREADABLE;
-    }
+  } catch {
+    warnings.push(`Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`);
+    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
   }
-  // else: phasesDir itself does not exist — a real answer (no phases on disk
-  // yet), not a look failure. scope stays COMPLETE.
 
   const valid = warnings.length === 0;
   output({ valid, warnings, drift, scope }, raw, undefined);
@@ -3164,8 +3493,24 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   if (!milestoneBounded) {
     changes.push(`Progress: skipped — milestone ${versionStr} cannot be bounded to a versioned ROADMAP phase set (#1761)`);
   } else {
-    const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases);
-    percent = p !== null ? p : 0;
+    // #3217 (ADR-3180 §7.6 rule 4) BLOCKER fix: the prior comment here claimed
+    // `entries` (the raw fs.readdirSync listing above) was "never routed
+    // through listMilestonePhaseDirs, so there is no real Scope to pass" —
+    // that was factually wrong. The same `syncRoadmapRaw`/`syncRoadmapScope`
+    // already parsed above (~3104) is precisely what
+    // `listMilestonePhaseDirs` (via `getMilestonePhaseFilter`) re-derives
+    // from `cwd` to produce a real `Scope` — the identical shape already
+    // threaded through `buildStateFrontmatter`'s `diskScope` above. Calling
+    // it here (discarding `.value`, which duplicates `entries`'s own
+    // retired-phase-filtered listing) gets the real scope without changing
+    // the disk-scan totals computed above.
+    const syncScope: Scope = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr }).scope;
+    if (syncScope !== SCOPE.COMPLETE) {
+      changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);
+    } else {
+      const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, syncScope);
+      percent = p !== null ? p : 0;
+    }
   }
 
   const syncResult = transitionCore(
@@ -3661,6 +4006,7 @@ export = {
   writeStateMd,
   readModifyWriteStateMd,
   syncStateFrontmatter,
+  readStateHeadFreshness,
   withStateLock,
   updatePerformanceMetricsSection,
   cmdStateLoad,

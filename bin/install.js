@@ -672,6 +672,7 @@ function _runtimeAdapter(runtime) {
 const {
   applyInstallerMigrationPlan,
   discoverInstallerMigrations,
+  MANIFEST_SCHEMA_VERSION,
   runInstallerMigrations,
 } = require(path.join(_gsdLibDir, 'installer-migrations.cjs'));
 const {
@@ -7877,6 +7878,15 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
 
+    // #3333: srcPath was enumerated by readdirSync above, but a filesystem is not
+    // transactional — the file it named can vanish between listing and this read
+    // (a concurrent process, or another test in this suite writing/cleaning up a
+    // fixture inside this same real directory). Treat "gone by the time we get
+    // here" as benign and skip it, never a fatal crash of the whole install.
+    if (!entry.isDirectory() && !fs.existsSync(srcPath)) {
+      continue;
+    }
+
     if (entry.isDirectory()) {
       copyWithPathReplacement(srcPath, destPath, pathPrefix, runtime, isCommand, isGlobal, confinementRoot);
     } else if (entry.name.endsWith('.md')) {
@@ -9636,13 +9646,31 @@ function writeManifest(configDir, runtime = DEFAULT_RUNTIME, options = {}) {
   // so the manifest records what's actually on disk. _resolveSkillsRootDir already
   // resolves destSubpath (which includes hermes's 'skills/gsd' nesting) — do not
   // re-append 'gsd' or the hermes dir gets double-nested to skills/gsd/gsd.
-  const codexSkillsDir = _resolveSkillsRootDir(runtime, configDir, options.scope === 'local' ? 'local' : 'global');
+  // #2872 (ADR-2866 Phase 3): the scope used to pick the skills root and the
+  // scope RECORDED in the manifest are one value, resolved once. Two reads of
+  // `options.scope` could drift; one cannot.
+  const resolvedScope = options.scope === 'local' ? 'local' : 'global';
+  const codexSkillsDir = _resolveSkillsRootDir(runtime, configDir, resolvedScope);
   const codexSkillsManifestPrefix = _hostBehaviors(runtime).skillsManifestPrefix || 'skills/';
   const agentsDir = path.join(configDir, 'agents');
   const manifest = {
+    // Schema version of this DOCUMENT (#2872) — distinct from `version`
+    // below, which is the GSD package version. Absent ⇒ a pre-#2872 (v1)
+    // manifest, which readInstallManifest still reads without error and
+    // without requiring a reinstall. Read from the Installer Migration
+    // Module rather than repeated as a second literal: the writer here and
+    // the reader's normalizeManifestVersion are two surfaces over one
+    // constant, and this repo's "generative fix divergence" class is exactly
+    // two such literals drifting apart.
+    manifestVersion: MANIFEST_SCHEMA_VERSION,
     version: pkg.version,
     timestamp: new Date().toISOString(),
     mode: options.mode === 'minimal' ? 'minimal' : 'full',
+    // Recorded so an Installed Surface Resolver can answer "which surfaces
+    // are installed, at which scopes, for which runtimes" without re-deriving
+    // it from the directory it happened to be found in (#2872).
+    runtime,
+    scope: resolvedScope,
     files: {},
   };
 
