@@ -610,7 +610,7 @@ steps (`backup_custom_files`, `restore_custom_files`) still depend on.
 `--rc`) is resolved in PARALLEL with, not in place of, `update.md`'s own
 `TAG="next"`/`TAG="latest"` case-statement in `parse_update_channel`, which
 stays byte-identical — issue #815's regression test
-(`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+(`tests/update-workflow.test.cjs`) asserts that literal
 case-statement text remains in the workflow, since the npm dist-tag
 selection has to run in the workflow's own shell before any `gsd_run`
 round-trip.
