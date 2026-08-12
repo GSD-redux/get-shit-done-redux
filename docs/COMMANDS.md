@@ -1000,6 +1000,18 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 /gsd-health --context               # Context-utilization triage
 ```
 
+**STATE.md freshness (`W024`).** STATE.md records the commit it was last written
+against (`state_head` in its frontmatter). When the codebase has moved a long way
+since — 20 commits or more — health adds an advisory noting that STATE.md's
+contents should be treated as approximate.
+
+This is a *freshness proxy, not a drift measurement*: the count includes commits
+that never touched anything STATE.md describes, and the stamp is refreshed by any
+command that writes STATE.md, so a low count means STATE.md was written recently
+rather than that its contents are correct. The advisory never changes health's
+pass/fail status, and stays silent when the stamp is absent or the project isn't
+a git repo — "unknown" is reported as unknown, not as fresh.
+
 ### `/gsd-cleanup`
 
 Archive accumulated phase directories from completed milestones and prune local branches whose upstream has been deleted.
@@ -1520,6 +1532,8 @@ Execute a trivial task inline — no subagents, no planning overhead. For typo f
 Cross-AI peer review of phase plans from external AI CLIs.
 
 Reviewers are prompted to verify the plan's claims against the actual repository source — opening the referenced files and citing `file:line` evidence with the mechanism — rather than reviewing the plan text in isolation. A reviewer that has no file access flags what it cannot verify instead of asserting it, and `file:line`-grounded findings are weighted more heavily during consensus synthesis.
+
+**The prompt-fed CLI reviewers all start from the same assembled prompt.** It is built before any reviewer runs and carries the PROJECT.md excerpt, the roadmap section, every PLAN file, CONTEXT.md, RESEARCH.md and REQUIREMENTS.md — reviewers then open repository files from there, as described above. To keep the Claude reviewer on the same starting footing as the others, its lane declares `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so it does **not** additionally inherit your global `CLAUDE.md`, the project `CLAUDE.md`, or Claude Code auto-memory (the two are independently-toggled mechanisms, so each gets its own variable). The pair is merged into that one spawn's environment — it does not affect the session you ran `/gsd-review` from or any other reviewer in the same run, and it suppresses those memory mechanisms only, not hooks, skills, or MCP configuration. (Inside Claude Code the Claude reviewer is skipped entirely for independence, so this applies when reviewing from another runtime.)
 
 | Argument | Required | Description |
 |----------|----------|-------------|

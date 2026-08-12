@@ -876,7 +876,7 @@ describe('#3045 MINOR — writer/reader sentinel path derivation now agrees for 
 });
 
 describe('#2486 regression: inspect-dispatch-isolation is the sentinel-free read', () => {
-  // /gsd:health (W024) and /gsd:settings (Worktrees branching) must be able to
+  // /gsd:health (W025) and /gsd:settings (Worktrees branching) must be able to
   // learn the negotiated isolation WITHOUT recording it: the #3045 recording
   // verb stamps a phase:null/plan:null sentinel the guard hooks then enforce
   // against real executor dispatches — letting a read-only diagnostic

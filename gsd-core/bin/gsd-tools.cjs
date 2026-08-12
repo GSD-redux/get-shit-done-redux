@@ -1397,6 +1397,10 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           killSignal: 'SIGKILL',
           maxBuffer: 64 * 1024 * 1024,
           shell: false, // argv array only — never a shell string (no interpolation of config values)
+          // #2483: a lane's declared env pairs merged OVER this process's environment, for this
+          // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
+          // into the orchestrating session or into the next lane.
+          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
         });
         return {
           status: r.status,
@@ -1800,7 +1804,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   function routeInspectDispatchIsolation({ args, cwd, raw }) {
     // #2486: sentinel-free sibling of `dispatch-isolation` for INSPECTION
-    // surfaces — /gsd:health's W024 check and /gsd:settings' Worktrees
+    // surfaces — /gsd:health's W025 check and /gsd:settings' Worktrees
     // branching. The dispatch verb above intentionally records its resolved
     // decision to the isolation sentinel as an unconditional side effect
     // (#3045 CORE REDESIGN): correct for executor dispatch, where the record

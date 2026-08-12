@@ -612,7 +612,11 @@ const capabilities = {
         "promptChannel": "stdin",
         "outputChannel": "stdout",
         "modelArg": "--model",
-        "effortChannel": "argv"
+        "effortChannel": "argv",
+        "env": {
+          "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+        }
       },
       "timeoutFloorMs": 1200000,
       "emptyOutput": "stub-with-stderr",
@@ -5327,7 +5331,11 @@ const runtimes = {
         "promptChannel": "stdin",
         "outputChannel": "stdout",
         "modelArg": "--model",
-        "effortChannel": "argv"
+        "effortChannel": "argv",
+        "env": {
+          "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+        }
       },
       "timeoutFloorMs": 1200000,
       "emptyOutput": "stub-with-stderr",

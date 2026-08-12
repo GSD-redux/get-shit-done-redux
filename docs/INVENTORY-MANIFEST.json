@@ -225,6 +225,7 @@
       "debugger-semantic-recall.md",
       "debugger-techniques.md",
       "decimal-phase-calculation.md",
+      "dispatch-isolation-gate.md",
       "doc-conflict-engine.md",
       "domain-probes.md",
       "edge-probe.md",

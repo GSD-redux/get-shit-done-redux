@@ -47,8 +47,12 @@ export interface SpawnOutcome {
 }
 
 export interface RunnerDeps {
-  /** Bounded synchronous spawn. Production wires `child_process.spawnSync`. */
-  spawn: (binary: string, argv: string[], opts: { input?: string; timeoutMs: number }) => SpawnOutcome;
+  /**
+   * Bounded synchronous spawn. Production wires `child_process.spawnSync`.
+   * `env` pairs are merged OVER the inherited environment for this one child (#2483) — an absent
+   * `env` inherits unchanged, and the parent process environment is never mutated either way.
+   */
+  spawn: (binary: string, argv: string[], opts: { input?: string; timeoutMs: number; env?: Readonly<Record<string, string>> }) => SpawnOutcome;
   /** Bounded HTTP POST/GET returning the RAW body — never pre-parsed, so errors stay diagnosable. */
   httpJson: (url: string, opts: { method: 'GET' | 'POST'; body?: string; timeoutMs: number }) =>
     Promise<{ ok: boolean; status: number; body: string; error?: string }>;
@@ -663,7 +667,11 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, deps)
       : plan.argv;
 
-  const out = deps.spawn(plan.binary, argv, { input, timeoutMs: plan.timeoutMs });
+  const out = deps.spawn(plan.binary, argv, {
+    input,
+    timeoutMs: plan.timeoutMs,
+    ...(plan.env ? { env: plan.env } : {}),
+  });
   // #3086: surface spawn errors (ENOENT, ETIMEDOUT, etc.) that would otherwise
   // be silently dropped — the review path read only stdout/stderr and treated
   // an empty-stderr spawn failure as "the model had nothing to say".

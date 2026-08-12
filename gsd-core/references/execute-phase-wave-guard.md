@@ -7,16 +7,20 @@
    immediately with a base-mismatch fatal.
 
    **Run this check at the start of every wave when `USE_WORKTREES != "false"` and
-   `RUNTIME = "claude"`**, including Wave 1 (where it mirrors the initialize-step check):
+   `ISOLATION = "harness-worktree"`** (#2652 — the harness caches the fork base, so this is a
+   property of the isolation model, not of the runtime name; Cursor declares it too),
+   including Wave 1 (where it mirrors the initialize-step check):
 
    ```bash
-   if [ "$RUNTIME" = "claude" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
+   if [ "$ISOLATION" = "harness-worktree" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
      _WAVE_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
      if [ "$_WAVE_DEGRADE" = "true" ]; then
        _WAVE_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
        [ -n "$_WAVE_DEGRADE_MSG" ] && printf '%s\n' "$_WAVE_DEGRADE_MSG" >&2
        echo "⚠ [#1369] Worktree fork base diverged from orchestrator HEAD (wave merges advanced HEAD past origin/HEAD). Auto-degrading to sequential mode for this wave to avoid base-mismatch halts." >&2
+       # Both must move together (#2652): dispatch keys on ISOLATION.
        USE_WORKTREES=false
+       ISOLATION=none
      fi
    fi
    ```
