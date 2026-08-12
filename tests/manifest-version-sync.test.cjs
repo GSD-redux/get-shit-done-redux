@@ -389,13 +389,18 @@ describe('F: npm version script includes gen-capability-registry --write (#1498)
 // version that runtimes read lives at plugins[0].version (the canonical
 // marketplace schema location), kept in sync with package.json by
 // scripts/sync-manifest-versions.cjs via a nested versionKey descriptor.
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const pkg = require(path.join(ROOT, 'package.json'));
 const pluginJson = require(path.join(ROOT, '.claude-plugin', 'plugin.json'));
 const MARKETPLACE_JSON_PATH = path.join(ROOT, '.claude-plugin', 'marketplace.json');
 const MARKETPLACE_REL = '.claude-plugin/marketplace.json';
 
-// ─── Section A: marketplace.json structure ───────────────────────────────────
-describe('A: .claude-plugin/marketplace.json', () => {
+// ─── Section A2: marketplace.json structure ──────────────────────────────────
+describe('A2: .claude-plugin/marketplace.json', () => {
 
   let manifest;
 
@@ -461,8 +466,8 @@ describe('A: .claude-plugin/marketplace.json', () => {
   });
 });
 
-// ─── Section B: registration in the version-sync registry ────────────────────
-describe('B: marketplace.json is registered for version sync', () => {
+// ─── Section B4: registration in the version-sync registry ───────────────────
+describe('B4: marketplace.json is registered for version sync', () => {
 
   test('marketplace.json path appears in VERSIONED_MANIFESTS', () => {
     const paths = VERSIONED_MANIFESTS.map((e) => (typeof e === 'string' ? e : e && e.path));
@@ -527,8 +532,8 @@ describe('D: getByPath / setByPath reject reserved properties', () => {
   }
 });
 
-// ─── Section C: sync stamps the nested version (temp fixture, red→green) ─────
-describe('C: syncManifestVersions stamps plugins[0].version (temp fixture)', () => {
+// ─── Section C2: sync stamps the nested version (temp fixture, red→green) ────
+describe('C2: syncManifestVersions stamps plugins[0].version (temp fixture)', () => {
 
   test('stamps a stale marketplace plugins[0].version to the package version, then is idempotent', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1855-'));
