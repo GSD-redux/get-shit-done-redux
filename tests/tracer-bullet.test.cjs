@@ -368,3 +368,281 @@ describe('#1945 behavioral: verify plan-structure accepts type="tracer" (accepta
     );
   });
 });
+
+// ─── Suite 6: #3299 — the tracer gate must honor workflow.human_verify_mode ───
+
+// The tracer feedback gate (#2294) predates human_verify_mode (#3309), whose scope
+// was the planner + verifier only. Until #3299 the gate branched on auto-mode ALONE,
+// so under the documented `end-of-phase` default an interactive run halted after
+// EVERY tracer — synthesizing a checkpoint:human-verify no planner ever emitted and
+// asking the user to retype a verdict the executor had just computed.
+//
+// These assertions are prose-shaped because the gate itself is prose: it is executed
+// by an agent reading agents/gsd-executor.md and gsd-core/workflows/execute-plan.md.
+// The two files duplicate the rule and MUST stay in sync — a fix landing in only one
+// leaves the defect live on whichever dispatch path reads the other.
+describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mode', () => {
+  const HV_REF = read('gsd-core/references/planner-human-verify-mode.md');
+  const CHECKPOINTS = read('gsd-core/references/checkpoints.md');
+
+  // ── Scope the assertions to the DECISION POINT, not the whole file ──────────
+  //
+  // This is the load-bearing part of the suite. An earlier revision asserted
+  // against the whole file and was VACUOUS on the executor path: reverting
+  // agents/gsd-executor.md's interactive branch to its pre-#3299 unconditional
+  // "STOP -> checkpoint:human-verify" left every assertion passing, because the
+  // strings they matched lived in the config read and the reference pointer
+  // rather than in the rule itself. The bug could return with CI green — which
+  // is exactly the duplicate-copy drift that produced #3299. Each extractor
+  // below returns ONLY the tracer gate's interactive branch, so a mutation of
+  // that branch has nowhere to hide.
+
+  // agents/gsd-executor.md: the `2. **If type="tracer":**` list item, up to the
+  // next numbered item.
+  function executorTracerGate(md) {
+    const start = md.indexOf('2. **If `type="tracer"`:**');
+    assert.notStrictEqual(start, -1, 'executor tracer task branch not found — extractor is stale, fix it before trusting this suite');
+    const rest = md.slice(start);
+    const end = rest.search(/\n3\. \*\*If /);
+    assert.notStrictEqual(end, -1, 'executor tracer branch terminator not found — extractor is stale');
+    return rest.slice(0, end);
+  }
+
+  // gsd-core/workflows/execute-plan.md: the single `- type="tracer":` dispatch line.
+  function executePlanTracerGate(md) {
+    const line = md.split(/\r?\n/).find((l) => l.includes('`type="tracer"`') && /tracer feedback gate/i.test(l));
+    assert.ok(line, 'execute-plan.md tracer dispatch line not found — extractor is stale');
+    return line;
+  }
+
+  // Both operative copies, keyed by the file an agent would actually be reading.
+  const GATES = [
+    ['agents/gsd-executor.md', executorTracerGate(EXECUTOR)],
+    ['gsd-core/workflows/execute-plan.md', executePlanTracerGate(EXECUTE_PLAN)],
+  ];
+
+  // Guard the extractors themselves: if they ever silently return the pre-fix
+  // text (or nothing), every assertion below would pass vacuously again.
+  test('extractors isolate a real, non-trivial decision point in both copies', () => {
+    for (const [name, gate] of GATES) {
+      assert.ok(gate.length > 120, `${name}: extracted gate is implausibly short (${gate.length} chars) — extractor is broken`);
+      assert.match(gate, /Interactive/i, `${name}: extracted gate must contain the interactive branch`);
+    }
+  });
+
+  // ── Clause-level parsing: bind CONDITION to ACTION, and pin ORDER ──────────
+  //
+  // Peer review (round 2) defeated an earlier revision of this suite that only
+  // checked vocabulary: mutating `blocking-human -> STOP` into
+  // `blocking-human AND HUMAN_VERIFY_MODE is mid-flight -> STOP` makes an
+  // interactive end-of-phase tracer carrying blocking-human fall through and
+  // auto-continue — a genuine safety bypass — and all 37 assertions still
+  // passed, because every token it looked for was still present somewhere in
+  // the region. Presence is not binding. These helpers split the interactive
+  // branch into its ordered clauses so each condition is asserted against its
+  // own action, and the order is asserted as an order.
+
+  // Both operative copies use the same First / Next / Otherwise clause markers
+  // precisely so one parser can hold them to the same contract.
+  function interactiveClauses(name, gate) {
+    const m = gate.match(/Interactive[^\n]*?evaluate in order \(#3299\)\.?\s*([\s\S]*)$/);
+    assert.ok(m, `${name}: interactive branch must open with "evaluate in order (#3299)"`);
+    const body = m[1];
+    const iFirst = body.indexOf('First,');
+    const iNext = body.indexOf('Next,');
+    const iElse = body.indexOf('Otherwise');
+    assert.ok(iFirst === 0 || iFirst > -1, `${name}: missing "First," clause`);
+    assert.ok(iNext > iFirst, `${name}: "Next," clause must follow "First," — precedence order is the contract`);
+    assert.ok(iElse > iNext, `${name}: "Otherwise" clause must come last — it is the fallback`);
+    return {
+      blocking: body.slice(iFirst, iNext),
+      automated: body.slice(iNext, iElse),
+      fallback: body.slice(iElse),
+    };
+  }
+
+  test('clause 1 stops on blocking-human UNCONDITIONALLY in both copies', () => {
+    for (const [name, gate] of GATES) {
+      const c = interactiveClauses(name, gate);
+      assert.match(c.blocking, /blocking-human/, `${name}: clause 1 must be the blocking-human clause`);
+      assert.match(c.blocking, /STOP/, `${name}: clause 1 must STOP`);
+      // The mutation that defeated the previous suite: qualifying this clause on
+      // a mode makes blocking-human bypassable under end-of-phase.
+      assert.doesNotMatch(
+        c.blocking,
+        /\bAND\b|\bOR\b|mid-flight|end-of-phase|HUMAN_VERIFY_MODE/,
+        `${name}: clause 1 must be UNCONDITIONAL — qualifying blocking-human on a mode makes it bypassable`,
+      );
+    }
+  });
+
+  test('clause 2 binds end-of-phase + automated-only to re-run, HALT on failure, continue on success', () => {
+    for (const [name, gate] of GATES) {
+      const c = interactiveClauses(name, gate);
+      assert.match(c.automated, /end-of-phase/, `${name}: clause 2 must be gated on end-of-phase`);
+      assert.match(c.automated, /only `<automated>`/, `${name}: clause 2 must require automated-only evidence`);
+      assert.match(c.automated, /no `<human-check>`/, `${name}: clause 2 must exclude <human-check>`);
+      assert.match(c.automated, /failure[^.;]*HALT/i, `${name}: clause 2 must bind HALT to the failure case`);
+      assert.match(c.automated, /never a checkpoint/i, `${name}: clause 2 must forbid turning a failure into a checkpoint`);
+      assert.match(c.automated, /success[^.;]*continue/i, `${name}: clause 2 must bind continue to the success case`);
+    }
+  });
+
+  test('clause 3 is the STOP fallback covering mid-flight and human-check', () => {
+    for (const [name, gate] of GATES) {
+      const c = interactiveClauses(name, gate);
+      assert.match(c.fallback, /mid-flight/, `${name}: the fallback must name mid-flight`);
+      assert.match(c.fallback, /STOP/, `${name}: the fallback must STOP`);
+      assert.match(c.fallback, /checkpoint:human-verify/, `${name}: the fallback must return checkpoint:human-verify`);
+      assert.doesNotMatch(
+        c.fallback,
+        /continue with NO checkpoint|do NOT synthesize/i,
+        `${name}: the fallback must never auto-continue`,
+      );
+    }
+  });
+
+  // Every site that reads the mode must pass --default: the key is absent from
+  // SCHEMA_DEFAULTS, so a bare read fails closed-but-empty on legacy projects.
+  test('every site reading the mode passes an explicit --default end-of-phase', () => {
+    for (const [name, md] of [
+      ['agents/gsd-executor.md', EXECUTOR],
+      ['gsd-core/workflows/execute-plan.md', EXECUTE_PLAN],
+      ['gsd-core/references/checkpoints.md', CHECKPOINTS],
+    ]) {
+      assert.match(
+        md,
+        /config-get workflow\.human_verify_mode --default end-of-phase/,
+        `${name}: must pass --default end-of-phase (the key is absent from SCHEMA_DEFAULTS)`,
+      );
+    }
+  });
+
+  // Behavioral: prove the CLI contract the whole fix rests on, rather than
+  // trusting the flag is spelled correctly. Absent key -> documented default;
+  // present key -> the operator's value always wins over --default.
+  test('config-get resolves end-of-phase when the key is absent, and never overrides a set value', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const configPath = path.join(tmpDir, '.planning', 'config.json');
+
+    // The reporter's exact config shape (issue #3299): human_verify_mode absent
+    // entirely — the pre-#3309 project shape every existing user still has.
+    const base = { mode: 'yolo', workflow: { _auto_chain_active: false, tdd_mode: true } };
+    fs.writeFileSync(configPath, JSON.stringify(base, null, 2));
+
+    // Precondition — and the entire reason --default is mandatory. Assert the
+    // FAILURE explicitly (exit code + message), not merely "output was empty":
+    // an empty successful result would satisfy a laxer check while meaning
+    // something completely different.
+    const bare = runGsdTools('query config-get workflow.human_verify_mode --raw', tmpDir);
+    assert.strictEqual(bare.success, false, 'a bare config-get for an absent key must FAIL, not return empty');
+    assert.notStrictEqual(bare.exitCode, 0, 'a bare config-get for an absent key must exit non-zero');
+    assert.match(String(bare.error || ''), /Key not found/, 'the failure must be the Key-not-found path, not some other error');
+
+    const withDefault = runGsdTools('query config-get workflow.human_verify_mode --default end-of-phase --raw', tmpDir);
+    assert.strictEqual(withDefault.success, true, '--default must succeed for an absent key');
+    assert.strictEqual((withDefault.output || '').trim(), 'end-of-phase', '--default must supply the documented default');
+
+    // An operator who opted back into mid-flight must not be silently overridden.
+    base.workflow.human_verify_mode = 'mid-flight';
+    fs.writeFileSync(configPath, JSON.stringify(base, null, 2));
+    const setValue = runGsdTools('query config-get workflow.human_verify_mode --default end-of-phase --raw', tmpDir);
+    assert.strictEqual(setValue.success, true, 'a present value must resolve successfully');
+    assert.strictEqual((setValue.output || '').trim(), 'mid-flight', 'a present value must win over --default');
+  });
+
+  // agents/gsd-executor.md is LARGE tier against a 49152-byte HARD cap
+  // (tests/agent-size-budget.test.cjs) and had 154 bytes of headroom at the
+  // merge-base, so it carries the rule and delegates the precedence table to
+  // checkpoints.md — which <checkpoint_protocol> already @-imports, so nothing
+  // new is loaded. That is only safe while the terse copy points at the
+  // canonical one; an orphaned pointer is how two copies drift apart.
+  test('the terse executor copy points at the canonical rule, which exists', () => {
+    assert.match(
+      EXECUTOR,
+      /full rule in "Tracer feedback gate", checkpoints\.md/,
+      'gsd-executor.md must point at the canonical tracer-gate rule',
+    );
+    assert.match(
+      CHECKPOINTS,
+      /### Tracer feedback gate \(#3299\)/,
+      'checkpoints.md must carry the canonical tracer-gate section the executor points to',
+    );
+  });
+
+  // The canonical table is a PRECEDENCE CHAIN. Peer review round 1 caught an
+  // earlier revision that listed auto-mode as "any verify -> continue" while
+  // also claiming auto-continue required automated-only evidence — two rules an
+  // agent could follow to opposite conclusions, one unsafe. Round 2 caught that
+  // asserting on the table's TEXT rather than its ROWS could not tell a correct
+  // table from a reordered or re-celled one. So: parse the rows, assert cells.
+  function canonicalTracerRows(md) {
+    const secStart = md.indexOf('### Tracer feedback gate (#3299)');
+    assert.notStrictEqual(secStart, -1, 'checkpoints.md must carry the canonical tracer-gate section');
+    const rest = md.slice(secStart);
+    const secEnd = rest.search(/\n### |\n<type /);
+    const section = secEnd === -1 ? rest : rest.slice(0, secEnd);
+    const rows = section
+      .split(/\r?\n/)
+      .filter((l) => /^\s*\|/.test(l))
+      .map((l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim()))
+      .filter((cells) => !cells.every((c) => /^-+$/.test(c) || c === ''));
+    // drop the header row
+    const header = rows.shift();
+    assert.ok(header && /run/i.test(header.join(' ')), 'tracer-gate table header not found — parser is stale');
+    return rows;
+  }
+
+  test('the canonical table is an ordered precedence chain with the right cells', () => {
+    assert.match(CHECKPOINTS, /in order/i, 'checkpoints.md must state the rows are evaluated in order');
+    const rows = canonicalTracerRows(CHECKPOINTS);
+    assert.ok(rows.length >= 5, `expected at least 5 precedence rows, got ${rows.length}`);
+
+    // Rows are numbered in column 0; they must be 1..N in order — a shuffled
+    // table would still contain all the same words.
+    rows.forEach((cells, idx) => {
+      assert.strictEqual(cells[0], String(idx + 1), `row ${idx + 1} must carry its precedence number in column 1`);
+    });
+
+    const row = (n) => rows[n - 1].join(' | ');
+
+    // Row 1 outranks everything and must STOP unconditionally.
+    assert.match(row(1), /blocking-human/, 'row 1 must be the blocking-human row — it outranks every other condition');
+    assert.match(row(1), /STOP/, 'row 1 must STOP');
+    assert.match(row(1), /Never auto-continued/i, 'row 1 must state explicitly that it is never auto-continued');
+    assert.doesNotMatch(row(1), /no checkpoint/i, 'row 1 must never be a no-checkpoint row');
+
+    // Row 2 is the pre-existing autonomous branch, explicitly out of #3299 scope.
+    assert.match(row(2), /Auto mode active/i, 'row 2 must be the autonomous branch');
+    assert.match(row(2), /unchanged by #3299/i, 'row 2 must be marked out of #3299 scope so the table reads as one rule');
+
+    // Row 3 is the ONLY row this fix makes continue.
+    assert.match(row(3), /end-of-phase/, 'row 3 must be the end-of-phase interactive row');
+    assert.match(row(3), /only `<automated>`/, 'row 3 must require automated-only evidence');
+    assert.match(row(3), /no checkpoint/i, 'row 3 is the row that continues without a checkpoint');
+
+    // Rows 4-5 must STOP, never continue.
+    for (const n of [4, 5]) {
+      assert.match(row(n), /STOP/, `row ${n} must STOP`);
+      assert.doesNotMatch(row(n), /no checkpoint/i, `row ${n} must not auto-continue`);
+    }
+    assert.match(row(4), /human-check/, 'row 4 must be the human-check row');
+    assert.match(row(5), /mid-flight/, 'row 5 must be the mid-flight row');
+  });
+
+  // The gap existed because planner-side suppression could not reach an
+  // executor-synthesized checkpoint and nothing documented that seam.
+  test('planner-human-verify-mode.md documents the executor-side seam', () => {
+    assert.match(HV_REF, /tracer feedback gate/i, 'the reference must document the tracer gate as a mode consumer');
+    assert.match(HV_REF, /#3299/, 'the reference must cite the issue so the decision is traceable');
+    assert.match(HV_REF, /SCHEMA_DEFAULTS/, 'the reference must record why --default end-of-phase is mandatory');
+    // The harvest seam is the decisive reason a <human-check> tracer halts
+    // rather than deferring: gsd-verifier harvests auto tasks, not tracers.
+    assert.match(
+      HV_REF,
+      /harvest does not cover tracers|does not cover tracers/i,
+      'the reference must record WHY a human-check tracer halts (the end-of-phase harvest does not reach tracers)',
+    );
+  });
+});
