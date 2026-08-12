@@ -53,7 +53,7 @@ function buildRefRe(phantom) {
 const REF_RE = buildRefRe(PHANTOM);
 
 const SCAN_EXT = new Set(['.md', '.cjs', '.js', '.cts', '.ts']);
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.changeset']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.changeset', '.claude', '.planning']);
 // This guard file itself names the phantom numbers (by necessity); exclude it.
 const SELF = path.relative(ROOT, __filename);
 
@@ -131,7 +131,7 @@ test('walk() skips broken symlinks and does not throw ENOENT (#1545)', (t) => {
   }
 });
 
-test('walk() does not scan ambient .claude/.planning content (#3321)', (t) => {
+test('walk() does not scan ambient .claude/.planning content (#3321)', () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nophantom-ambient-'));
   try {
     fs.writeFileSync(path.join(fixture, 'real.md'), '# real, no phantom refs\n');
