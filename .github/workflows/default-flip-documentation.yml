@@ -1,0 +1,42 @@
+name: Default Flip Documentation
+
+# DEFECT.DEFAULT-FLIP-DOCUMENTATION (CONTEXT.md): a PR that changes an
+# existing default value in gsd-core/bin/shared/config-defaults.manifest.json
+# must document the migration semantics in a `## Breaking Changes` PR-body
+# section (when the new default takes effect, the opt-back-in command,
+# effect on in-flight artifacts) — see scripts/lint-default-flip-documentation.cjs
+# for the full rationale and scope notes.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  default-flip-documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          # Intentionally shallow — see tests/policy-lint-shallow-checkout.test.cjs.
+          fetch-depth: 50
+      - name: Fetch base ref for diff
+        # git show origin/<base>:<path> needs the base ref present locally;
+        # the shallow checkout above only guarantees PR-branch ancestry.
+        run: git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+      - name: Check default-flip documentation
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: node scripts/lint-default-flip-documentation.cjs

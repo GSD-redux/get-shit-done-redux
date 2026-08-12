@@ -490,7 +490,7 @@ function applyMigration(cwd: string, plan: MigrationPlan, options: { dryRun?: bo
   // ── Real run: verify clean working tree ───────────────────────────────────
   let gitStatus: string;
   try {
-    gitStatus = execSync('git status --porcelain', { cwd, encoding: 'utf8', windowsHide: true });
+    gitStatus = execSync('git status --porcelain', { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
   } catch (err) {
     throw new Error(`git status failed: ${(err as Error).message}`);
   }

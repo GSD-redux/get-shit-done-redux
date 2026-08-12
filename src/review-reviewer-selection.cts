@@ -26,12 +26,14 @@
  * three-namespace trap (`id` must be kebab; `slug` keeps the shipped roster's
  * snake form).
  *
- * `runtime.hostBehaviors.reviewerCli: true` survives as a DERIVED LEGACY ALIAS
- * for one release (D9): a capability that only sets the flag (no `reviewer`
- * body yet) still contributes its capability id as a slug, exactly as before
- * this phase. Where a capability carries BOTH a declared body and the alias,
- * the BODY WINS — that capability contributes only the body's slug, never
- * both. Alias removal is a named later phase (#2801), not done here.
+ * `runtime.hostBehaviors.reviewerCli` is GONE (Phase 7, #2801). It survived one
+ * release as a derived legacy alias — a capability setting only the flag
+ * contributed its capability id as a slug — and that window closed when 1.10.0
+ * shipped after Phase 5a's 1.9.0. A declared `reviewer` body is now the ONLY
+ * route onto the roster. A manifest still carrying the key contributes no lane
+ * and is told so: `collectReviewerWarnings`
+ * (`gsd-core/bin/lib/capability-validator.cjs`) emits a removal notice on both
+ * the build-time registry generation and the third-party overlay load path.
  *
  * Before this phase the five non-runtime reviewers (`gemini`, `coderabbit`,
  * `ollama`, `lm_studio`, `llama_cpp`) had no `capabilities/<id>/` descriptor at
@@ -43,7 +45,6 @@
 
 interface RegistryReviewerCapability {
   reviewer?: { slug?: unknown };
-  runtime?: { hostBehaviors?: { reviewerCli?: unknown } };
 }
 
 interface ReviewerCapabilityRegistry {
@@ -62,19 +63,17 @@ interface ReviewerCapabilityRegistry {
  *
  * Reads `registry.capabilities` — every declared capability regardless of
  * role — because a `role: "reviewer"` lane-only capability is never stored in
- * `registry.runtimes` (that map is role:"runtime" only). Per capability: a
- * declared `reviewer.slug` wins outright (D9) and the capability contributes
- * ONLY that slug; only when there is no body does the legacy
- * `hostBehaviors.reviewerCli` alias contribute the capability id instead. The
+ * `registry.runtimes` (that map is role:"runtime" only). A capability
+ * contributes exactly one slug — its declared `reviewer.slug` — or none. The
  * result is collected into a Set (so a slug can never appear twice, even if
  * two distinct capabilities somehow named the same one) and returned as a
- * SORTED array, so the roster's order never depends on `Object.entries()`
+ * SORTED array, so the roster's order never depends on `Object.values()`
  * iteration / registry build order.
  */
 export function deriveReviewerSlugs(registry: ReviewerCapabilityRegistry): string[] {
   const capabilities = registry.capabilities || {};
   const slugs = new Set<string>();
-  for (const [capId, cap] of Object.entries(capabilities)) {
+  for (const cap of Object.values(capabilities)) {
     // Trim before the emptiness test: `length > 0` alone admits a whitespace-only
     // slug ("   ") verbatim into the roster, where it can never match a real lane
     // but still occupies a roster entry. Unreachable through the checked-in
@@ -82,13 +81,7 @@ export function deriveReviewerSlugs(registry: ReviewerCapabilityRegistry): strin
     // other validation, so it should not depend on its caller's hygiene.
     const rawSlug = cap?.reviewer?.slug;
     const declaredSlug = typeof rawSlug === 'string' ? rawSlug.trim() : '';
-    if (declaredSlug.length > 0) {
-      slugs.add(declaredSlug);
-      continue; // the body wins — never ALSO add this capability's alias below.
-    }
-    if (cap?.runtime?.hostBehaviors?.reviewerCli === true) {
-      slugs.add(capId);
-    }
+    if (declaredSlug.length > 0) slugs.add(declaredSlug);
   }
   return [...slugs].sort();
 }

@@ -16,7 +16,8 @@
  *   - ./config-loader.cjs    (loadConfig)
  *   - ./configuration.cjs    (CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS)
  *   - ./model-profiles.cjs   (MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier)
- *   - ./model-catalog.cjs    (MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS)
+ *   - ./model-catalog.cjs    (MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS,
+ *                             CLAUDE_AGENT_ALIASES — re-exported below for back-compat, #3241)
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -30,7 +31,7 @@ import { CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS } from './configuration.cj
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier } = modelProfiles;
 
-import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS } from './model-catalog.cjs';
+import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS, CLAUDE_AGENT_ALIASES } from './model-catalog.cjs';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -179,7 +180,9 @@ const CLAUDE_POLICY_ID_TO_ALIAS: Record<string, string> = {
   ),
   'claude-fable-5': 'fable',
 };
-const CLAUDE_AGENT_ALIASES = new Set(['opus', 'sonnet', 'haiku', 'fable']);
+// CLAUDE_AGENT_ALIASES moved to ./model-catalog.cts (#3241) — imported above
+// and re-exported below for back-compat (bin/install.js:474,
+// tests/codex-config.test.cjs:24 depend on the name being on this module).
 
 // Dedupe stderr warnings so repeated agent resolutions don't spam (#1133).
 const _modelPolicyUnmappableWarned = new Set<string>();
@@ -310,6 +313,133 @@ function resolveModelPolicy(policy: Record<string, unknown> | null | undefined, 
   return budgetEntry.model;
 }
 
+/**
+ * #2229 — the profile/phase-type tier for (config, agentType).
+ *
+ * Extracted verbatim from resolveModelInternal's step 2 so the same expression can
+ * answer "which tier did GSD resolve?" without also resolving a model id. The
+ * extraction is behaviour-preserving by construction: resolveModelInternal calls
+ * straight back into it.
+ *
+ * Returns null when the agent has no catalog entry and the profile is not `inherit`.
+ */
+function computeProfileTier(config: Record<string, unknown>, agentType: string): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const profile = String(config['model_profile'] || 'balanced').toLowerCase();
+  // Own-property guard: agentType is an unvalidated CLI positional (the
+  // `resolve-model <agent-type>` argument is never checked against a known
+  // agent list), so a prototype-chain agentType ("toString", "constructor")
+  // would otherwise return an inherited member from this plain object
+  // instead of undefined — verified reachable purely via the CLI.
+  const modelProfilesMap = MODEL_PROFILES as unknown as Record<string, Record<string, string>>;
+  const agentModels = Object.hasOwn(modelProfilesMap, agentType) ? modelProfilesMap[agentType] : undefined;
+  const phaseType = (AGENT_TO_PHASE_TYPE)[agentType];
+  const configModels = config['models'] as Record<string, string> | null | undefined;
+  const phaseTypeTier = (phaseType && configModels && typeof configModels === 'object')
+    ? configModels[phaseType]
+    : undefined;
+  return (phaseTypeTier && VALID_TIERS.has(phaseTypeTier))
+    ? phaseTypeTier
+    : (profile === 'inherit'
+      ? 'inherit'
+      : (agentModels
+        // Own-property guard: `profile` is a config-supplied string
+        // (config['model_profile'], lower-cased); an already-lowercase
+        // prototype-chain key ("constructor", "__proto__") would otherwise
+        // return an inherited non-string member instead of falling back to
+        // 'balanced' (verified: profile:"constructor"/"__proto__" leaked a
+        // function/object through both the tier and model resolution paths).
+        ? ((Object.hasOwn(agentModels, profile) ? agentModels[profile] : undefined) || agentModels['balanced'])
+        : null));
+}
+
+/**
+ * #2229 — the effective model TIER for (config, agentType), as a signal a workflow can
+ * read: `gsd_run query resolve-model <agent> --pick tier`.
+ *
+ * Why this is not just "look at the resolved model": on every runtime the installer
+ * configures with `resolve_model_ids: "omit"` — which is every non-Claude runtime, see
+ * docs/CONFIGURATION.md — resolveModelInternal deliberately returns '' below. A guard
+ * keyed on the model id therefore cannot tell a budget-tier run from a top-tier one
+ * there, while the tier itself is computed ABOVE that early-return and stays knowable.
+ *
+ * Honesty contract — this never guesses, because a guard that reports a wrong tier is
+ * worse than one that reports none:
+ *   - a per-agent `model_overrides` pin naming a known alias (or a full Claude id that
+ *     maps to one) reports that alias;
+ *   - a pin that maps to nothing reports 'unknown' — a raw model id carries no tier;
+ *   - `model_profile: inherit` reports 'inherit' — the session model is not ours to name;
+ *   - an agent with no catalog entry reports 'unknown'.
+ *
+ * Callers must treat 'unknown' and 'inherit' as "cannot tell", never as "adequate".
+ */
+function resolveTierFromConfig(config: Record<string, unknown>, agentType: string): string {
+  const rawOverrides = config['model_overrides'];
+  const modelOverrides = (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides))
+    ? rawOverrides as Record<string, string>
+    : null;
+  // Own-property guard: agentType is a caller-supplied string (the
+  // `resolve-model <agent-type>` CLI positional is not validated against a
+  // known agent list); a prototype-chain agentType ("toString",
+  // "constructor") against ANY model_overrides object — even `{}` — would
+  // otherwise return an inherited member instead of undefined.
+  const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
+    ? modelOverrides[agentType]
+    : undefined;
+  if (override && typeof override === 'string') {
+    if (CLAUDE_AGENT_ALIASES.has(override)) return override;
+    // Own-property guard: this indexes a plain object with a config-supplied
+    // string, so a prototype-chain key ("toString", "constructor", "valueOf")
+    // would otherwise return an inherited member instead of undefined — and a
+    // function-valued tier is dropped entirely by JSON.stringify, silently
+    // removing the key a guard depends on.
+    const alias = Object.hasOwn(CLAUDE_POLICY_ID_TO_ALIAS, override)
+      ? CLAUDE_POLICY_ID_TO_ALIAS[override]
+      : undefined;
+    if (typeof alias === 'string' && alias) return alias;
+    return 'unknown';
+  }
+
+  const profileTier = computeProfileTier(config, agentType);
+
+  // #3282 — mirror resolveModelInternal's step 2.5 (model_policy preset). The
+  // profile tier alone under-reports: model_policy can dispatch a DIFFERENT
+  // tier than the profile implies (e.g. a `balanced` profile's "sonnet" tier
+  // combined with `model_policy: {budget: 'low'}` actually spawns "haiku"),
+  // and reporting the profile tier there is exactly the under-report this
+  // fixes — a haiku-tier run must never be reported as "sonnet". Skipped
+  // under the same condition resolveModelInternal skips it (no tier, or
+  // "inherit" — the session model is not ours to name).
+  if (profileTier && profileTier !== 'inherit') {
+    const mergedPolicy = config['model_policy']
+      ? { ...(config['model_policy'] as Record<string, unknown>), runtime: (config['runtime'] as string | null | undefined) || 'claude' }
+      : null;
+    const policyModel = resolveModelPolicy(mergedPolicy, profileTier);
+    if (policyModel) {
+      // Map the policy-resolved id back to a tier alias with the same
+      // own-property-guarded lookups used above. If it maps, that alias IS
+      // the tier that actually runs — report it (the fix). If it does not
+      // map — including every non-Claude runtime, where resolveModelInternal
+      // returns the policy model verbatim with no tier meaning — the model
+      // carries no tier we can name; report 'unknown' rather than falling
+      // back to the profile tier, which would silently reintroduce the
+      // under-report this block exists to close.
+      const aliasForId = Object.hasOwn(CLAUDE_POLICY_ID_TO_ALIAS, policyModel)
+        ? CLAUDE_POLICY_ID_TO_ALIAS[policyModel]
+        : undefined;
+      if (typeof aliasForId === 'string' && aliasForId) return aliasForId;
+      if (CLAUDE_AGENT_ALIASES.has(policyModel)) return policyModel;
+      return 'unknown';
+    }
+  }
+
+  return profileTier || 'unknown';
+}
+
+function resolveTierInternal(cwd: string, agentType: string): string {
+  return resolveTierFromConfig(loadConfig(cwd), agentType);
+}
+
 function resolveModelInternal(cwd: string, agentType: string): string {
   const config = loadConfig(cwd);
 
@@ -317,27 +447,30 @@ function resolveModelInternal(cwd: string, agentType: string): string {
   // the claude runtime, mirroring the model_policy path #1144; non-Claude
   // runtimes and non-Claude values pass through verbatim).
   const modelOverrides = config['model_overrides'] as Record<string, string> | null | undefined;
-  const override = modelOverrides?.[agentType];
+  // Own-property guard (see resolveTierFromConfig above): without it, an
+  // agentType of "toString" against `model_overrides: {}` returned the
+  // inherited Function.prototype.toString as the resolved "model" — verified
+  // reachable purely via the CLI, no override value needed.
+  const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
+    ? modelOverrides[agentType]
+    : undefined;
   if (override) {
     const mapped = mapClaudeOverrideForRuntime(override, config['runtime'] as string | null | undefined, agentType);
     if (mapped !== null) return mapped;
     // Unmappable Claude ID — fall through to tier resolution (matches model_policy).
   }
 
-  // 2. Compute the tier
+  // 2. Compute the tier (#2229: shared with resolveTierFromConfig so the tier a
+  // workflow reads and the tier a model is resolved from can never diverge).
   // eslint-disable-next-line @typescript-eslint/no-base-to-string
   const profile = String(config['model_profile'] || 'balanced').toLowerCase();
-  const agentModels = (MODEL_PROFILES as unknown as Record<string, Record<string, string>>)[agentType];
-  const phaseType = (AGENT_TO_PHASE_TYPE)[agentType];
-  const configModels = config['models'] as Record<string, string> | null | undefined;
-  const phaseTypeTier = (phaseType && configModels && typeof configModels === 'object')
-    ? configModels[phaseType]
-    : undefined;
-  const tier = (phaseTypeTier && VALID_TIERS.has(phaseTypeTier))
-    ? phaseTypeTier
-    : (profile === 'inherit'
-      ? 'inherit'
-      : (agentModels ? (agentModels[profile] || agentModels['balanced']) : null));
+  // Own-property guard (see computeProfileTier above): without it, agentType
+  // "toString" returned Function.prototype.toString as `agentModels`
+  // (truthy), which skipped the "unknown agent" fallback below and made
+  // resolveModelInternal return undefined instead of a tier-derived string.
+  const modelProfilesMapForModel = MODEL_PROFILES as unknown as Record<string, Record<string, string>>;
+  const agentModels = Object.hasOwn(modelProfilesMapForModel, agentType) ? modelProfilesMapForModel[agentType] : undefined;
+  const tier = computeProfileTier(config, agentType);
 
   // 2.5. model_policy preset (#49, #1133)
   const configRuntime = config['runtime'] as string | null | undefined;
@@ -353,8 +486,10 @@ function resolveModelInternal(cwd: string, agentType: string): string {
       if (!onClaude) return policyModel;
       // Claude Code's Agent tool takes tier aliases (opus/sonnet/haiku/fable),
       // not full model IDs — map the policy-resolved ID back to an alias (#1133).
-      const aliasForId = CLAUDE_POLICY_ID_TO_ALIAS[policyModel];
-      if (aliasForId) return aliasForId;
+      const aliasForId = Object.hasOwn(CLAUDE_POLICY_ID_TO_ALIAS, policyModel)
+        ? CLAUDE_POLICY_ID_TO_ALIAS[policyModel]
+        : undefined;
+      if (typeof aliasForId === 'string' && aliasForId) return aliasForId;
       // The policy value may already be a bare Claude agent alias (e.g. "fable").
       if (CLAUDE_AGENT_ALIASES.has(policyModel)) return policyModel;
       // No Claude alias for this ID (e.g. a pinned minor version like
@@ -457,7 +592,13 @@ function resolveModelForTier(cwd: string, agentType: string, attempt?: number): 
   const attemptN = Number.isInteger(attempt) && (attempt as number) > 0 ? (attempt as number) : 0;
 
   const modelOverrides = config['model_overrides'] as Record<string, string> | null | undefined;
-  const override = modelOverrides?.[agentType];
+  // Own-property guard (see resolveTierFromConfig above): without it, an
+  // agentType of "toString" against `model_overrides: {}` returned the
+  // inherited Function.prototype.toString as the resolved "model" — verified
+  // reachable purely via the CLI, no override value needed.
+  const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
+    ? modelOverrides[agentType]
+    : undefined;
   if (override) {
     const mapped = mapClaudeOverrideForRuntime(override, config['runtime'] as string | null | undefined, agentType);
     if (mapped !== null) return mapped;
@@ -778,6 +919,8 @@ export = {
   CLAUDE_AGENT_ALIASES,
   resolveModelPolicy,
   resolveModelInternal,
+  resolveTierInternal,
+  resolveTierFromConfig,
   _resetModelPolicyWarningCacheForTests,
   _resetModelOverrideWarningCacheForTests,
   _setInstallRuntimeMarkerForTests,

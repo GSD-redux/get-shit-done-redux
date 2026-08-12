@@ -459,6 +459,13 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
     phase_name: null,
     plans: [],
     summaries: [],
+    // #3218: scalar counts alongside the arrays above. Left `null` (not `0`)
+    // when the phase can't be resolved at all — a fabricated `0` here would
+    // read identically to "phase exists with zero plans", which is a real,
+    // distinct answer (see the `status: superseded` case below).
+    plan_count: null,
+    summary_count: null,
+    plan_count_all: null,
     searched_directories: [] as string[],
   };
 
@@ -537,10 +544,8 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
       // the owner recognizes, canonical or not) rather than the live-only
       // `plans`, so a superseded-but-canonically-named plan is not misreported
       // as a naming violation.
-      const planNamingWarning = describeNonCanonicalPlans(
-        phaseFiles,
-        phaseScan.allPlanFiles.filter(isCanonicalPlanFile),
-      );
+      const canonicalAllPlanFiles = phaseScan.allPlanFiles.filter(isCanonicalPlanFile);
+      const planNamingWarning = describeNonCanonicalPlans(phaseFiles, canonicalAllPlanFiles);
 
       const result: Record<string, unknown> = {
         found: true,
@@ -555,6 +560,20 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
         phase_name: phaseName,
         plans,
         summaries,
+        // #3218: scalar counts additive alongside `plans[]`/`summaries[]`,
+        // which stay unchanged for existing consumers. Naming mirrors
+        // `roadmap.analyze`'s `plan_count`/`summary_count` (live, i.e.
+        // status:superseded EXCLUDED — same set as `plans`/`summaries`
+        // above) so the two surfaces read alike. `plan_count_all` is the
+        // PHYSICAL count — every canonically-named plan file on disk,
+        // status:superseded INCLUDED, same set `planNamingWarning` above
+        // diffs against (`canonicalAllPlanFiles`). The `_all` suffix
+        // deliberately echoes `scanPhasePlans`'s own `allPlanFiles` field so
+        // a reader can trace the name back to its source rather than guess
+        // which of two similarly-named integers is the filtered one.
+        plan_count: plans.length,
+        summary_count: summaries.length,
+        plan_count_all: canonicalAllPlanFiles.length,
       };
       if (planNamingWarning) result['warning'] = planNamingWarning;
 

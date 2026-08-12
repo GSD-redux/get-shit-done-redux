@@ -76,6 +76,16 @@ const NON_REGISTRY_CONFIG_LOCATION_ENV_KEYS = [
   'GSD_RUNTIME',
   'GSD_PROJECT',
   'GSD_WORKSTREAM',
+  // #3245: host-session signals GSD now reads (host-runtime-detection.cts's
+  // detectHostRuntime / resolveReportedRuntime). Scrubbed for the same reason
+  // GSD_RUNTIME is — an ambiently-set CODEX_SANDBOX / (this repo's test suite
+  // running from inside a Codex session, or any host that happens to export
+  // these) would non-deterministically flip the detected runtime for every
+  // test that does not explicitly pass them. Tests that WANT them set still
+  // can, via the per-call env override, which is applied after this base and
+  // so continues to win.
+  'CODEX_SANDBOX',
+  'CODEX_SANDBOX_NETWORK_DISABLED',
 ];
 
 // Write-escape PERMISSIONS — deliberately its own family, and deliberately NOT

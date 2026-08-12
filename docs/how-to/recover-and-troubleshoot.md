@@ -265,6 +265,72 @@ npx @opengsd/gsd-core@latest --claude --local
 
 For runtime-specific install paths and troubleshooting, see [Install on your runtime](install-on-your-runtime.md).
 
+### If Codex agents fail to spawn with a 400 about an unsupported model
+
+Symptom — a typed agent (`gsd-planner`, `gsd-executor`, …) fails to start and the whole
+plan/execute flow falls back to a generic agent:
+
+```
+400 invalid_request_error: "The 'sonnet' model is not supported when using Codex with a ChatGPT account."
+```
+
+This means an installed `~/.codex/agents/<agent>.toml` still pins a model your Codex session cannot
+serve. Installs made before the passive model posture landed embedded a per-tier model; a
+ChatGPT-account session exposes only its own model, so the pin fails the request outright
+([ADR-2313](../adr/2313-codex-passive-model-posture.md)).
+
+Check which agents are affected:
+
+```bash
+node gsd-tools.cjs validate agents
+```
+
+The `codex_posture` section reports one violation per offending agent, naming the file and the
+offending value. Two things it flags:
+
+- `anthropic_flavored_model` — the `.toml` pins a GSD tier alias (`opus`, `sonnet`, `haiku`,
+  `fable`) or a `claude-*` id. Codex rejects all of these.
+- `orphaned_reasoning_effort` — a `model_reasoning_effort` with no `model`, which leaves the model
+  following your Codex session while the effort follows GSD.
+
+An empty violations list means every regular `.toml` in the directory is posture-clean, so the 400
+is coming from somewhere else — check that your Codex session itself is healthy.
+
+One thing the check deliberately does not inspect: an agent file that is a **symlink** is skipped
+rather than followed, matching how the effort sync treats them. If you symlink your agent configs,
+verify those targets by hand.
+
+**Fix — repair in place, without a reinstall.** Preview what would change:
+
+```bash
+node gsd-tools.cjs effort sync
+```
+
+That is a dry run; it writes nothing. When the reported changes look right, apply them:
+
+```bash
+node gsd-tools.cjs effort sync --apply
+```
+
+It removes only the offending `model` / `model_reasoning_effort` lines. Everything else — your line
+endings, comments, key order, and any keys you added by hand — is preserved byte-for-byte, so the
+result is a two-line diff rather than a reformatted file. An explicit real-Codex pin is left alone,
+and a file it cannot parse is refused and reported rather than partially rewritten.
+
+**Or re-run the installer**, which rewrites the agent files wholesale. Current versions write no
+model at all, so agents inherit the session model:
+
+```bash
+npx @opengsd/gsd-core@latest --codex --global
+```
+
+Prefer the sync if you have hand-edited your `.toml` files — a reinstall regenerates them.
+
+If you are on an **API-key** account and genuinely want a pinned model, name a real Codex model id
+per agent instead — see [How to configure model profiles](configure-model-profiles.md#codex-does-not-do-tier-routing--pin-explicitly-instead).
+
+> The check is read-only. It reports what is wrong and does not edit your files.
+
 ### If an update overwrote your local changes
 
 Since v1.17, the installer backs up locally modified files to `gsd-local-patches/`. Reapply your changes:

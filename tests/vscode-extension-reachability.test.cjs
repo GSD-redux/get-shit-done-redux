@@ -24,6 +24,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const extension = require('../vscode/extension.js');
 const { activate, dispatchGsdCommand, resolveEngineRoot, resolveWorkspaceCwd } = extension;
@@ -39,6 +40,12 @@ test('the extension exports activate + dispatchGsdCommand + resolveEngineRoot', 
 test('REACHABILITY: dispatchGsdCommand dispatches a real family/subcommand through gsd-tools.cjs and returns REAL output (keystone wired, not UnknownCommand)', async () => {
   const dir = createTempDir();
   try {
+    // #3217 (ADR-3180 §7.6 rule 4): a free-form ROADMAP.md (no version
+    // token) is COMPLETE scope for windowing (§7.1) — without this, a
+    // bare temp dir has no ROADMAP.md at all (UNREADABLE) and `percent`
+    // is withheld (null), breaking this reachability proxy.
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     const result = await dispatchGsdCommand({ family: 'progress', subcommand: 'json', cwd: dir });
     assert.equal(typeof result, 'string', 'returns a string result');
     const parsed = JSON.parse(result);

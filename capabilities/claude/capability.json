@@ -49,6 +49,7 @@
         }
       ]
     },
+    "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "claude",
@@ -101,8 +102,7 @@
       "skillsGlobalOnboarding": true,
       "legacyCommandsGsdInstallMigration": true,
       "legacyCommandsGsdUninstall": "global",
-      "hyphenNameAgentBody": true,
-      "reviewerCli": true
+      "hyphenNameAgentBody": true
     }
   },
   "reviewer": {
@@ -126,7 +126,11 @@
       "promptChannel": "stdin",
       "outputChannel": "stdout",
       "modelArg": "--model",
-      "effortChannel": "argv"
+      "effortChannel": "argv",
+      "env": {
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+      }
     },
     "timeoutFloorMs": 1200000,
     "emptyOutput": "stub-with-stderr",

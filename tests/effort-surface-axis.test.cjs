@@ -1,7 +1,11 @@
-// allow-test-rule: source-text-is-the-product (see #2481)
+// allow-test-rule: source-text-is-the-product (see #2481, #2615)
 // The final describe block asserts on gsd-core/workflows/review.md's text. A
 // workflow .md IS what the runtime loads — its literal command lines are the
 // deployed contract, and there is no runtime seam that executes review.md here.
+// The #2615 matrix-parity block below is the same kind of contract assertion:
+// docs/reference/host-integration-capability-matrix.md IS the cited source of
+// truth for every descriptor axis (ADR-1239), so asserting a shipped axis
+// value appears there and matches is a contract assertion, not a source grep.
 // Every other block in this file is behavioral (CLI + module surface).
 
 /**
@@ -37,6 +41,31 @@ const {
   _HOST_INTEGRATION_VOCAB,
   validateRuntimeBody,
 } = require(path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'capability-validator.cjs'));
+const registry = require(path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
+
+// #2615: the host-integration capability matrix, normalized so CRLF checkouts
+// (Windows autocrlf) don't break the row regexes below.
+const MATRIX = path.join(REPO_ROOT, 'docs', 'reference', 'host-integration-capability-matrix.md');
+const MATRIX_TEXT = fs.readFileSync(MATRIX, 'utf-8').replace(/\r\n/g, '\n');
+
+/** Extract a `## <host>` section body, stopping at the next top-level host heading. */
+function matrixSection(host) {
+  const start = MATRIX_TEXT.indexOf(`\n## ${host}\n`);
+  if (start === -1) return null;
+  const rest = MATRIX_TEXT.slice(start + 1);
+  const end = rest.indexOf('\n## ');
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** Read the value cell of a `| <axis> | <value> | …` row. */
+function matrixAxisValue(body, axis) {
+  const row = body.split(/\r?\n/).find((l) => l.startsWith(`| ${axis} |`));
+  return row ? row.split('|')[2].trim() : null;
+}
+
+const MATRIX_RUNTIMES = Object.keys(registry.runtimes).filter(
+  (id) => registry.runtimes[id]?.runtime?.hostIntegration,
+);
 
 /**
  * A real shipped descriptor with one hostIntegration axis stripped.
@@ -426,4 +455,48 @@ describe('#2481 review workflow resolves effort per reviewer', () => {
       .map((l) => l.slug).sort();
     assert.deepStrictEqual(argvEffort, ['claude', 'codex', 'opencode']);
   });
+});
+
+describe('#2615: the matrix documents the effortSurface axis', () => {
+  test('the axes legend defines effortSurface and its vocabulary', () => {
+    const legendRow = MATRIX_TEXT.split(/\r?\n/).find((l) => l.startsWith('| `effortSurface` |'));
+    assert.ok(legendRow, 'the axes legend must define effortSurface (#2615)');
+    for (const member of ['`argv`', '`none`', '`undocumented`']) {
+      assert.ok(legendRow.includes(member),
+        `the legend must document the ${member} vocabulary member (#2615)`);
+    }
+  });
+
+  test('there is at least one runtime to check', () => {
+    // Guards the loops below against silently asserting nothing.
+    assert.ok(MATRIX_RUNTIMES.length >= 18, `expected the full runtime corpus, got ${MATRIX_RUNTIMES.length}`);
+  });
+
+  for (const id of MATRIX_RUNTIMES) {
+    describe(`runtime: ${id}`, () => {
+      test('has a matrix section', () => {
+        assert.ok(matrixSection(id), `${id}: every installed runtime needs a matrix section (ADR-1239)`);
+      });
+
+      test('documents effortSurface, and the value matches the descriptor', () => {
+        const body = matrixSection(id);
+        assert.ok(body, `${id}: missing matrix section`);
+
+        const documented = matrixAxisValue(body, 'effortSurface');
+        assert.ok(documented, `${id}: the matrix must carry an effortSurface row (#2615)`);
+
+        const declared = registry.runtimes[id].runtime.hostIntegration.effortSurface;
+        if (declared === undefined) {
+          // kimi-code declares no value: its mechanism (`/effort`) is interactive-only
+          // and neither `argv` nor `none` describes it. The matrix must say so rather
+          // than invent a value.
+          assert.match(documented, /not declared/i,
+            `${id}: an absent descriptor value must be documented as absent, not guessed (#2615)`);
+        } else {
+          assert.equal(documented, declared,
+            `${id}: the matrix effortSurface value must match the shipped descriptor`);
+        }
+      });
+    });
+  }
 });

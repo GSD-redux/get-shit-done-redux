@@ -3,9 +3,13 @@ name: Issue Version Gate
 on:
   issues:
     types: [opened]
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - main
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 permissions:
@@ -14,6 +18,7 @@ permissions:
 
 jobs:
   gate:
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -45,3 +50,17 @@ jobs:
               owner, repo, issue_number: issue.number,
               state: 'closed', state_reason: 'not_planned',
             });
+
+  # DEFECT.CANARY-VERSION-LEAK: package.json .version must never carry a
+  # -canary.<N> suffix on main — that suffix is a dev-branch marker. Explicit
+  # base-branch condition below (not just the trigger's `branches: [main]`
+  # filter) so the gate is unambiguous even if the trigger is ever widened.
+  canary-version-leak:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Reject a -canary.<N> version landing on main
+        run: node scripts/lint-canary-version-leak.cjs

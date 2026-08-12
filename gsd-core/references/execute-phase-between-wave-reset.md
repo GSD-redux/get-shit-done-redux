@@ -7,7 +7,9 @@
 
 7c. **Between-wave manifest reset and worktree base refresh (waves 2+ only — #1369):**
 
-   **REQUIRED before each wave transition when `USE_WORKTREES != "false"` and `RUNTIME = "claude"`.**
+   **REQUIRED before each wave transition when `USE_WORKTREES != "false"` and
+   `ISOLATION = "harness-worktree"`** (#2652 — keyed on the negotiated isolation model, not the
+   runtime name).
 
    Wave N's `WAVE_WORKTREE_MANIFEST` was consumed by `worktree.cleanup-wave` in step 5.5. It must be
    unset so wave N+1's step 3 creates a fresh manifest for the new wave's worktrees. Without this,
@@ -26,7 +28,7 @@
    # advanced. Re-assert worktree.baseRef:"head" (idempotent — no-op if already set) so the
    # Claude Code harness re-reads the live HEAD on the next Agent(isolation="worktree") call
    # rather than using a cached session-start commit as the fork base.
-   if [ "$RUNTIME" = "claude" ] && [ "$USE_WORKTREES" != "false" ]; then
+   if [ "$ISOLATION" = "harness-worktree" ] && [ "$USE_WORKTREES" != "false" ]; then
      gsd_run query worktree.set-baseref 2>/dev/null || true
 
      # Safety re-check: evaluate degradation AFTER the wave N commits. If HEAD has diverged
@@ -37,7 +39,9 @@
        _DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
        [ -n "$_DEGRADE_MSG" ] && printf '%s\n' "$_DEGRADE_MSG" >&2
        printf 'Degrading to sequential mode for remaining waves: HEAD advanced past worktree fork base after wave %s merge (#1369).\n' "${N}" >&2
+       # Both must move together (#2652): dispatch keys on ISOLATION.
        USE_WORKTREES=false
+       ISOLATION=none
      fi
    fi
    ```

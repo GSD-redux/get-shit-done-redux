@@ -37,7 +37,7 @@ import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
 import { VALID_PROFILES, VALID_TIERS, VALID_PHASE_TYPES } from './model-catalog.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
-const { checkAgentsInstalled } = agentInstallCheck;
+const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -62,7 +62,18 @@ const { determinePhaseStatus } = commandsMod;
 
 const { planningDir, planningRoot } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
-const { writeStateMd } = stateMod;
+const { writeStateMd, readStateHeadFreshness } = stateMod;
+
+/**
+ * W024 (#2573) threshold — how many commits STATE.md may lag HEAD before
+ * `validate.health` mentions it.
+ *
+ * Deliberately coarse. `state_head` restamps on every state write, so a small
+ * count is normal for any active project; firing near zero would make health
+ * noisy for healthy projects without telling anyone anything. This is a
+ * freshness proxy, not a drift measurement — see readStateHeadFreshness.
+ */
+const STATE_HEAD_ADVISORY_COMMITS = 20;
 const { MODEL_PROFILES } = modelProfilesMod;
 
 // Unused but imported for structural parity
@@ -1647,6 +1658,29 @@ function cmdValidateHealth(
     repairs.push('regenerateState');
   } else {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+
+    // W024 (#2573): STATE.md commit-age freshness. Advisory ONLY — it appends
+    // to warnings[] and never touches `status`, the repair set, or any existing
+    // count. Silent when the stamp is absent or unresolvable: "unknown" is not
+    // a finding. The threshold is deliberately coarse so an ordinary project
+    // stays quiet — firing on every project would change health's observable
+    // "clean" state for anything gating on it.
+    {
+      const fm = extractFrontmatter(stateContent) as Record<string, unknown>;
+      const freshness = readStateHeadFreshness(cwd, fm['state_head']);
+      if (
+        freshness.commits_behind !== null &&
+        freshness.commits_behind >= STATE_HEAD_ADVISORY_COMMITS
+      ) {
+        addIssue(
+          'warning',
+          'W024',
+          `STATE.md was written ${freshness.commits_behind} commits ago (at ${freshness.state_head}) — treat its contents as approximate`,
+          'Re-read the current phase artifacts before relying on STATE.md, or run a GSD command that refreshes it',
+        );
+      }
+    }
+
     const phaseRefs = [
       ...stateContent.matchAll(new RegExp(`[Pp]hase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})`, 'g')),
     ].map(
@@ -2505,8 +2539,24 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
   // is the `validate agents` entry the issue's repro runs; pre-resolving with
   // resolveRuntime returned 'claude' on a defaults.json-only Codex install and
   // the sandbox gate never opened.
+  //
+  // Rebase note (#3364): `next` now pre-resolves here via resolveRuntime. That
+  // becomes the RIGHT shape once #3382 teaches resolveRuntime the .gsd-runtime
+  // marker rung — at which point this bespoke tier is deleted and B1 routes
+  // through the shared resolver, exactly as trek-e described on this PR. Kept
+  // as-is for now so the branch stays correct against today's `next`, where
+  // that rung does not exist yet.
   const agentStatus = checkAgentsInstalled(undefined, cwd);
+  // #3242's posture check is a DIFFERENT consumer and does want a resolved
+  // runtime — it asks "is this Codex install's .toml posture sane", which is
+  // meaningless without knowing the runtime. Only the checkAgentsInstalled
+  // call above deliberately withholds it.
+  const runtime = resolveRuntime(cwd);
   const expected = Object.keys(MODEL_PROFILES);
+  // #3242 ADR-2313 D6 — additive: validates posture (never an Anthropic-flavored
+  // model or an orphaned reasoning-effort pin in a Codex agent .toml), not just
+  // presence. checkAgentsInstalled above is untouched.
+  const codexPosture = checkCodexModelPosture(runtime, cwd);
 
   output(
     {
@@ -2520,6 +2570,7 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
       // incomplete:[] with no explanation for the failure.
       sandbox_violations: agentStatus.sandbox_violations,
       expected,
+      codex_posture: codexPosture,
     },
     raw,
   );
@@ -2783,6 +2834,7 @@ export = {
   cmdValidateAgents,
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
+  STATE_HEAD_ADVISORY_COMMITS,
   // Test seam (#1883): listMilestoneArchiveDirs is private and exercised through
   // the validate command, which runs in a subprocess — an fs monkeypatch in the
   // test process cannot reach it. Exposed under a leading underscore so the

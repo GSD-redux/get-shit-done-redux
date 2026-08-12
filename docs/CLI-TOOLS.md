@@ -166,6 +166,29 @@ the same canonical sentinel predicate `phases list` uses — previously its own
 regex excluded `999` but not `0`, so a `0-*` directory could be destroyed on
 this irreversible path.
 
+### `find-phase` plan/summary counts (live vs physical)
+
+`find-phase`'s JSON carries the existing `plans[]` / `summaries[]` arrays
+**unchanged**, plus three additive scalar fields:
+
+| Field | Set | Answers |
+|---|---|---|
+| `plan_count` | live — `status: superseded` plans excluded | "how much outstanding work is left in this phase?" (same set as `plans[]`) |
+| `summary_count` | live | same, for `summaries[]` |
+| `plan_count_all` | physical — every canonically-named plan file on disk, superseded included | "what has the planner actually written to disk?" |
+
+Naming mirrors `roadmap analyze`'s existing `plan_count`/`summary_count`, and the
+`_all` suffix echoes the underlying `scanPhasePlans` field it is drawn from.
+**Pick by the question you're asking, not by which number looks bigger:** a
+phase where every plan is `status: superseded` correctly reports `plan_count: 0`
+— that is a real "nothing outstanding" answer, not a bug — while
+`plan_count_all` still reports the physical count, so a check for "did the
+planner produce anything at all" doesn't misread a fully-superseded phase as
+untouched.
+
+When the phase can't be resolved, all three fields are `null`, not `0` — a
+fabricated `0` would read identically to a genuinely empty phase.
+
 ### Phase SUMMARY artifact check
 
 A phase `SUMMARY.md` asserts which files the phase created or modified. On
@@ -229,6 +252,37 @@ A ROADMAP with no versioned milestone headings at all (the free-form legacy
 shape) reports `complete`: the whole document *is* the milestone there. Note
 this answer is specific to *windowing* — see the next section for why milestone
 *identity* answers the same document differently.
+
+### A non-`COMPLETE` scope withholds the percentage entirely (#3217)
+
+`roadmap analyze --json`'s `progress_percent`, `stats --raw`'s `percent` /
+`plan_percent`, `query progress --raw`'s `percent`, and `state json --raw`'s
+`progress.percent` are now **nullable** — a Tier-2 contract change. When the
+phase set a percentage would be computed from is not fully trustworthy (any
+scope other than `complete`), these surfaces render **no percentage at all**
+rather than a number computed from a truncated, unscoped, or unreadable set:
+
+| Surface | Non-`complete` behavior |
+|---|---|
+| `roadmap analyze --json` | `progress_percent: null` |
+| `stats --raw` | `percent: null`, `plan_percent: null` |
+| `query progress --raw` | `percent: null` |
+| `state json --raw` | `progress.percent` is **omitted** from the `progress` object (not `0`, not present as `null`) |
+| `state update-progress --raw` | `false` — no write; `STATE.md`'s Progress field is left untouched, and a `[gsd-tools] WARNING:` line is written to stderr naming the scope |
+
+`0` is a legitimate, real answer under a `complete` scope (e.g. a
+freshly-declared milestone with zero phases, or a phase with zero plan files)
+and is never withheld — only a non-`complete` scope withholds.
+
+`roadmap analyze --json` gates `total_plans` / `total_summaries` / `phases` /
+`completed_phases` on the top-level `scope` field described above (heading
+windowing identity), but `progress_percent` is governed by a **separate**
+`progress_scope` field — the scope of the phase-directory set the percentage
+was actually computed from. The two can legitimately disagree (e.g.
+`scope: "complete"` — the ROADMAP heading resolves fine — alongside
+`progress_scope: "unreadable"` when `.planning/phases` itself cannot be read),
+so a consumer must branch on `progress_scope`, not `scope`, to know why
+`progress_percent` is `null`.
 
 ### Milestone identity (which milestone, and what it is called)
 
@@ -842,10 +896,11 @@ node gsd-tools.cjs worktree set-baseref
 # Returns JSON: { ok, reason, entry, manifest_path } (exit 0), or
 #   { ok:false, reason, hint } with a non-zero exit on a rejected/failed create.
 node gsd-tools.cjs worktree create \
-  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir>
+  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir> \
+  [--files "<space-separated declared paths>"]
 ```
 
-**`worktree create`** validates and records the manifest entry BEFORE running any git command, then runs `git worktree add` for the validated `{path, branch, base}`, and only on success finalizes the manifest write — a rejected entry or a failed `git worktree add` never leaves a partially-recorded manifest or an unmanifested worktree on disk. `--root` is **mandatory** (#3050): the fail-closed root-confinement check resolves `--path` and `--root` and rejects (`reason:"path_outside_root"`) unless `--path` resolves strictly inside `--root` — this closes a prior gap where an unconfined `--path` (no `--root` check at all) could point a spawned executor's worktree anywhere on the filesystem. Omitting `--root` fails closed with `reason:"root_required"` rather than silently skipping confinement. All other flags share `worktree record-agent`'s validation rules above (`--branch` namespace, non-empty/non-whitespace `--path`/`--branch`/`--base`, `--agent-id` required).
+**`worktree create`** validates and records the manifest entry BEFORE running any git command, then runs `git worktree add` for the validated `{path, branch, base}`, and only on success finalizes the manifest write — a rejected entry or a failed `git worktree add` never leaves a partially-recorded manifest or an unmanifested worktree on disk. `--root` is **mandatory** (#3050): the fail-closed root-confinement check resolves `--path` and `--root` and rejects (`reason:"path_outside_root"`) unless `--path` resolves strictly inside `--root` — this closes a prior gap where an unconfined `--path` (no `--root` check at all) could point a spawned executor's worktree anywhere on the filesystem. Omitting `--root` fails closed with `reason:"root_required"` rather than silently skipping confinement. All other flags share `worktree record-agent`'s validation rules above (`--branch` namespace, non-empty/non-whitespace `--path`/`--branch`/`--base`, `--agent-id` required). It also accepts the same optional `--files` as `record-agent` (#2596).
 
 ### Wave-manifest recording
 
@@ -856,10 +911,21 @@ The execute-phase orchestrator records each spawned executor's worktree identity
 # Returns JSON: { ok, reason, entry, manifest_path } (exit 0), or
 #   { ok:false, reason, hint } with a non-zero exit on a rejected entry.
 node gsd-tools.cjs worktree record-agent \
-  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha>
+  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> \
+  [--files "<space-separated declared paths>"]
 ```
 
-**`worktree record-agent`** appends one `{agent_id, worktree_path, branch, expected_base}` entry to an already-initialized manifest, validating every field **at write time using the same rules the `cleanup-wave` reader enforces** — `--branch` must match the disposable `^(worktree-)?agent-[A-Za-z0-9._/-]+$` namespace (accepts both `agent-<id>` and legacy `worktree-agent-<id>`), and `--path`/`--branch`/`--base` must be non-empty. `--agent-id` is required (write-strict), even though the reader treats it as optional. A missing or garbled field — or a duplicate `(worktree_path, branch)` the reader would dedup away — fails loudly with a recovery hint and a non-zero exit **without** writing, instead of appending an under-populated or silently-dropped entry. Whitespace-only `--path`/`--base` are rejected (values are trimmed). The on-disk manifest shape is unchanged (the reader re-derives `allowed_bases`); the orchestrator still initializes the empty `{orchestrator_root, worktrees: []}` shell inline before any agent is recorded.
+**`worktree record-agent`** appends one `{agent_id, worktree_path, branch, expected_base}` entry to an already-initialized manifest, validating every field **at write time using the same rules the `cleanup-wave` reader enforces** — `--branch` must match the disposable `^(worktree-)?agent-[A-Za-z0-9._/-]+$` namespace (accepts both `agent-<id>` and legacy `worktree-agent-<id>`), and `--path`/`--branch`/`--base` must be non-empty. `--agent-id` is required (write-strict), even though the reader treats it as optional. A missing or garbled field — or a duplicate `(worktree_path, branch)` the reader would dedup away — fails loudly with a recovery hint and a non-zero exit **without** writing, instead of appending an under-populated or silently-dropped entry. Whitespace-only `--path`/`--base` are rejected (values are trimmed). The on-disk manifest shape is unchanged unless `--files` is supplied (see below); the reader still re-derives `allowed_bases`, and the orchestrator still initializes the empty `{orchestrator_root, worktrees: []}` shell inline before any agent is recorded.
+
+`--files` is optional (#2596). When supplied it records the plan's declared `files_modified` — the same whitespace-separated `PLAN_FILES` list the per-plan worktree gate already builds — as an extra `files_modified` array on the entry, and `cleanup-wave` then reports any path the branch committed outside it. A blank or omitted `--files` writes no field at all, leaving the 4-field on-disk shape untouched, and the scope check is simply skipped for that entry: an unrecorded scope means *unknown*, never *declares nothing*. Values are compared against a diff, never opened as paths and never passed to a shell.
+
+**Scope conformance at merge (advisory, #2596)**
+
+When a manifest entry carries a declared `files_modified`, `cleanup-wave` compares the branch's actual committed diff (`HEAD...<branch>`) against it and appends one entry to the result's `warnings` array for every path outside the declared scope, with `code: "scope_out_of_declared"` and the offending `path`. If the diff itself cannot be computed the entry gets a single `code: "scope_check_unavailable"` warning instead, so an unknown result is never mistaken for a clean one. Warnings are also aggregated on the top-level `warnings` array, each tagged with its `branch`.
+
+This is advisory: it does not change `ok`, `reason`, the per-entry `status`, or the exit code, and the merge proceeds either way. Promotion to a hard gate would be a separate, disclosed change.
+
+Two deliberate limits keep it from crying wolf. `.planning/**/*SUMMARY.md` paths are always exempt — the executor writes a SUMMARY by orchestration contract and no plan declares it. Glob patterns are matched by their literal prefix only, so `src/**/*.ts` covers everything under `src/`, and a pattern with no literal prefix (`*.md`) suppresses warnings for that entry rather than reporting every file.
 
 ---
 

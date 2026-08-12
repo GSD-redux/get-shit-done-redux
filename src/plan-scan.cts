@@ -219,6 +219,25 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
     // (0 >= 0) rather than being pinned below 100% forever, which is the very
     // failure this fix removes. A genuinely empty phase (no plans authored)
     // still has allPlanFiles.length 0 and stays not-completed, exactly as before.
+    //
+    // ADR-3180 §7.4 (issue #3186) — DELIBERATELY NOT routed through
+    // `isPhaseComplete` (src/verification.cts). This field answers "are all
+    // plans summarized?", NOT "is the phase complete?" — completion
+    // additionally requires a passing `*-VERIFICATION.md`, which is the
+    // whole point of that owner's unconditional readVerificationStatus call.
+    // Folding this field onto `isPhaseComplete` would either over-report
+    // completion (a phase whose plans are done but never verified) or drag a
+    // verification read into this module, inverting the dependency
+    // direction between this Phase-1 owner (plan counting) and the Phase-4
+    // owner (completion) — the owner must consume plan counts, never the
+    // reverse. Kept as its own, differently-scoped answer per the design's
+    // "0.x split" and exempted (function-scoped, not file-scoped) in
+    // scripts/lint-completion-predicate-drift.cjs's FUNCTION_SCOPED_EXEMPTIONS.
+    // The field name is left unchanged (not renamed to e.g.
+    // `summariesMeetPlanCount`) — scanPhasePlans has 11 direct callers, and a
+    // rename's blast radius is out of this phase's declared scope; noted
+    // here as a deliberate, considered-and-declined option rather than an
+    // oversight.
     completed: allPlanFiles.length > 0 && summaryCount >= planCount,
     hasNestedPlans,
     planFiles,

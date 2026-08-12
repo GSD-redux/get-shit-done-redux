@@ -644,6 +644,8 @@ node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" state sync --verify     # Previe
 node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" state sync              # Reconstruct STATE.md
 ```
 
+`state validate`'s report carries a `scope` field alongside `valid` — `valid:true` means no drift was found, but `scope` says whether the check could actually run at all (a phase that could not be resolved, or an unreadable frontmatter/phases directory, reports `valid:true` too, because there was nothing to flag). See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) before treating a passing `state validate` as "clean."
+
 ### A Command Looks Frozen After "Spawning..."
 
 GSD subagents run in a separate context window — their work is invisible to the parent session while in progress. Do not interrupt the session. Wait for the result; research and planning agents routinely take 1–5 minutes.
@@ -967,7 +969,7 @@ To disable parallel execution entirely: `/gsd-settings` → set `parallelization
 | Phase went wrong                     | `git revert` the phase commits, then re-plan                             |
 | Need to change scope                 | `/gsd-phase` (default), `/gsd-phase --insert`, or `/gsd-phase --remove`  |
 | Something broke                      | `/gsd-debug "description"` (add `--diagnose` for analysis without fixes) |
-| STATE.md out of sync                 | `state validate` then `state sync`                                       |
+| STATE.md out of sync                 | `state validate` then `state sync` — check the report's `scope` field, not just `valid` ([interpret results](how-to/interpret-state-validate-results.md)) |
 | Workflow state seems corrupted       | `/gsd-forensics`                                                         |
 | Quick targeted fix                   | `/gsd-quick`                                                             |
 | Plan doesn't match your vision       | `/gsd-discuss-phase [N]` then re-plan                                    |

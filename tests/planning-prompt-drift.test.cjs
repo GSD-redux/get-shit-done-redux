@@ -26,8 +26,10 @@ const path = require('node:path');
 const drift = require('../scripts/lint-planning-prompt-drift.cjs');
 const { findPromptDrift, scanRepo, loadBaseline, diffAgainstBaseline, toPosixRel, writeBaseline } = drift;
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
+const DRIFT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-planning-prompt-drift.cjs');
 
 // ─── POSITIVE ───────────────────────────────────────────────────────────
 
@@ -298,19 +300,18 @@ describe('Windows-shaped repo-relative paths are normalized to POSIX', () => {
 
 // ─── BASELINE INTEGRITY — both directions, against the real repo ─────────
 
-test('loadBaseline on the committed baseline returns exactly 6 entries (one row per distinct (file, text) pair)', () => {
-  // 7 total ACKNOWLEDGED occurrences across 6 distinct pairs: plan-phase.md's
-  // byte-identical DISK_PLANS site fires at two different lines and is
-  // recorded as ONE row carrying `count: 2` (the Finding-3 fix — a
-  // duplicated-row baseline made migrating only one of the two sites
-  // invisible to the ratchet).
+test('loadBaseline on the committed baseline returns ZERO entries — Phase 8 (#3218) burned the ratchet to zero', () => {
+  // Pre-#3218 this asserted 6 entries / 7 occurrences (the shell
+  // re-derivations). #3218 migrated all 7 sites to `gsd_run query find-phase`
+  // and, per ADR-3180 Decision 4(e), emptied the baseline rather than
+  // acknowledging them going stale — a stale entry left behind after its
+  // site migrates ALSO fails (see the "scanRepo matches the baseline
+  // exactly" test below), so an empty baseline is the only way this guard
+  // can be green on an EARNED zero rather than a baseline still covering
+  // sites that no longer fire.
   const { entries, errors } = loadBaseline(REPO_ROOT);
   assert.deepStrictEqual(errors, []);
-  assert.strictEqual(entries.length, 6);
-  const totalAcknowledgedOccurrences = entries.reduce((sum, e) => sum + (e.count ?? 1), 0);
-  assert.strictEqual(totalAcknowledgedOccurrences, 7);
-  const planPhaseEntry = entries.find((e) => e.file === 'gsd-core/workflows/plan-phase.md');
-  assert.strictEqual(planPhaseEntry.count, 2);
+  assert.deepStrictEqual(entries, []);
 });
 
 test('scanRepo(repoRoot) matches the baseline exactly: zero fresh AND zero stale', () => {
@@ -323,4 +324,36 @@ test('scanRepo(repoRoot) matches the baseline exactly: zero fresh AND zero stale
   const { fresh, stale } = diffAgainstBaseline(violations, baseline);
   assert.deepStrictEqual(fresh, []);
   assert.deepStrictEqual(stale, []);
+});
+
+// ─── E5 (test matrix): PROVE the guard, not just its pure functions, can
+// still FAIL — an empty baseline that is green only because nothing
+// exercises the fail path is exactly the "trusted on a green baseline it
+// did not earn" failure this epic keeps recording. `main()` fixes its scan
+// root to the real repo (`path.join(__dirname, '..')`), so this drives the
+// actual CLI end-to-end against a real (temporary) file under a real
+// SCAN_DIR — not a synthetic tree passed to the pure `scanRepo` — cleaned
+// up in `t.after()` regardless of assertion outcome. ─────────────────────
+
+describe('CLI end-to-end: the guard fails on a deliberate unacknowledged fixture', () => {
+  test('a fresh, unacknowledged plan-count re-derivation exits 1 and names itself in stderr', (t) => {
+    const fixturePath = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md');
+    // helpers.cleanup() refuses any path outside the OS temp root; this
+    // fixture must live under a real SCAN_DIR (gsd-core/workflows/) because
+    // main() hardcodes its scan root to the real repo — see the file header
+    // above this describe block.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture lives outside the temp root helpers.cleanup() requires (see comment above)
+    t.after(() => fs.rmSync(fixturePath, { force: true }));
+    fs.writeFileSync(
+      fixturePath,
+      'FIXTURE_COUNT=$(ls .planning/phases/zzz/*-PLAN.md 2>/dev/null | wc -l)\n',
+    );
+
+    const result = runNode([DRIFT_SCRIPT]);
+    assert.strictEqual(result.outcome, 'exited');
+    assert.strictEqual(result.exitCode, 1);
+    assert.match(result.stderr, /NEW plan\/summary count re-derivation/);
+    assert.match(result.stderr, /gsd-core\/workflows\/zzz-e5-drift-fixture\.md/);
+    assert.match(result.stderr, /FIXTURE_COUNT=/);
+  });
 });

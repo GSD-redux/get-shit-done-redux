@@ -62,6 +62,7 @@ const { detectMonorepoWorkspaces } = docsMod;
 import workstreamInventoryMod = require('./workstream-inventory.cjs');
 const { getOtherActiveWorkstreamInventories } = workstreamInventoryMod;
 const { checkAgentsInstalled } = agentInstallCheck;
+import { resolveReportedRuntime } from './host-runtime-detection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
 const { gitWorktreeInfoInternal } = gitBaseBranch;
@@ -101,7 +102,7 @@ const {
 
 const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
-const { readVerificationStatus } = verificationMod;
+const { isPhaseComplete } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
@@ -243,9 +244,9 @@ interface PhaseCompletionProjection {
 
 function projectCompletionStatus(
   implementationComplete: boolean,
-  verificationPassed: boolean,
+  phaseComplete: boolean,
 ): string {
-  if (implementationComplete && verificationPassed) return 'complete';
+  if (phaseComplete) return 'complete';
   if (implementationComplete) return 'executed';
   return 'incomplete';
 }
@@ -258,32 +259,42 @@ function buildPhaseCompletionProjection(
   summaryCount: number,
   slashRuntime: string,
 ): PhaseCompletionProjection {
+  // ADR-3180 §7.4 (issue #3186) / DO-NOT-MIGRATE exemption
+  // (scripts/lint-completion-predicate-drift.cjs FUNCTION_SCOPED_EXEMPTIONS,
+  // declared deviation): `implementation_complete` answers "are the plans
+  // done" (a `scanPhasePlans`-shaped different question, per the design's
+  // 0.x-split), NOT "is the phase complete" — it is kept for the
+  // 'executed'-vs-'planned' disk_status distinction downstream consumers
+  // still rely on, which `isPhaseComplete`'s locked `{ complete, verification
+  // }` return shape does not carry.
   const implementationComplete = planCount > 0 && summaryCount >= planCount;
   const phaseFullDir = phaseDir ? path.join(cwd, phaseDir) : '';
-  // #2617: ONE verification-routing seam. init used to re-derive next_command
-  // from the status with its own projector, which had drifted from the router's
-  // table — it appended the phase number and answered `human_needed`; the table
-  // did neither. The router now owns both the content and the runtime
-  // projection, and init passes the phase number it already knows (its phaseDir
+  // #3168 / ADR-3180 §7.4 (disk-strict, #2957): route through the canonical
+  // owner (`src/verification.cts` · `isPhaseComplete`), which calls
+  // readVerificationStatus UNCONDITIONALLY — plan count is NOT a
+  // precondition. A zero-plan phase with a passing `*-VERIFICATION.md` is
+  // complete; init used to gate the read on `implementationComplete` and
+  // synthesize a `not_required` sentinel instead, which is the #3168 defect.
+  // #2617: the router still owns both the message content and the runtime
+  // projection; init passes the phase number it already knows (its phaseDir
   // is unresolved in some branches, where the router could not derive one).
-  const verificationStatus = implementationComplete
-    ? readVerificationStatus(phaseFullDir, { runtime: slashRuntime, phaseNumber })
-    : { status: 'not_required', next_action: '', next_command: '' };
+  const completionResult = isPhaseComplete(phaseFullDir, { runtime: slashRuntime, phaseNumber });
+  const verificationStatus = completionResult.value.verification;
   const projectedVerificationStatus = verificationStatus.status;
   const projectedVerificationAction = verificationStatus.next_action;
   const verificationPassed = projectedVerificationStatus === 'passed';
-  const phaseComplete = implementationComplete && verificationPassed;
+  const phaseComplete = completionResult.value.complete;
 
   return {
     implementation_complete: implementationComplete,
     verification_status: projectedVerificationStatus,
     verification_passed: verificationPassed,
     phase_complete: phaseComplete,
-    completion_status: projectCompletionStatus(implementationComplete, verificationPassed),
+    completion_status: projectCompletionStatus(implementationComplete, phaseComplete),
     verification_next_action: projectedVerificationAction,
     verification_next_command: verificationStatus.next_command,
-    // #3057 B3: only readVerificationStatus's result ever carries this flag —
-    // the `not_required` synthetic object above never does.
+    // #3057 B3: readVerificationStatus's result carries this flag when its
+    // internal staleness check could not run to completion.
     verification_stale_check_indeterminate: 'staleCheckIndeterminate' in verificationStatus
       && verificationStatus.staleCheckIndeterminate === true,
   };
@@ -304,11 +315,20 @@ function getLatestCompletedMilestone(cwd: string): { version: string; name: stri
 
 function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<string, unknown> {
   result['project_root'] = cwd;
-  // #2540 round 8: pass NO runtime so checkAgentsInstalled applies its own
-  // persisted-default resolution (…> ~/.gsd/defaults.json > 'claude') instead
-  // of the narrower resolveRuntime pre-resolution that made the codex sandbox
-  // gate unreachable on a defaults.json-only Codex install.
-  const agentStatus = checkAgentsInstalled(undefined, cwd);
+  // #3245: the reported agent_runtime gets a host-detection rung below the two
+  // explicit sources; every other resolveRuntime caller keeps the old ladder
+  // (ADR-2313 scope boundary).
+  //
+  // #2540 round 8 passed NO runtime here so checkAgentsInstalled could apply
+  // its own persisted-default resolution — plain resolveRuntime returned
+  // 'claude' on a defaults.json-only Codex install and the sandbox gate never
+  // opened. That workaround is retired on this rebase: #3245's ladder already
+  // adds host detection, and #3382 adds the .gsd-runtime marker rung below it,
+  // so the shared resolver now answers what the bespoke tier reached for. This
+  // is the B1 direction trek-e described — route through the shared resolver
+  // rather than duplicate it.
+  const activeRuntime = resolveReportedRuntime(cwd);
+  const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;
   result['missing_agents'] = agentStatus.missing_agents;
   result['sandbox_violations'] = agentStatus.sandbox_violations; // #2540
@@ -1317,7 +1337,7 @@ function cmdInitQuick(
   options: Record<string, unknown> = {},
 ): void {
   const config = loadConfig(cwd);
-  const now = new Date();
+  const now = new Date(realClock.now());
   const slug = description ? generateSlugInternal(description)?.substring(0, 40) : null;
 
   const yy = String(now.getFullYear()).slice(-2);
@@ -2265,7 +2285,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
         else if (hasContext) diskStatus = 'discussed';
         else diskStatus = 'empty';
 
-        const nowMs = Date.now();
+        const nowMs = realClock.now();
         let newestMtime = 0;
         for (const f of phaseFiles) {
           try {
@@ -2284,18 +2304,20 @@ function cmdInitManager(cwd: string, raw: boolean): void {
       /* intentionally empty */
     }
 
+    // ADR-3180 §7.4 (disk-strict, #2957, maintainer decision 2026-08-08):
+    // `roadmapComplete` is reported below as metadata only — it carries NO
+    // machine authority over `diskStatus`. The #3033 checkbox override that
+    // used to live here (treating a zero-plan phase as complete whenever the
+    // ROADMAP checkbox was ticked, layered on top of
+    // buildPhaseCompletionProjection's own output) is DELETED, not
+    // generalized: `diskStatus` now comes entirely from `completion`, which
+    // already routes through the canonical owner (`isPhaseComplete`) and
+    // itself resolves a zero-plan phase as complete whenever a passing
+    // `*-VERIFICATION.md` exists (#3168) — with no dependency on the
+    // checkbox. A zero-plan phase whose completion previously relied SOLELY
+    // on a ticked checkbox (no passing verification) now reports incomplete;
+    // this is the deliberate Tier-2 break (ADR-3180 §7.4 Decision 3).
     const roadmapComplete = _checkboxStates.get(phaseNum) || false;
-    // #3033: a zero-plan phase (split parent — intentionally plan-less, holds
-    // shared context for sub-phases) whose roadmap checkbox is marked complete
-    // must resolve as complete. The original gate required completion.phase_complete
-    // (derived from plan/summary counts), which is always false for zero-plan
-    // phases — so the checkbox override never fired and the parent was permanently
-    // stuck as 'researched' (an in-progress state eligible for current-phase
-    // selection). Now: when the roadmap marks it complete AND it has zero plans,
-    // treat it as complete regardless of the plan-count derivation.
-    if (roadmapComplete && (completion.phase_complete || planCount === 0) && diskStatus !== 'complete') {
-      diskStatus = 'complete';
-    }
 
     phases.push({
       number: phaseNum,

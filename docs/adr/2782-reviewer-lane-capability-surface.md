@@ -155,6 +155,7 @@ context (b) describes.
 | `invoke.modelDiscovery` | forbidden | closed enum: `none` \| `first-from-models-endpoint` |
 | `invoke.modelArg` | optional | forbidden (model travels in the JSON body) |
 | `invoke.effortChannel` | closed enum: `none` \| `argv` \| `env` | `none` |
+| `invoke.env` | optional: object of environment name/value pairs, string values only | forbidden (no child process to carry an environment) |
 
 A manifest declaring fields from both sub-shapes, or neither, **fails validation**. The
 discriminator is explicit rather than inferred from field presence: inference leaves a manifest with
@@ -302,8 +303,12 @@ therefore disclosed **and** signature-bound.
 
 The lane folds into `disclosureSignature` / `signatureForManifest` as stable sorted JSON, exactly as
 `env`/`cwd` do for MCP servers (#1459). `executableSetChanged` treats **any** of the following as an
-executable-set change for the auto-update re-consent trigger (ADR-1244 D5 rule 4): adding or
-removing a lane, or changing its `binary`, `args`, `hostConfigKey`, `promptChannel`, or `handler`.
+executable-set change for the auto-update re-consent trigger (ADR-1244 D5 rule 4): adding or removing
+a lane, changing its `slug`, `transport`, `binary`, `args`, `hostConfigKey`, `promptChannel` or
+`handler`, **or changing any other field of its declared `invoke` object** — the residual added by
+#2483, which is what stops this list going stale again. See the 2026-08-05 amendment: an enumeration
+of "the fields that matter" had already fallen eight fields behind by the time `env` arrived, so the
+signature no longer relies on one.
 
 #### The egress destination is re-verified at invocation, not only at install
 
@@ -343,8 +348,10 @@ mutation in this design, and it must not be reachable by editing a JSON file.
 > false-mismatch loop that re-prompts forever.
 >
 > So the binding is split, and rule 1 still holds end to end:
-> - the **signature** binds the manifest-derived lane fields (`slug`, `transport`, `binary`, `args`,
->   `hostConfigKey`, `promptChannel`, `handler`) — everything that is SHA-pinned;
+> - the **signature** binds the manifest-derived lane fields — `slug`, `transport`, `binary`, `args`,
+>   `hostConfigKey`, `promptChannel`, `handler`, **plus every other declared `invoke` field via the
+>   #2483 residual** (2026-08-05: the enumeration alone was eight fields short, including
+>   `defaultHost`, which is itself an egress destination);
 > - the **consent record** additionally stores the resolved host, which is what rule 1 requires;
 > - **Phase 5b re-resolves and compares at invocation** and blocks on mismatch, which is where rule 4
 >   already places the check.
@@ -768,3 +775,106 @@ remove, so they are replaced by **descriptor ↔ registry** parity in both direc
 what the runtime iterates once lanes are data) plus an **anti-parity** assertion that fires if a
 bespoke leg is ever re-added. That also gives #2781/Phase 6 the mechanical single source its docs and
 locale gate needs, which per-leg text could never provide.
+
+### 2026-08-03 — D2 spawn invoke vocabulary widened by #2483 (`invoke.env`)
+
+The `claude` lane was the only reviewer additionally inheriting the invoking user's global
+`CLAUDE.md`, the project `CLAUDE.md`, and Claude Code auto-memory — a context asymmetry against the
+workflow's own independent-review premise, since `gemini` sees only the assembled prompt and `codex`
+runs `--ephemeral`. Closing it needs two environment variables set for that one spawn. Additive, and
+forced by a lane that ships today.
+
+| # | Decision | Was | Is | Forced by |
+|---|---|---|---|---|
+| 1 | D2 | spawn `invoke` carried no way to shape the child's environment | adds `invoke.env` — optional, an object of environment name/value pairs with string values only; forbidden on `openai-http` | The `claude` lane must spawn with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (#2483). The pairs are static per lane, so this is declared data — not a `handler`, which D6 reserves for behavior data cannot express |
+
+**Declared data rather than a handler, and D6 is the wrong authority for it.** An earlier revision of
+this change cited D6 in the source comment. D6 governs the closed `handler` enum — imperative
+behavior admitted first-party — and says nothing about the `invoke` field vocabulary, which is D2's
+territory. The citation did not cover the widening, which is why this entry exists rather than a code
+comment pointing at the wrong decision.
+
+**`env` is OPTIONAL, per D4 rule 2**, exactly as `modelConfigKey` was in the Phase 5b entry above: it
+did not exist before this change, so requiring it would fail validation on every reviewer manifest
+authored against an earlier GSD. Absent means the lane inherits the environment unchanged.
+
+**Forbidden on `openai-http`, and registered in the discriminator to make that enforceable.** An
+`openai-http` lane spawns no child, so an environment pair there has no referent. The first
+implementation validated `env`'s shape but left it out of `SPAWN_ONLY_INVOKE_FIELDS` — the list the
+openai-http arm rejects against — so it was accepted on that transport in silence, alone among the
+spawn fields. Both registrations are required; neither implies the other.
+
+**What this does not change.** No decision is reversed. `transport` remains a closed two-member
+discriminator; `effortChannel` stays in neither field list because D2 defines it for **both**
+transports, so it is shared rather than spawn-only.
+
+**`env` IS added to the D5 disclosure signature, and to the human consent prompt.** An installed
+overlay `reviewer` body reaches `resolveLanePlan` and is executed: `routeReviewLane` builds its lane
+map from `mergeReviewerLanes(REVIEWER_LANES, loadRegistry({includeInstalled: true}))` (D8, #2927 /
+#3062), and that merge is field-identical per D1 — it admits the overlay body without deep-validating
+`invoke`, precisely because the invocation seam is where a lane is re-validated before it runs. So a
+third-party manifest can declare `env` on a reviewer lane and have those pairs applied to the spawned
+child. Undisclosed, that is arbitrary code execution behind a consent prompt that never mentioned it
+(`NODE_OPTIONS=--require ./evil.js`; `LD_PRELOAD` on POSIX). D5 already folds `env` into **MCP-server**
+disclosure and names that exact shape as the reason; reviewer lanes now carry the identical treatment.
+
+> 2026-08-05: the earlier reading — that `env` needed no disclosure because manifest `invoke` fields
+> never reach `resolveLanePlan` — is withdrawn. It was true when written and #3062 retired it. See git
+> history for the superseded text.
+
+**The enumeration was the defect, not the missing name.** `env` was the ninth `invoke` field that
+reaches `resolveLanePlan` without being bound by the D5 lane signature; the other eight were
+`defaultHost`, `path`, `outputChannel`, `outputArg`, `modelArg`, `effortChannel`, `modelDiscovery` and
+`fallbackModel`. Two of those are egress-relevant on their own — `defaultHost` is the destination the
+**manifest itself** declares, used whenever `hostConfigKey` resolves to nothing (`configured ??
+declaredDefault`), and `path` completes the URL — so a lane with an unresolved config key disclosed
+"(unresolved …)" while shipping the D5 egress payload classes to an address of the manifest's
+choosing. Adding a ninth name would have left a tenth open, so the lane element instead carries a
+**residual** of every other declared `invoke` key, mirroring the `rawConfig` completeness backstop the
+MCP surface has carried since #1459 finding 5. `env` and `defaultHost` are additionally named
+explicitly, mirroring that same line's deliberate explicit-then-backstop overlap.
+
+**D4.5 is preserved one level down, and the cost it guards against does not arise here anyway.** The
+residual element is appended to the lane tuple **only when the lane declares something beyond the
+eight already-bound fields**, so a lane declaring none keeps a byte-identical signature. State the
+scope of that property honestly, because it is easy to oversell in both directions:
+
+- **It is vacuous for any VALID lane, and that is the honest statement.** Once the residual covers the
+  lane body's outer fields too, a lane that produces no residual is one declaring no `flags`, no
+  `probe`, no `emptyOutput`, no `evidenceClass`, no `requiresBinaries` and no `promptBudgetKey` — i.e.
+  a body the validator rejects. Measured across the twelve first-party reviewer capabilities: **zero**
+  are in the byte-identical class. The conditional append is still correct — it keeps the signature
+  minimal and means the residual element carries information when present — but it is a property of
+  the encoding, **not** a claim that anyone's signature is unchanged.
+- **And no capability is re-prompted regardless.** A *code* change to `disclosureSignature` cannot
+  invalidate an existing consent: `hasProjectConsent` matches on the recomputed bundle
+  `contentHash` — the signature is explicitly "no longer the security binding" (#1459 CB-1/CB-2) —
+  and the upgrade path's `executableSetChanged(old, new)` compares two disclosures both computed by
+  the *current* code, so widening the signature shifts both sides equally.
+- **What the widening actually buys** is therefore forward-looking and is the whole point: an upgrade
+  whose manifest edits `env`, `defaultHost`, or any other declared `invoke` field now registers as an
+  executable-surface change and re-consents, where previously it could change what the lane runs in
+  silence. First-party capabilities never enter this path at all — the install flow blocks a
+  first-party id before trust evaluation.
+
+**Validation is defence in depth; consent is the boundary.** `invoke.env` is validated for object
+shape, POSIX name grammar and string values, and a **denylist refuses execution-primitive names
+outright** on a reviewer lane — `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`,
+`BASH_ENV`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `GIT_SSH_COMMAND`, `JAVA_TOOL_OPTIONS` and
+siblings, matched case-insensitively because Windows environment lookup is. `PATH` is included
+deliberately: it is the most complete primitive of the set, and a lane needing a specific executable
+declares an absolute `invoke.binary` rather than reshaping the child's `PATH`.
+
+State the limit plainly, because the list invites being mistaken for the control: it **cannot** be
+complete against an arbitrary third-party child, and disclosure runs *before* validation — on
+manifests validation would reject. So the boundary remains install-time consent, which shows every
+declared pair and binds it to the signature; execution-primitive names additionally carry a warning
+line in the prompt. A name missing from both lists costs a quieter line on a value the user is still
+shown.
+
+**One inconsistency this entry closes, and it was real.** Consequences above states that adding a
+reviewer is "one manifest … no core patch", and `CONTEXT.md`, `gsd-core/workflows/review.md` and
+`resolveLanePlan`'s own header all describe overlay manifests reaching the resolver — while the
+runtime, until #3062, built `laneBySlug` solely from the first-party table and rejected every slug
+absent from it. Four documents on one side, the runtime on the other. #3062 resolved it in the
+documents' favour, which is what makes the disclosure above mandatory rather than defensive.

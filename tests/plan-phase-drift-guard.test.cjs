@@ -712,8 +712,10 @@ describe('plan-phase.md — filesystem fallback (#2310)', () => {
 
   test('step 9 checks PLAN.md count on disk when planner return lacks completion marker', () => {
     assert.ok(
-      content.includes('DISK_PLANS=$(ls "${PHASE_DIR}"/*-PLAN.md'),
-      'step 9a must check disk for PLAN.md files via DISK_PLANS variable'
+      content.includes('DISK_PLANS=$(gsd_run query find-phase') &&
+        content.includes("jq -r '.plan_count_all // 0')"),
+      'step 9a must check disk for PLAN.md files via DISK_PLANS variable ' +
+        '(sourced from gsd_run query find-phase\'s plan_count_all, ADR-3180 §7.5)'
     );
   });
 
