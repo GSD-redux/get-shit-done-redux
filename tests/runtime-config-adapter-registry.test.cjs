@@ -26,6 +26,18 @@ const {
 } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-config-adapter-registry.cjs'));
 const registry = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
 
+// Folded from tests/issue-57-runtime-install-no-drift.test.cjs (issue #57).
+process.env.GSD_TEST_MODE = '1'; // must precede require of bin/install.js
+const fs = require('node:fs');
+const os = require('node:os');
+const { allRuntimes, runtimeMap } = require(path.join(ROOT, 'bin', 'install.js'));
+const { resolveRuntimeArtifactLayout } = require(
+  path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-artifact-layout.cjs'),
+);
+const { getGlobalConfigDir } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-homes.cjs'));
+
+const sorted = (iterable) => [...iterable].sort();
+
 // ---------------------------------------------------------------------------
 // Source-of-truth table — DERIVED from the capability registry descriptors.
 // Each row is the descriptor projection of one runtime's config intent. This is
@@ -371,5 +383,166 @@ describe('resolveInstallPlan — descriptor-projection contract (count-agnostic)
       assert.strictEqual(plan.writesSharedSettings, intent.writesSharedSettings, `${id}: writesSharedSettings mismatch`);
       assert.strictEqual(plan.finishPermissionWriter, intent.finishPermissionWriter, `${id}: finishPermissionWriter mismatch`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folded from tests/issue-57-runtime-install-no-drift.test.cjs (issue #57,
+// H3 Wave 4 consolidation). Protects the Runtime Install Policy Module
+// boundary (ADR-58) and the explicit Runtime Config Adapter Registry (#60):
+// these guards fail when supported-runtime metadata bypasses the registry
+// projection (AC1) or config-mutation dispatch bypasses the explicit adapter
+// registry (AC2). Known intentional asymmetry: `grok` appears in
+// runtime-homes.cjs's getGlobalConfigDir switch but not in the registry /
+// artifact-layout supported sets, and getGlobalConfigDir() falls back to
+// ~/.claude for an unknown runtime instead of throwing (deliberately
+// liberal) — only the registry and artifact-layout projections are loud
+// gates. One source case was dropped as subsumed (see note below).
+// ---------------------------------------------------------------------------
+
+describe('issue-57 AC1 — supported-runtime metadata has one projected source of truth', () => {
+  test('installer allRuntimes, interactive runtimeMap, and registry agree on the supported set', () => {
+    const installable = sorted(allRuntimes);
+    assert.deepStrictEqual(
+      installable,
+      sorted(Object.values(runtimeMap)),
+      'Drift: bin/install.js `allRuntimes` and the interactive `runtimeMap` selection menu '
+        + 'diverged. A runtime selectable in the prompt but absent from allRuntimes (or vice '
+        + 'versa) is a supported-runtime call site that skipped the projection.',
+    );
+    assert.deepStrictEqual(
+      installable,
+      sorted(ALLOWED_CONFIG_RUNTIMES),
+      'Drift: bin/install.js `allRuntimes` and `ALLOWED_CONFIG_RUNTIMES` (runtime config '
+        + 'adapter registry) diverged. A runtime added to an installer call site without a '
+        + 'registry adapter entry bypasses the registry projection — register it in '
+        + 'src/runtime-config-adapter-registry.cts.',
+    );
+  });
+
+  // NOTE: source also asserted `resolveRuntimeConfigIntent(runtime).runtime === runtime`
+  // for every `allRuntimes` entry — dropped here as subsumed by the
+  // descriptor-projection contract test above (deep-equal over every registry
+  // runtime, a strict superset of `allRuntimes` per the equality just asserted).
+
+  test('every installable runtime resolves a global config dir through runtime-homes', () => {
+    for (const runtime of allRuntimes) {
+      const dir = getGlobalConfigDir(runtime);
+      assert.equal(typeof dir, 'string', `${runtime} config dir must be a string`);
+      assert.ok(dir.length > 0, `${runtime} must resolve a non-empty global config dir`);
+    }
+  });
+});
+
+describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit registry', () => {
+  test('every config intent uses a registry-declared install surface', () => {
+    const surfaces = new Set(INSTALL_SURFACES);
+    for (const runtime of allRuntimes) {
+      const { installSurface } = resolveRuntimeConfigIntent(runtime);
+      assert.ok(
+        surfaces.has(installSurface),
+        `${runtime} dispatches config via unregistered surface "${installSurface}" — add it `
+          + 'to INSTALL_SURFACES in the registry instead of branching on it inline.',
+      );
+    }
+  });
+
+  test('every finishInstall permission writer is null or a registry-known runtime', () => {
+    for (const runtime of allRuntimes) {
+      const { finishPermissionWriter } = resolveRuntimeConfigIntent(runtime);
+      assert.ok(
+        finishPermissionWriter === null || ALLOWED_CONFIG_RUNTIMES.has(finishPermissionWriter),
+        `${runtime} uses finishPermissionWriter "${finishPermissionWriter}", which is neither `
+          + 'null nor a registry-known runtime — route it through a registered adapter.',
+      );
+    }
+  });
+
+  test('unknown runtime fails loudly through both strict projections (no silent fallthrough)', () => {
+    const SENTINEL = '__drift_sentinel_runtime__';
+    assert.throws(
+      () => resolveRuntimeConfigIntent(SENTINEL),
+      TypeError,
+      'config adapter registry must reject an unknown runtime, not dispatch it silently',
+    );
+    assert.throws(
+      () => resolveRuntimeArtifactLayout(SENTINEL, path.join(os.tmpdir(), 'gsd-57'), 'global'),
+      TypeError,
+      'artifact-layout projection must reject an unknown runtime',
+    );
+  });
+
+  test('registry rejects prototype-chain keys (no proto-pollution dispatch bypass)', () => {
+    // Overlaps __proto__/constructor/toString with the individually-named
+    // cases above; folded anyway to keep the 'prototype' key covered (not
+    // asserted individually elsewhere in this file).
+    for (const key of ['__proto__', 'constructor', 'prototype', 'toString']) {
+      assert.throws(
+        () => resolveRuntimeConfigIntent(key),
+        TypeError,
+        `${key} must throw, not resolve via the prototype chain`,
+      );
+    }
+  });
+
+  // allow-test-rule: structural-regression-guard (#3336)
+  // structural guard over bin/install.js source. Behavioral assertions
+  // cannot observe inline `runtime === '...'` config branching, so this enforces that
+  // every inline per-runtime branch references a runtime the adapter registry knows
+  // about — a NEW branch against an unregistered runtime name fails here.
+  test('every inline `runtime === "..."` branch references a registry-known runtime', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
+    const literals = new Set(
+      [...src.matchAll(/runtime === (?:'([a-z][a-z0-9-]*)'|"([a-z][a-z0-9-]*)")/g)]
+        .map((m) => m[1] ?? m[2]),
+    );
+    assert.ok(literals.size > 0, 'expected to find inline runtime comparisons in bin/install.js');
+    const unregistered = [...literals].filter((r) => !ALLOWED_CONFIG_RUNTIMES.has(r));
+    assert.deepStrictEqual(
+      unregistered,
+      [],
+      `inline 'runtime === "..."' branch(es) reference runtimes absent from the config adapter `
+        + `registry: ${unregistered.join(', ')} — register them in `
+        + 'src/runtime-config-adapter-registry.cts or route the logic through '
+        + 'resolveRuntimeConfigIntent instead of branching inline.',
+    );
+  });
+
+  // allow-test-rule: structural-regression-guard (#2103)
+  // VS Code is a registry runtime but is NEVER CLI-installed (Marketplace/VSIX
+  // extension); it must stay fully descriptor-driven — bin/install.js must
+  // never special-case it by name.
+  test('#2103: bin/install.js has ZERO runtime === "vscode" / isVscode branches (vscode stays fully descriptor-driven)', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
+    const runtimeComparisons = [...src.matchAll(/runtime === (?:'vscode'|"vscode")/g)];
+    assert.deepStrictEqual(
+      runtimeComparisons.map((m) => m[0]),
+      [],
+      'bin/install.js must not special-case vscode via `runtime === "vscode"` — vscode has no '
+        + 'install surface at all (installSurface: "none") and is never CLI-installed; any '
+        + 'vscode-specific behavior belongs in capabilities/vscode/capability.json, not an inline branch.',
+    );
+    const isVscodeRefs = [...src.matchAll(/\bisVscode\b/g)];
+    assert.deepStrictEqual(
+      isVscodeRefs.map((m) => m[0]),
+      [],
+      'bin/install.js must not introduce an isVscode flag — vscode is intentionally excluded '
+        + 'from runtimeFlags (Marketplace-distributed, never CLI-installed).',
+    );
+  });
+
+  // allow-test-rule: structural-regression-guard (#3336)
+  // delegation-presence guard. Catches wholesale removal of the registry
+  // dispatch (a regression to scattered per-runtime config branching).
+  test('bin/install.js requires the config adapter registry and dispatches through it', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
+    assert.ok(
+      src.includes('runtime-config-adapter-registry'),
+      'bin/install.js no longer requires the runtime config adapter registry',
+    );
+    assert.ok(
+      src.includes('resolveInstallPlan('),
+      'bin/install.js no longer dispatches config through resolveInstallPlan',
+    );
   });
 });
