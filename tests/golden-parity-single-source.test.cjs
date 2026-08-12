@@ -112,6 +112,13 @@ for (const consumer of CONSUMERS) {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-1575-agent-descriptor-parity.test.cjs — consolidation epic #1969 (H3 #3336)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-1575-agent-descriptor-parity', () => {
+
 // --- #1575 — surface/install byte-identical agent-output parity (ADR-1235 §0) ---
 // Folded in from tests/issue-1575-agent-descriptor-parity.test.cjs (H3 wave 4,
 // #3336). Distinct anti-divergence concern from the manifest-builder guards
@@ -273,3 +280,5 @@ describe('#1575 — surface path: no prune data-loss over pre-existing legacy ag
     assert.ok(afterSurface.includes('user-custom.md'), 'user agent still preserved after surface');
   });
 });
+  });
+}

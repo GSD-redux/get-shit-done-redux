@@ -386,6 +386,9 @@ describe('resolveInstallPlan — descriptor-projection contract (count-agnostic)
   });
 });
 
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-57-runtime-install-no-drift', () => {
 // ---------------------------------------------------------------------------
 // Folded from tests/issue-57-runtime-install-no-drift.test.cjs (issue #57,
 // H3 Wave 4 consolidation). Protects the Runtime Install Policy Module
@@ -546,3 +549,5 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     );
   });
 });
+  });
+}

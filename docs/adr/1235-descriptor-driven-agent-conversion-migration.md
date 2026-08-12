@@ -82,7 +82,7 @@ Cross-cutting steps (a, b, c) are applied by the descriptor pipeline for the app
 
 ### Cutover progress (#1575)
 
-- **Step 0 (parity harness):** shipped in `tests/golden-parity-single-source.test.cjs` (folded from `tests/issue-1575-agent-descriptor-parity.test.cjs` in the #3336 test-hygiene sweep). Asserts `applySurface` output is byte-identical to `installRuntimeArtifacts` for all descriptor-driven runtimes. Covers stale-cleanup convergence (pre-existing legacy `.agent.md` pruned correctly).
+- **Step 0 (parity harness):** shipped in `tests/golden-parity-single-source.test.cjs` (folded as `folded:issue-1575-agent-descriptor-parity` in the #3336 test-hygiene sweep). Asserts `applySurface` output is byte-identical to `installRuntimeArtifacts` for all descriptor-driven runtimes. Covers stale-cleanup convergence (pre-existing legacy `.agent.md` pruned correctly).
 - **Step 1 (trivial converters):** cursor, windsurf, augment, trae, codebuddy — install-path cutover complete (PR #1438); surface-path parity shipped (#1575: `applySurface` now builds `agentCtx` and passes it to `kind.stage()` for agents, applying path-rewrite + attribution + converter + normalize).
 - **Step 2 (scope-aware):** copilot and antigravity — cutover complete (#1575: declared `agents` kind in `capability.json`, added to `_DESCRIPTOR_AGENTS_RUNTIMES`, copilot `.agent.md` rename handled in both `_copyStaged` and `_syncGsdDir`).
 - **Cline:** deferred — rules-only local branch + local/global complication not handled by the descriptor-driven path.

@@ -1416,6 +1416,13 @@ describe('installOpencodeFamilySkills destination parity (#2911 sibling coverage
   }
 });
 
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-69-surface-keeps-nested.test.cjs — consolidation epic #1969 (H3 #3336)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-69-surface-keeps-nested', () => {
+
 // #69 regression, folded from issue-69-surface-keeps-nested.test.cjs:
 // stageSkillsForRuntimeAsSkills gated nesting on `resolvedProfile.skills === '*'`
 // (the sentinel). applySurface → resolveSurface materializes the full profile
@@ -1526,3 +1533,5 @@ describe('issue-69: applySurface preserves nested skill layout (no re-flatten)',
     );
   });
 });
+  });
+}

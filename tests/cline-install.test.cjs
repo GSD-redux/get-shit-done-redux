@@ -228,6 +228,9 @@ describe('Cline install (local)', () => {
 // Verifies the installer emits Cline directory-form rules, a PreToolUse
 // lifecycle hook (Cline JSON stdin -> {cancel,errorMessage,contextModification}
 // protocol), and a global ~/.agents/AGENTS.md instruction target.
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-787-cline-hooks-agents', () => {
 
 describe('#787 Cline pure helpers', () => {
   test('buildClineRulesBody returns GSD directory-form rules markdown', () => {
@@ -489,3 +492,5 @@ describe('#787 Cline uninstall removes managed artifacts', () => {
     assert.ok(!fs.existsSync(path.join(tmpDir, '.clinerules', 'hooks', 'PreToolUse')), 'hook should be removed');
   });
 });
+  });
+}
