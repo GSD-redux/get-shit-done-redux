@@ -982,6 +982,27 @@ function describeGoalShapedTitle(description: string): string | null {
   );
 }
 
+/**
+ * #3163: compute the byte offset in `rawContent` where a new `### Phase N:`
+ * entry should be inserted — at the end of the active phase list, scoped to the
+ * CURRENT MILESTONE so the entry can never land before a trailing `---` in
+ * shipped/history/backlog material (the file's last `---` on a long roadmap
+ * sits deep in archive). When no current milestone can be resolved (no
+ * STATE.md `milestone:` and no in-progress `🚧`/`🔄` marker), fall back to the
+ * legacy whole-file lastIndexOf('\n---') so simple no-milestone roadmaps keep
+ * their existing behavior.
+ */
+function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
+  const ranges = currentMilestoneRawRanges(rawContent, cwd);
+  if (!ranges) {
+    const legacy = rawContent.lastIndexOf('\n---');
+    return legacy > 0 ? legacy : rawContent.length;
+  }
+  const window = rawContent.slice(ranges.primary.start, ranges.primary.end);
+  const lastSeparator = window.lastIndexOf('\n---');
+  return lastSeparator > 0 ? ranges.primary.start + lastSeparator : ranges.primary.end;
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
@@ -1072,13 +1093,8 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
     const phaseEntry =
       `\n### Phase ${_newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${_newPhaseId} to break down)\n`;
 
-    let updatedContent: string;
-    const lastSeparator = rawContent.lastIndexOf('\n---');
-    if (lastSeparator > 0) {
-      updatedContent = rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator);
-    } else {
-      updatedContent = rawContent + phaseEntry;
-    }
+    const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+    const updatedContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
 
     platformWriteSync(roadmapPath, updatedContent);
     return { newPhaseId: _newPhaseId, dirName: _dirName };
@@ -1163,11 +1179,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           : `\n**Depends on:** Phase ${typeof newPhaseId === 'number' ? newPhaseId - 1 : 'TBD'}`;
       const phaseEntry =
         `\n### Phase ${newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${newPhaseId} to break down)\n`;
-      const lastSeparator = rawContent.lastIndexOf('\n---');
-      rawContent =
-        lastSeparator > 0
-          ? rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator)
-          : rawContent + phaseEntry;
+      const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+      rawContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
       added.push({
         phase_number: typeof newPhaseId === 'number' ? newPhaseId : String(newPhaseId),
         padded:
