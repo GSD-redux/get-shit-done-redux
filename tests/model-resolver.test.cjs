@@ -4423,19 +4423,20 @@ const {
   _resetInstallRuntimeMarkerCacheForTests,
 } = require('../gsd-core/bin/lib/model-resolver.cjs');
 
+const { isolateWorkstreamEnv, restoreWorkstreamEnv } = require('./helpers.cjs');
+
 // HOME / GSD_HOME / GSD_RUNTIME isolation — config-loader.cjs reads global
 // defaults from path.join(process.env.GSD_HOME || os.homedir(), '.gsd', 'defaults.json').
 // Isolate HOME and GSD_HOME to a fresh tmpdir per test, and save/restore
 // GSD_RUNTIME (several tests set it directly to drive the active-runtime
-// chain) plus GSD_WORKSTREAM/GSD_PROJECT (planningDir() reads both directly
-// from process.env when its params are omitted, so an ambient value in a
-// developer's shell could redirect projectExplicitlySetsOmit()'s reads).
+// chain) plus GSD_WORKSTREAM/GSD_PROJECT via the shared helpers.cjs
+// isolateWorkstreamEnv()/restoreWorkstreamEnv() pair (planningDir() reads both
+// directly from process.env when its params are omitted, so an ambient value
+// in a developer's shell could redirect projectExplicitlySetsOmit()'s reads).
 let _origHome;
 let _origUserProfile;
 let _origGsdHome;
 let _origGsdRuntime;
-let _origGsdWorkstream;
-let _origGsdProject;
 let _isolatedHome;
 
 function isolateHome() {
@@ -4443,16 +4444,13 @@ function isolateHome() {
   _origUserProfile = process.env.USERPROFILE;
   _origGsdHome = process.env.GSD_HOME;
   _origGsdRuntime = process.env.GSD_RUNTIME;
-  _origGsdWorkstream = process.env.GSD_WORKSTREAM;
-  _origGsdProject = process.env.GSD_PROJECT;
+  isolateWorkstreamEnv();
   _isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2297-home-'));
   process.env.HOME = _isolatedHome;
   // Windows resolves the home dir from USERPROFILE, not HOME.
   process.env.USERPROFILE = _isolatedHome;
   process.env.GSD_HOME = _isolatedHome;
   delete process.env.GSD_RUNTIME;
-  delete process.env.GSD_WORKSTREAM;
-  delete process.env.GSD_PROJECT;
 }
 
 function restoreHome() {
@@ -4460,8 +4458,7 @@ function restoreHome() {
   if (_origUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = _origUserProfile;
   if (_origGsdHome === undefined) delete process.env.GSD_HOME; else process.env.GSD_HOME = _origGsdHome;
   if (_origGsdRuntime === undefined) delete process.env.GSD_RUNTIME; else process.env.GSD_RUNTIME = _origGsdRuntime;
-  if (_origGsdWorkstream === undefined) delete process.env.GSD_WORKSTREAM; else process.env.GSD_WORKSTREAM = _origGsdWorkstream;
-  if (_origGsdProject === undefined) delete process.env.GSD_PROJECT; else process.env.GSD_PROJECT = _origGsdProject;
+  restoreWorkstreamEnv();
   rmDir(_isolatedHome);
   _isolatedHome = null;
 }

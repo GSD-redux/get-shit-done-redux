@@ -14,6 +14,7 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
@@ -1059,11 +1060,11 @@ describe('cmdWorktreeBaseCheck — user/global cascade (#1013)', () => {
 // together per that bug's acceptance criterion 5 — same bug class, same
 // one-line gate).
 
-const fs = require('node:fs');
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-1941-quick-worktree-stale-base', () => {
 
 const QUICK_WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
-const DIAGNOSE_ISSUES_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'diagnose-issues.md');
-const EXECUTE_PLAN_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-plan.md');
 
 describe('quick: pre-dispatch worktree base re-check (#1941)', () => {
   test('workflow file exists', () => {
@@ -1132,6 +1133,16 @@ describe('quick: pre-dispatch worktree base re-check (#1941)', () => {
     assert.ok(section.includes('origin/HEAD'), 'Step 6 must name origin/HEAD as the stale fork base');
   });
 });
+
+  });
+}
+
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-2649-diagnose-issues-worktree-stale-base', () => {
+
+const DIAGNOSE_ISSUES_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'diagnose-issues.md');
+const EXECUTE_PLAN_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-plan.md');
 
 describe('diagnose-issues: pre-dispatch worktree base-check (#2649)', () => {
   test('workflow file exists', () => {
@@ -1220,3 +1231,6 @@ describe('execute-plan Pattern A: pre-dispatch worktree base-check (#2649)', () 
     );
   });
 });
+
+  });
+}

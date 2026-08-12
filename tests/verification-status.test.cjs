@@ -1202,25 +1202,28 @@ describe('#2868: verification status CLI drives the execute-phase stranded-phase
   });
 });
 
-// allow-test-rule: source-text-is-the-product see #3174
-// Workflow .md / agent .md / command .md / reference .md files — their text
-// IS what the runtime loads. Testing text content tests the deployed contract.
-// Per CONTRIBUTING.md exception matrix.
-//
-// #3174: quick's verification step used to read the verifier's result with a
-// raw `grep "^status:" F | cut -d: -f2 | tr -d ' '` and route it through arms
-// passed / human_needed / gaps_found only. That read failed two ways, both
-// measured against the old pipeline: it matched NO arm on a missing report,
-// most off-schema values, a `status:` line in both frontmatter and prose, or
-// (on a CRLF checkout) a valid `passed` arriving as `passed\r`; and it
-// matched the SUCCESS arm when it should not have on a stale `passed`
-// report (staleness was never evaluated), a report whose only `status:` line
-// sits in its prose, or an off-schema value carrying a colon
-// (`passed:bogus`), which `cut -d: -f2` splits at that colon. The unanchored
-// match is the DEFECT.FRONTMATTER-SCALAR-BROAD-GREP class the code side
-// already fixed by name. These tests pin the five properties that keep the
-// replacement honest.
-describe('quick verification status read (#3174)', () => {
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-3174-quick-verification-status-read', () => {
+  // allow-test-rule: source-text-is-the-product see #3174
+  // Workflow .md / agent .md / command .md / reference .md files — their text
+  // IS what the runtime loads. Testing text content tests the deployed contract.
+  // Per CONTRIBUTING.md exception matrix.
+  //
+  // #3174: quick's verification step used to read the verifier's result with a
+  // raw `grep "^status:" F | cut -d: -f2 | tr -d ' '` and route it through arms
+  // passed / human_needed / gaps_found only. That read failed two ways, both
+  // measured against the old pipeline: it matched NO arm on a missing report,
+  // most off-schema values, a `status:` line in both frontmatter and prose, or
+  // (on a CRLF checkout) a valid `passed` arriving as `passed\r`; and it
+  // matched the SUCCESS arm when it should not have on a stale `passed`
+  // report (staleness was never evaluated), a report whose only `status:` line
+  // sits in its prose, or an off-schema value carrying a colon
+  // (`passed:bogus`), which `cut -d: -f2` splits at that colon. The unanchored
+  // match is the DEFECT.FRONTMATTER-SCALAR-BROAD-GREP class the code side
+  // already fixed by name. These tests pin the five properties that keep the
+  // replacement honest.
+  describe('quick verification status read (#3174)', () => {
   const QUICK_VERIFICATION = path.join(
     __dirname, '..', 'gsd-core', 'workflows', 'quick', 'steps', 'quick-verification.md',
   );
@@ -1312,4 +1315,6 @@ describe('quick verification status read (#3174)', () => {
       'the terminal arm must set the display string consumed by the quick index row and banner',
     );
   });
-});
+  });
+  });
+}

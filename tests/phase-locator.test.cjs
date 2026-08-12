@@ -26,7 +26,9 @@ const fc = require('./helpers/fast-check-setup.cjs');
 
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const planDependencyGraph = require('../gsd-core/bin/lib/plan-dependency-graph.cjs');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const {
+  runGsdTools, createTempProject, cleanup, isolateWorkstreamEnv, restoreWorkstreamEnv,
+} = require('./helpers.cjs');
 
 // ─── findPhaseInternal — basic active-phase lookup ────────────────────────────
 
@@ -474,6 +476,9 @@ describe('#2237: ambiguous phase-directory collision', () => {
 // plan-dependency-graph test file exists yet, and #3335 names this file as
 // the fold target.
 // ═══════════════════════════════════════════════════════════════════════
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-2830-halted-plan-dependents', () => {
 
 // Fixture: 01-01 halted spike (SUMMARY status: halted), 01-02 depends_on
 // 01-01 (direct dependent), 01-03 depends_on 01-02 (transitive, 2 hops),
@@ -645,7 +650,9 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     const data = JSON.parse(result.output);
 
     const p01 = data.plans.find((p) => p.id === '03-01');
+    assert.ok(p01, '03-01 should be present');
     const p02 = data.plans.find((p) => p.id === '03-02');
+    assert.ok(p02, '03-02 should be present');
     assert.deepEqual(p01.blocked_by, [], '03-01 (no summary) is not itself halted or blocked');
     assert.deepEqual(p02.blocked_by, [], '03-02 must NOT be "blocked" by an ordinary (non-halted) dependency');
     assert.ok(data.runnable.includes('03-02'), '03-02 stays runnable — only a halted upstream blocks');
@@ -666,6 +673,7 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     const data = JSON.parse(result.output);
 
     const p01 = data.plans.find((p) => p.id === '04-01');
+    assert.ok(p01, '04-01 should be present');
     assert.deepEqual(p01.blocked_by, [], 'an unresolved depends_on id must not produce a spurious block');
     assert.ok(data.runnable.includes('04-01'));
   });
@@ -695,7 +703,9 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     const data = JSON.parse(result.output);
 
     const p01 = data.plans.find((p) => p.id === '05-01');
+    assert.ok(p01, '05-01 should be present');
     const p02 = data.plans.find((p) => p.id === '05-02');
+    assert.ok(p02, '05-02 should be present');
     assert.strictEqual(p01.halted, false, 'unterminated frontmatter must fail open to not-halted');
     assert.deepEqual(p02.blocked_by, [], 'dependent of a fail-open-not-halted plan must not be blocked');
   });
@@ -719,7 +729,9 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     const data = JSON.parse(result.output);
 
     const p01 = data.plans.find((p) => p.id === '06-01');
+    assert.ok(p01, '06-01 should be present');
     const p02 = data.plans.find((p) => p.id === '06-02');
+    assert.ok(p02, '06-02 should be present');
     assert.strictEqual(p01.halted, true, 'CRLF SUMMARY frontmatter must still parse status: halted');
     assert.deepEqual(p02.blocked_by, ['06-01'], 'dependent must be blocked even when the halt was recorded with CRLF newlines');
   });
@@ -739,7 +751,9 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     const data = JSON.parse(result.output);
 
     const p01 = data.plans.find((p) => p.id === '07-01');
+    assert.ok(p01, '07-01 should be present');
     const p02 = data.plans.find((p) => p.id === '07-02');
+    assert.ok(p02, '07-02 should be present');
     assert.strictEqual(p01.halted, false);
     assert.deepEqual(p02.blocked_by, []);
     assert.ok(data.runnable.includes('07-02'));
@@ -986,7 +1000,7 @@ describe('computeHaltPropagation: graph invariants (#2830)', () => {
           );
         }
       }),
-      { numRuns: 50 },
+      { numRuns: 50, seed: 7 },
     );
   });
 
@@ -1181,6 +1195,9 @@ describe('#2830 review findings', () => {
   });
 });
 
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Folded from tests/fix-2855-phase-locator-workstream-archive-scope.test.cjs
 // (#3335 H3 fold).
@@ -1197,23 +1214,9 @@ describe('#2830 review findings', () => {
 // planningDir() when omitted, so every test here explicitly saves/restores
 // both to avoid leaking state across tests or picking up ambient shell env.
 // ═══════════════════════════════════════════════════════════════════════
-
-let _origWorkstream;
-let _origProject;
-
-function isolateWorkstreamEnv() {
-  _origWorkstream = process.env.GSD_WORKSTREAM;
-  _origProject = process.env.GSD_PROJECT;
-  delete process.env.GSD_WORKSTREAM;
-  delete process.env.GSD_PROJECT;
-}
-
-function restoreWorkstreamEnv() {
-  if (_origWorkstream === undefined) delete process.env.GSD_WORKSTREAM;
-  else process.env.GSD_WORKSTREAM = _origWorkstream;
-  if (_origProject === undefined) delete process.env.GSD_PROJECT;
-  else process.env.GSD_PROJECT = _origProject;
-}
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-2855-phase-locator-workstream-archive-scope', () => {
 
 describe('#2855: findPhaseInternal does not leak cross-workstream archived phases', () => {
   let tmpDir;
@@ -1410,3 +1413,6 @@ describe('#2855: getArchivedPhaseDirs does not leak cross-workstream archived ph
     assert.strictEqual(entry.fullPath, path.join(archiveDir, '03-auth'));
   });
 });
+
+  });
+}
