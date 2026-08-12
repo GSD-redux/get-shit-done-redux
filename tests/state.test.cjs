@@ -915,6 +915,39 @@ team: platform
     assert.ok(content.includes('status: executing'), 'schema-owned status still preserved');
   });
 
+  test('#3257: full-line frontmatter comments survive a mutating state verb', () => {
+    // syncStateFrontmatter rebuilds frontmatter via buildStateFrontmatter (fresh object)
+    // + an Object.keys carry-forward. Without propagating the comment channel, the
+    // comment is lost HERE even though the parse→reconstruct pair preserves it in
+    // isolation. This is the e2e path the issue is filed against.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---
+status: executing
+milestone: v1.0
+# NOTE: current_phase is hand-maintained here while the roadmap is in flux
+current_phase: 3
+---
+
+# Project State
+
+**Current Phase:** 03
+**Current Plan:** 03-02
+`
+    );
+
+    // Any writeStateMd triggers syncStateFrontmatter.
+    runGsdTools('state update "Current Plan" "03-03"', tmpDir);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(
+      content.includes('# NOTE: current_phase is hand-maintained here while the roadmap is in flux'),
+      `full-line frontmatter comment must survive a mutating verb; got:\n${content}`,
+    );
+    // The mutation itself still applied.
+    assert.ok(content.includes('03-03'), 'the state update still took effect');
+  });
+
   test('round-trip: write then read via state json', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),

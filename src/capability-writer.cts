@@ -372,8 +372,9 @@ function setCapabilityState(
       // access to getCommitAttribution (which lives in bin/install.js). Until that
       // is refactored into a shared module, surface-path agents for descriptor-
       // driven runtimes will lack the Co-Authored-By trailer that install adds.
-      // Parity is proven when resolveAttribution IS provided (see
-      // tests/issue-1575-agent-descriptor-parity.test.cjs).
+      // Parity is proven when resolveAttribution IS provided (see the
+      // folded:issue-1575-agent-descriptor-parity describe block in
+      // tests/golden-parity-single-source.test.cjs).
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       applySurface(resolvedConfigDir, layout, manifest, undefined, registry, opts?.materialize?.resolveAttribution
         ? { resolveAttribution: opts.materialize.resolveAttribution }

@@ -295,6 +295,47 @@ describe('reconstructFrontmatter', () => {
     const extracted2 = extractFrontmatter(roundTrip);
     assert.deepStrictEqual(extracted2, extracted1, 'round-trip should preserve multiple data types');
   });
+
+  test('#3257: full-line comments survive an extract→reconstruct round-trip', () => {
+    const original = '---\ngsd_state_version: 1.0\n# NOTE: current_phase is hand-maintained here\ncurrent_phase: 3\nstatus: executing\n---';
+    const extracted = extractFrontmatter(original);
+    assert.strictEqual(extracted['gsd_state_version'], '1.0');
+    assert.strictEqual(extracted['current_phase'], '3');
+
+    const reconstructed = reconstructFrontmatter(extracted);
+    // #3257: the comment must survive in place (between gsd_state_version and current_phase).
+    assert.ok(
+      reconstructed.includes('# NOTE: current_phase is hand-maintained here'),
+      `comment should survive reconstruct; got:\n${reconstructed}`,
+    );
+    // data identity preserved alongside the comment.
+    assert.ok(reconstructed.includes('gsd_state_version: 1.0'));
+    assert.ok(reconstructed.includes('current_phase: 3'));
+    assert.ok(reconstructed.includes('status: executing'));
+    // the reconstructed output re-parses to the same data (idempotent round-trip).
+    const reextracted = extractFrontmatter(`---\n${reconstructed}\n---`);
+    assert.strictEqual(reextracted['current_phase'], '3');
+  });
+
+  test('#3257: leading (before first key) and trailing (after last key) comments survive', () => {
+    const original = '---\n# top comment\na: 1\nb: 2\n# trailing comment\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# top comment'), `leading comment lost:\n${reconstructed}`);
+    assert.ok(reconstructed.includes('# trailing comment'), `trailing comment lost:\n${reconstructed}`);
+  });
+
+  test('#3257: multiple consecutive comments survive in order', () => {
+    const original = '---\na: 1\n# first note\n# second note\nb: 2\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# first note') && reconstructed.includes('# second note'),
+      `consecutive comments lost:\n${reconstructed}`);
+    const aIdx = reconstructed.indexOf('a: 1');
+    const firstIdx = reconstructed.indexOf('# first note');
+    const secondIdx = reconstructed.indexOf('# second note');
+    assert.ok(aIdx < firstIdx && firstIdx < secondIdx, `order wrong (a:${aIdx} first:${firstIdx} second:${secondIdx})`);
+  });
 });
 
 // ─── spliceFrontmatter ──────────────────────────────────────────────────────

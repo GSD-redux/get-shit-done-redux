@@ -94,6 +94,20 @@ function isFrontmatterShaped(region: string): boolean {
 }
 
 /**
+ * #3257: a Symbol-keyed channel that carries full-line (column-0 `#`) YAML
+ * comments through a parse → reconstruct round-trip. Comments are otherwise
+ * unrepresentable on the Frontmatter object (Record<string, ...>) and were
+ * silently dropped by reconstructFrontmatter. The Symbol is invisible to
+ * Object.entries / Object.keys / JSON.stringify / for-in, so every existing
+ * reader is unchanged; only reconstructFrontmatter reads it. Leading comments
+ * are attached to the top-level key that follows them; comments after the last
+ * key go to `trailing`. Only set when a comment is actually seen, so comment-less
+ * frontmatter parses byte-identically to before.
+ */
+const FULL_LINE_COMMENTS = Symbol('fullLineComments');
+type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: string[] };
+
+/**
  * Parse one already-delimited YAML region into a Frontmatter object.
  *
  * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
@@ -104,6 +118,10 @@ function parseYamlRegion(yaml: string): Frontmatter {
   const frontmatter: Frontmatter = {};
   const lines = yaml.split(/\r?\n/);
 
+  // #3257: pending column-0 full-line comments, attached to the next top-level key.
+  let pendingComments: string[] = [];
+  let commentChannel: FullLineCommentChannel | undefined;
+
   // Stack to track nested objects: [{obj, key, indent}]
   type StackEntry = { obj: Record<string, unknown> | unknown[]; key: string | null; indent: number };
   const stack: StackEntry[] = [{ obj: frontmatter, key: null, indent: -1 }];
@@ -111,6 +129,12 @@ function parseYamlRegion(yaml: string): Frontmatter {
   for (const line of lines) {
     // Skip empty lines
     if (line.trim() === '') continue;
+
+    // #3257: capture column-0 full-line comments; attach them to the next top-level key.
+    if (/^#/.test(line)) {
+      pendingComments.push(line);
+      continue;
+    }
 
     // Calculate indentation (number of leading spaces)
     const indentMatch = line.match(/^(\s*)/);
@@ -127,6 +151,12 @@ function parseYamlRegion(yaml: string): Frontmatter {
     const keyMatch = line.match(/^(\s*)([a-zA-Z0-9_-]+):\s*(.*)/);
     if (keyMatch) {
       const key = keyMatch[2];
+      // #3257: attach any pending comments to this (top-level) key.
+      if (pendingComments.length) {
+        if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
+        commentChannel.leading[key] = pendingComments;
+        pendingComments = [];
+      }
       const value = keyMatch[3].trim();
 
       if (value === '' || value === '[') {
@@ -166,6 +196,15 @@ function parseYamlRegion(yaml: string): Frontmatter {
         current.obj.push(itemValue);
       }
     }
+  }
+
+  // #3257: trailing comments (after the last key) + attach the channel if any comment was seen.
+  if (pendingComments.length) {
+    if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
+    commentChannel.trailing = pendingComments;
+  }
+  if (commentChannel) {
+    (frontmatter as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = commentChannel;
   }
 
   return frontmatter;
@@ -282,8 +321,14 @@ function scalarNeedsDoubleQuoting(s: string): boolean {
 
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
+  // #3257: read the full-line-comment channel (set by parseYamlRegion when comments
+  // were present). Object.entries skips the Symbol key, so the data loop is unchanged.
+  const commentChannel = (obj as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
   for (const [key, value] of Object.entries(obj)) {
     if (value === null || value === undefined) continue;
+    // #3257: re-emit this key's leading full-line comments before the key itself.
+    const leading = commentChannel?.leading[key];
+    if (leading) for (const c of leading) lines.push(c);
     if (Array.isArray(value)) {
       if (value.length === 0) {
         lines.push(`${key}: []`);
@@ -343,7 +388,32 @@ function reconstructFrontmatter(obj: Frontmatter): string {
       }
     }
   }
+  // #3257: re-emit any trailing full-line comments (those after the last key).
+  if (commentChannel?.trailing?.length) {
+    for (const c of commentChannel.trailing) lines.push(c);
+  }
   return lines.join('\n');
+}
+
+/**
+ * #3257: copy the full-line-comment channel from `source` onto `target`, filtering
+ * `leading` to keys still present in `target` (a deleted key's annotation goes with
+ * it — AC5). No-op when `source` carries no channel. Consumers that rebuild their
+ * target object fresh (syncStateFrontmatter builds derivedFm via buildStateFrontmatter
+ * and copies keys with Object.keys, which skips the Symbol) MUST call this before
+ * reconstructFrontmatter, or the channel parseYamlRegion attached to the extracted
+ * source is lost.
+ */
+function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void {
+  const channel = (source as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
+  if (!channel) return;
+  const filtered: FullLineCommentChannel = { leading: {}, trailing: channel.trailing };
+  for (const [key, comments] of Object.entries(channel.leading)) {
+    if (key in target) filtered.leading[key] = comments;
+  }
+  if (filtered.trailing.length || Object.keys(filtered.leading).length) {
+    (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = filtered;
+  }
 }
 
 /**
@@ -826,4 +896,5 @@ export = {
   cmdFrontmatterSet,
   cmdFrontmatterMerge,
   cmdFrontmatterValidate,
+  propagateCommentChannel,
 };
