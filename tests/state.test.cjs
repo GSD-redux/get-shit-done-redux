@@ -1724,17 +1724,49 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.ok(updated.includes('50%'), 'STATE.md Progress should contain 50%');
   });
 
-  test('handles zero plans gracefully', () => {
+  test('#3233: zero plans (0/0) is a no-op — does not clobber the Progress record', () => {
+    // Post-milestone-close: .planning/phases/ holds no plans (0/0). The buggy path
+    // mapped 0/0 through clampPercent to 0% and rewrote the shipped 100% record.
+    // The fix no-ops when there are zero plans to measure.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      '# Project State\n\n**Progress:** [░░░░░░░░░░] 0%\n'
+      '# Project State\n\n**Progress:** [██████████] 100% of v1.0\n'
     );
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.strictEqual(output.percent, 0, 'percent should be 0 when no plans found');
+    assert.strictEqual(output.updated, false, 'zero plans → no-op (updated:false)');
+    assert.ok(
+      /no plans found/i.test(String(output.reason)),
+      `should explain the no-op; got reason: ${output.reason}`
+    );
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'STATE.md must be unchanged when no plans are found (#3233)');
+  });
+
+  test('#3233 negative-space: plans exist but none done still writes 0%', () => {
+    // The fix no-ops ONLY on totalPlans===0. A milestone with plans but none
+    // summarized must still write a legitimate 0% (not be suppressed).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Progress:** [██████████] 100%\n'
+    );
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01');
+    fs.mkdirSync(phase01Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase01Dir, '01-01-PLAN.md'), '# Plan\n');
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true, 'plans exist → write (updated:true)');
+    assert.strictEqual(output.percent, 0, 'none done → 0% (legitimate, not suppressed)');
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(after.includes('0%'), 'STATE.md Progress should reflect 0%');
   });
 
   test('returns error when Progress field missing', () => {
