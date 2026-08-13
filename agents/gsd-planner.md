@@ -263,7 +263,7 @@ Exceptions where `tdd="true"` is not needed: `type="checkpoint:*"` tasks, config
   <name>End-to-end "[capability]" — one path only</name>
   <files>[one file per layer the phase touches]</files>
   <action>Wire ONE entry point through every layer to the far end of the stack. No other call sites, no batching. Real error handling on the single path.</action>
-  <verify>[a real, runnable END-TO-END check of the one path — not a per-layer unit test]</verify>
+  <verify><automated>[a real END-TO-END check of the one path — not a per-layer unit test]</automated></verify>
   <done>The single happy path works end-to-end and is committed.</done>
 </task>
 ```

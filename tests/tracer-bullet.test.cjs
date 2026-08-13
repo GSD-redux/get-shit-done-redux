@@ -101,9 +101,19 @@ function parseExecutorContract(md) {
       /Interactive run \(auto mode not active\)/i.test(md) &&
       /checkpoint:human-verify/.test(md),
     // #3299: that checkpoint is now the FALLBACK, not the unconditional result.
-    // Pinning this here stops the pre-#3299 unconditional prose from being
-    // restored while the substring assertion above keeps passing.
-    interactiveIsConditional: /Interactive run \(auto mode not active\):\*\* [^\n]*HUMAN_VERIFY_MODE/i.test(md),
+    // Merely finding HUMAN_VERIFY_MODE on the line proves nothing — peer review
+    // showed a branch can name the variable and still checkpoint unconditionally.
+    // Require the ordered clause markers AND that the auto-continue clause is
+    // free of any STOP outcome, which is what "conditional" actually means here.
+    interactiveIsConditional: (() => {
+      const m = md.match(/Interactive run \(auto mode not active\):\*\*([^\n]*)/i);
+      if (!m) return false;
+      const body = m[1];
+      const iF = body.indexOf('First,'), iN = body.indexOf('Next,'), iO = body.indexOf('Otherwise');
+      if (!(iF > -1 && iN > iF && iO > iN)) return false;
+      const autoContinue = body.slice(iN, iO);
+      return /HUMAN_VERIFY_MODE/.test(body) && !/\bSTOP\b/.test(autoContinue);
+    })(),
     // Cross-referenced in the checkpoint protocol section too.
     documentedInCheckpointProtocol: /\*\*Tracer feedback gate:\*\*/.test(md),
   };
@@ -287,18 +297,52 @@ describe('#1945 glossary + docs', () => {
   // CONTEXT.md names this file the canonical reference for the task-type
   // contract, so a wrong row here is the authoritative wrong answer. Assert the
   // row's CONTENT against the behavior actually shipped.
-  test('docs/reference/plan-md.md tracer row matches shipped gate behavior', () => {
+  // Keyword presence in this row is not enough: peer review defeated an earlier
+  // revision by APPENDING "Nevertheless, interactive runs always present a
+  // checkpoint:human-verify." — every required keyword still matched, so the
+  // canonical schema reference could contradict itself with CI green. Pin the
+  // Autonomy cell EXACTLY. This is deliberately brittle: it is the canonical
+  // contract, so a wording change here must be a conscious edit in both places.
+  test('docs/reference/plan-md.md tracer row Autonomy cell matches shipped behavior exactly', () => {
     const row = (PLAN_MD_REF.split(/\r?\n/).find((l) => l.startsWith('| `tracer` |')) || '');
     assert.ok(row, 'plan-md.md Task types table must include a tracer row');
-    assert.match(row, /halt on failure/i, 'the row must state the autonomous halt-on-failure behavior');
-    assert.match(row, /human_verify_mode/, 'the row must state that interactive runs honor workflow.human_verify_mode (#3299)');
-    assert.match(row, /end-of-phase/, 'the row must name the end-of-phase default');
-    assert.match(row, /no\*{0,2} checkpoint/i, 'the row must state that an automated-only tracer continues with no checkpoint');
-    // The pre-#3299 unconditional claim must not survive here.
-    assert.doesNotMatch(
-      row,
-      /interactive runs present a `checkpoint:human-verify`\s*\|/,
-      'the row must not keep the pre-#3299 unconditional "interactive runs present a checkpoint" claim',
+    const cells = row.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    assert.strictEqual(cells.length, 3, `tracer row must have 3 cells, got ${cells.length}`);
+    const autonomy = cells[2].replace(/\s+/g, ' ').trim();
+    const EXPECTED = 'Fully autonomous; after committing, the executor runs the tracer\'s `<verify>` '
+      + 'as an early integration gate. Autonomous runs halt on failure before expansion. '
+      + 'Interactive runs honor `workflow.human_verify_mode` (#3299): under the `end-of-phase` '
+      + 'default a `<verify>` carrying only `<automated>` is re-run and, on success, expansion '
+      + 'continues with **no** checkpoint (failure still halts); under `mid-flight`, or when the '
+      + 'tracer carries `<human-check>` or `gate="blocking-human"`, a `checkpoint:human-verify` is '
+      + 'presented. Full precedence chain: `references/checkpoints.md` → "Tracer feedback gate".';
+    assert.strictEqual(
+      autonomy,
+      EXPECTED,
+      'plan-md.md tracer Autonomy cell drifted from the shipped gate contract. This table is the '
+      + 'canonical schema reference (per CONTEXT.md) — if the behavior genuinely changed, update '
+      + 'the cell AND this expected string together; do not relax the assertion.',
+    );
+  });
+
+  // The planner's tracer-specific template must emit a <verify> the gate can
+  // actually auto-continue on. Peer review caught that the template shipped the
+  // legacy bare-text form while the Nyquist Rule twelve lines earlier says every
+  // <verify> carries <automated> — so a planner following its own tracer template
+  // produced tracers that always fell to the STOP fallback, making #3299's
+  // benefit unreachable on the default tracer-first path.
+  test('planner tracer template emits an <automated> verify the gate can auto-continue', () => {
+    const i = PLANNER.indexOf('**Tracer task shape:**');
+    assert.notStrictEqual(i, -1, 'planner must carry a tracer task shape template');
+    const block = PLANNER.slice(i, i + 1200);
+    const verify = block.match(/<verify>[\s\S]*?<\/verify>/);
+    assert.ok(verify, 'the tracer template must contain a <verify> element');
+    assert.match(
+      verify[0],
+      /<automated>/,
+      'the tracer template\'s <verify> must wrap its command in <automated> — the #3299 gate '
+      + 'auto-continues only on an automated-only verify, so a bare-text template makes the fix '
+      + 'unreachable for every tracer the planner generates',
     );
   });
 
@@ -520,6 +564,22 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
       assert.match(c.automated, /failure[^.;]*HALT/i, `${name}: clause 2 must bind HALT to the failure case`);
       assert.match(c.automated, /never a checkpoint/i, `${name}: clause 2 must forbid turning a failure into a checkpoint`);
       assert.match(c.automated, /success[^.;]*continue/i, `${name}: clause 2 must bind continue to the success case`);
+      // Positive vocabulary alone is not binding: peer review defeated an earlier
+      // revision by APPENDING "then immediately STOP and return a
+      // checkpoint:human-verify" to this very clause. Every required phrase above
+      // still matched, so 35/35 passed with interactive checkpointing restored
+      // unconditionally. The auto-continue clause must contain no STOP outcome at
+      // all — "never a checkpoint" has to be true of the clause, not just said in it.
+      assert.doesNotMatch(
+        c.automated,
+        /\bSTOP\b/,
+        `${name}: clause 2 is the auto-continue path — it must not contain a STOP outcome`,
+      );
+      assert.doesNotMatch(
+        c.automated,
+        /return a `checkpoint:human-verify`|present a `checkpoint:human-verify`/i,
+        `${name}: clause 2 must not emit a checkpoint — that is clause 3's job`,
+      );
     }
   });
 
