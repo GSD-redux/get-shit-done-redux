@@ -67,10 +67,6 @@
  *     see the PHYSICAL set so a heading already scoped by
  *     `extractCurrentMilestoneScoped` can find its directory; filtering it
  *     through the owner would scope the same set twice.
- *   - `src/verify.cts` `collectDiskPhases`: a DRIFT DIAGNOSTIC comparing
- *     what is on disk against what the ROADMAP declares. It wants the
- *     physical set by definition — scoping it would make the diagnostic
- *     unable to see the very drift it exists to report.
  *   - `src/verify.cts` `cmdValidateHealth`: a project-wide HEALTH-CHECK sweep
  *     (config drift, phase-directory naming, duplicate-directory collisions,
  *     unsummarized-plan detection) — same "sweep everything, report gaps"
@@ -274,7 +270,7 @@ const OWNER_FILES = new Set([
 // See the header comment for the full written reason behind each entry.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnalyze'])],
-  [path.join('src', 'verify.cts'), new Set(['collectDiskPhases', 'cmdValidateHealth', 'cmdVerifySchemaDrift'])],
+  [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'cmdVerifySchemaDrift'])],
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],

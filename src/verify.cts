@@ -9,8 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { phaseVariants, buildRoadmapPhaseVariants } from './validate.cjs';
-import { PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, textEncodingError } from './validate.cjs';
+import { MILESTONE_ARCHIVE_DIR_RE, textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -27,7 +26,7 @@ const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
-import { execGit, platformReadSync as safeReadFile, posixNormalize } from './shell-command-projection.cjs';
+import { execGit, platformReadSync as safeReadFile } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { detectSchemaFiles, checkSchemaDrift } from './schema-detect.cjs';
 import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
@@ -38,20 +37,17 @@ const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-import configLoaderMod = require('./config-loader.cjs');
-const { loadConfig } = configLoaderMod;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone } = roadmapParserMod;
+const { stripShippedMilestones } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- health-diagnostic.cjs is an export= CommonJS module
 import healthDiagnosticMod = require('./health-diagnostic.cjs');
-const { SEVERITY: HEALTH_SEVERITY, REMEDY_ACTION, REMEDY_RISK, evaluateRules, applyRepairs } = healthDiagnosticMod;
+const { SEVERITY: HEALTH_SEVERITY, REMEDY_ACTION, REMEDY_RISK, evaluateRules, evaluateConsistencyRules, applyRepairs } = healthDiagnosticMod;
 type HealthDiagnostic = healthDiagnosticMod.Diagnostic;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-snapshot.cjs is an export= CommonJS module
 import planningSnapshotMod = require('./planning-snapshot.cjs');
@@ -1293,95 +1289,18 @@ function listMilestoneArchiveDirs(planBase: string): string[] {
       );
   } catch (err) {
     // #1883: distinguish genuine absence from a permission/I-O failure. ENOENT
-    // (no milestones/ dir yet) keeps the long-standing [] contract that
-    // collectPhaseRoots / forEachArchivedPhaseToken depend on for "no archives";
-    // every other error (EACCES, EIO, …) must propagate — otherwise an unreadable
-    // milestones/ dir is silently reported as "no archives" and active-milestone
-    // resolution / archived-phase filtering misbehaves.
+    // (no milestones/ dir yet) keeps the long-standing [] contract callers of
+    // this function depend on for "no archives"; every other error (EACCES,
+    // EIO, …) must propagate — otherwise an unreadable milestones/ dir is
+    // silently reported as "no archives" and archived-phase resolution
+    // misbehaves. As of Phase 12 (#3310), `cmdValidateConsistency`'s own
+    // caller of this function (`collectPhaseRoots` -> `getActiveMilestoneArchiveDir`)
+    // was migrated onto `buildPlanningSnapshot` and deleted; this function is
+    // retained solely for its `_listMilestoneArchiveDirs` test seam below.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
   }
 }
-
-function getActiveMilestoneArchiveDir(planBase: string): string | null {
-  const archiveDirs = listMilestoneArchiveDirs(planBase);
-  if (archiveDirs.length === 0) return null;
-
-  try {
-    const statePath = path.join(planBase, 'STATE.md');
-    if (fs.existsSync(statePath)) {
-      const state = fs.readFileSync(statePath, 'utf-8');
-      const m = state.match(
-        /^\s*(?:\*\*)?milestone(?:\*\*)?:\s*\*{0,2}\s*([^\s*\r\n#][^\s\r\n#]*)/mi,
-      );
-      if (m && m[1]) {
-        const milestone = m[1].trim();
-        const candidate = path.join(planBase, 'milestones', `${milestone}-phases`);
-        return archiveDirs.includes(candidate) ? candidate : null;
-      }
-    }
-  } catch {
-    /* intentionally empty — fall through to version-sort below */
-  }
-
-  return archiveDirs[archiveDirs.length - 1];
-}
-
-function collectPhaseRoots(planBase: string): string[] {
-  const roots: string[] = [];
-  const flatPhasesDir = path.join(planBase, 'phases');
-  if (fs.existsSync(flatPhasesDir)) roots.push(flatPhasesDir);
-  const activeArchive = getActiveMilestoneArchiveDir(planBase);
-  if (activeArchive) roots.push(activeArchive);
-  return roots;
-}
-
-/**
- * #2528: the disk-side phase inventory, keyed by extracted token but KEEPING the
- * directory names behind each token.
- *
- * The token alone is what made `validate health` the ninth site of the #2528
- * class. W006/W007 pair roadmap phases against disk by intersecting TOKEN SETS
- * (`phaseVariants(p)` vs these keys), which is a dir→token labelling, not the
- * query→dir selection `matchPhaseDirs` owns — so a `grep phaseTokenMatches`
- * never surfaced it. On a digit-leading slug the label is wrong in both
- * directions at once: `05-80-20-cleanup` labels itself `05-80-20`, so phase 5
- * "has no directory" (W006) AND that directory "is not in the roadmap" (W007).
- *
- * Carrying the names lets both warnings ask the canonical matcher whether a
- * roadmap phase actually resolves to a directory, instead of asking whether two
- * independently-derived labels happen to be equal.
- */
-function collectDiskPhaseEntries(planBase: string): Map<string, string[]> {
-  const entriesByToken = new Map<string, string[]>();
-  const phaseRoots = collectPhaseRoots(planBase);
-  const scanDir = (dir: string) => {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const e of entries) {
-        if (e.isDirectory()) {
-          const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-          if (!m) continue;
-          const token = stripProjectCodePrefix(m[1]);
-          const dirs = entriesByToken.get(token);
-          if (dirs) dirs.push(e.name);
-          else entriesByToken.set(token, [e.name]);
-        }
-      }
-    } catch {
-      /* dir absent */
-    }
-  };
-
-  for (const root of phaseRoots) scanDir(root);
-
-  return entriesByToken;
-}
-
-function collectDiskPhases(planBase: string): Set<string> {
-  return new Set(collectDiskPhaseEntries(planBase).keys());
-}
-
 
 interface IssueEntry {
   code: string;
@@ -1467,144 +1386,41 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const planBase = planningDir(cwd);
   const roadmapPath = path.join(planBase, 'ROADMAP.md');
   const errors: string[] = [];
-  const warnings: string[] = [];
+  const warnings: IssueEntry[] = [];
 
+  // Pre-check, stays OUTSIDE the rule table — same shape as `validate.health`'s
+  // E001/E010/I010 (design doc, "Which rules run where"). `.planning/` cannot
+  // build a `PlanningSnapshot` worth evaluating without a ROADMAP.md to read.
   if (!fs.existsSync(roadmapPath)) {
     errors.push('ROADMAP.md not found');
     output({ passed: false, errors, warnings }, raw, 'failed');
     return;
   }
 
-  const roadmapContentRaw = fs.readFileSync(roadmapPath, 'utf-8');
-  const roadmapContent = extractCurrentMilestone(roadmapContentRaw, cwd);
+  // ─── Rule-table evaluation (Phase 12, #3310) ───────────────────────────────
+  // Replaces this function's entire hand-rolled disk-vs-roadmap /
+  // numbering-gap / orphan-summary / wave-missing scan — see the design
+  // doc's "Which rules run where" section. `evaluateConsistencyRules` runs
+  // W006/W007 (the SAME `Rule` objects `validate.health` evaluates, reused
+  // verbatim — not a second, independently-drifting copy) plus the four new
+  // C001-C004 rules, against the same `PlanningSnapshot` `validate.health`
+  // builds.
+  const snapshot = buildPlanningSnapshot(cwd);
+  const diagnostics = evaluateConsistencyRules(snapshot);
 
-  const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent);
-  const { roadmapPhaseVariants: fullRoadmapPhaseVariants } = buildRoadmapPhaseVariants(roadmapContentRaw);
-
-  const diskPhases = collectDiskPhases(planBase);
-
-  for (const p of roadmapPhases) {
-    // #3225: sentinel phase ids are never-on-roadmap by convention.
-    if (isSentinelPhaseId(p)) continue;
-    if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
-      warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
-    }
-  }
-
-  for (const p of diskPhases) {
-    // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
-    // never-on-roadmap; it must not warn here (same guard as cmdValidateHealth).
-    if (isSentinelPhaseId(p)) continue;
-    const variants = phaseVariants(p);
-    if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
-      warnings.push(`Phase ${p} exists on disk but not in ROADMAP.md`);
-    }
-  }
-
-  const config = loadConfig(cwd);
-  if (config.phase_naming !== 'custom') {
-    const integerPhases = [...diskPhases]
-      // #3225: exclude sentinel phase ids (999.x/0.x) — they are never part of the
-      // sequential numbering, so a 999-interim dir must not produce a spurious
-      // "Gap in phase numbering: N → 999".
-      .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
-      .map((p) => parseInt(p, 10))
-      .sort((a, b) => a - b);
-
-    for (let i = 1; i < integerPhases.length; i++) {
-      if (integerPhases[i] !== integerPhases[i - 1] + 1) {
-        warnings.push(`Gap in phase numbering: ${integerPhases[i - 1]} → ${integerPhases[i]}`);
-      }
-    }
-  }
-
-  const phaseRoots = collectPhaseRoots(planBase);
-  for (const phaseRoot of phaseRoots) {
-    try {
-      const entries = fs.readdirSync(phaseRoot, { withFileTypes: true });
-      const dirs = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-        .sort();
-
-      for (const dir of dirs) {
-        const phasePath = path.join(phaseRoot, dir);
-        const phaseLabel = posixNormalize(path.relative(planBase, phasePath));
-
-        // #3183: this loop mixes two DIFFERENT questions — split explicitly
-        // rather than migrating it as one blind swap-in.
-
-        // QUESTION 1 — physical numbering-gap detection: wants EVERY plan
-        // file that physically exists, superseded or not (a retired plan
-        // still occupied a number in the sequence), root+nested. Uses the
-        // single owner's allPlanFiles rather than a root-only readdirSync
-        // filter. The strict `-NN-PLAN.md` suffix regex below already
-        // ignores any entry (nested, loose-named, bare PLAN.md) that isn't
-        // in the root canonical numbered form, so widening the input set is
-        // a pure visibility fix with no change to which files feed a number.
-        //
-        // One scan serves both questions below: `allPlanFiles` answers
-        // Question 1 (numbering-gap), `planFiles`/`summaryFiles` answer
-        // Question 2 (pairing) a few lines down.
-        const { allPlanFiles, planFiles, summaryFiles } = planScanMod.scanPhasePlans(phasePath);
-
-        // Root-canonical numbered plans only (`<phase>-NN-PLAN.md`) — the
-        // shape the numbering-gap sequence check operates on. Matched via
-        // the numbering regex itself rather than a separate suffix filter,
-        // so this stays a single derivation from the owner's output, not a
-        // second independent re-derivation of its filename grammar.
-        const numberedPlans = allPlanFiles
-          .map((p) => {
-            const pm = p.match(/-(\d{2})-PLAN\.md$/);
-            return pm ? { file: p, num: parseInt(pm[1], 10) } : null;
-          })
-          .filter((e): e is { file: string; num: number } => e !== null)
-          .sort((a, b) => a.num - b.num);
-        // numberedPlans (and planNums below) answers Question 1 ONLY — the
-        // numbering-gap sequence check. It is a strict `-NN-PLAN.md` subset
-        // and must NOT be reused as a general "all live plans" set: a plan
-        // whose filename isn't in that canonical 2-digit form (a 3-digit
-        // continuation, a bare PLAN.md, etc.) is silently absent from it.
-        const planNums = numberedPlans.map((e) => e.num);
-
-        for (let i = 1; i < planNums.length; i++) {
-          if (planNums[i] !== planNums[i - 1] + 1) {
-            warnings.push(
-              `Gap in plan numbering in ${phaseLabel}: plan ${planNums[i - 1]} → ${planNums[i]}`,
-            );
-          }
-        }
-
-        // QUESTION 2 — plan↔summary pairing: "does this summary have a
-        // matching LIVE plan" wants the single owner's superseded-excluded
-        // planFiles and the canonical summaryCandidates-based pairing
-        // (findOrphanSummaries) instead of an exact-suffix Set-diff, which
-        // produced false "orphan summary" warnings for legacy/nested naming
-        // forms it could not recognize as paired.
-        const orphanSummaries = findOrphanSummaries(planFiles, summaryFiles);
-        for (const orphan of orphanSummaries) {
-          warnings.push(`Summary ${orphan} in ${phaseLabel} has no matching PLAN.md`);
-        }
-
-        // QUESTION 3 — wave-frontmatter presence: "does every LIVE plan
-        // declare a wave" wants the same live (superseded-excluded) set as
-        // Question 2's pairing check — planFiles, NOT numberedPlans/Question
-        // 1's strict 2-digit subset. A superseded plan legitimately carries
-        // no wave, and a live plan whose filename isn't in canonical 2-digit
-        // form (a 3-digit continuation, a bare PLAN.md, etc.) must still be
-        // checked here even though it is invisible to the numbering-gap scan.
-        for (const plan of planFiles) {
-          const planFilePath = path.join(phasePath, plan);
-          const content = fs.readFileSync(planFilePath, 'utf-8');
-          const fmData = extractFrontmatter(content, planFilePath);
-          if (!fmData['wave']) {
-            warnings.push(`${phaseLabel}/${plan}: missing 'wave' in frontmatter`);
-          }
-        }
-      }
-    } catch {
-      /* intentionally empty */
-    }
+  // Every current C0NN/W006/W007 diagnostic is `SEVERITY.WARNING` (confirmed
+  // by direct read of `consistency.cts`/`roadmap-disk-consistency.cts`) —
+  // matching the pre-migration shape, where only the ROADMAP-missing
+  // pre-check above ever populated `errors`. Bucketed defensively by
+  // severity anyway, mirroring `cmdValidateHealth`'s own pattern, so a
+  // future ERROR-severity rule added to `CONSISTENCY_RULES` lands in the
+  // right bucket without another migration.
+  const _slashRuntime = resolveRuntime(cwd);
+  const slash = (name: string) => formatGsdSlash(name, _slashRuntime) as string;
+  for (const diagnostic of diagnostics) {
+    const entry = diagnosticToIssueEntry(diagnostic, slash);
+    if (diagnostic.severity === HEALTH_SEVERITY.ERROR) errors.push(entry.message);
+    else warnings.push(entry);
   }
 
   const passed = errors.length === 0;

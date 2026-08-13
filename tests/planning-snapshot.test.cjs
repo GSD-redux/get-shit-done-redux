@@ -102,8 +102,12 @@ function makeDirUnreadableAsFile(fullPath) {
 // A matched plan/summary pair plus a passing `*-VERIFICATION.md` —
 // `isPhaseComplete` requires `verification.status === 'passed'` for
 // `complete: true`, which plan/summary pairing alone does not establish.
+// The plan carries `wave: 1` frontmatter so this fixture is also
+// wave-complete — callers that assert `perPhaseWaveMissingPlans` is empty
+// on a "healthy" phase (Phase 12, #3310) get a genuinely clean baseline
+// rather than a false positive from a plan that predates the `wave:` field.
 function makeCompletePhaseDir(cwd, relPhaseDir) {
-  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '# Plan\n');
+  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '---\nwave: 1\n---\n\n# Plan\n');
   writeFile(cwd, `${relPhaseDir}/01-01-SUMMARY.md`, '# Summary\n');
   writeFile(cwd, `${relPhaseDir}/01-VERIFICATION.md`, '---\nstatus: passed\n---\n');
 }
@@ -1088,5 +1092,182 @@ describe('allPhaseDirNames field (Phase 11, #3309 — health-diagnostic-rules/ro
 
     const snap = buildPlanningSnapshot(cwd);
     assert.deepStrictEqual(snap.allPhaseDirNames, { value: [], scope: SCOPE.UNREADABLE });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 12 (#3310, ADR-3180 §8.4) additions — perPhasePlanNumbering /
+// perPhaseOrphanSummaries / perPhaseWaveMissingPlans
+//
+// Design:      .gsd/phase/feat-3310-enhance-3180-the-sibling-validators-shar/40-design.md
+//              ("New PlanningSnapshot fields")
+// Test matrix: .gsd/phase/feat-3310-enhance-3180-the-sibling-validators-shar/50-test-matrix.md
+//              section 1, rows 1-8
+//
+// Each relocates (not reinvents) `verify.cts:1556-1603`'s per-phase-directory
+// plan scan — see `buildPerPhasePlanScanFields`'s doc comment in
+// src/planning-snapshot.cts for the exact source lines. Fixture helpers
+// mirror the existing writeRoadmap/writeState/writeFile idiom.
+// ═════════════════════════════════════════════════════════════════════════
+
+function writePlan(cwd, relPhasePath, planName, frontmatterLines) {
+  const lines = frontmatterLines ? ['---', ...frontmatterLines, '---', '', '# Plan', ''] : ['# Plan', ''];
+  writeFile(cwd, `${relPhasePath}/${planName}`, lines.join('\n'));
+}
+
+describe('perPhasePlanNumbering field (Phase 12, #3310, matrix rows 1-2)', () => {
+  test('row 1: sequential plans (01, 02, 03) report the full sorted sequence, no gap', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-03-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [1, 2, 3] });
+    assert.strictEqual(snap.perPhasePlanNumbering.scope, SCOPE.COMPLETE);
+  });
+
+  test('row 2: a real gap (01, 03) is surfaced in the raw per-phase number list', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn2-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-03-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [1, 3] });
+  });
+
+  test('boundary: zero phase directories yields an empty array, not a non-answer', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases'), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.perPhasePlanNumbering, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('boundary: a phase with zero plans reports an empty planNums list for that phase, not an absent entry', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn4-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', '01-foo'), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [] });
+  });
+});
+
+describe('perPhaseOrphanSummaries field (Phase 12, #3310, matrix rows 3-5)', () => {
+  test('row 3: a paired plan+summary produces no orphan entries', (t) => {
+    const cwd = createTempDir('gsd-3310-pos1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(
+      snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo'),
+      [],
+    );
+  });
+
+  test('row 4: a summary with no live plan at all is named as an orphan', (t) => {
+    const cwd = createTempDir('gsd-3310-pos2-');
+    t.after(() => cleanup(cwd));
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', orphanSummary: '01-01-SUMMARY.md' }]);
+  });
+
+  test('row 5: a summary paired only to a superseded plan is still orphan — superseded plans are not live', (t) => {
+    const cwd = createTempDir('gsd-3310-pos3-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['status: superseded']);
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', orphanSummary: '01-01-SUMMARY.md' }]);
+  });
+});
+
+describe('perPhaseWaveMissingPlans field (Phase 12, #3310, matrix rows 6-7)', () => {
+  test('row 6: a plan with wave: in frontmatter is not flagged', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['wave: 1']);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(
+      snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo'),
+      [],
+    );
+  });
+
+  test('row 7: a plan without wave: in frontmatter is flagged', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm2-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', plan: '01-01-PLAN.md' }]);
+  });
+
+  test('boundary: a phase where every plan lacks wave: reports every one, none silently dropped', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm3-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(
+      entries.map((e) => e.plan).sort(),
+      ['01-01-PLAN.md', '01-02-PLAN.md'],
+    );
+  });
+
+  test('boundary: a phase where every plan carries wave: reports none', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm4-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['wave: 1']);
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md', ['wave: 2']);
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, []);
+  });
+});
+
+describe('Phase-10/11 fields unchanged by the Phase-12 extension (matrix row 8)', () => {
+  test('the new fields are additive alongside every prior field on the same fixture', (t) => {
+    const cwd = createTempDir('gsd-3310-reg8-');
+    t.after(() => cleanup(cwd));
+    buildHealthyTwoPhaseFixture(cwd);
+
+    const snap = buildPlanningSnapshot(cwd);
+
+    assert.strictEqual(snap.milestone.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.phases.value.length, 2);
+    assert.ok('config' in snap);
+    assert.ok('agentInstall' in snap);
+    assert.ok('worktreeHealth' in snap);
+    // The extension is additive — the three new Phase 12 fields sit
+    // alongside every prior field, not in place of them.
+    assert.ok('perPhasePlanNumbering' in snap);
+    assert.ok('perPhaseOrphanSummaries' in snap);
+    assert.ok('perPhaseWaveMissingPlans' in snap);
+    assert.strictEqual(snap.perPhasePlanNumbering.value.length, 2);
+    for (const entry of snap.perPhasePlanNumbering.value) {
+      assert.deepStrictEqual(entry.planNums, [1]);
+    }
+    assert.deepStrictEqual(snap.perPhaseOrphanSummaries.value, []);
+    assert.deepStrictEqual(snap.perPhaseWaveMissingPlans.value, []);
   });
 });

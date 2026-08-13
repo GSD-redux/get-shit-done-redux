@@ -81,6 +81,8 @@ import roadmapDiskConsistencyMod = require('./health-diagnostic-rules/roadmap-di
 import worktreeHealthMod = require('./health-diagnostic-rules/worktree-health.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneArchiveHygieneMod = require('./health-diagnostic-rules/milestone-archive-hygiene.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import consistencyMod = require('./health-diagnostic-rules/consistency.cjs');
 
 const RULES: Rule[] = [
   ...rootExistenceMod.RULES,
@@ -91,6 +93,20 @@ const RULES: Rule[] = [
   ...roadmapDiskConsistencyMod.RULES,
   ...worktreeHealthMod.RULES,
   ...milestoneArchiveHygieneMod.RULES,
+];
+
+/**
+ * `validate.consistency`'s own rule set (Phase 12, #3310, ADR-3180 §8.4,
+ * design doc "Which rules run where") — W006/W007 REUSED (the exact same
+ * `Rule` objects `RULES` above already carries, not new copies) plus the
+ * four new C0NN rules from `consistency.cts`. Deliberately NOT the full
+ * `RULES` table: running `validate.health`'s config/state/worktree rules
+ * under `validate.consistency` would be scope creep the issue never asked
+ * for.
+ */
+const CONSISTENCY_RULES: Rule[] = [
+  ...roadmapDiskConsistencyMod.RULES.filter((r) => ['W006', 'W007'].includes(r.code)),
+  ...consistencyMod.RULES,
 ];
 
 // ─── Repair-handler runtime dependencies ───────────────────────────────────
@@ -141,6 +157,15 @@ function evaluateRuleTable(rules: Rule[], snapshot: PlanningSnapshot): Diagnosti
  */
 function evaluateRules(snapshot: PlanningSnapshot): Diagnostic[] {
   return evaluateRuleTable(RULES, snapshot);
+}
+
+/**
+ * Evaluate `CONSISTENCY_RULES` (W006/W007 + C001-C004) against `snapshot` —
+ * `validate.consistency`'s evaluator entry point, mirroring `evaluateRules`
+ * exactly but over the smaller, command-specific rule subset.
+ */
+function evaluateConsistencyRules(snapshot: PlanningSnapshot): Diagnostic[] {
+  return evaluateRuleTable(CONSISTENCY_RULES, snapshot);
 }
 
 // ─── Repair dispatcher ──────────────────────────────────────────────────────
@@ -475,6 +500,9 @@ const healthDiagnostic = {
   // rule array without mutating the real, still-empty `RULES` export.
   evaluateRuleTable,
   applyRepairs,
+  // Phase 12 (#3310) — `validate.consistency`'s own rule subset + evaluator.
+  CONSISTENCY_RULES,
+  evaluateConsistencyRules,
 };
 
 // Namespace merge (same binding name as the value above) is how a CommonJS
