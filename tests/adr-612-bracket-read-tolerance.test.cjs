@@ -567,10 +567,19 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
     assert.match(w[0], /Phase 09/);
   });
 
-  test('INHERITED WART, unchanged: a legacy `### Phase 999:` still warns here', () => {
-    // Base behaviour, disclosed rather than fixed — the legacy path stays
-    // byte-identical, so the pre-existing disagreement between the two verbs
-    // survives on legacy repos exactly as it does today.
+  // INVERTED by the merge of next @ 86101ee6. This case previously asserted the
+  // INHERITED WART — that a legacy `### Phase 999:` still warned here while
+  // `validate health` suppressed it — which this branch disclosed rather than
+  // fixed, because the legacy path was to stay byte-identical.
+  //
+  // ae7dc529 (#3225) fixed that wart upstream by adding the `isSentinelPhaseId`
+  // guard to this very loop, so the disagreement it pinned no longer exists and
+  // the old assertion inverted on the merge. The case is kept (not deleted) and
+  // flipped to assert the FIXED behaviour: it is the negative-space proof that
+  // this branch's `sentinelPhases` guard did not have to grow a legacy reading
+  // of its own, and it reds if a future resolution drops upstream's guard while
+  // keeping ours.
+  test('#3225 (merged): a legacy `### Phase 999:` no longer warns here', () => {
     write(`# Roadmap
 
 ## v2.0
@@ -578,9 +587,25 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
 ### Phase 999: Backlog
 **Goal:** a
 `, undefined);
+    assert.deepEqual(
+      consistencyWarnings(), [],
+      'the legacy leading-int sentinel rule suppresses this since #3225',
+    );
+  });
+
+  // Negative space for the case above: the #3225 guard is SENTINEL-scoped, not a
+  // blanket silencer. Without this, dropping the whole loop would also pass.
+  test('#3225 scope: a legacy NON-sentinel phase with no directory still warns', () => {
+    write(`# Roadmap
+
+## v2.0
+
+### Phase 09: Real but absent
+**Goal:** a
+`, undefined);
     const w = consistencyWarnings();
     assert.equal(w.length, 1, JSON.stringify(w));
-    assert.match(w[0], /Phase 999/);
+    assert.match(w[0], /Phase 09/);
   });
 });
 
