@@ -1082,7 +1082,7 @@
     {
       "id": "RULESET.TESTS.eslint-harness",
       "klass": "RULESET",
-      "value": "ADR 452 (2026-05-28): ESLint flat config + typescript-eslint + eslint-plugin-n + eslint-plugin-no-only-tests + local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/); replaces scripts/lint-*.cjs regex scanners (fully removed in #632); of the three test-rigor rules, local/no-source-grep and local/no-magic-sleep-in-tests are already promoted to error in tests/**/*.test.cjs scope (post-cleanup), local/no-elapsed-assertion remains at warn pending open epic #1885 (its dedicated ratchet issue #453 already merged without completing this promotion; follow-up #1888 was closed not-planned and folded into #1885)"
+      "value": "ADR 452 (2026-05-28): ESLint flat config + typescript-eslint + eslint-plugin-n + eslint-plugin-no-only-tests + local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/); replaces scripts/lint-*.cjs regex scanners (fully removed in #632); all three test-rigor rules now ship at error in tests/**/*.test.cjs scope: local/no-source-grep and local/no-magic-sleep-in-tests promoted by #3313, local/no-elapsed-assertion promoted by #3331 once #3314 delivered its ADR-456 §(a) precondition (epic #1885 was subsumed into epic #3053 and closed stale before this promotion landed)"
     },
     {
       "id": "RULESET.TESTS.feedback-loop-convergence",
@@ -1132,7 +1132,7 @@
     {
       "id": "RULESET.TESTS.no-timing-assertion",
       "klass": "RULESET",
-      "value": "do not assert on wall-clock elapsed time (Date.now() delta, performance.now(), process.hrtime() comparison); such assertions test the host machine not the SUT and flake on loaded CI runners; enforcement: local/no-elapsed-assertion ESLint rule, currently warn (promotion to error tracked under open epic #1885, not #453 which already merged without completing it); canonical replacement: clock-seam pattern with node:test mock.timers"
+      "value": "do not assert on wall-clock elapsed time (Date.now() delta, performance.now(), process.hrtime() comparison); such assertions test the host machine not the SUT and flake on loaded CI runners; enforcement: local/no-elapsed-assertion ESLint rule, error (promoted by #3331 once #3314 delivered the ADR-456 §(a) reachability rule + deterministic backfill precondition); canonical replacement: clock-seam pattern with node:test mock.timers"
     },
     {
       "id": "RULESET.TESTS.property-based-testing",

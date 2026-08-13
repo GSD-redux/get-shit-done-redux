@@ -112,13 +112,13 @@ Each phase is its own small PR, opened under a fresh `chore(#2121): … — Phas
 
 ### 7. The anti-divergence contract (the parity guard)
 
-**Locked mechanism**, modeled on the repo's two proven single-source patterns — `tests/capability-precedence-parity.test.cjs` (identity guard) and `scripts/lint-package-identity-drift.cjs` + `tests/issue-498-identity-drift-lint.test.cjs` (drift scanner):
+**Locked mechanism**, modeled on the repo's two proven single-source patterns — `tests/capability-precedence-parity.test.cjs` (identity guard) and `scripts/lint-package-identity-drift.cjs` + `tests/package-identity.test.cjs` (drift scanner):
 
 1. **Identity guard test** — for every consumer that re-exports a canonical phase-ID function, assert reference identity: `assert.strictEqual(consumer.fn, phaseId.fn)`. A pasted re-implementation is a different function object and fails instantly (the mechanism `capability-precedence-parity.test.cjs:44-51` uses).
 2. **Drift scanner** — `scripts/lint-phase-id-drift.cjs` exports a **pure** `findPhaseIdRegexDrift(text, opts)` that flags phase-ID-shaped regex literals (`\d+[A-Z]?(?:\.\d+)*`, `[A-Z][A-Z0-9_]*-`, and `Phase\s+…:` heading builders) defined in any `src/*.cts` other than `phase-id.cts`. It is wired to `npm run check:phase-id-drift` and asserted zero via a `scanRepo(ROOT)` integration test. A narrow allowlist keyed by an explicit `// phase-id-owner: <reason>` comment covers sanctioned exceptions (e.g. Cluster-1 / #2104 init sites, `// phase-id-owner: cluster-1-#2104`) until they migrate.
 
 **Locked constraints on the guard's own implementation** (so it does not become new tech debt):
-- It must be **behavioral**, not a `readFileSync(path).includes(...)` inside a `tests/**/*.test.cjs` file — that trips `eslint-rules/no-source-grep.cjs` (bound `local/no-source-grep`, `error` in tests). Text-scanning lives in the `scripts/` pure function; the test `require()`s it and calls it with **inline string literals**, per `tests/issue-498-identity-drift-lint.test.cjs:21-25`.
+- It must be **behavioral**, not a `readFileSync(path).includes(...)` inside a `tests/**/*.test.cjs` file — that trips `eslint-rules/no-source-grep.cjs` (bound `local/no-source-grep`, `error` in tests). Text-scanning lives in the `scripts/` pure function; the test `require()`s it and calls it with **inline string literals**, per `tests/package-identity.test.cjs:22-25`.
 - It must **not** be modeled on `tests/package-name-single-source.test.cjs`, which only *appears* to satisfy `no-source-grep` because the rule's taint-tracking loses the variable after `.split()` — an evasion, not an exemption.
 
 *Rejected:* (B) an ESLint `no-restricted-syntax` rule — the repo has exactly one such rule (test-timing hygiene, `eslint.config.mjs:363`) and no single-ownership lint precedent; a `node:test` behavioral contract is the established, proven pattern. (C) outcome-parity only (run two paths, diff outputs, as `tests/phase.test.cjs:6881` `expectParity` does for #3537) — necessary but insufficient: it proves two paths *agree today*, not that only one *implementation* exists, so it cannot catch a third divergent site added tomorrow.

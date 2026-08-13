@@ -915,6 +915,39 @@ team: platform
     assert.ok(content.includes('status: executing'), 'schema-owned status still preserved');
   });
 
+  test('#3257: full-line frontmatter comments survive a mutating state verb', () => {
+    // syncStateFrontmatter rebuilds frontmatter via buildStateFrontmatter (fresh object)
+    // + an Object.keys carry-forward. Without propagating the comment channel, the
+    // comment is lost HERE even though the parse→reconstruct pair preserves it in
+    // isolation. This is the e2e path the issue is filed against.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---
+status: executing
+milestone: v1.0
+# NOTE: current_phase is hand-maintained here while the roadmap is in flux
+current_phase: 3
+---
+
+# Project State
+
+**Current Phase:** 03
+**Current Plan:** 03-02
+`
+    );
+
+    // Any writeStateMd triggers syncStateFrontmatter.
+    runGsdTools('state update "Current Plan" "03-03"', tmpDir);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(
+      content.includes('# NOTE: current_phase is hand-maintained here while the roadmap is in flux'),
+      `full-line frontmatter comment must survive a mutating verb; got:\n${content}`,
+    );
+    // The mutation itself still applied.
+    assert.ok(content.includes('03-03'), 'the state update still took effect');
+  });
+
   test('round-trip: write then read via state json', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
@@ -1724,17 +1757,49 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.ok(updated.includes('50%'), 'STATE.md Progress should contain 50%');
   });
 
-  test('handles zero plans gracefully', () => {
+  test('#3233: zero plans (0/0) is a no-op — does not clobber the Progress record', () => {
+    // Post-milestone-close: .planning/phases/ holds no plans (0/0). The buggy path
+    // mapped 0/0 through clampPercent to 0% and rewrote the shipped 100% record.
+    // The fix no-ops when there are zero plans to measure.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      '# Project State\n\n**Progress:** [░░░░░░░░░░] 0%\n'
+      '# Project State\n\n**Progress:** [██████████] 100% of v1.0\n'
     );
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.strictEqual(output.percent, 0, 'percent should be 0 when no plans found');
+    assert.strictEqual(output.updated, false, 'zero plans → no-op (updated:false)');
+    assert.ok(
+      /no plans found/i.test(String(output.reason)),
+      `should explain the no-op; got reason: ${output.reason}`
+    );
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'STATE.md must be unchanged when no plans are found (#3233)');
+  });
+
+  test('#3233 negative-space: plans exist but none done still writes 0%', () => {
+    // The fix no-ops ONLY on totalPlans===0. A milestone with plans but none
+    // summarized must still write a legitimate 0% (not be suppressed).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Progress:** [██████████] 100%\n'
+    );
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01');
+    fs.mkdirSync(phase01Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase01Dir, '01-01-PLAN.md'), '# Plan\n');
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true, 'plans exist → write (updated:true)');
+    assert.strictEqual(output.percent, 0, 'none done → 0% (legitimate, not suppressed)');
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(after.includes('0%'), 'STATE.md Progress should reflect 0%');
   });
 
   test('returns error when Progress field missing', () => {
@@ -1742,13 +1807,22 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Status:** Active\n'
     );
+    // #3233: give the scan a plan so totalPlans > 0 clears the zero-plans
+    // no-op guard and this test reaches the 'Progress field not found' branch
+    // it is named for (otherwise the guard fires first and the branch is uncovered).
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01');
+    fs.mkdirSync(phase01Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase01Dir, '01-01-PLAN.md'), '# Plan\n');
 
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, false, 'updated should be false');
-    assert.ok(output.reason !== undefined, 'should have a reason');
+    assert.ok(
+      /Progress field not found/i.test(String(output.reason)),
+      `should be the 'Progress field not found' reason; got: ${output.reason}`
+    );
   });
 
   // ── #2177: frontmatter `progress:` key must not shadow the body Progress: line ──

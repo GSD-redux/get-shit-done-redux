@@ -27,7 +27,7 @@ const { planningDir, planningPaths } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -801,6 +801,27 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
       `STATE.md's Progress field was left unchanged.\n`
     );
     output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+    return;
+  }
+
+  // #3233: zero plans in the current-milestone phases means there is nothing to
+  // measure — most often the milestone was just closed and its phases archived
+  // (.planning/phases/ empty, but scope COMPLETE — "a real empty"). clampPercent
+  // maps 0/0 to 0%, which would clobber the shipped Progress record (e.g.
+  // [██████████] 100% → [░░░░░░░░░░] 0%). No-op instead, mirroring the
+  // scope-withhold above and computeProgressPercent's null-for-empty contract
+  // ("nothing to measure" ≠ "0% done"). The legitimate 0% case (plans exist,
+  // none summarized → clampPercent(0, N>0) = 0) is unaffected: totalPlans > 0.
+  if (totalPlans === 0) {
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — no plans found in current-milestone phases (0 plans). ` +
+      `STATE.md's Progress field was left unchanged (milestone archived?).\n`
+    );
+    output(
+      { updated: false, reason: 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)' },
+      raw,
+      'false',
+    );
     return;
   }
 
@@ -2340,6 +2361,12 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
       }
     }
   }
+
+  // #3257: propagate full-line frontmatter comments from the extracted source onto the
+  // rebuilt derivedFm (buildStateFrontmatter + the Object.keys carry-forward above both
+  // skip the Symbol-keyed channel, so without this the comments would be lost here even
+  // though parseYamlRegion/reconstructFrontmatter preserve them in isolation).
+  propagateCommentChannel(existingFm as unknown as Frontmatter, derivedFm as unknown as Frontmatter);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;

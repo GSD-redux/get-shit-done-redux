@@ -4372,3 +4372,1300 @@ describe('#2229 PROPERTY: resolveTierFromConfig never throws and always returns 
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/fix-2297-resolve-model-ids-runtime-scoping.test.cjs
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:fix-2297-resolve-model-ids-runtime-scoping', () => {
+/**
+ * Bug #2297 — `resolve_model_ids:"omit"` must be scoped to the ACTIVE runtime,
+ * not applied blindly whenever it appears anywhere in the merged config.
+ *
+ * Root cause (pre-fix): the installer writes `resolve_model_ids:"omit"` into
+ * the SHARED `~/.gsd/defaults.json` for every runtime that lacks native model
+ * aliases (#1156). Because that file is machine-wide, installing a non-Claude
+ * runtime (e.g. codex) on a box that also runs Claude poisoned Claude's
+ * no-project resolution: Claude would see `resolve_model_ids:"omit"` in the
+ * merged global defaults and return `''` instead of its tier aliases
+ * (opus/sonnet/haiku), silently defeating Claude's adaptive tier distinction.
+ *
+ * Fix (`resolveModelInternal`): the `"omit"` branch now returns `''` ONLY
+ * when either (a) the PROJECT's own `.planning/config.json` explicitly sets
+ * `resolve_model_ids:"omit"` (user intent — #2517 finding #4, unchanged), or
+ * (b) the ACTIVE runtime genuinely lacks native model aliases. A native-alias
+ * runtime (currently only `claude`) ignores an `"omit"` that came solely from
+ * the shared global defaults and falls through to its tier aliases.
+ * Active-runtime precedence: `process.env.GSD_RUNTIME` -> `config.runtime` ->
+ * per-install `.gsd-runtime` marker -> `'claude'` (all canonicalized).
+ *
+ * NOTE: the global-defaults merge path in config-loader.cjs (branch D: "no
+ * .planning/ at all") only fires when the project dir has NO `.planning/`
+ * whatsoever — the moment `.planning/` exists, `~/.gsd/defaults.json` is not
+ * merged for these fields at all. Group A below therefore uses bare
+ * `fs.mkdtempSync` project dirs with no `.planning/` subdir; Group A #4,
+ * Group B, and Group C need a real per-project config and create
+ * `.planning/config.json`.
+ */
+
+'use strict';
+
+const { describe, test, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const {
+  resolveModelInternal,
+  _setInstallRuntimeMarkerForTests,
+  _resetInstallRuntimeMarkerCacheForTests,
+} = require('../gsd-core/bin/lib/model-resolver.cjs');
+
+const { isolateWorkstreamEnv, restoreWorkstreamEnv } = require('./helpers.cjs');
+
+// HOME / GSD_HOME / GSD_RUNTIME isolation — config-loader.cjs reads global
+// defaults from path.join(process.env.GSD_HOME || os.homedir(), '.gsd', 'defaults.json').
+// Isolate HOME and GSD_HOME to a fresh tmpdir per test, and save/restore
+// GSD_RUNTIME (several tests set it directly to drive the active-runtime
+// chain) plus GSD_WORKSTREAM/GSD_PROJECT via the shared helpers.cjs
+// isolateWorkstreamEnv()/restoreWorkstreamEnv() pair (planningDir() reads both
+// directly from process.env when its params are omitted, so an ambient value
+// in a developer's shell could redirect projectExplicitlySetsOmit()'s reads).
+let _origHome;
+let _origUserProfile;
+let _origGsdHome;
+let _origGsdRuntime;
+let _isolatedHome;
+
+function isolateHome() {
+  _origHome = process.env.HOME;
+  _origUserProfile = process.env.USERPROFILE;
+  _origGsdHome = process.env.GSD_HOME;
+  _origGsdRuntime = process.env.GSD_RUNTIME;
+  isolateWorkstreamEnv();
+  _isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2297-home-'));
+  process.env.HOME = _isolatedHome;
+  // Windows resolves the home dir from USERPROFILE, not HOME.
+  process.env.USERPROFILE = _isolatedHome;
+  process.env.GSD_HOME = _isolatedHome;
+  delete process.env.GSD_RUNTIME;
+}
+
+function restoreHome() {
+  if (_origHome === undefined) delete process.env.HOME; else process.env.HOME = _origHome;
+  if (_origUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = _origUserProfile;
+  if (_origGsdHome === undefined) delete process.env.GSD_HOME; else process.env.GSD_HOME = _origGsdHome;
+  if (_origGsdRuntime === undefined) delete process.env.GSD_RUNTIME; else process.env.GSD_RUNTIME = _origGsdRuntime;
+  restoreWorkstreamEnv();
+  rmDir(_isolatedHome);
+  _isolatedHome = null;
+}
+
+function rmDir(dir) {
+  if (typeof dir !== 'string' || dir.length === 0) return;
+  // eslint-disable-next-line local/no-raw-rmsync-in-tests -- carries the same maxRetries/retryDelay budget as helpers.cleanup; used for both the isolated-home and bare project temp dirs
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+}
+
+function writeGlobalDefaults(obj) {
+  fs.mkdirSync(path.join(_isolatedHome, '.gsd'), { recursive: true });
+  fs.writeFileSync(path.join(_isolatedHome, '.gsd', 'defaults.json'), JSON.stringify(obj, null, 2));
+}
+
+// Bare project dir with NO .planning/ subdirectory — needed to exercise the
+// config-loader's global-defaults merge branch (see header comment above).
+function mkProjNoPlanning() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2297-proj-noplan-'));
+}
+
+// Project dir WITH a .planning/config.json — the normal "inside a project" path.
+function mkProjWithConfig(obj) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2297-proj-'));
+  fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify(obj, null, 2));
+  return dir;
+}
+
+// ─── Group A: GLOBAL-defaults "omit" is runtime-scoped (the #2297 fix) ─────
+describe('#2297: global-defaults resolve_model_ids:"omit" is scoped to the active runtime', () => {
+  let projDir;
+  beforeEach(() => { isolateHome(); projDir = null; });
+  afterEach(() => { rmDir(projDir); restoreHome(); });
+
+  test('no runtime signal defaults to claude: executor and planner get distinct non-empty tier aliases (acceptance #3)', () => {
+    // Global defaults poison the shared file with "omit" (simulating a
+    // non-Claude runtime having been installed on this machine). With no
+    // .planning/config.json (no project) and no GSD_RUNTIME, the active
+    // runtime falls back to 'claude', which has native aliases and must
+    // ignore the poisoned global "omit" — the adaptive tier distinction
+    // between executor (sonnet) and planner (opus) must survive.
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+
+    const executor = resolveModelInternal(projDir, 'gsd-executor');
+    const planner = resolveModelInternal(projDir, 'gsd-planner');
+
+    assert.strictEqual(executor, 'sonnet');
+    assert.strictEqual(planner, 'opus');
+    assert.notStrictEqual(executor, '');
+    assert.notStrictEqual(planner, '');
+    assert.notStrictEqual(executor, planner);
+  });
+
+  test('GSD_RUNTIME="claude" explicitly: executor still resolves to "sonnet" (claude ignores global omit)', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    process.env.GSD_RUNTIME = 'claude';
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+  });
+
+  test('GSD_RUNTIME="codex": a non-alias runtime still honors the global omit (acceptance #4)', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    process.env.GSD_RUNTIME = 'codex';
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), '');
+  });
+
+  // #2297 correctness-review BLOCKER: resolveActiveRuntime() must canonicalize
+  // its candidates via resolveRuntimeNameFromCandidates before checking
+  // RUNTIMES_WITH_NATIVE_ALIASES, or an alias/case variant of "claude" would
+  // fail the Set('claude').has() check and wrongly fall through to honoring the
+  // poisoned global omit. These would FAIL against a non-canonicalizing resolver.
+  test('GSD_RUNTIME="claude-code" (alias, not canonical "claude"): executor and planner still ignore the global omit', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    process.env.GSD_RUNTIME = 'claude-code';
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-planner'), 'opus');
+  });
+
+  test('GSD_RUNTIME="Claude" (case variant): executor still resolves to "sonnet" (canonicalization is case-insensitive)', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    process.env.GSD_RUNTIME = 'Claude';
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+  });
+
+  test('project config.runtime="codex" (no resolve_model_ids in project) takes precedence over GSD_RUNTIME/marker in the active-runtime chain', () => {
+    // config.runtime is checked before GSD_RUNTIME / the install marker. This
+    // scenario uses a REAL project (.planning/config.json present), so the
+    // config-loader does NOT merge ~/.gsd/defaults.json for resolve_model_ids
+    // at all here (see header comment above) — resolution instead reaches the
+    // #2517 runtime-tier path (step 3 in resolveModelInternal, which fires
+    // before the omit gate) and returns codex's native sonnet-tier model id
+    // directly, rather than the omit gate's ''. Verified empirically: the
+    // built resolver returns 'gpt-5.6-terra', not ''. Assert it is non-empty
+    // and NOT a claude alias, which is the property this test actually needs
+    // to guarantee (config.runtime, not GSD_RUNTIME/env, drove the resolution).
+    projDir = mkProjWithConfig({ runtime: 'codex' });
+    writeGlobalDefaults({ resolve_model_ids: 'omit' }); // irrelevant: not merged when .planning/ exists
+
+    const result = resolveModelInternal(projDir, 'gsd-executor');
+    assert.notStrictEqual(result, '');
+    assert.ok(
+      !['sonnet', 'opus', 'haiku'].includes(result),
+      `expected a non-claude-alias result for config.runtime="codex", got ${JSON.stringify(result)}`
+    );
+  });
+
+  test('install-order independence (acceptance #1/#2): a global omit poisoned by a prior non-Claude install does not affect Claude resolution, and Claude retains its adaptive tier distinction', () => {
+    // Resolution depends on the RESOLVING runtime (active runtime at call
+    // time), not on install order — installing codex (or any non-alias
+    // runtime) before/after Claude must never change what Claude itself
+    // resolves to. Global omit present, no project, no runtime signal ->
+    // default 'claude' -> tier aliases survive. Distinct from the first Group A
+    // test above: this asserts install-order independence AND, specifically,
+    // that executor/planner remain DIFFERENT tiers under the poisoned global
+    // omit — i.e. install order never collapses Claude's adaptive tier
+    // distinction into a single omitted value.
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+
+    const executor = resolveModelInternal(projDir, 'gsd-executor');
+    const planner = resolveModelInternal(projDir, 'gsd-planner');
+
+    assert.strictEqual(executor, 'sonnet');
+    assert.strictEqual(planner, 'opus');
+    assert.notStrictEqual(executor, planner, 'install-order poisoning must not collapse the adaptive tier distinction');
+  });
+});
+
+// ─── Group B: explicit PROJECT "omit" is still honored for EVERY runtime ───
+// (#2517 finding #4 — preserved, NOT changed by #2297.)
+describe('#2297: explicit project-level resolve_model_ids:"omit" is honored regardless of runtime', () => {
+  let projDir;
+  beforeEach(() => { isolateHome(); projDir = null; });
+  afterEach(() => { rmDir(projDir); restoreHome(); });
+
+  test('no runtime set, explicit project omit -> "" even though the default runtime is claude', () => {
+    projDir = mkProjWithConfig({ resolve_model_ids: 'omit' });
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-planner'), '');
+  });
+
+  test('runtime:"claude" + explicit project omit -> "" (mirrors #2517 finding #4)', () => {
+    projDir = mkProjWithConfig({ runtime: 'claude', resolve_model_ids: 'omit' });
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-planner'), '');
+  });
+});
+
+// ─── Group B2: projectExplicitlySetsOmit is workstream-scope aware (#2297) ──
+// The root .planning/config.json does NOT set resolve_model_ids, but the
+// ACTIVE workstream's own config.json does — projectExplicitlySetsOmit()
+// resolves via planningDir(cwd) (workstream layer wins over root, mirroring
+// loadConfig's precedence), so the workstream's explicit "omit" must still be
+// honored even though no global default and the default runtime (claude) would
+// otherwise have returned a tier alias.
+describe('#2297: explicit project-level "omit" is honored at the active-workstream config layer', () => {
+  let projDir;
+  let _origGsdWorkstreamForBlock;
+  beforeEach(() => {
+    isolateHome(); // clears GSD_WORKSTREAM/GSD_PROJECT as part of hermeticity
+    projDir = null;
+    _origGsdWorkstreamForBlock = process.env.GSD_WORKSTREAM;
+  });
+  afterEach(() => {
+    if (_origGsdWorkstreamForBlock === undefined) delete process.env.GSD_WORKSTREAM;
+    else process.env.GSD_WORKSTREAM = _origGsdWorkstreamForBlock;
+    rmDir(projDir);
+    restoreHome();
+  });
+
+  test('root config has no resolve_model_ids, but the active workstream config sets "omit" -> "" despite default runtime claude', () => {
+    const ws = 'ws-alpha';
+    projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2297-proj-ws-'));
+    fs.mkdirSync(path.join(projDir, '.planning'), { recursive: true });
+    // Root config exists but does NOT set resolve_model_ids at all.
+    fs.writeFileSync(
+      path.join(projDir, '.planning', 'config.json'),
+      JSON.stringify({ model_profile: 'balanced' }, null, 2)
+    );
+    // The active workstream's own config explicitly sets "omit".
+    const wsConfigDir = path.join(projDir, '.planning', 'workstreams', ws);
+    fs.mkdirSync(wsConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(wsConfigDir, 'config.json'),
+      JSON.stringify({ resolve_model_ids: 'omit' }, null, 2)
+    );
+    process.env.GSD_WORKSTREAM = ws;
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-planner'), '');
+  });
+});
+
+// ─── Group C: explicit `true` still materializes full model ids (acceptance #5) ──
+describe('#2297: resolve_model_ids:true still materializes full Claude model ids', () => {
+  let projDir;
+  beforeEach(() => { isolateHome(); projDir = null; });
+  afterEach(() => { rmDir(projDir); restoreHome(); });
+
+  test('resolve_model_ids:true + balanced profile -> full materialized claude-opus-4-8 id', () => {
+    projDir = mkProjWithConfig({ resolve_model_ids: true, model_profile: 'balanced' });
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-planner'), 'claude-opus-4-8');
+  });
+});
+
+// ─── Group D: registry parity guard ─────────────────────────────────────────
+describe('#2297: capability-registry nativeModelAliases parity guard', () => {
+  test('exactly the runtimes with hostBehaviors.nativeModelAliases:true match RUNTIMES_WITH_NATIVE_ALIASES ([\'claude\'])', () => {
+    // The model-resolver hardcodes RUNTIMES_WITH_NATIVE_ALIASES = new Set(['claude'])
+    // rather than reading the registry at runtime. This test keeps that
+    // hardcoded set honest against the generated registry's actual contract:
+    // registry.runtimes[id].runtime.hostBehaviors.nativeModelAliases.
+    // If a future runtime gains nativeModelAliases:true, this fails loudly so
+    // RUNTIMES_WITH_NATIVE_ALIASES in model-resolver.cts is updated in lockstep.
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+
+    const nativeAliasRuntimes = Object.keys(registry.runtimes)
+      .filter((id) => registry.runtimes[id]?.runtime?.hostBehaviors?.nativeModelAliases === true)
+      .sort();
+
+    assert.deepStrictEqual(nativeAliasRuntimes, ['claude']);
+  });
+});
+
+// ─── Group E: installer writes the per-install .gsd-runtime marker ─────────
+describe('#2297: installer emits the gsd-core/.gsd-runtime marker (fixture parity)', () => {
+  test('claude and codex install-tree fixtures both list gsd-core/.gsd-runtime', () => {
+    // These fixtures are flat JSON arrays of install-relative paths, generated
+    // by running the real installer (tests/fixtures/install-tree/*.json). Their
+    // presence here proves the installer actually emits the per-install marker
+    // that resolveActiveRuntime()'s precedence chain falls back to.
+    const claudeFixturePath = path.join(__dirname, 'fixtures', 'install-tree', 'claude.json');
+    const codexFixturePath = path.join(__dirname, 'fixtures', 'install-tree', 'codex.json');
+
+    const claudeFixture = JSON.parse(fs.readFileSync(claudeFixturePath, 'utf8'));
+    const codexFixture = JSON.parse(fs.readFileSync(codexFixturePath, 'utf8'));
+
+    assert.ok(Array.isArray(claudeFixture), 'expected claude.json fixture to be a flat array of paths');
+    assert.ok(Array.isArray(codexFixture), 'expected codex.json fixture to be a flat array of paths');
+
+    assert.ok(
+      claudeFixture.includes('gsd-core/.gsd-runtime'),
+      'expected claude.json install-tree fixture to include gsd-core/.gsd-runtime'
+    );
+    assert.ok(
+      codexFixture.includes('gsd-core/.gsd-runtime'),
+      'expected codex.json install-tree fixture to include gsd-core/.gsd-runtime'
+    );
+  });
+});
+
+// ─── Group F: the install-marker precedence rung, driven directly (#2297) ──
+// Previously untested: with no GSD_RUNTIME and no project config.runtime, the
+// active runtime falls all the way through to the per-install .gsd-runtime
+// marker (third precedence rung). The dev/source tree has no real marker file,
+// so these tests drive that rung directly via the _setInstallRuntimeMarkerForTests
+// / _resetInstallRuntimeMarkerCacheForTests seams exported specifically for this
+// purpose (#2297 correctness-review gap).
+describe('#2297: install-marker precedence rung (GSD_RUNTIME and config.runtime both absent)', () => {
+  let projDir;
+  beforeEach(() => {
+    isolateHome(); // also deletes GSD_RUNTIME
+    projDir = null;
+    // Belt-and-suspenders: the marker rung is only reached when GSD_RUNTIME and
+    // config.runtime are both absent; isolateHome() already deletes GSD_RUNTIME.
+    delete process.env.GSD_RUNTIME;
+  });
+  afterEach(() => {
+    rmDir(projDir);
+    restoreHome();
+    // CRITICAL: reset the module-level marker cache after every case in this
+    // block so a set value never leaks into a later case here, or into any
+    // OTHER describe block in this file (readInstallRuntimeMarker() otherwise
+    // memoizes the first value it sees for the lifetime of the process).
+    _resetInstallRuntimeMarkerCacheForTests();
+  });
+
+  test('marker="codex" (non-alias runtime): honors the poisoned global omit -> ""', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    _setInstallRuntimeMarkerForTests('codex');
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), '');
+  });
+
+  test('marker="claude": ignores the poisoned global omit -> "sonnet"', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    _setInstallRuntimeMarkerForTests('claude');
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+  });
+
+  test('marker="claude-code" (alias): canonicalized to "claude" and still ignores the poisoned global omit -> "sonnet"', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    _setInstallRuntimeMarkerForTests('claude-code');
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+  });
+
+  test('marker unset (null): falls through to the "claude" default and ignores the poisoned global omit -> "sonnet"', () => {
+    writeGlobalDefaults({ resolve_model_ids: 'omit' });
+    projDir = mkProjNoPlanning();
+    _setInstallRuntimeMarkerForTests(null);
+
+    assert.strictEqual(resolveModelInternal(projDir, 'gsd-executor'), 'sonnet');
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2517-runtime-aware-profiles.test.cjs (H3 Wave 7,
+// issue #3339). 1 of 80 source test blocks ('resolveTierEntry helper: unknown
+// runtime + no overrides -> null', runtime:'mystery') was dropped as a verified
+// duplicate of the pre-existing test at line 525 ('unknown runtime + unknown
+// tier, no overrides -> null') — same resolveTierEntry null-return assertion
+// for an unknown runtime with no overrides.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2517-runtime-aware-profiles', () => {
+/**
+ * Issue #2517 — runtime-aware model profile resolution.
+ *
+ * Today, profile tiers (opus/sonnet/haiku) only resolve to Claude IDs. On Codex /
+ * other runtimes, users must use `inherit` or write large `model_overrides` blocks.
+ *
+ * This adds a `runtime` config key + `model_profile_overrides[runtime][tier]` map.
+ * When `runtime` is set to a non-Claude value, profile tiers resolve to runtime-
+ * native model IDs.
+ *
+ *   Codex:   opus -> gpt-5.6-sol (xhigh), sonnet -> gpt-5.6-terra (medium), haiku -> gpt-5.6-luna (medium)
+ *
+ * `runtime: "claude"` is the implicit default and is treated as a no-op for
+ * resolution — it does not override `resolve_model_ids: "omit"` or any other
+ * Claude-native semantics (review finding #4).
+ *
+ * `inherit` keeps current behavior. Unknown runtimes fall back safely (do NOT emit
+ * provider-specific IDs the runtime can't accept) and trigger a one-shot stderr
+ * warning so typos like `runtime: "codx"` surface immediately (review finding #13).
+ *
+ * HOME isolation: every test sets `process.env.HOME` to a per-suite tmpdir so the
+ * developer's real `~/.gsd/defaults.json` cannot bleed into assertions
+ * (review finding #8 / pattern from CodeRabbit on PRs #2603, #2604).
+ */
+
+'use strict';
+
+const { describe, test, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { createTempProject, cleanup, resetRuntimeWarningCaches } = require('./helpers.cjs');
+
+const {
+  resolveModelInternal,
+  resolveEffortInternal,
+  resolveTierEntry,
+} = require('../gsd-core/bin/lib/model-resolver.cjs');
+const {
+  RUNTIME_PROFILE_MAP,
+  KNOWN_RUNTIMES,
+} = require('../gsd-core/bin/lib/model-catalog.cjs');
+const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+const { isValidConfigKey } = require('../gsd-core/bin/lib/config-schema.cjs');
+
+function writeConfig(tmpDir, obj) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'),
+    JSON.stringify(obj, null, 2)
+  );
+}
+
+// ─── Shared HOME isolation (#2517 review finding #8) ────────────────────────
+// Without this, a developer's real `~/.gsd/defaults.json` (e.g. one with
+// `runtime: codex` set) silently overrides test assertions about back-compat
+// behavior. Capture HOME, point it at an isolated tmpdir for the duration of
+// each test, restore on teardown.
+let _origHome;
+let _origUserProfile;
+let _origGsdHome;
+let _isolatedHome;
+function isolateHome() {
+  _origHome = process.env.HOME;
+  _origUserProfile = process.env.USERPROFILE;
+  _origGsdHome = process.env.GSD_HOME;
+  _isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-home-iso-'));
+  process.env.HOME = _isolatedHome;
+  process.env.USERPROFILE = _isolatedHome;
+  process.env.GSD_HOME = _isolatedHome;
+}
+function restoreHome() {
+  if (_origHome === undefined) delete process.env.HOME; else process.env.HOME = _origHome;
+  if (_origUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = _origUserProfile;
+  if (_origGsdHome === undefined) delete process.env.GSD_HOME; else process.env.GSD_HOME = _origGsdHome;
+  cleanup(_isolatedHome);
+  _isolatedHome = null;
+}
+
+// ─── Backwards compatibility — no `runtime` set ─────────────────────────────
+describe('issue #2517: backwards compat — no runtime key set', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('balanced profile returns Claude alias when runtime absent', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced' });
+    // gsd-planner balanced -> opus
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  test('inherit profile still returns "inherit" with no runtime', () => {
+    writeConfig(tmpDir, { model_profile: 'inherit' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'inherit');
+  });
+
+  test('resolve_model_ids:true still maps alias -> full Claude ID with no runtime', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced', resolve_model_ids: true });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-8');
+  });
+
+  test('resolve_model_ids:"omit" still returns "" with no runtime', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced', resolve_model_ids: 'omit' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), '');
+  });
+
+  test('effort resolves universally but render param is null when runtime absent', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced' });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    // Effort always resolves (universal); rendering without a runtime yields no wire param.
+    const rendered = renderEffortForRuntime(undefined, eff);
+    assert.strictEqual(rendered.param, null);
+  });
+
+  test('adaptive profile still works without runtime (#1713/#1806)', () => {
+    writeConfig(tmpDir, { model_profile: 'adaptive' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'haiku');
+  });
+});
+
+// ─── runtime: "claude" — no-op (preserves Claude-native semantics) ──────────
+describe('issue #2517: runtime "claude" is a no-op for resolution (finding #4)', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('runtime:"claude" + balanced returns the alias, not the resolved Claude ID', () => {
+    // `runtime: "claude"` is the implicit default — it must not silently flip
+    // resolve_model_ids on. The alias passes through identically to the unset case.
+    writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  test('runtime:"claude" + resolve_model_ids:"omit" returns "" (finding #4 regression)', () => {
+    // The pre-fix bug: runtime:"claude" hijacked the resolution chain and
+    // returned the resolved Claude ID even when the user explicitly asked for the
+    // omit semantics.
+    writeConfig(tmpDir, {
+      runtime: 'claude',
+      model_profile: 'quality',
+      resolve_model_ids: 'omit',
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), '');
+  });
+
+  test('runtime:"claude" + resolve_model_ids:true maps alias -> full Claude ID', () => {
+    writeConfig(tmpDir, {
+      runtime: 'claude',
+      model_profile: 'quality',
+      resolve_model_ids: true,
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-8');
+  });
+
+  test('effort is first-class on Claude (emits output_config.effort)', () => {
+    writeConfig(tmpDir, { runtime: 'claude', model_profile: 'quality' });
+    // Under unification, Claude effort is first-class — rendered via output_config.effort.
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('claude', eff);
+    assert.strictEqual(rendered.param, 'output_config.effort');
+    // gsd-planner is heavy tier → default effort 'xhigh'
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+});
+
+// ─── runtime: "codex" — resolves tiers to Codex IDs + reasoning_effort ──────
+describe('issue #2517: runtime "codex" — Codex tier resolution', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('opus tier -> gpt-5.6-sol model; heavy-tier agent -> xhigh effort on codex', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    // gsd-planner quality -> opus -> gpt-5.6-sol (model unchanged)
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-sol');
+    // gsd-planner is heavy routing tier → effort 'xhigh' → rendered model_reasoning_effort
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('sonnet tier -> gpt-5.6-terra model; heavy-tier agent -> xhigh effort on codex', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'gpt-5.6-terra');
+    // gsd-roadmapper is heavy routing tier → effort 'xhigh' (not catalog medium)
+    const eff = resolveEffortInternal(tmpDir, 'gsd-roadmapper');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('haiku tier -> gpt-5.6-luna model; light-tier agent -> low effort on codex', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'budget' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'gpt-5.6-luna');
+    // gsd-codebase-mapper is light routing tier → effort 'low' (not catalog medium)
+    const eff = resolveEffortInternal(tmpDir, 'gsd-codebase-mapper');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'low');
+  });
+
+  test('adaptive profile resolves on Codex (no #1713/#1806 regression)', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'adaptive' });
+    // gsd-planner adaptive -> opus -> gpt-5.6-sol
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-sol');
+    // gsd-codebase-mapper adaptive -> haiku -> gpt-5.6-luna
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'gpt-5.6-luna');
+  });
+
+  test('inherit profile still returns "inherit" on Codex; effort still resolves universally', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'inherit' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'inherit');
+    // Unified effort is config-driven (routing_tier_defaults), independent of model_profile.
+    // gsd-planner (heavy tier) → 'xhigh'; rendered to codex param.
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('runtime:"codex" beats resolve_model_ids:"omit" (explicit non-Claude opt-in wins)', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      resolve_model_ids: 'omit',
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-sol');
+  });
+});
+
+// ─── Precedence chain ───────────────────────────────────────────────────────
+describe('issue #2517: precedence chain', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('per-agent model_overrides wins over runtime tier resolution', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_overrides: { 'gsd-planner': 'gpt-5.6-luna' },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-luna');
+  });
+
+  test('model_profile_overrides[runtime][tier] beats built-in defaults', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: {
+        codex: { opus: 'gpt-5-pro' },
+      },
+    });
+    // gsd-planner quality -> opus -> overridden to gpt-5-pro
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5-pro');
+    // gsd-codebase-mapper quality -> sonnet -> gpt-5.6-terra
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'gpt-5.6-terra');
+  });
+
+  test('partial profile_overrides — only opus overridden, sonnet uses default', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'balanced',
+      model_profile_overrides: {
+        codex: { opus: 'gpt-5-pro' }, // only opus overridden
+      },
+    });
+    // gsd-planner balanced -> opus -> overridden to gpt-5-pro
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5-pro');
+    // gsd-roadmapper balanced -> sonnet -> spec default
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'gpt-5.6-terra');
+  });
+
+  test('per-agent override beats profile override beats default', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: { codex: { opus: 'gpt-5-pro' } },
+      model_overrides: { 'gsd-planner': 'custom-model' },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'custom-model');
+  });
+});
+
+// ─── Field-merge semantics — review findings #2 ─────────────────────────────
+describe('issue #2517: field-merge of overrides with built-in defaults (finding #2)', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('string-shorthand override: model is overridden; unified effort derives from routing tier', () => {
+    // `{ codex: { opus: "gpt-5-pro" } }` is the documented shorthand.
+    // Model is overridden to gpt-5-pro; effort now derives from the universal
+    // config-driven path (gsd-planner heavy tier → 'xhigh'), not from the catalog.
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: { codex: { opus: 'gpt-5-pro' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5-pro');
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('partial-object override (no model) keeps model from built-in; unified effort from routing tier', () => {
+    // `{ codex: { opus: { reasoning_effort: "low" } } }` preserves the built-in model.
+    // Under unification, the catalog reasoning_effort field is not read for effort resolution;
+    // effort comes from routing_tier_defaults (gsd-planner heavy → 'xhigh').
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: { codex: { opus: { reasoning_effort: 'low' } } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-sol');
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('full-object override: model replaced; unified effort from routing tier (not catalog field)', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: {
+        codex: { opus: { model: 'custom-model', reasoning_effort: 'minimal' } },
+      },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'custom-model');
+    // Effort comes from routing_tier_defaults, not the catalog 'minimal' field.
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codex', eff);
+    assert.strictEqual(rendered.param, 'model_reasoning_effort');
+    assert.strictEqual(rendered.value, 'xhigh');
+  });
+
+  test('resolveTierEntry helper: shorthand merge', () => {
+    // Direct unit-test of the shared helper used by core + install.js.
+    const entry = resolveTierEntry({
+      runtime: 'codex',
+      tier: 'opus',
+      overrides: { codex: { opus: 'gpt-5-pro' } },
+    });
+    assert.deepStrictEqual(entry, { model: 'gpt-5-pro', reasoning_effort: 'xhigh' });
+  });
+
+  test('resolveTierEntry helper: partial-object merge keeps built-in model', () => {
+    const entry = resolveTierEntry({
+      runtime: 'codex',
+      tier: 'opus',
+      overrides: { codex: { opus: { reasoning_effort: 'low' } } },
+    });
+    assert.deepStrictEqual(entry, { model: 'gpt-5.6-sol', reasoning_effort: 'low' });
+  });
+});
+
+// ─── Unknown runtime render safety (finding #3 spirit) ──────────────────────
+describe('issue #2517: unknown runtime render param is null (effort does not leak to install path)', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('unknown runtime: model resolves via override; render param is null (no wire param leaked)', () => {
+    // Under unification, effort always resolves (universal), but renderEffortForRuntime
+    // returns param=null for unknown runtimes — no effort leaks to the install path.
+    writeConfig(tmpDir, {
+      runtime: 'mystery',
+      model_profile: 'quality',
+      model_profile_overrides: {
+        mystery: { opus: { model: 'mystery-opus', reasoning_effort: 'xhigh' } },
+      },
+    });
+    // Model still resolves (overrides are honored).
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'mystery-opus');
+    // Effort resolves universally but the unknown runtime has no wire param.
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('mystery', eff);
+    assert.strictEqual(rendered.param, null);
+  });
+
+  test('typo runtime "codx": render param is null (no leak into install path)', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codx',
+      model_profile: 'quality',
+      model_profile_overrides: { codx: { opus: { model: 'gpt-5.6-terra', reasoning_effort: 'xhigh' } } },
+    });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    const rendered = renderEffortForRuntime('codx', eff);
+    assert.strictEqual(rendered.param, null);
+  });
+});
+
+// ─── Unknown runtime / unknown tier ─────────────────────────────────────────
+describe('issue #2517: unknown runtime + safe fallback', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('unknown runtime falls back to Claude-alias safe default (no Codex IDs leaked)', () => {
+    writeConfig(tmpDir, { runtime: 'mystery-runtime', model_profile: 'quality' });
+    // Should NOT emit gpt-5.6-sol — should fall back to Claude alias
+    const resolved = resolveModelInternal(tmpDir, 'gsd-planner');
+    assert.notStrictEqual(resolved, 'gpt-5.6-sol');
+    assert.strictEqual(resolved, 'opus');
+  });
+
+  test('unknown runtime + user-provided overrides for that runtime — uses overrides', () => {
+    writeConfig(tmpDir, {
+      runtime: 'mystery-runtime',
+      model_profile: 'quality',
+      model_profile_overrides: {
+        'mystery-runtime': { opus: 'mystery-opus' },
+      },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'mystery-opus');
+  });
+
+  test('runtime:"codex" but missing model_profile_overrides[codex] uses spec defaults', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    // No model_profile_overrides at all — built-in Codex defaults take over
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'gpt-5.6-sol');
+  });
+});
+
+// ─── Schema validation (config-set time + load time) ────────────────────────
+describe('issue #2517: VALID_CONFIG_KEYS schema', () => {
+  test('"runtime" is a valid config key', () => {
+    assert.strictEqual(isValidConfigKey('runtime'), true);
+  });
+
+  test('model_profile_overrides.codex.opus is valid', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.codex.opus'), true);
+  });
+
+  test('model_profile_overrides.codex.sonnet is valid', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.codex.sonnet'), true);
+  });
+
+  test('model_profile_overrides.codex.haiku is valid', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.codex.haiku'), true);
+  });
+
+  test('model_profile_overrides.claude.opus is valid', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.claude.opus'), true);
+  });
+
+  test('model_profile_overrides with unknown runtime is valid (free-string runtime)', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.acme.opus'), true);
+  });
+
+  test('model_profile_overrides with bogus tier is rejected', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.codex.banana'), false);
+  });
+
+  test('model_profile_overrides without tier is rejected', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides.codex'), false);
+  });
+
+  test('model_profile_overrides root key alone is rejected (must include runtime+tier)', () => {
+    assert.strictEqual(isValidConfigKey('model_profile_overrides'), false);
+  });
+});
+
+// ─── loadConfig validation warnings (review findings #10, #13) ──────────────
+describe('issue #2517: loadConfig warns on unknown runtime/tier (findings #10, #13)', () => {
+  const { loadConfig } = require('../gsd-core/bin/lib/config-loader.cjs');
+  let tmpDir;
+  let origWrite;
+  let captured;
+  beforeEach(() => {
+    isolateHome();
+    tmpDir = createTempProject();
+    resetRuntimeWarningCaches();
+    captured = [];
+    origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { captured.push(String(chunk)); return true; };
+  });
+  afterEach(() => { process.stderr.write = origWrite; cleanup(tmpDir); restoreHome(); });
+
+  test('unknown runtime triggers a stderr warning', () => {
+    writeConfig(tmpDir, { runtime: 'codx', model_profile: 'quality' });
+    loadConfig(tmpDir);
+    const joined = captured.join('');
+    assert.match(joined, /unknown value "codx"/);
+  });
+
+  test('known runtime does NOT trigger a runtime warning', () => {
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    loadConfig(tmpDir);
+    const joined = captured.join('');
+    assert.doesNotMatch(joined, /unknown value/);
+  });
+
+  test('unknown tier in overrides triggers a stderr warning', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile_overrides: { codex: { banana: 'whatever' } },
+    });
+    loadConfig(tmpDir);
+    const joined = captured.join('');
+    assert.match(joined, /unknown tier "banana"/);
+  });
+
+  test('unknown runtime in overrides triggers a stderr warning', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile_overrides: { mystery: { opus: 'whatever' } },
+    });
+    loadConfig(tmpDir);
+    const joined = captured.join('');
+    assert.match(joined, /model_profile_overrides\.mystery\.\* uses unknown runtime/);
+  });
+
+  test('every name in KNOWN_RUNTIMES survives the warning gate', () => {
+    // Smoke check: `KNOWN_RUNTIMES` must list every runtime `bin/install.js`
+    // emits for, otherwise legitimate users get spammed at every loadConfig.
+    for (const r of KNOWN_RUNTIMES) {
+      assert.ok(typeof r === 'string' && r.length > 0);
+    }
+  });
+});
+
+// ─── End-to-end: per-project config -> Codex TOML emit (finding #1) ─────────
+describe('issue #2517: install end-to-end — per-project config reaches Codex TOML (finding #1)', () => {
+  // Load install.js in test-mode so its module exports are populated.
+  const prevTestMode = process.env.GSD_TEST_MODE;
+  process.env.GSD_TEST_MODE = '1';
+  const installMod = require('../bin/install.js');
+  if (prevTestMode === undefined) delete process.env.GSD_TEST_MODE;
+  else process.env.GSD_TEST_MODE = prevTestMode;
+  const { readGsdRuntimeProfileResolver, generateCodexAgentToml } = installMod;
+
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('readGsdRuntimeProfileResolver picks up runtime from .planning/config.json', () => {
+    // No ~/.gsd/defaults.json (HOME is isolated tmpdir). Per-project config alone
+    // must drive the resolver — pre-fix, it returned null.
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(tmpDir);
+    assert.ok(resolver, 'expected a resolver from per-project config');
+    assert.strictEqual(resolver.runtime, 'codex');
+    const entry = resolver.resolve('gsd-planner');
+    assert.deepStrictEqual(entry, { model: 'gpt-5.6-sol', reasoning_effort: 'xhigh' });
+  });
+
+  test('per-project config wins over global ~/.gsd/defaults.json', () => {
+    fs.mkdirSync(path.join(_isolatedHome, '.gsd'), { recursive: true });
+    fs.writeFileSync(
+      path.join(_isolatedHome, '.gsd', 'defaults.json'),
+      JSON.stringify({ runtime: 'claude', model_profile: 'budget' })
+    );
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(tmpDir);
+    assert.strictEqual(resolver.runtime, 'codex');
+    const entry = resolver.resolve('gsd-planner');
+    assert.strictEqual(entry.model, 'gpt-5.6-sol');
+  });
+
+  test('generated Codex TOML omits model = and model_reasoning_effort = lines when only the resolver would have supplied them (#3241)', () => {
+    // #3241 flips this: the runtime-resolver auto-embed (D1) was removed, so a
+    // resolver alone with no explicit model_overrides no longer pins a model,
+    // and #838's coupling means the reasoning-effort line is omitted too.
+    writeConfig(tmpDir, { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(tmpDir);
+    const toml = generateCodexAgentToml(
+      'gsd-planner',
+      '---\nname: gsd-planner\ndescription: Planner agent\n---\nBody.\n',
+      null,
+      resolver
+    );
+    assert.doesNotMatch(toml, /^model = "gpt-5\.6-sol"$/m);
+    assert.doesNotMatch(toml, /^model_reasoning_effort = "xhigh"$/m);
+  });
+
+  test('generated TOML always includes model_reasoning_effort even when model_profile_overrides sets reasoning_effort to empty (#443 unified) (#3241: model now pinned via explicit model_overrides, not the resolver alone)', () => {
+    // Under the unified effort design (#443), model_reasoning_effort in the Codex TOML
+    // is driven by the unified effort resolver (resolveInstallTimeEffort / effortCfg),
+    // NOT by model_profile_overrides.reasoning_effort. Setting reasoning_effort: '' in
+    // model_profile_overrides does NOT suppress the unified effort when a model IS
+    // pinned — the TOML carries a valid model_reasoning_effort drawn from the agent's
+    // routing tier.
+    // #3241: the resolver alone no longer pins a model (D1), so this test now supplies
+    // an explicit model_overrides pin ('custom', a real-looking Codex id — row 4,
+    // "unchanged") to keep exercising the unrelated property under test: that
+    // model_profile_overrides.reasoning_effort is ignored by the unified resolver.
+    // gsd-planner is a heavy-tier agent → unified default resolves to "xhigh".
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      model_profile: 'quality',
+      model_profile_overrides: { codex: { opus: { model: 'custom', reasoning_effort: '' } } },
+    });
+    const resolver = readGsdRuntimeProfileResolver(tmpDir);
+    const toml = generateCodexAgentToml(
+      'gsd-planner',
+      '---\nname: gsd-planner\n---\nBody.\n',
+      { 'gsd-planner': 'custom' },
+      resolver
+    );
+    // Explicit model_overrides pin is respected (#3241 row 4 — unchanged).
+    assert.match(toml, /^model = "custom"$/m);
+    // Unified effort always fires when a model is pinned — model_reasoning_effort is
+    // present and valid, ignoring model_profile_overrides.reasoning_effort.
+    assert.match(toml, /^model_reasoning_effort = "(minimal|low|medium|high|xhigh)"$/m);
+    // gsd-planner is heavy-tier, so with no effortCfg the manifest tier default applies → xhigh.
+    assert.match(toml, /^model_reasoning_effort = "xhigh"$/m);
+  });
+
+  test('resolver returns null with no global, no per-project config', () => {
+    // Sanity: nothing configured -> nothing emitted. Pre-existing back-compat.
+    const resolver = readGsdRuntimeProfileResolver(tmpDir);
+    assert.strictEqual(resolver, null);
+  });
+
+  test('inline require paths resolve relative to install.js __dirname (finding #6)', () => {
+    // Defensive: assert the lib files install.js requires actually exist at
+    // resolver-construction time. Catches accidental relative-path drift in CI.
+    const installDir = path.dirname(require.resolve('../bin/install.js'));
+    const libDir = path.join(installDir, '..', 'gsd-core', 'bin', 'lib');
+    assert.ok(fs.existsSync(path.join(libDir, 'model-catalog.cjs')));
+    assert.ok(fs.existsSync(path.join(libDir, 'model-profiles.cjs')));
+  });
+});
+
+// ─── RUNTIME_PROFILE_MAP single source of truth (finding #16) ───────────────
+describe('issue #2517: RUNTIME_PROFILE_MAP single source of truth (finding #16)', () => {
+  test('install.js consumes the same map as model-catalog.cjs', () => {
+    // `bin/install.js` must NOT carry its own duplicate copy of the map.
+    // The shared resolver imported in install.js exposes `runtime` and the
+    // entries through `resolveTierEntry`, so any future drift between the two
+    // files would surface as a test failure here rather than a silent bug.
+    const codexOpus = RUNTIME_PROFILE_MAP.codex?.opus;
+    assert.deepStrictEqual(codexOpus, { model: 'gpt-5.6-sol', reasoning_effort: 'xhigh' });
+    const claudeOpus = RUNTIME_PROFILE_MAP.claude?.opus;
+    assert.deepStrictEqual(claudeOpus, { model: 'claude-opus-4-8' });
+  });
+});
+
+// #1928: the "gemini" runtime tier-resolution suite was removed with the
+// sunset Gemini CLI runtime. The gemini-3.x models remain in the catalog for
+// Antigravity (which runs on the Gemini backend and carries its own
+// runtimeTierDefaults); Antigravity's tier resolution is covered elsewhere.
+
+// ─── Issue #2612: qwen runtime tier resolution ───────────────────────────────
+describe('issue #2612: runtime "qwen" — Qwen tier resolution', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('opus tier -> qwen3-max-2026-01-23', () => {
+    writeConfig(tmpDir, { runtime: 'qwen', model_profile: 'quality' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'qwen3-max-2026-01-23');
+  });
+
+  test('sonnet tier -> qwen3-coder-plus', () => {
+    writeConfig(tmpDir, { runtime: 'qwen', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'qwen3-coder-plus');
+  });
+
+  test('haiku tier -> qwen3-coder-next', () => {
+    writeConfig(tmpDir, { runtime: 'qwen', model_profile: 'budget' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'qwen3-coder-next');
+  });
+
+  test('qwen: effort resolves universally but render param is null (no wire param)', () => {
+    writeConfig(tmpDir, { runtime: 'qwen', model_profile: 'quality' });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    assert.strictEqual(renderEffortForRuntime('qwen', eff).param, null);
+  });
+});
+
+// ─── Issue #2612: opencode runtime tier resolution ───────────────────────────
+describe('issue #2612: runtime "opencode" — OpenCode tier resolution', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('opus tier -> anthropic/claude-opus-4-8', () => {
+    writeConfig(tmpDir, { runtime: 'opencode', model_profile: 'quality' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'anthropic/claude-opus-4-8');
+  });
+
+  test('sonnet tier -> anthropic/claude-sonnet-5', () => {
+    writeConfig(tmpDir, { runtime: 'opencode', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'anthropic/claude-sonnet-5');
+  });
+
+  test('haiku tier -> anthropic/claude-haiku-4-5', () => {
+    writeConfig(tmpDir, { runtime: 'opencode', model_profile: 'budget' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'anthropic/claude-haiku-4-5');
+  });
+
+  test('opencode: effort resolves universally but render param is null (no wire param)', () => {
+    writeConfig(tmpDir, { runtime: 'opencode', model_profile: 'quality' });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    assert.strictEqual(renderEffortForRuntime('opencode', eff).param, null);
+  });
+});
+
+// ─── Issue #2093: kilo runtime tier resolution ───────────────────────────────
+// Kilo is an OpenCode fork and shares the IDENTICAL built-in tier IDs (UPGRADE 2
+// / ADR-1239). Kilo moved from Group B (no built-in defaults) to Group A here.
+describe('issue #2093: runtime "kilo" — Kilo tier resolution', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('opus tier -> anthropic/claude-opus-4-8', () => {
+    writeConfig(tmpDir, { runtime: 'kilo', model_profile: 'quality' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'anthropic/claude-opus-4-8');
+  });
+
+  test('sonnet tier -> anthropic/claude-sonnet-5', () => {
+    writeConfig(tmpDir, { runtime: 'kilo', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'anthropic/claude-sonnet-5');
+  });
+
+  test('haiku tier -> anthropic/claude-haiku-4-5', () => {
+    writeConfig(tmpDir, { runtime: 'kilo', model_profile: 'budget' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'anthropic/claude-haiku-4-5');
+  });
+
+  test('kilo: effort resolves universally but render param is null (no wire param)', () => {
+    writeConfig(tmpDir, { runtime: 'kilo', model_profile: 'quality' });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    assert.strictEqual(renderEffortForRuntime('kilo', eff).param, null);
+  });
+});
+
+// ─── Issue #2612: copilot runtime tier resolution ────────────────────────────
+describe('issue #2612: runtime "copilot" — Copilot tier resolution', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('opus tier -> claude-opus-4-8', () => {
+    writeConfig(tmpDir, { runtime: 'copilot', model_profile: 'quality' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-8');
+  });
+
+  test('sonnet tier -> claude-sonnet-5', () => {
+    writeConfig(tmpDir, { runtime: 'copilot', model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'claude-sonnet-5');
+  });
+
+  test('haiku tier -> claude-haiku-4-5', () => {
+    writeConfig(tmpDir, { runtime: 'copilot', model_profile: 'budget' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'claude-haiku-4-5');
+  });
+
+  test('copilot: effort resolves universally but render param is null (no wire param)', () => {
+    writeConfig(tmpDir, { runtime: 'copilot', model_profile: 'quality' });
+    const eff = resolveEffortInternal(tmpDir, 'gsd-planner');
+    assert.strictEqual(renderEffortForRuntime('copilot', eff).param, null);
+  });
+});
+
+// ─── Issue #2612: Group B runtimes fall through (no built-in map) ────────────
+describe('issue #2612: Group B runtimes — no built-in map, use unknown-runtime fallback', () => {
+  test('cursor is not in RUNTIME_PROFILE_MAP (uses unknown-runtime fallback)', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.cursor, undefined);
+  });
+
+  test('windsurf is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.windsurf, undefined);
+  });
+
+  test('cline is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.cline, undefined);
+  });
+
+  test('augment is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.augment, undefined);
+  });
+
+  test('trae is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.trae, undefined);
+  });
+
+  test('codebuddy is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.codebuddy, undefined);
+  });
+
+  test('antigravity is not in RUNTIME_PROFILE_MAP', () => {
+    assert.strictEqual(RUNTIME_PROFILE_MAP.antigravity, undefined);
+  });
+
+  test('cursor runtime falls back to Claude alias (not a Gemini/Qwen/etc ID)', () => {
+    const { createTempProject, cleanup } = require('./helpers.cjs');
+    isolateHome();
+    const tmpDir = createTempProject();
+    resetRuntimeWarningCaches();
+    try {
+      writeConfig(tmpDir, { runtime: 'cursor', model_profile: 'quality' });
+      // Should fall back to Claude alias, not emit a provider-specific ID
+      const resolved = resolveModelInternal(tmpDir, 'gsd-planner');
+      assert.strictEqual(resolved, 'opus');
+    } finally {
+      cleanup(tmpDir);
+      restoreHome();
+    }
+  });
+});
+
+// ─── Issue #2612: Partial override merge for new runtimes ────────────────────
+describe('issue #2612: partial override merge for new Group A runtimes', () => {
+  let tmpDir;
+  beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
+  afterEach(() => { cleanup(tmpDir); restoreHome(); });
+
+  test('qwen.opus override wins; sonnet and haiku use built-in defaults', () => {
+    writeConfig(tmpDir, {
+      runtime: 'qwen',
+      model_profile: 'quality',
+      model_profile_overrides: {
+        qwen: { opus: 'qwen3-max-custom' },
+      },
+    });
+    // opus is overridden
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'qwen3-max-custom');
+    // sonnet not overridden — quality -> sonnet for gsd-codebase-mapper
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'qwen3-coder-plus');
+  });
+
+  test('opencode.sonnet override wins; opus and haiku still use built-in defaults', () => {
+    writeConfig(tmpDir, {
+      runtime: 'opencode',
+      model_profile: 'balanced',
+      model_profile_overrides: {
+        opencode: { sonnet: 'anthropic/claude-sonnet-4-7' },
+      },
+    });
+    // gsd-planner balanced -> opus -> built-in default
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'anthropic/claude-opus-4-8');
+    // gsd-roadmapper balanced -> sonnet -> overridden
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'anthropic/claude-sonnet-4-7');
+    // gsd-codebase-mapper balanced -> haiku -> built-in default (haiku not overridden)
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'anthropic/claude-haiku-4-5');
+  });
+
+  test('copilot.haiku override wins; opus and sonnet still use built-in defaults', () => {
+    writeConfig(tmpDir, {
+      runtime: 'copilot',
+      model_profile: 'budget',
+      model_profile_overrides: {
+        copilot: { haiku: 'claude-haiku-4-6' },
+      },
+    });
+    // gsd-codebase-mapper budget -> haiku -> overridden
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'claude-haiku-4-6');
+    // gsd-planner budget -> sonnet -> built-in default
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-sonnet-5');
+  });
+
+  // #2093: kilo just moved into Group A — same partial-merge coverage as opencode.
+  test('kilo.sonnet override wins; opus and haiku still use built-in defaults', () => {
+    writeConfig(tmpDir, {
+      runtime: 'kilo',
+      model_profile: 'balanced',
+      model_profile_overrides: {
+        kilo: { sonnet: 'anthropic/claude-sonnet-4-7' },
+      },
+    });
+    // gsd-planner balanced -> opus -> built-in default
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'anthropic/claude-opus-4-8');
+    // gsd-roadmapper balanced -> sonnet -> overridden
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-roadmapper'), 'anthropic/claude-sonnet-4-7');
+    // gsd-codebase-mapper balanced -> haiku -> built-in default (haiku not overridden)
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'anthropic/claude-haiku-4-5');
+  });
+});
+  });
+}

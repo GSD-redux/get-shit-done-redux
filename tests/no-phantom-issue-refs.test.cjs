@@ -53,7 +53,7 @@ function buildRefRe(phantom) {
 const REF_RE = buildRefRe(PHANTOM);
 
 const SCAN_EXT = new Set(['.md', '.cjs', '.js', '.cts', '.ts']);
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.changeset']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.changeset', '.claude', '.planning']);
 // This guard file itself names the phantom numbers (by necessity); exclude it.
 const SELF = path.relative(ROOT, __filename);
 
@@ -124,6 +124,45 @@ test('walk() skips broken symlinks and does not throw ENOENT (#1545)', (t) => {
     assert.doesNotThrow(
       () => found.length && walk(fixture, []).forEach((fp) => fs.readFileSync(fp, 'utf8')),
       'readFileSync on every walk() result must not throw (no broken symlinks returned)',
+    );
+  } finally {
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- local cleanup in standalone guard test; no helpers import available (would introduce a test-dep cycle)
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('walk() does not scan ambient .claude/.planning content (#3321)', () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nophantom-ambient-'));
+  try {
+    fs.writeFileSync(path.join(fixture, 'real.md'), '# real, no phantom refs\n');
+
+    const claudeDir = path.join(fixture, '.claude', 'worktrees', 'some-agent-worktree');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'offender.md'), '#94729 sentinel phantom ref\n');
+
+    const planningDir = path.join(fixture, '.planning', 'notes');
+    fs.mkdirSync(planningDir, { recursive: true });
+    fs.writeFileSync(path.join(planningDir, 'offender.md'), '#94729 sentinel phantom ref\n');
+
+    const found = walk(fixture, []).map((f) => path.relative(fixture, f));
+
+    assert.ok(found.includes('real.md'), 'walk() must still include real.md at fixture root');
+    assert.ok(
+      !found.some((f) => f.startsWith('.claude' + path.sep)),
+      'walk() must NOT descend into .claude/',
+    );
+    assert.ok(
+      !found.some((f) => f.startsWith('.planning' + path.sep)),
+      'walk() must NOT descend into .planning/',
+    );
+
+    // Prove the offending content WOULD have matched if scanned -- i.e. this isn't a vacuous
+    // "no file happened to match" pass. Use a test-local sentinel, never the module PHANTOM.
+    const sentinelRe = buildRefRe(['94729']);
+    const offenderContent = fs.readFileSync(path.join(claudeDir, 'offender.md'), 'utf8');
+    assert.ok(
+      sentinelRe.test(offenderContent),
+      'sanity: sentinel ref pattern must actually match the offender content',
     );
   } finally {
     // eslint-disable-next-line local/no-raw-rmsync-in-tests -- local cleanup in standalone guard test; no helpers import available (would introduce a test-dep cycle)
