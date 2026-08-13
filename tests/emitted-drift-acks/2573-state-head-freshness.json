@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "health.md": "#2573 registers W024 (STATE.md written many commits ago \u2014 treat its contents as approximate) in the health workflow's <error_codes> table, so the advisory health now emits is documented where every other W-code is listed. The growth is that single table row written inline, not relocated into an eagerly @-imported reference (ADR-1610 Decision 4). 12246 -> 12348 bytes (+102), DEFAULT tier, cap 40960.\n\nAlso acknowledged here because the seam permits exactly one ack source per path and #2573 landed on next first (#2486 rebase, 2026-08-11): #2486 \u2014 adds the W025 diagnostic that detects a persisted workflow.use_worktrees:true on a runtime whose declared isolation cannot honor it, resolved via the sentinel-free inspect-dispatch-isolation query. Growth is the new check, its prose, and the error_codes row."
-  }
-}

@@ -1075,7 +1075,12 @@ describe('W023 — colliding phase directories (issue #2408)', () => {
     fs.mkdirSync(realDir, { recursive: true });
     fs.writeFileSync(path.join(realDir, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(realDir, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(realDir, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    // Real convention is `*-VERIFICATION.md` (gsd-core/workflows/verify-work.md:573's
+    // `ls "${PHASE_DIR}"/*-VERIFICATION.md` glob; verification.cts:425's
+    // `readVerificationStatus` matches the same `-VERIFICATION.md` suffix) — a bare
+    // `VERIFICATION.md` with no prefix is never produced by /gsd-verify-work and is
+    // invisible to the canonical reader `isPhaseComplete` now sources this rule from.
+    fs.writeFileSync(path.join(realDir, '05-real-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     // 05-real-stray/ — empty → Not Started
     fs.mkdirSync(path.join(phasesDir, '05-real-stray'), { recursive: true });

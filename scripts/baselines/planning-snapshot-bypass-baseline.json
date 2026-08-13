@@ -1,0 +1,12 @@
+{
+  "$comment": "ADR-3180 §8.1 rule 2 ratchet, owned by Phase 11 (#3309). See scripts/lint-planning-snapshot-bypass-drift.cjs. SHRINK-ONLY: entries are removed as cmdValidateHealth migrates onto src/planning-snapshot.cts; new or changed entries fail lint:ci. `count` is the number of byte-identical (file, text) occurrences acknowledged at this site — a run producing fewer fails as a partial migration, more fails as an unacknowledged new copy.",
+  "entries": [
+    {
+      "file": "src/verify.cts",
+      "text": "const stateContent = fs.readFileSync(statePath, 'utf-8');",
+      "derivation": "planning-snapshot-bypass",
+      "owner_issue": "#3309",
+      "count": 1
+    }
+  ]
+}

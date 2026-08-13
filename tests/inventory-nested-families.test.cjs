@@ -18,10 +18,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { collectNested } = require('../scripts/gen-inventory-manifest.cjs');
+const { collectNested, collectOneLevelSubdirs } = require('../scripts/gen-inventory-manifest.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const MD_ONLY = (f) => f.endsWith('.md');
+const CJS_ONLY = (f) => f.endsWith('.cjs');
 
 /** Build a fixture tree: {parentName: {subdirName: [fileNames]}}. */
 function buildTree(spec) {
@@ -173,4 +174,105 @@ test('collectNested is deterministic and sorted', (t) => {
   const second = collectNested({ root, subdir: 'steps', filter: MD_ONLY });
   assert.deepStrictEqual(first, second);
   assert.deepStrictEqual(first, ['alpha/steps/c.md', 'zeta/steps/a.md', 'zeta/steps/b.md']);
+});
+
+// ─── collectOneLevelSubdirs — cli_modules one-level subdir scan (#3309) ───────
+//
+// Unlike collectNested's FIXED subdir name (many parents, one shared child-dir
+// name like `steps`), this helper's `dir` IS the parent, and every one of ITS
+// child directories is the thing being collected — e.g. `bin/lib/health-diagnostic-rules/`.
+
+/** Build a fixture tree directly under `dir`: {subdirName: [fileNames]} \| flat file list. */
+function buildSubdirTree(dir, spec) {
+  for (const [subdir, files] of Object.entries(spec)) {
+    const subdirPath = path.join(dir, subdir);
+    fs.mkdirSync(subdirPath, { recursive: true });
+    for (const f of files) fs.writeFileSync(path.join(subdirPath, f), '// fixture\n');
+  }
+}
+
+test('collectOneLevelSubdirs picks up a file inside a subdirectory', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  buildSubdirTree(dir, { 'health-diagnostic-rules': ['root-existence.cjs'] });
+
+  assert.deepStrictEqual(
+    collectOneLevelSubdirs({ dir, filter: CJS_ONLY }),
+    ['health-diagnostic-rules/root-existence.cjs'],
+  );
+});
+
+test('collectOneLevelSubdirs merges multiple subdirectories, sorted', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  buildSubdirTree(dir, {
+    observability: ['redaction.cjs', 'event.cjs'],
+    'installer-migrations': ['001-x.cjs'],
+  });
+
+  assert.deepStrictEqual(
+    collectOneLevelSubdirs({ dir, filter: CJS_ONLY }),
+    ['installer-migrations/001-x.cjs', 'observability/event.cjs', 'observability/redaction.cjs'],
+  );
+});
+
+test('collectOneLevelSubdirs contributes nothing for an empty subdirectory', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, 'empty-subdir'), { recursive: true });
+
+  assert.deepStrictEqual(collectOneLevelSubdirs({ dir, filter: CJS_ONLY }), []);
+});
+
+test('collectOneLevelSubdirs ignores files directly in dir (flat scan owns those)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  fs.writeFileSync(path.join(dir, 'top-level.cjs'), '// fixture\n');
+  buildSubdirTree(dir, { subdir: ['nested.cjs'] });
+
+  assert.deepStrictEqual(collectOneLevelSubdirs({ dir, filter: CJS_ONLY }), ['subdir/nested.cjs']);
+});
+
+test('collectOneLevelSubdirs applies the filter and ignores non-matching files', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  buildSubdirTree(dir, { subdir: ['keep.cjs', 'skip.md', 'skip.json'] });
+
+  assert.deepStrictEqual(collectOneLevelSubdirs({ dir, filter: CJS_ONLY }), ['subdir/keep.cjs']);
+});
+
+test('collectOneLevelSubdirs does not recurse past one level', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  buildSubdirTree(dir, { subdir: ['top.cjs'] });
+  const deep = path.join(dir, 'subdir', 'deeper');
+  fs.mkdirSync(deep, { recursive: true });
+  fs.writeFileSync(path.join(deep, 'too-deep.cjs'), '// fixture\n');
+
+  assert.deepStrictEqual(collectOneLevelSubdirs({ dir, filter: CJS_ONLY }), ['subdir/top.cjs']);
+});
+
+test('collectOneLevelSubdirs on a missing dir contributes nothing rather than throwing', () => {
+  assert.deepStrictEqual(
+    collectOneLevelSubdirs({ dir: path.join(os.tmpdir(), 'gsd-3309-does-not-exist'), filter: CJS_ONLY }),
+    [],
+  );
+});
+
+test('collectOneLevelSubdirs skips a dangling symlink without crashing the walk', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('symlink creation requires elevation on Windows; the unstattable-entry path is asserted on macOS + Linux');
+    return;
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3309-onelevel-'));
+  t.after(() => cleanup(dir));
+  buildSubdirTree(dir, { subdir: ['real.cjs'] });
+  fs.symlinkSync(path.join(dir, 'subdir', 'nope.cjs'), path.join(dir, 'subdir', 'dangling.cjs'));
+
+  assert.deepStrictEqual(
+    collectOneLevelSubdirs({ dir, filter: CJS_ONLY }),
+    ['subdir/real.cjs'],
+    'one unreadable entry must not take down the whole scan',
+  );
 });
