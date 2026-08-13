@@ -96,10 +96,14 @@ function parseExecutorContract(md) {
       /`AUTO_CHAIN` or `AUTO_CFG`/.test(md) &&
       /HALT and surface it/i.test(md) &&
       /do NOT proceed to expansion tasks/i.test(md),
-    // Interactive: emit checkpoint:human-verify immediately after the tracer.
+    // Interactive: the branch exists and still names checkpoint:human-verify.
     interactiveHumanVerify:
       /Interactive run \(auto mode not active\)/i.test(md) &&
       /checkpoint:human-verify/.test(md),
+    // #3299: that checkpoint is now the FALLBACK, not the unconditional result.
+    // Pinning this here stops the pre-#3299 unconditional prose from being
+    // restored while the substring assertion above keeps passing.
+    interactiveIsConditional: /Interactive run \(auto mode not active\):\*\* [^\n]*HUMAN_VERIFY_MODE/i.test(md),
     // Cross-referenced in the checkpoint protocol section too.
     documentedInCheckpointProtocol: /\*\*Tracer feedback gate:\*\*/.test(md),
   };
@@ -194,9 +198,24 @@ describe('#1945 executor: post-tracer feedback gate', () => {
     assert.ok(c.autoHaltsOnFailure, 'autonomous run must halt (surfaced) before expansion when the tracer verify fails');
   });
 
-  // Acceptance: interactive run presents a human-verify checkpoint after the tracer.
-  test('interactive run emits checkpoint:human-verify after the tracer (acceptance #4)', () => {
-    assert.ok(c.interactiveHumanVerify, 'interactive run must emit checkpoint:human-verify immediately after the tracer');
+  // Acceptance #4, as narrowed by #3299. Originally "an interactive run ALWAYS
+  // emits checkpoint:human-verify after the tracer". That is no longer the
+  // contract: under human_verify_mode=end-of-phase an automated-only tracer
+  // verify auto-continues with no checkpoint. What survives of #1945's
+  // acceptance is that the interactive branch still HAS a checkpoint outcome —
+  // it is now the fallback rather than the unconditional result.
+  //
+  // Left as a bare `interactiveHumanVerify` substring check this test kept
+  // passing after #3299 purely because the strings still appear in the fallback
+  // clause, while its NAME asserted the opposite of shipped behavior — the same
+  // one-copy-stale drift #3299 itself is about. Suite 6 owns the conditional
+  // contract; this one is scoped to what #1945 still guarantees.
+  test('interactive run retains a checkpoint:human-verify outcome (acceptance #4, narrowed by #3299)', () => {
+    assert.ok(c.interactiveHumanVerify, 'interactive branch must still exist and still name checkpoint:human-verify');
+    assert.ok(
+      c.interactiveIsConditional,
+      'post-#3299 the interactive checkpoint is CONDITIONAL — the branch must consult HUMAN_VERIFY_MODE, not emit unconditionally',
+    );
   });
 
   test('gate is cross-referenced in the checkpoint protocol', () => {
@@ -263,8 +282,24 @@ describe('#1945 glossary + docs', () => {
     assert.match(COMMANDS_DOC, /\| `--no-tracer` \|/, 'COMMANDS.md flag table must include --no-tracer');
   });
 
-  test('docs/reference/plan-md.md task-types table includes tracer', () => {
-    assert.match(PLAN_MD_REF, /\| `tracer` \|/, 'plan-md.md Task types table must include a tracer row');
+  // Asserting only that the row EXISTS is what let the canonical schema table
+  // drift out of sync with shipped behavior after #3299 without CI noticing —
+  // CONTEXT.md names this file the canonical reference for the task-type
+  // contract, so a wrong row here is the authoritative wrong answer. Assert the
+  // row's CONTENT against the behavior actually shipped.
+  test('docs/reference/plan-md.md tracer row matches shipped gate behavior', () => {
+    const row = (PLAN_MD_REF.split(/\r?\n/).find((l) => l.startsWith('| `tracer` |')) || '');
+    assert.ok(row, 'plan-md.md Task types table must include a tracer row');
+    assert.match(row, /halt on failure/i, 'the row must state the autonomous halt-on-failure behavior');
+    assert.match(row, /human_verify_mode/, 'the row must state that interactive runs honor workflow.human_verify_mode (#3299)');
+    assert.match(row, /end-of-phase/, 'the row must name the end-of-phase default');
+    assert.match(row, /no\*{0,2} checkpoint/i, 'the row must state that an automated-only tracer continues with no checkpoint');
+    // The pre-#3299 unconditional claim must not survive here.
+    assert.doesNotMatch(
+      row,
+      /interactive runs present a `checkpoint:human-verify`\s*\|/,
+      'the row must not keep the pre-#3299 unconditional "interactive runs present a checkpoint" claim',
+    );
   });
 
   test('docs/how-to and docs/AGENTS reflect tracer-first + the executor gate', () => {
