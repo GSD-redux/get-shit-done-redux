@@ -645,7 +645,7 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
   });
 
   test('handler is a closed first-party enum', () => {
-    const allowed = [null, 'antigravity', 'openai-compatible', 'opencode'];
+    const allowed = [null, 'antigravity', 'openai-compatible', 'opencode', 'zcode'];
     for (const lane of REVIEWER_LANES) {
       assert.ok(allowed.includes(lane.handler), `${lane.slug}: unexpected handler ${lane.handler}`);
     }
@@ -653,7 +653,7 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
       REVIEWER_LANES.filter((l) => l.handler !== null).map((l) => l.slug).sort(),
       // `opencode` joined in Phase 5b: its review is reconstructed from assistant text parts of a
       // --format json stream, which data cannot express (#1936).
-      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama', 'opencode'],
+      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama', 'opencode', 'zcode'],
     );
   });
 

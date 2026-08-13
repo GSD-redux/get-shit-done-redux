@@ -150,6 +150,8 @@ export interface ReviewerSelectionInput {
   configuredDefaultReviewers?: unknown;
   /** #1517: the `review.reviewer_instances` config object. */
   reviewerInstances?: unknown;
+  /** Reviewers removed after detection and after `--all` expansion. */
+  excludedReviewers?: unknown;
 }
 
 export interface ReviewerSelectionResult {
@@ -162,6 +164,23 @@ export interface ReviewerSelectionResult {
   resolvedInstances: ResolvedReviewer[];
   /** #1517: true when ≥2 selected instances share a base cli (consensus caveat). */
   sharedAdapterCaveat: boolean;
+}
+
+export function normalizeExcludedReviewers(rawValue: unknown): { values: string[]; errors: string[] } {
+  if (rawValue === undefined || rawValue === null) return { values: [], errors: [] };
+  if (!Array.isArray(rawValue)) {
+    return { values: [], errors: ['review.excluded_reviewers must be a JSON array of reviewer slugs'] };
+  }
+  const values = new Set<string>();
+  const errors: string[] = [];
+  for (const item of rawValue) {
+    if (typeof item !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(item)) {
+      errors.push(`invalid reviewer slug in review.excluded_reviewers: ${String(item)}`);
+      continue;
+    }
+    values.add(item.toLowerCase());
+  }
+  return { values: [...values], errors };
 }
 
 export function normalizeConfiguredDefaultReviewers(
@@ -291,12 +310,18 @@ export function resolveReviewerSelection(
     input.configuredDefaultReviewers,
   );
   const normalizedInstances = normalizeReviewerInstances(input.reviewerInstances);
+  const normalizedExclusions = normalizeExcludedReviewers(input.excludedReviewers);
+  const excluded = new Set(normalizedExclusions.values);
   const instances = normalizedInstances.instances;
   const instancesConfigured = Object.keys(instances).length > 0;
 
   const warnings: string[] = [];
   const infos: string[] = [];
-  const errors: string[] = [...normalizedDefaults.errors, ...normalizedInstances.errors];
+  const errors: string[] = [
+    ...normalizedDefaults.errors,
+    ...normalizedInstances.errors,
+    ...normalizedExclusions.errors,
+  ];
 
   let source = 'no_config_all_detected';
   let selected: string[] = [];
@@ -368,6 +393,16 @@ export function resolveReviewerSelection(
   } else {
     selected = [...detected];
   }
+
+  for (const slug of [...excluded].sort()) {
+    infos.push(`reviewer '${slug}' excluded by configuration`);
+  }
+  if (explicitFlags.size > 0) {
+    for (const slug of [...explicitFlags].filter((item) => excluded.has(item)).sort()) {
+      errors.push(`explicit reviewer '${slug}' is excluded by review.excluded_reviewers`);
+    }
+  }
+  selected = selected.filter((slug) => !excluded.has(slug));
 
   const selectedSorted = selected.sort();
 

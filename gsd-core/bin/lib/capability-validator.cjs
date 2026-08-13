@@ -862,7 +862,7 @@ const VALID_EVIDENCE_CLASSES  = new Set(['source-grounded', 'diff-only']);
 // `text` parts of a `--format json` stream — a parse, not a copy. Expressing that
 // as data would need an `outputChannel: 'json-parts'` plus a selector expression,
 // i.e. exactly the ad-hoc interpreter the admission rule exists to prevent.
-const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible', 'opencode']);
+const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible', 'opencode', 'zcode']);
 
 // D2 — `transport` selects the invoke sub-shape. A manifest carrying fields from
 // BOTH sub-shapes, or from NEITHER, has undefined meaning and fails validation.

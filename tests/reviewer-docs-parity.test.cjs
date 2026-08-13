@@ -678,7 +678,7 @@ describe('reviewer docs parity — the shipped repo', () => {
 
   test('the shipped descriptor is non-empty', () => {
     // Guards the vacuous-truth failure mode: an empty roster trivially satisfies every check below.
-    assert.ok(REVIEWER_LANES.length >= 12, 'expected at least the 12 shipped lanes');
+    assert.ok(REVIEWER_LANES.length >= 13, 'expected at least the 13 shipped lanes');
   });
 
   test('the shipped docs satisfy reviewer lane parity', () => {

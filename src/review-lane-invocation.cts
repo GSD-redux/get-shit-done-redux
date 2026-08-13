@@ -3,7 +3,7 @@
  *
  * Turns a DECLARED lane (`review-lane-descriptor.cts`) plus resolved configuration into a concrete,
  * inspectable INVOCATION PLAN. Phase 1's module declares; this one resolves; `review-lane-runner`
- * executes. The split exists so the interesting half is pure: a plan is a value, so the twelve
+ * executes. The split exists so the interesting half is pure: a plan is a value, so the thirteen
  * shipped lanes can be asserted against a golden table without spawning anything.
  *
  * WHY A GOLDEN TABLE AND NOT A FRESH DESIGN (Gall's Law). The 640 lines of hand-authored bash this
@@ -12,7 +12,7 @@
  * (Antigravity's three modes), #2176 (repo-root anchoring), #2589 (no jq on stock Windows), #2794
  * (Qwen's missing sidecar). A resolver designed from the descriptor TYPES would throw that away and
  * rebuild the bugs. So each lane's plan was derived from its leg, and `tests/review-lane-invocation`
- * asserts all twelve against a frozen table. Old and new cannot literally run in parallel, so that
+ * asserts all thirteen against a frozen table. Old and new cannot literally run in parallel, so that
  * table is the strangler-fig substitute — it is what makes this cutover safe rather than hopeful.
  *
  * PURE. No filesystem, no network, no subprocess, no clock. Configuration arrives through the
@@ -57,6 +57,8 @@ export const LANE_UNAVAILABLE = Object.freeze({
   EGRESS_HOST_CHANGED: 'egress_host_changed',
   BUDGET_TOO_SMALL: 'budget_too_small',
   BUDGET_TOOL_FAILED: 'budget_tool_failed',
+  MODEL_UNAVAILABLE: 'model_unavailable',
+  MISSING_MODEL_CONFIG: 'missing_model_config',
 } as const);
 
 export type LaneUnavailableReason =
@@ -101,6 +103,8 @@ export interface SpawnPlan {
    * non-string value is dropped, not coerced, for the same reason model values are not (below).
    */
   env: Readonly<Record<string, string>> | null;
+  /** Configured model override, retained for preflight diagnostics. */
+  model: string | null;
 }
 
 export interface HttpPlan {
@@ -133,7 +137,7 @@ export type ResolveResult =
   | { ok: false; reason: LaneUnavailableReason; detail: string; warnings: string[] };
 
 /** Every handler name the runner can dispatch. Mirrors `LaneHandler` (D6's closed enum). */
-const KNOWN_HANDLERS: ReadonlySet<string> = new Set(['antigravity', 'openai-compatible', 'opencode']);
+const KNOWN_HANDLERS: ReadonlySet<string> = new Set(['antigravity', 'openai-compatible', 'opencode', 'zcode']);
 
 export interface ResolveInput {
   lane: ReviewerLane;
@@ -500,6 +504,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       requiresBinaries,
       probe: lane.probe,
       env,
+      model,
     },
   };
 }

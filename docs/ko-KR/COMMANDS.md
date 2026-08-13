@@ -1247,6 +1247,7 @@ AI 시스템 구축을 포함하는 단계에 대한 AI-SPEC.md 디자인 계약
 | `--codex` | Codex CLI 검토 포함 |
 | `--coderabbit` | CodeRabbit 검토 포함 |
 | `--opencode` | OpenCode 검토 포함 (GitHub Copilot을 통해) |
+| `--zcode` | 비변경 계획 모드로 ZCode CLI 검토 포함 |
 | `--qwen` | Qwen Code 검토 포함 (Alibaba Qwen 모델) |
 | `--cursor` | Cursor 에이전트 검토 포함 |
 | `--agy` / `--antigravity` | Antigravity CLI 검토 포함 (Google 자격증명으로 무료) |

@@ -25,6 +25,7 @@ command -v qwen >/dev/null 2>&1 && echo "qwen:available" || echo "qwen:missing"
 command -v cursor-agent >/dev/null 2>&1 && echo "cursor:available" || echo "cursor:missing"
 command -v agy >/dev/null 2>&1 && echo "antigravity:available" || echo "antigravity:missing"
 command -v kimi >/dev/null 2>&1 && echo "kimi-code:available" || echo "kimi-code:missing"
+command -v zcode >/dev/null 2>&1 && echo "zcode:available" || echo "zcode:missing"
 
 # Check local model servers (OpenAI-compatible HTTP API — no CLI binary required)
 OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
@@ -77,6 +78,7 @@ Parse flags from `$ARGUMENTS`:
 - `--cursor` → include Cursor
 - `--agy` or `--antigravity` → include Antigravity CLI
 - `--kimi-code` → include Kimi CLI
+- `--zcode` → include ZCode CLI
 - `--ollama` → include Ollama (local server, OpenAI-compatible)
 - `--lm-studio` → include LM Studio (local server, OpenAI-compatible)
 - `--llama-cpp` → include llama.cpp (local server, OpenAI-compatible)
@@ -88,6 +90,10 @@ Reviewer-selection precedence:
 2. `--all`
 3. `review.default_reviewers`
 4. No key + no flags → all detected reviewers
+
+After detection and after expanding `--all`, apply `review.excluded_reviewers`. Report every removed
+lane as `excluded by configuration`, never as missing. An individual reviewer flag that names an
+excluded lane is a configuration error; do not silently override the denylist or run a thinner set.
 
 **Explicit reviewer flags are an assertion, not a preference (ADR-2782 D4).** A lane the user
 named on the command line and that cannot run is an **error**, surfaced and non-silent — even
@@ -106,6 +112,7 @@ user who wants a preferred set has `review.default_reviewers`. Both stay lenient
 - Known-but-undetected slugs emit an info note and are ignored — a configured default is a
   preference evaluated across many hosts, so a subset being present is expected, not an error
 - If all configured reviewers are unavailable, fail with an actionable message
+- Exclusions are applied to configured defaults and to the no-config all-detected fallback too
 
 <!-- gsd:section id="reviewer-instances-note-1" when="state:reviewer-instances-configured" -->
 If `section_manifest` is `null` or `"reviewer-instances-note-1"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-1.md`. Otherwise skip — do not read the file.
@@ -121,6 +128,7 @@ No external AI CLIs found. Install at least one:
 - qwen: https://github.com/nicepkg/qwen-code (Alibaba Qwen models)
 - cursor: https://cursor.com (Cursor IDE agent mode)
 - agy: curl -fsSL https://antigravity.google/cli/install.sh | bash (Antigravity CLI — free with Google credentials)
+- zcode: install ZCode, expose its bundled CLI as `zcode`, then configure a model in Manage Models
 
 Then run /gsd:review again.
 ```
@@ -296,6 +304,8 @@ own `timeoutFloorMs` and the runner enforces it internally, but the **Bash tool 
 loop below must still be given a high `timeout:`** — at least `900000`, and `1200000` when Codex or
 headless Claude are in the selection — or the host kills the whole loop mid-lane. On Claude Code,
 raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it.
+When the host is Codex with lean-ctx, invoke the encompassing `ctx_shell` call with
+`timeout_ms: 1200000`; `timeout` is not the parameter name and silently leaves the 120-second default.
 
 A silent empty output after a long run is a **timeout kill, not a crash** — the Codex `0xc0000142`
 misdiagnosis persisted for exactly this reason, because an empty result cannot distinguish the two
@@ -396,7 +406,8 @@ review: it keeps its "failed or returned empty output" header (#2494/#2605/#2794
 
 A lane that will not run reports a typed reason rather than an empty file — `missing_binary`,
 `probe_failed`, `probe_timeout`, `missing_required_binary`, `host_unreachable`,
-`egress_host_changed`, `unknown_handler`, `budget_too_small`. **`egress_host_changed` means the lane
+`egress_host_changed`, `unknown_handler`, `model_unavailable`, `missing_model_config`,
+`budget_too_small`. **`egress_host_changed` means the lane
 was consented to send plans to one destination and `.planning/config.json` now names another; it is
 blocked, not silently redirected** (ADR-2782 D5).
 
@@ -424,7 +435,7 @@ instances print a one-line shared-adapter caveat. Format in
 ```markdown
 ---
 phase: {N}
-reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, antigravity, ollama, lm_studio, llama_cpp]  # populate at runtime with only the reviewers actually invoked
+reviewers: [gemini, claude, codex, coderabbit, opencode, zcode, qwen, cursor, antigravity, ollama, lm_studio, llama_cpp, kimi-code]  # populate at runtime with only the reviewers actually invoked
 reviewed_at: {ISO timestamp}
 plans_reviewed: [{list of PLAN.md files}]
 trimmed_reviewers:        # only present if at least one reviewer was trimmed
@@ -465,6 +476,10 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 ## Consensus Summary
 
 {synthesize common concerns across all reviewers. CodeRabbit is a diff-only reviewer (it never received the source-grounding prompt), so do not weight its verdict as a grounded plan review — fold in its diff findings, but base plan-level consensus on the prompt-fed reviewers. A reviewer output carrying the `[reviewed-without-repo-access]` marker (or beginning with `REVIEWED-WITHOUT-REPO-ACCESS`) ran without repo access (#2176) — treat it the same way: note its concerns, but do not count its verdict at full consensus weight.}
+
+Count only substantive, non-stub, source-grounded responses. If fewer than two qualify, state
+`Insufficient source-grounded responses for consensus` and do not claim agreed strengths or agreed
+concerns. A section existing on disk is not proof that its reviewer answered.
 
 ### Agreed Strengths
 {strengths mentioned by 2+ reviewers}

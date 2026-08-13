@@ -1524,14 +1524,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `--agent` is OpenCode's native subagent flag and is honoured only by adapters that have the
     // concept; ignored elsewhere rather than passed to a tool that would reject it.
     if (instanceAgent && entry.slug === 'opencode' && entry.plan.transport === 'spawn') {
-      const runIdx = entry.plan.argv.indexOf('run');
-      const insertAt = runIdx === -1 ? 0 : runIdx + 1;
-      entry.plan.argv = [
-        ...entry.plan.argv.slice(0, insertAt),
-        '--agent',
-        instanceAgent,
-        ...entry.plan.argv.slice(insertAt),
-      ];
+      const existingAgent = entry.plan.argv.indexOf('--agent');
+      if (existingAgent !== -1 && existingAgent + 1 < entry.plan.argv.length) {
+        entry.plan.argv[existingAgent + 1] = instanceAgent;
+      } else {
+        const runIdx = entry.plan.argv.indexOf('run');
+        const insertAt = runIdx === -1 ? 0 : runIdx + 1;
+        entry.plan.argv = [
+          ...entry.plan.argv.slice(0, insertAt),
+          '--agent',
+          instanceAgent,
+          ...entry.plan.argv.slice(insertAt),
+        ];
+      }
     }
 
     // `--prompt-file` lets the caller substitute a budget-trimmed prompt. Applied to whichever
@@ -4168,4 +4173,3 @@ module.exports = {
   skipsRootResolution,
   resolveMainWorktreeCwd,
 };
-

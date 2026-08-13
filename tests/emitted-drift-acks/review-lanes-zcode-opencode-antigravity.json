@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-core/bin/gsd-tools.cjs": "The OpenCode reviewer now preserves the declared read-only Plan agent while adding model overrides, so the shared runtime emitted to every host changes deliberately.",
+    "gsd-core/bin/shared/config-schema.manifest.json": "The public review.excluded_reviewers denylist is shipped to every runtime deliberately.",
+    "gsd-core/workflows/review.md": "The review workflow deliberately adds ZCode, persistent reviewer exclusions, typed lane failures, and source-grounded consensus gating for every runtime.",
+    "review.md": "The shared review workflow grows to document and enforce ZCode, reviewer exclusions, bounded wrappers, typed failures, and source-grounded consensus."
+  }
+}

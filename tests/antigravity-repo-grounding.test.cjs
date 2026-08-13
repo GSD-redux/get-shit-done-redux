@@ -46,6 +46,23 @@ describe('#2176 — agy receives the repo under review', () => {
     assert.equal(argv[i + 1], ROOT);
   });
 
+  test('--add-dir grants both the repo and prompt directory without duplicates', () => {
+    const p = planFor('antigravity');
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying('--add-dir'));
+    const granted = argv.flatMap((arg, i) => arg === '--add-dir' ? [argv[i + 1]] : []);
+    assert.deepEqual(granted, [ROOT, RUN]);
+
+    const sameDir = antigravityArgv(p.argv, p.promptPath, RUN, helpSaying('--add-dir'));
+    const deduped = sameDir.flatMap((arg, i) => arg === '--add-dir' ? [sameDir[i + 1]] : []);
+    assert.deepEqual(deduped, [RUN]);
+  });
+
+  test('the lane is forced into sandboxed plan mode', () => {
+    const p = planFor('antigravity');
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying('--add-dir'));
+    assert.deepEqual(argv.slice(0, 3), ['--mode', 'plan', '--sandbox']);
+  });
+
   test('--add-dir is CAPABILITY-PROBED, not assumed', () => {
     // An older agy rejects an unknown flag outright. A lane that fails to start is worse than one
     // running on the prompt anchor alone, so support is probed rather than presumed.

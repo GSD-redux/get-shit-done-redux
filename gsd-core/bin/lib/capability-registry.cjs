@@ -2730,10 +2730,16 @@ const capabilities = {
         "binary": "opencode",
         "args": [
           "run",
+          "--pure",
+          "--agent",
+          "plan",
           "{{model}}",
           "{{effort}}",
           "--format",
           "json",
+          "--print-logs",
+          "--log-level",
+          "ERROR",
           "-"
         ],
         "promptChannel": "stdin",
@@ -3759,7 +3765,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.10.0",
     "title": "ZCode",
-    "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
+    "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2 with a read-only cross-AI reviewer lane; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -3863,6 +3869,43 @@ const capabilities = {
       "hostBehaviors": {
         "skipSharedHooksInstall": true
       }
+    },
+    "reviewer": {
+      "slug": "zcode",
+      "flags": [
+        "--zcode"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "zcode"
+      },
+      "invoke": {
+        "binary": "zcode",
+        "args": [
+          "--prompt",
+          "Review the attached request. Reply only with the resulting markdown review. Begin with REVIEWED-WITHOUT-REPO-ACCESS if repository files cannot be verified.",
+          "--attach",
+          "{{prompt}}",
+          "--mode",
+          "plan",
+          "--disallowed-tools",
+          "Edit Write Bash",
+          "--no-color"
+        ],
+        "promptChannel": "argv",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "ZCode",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": null,
+      "handler": "zcode"
     }
   }
 };
@@ -6515,10 +6558,16 @@ const runtimes = {
         "binary": "opencode",
         "args": [
           "run",
+          "--pure",
+          "--agent",
+          "plan",
           "{{model}}",
           "{{effort}}",
           "--format",
           "json",
+          "--print-logs",
+          "--log-level",
+          "ERROR",
           "-"
         ],
         "promptChannel": "stdin",
@@ -7001,7 +7050,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.10.0",
     "title": "ZCode",
-    "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
+    "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2 with a read-only cross-AI reviewer lane; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -7105,6 +7154,43 @@ const runtimes = {
       "hostBehaviors": {
         "skipSharedHooksInstall": true
       }
+    },
+    "reviewer": {
+      "slug": "zcode",
+      "flags": [
+        "--zcode"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "zcode"
+      },
+      "invoke": {
+        "binary": "zcode",
+        "args": [
+          "--prompt",
+          "Review the attached request. Reply only with the resulting markdown review. Begin with REVIEWED-WITHOUT-REPO-ACCESS if repository files cannot be verified.",
+          "--attach",
+          "{{prompt}}",
+          "--mode",
+          "plan",
+          "--disallowed-tools",
+          "Edit Write Bash",
+          "--no-color"
+        ],
+        "promptChannel": "argv",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "ZCode",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": null,
+      "handler": "zcode"
     }
   }
 };

@@ -1546,6 +1546,7 @@ Reviewers are prompted to verify the plan's claims against the actual repository
 | `--codex` | Include Codex CLI review |
 | `--coderabbit` | Include CodeRabbit review |
 | `--opencode` | Include OpenCode review (via GitHub Copilot) |
+| `--zcode` | Include ZCode CLI review in non-mutating plan mode |
 | `--qwen` | Include Qwen Code review (Alibaba Qwen models) |
 | `--cursor` | Include Cursor agent review |
 | `--agy` / `--antigravity` | Include Antigravity CLI review (free with Google credentials) |

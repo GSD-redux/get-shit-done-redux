@@ -113,7 +113,7 @@ describe('Antigravity lane — #2073 mode 2 (a pinned model that 404s)', () => {
 
   test('an absent log still yields the pre-session-stall tell', () => {
     const out = antigravityDiagnostic(deps());
-    assert.ok(out.includes('pre-session-stall'));
+    assert.ok(out.includes('cause=pre_session_stall'));
     assert.ok(!out.includes('agy models'), 'no hint should be invented without evidence');
   });
 });
@@ -198,6 +198,6 @@ describe('Antigravity lane — transcript fallback and staleness', () => {
     const r = await runLane(p, d, { repoRoot: ROOT });
     assert.equal(r.stubbed, true);
     assert.ok(d.files[p.reviewPath].includes('failed or returned empty output'));
-    assert.ok(d.files[p.reviewPath].includes('pre-session-stall'));
+    assert.ok(d.files[p.reviewPath].includes('cause=pre_session_stall'));
   });
 });

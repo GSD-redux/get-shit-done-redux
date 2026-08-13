@@ -117,6 +117,47 @@ describe('resolveReviewerSelection', () => {
     assert.ok(r.selected.includes('claude'));
   });
 
+  test('all_flag applies excluded_reviewers after detection and reports exclusions', () => {
+    const r = resolveReviewerSelection({
+      detected: ['gemini', 'llama_cpp'],
+      explicitFlags: [],
+      allFlag: true,
+      excludedReviewers: ['llama_cpp'],
+    });
+    assert.deepStrictEqual(r.selected, ['gemini']);
+    assert.ok(r.infos.includes("reviewer 'llama_cpp' excluded by configuration"));
+    assert.ok(!r.infos.some((info) => /llama_cpp.*missing/i.test(info)));
+  });
+
+  test('an explicitly requested excluded reviewer is a configuration error', () => {
+    const r = resolveReviewerSelection({
+      detected: ['llama_cpp'],
+      explicitFlags: ['llama_cpp'],
+      excludedReviewers: ['llama_cpp'],
+    });
+    assert.deepStrictEqual(r.selected, []);
+    assert.ok(r.errors.includes("explicit reviewer 'llama_cpp' is excluded by review.excluded_reviewers"));
+  });
+
+  test('an explicitly requested missing zcode lane is an error', () => {
+    const r = resolveReviewerSelection({
+      detected: ['gemini'],
+      explicitFlags: ['zcode'],
+    });
+    assert.deepStrictEqual(r.selected, []);
+    assert.ok(r.errors.some((error) => error.includes("explicit reviewer 'zcode'")));
+  });
+
+  test('an undetected zcode lane is harmless when --all did not detect it', () => {
+    const r = resolveReviewerSelection({
+      detected: ['gemini'],
+      explicitFlags: [],
+      allFlag: true,
+    });
+    assert.deepStrictEqual(r.selected, ['gemini']);
+    assert.deepStrictEqual(r.errors, []);
+  });
+
   test('no_config_all_detected source — returns all detected when no config', () => {
     const r = resolveReviewerSelection({
       detected: ['gemini'],

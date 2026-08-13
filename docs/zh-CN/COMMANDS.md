@@ -1241,6 +1241,7 @@ node gsd-tools.cjs intel api-surface              # 渲染 api-map.json → API-
 | `--codex` | 包含 Codex CLI 审查 |
 | `--coderabbit` | 包含 CodeRabbit 审查 |
 | `--opencode` | 包含 OpenCode 审查（通过 GitHub Copilot） |
+| `--zcode` | 以非修改计划模式包含 ZCode CLI 审查 |
 | `--qwen` | 包含 Qwen Code 审查（阿里巴巴 Qwen 模型） |
 | `--cursor` | 包含 Cursor 代理审查 |
 | `--agy` / `--antigravity` | 包含 Antigravity CLI 审查（使用 Google 凭证免费） |

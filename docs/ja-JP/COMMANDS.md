@@ -1241,6 +1241,7 @@ AI システムの構築を含むフェーズの AI-SPEC.md デザインコン�
 | `--codex` | Codex CLI レビューを含める |
 | `--coderabbit` | CodeRabbit レビューを含める |
 | `--opencode` | OpenCode レビューを含める（GitHub Copilot 経由） |
+| `--zcode` | ZCode CLI レビューを含める（非変更のプランモード） |
 | `--qwen` | Qwen Code レビューを含める（Alibaba Qwen モデル） |
 | `--cursor` | Cursor エージェントレビューを含める |
 | `--agy` / `--antigravity` | Antigravity CLI レビューを含める（Google 認証情報で無料） |

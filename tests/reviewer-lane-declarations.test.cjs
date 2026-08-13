@@ -88,8 +88,8 @@ const ROOT = path.join(__dirname, '..');
 /** The five net-new lane-only `role:"reviewer"` capabilities (ADR-2782 D3). */
 const NEW_LANE_ONLY_IDS = ['gemini', 'coderabbit', 'ollama', 'lm-studio', 'llama-cpp'];
 
-/** The six pre-existing dual-purpose `role:"runtime"` capabilities. */
-const RUNTIME_REVIEWER_IDS = ['antigravity', 'claude', 'codex', 'cursor', 'opencode', 'qwen'];
+/** The seven dual-purpose `role:"runtime"` capabilities. */
+const RUNTIME_REVIEWER_IDS = ['antigravity', 'claude', 'codex', 'cursor', 'opencode', 'qwen', 'zcode'];
 
 /**
  * The shipped roster BEFORE this phase, as a literal (not computed) sorted
@@ -103,6 +103,7 @@ const LITERAL_ROSTER = [
   // kimiCodeIsDeclaredAndInvocableInThisPhase for why it landed here and not in 5a.
   'kimi-code',
   'llama_cpp', 'lm_studio', 'ollama', 'opencode', 'qwen',
+  'zcode',
 ];
 
 /**
@@ -235,9 +236,9 @@ describe('A. The five new lane-only capabilities', () => {
   });
 });
 
-// ─── B. The six existing runtime capabilities ───────────────────────────────
+// ─── B. The seven runtime capabilities ──────────────────────────────────────
 
-describe('B. The six existing runtime capabilities', () => {
+describe('B. The seven runtime capabilities', () => {
   test('dualPurposeRuntimesCarryAReviewerBody', () => {
     for (const id of RUNTIME_REVIEWER_IDS) {
       const cap = SHIPPED.capMap.get(id);
@@ -251,14 +252,14 @@ describe('B. The six existing runtime capabilities', () => {
 
   /**
    * Real per-capability snapshots of `cap.runtime`'s own KEY SET, captured at
-   * this phase's boundary (`git status` confirms these six files' only
+   * this phase's boundary (`git status` confirms these seven files' only
    * uncommitted change is the added `reviewer` key). Adding that sibling key
    * must not add, remove, or rename anything inside `runtime` — a top-level
    * key drift here means the edit that added `reviewer` also touched
    * `runtime`, by accident or by a future careless merge of the two bodies.
    *
    * Deliberately a KEY-SET snapshot, not a full-content one: embedding all six
-   * ~15-70-field runtime bodies verbatim would duplicate six actively-edited
+   * ~15-70-field runtime bodies verbatim would duplicate seven actively-edited
    * install descriptors into the test as a second source of truth that drifts
    * on every legitimate future runtime change (these are the most frequently
    * touched capabilities in the repo). Value-level integrity is covered by
@@ -277,6 +278,7 @@ describe('B. The six existing runtime capabilities', () => {
     cursor: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'harnessIsolationFlag', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
     opencode: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'extensionEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'orchestratorExec', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
     qwen: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
+    zcode: ['artifactLayout', 'commandStyle', 'configFormat', 'configHome', 'extendedHookEvents', 'hooksSurface', 'hostBehaviors', 'hostIntegration', 'installSurface', 'localConfigDir', 'permissionWriter', 'sandboxTier', 'supportTier', 'triggerPrecedence', 'writesSharedSettings'],
   };
 
   test('runtimeBodiesAreUnchangedByLaneDeclaration', () => {
@@ -351,7 +353,7 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     // KEYSTONE. This row is GREEN before and after #2801 — it is the invariant
     // the phase must not break, not a red row. The literal list is never
     // computed by the machinery under test.
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'roster must be exactly 12 — not 11, not 13');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 13, 'roster must be exactly 13');
     assert.deepEqual(
       [...KNOWN_REVIEWER_SLUGS].sort(), LITERAL_ROSTER,
       `roster must be exactly the declared lane set, got: ${JSON.stringify(KNOWN_REVIEWER_SLUGS)}`,
@@ -466,7 +468,7 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
             slug: fc.string({ minLength: 1, maxLength: 8 }).filter((s) => s.trim().length > 0),
             aliasValue: fc.constantFrom(true, false, 'true', 1, 0, null, undefined),
           }),
-          { minLength: 0, maxLength: 12 },
+      { minLength: 0, maxLength: 13 },
         ),
         (specs) => {
           const capabilities = {};
@@ -575,12 +577,12 @@ describe('D. Cross-phase invariants that must not regress', () => {
     );
   });
 
-  test('allElevenDeclaredLanesSatisfyUniqueness', () => {
+  test('allThirteenDeclaredLanesSatisfyUniqueness', () => {
     const errs = validateCrossCapability(SHIPPED.capMap, new Set());
     const laneErrs = errs.filter((e) => e.startsWith('reviewer '));
     assert.deepEqual(
       laneErrs, [],
-      `expected no reviewer-lane uniqueness violations (slug/flag/section) across the real eleven, got: ${JSON.stringify(laneErrs)}`,
+      `expected no reviewer-lane uniqueness violations (slug/flag/section) across the real thirteen, got: ${JSON.stringify(laneErrs)}`,
     );
   });
 
@@ -633,8 +635,8 @@ describe('E. Lane fidelity — no translation layer', () => {
       }
     }
 
-    assert.equal(REVIEWER_LANES.length, 12, 'expected exactly 12 declared descriptor lanes');
-    assert.equal(bySlug.size, 12, `expected exactly 12 capabilities declaring a reviewer body, got: ${bySlug.size}`);
+    assert.equal(REVIEWER_LANES.length, 13, 'expected exactly 13 declared descriptor lanes');
+    assert.equal(bySlug.size, 13, `expected exactly 13 capabilities declaring a reviewer body, got: ${bySlug.size}`);
 
     // Top-level scalar/array fields compared whole; the two fields that are
     // themselves nested objects (probe, invoke) are compared sub-field-by-
@@ -746,7 +748,7 @@ describe('F. Isolated-security-review regressions', () => {
     // The module under test already imported successfully above; assert the
     // derived roster is a usable array rather than a partially-initialised value.
     assert.ok(Array.isArray([...KNOWN_REVIEWER_SLUGS]), 'roster must be iterable after module load');
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'the real registry still yields the twelve lanes');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 13, 'the real registry yields all thirteen lanes');
     // And the derivation itself is total over the shapes JSON can express.
     for (const hostile of [null, undefined, [], 0, 'x', { capabilities: null }, { capabilities: [] }]) {
       assert.doesNotThrow(

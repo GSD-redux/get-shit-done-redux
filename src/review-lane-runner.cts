@@ -138,20 +138,72 @@ export async function probeLane(
     }
   }
 
+  if (plan.transport === 'spawn' && plan.handler === 'zcode') {
+    const configPath = `${deps.homeDir}/.zcode/cli/config.json`;
+    let configured = false;
+    if (deps.exists(configPath)) {
+      try {
+        const config = JSON.parse(deps.readFile(configPath)) as {
+          model?: { main?: unknown } | string;
+        };
+        const main = typeof config.model === 'string' ? config.model : config.model?.main;
+        // ZCode CLI 0.16.3 validates a provider-qualified string (`provider/model`). Retain the
+        // object form as forward compatibility for clients that expose the normalized target.
+        configured = typeof main === 'string'
+          ? /^[^/\s]+\/.+/.test(main.trim())
+          : Boolean(
+              main && typeof main === 'object' &&
+              typeof (main as { provider?: unknown }).provider === 'string' &&
+              (main as { provider: string }).provider.trim().length > 0 &&
+              typeof (main as { model?: unknown }).model === 'string' &&
+              (main as { model: string }).model.trim().length > 0,
+            );
+      } catch {
+        configured = false;
+      }
+    }
+    if (!configured) {
+      return {
+        available: false,
+        reason: LANE_UNAVAILABLE.MISSING_MODEL_CONFIG,
+        detail: `ZCode model config is missing: configure model.main as a provider/model reference in ${configPath} through Manage Models or ZCode login`,
+      };
+    }
+  }
+
   const probe = plan.probe;
   if (!probe || typeof probe !== 'object') {
     return { available: false, reason: LANE_UNAVAILABLE.PROBE_FAILED, detail: 'lane declares no probe' };
   }
 
   switch (probe.kind) {
-    case 'command-exists':
-      return deps.hasBinary(probe.binary)
-        ? { available: true }
-        : {
+    case 'command-exists': {
+      if (!deps.hasBinary(probe.binary)) {
+        return {
             available: false,
             reason: LANE_UNAVAILABLE.MISSING_BINARY,
             detail: `'${probe.binary}' not found on PATH`,
           };
+      }
+      if (plan.transport === 'spawn' && plan.handler === 'opencode' && plan.model) {
+        const models = deps.spawn('opencode', ['models'], { timeoutMs: 30_000 });
+        const exactModels = String(models.stdout ?? '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (models.errorCode === 'ETIMEDOUT' || models.status !== 0 || !exactModels.includes(plan.model)) {
+          const stderr = String(models.stderr ?? '').trim().slice(-4_000);
+          return {
+            available: false,
+            reason: LANE_UNAVAILABLE.MODEL_UNAVAILABLE,
+            detail:
+              `OpenCode model '${plan.model}' is not available from 'opencode models' ` +
+              `(exit code=${String(models.status)}, stdout lines=${exactModels.length}, stderr=${stderr || 'empty'})`,
+          };
+        }
+      }
+      return { available: true };
+    }
 
     case 'command-capability': {
       // Existence alone is structurally insufficient here: `kimi` is claimed by BOTH the Kimi Code
@@ -263,10 +315,15 @@ export function writeReviewOrStub(
  * than failing the lane — a partial stream still carries usable review text, and losing the whole
  * review to one malformed line would be strictly worse than the bug this handler exists to fix.
  */
-export function handleOpencodeOutput(rawStdout: string): { review: string; diagnostic: string } {
+export function handleOpencodeOutput(
+  rawStdout: string,
+  invocation: { exitCode?: number | null; model?: string | null; stderr?: string } = {},
+): { review: string; diagnostic: string } {
   const texts: string[] = [];
-  let stopReason = '?';
-  let outputTokens = '?';
+  let stopReason: string | null = null;
+  let outputTokens: number | null = null;
+  let eventCount = 0;
+  let lastStepFinish: string | null = null;
   for (const line of String(rawStdout ?? '').split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -277,6 +334,7 @@ export function handleOpencodeOutput(rawStdout: string): { review: string; diagn
       continue;
     }
     if (evt === null || typeof evt !== 'object') continue;
+    eventCount += 1;
     const e = evt as { type?: unknown; part?: unknown };
     const part = (e.part ?? {}) as { text?: unknown; reason?: unknown; tokens?: unknown };
     if (e.type === 'text' && typeof part.text === 'string') {
@@ -288,13 +346,39 @@ export function handleOpencodeOutput(rawStdout: string): { review: string; diagn
     } else if (e.type === 'step_finish') {
       if (typeof part.reason === 'string') stopReason = part.reason;
       const tokens = (part.tokens ?? {}) as { output?: unknown };
-      if (typeof tokens.output === 'number') outputTokens = String(tokens.output);
+      if (typeof tokens.output === 'number') outputTokens = tokens.output;
+      lastStepFinish = `reason=${stopReason ?? 'absent'}, output tokens=${outputTokens ?? 'absent'}`;
     }
   }
+  const stderr = String(invocation.stderr ?? '').trim().slice(-4_000);
   return {
     review: texts.join('\n'),
-    diagnostic: `stop reason=${stopReason}, output tokens=${outputTokens}`,
+    diagnostic: [
+      `exit code=${invocation.exitCode ?? 'unknown'}`,
+      `model=${invocation.model || 'CLI default'}`,
+      `stdout bytes=${Buffer.byteLength(String(rawStdout ?? ''), 'utf8')}`,
+      `JSON events=${eventCount}`,
+      `last step_finish=${lastStepFinish ?? 'none'}`,
+      `stderr=${stderr || 'empty'}`,
+    ].join(', '),
   };
+}
+
+/** Build ZCode's dedicated headless, attachment-based, non-mutating invocation. */
+export function zcodeArgv(
+  argv: readonly string[],
+  promptPath: string,
+  repoRoot: string,
+): string[] {
+  const resolved = argv.map((arg) => (arg === promptPath ? promptPath : arg));
+  const attachIdx = resolved.indexOf('--attach');
+  const insertAt = attachIdx === -1 ? 0 : attachIdx + 2;
+  return [
+    ...resolved.slice(0, insertAt),
+    '--cwd',
+    repoRoot,
+    ...resolved.slice(insertAt),
+  ];
 }
 
 /** One `PLANNER_RESPONSE` line of an Antigravity transcript. */
@@ -481,7 +565,12 @@ export function antigravityArgv(
   deps: RunnerDeps,
 ): string[] {
   const standard = fileRefPromptText(promptPath, repoRoot);
-  const out = argv.map((a) => (a === standard ? antigravityPrompt(promptPath, repoRoot) : a));
+  const out = [
+    '--mode',
+    'plan',
+    '--sandbox',
+    ...argv.map((a) => (a === standard ? antigravityPrompt(promptPath, repoRoot) : a)),
+  ];
 
   let supportsAddDir = false;
   try {
@@ -492,10 +581,14 @@ export function antigravityArgv(
   }
   if (!supportsAddDir) return out;
 
+  const promptDir = promptPath.replace(/[\\/][^\\/]*$/, '');
+  const grantedDirs = [...new Set([repoRoot, promptDir].filter((dir) => dir.length > 0))];
+  const addDirArgs = grantedDirs.flatMap((dir) => ['--add-dir', dir]);
+
   // Insert before the trailing `-p <prompt>` pair so the prompt stays last, as the leg had it.
   const pIdx = out.lastIndexOf('-p');
-  if (pIdx === -1) return [...out, '--add-dir', repoRoot];
-  return [...out.slice(0, pIdx), '--add-dir', repoRoot, ...out.slice(pIdx)];
+  if (pIdx === -1) return [...out, ...addDirArgs];
+  return [...out.slice(0, pIdx), ...addDirArgs, ...out.slice(pIdx)];
 }
 
 /**
@@ -509,32 +602,90 @@ export function antigravityArgv(
  * Mode 3 (a pre-session stall, which `--print-timeout` cannot bound because it cannot fire before a
  * session exists) leaves no log line at all, so its tell is stated rather than searched for.
  */
-export function antigravityDiagnostic(deps: RunnerDeps): string {
-  const lines = [
-    'Antigravity review failed or returned empty output.',
-  ];
+export function antigravityDiagnostic(deps: RunnerDeps): string;
+export function antigravityDiagnostic(
+  workspace: string,
+  mark: { convId: string; lines: number; unreadable?: boolean },
+  outcome: SpawnOutcome,
+  deps: RunnerDeps,
+): string;
+export function antigravityDiagnostic(
+  workspaceOrDeps: string | RunnerDeps,
+  markArg?: { convId: string; lines: number; unreadable?: boolean },
+  outcomeArg?: SpawnOutcome,
+  depsArg?: RunnerDeps,
+): string {
+  // Preserve the original one-argument helper contract for callers that only need the agy-log
+  // diagnostic. The richer form adds launch-watermark evidence without making those callers invent
+  // a workspace, watermark, or spawn result.
+  const legacyCall = typeof workspaceOrDeps !== 'string';
+  const workspace = legacyCall ? '' : workspaceOrDeps;
+  const mark = markArg ?? { convId: '', lines: 0 };
+  const outcome = outcomeArg ?? { status: null, stdout: '', stderr: '' };
+  const deps = legacyCall ? workspaceOrDeps : depsArg;
+  if (!deps) throw new Error('antigravityDiagnostic requires RunnerDeps');
+  const lines = ['Antigravity review failed or returned empty output.'];
+  let cause:
+    | 'pre_session_stall'
+    | 'session_started_no_final_response'
+    | 'outer_timeout'
+    | 'model_unavailable' = 'pre_session_stall';
+  if (outcome.errorCode === 'ETIMEDOUT') cause = 'outer_timeout';
+
   const logPath = `${deps.homeDir}/.gemini/antigravity-cli/cli.log`;
+  let modelHints: string[] = [];
   if (deps.exists(logPath)) {
     try {
-      const hits = deps
+      modelHints = deps
         .readFile(logPath)
         .split(/\r?\n/)
         .filter((l) => /agent executor error|NOT_FOUND|Publisher model/i.test(l))
         .slice(-3);
-      if (hits.length) {
+      if (modelHints.length) {
+        if (cause !== 'outer_timeout') cause = 'model_unavailable';
         lines.push(
           "agy log hint (pinned model may be unavailable — run 'agy models' and set review.models.agy):",
-          ...hits,
+          ...modelHints,
         );
       }
     } catch {
       /* an unreadable log is not worth failing the lane over */
     }
   }
-  lines.push(
-    'If no agy run started, that is the pre-session-stall case: check whether a new ' +
-      '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.',
-  );
+
+  if (cause === 'pre_session_stall') {
+    const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
+    try {
+      if (deps.exists(cachePath)) {
+        const cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
+        const convId = resolveConvId(cache, workspace);
+        if (convId) {
+          const tx = transcriptPath(deps.homeDir, convId);
+          const currentLines = deps.exists(tx)
+            ? deps.readFile(tx).split(/\r?\n/).filter((line) => line.trim()).length
+            : 0;
+          const startedFreshConversation = convId !== mark.convId;
+          const appendedActivity = convId === mark.convId && currentLines > mark.lines;
+          if (startedFreshConversation || appendedActivity) {
+            cause = 'session_started_no_final_response';
+          }
+        }
+      }
+    } catch {
+      /* unavailable transcript evidence leaves the conservative pre-session classification */
+    }
+  }
+
+  lines.unshift(`cause=${cause}`);
+  if (cause === 'pre_session_stall') {
+    lines.push(
+      'No conversation or transcript activity was created after the launch watermark.',
+    );
+  } else if (cause === 'session_started_no_final_response') {
+    lines.push('A conversation or tool activity exists after the watermark, but no final response was emitted.');
+  } else if (cause === 'outer_timeout') {
+    lines.push('The outer process wrapper terminated agy before a usable final response was recovered.');
+  }
   return lines.join('\n');
 }
 
@@ -665,7 +816,9 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   const argv =
     plan.handler === 'antigravity'
       ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, deps)
-      : plan.argv;
+      : plan.handler === 'zcode'
+        ? zcodeArgv(plan.argv, plan.promptPath, repoRoot)
+        : plan.argv;
 
   const out = deps.spawn(plan.binary, argv, {
     input,
@@ -691,14 +844,20 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   let extra: string | undefined;
 
   if (plan.handler === 'opencode') {
-    const rebuilt = handleOpencodeOutput(review);
+    const rebuilt = handleOpencodeOutput(review, {
+      exitCode: out.status,
+      model: plan.model,
+      stderr: out.stderr,
+    });
     if (!isEmptyReview(rebuilt.review)) {
-      review = rebuilt.review;
+      review = stampBlindReview(rebuilt.review);
     } else {
       review = '';
       extra = `OpenCode review returned no assistant text (#1936: agent ended its turn with no final message).\nDiagnostic: ${rebuilt.diagnostic}`;
     }
   }
+
+  if (plan.handler === 'zcode') review = stampBlindReview(review);
 
   if (plan.handler === 'antigravity') {
     // A non-zero exit (timeout kill, crash) discards partial output so the transcript fallback and
@@ -709,7 +868,7 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
     // Layer 3. `emptyOutput: 'handler-owned'` means the generic stub does not fire for this lane,
     // so if nothing is written here the lane goes out empty — the #2073 failure itself.
     if (isEmptyReview(review)) {
-      deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(deps)}\n`);
+      deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(repoRoot, mark, out, deps)}\n`);
       return { slug: plan.slug, ok: true, stubbed: true };
     }
   }

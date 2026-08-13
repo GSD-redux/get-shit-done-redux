@@ -237,7 +237,7 @@ The key suffix is **not** always the lane slug. Each lane declares the config ke
 | `review.models.claude` | string | (session model) | Model id for Claude-flavored review. Defaults to the session model when unset |
 | `review.models.codex` | string | `null` | Model id for Codex review (injected into --model), e.g. `"gpt-5"` |
 | `review.models.gemini` | string | `null` | Model id for Gemini review (injected into -m), e.g. `"gemini-2.5-pro"` |
-| `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
+| `review.models.opencode` | string | `null` | Exact `provider/model` id for OpenCode review (validated against `opencode models` before invocation), e.g. `"opencode/deepseek-v4-flash-free"` |
 | `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
 **Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
@@ -248,11 +248,13 @@ which schema validates them moved.
 One consequence follows: `<cli>` must now name a **declared reviewer lane**. Previously any slug
 matching `[a-zA-Z0-9_-]+` was accepted, so a typo or a key left over from a removed reviewer
 validated silently and was never read. Such a key is now rejected by `config-set`. The declared
-lanes are `gemini`, `claude`, `codex`, `opencode`, `agy` (the Antigravity lane — its key suffix is
-the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
+lanes with model keys are `gemini`, `claude`, `codex`, `opencode`, `agy` (the Antigravity lane —
+its key suffix is the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
+ZCode is a declared lane too, but its selected provider and model live in ZCode's own CLI config.
 
 The same applies to `review.max_prompt_tokens_per_reviewer.<slug>`. `review.max_prompt_tokens`
-(the global default), `review.default_reviewers` and `review.reviewer_instances` describe policy
+(the global default), `review.default_reviewers`, `review.excluded_reviewers` and
+`review.reviewer_instances` describe policy
 across lanes rather than one lane's behavior, so they remain central and are unaffected.
 
 ### Reviewer defaults for `/gsd-review`
@@ -262,6 +264,7 @@ Use `review.default_reviewers` to scope the no-flag `/gsd-review` run to a subse
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `review.default_reviewers` | string[] \| null | `null` (all detected reviewers) | Optional default subset for no-flag `/gsd-review`, e.g. `["gemini","codex"]`. Entries may be built-in reviewer slugs or configured `review.reviewer_instances` names. Precedence is: explicit reviewer flags > `--all` > `review.default_reviewers` > all detected. Unknown slugs are ignored with a warning when no instances are configured; with `review.reviewer_instances` present, unknown entries are hard errors to catch typoed instance names. Known-but-undetected slugs are ignored with an info note; empty arrays are rejected by `config-set`. This leniency is specific to the configured default: a reviewer named by an explicit CLI flag that cannot run is an error, not an info note. |
+| `review.excluded_reviewers` | string[] | `[]` | Persistent denylist applied after detection and after `--all` expansion. Excluded reviewers are reported as `excluded by configuration`, never as missing. Explicitly naming an excluded reviewer is a configuration error. |
 
 Example:
 
@@ -272,6 +275,21 @@ Example:
   }
 }
 ```
+
+To exclude llama.cpp from every implicit or `--all` review:
+
+```json
+{
+  "review": {
+    "excluded_reviewers": ["llama_cpp"]
+  }
+}
+```
+
+ZCode CLI 0.16.3 requires an explicit provider-qualified `model.main` string such as
+`"zai-coding-plan/glm-5.2"`, generated or validated by ZCode's Manage Models or login flow. GSD
+never writes an API key to `~/.zcode/cli/config.json`; use ZCode's shared authentication, the
+system keychain, or an environment reference.
 
 ### Reviewer instances for `/gsd-review` (#1517)
 

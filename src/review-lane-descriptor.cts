@@ -79,7 +79,7 @@ export type EvidenceClass = 'source-grounded' | 'diff-only';
  * language into the descriptor and would want a selector expression next. D6's whole point is that
  * divergence escapes to NAMED FIRST-PARTY CODE rather than accreting inside data.
  */
-export type LaneHandler = null | 'antigravity' | 'openai-compatible' | 'opencode';
+export type LaneHandler = null | 'antigravity' | 'openai-compatible' | 'opencode' | 'zcode';
 
 /**
  * What a lane does when it produces no usable output.
@@ -230,7 +230,7 @@ const SPAWN_STDIN_STDOUT = {
 } as const;
 
 /**
- * The twelve declared lanes, in `write_reviews` order.
+ * The thirteen declared lanes, in `write_reviews` order.
  *
  * `kimi-code` joined in Phase 5b (#2799, closes #2718) — ADR-2782's phase table lands it here
  * rather than in 5a precisely so it arrives together with the iteration that can invoke it.
@@ -353,7 +353,20 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'opencode' },
     invoke: {
       binary: 'opencode',
-      args: ['run', '{{model}}', '{{effort}}', '--format', 'json', '-'],
+      args: [
+        'run',
+        '--pure',
+        '--agent',
+        'plan',
+        '{{model}}',
+        '{{effort}}',
+        '--format',
+        'json',
+        '--print-logs',
+        '--log-level',
+        'ERROR',
+        '-',
+      ],
       ...SPAWN_STDIN_STDOUT,
       modelArg: '--model',
       effortChannel: 'argv',
@@ -370,6 +383,38 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // Phase 5b (#2799): was `null`. The review is REBUILT from assistant `text` parts; a plain
     // stdout copy would write the raw JSON envelope as the review (#1936). See LaneHandler.
     handler: 'opencode',
+  },
+  {
+    slug: 'zcode',
+    flags: ['--zcode'],
+    transport: 'spawn',
+    probe: { kind: 'command-exists', binary: 'zcode' },
+    invoke: {
+      binary: 'zcode',
+      args: [
+        '--prompt',
+        'Review the attached request. Reply only with the resulting markdown review. Begin with REVIEWED-WITHOUT-REPO-ACCESS if repository files cannot be verified.',
+        '--attach',
+        '{{prompt}}',
+        '--mode',
+        'plan',
+        '--disallowed-tools',
+        'Edit Write Bash',
+        '--no-color',
+      ],
+      promptChannel: 'argv',
+      outputChannel: 'stdout',
+      modelArg: null,
+      effortChannel: 'none',
+    },
+    timeoutFloorMs: 900_000,
+    emptyOutput: 'stub-with-stderr',
+    reviewsSection: 'ZCode',
+    evidenceClass: 'source-grounded',
+    requiresBinaries: [],
+    promptBudgetKey: null,
+    modelConfigKey: null,
+    handler: 'zcode',
   },
   {
     slug: 'qwen',
@@ -743,7 +788,7 @@ const LEG_MARKER_RE = /<!--\s*reviewer-lane:\s*([a-z0-9_-]+)\s*-->/g;
  * `LEG_MARKER_RE` can only capture `[a-z0-9_-]`. A lane whose slug falls outside
  * that class is therefore UNMATCHABLE in the workflow: its marker can be present
  * and correct and the scan will still never see it, so the lane reports
- * `LEG_MARKER_MISSING` forever with no indication why. All twelve shipped slugs
+ * `LEG_MARKER_MISSING` forever with no indication why. All thirteen shipped slugs
  * sit inside the class (`lm_studio`, `llama_cpp` use the underscore), so this
  * never bites today — but Phase 2 (#2795) admits third-party overlay lanes, and
  * a slug like `acme.reviewer` would silently vanish from a review.

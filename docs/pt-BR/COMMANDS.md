@@ -1244,6 +1244,7 @@ Revisão por pares cross-AI de planos de fase a partir de CLIs de IA externas.
 | `--codex` | Inclui revisão pelo Codex CLI |
 | `--coderabbit` | Inclui revisão pelo CodeRabbit |
 | `--opencode` | Inclui revisão pelo OpenCode (via GitHub Copilot) |
+| `--zcode` | Inclui revisão pelo ZCode CLI em modo de planejamento sem mutação |
 | `--qwen` | Inclui revisão pelo Qwen Code (modelos Alibaba Qwen) |
 | `--cursor` | Inclui revisão pelo agente Cursor |
 | `--agy` / `--antigravity` | Inclui revisão pelo Antigravity CLI (gratuito com credenciais Google) |

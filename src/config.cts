@@ -26,7 +26,12 @@ const { VALID_PROFILES, getAgentToModelMapForProfile, formatAgentToModelMapAsTab
 import configSchema = require('./config-schema.cjs');
 const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema } = configSchema;
 import { isSecretKey, maskSecret } from './secrets.cjs';
-import { normalizeConfiguredDefaultReviewers, INSTANCE_NAME_PATTERN, KNOWN_REVIEWER_SLUGS } from './review-reviewer-selection.cjs';
+import {
+  normalizeConfiguredDefaultReviewers,
+  normalizeExcludedReviewers,
+  INSTANCE_NAME_PATTERN,
+  KNOWN_REVIEWER_SLUGS,
+} from './review-reviewer-selection.cjs';
 import { migrateOnDisk } from './configuration.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -905,6 +910,14 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
 
   if (kp === 'review.default_reviewers') {
     const normalized = normalizeConfiguredDefaultReviewers(parsedValue);
+    if (normalized.errors.length > 0) {
+      error(normalized.errors[0]);
+    }
+    parsedValue = normalized.values;
+  }
+
+  if (kp === 'review.excluded_reviewers') {
+    const normalized = normalizeExcludedReviewers(parsedValue);
     if (normalized.errors.length > 0) {
       error(normalized.errors[0]);
     }

@@ -18,9 +18,11 @@ const {
   runLane,
   writeReviewOrStub,
   handleOpencodeOutput,
+  zcodeArgv,
   stampBlindReview,
   antigravityWatermark,
   antigravityTranscriptFallback,
+  antigravityDiagnostic,
   runOpenAiCompatible,
 } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
 
@@ -191,6 +193,25 @@ describe('runner — probe (ADR-2782 D7)', () => {
     assert.equal(r.available, false);
     assert.equal(r.reason, LANE_UNAVAILABLE.HOST_UNREACHABLE);
   });
+
+  test('a configured OpenCode model must exactly match opencode models', async () => {
+    const p = plan('opencode', { 'review.models.opencode': 'opencode/deepseek-v4-flash-free' });
+    const ok = await probeLane(p, deps({
+      spawn: () => ({
+        status: 0,
+        stdout: 'opencode/deepseek-v4-flash-free\nopencode/other',
+        stderr: '',
+      }),
+    }));
+    assert.equal(ok.available, true);
+
+    const unavailable = await probeLane(p, deps({
+      spawn: () => ({ status: 0, stdout: 'opencode/other', stderr: '' }),
+    }));
+    assert.equal(unavailable.available, false);
+    assert.equal(unavailable.reason, LANE_UNAVAILABLE.MODEL_UNAVAILABLE);
+    assert.match(unavailable.detail, /opencode\/deepseek-v4-flash-free/);
+  });
 });
 
 describe('runner — empty-output policy (#2494 / #2605 / #2794)', () => {
@@ -274,6 +295,22 @@ describe('runner — opencode handler (#1936)', () => {
     assert.ok(r.diagnostic.includes('0'));
   });
 
+  test('an empty stream reports every actionable invocation diagnostic', () => {
+    const r = handleOpencodeOutput('', {
+      exitCode: 1,
+      model: 'opencode/deepseek-v4-flash-free',
+      stderr: 'ProviderModelNotFoundError',
+    });
+    assert.equal(r.review, '');
+    assert.match(r.diagnostic, /exit code=1/);
+    assert.match(r.diagnostic, /model=opencode\/deepseek-v4-flash-free/);
+    assert.match(r.diagnostic, /stdout bytes=0/);
+    assert.match(r.diagnostic, /JSON events=0/);
+    assert.match(r.diagnostic, /last step_finish=none/);
+    assert.match(r.diagnostic, /ProviderModelNotFoundError/);
+    assert.doesNotMatch(r.diagnostic, /\?/);
+  });
+
   test('the raw JSON envelope never becomes the review', async () => {
     // The regression this locks: a plain stdout copy would write the JSON stream into REVIEWS.md.
     const p = plan('opencode');
@@ -284,12 +321,64 @@ describe('runner — opencode handler (#1936)', () => {
     assert.ok(!d.files[p.reviewPath].includes('"type"'));
   });
 
+  test('a self-reported blind review is marked as lacking repo access', async () => {
+    const p = plan('opencode');
+    const stream = JSON.stringify({
+      type: 'text',
+      part: { text: 'REVIEWED-WITHOUT-REPO-ACCESS\nCould not read repository files.' },
+    });
+    const d = deps({ spawn: () => ({ status: 0, stdout: stream, stderr: '' }) });
+    await runLane(p, d, { repoRoot: ROOT });
+    assert.match(d.files[p.reviewPath], /reviewed-without-repo-access/);
+  });
+
   test('CRLF in the stream is handled', () => {
     const stream = [
       JSON.stringify({ type: 'text', part: { text: 'a' } }),
       JSON.stringify({ type: 'text', part: { text: 'b' } }),
     ].join('\r\n');
     assert.equal(handleOpencodeOutput(stream).review, 'a\nb');
+  });
+});
+
+describe('runner — zcode handler', () => {
+  test('attaches the full prompt, pins the repo cwd, and stays non-mutating', () => {
+    const p = plan('zcode');
+    const argv = zcodeArgv(p.argv, p.promptPath, ROOT);
+    assert.deepEqual(argv, [
+      '--prompt', 'Review the attached request. Reply only with the resulting markdown review. Begin with REVIEWED-WITHOUT-REPO-ACCESS if repository files cannot be verified.',
+      '--attach', `${RUN}/gsd-review-prompt.md`,
+      '--cwd', ROOT,
+      '--mode', 'plan',
+      '--disallowed-tools', 'Edit Write Bash',
+      '--no-color',
+    ]);
+    assert.ok(!argv.includes('--max-turns'));
+  });
+
+  test('missing explicit model config is typed before the prompt is sent', async () => {
+    const p = plan('zcode');
+    const d = deps({
+      files: { '/home/u/.zcode/cli/config.json': JSON.stringify({ hooks: {}, mcp: {} }) },
+    });
+    const result = await runLane(p, d, { repoRoot: ROOT, explicitlyRequested: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, LANE_UNAVAILABLE.MISSING_MODEL_CONFIG);
+    assert.equal(d.spawns.length, 0);
+  });
+
+  test('ZCode CLI 0.16.3 provider/model config passes the model preflight', async () => {
+    const p = plan('zcode');
+    const d = deps({
+      files: {
+        '/home/u/.zcode/cli/config.json': JSON.stringify({
+          model: { main: 'zai-coding-plan/glm-5.2' },
+        }),
+      },
+    });
+    const result = await runLane(p, d, { repoRoot: ROOT, explicitlyRequested: true });
+    assert.equal(result.ok, true);
+    assert.equal(d.spawns.length, 1);
   });
 });
 
@@ -341,6 +430,48 @@ describe('runner — antigravity handler (#2073 / #2176)', () => {
     assert.equal(antigravityTranscriptFallback(ROOT, { convId: '', lines: 0 }, deps()), '');
     const d = deps({ files: { [CACHE]: 'NOT JSON' } });
     assert.equal(antigravityTranscriptFallback(ROOT, { convId: '', lines: 0 }, d), '');
+  });
+
+  test('diagnostics distinguish pre-session stalls from started sessions', () => {
+    const preSession = antigravityDiagnostic(
+      ROOT,
+      { convId: '', lines: 0 },
+      { status: 0, stdout: '', stderr: '' },
+      deps(),
+    );
+    assert.match(preSession, /cause=pre_session_stall/);
+
+    const files = {
+      [CACHE]: JSON.stringify({ [ROOT]: 'c1' }),
+      [TX('c1')]: JSON.stringify({ source: 'MODEL', type: 'TOOL_CALL', status: 'DONE' }),
+    };
+    const started = antigravityDiagnostic(
+      ROOT,
+      { convId: '', lines: 0 },
+      { status: 0, stdout: '', stderr: '' },
+      deps({ files }),
+    );
+    assert.match(started, /cause=session_started_no_final_response/);
+    assert.doesNotMatch(started, /cause=pre_session_stall/);
+  });
+
+  test('diagnostics type wrapper timeouts and unavailable models', () => {
+    const timedOut = antigravityDiagnostic(
+      ROOT,
+      { convId: '', lines: 0 },
+      { status: null, stdout: '', stderr: '', errorCode: 'ETIMEDOUT' },
+      deps(),
+    );
+    assert.match(timedOut, /cause=outer_timeout/);
+
+    const log = '/home/u/.gemini/antigravity-cli/cli.log';
+    const unavailable = antigravityDiagnostic(
+      ROOT,
+      { convId: '', lines: 0 },
+      { status: 0, stdout: '', stderr: '' },
+      deps({ files: { [log]: 'agent executor error: Publisher model NOT_FOUND' } }),
+    );
+    assert.match(unavailable, /cause=model_unavailable/);
   });
 
   // ── antigravityWatermark (#3118) ───────────────────────────────────────────
@@ -728,6 +859,9 @@ describe('#2494 — a failed lane writes a diagnosable stub, not a zero-byte fil
   }
 
   function deps(spawnResult, files = {}) {
+    files['/home/u/.zcode/cli/config.json'] ??= JSON.stringify({
+      model: { main: 'zai-coding-plan/glm-5.2' },
+    });
     return {
       files,
       // `kimi-code` declares a `command-capability` probe, so the runner spawns `--help` BEFORE the

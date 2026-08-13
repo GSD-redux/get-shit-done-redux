@@ -453,7 +453,7 @@ describe('#2483 the claude reviewer lane suppresses CLAUDE.md + auto-memory inje
       // rather than left flattering. The fixture below is NOT a valid reviewer lane — it declares no
       // `flags`, `probe`, `emptyOutput`, `evidenceClass`, `requiresBinaries` or `promptBudgetKey`, and
       // the validator rejects it. Every VALID lane produces a non-empty outer residual, and measured
-      // across the twelve shipped reviewer capabilities, ZERO keep a byte-identical signature. So this
+      // across the thirteen shipped reviewer capabilities, ZERO keep a byte-identical signature. So this
       // is a property of the ENCODING, not a claim that anyone's signature is unchanged — and it is
       // deliberately not the argument for the change being safe. That argument is that consent binds
       // to the bundle contentHash, so no existing consent is invalidated at all.

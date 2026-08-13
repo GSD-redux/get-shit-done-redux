@@ -127,10 +127,16 @@
       "binary": "opencode",
       "args": [
         "run",
+        "--pure",
+        "--agent",
+        "plan",
         "{{model}}",
         "{{effort}}",
         "--format",
         "json",
+        "--print-logs",
+        "--log-level",
+        "ERROR",
         "-"
       ],
       "promptChannel": "stdin",

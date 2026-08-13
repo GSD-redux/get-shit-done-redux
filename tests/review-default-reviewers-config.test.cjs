@@ -97,3 +97,41 @@ describe('review.default_reviewers config key (#3079)', () => {
   });
 });
 
+describe('review.excluded_reviewers config key', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('schema key is registered and round-trips normalized slugs', () => {
+    assert.ok(VALID_CONFIG_KEYS.has('review.excluded_reviewers'));
+    const setResult = runGsdTools(
+      ['config-set', 'review.excluded_reviewers', '["LLAMA_CPP","llama_cpp"]'],
+      tmpDir,
+      { HOME: tmpDir, USERPROFILE: tmpDir },
+    );
+    assert.ok(setResult.success, `config-set failed: ${setResult.error}`);
+    const getResult = runGsdTools(
+      ['config-get', 'review.excluded_reviewers'],
+      tmpDir,
+      { HOME: tmpDir, USERPROFILE: tmpDir },
+    );
+    assert.deepStrictEqual(JSON.parse(getResult.output), ['llama_cpp']);
+  });
+
+  test('invalid values are rejected', () => {
+    const result = runGsdTools(
+      ['config-set', 'review.excluded_reviewers', '["bad/slug"]'],
+      tmpDir,
+      { HOME: tmpDir, USERPROFILE: tmpDir },
+    );
+    assert.ok(!result.success);
+    assert.match(result.error, /invalid reviewer slug/);
+  });
+});
