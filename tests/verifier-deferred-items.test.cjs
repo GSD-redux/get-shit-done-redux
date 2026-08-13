@@ -112,43 +112,10 @@ describe('verifier deferred-items filtering (#1624)', () => {
     });
   });
 
-  // ── verify-phase.md (workflow) ─────────────────────────────────────────────
-
-  describe('gsd-core/workflows/verify-phase.md', () => {
-    const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'verify-phase.md');
-    let workflowContent;
-
-    test('file exists', () => {
-      assert.ok(fs.existsSync(workflowPath), 'verify-phase.md should exist');
-      workflowContent = fs.readFileSync(workflowPath, 'utf-8');
-    });
-
-    test('loads roadmap analyze in context step', () => {
-      workflowContent = workflowContent || fs.readFileSync(workflowPath, 'utf-8');
-      assert.ok(
-        workflowContent.includes('roadmap analyze'),
-        'verify-phase.md should load roadmap analyze in its context step'
-      );
-    });
-
-    test('contains filter_deferred_items step', () => {
-      workflowContent = workflowContent || fs.readFileSync(workflowPath, 'utf-8');
-      assert.ok(
-        workflowContent.includes('filter_deferred_items') ||
-        workflowContent.includes('Filter Deferred'),
-        'verify-phase.md should contain a deferred-item filtering step'
-      );
-    });
-
-    test('success criteria mentions deferred filtering', () => {
-      workflowContent = workflowContent || fs.readFileSync(workflowPath, 'utf-8');
-      assert.ok(
-        workflowContent.includes('Deferred items filtered') ||
-        workflowContent.includes('deferred items filtered'),
-        'success criteria should mention deferred item filtering'
-      );
-    });
-  });
+  // ── verify-phase.md (workflow) — DELETED #1892 ─────────────────────────────
+  // The orphan workflow gsd-core/workflows/verify-phase.md was removed (0 loaders;
+  // live deferred-item filtering is carried by gsd-verifier.md Step 9b, asserted
+  // in the describe block above).
 
   // sdk/prompts/workflows/verify-phase.md removed in 377a6d2 — SDK loads installed workflow directly.
 
