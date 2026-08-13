@@ -1201,3 +1201,181 @@ total_plans_in_phase: 3
     assert.equal(out.valid, false);
   });
 });
+
+// ─── The #3309/#3310 re-homing: the reads that moved into the rule table ───
+
+/**
+ * #3309/#3310 migrated `cmdValidateHealth` and `cmdValidateConsistency` onto the
+ * health-diagnostic rule table and deleted every helper this PR threaded —
+ * `collectDiskPhases`, `collectDiskPhaseEntries`, `collectArchivedPhaseDirNames`,
+ * `forEachArchivedPhaseToken`. Their reads now live in
+ * `src/planning-snapshot.cts` and the reads' CONSUMERS in
+ * `src/health-diagnostic-rules/*.cts`, so this PR's convention threading moved
+ * with them.
+ *
+ * Three of those re-homed sites turned out to be unfalsifiable by the rest of
+ * this suite once relocated: reverting the convention argument changed real CLI
+ * output and NOT ONE existing test went red. The pre-migration sites were
+ * covered indirectly, through helpers that no longer exist. Each case below
+ * pins one of them at the CLI, with its flat-legacy twin as the byte-identity
+ * control, so the threading is falsifiable in its new home rather than trusted.
+ *
+ * The fourth re-homed site — `buildValidPhaseSet`'s `extractPhaseToken(dir,
+ * convention)` in W002 (`state-consistency.cts`) — is deliberately NOT pinned
+ * here, because it is not observable: that rule unions the disk tokens with
+ * `roadmapDeclaredPhases` and `archivedPhaseTokens`, and any STATE.md reference
+ * a bracket disk token would rescue is already rescued by the ROADMAP half.
+ * It is threaded for provenance (it restores `collectDiskPhases(planBase,
+ * convention)`'s derivation exactly) and is disclosed as droppable rather than
+ * given a test that cannot fail for the right reason.
+ */
+describe('#612 PR-2: the re-homed W006/W007 reads still select by convention', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-rehome-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const healthCodes = (code) => {
+    const out = JSON.parse(runGsdTools(['validate', 'health'], tmpDir).output);
+    return [...(out.errors || []), ...(out.warnings || [])]
+      .filter(i => i.code === code)
+      .map(i => i.message);
+  };
+  const mkdir = (...parts) =>
+    fs.mkdirSync(path.join(tmpDir, '.planning', ...parts), { recursive: true });
+
+  // ── archivedPhaseTokens (planning-snapshot.cts) ──────────────────────────
+  // Pre-migration this was `forEachArchivedPhaseToken(planBase, cb, convention)`
+  // feeding W006's existence check. `PHASE_TOKEN_FROM_DIR_RE` rejects
+  // `GSD.02-05-shipped` outright, so un-threaded the archive is invisible and a
+  // phase whose only directory was archived draws a W006 it should not.
+
+  test('an ARCHIVED bracket phase directory satisfies W006', () => {
+    mkdir('milestones', 'v1.0-phases', 'GSD.02-05-shipped');
+    mkdir('phases');
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 05: Shipped work
+**Goal:** a
+`, 'bracket');
+    assert.deepEqual(healthCodes('W006'), [],
+      'the phase\'s directory lives in a milestone archive — that is not "no directory on disk"');
+  });
+
+  test('CONTROL: the flat-legacy twin of the same repo is equally silent', () => {
+    mkdir('milestones', 'v1.0-phases', '05-shipped');
+    mkdir('phases');
+    write(`# Roadmap
+
+## v2.0
+
+### Phase 05: Shipped work
+**Goal:** a
+`, undefined);
+    assert.deepEqual(healthCodes('W006'), []);
+  });
+
+  test('CONTROL: with the archive removed the same bracket repo DOES warn', () => {
+    // Non-vacuity: the silence above must come from the archive being read,
+    // not from W006 being unable to fire on this fixture at all.
+    mkdir('phases');
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 05: Shipped work
+**Goal:** a
+`, 'bracket');
+    const w = healthCodes('W006');
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 05/);
+  });
+
+  // ── roadmapPhaseCheckboxes (planning-snapshot.cts) ───────────────────────
+  // Pre-migration this exclusion came from `buildNotStartedPhaseVariants(
+  // roadmapContent, convention)`; the rule table replaced that call with the
+  // `roadmapPhaseCheckboxes` field. Un-threaded, a bracket repo's `- [ ]`
+  // bullets never parse, so every not-yet-started bracket phase draws a W006.
+
+  test('an UNCHECKED bracket checklist bullet excludes its phase from W006', () => {
+    mkdir('phases');
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+- [ ] **[GSD.02] 09: Not started**
+
+### [GSD.02] 09: Not started
+**Goal:** a
+`, 'bracket');
+    assert.deepEqual(healthCodes('W006'), [],
+      'an unstarted phase legitimately has no directory yet');
+  });
+
+  test('CONTROL: the flat-legacy twin of the same repo is equally silent', () => {
+    mkdir('phases');
+    write(`# Roadmap
+
+## v2.0
+
+- [ ] **Phase 09: Not started**
+
+### Phase 09: Not started
+**Goal:** a
+`, undefined);
+    assert.deepEqual(healthCodes('W006'), []);
+  });
+
+  test('CONTROL: a CHECKED bracket bullet is not excluded', () => {
+    // Non-vacuity in the direction that matters: the exclusion must read the
+    // checkbox STATE, not merely the presence of a bracket bullet.
+    mkdir('phases');
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+- [x] **[GSD.02] 09: Claimed complete**
+
+### [GSD.02] 09: Claimed complete
+**Goal:** a
+`, 'bracket');
+    const w = healthCodes('W006');
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 09/);
+  });
+
+  // ── W007's token (roadmap-disk-consistency.cts) ──────────────────────────
+  // Pre-migration W007 iterated `collectDiskPhaseEntries`' keys, which were
+  // built by the convention-aware extractor; the migrated rule iterates
+  // directory NAMES and tokenizes per entry. Un-threaded it reports the whole
+  // directory name as the phase id.
+
+  test('an ORPHAN bracket directory is reported by its phase token, not its dir name', () => {
+    mkdir('phases', 'GSD.02-77-orphan');
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 05: Real
+**Goal:** a
+`, 'bracket');
+    const w = healthCodes('W007');
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /^Phase 77 exists on disk/,
+      'un-threaded this reads "Phase GSD.02-77-orphan exists on disk"');
+  });
+
+  test('CONTROL: the flat-legacy twin names its token the same way', () => {
+    mkdir('phases', '77-orphan');
+    write(`# Roadmap
+
+## v2.0
+
+### Phase 05: Real
+**Goal:** a
+`, undefined);
+    const w = healthCodes('W007');
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /^Phase 77 exists on disk/);
+  });
+});
