@@ -11308,11 +11308,20 @@ describe('flat "## Phase Details" milestone leak (#501)', () => {
     const result = runGsdTools(['validate', 'consistency'], tmpDir);
     const payload = JSON.parse(result.output);
     const warnings = payload.warnings || [];
-    const orphanWarnings = warnings.filter((w) => /exists on disk but not in ROADMAP/i.test(w));
+    const orphanWarnings = warnings.filter((w) => /exists on disk but not in ROADMAP/i.test(w.message));
     assert.deepEqual(
       orphanWarnings,
       [],
       `shipped phase dirs (1-3) are in the full ROADMAP and must not be flagged as orphans. Got: ${JSON.stringify(orphanWarnings)}`
+    );
+    // W007 is REUSED verbatim from `validate.health`'s rule table (design doc,
+    // "Which rules run where") — `validate consistency`'s own findings carry
+    // the SAME code space for this subject, not a re-derived private label.
+    const w007Orphans = warnings.filter((w) => w.code === 'W007');
+    assert.deepEqual(
+      w007Orphans,
+      [],
+      `shipped phase dirs (1-3) must not produce W007 via validate consistency either. Got: ${JSON.stringify(w007Orphans)}`
     );
   });
 

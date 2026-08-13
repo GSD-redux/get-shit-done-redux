@@ -97,8 +97,14 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
     assert.ok(output.warning_count > 0, 'should have warnings');
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP')),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP')),
       'should warn about orphan directory'
+    );
+    // W007 is REUSED verbatim from `validate.health`'s rule table (design doc,
+    // "Which rules run where") — the code is proof of reuse, not a mistake.
+    assert.ok(
+      output.warnings.some(w => w.code === 'W007'),
+      `expected code W007 for the orphan-on-disk warning; got: ${JSON.stringify(output.warnings)}`
     );
   });
 
@@ -119,7 +125,7 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
 
     const sentinelWarnings = output.warnings.filter(
-      w => w.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w)
+      w => w.message.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelWarnings.length, 0,
@@ -127,14 +133,14 @@ describe('validate consistency command', () => {
     );
     // Negative space: the real orphan must still warn.
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP') && /02\b/.test(w)),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP') && /02\b/.test(w.message)),
       `expected a warning for the real orphan 02; got: ${JSON.stringify(output.warnings)}`
     );
     // #3225 (review finding): a sentinel dir must NOT produce a spurious
     // "Gap in phase numbering: N → 999" either (the gap check builds its integer
     // sequence from diskPhases and would otherwise include 999).
     const sentinelGaps = output.warnings.filter(
-      w => w.includes('Gap in phase numbering') && /999\b/.test(w)
+      w => w.message.includes('Gap in phase numbering') && /999\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelGaps.length, 0,
@@ -155,8 +161,14 @@ describe('validate consistency command', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(
-      output.warnings.some(w => w.includes('Gap in phase numbering')),
+      output.warnings.some(w => w.message.includes('Gap in phase numbering')),
       'should warn about gap'
+    );
+    // C001 — new code namespace (design doc, "Code namespace"): not a W0NN,
+    // since this subject has no `validate.health` equivalent.
+    assert.ok(
+      output.warnings.some(w => w.code === 'C001'),
+      `expected code C001 for the phase-numbering gap; got: ${JSON.stringify(output.warnings)}`
     );
   });
 });
