@@ -613,7 +613,7 @@ are right, because they ask different questions:
 | Contract | Question | Verdict on `0.x` |
 |---|---|---|
 | #2554 (`roadmap-parser.test.cjs`) | is this directory part of the current milestone's phase SET? | **count it** — a `00.1-<slug>` dir declared as `### Phase 00.1:` is a real phase |
-| #2949 (`issue-2949-phase-complete-stage3-sentinel.test.cjs`) | must this phase COMPLETE before the milestone can close? | **sentinel** — a `0.x` must not block `is_last_phase` |
+| #2949 (`phase.test.cjs`, folded:issue-2949-phase-complete-stage3-sentinel) | must this phase COMPLETE before the milestone can close? | **sentinel** — a `0.x` must not block `is_last_phase` |
 
 No single global predicate answers both. The resolution is layered, not unified: `isSentinelPhaseId`
 keeps its semantics (`0.x` IS a sentinel, satisfying #2949), and the milestone-WINDOW layer keeps a

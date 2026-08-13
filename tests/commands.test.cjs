@@ -1447,7 +1447,7 @@ describe('commit command', () => {
     const logCount = gitOrThrow(['log', '--oneline'], { cwd: tmpDir }).trim().split('\n').length;
     assert.strictEqual(logCount, 2, 'should have 2 commits (initial + amended)');
   });
-  test('creates strategy branch before first commit when branching_strategy is milestone (#3079: no switch)', () => {
+  test('#3207: creates AND switches to the milestone branch before first commit', () => {
     // Configure milestone branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1472,15 +1472,17 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the branch should be CREATED but NOT switched to.
+    // #3207: the branch should be CREATED and HEAD switched to it, so the first
+    // milestone-scoped commit lands on the milestone branch (#1278 intent). The
+    // prior #3079 no-switch behavior regressed this for fresh creates.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/v1.0-initial-release', '#3079: must NOT switch to the milestone branch');
-    // Verify the branch WAS created (exists as a ref)
-    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/v1.0-initial-release'], { cwd: tmpDir });
-    assert.ok(branchExists.trim(), 'milestone branch should be created even without switching');
+    assert.strictEqual(branch, 'gsd/v1.0-initial-release', '#3207: must switch to the milestone branch');
+    // The commit must be reachable on the milestone branch (HEAD is on it).
+    const committedFile = gitOrThrow(['show', 'HEAD:.planning/test-context.md'], { cwd: tmpDir });
+    assert.ok(committedFile.includes('# Context'), 'milestone commit must land on the milestone branch');
   });
 
-  test('creates strategy branch before first commit when branching_strategy is phase (#3079: no switch)', () => {
+  test('#3207: creates AND switches to the phase branch before first commit', () => {
     // Configure phase branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1509,14 +1511,16 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the branch should be CREATED but NOT switched to. The commit
-    // lands on the current branch (master/main), and the phase branch exists
-    // as a ref but HEAD did not move.
+    // #3207: the branch should be CREATED and HEAD switched to it, so the first
+    // phase-scoped commit lands on the phase branch (#1278 intent). The prior
+    // #3079 no-switch behavior regressed this for fresh creates.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/phase-01-setup', '#3079: must NOT switch to the phase branch');
-    // Verify the branch WAS created (exists as a ref)
-    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-01-setup'], { cwd: tmpDir });
-    assert.ok(branchExists.trim(), 'phase branch should be created even without switching');
+    assert.strictEqual(branch, 'gsd/phase-01-setup', '#3207: must switch to the phase branch');
+    // The commit must be reachable on the phase branch (HEAD is on it).
+    const committedFile = gitOrThrow(
+      ['show', 'HEAD:.planning/phases/01-setup/01-CONTEXT.md'], { cwd: tmpDir }
+    );
+    assert.ok(committedFile.includes('# Context'), 'phase commit must land on the phase branch');
   });
 
   test('decimal phase numbers are captured correctly in branching strategy', () => {
@@ -1548,9 +1552,9 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: verify branch is created but NOT switched to (decimal phase)
+    // #3207: the branch should be CREATED and HEAD switched to it (decimal phase).
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
-    assert.notStrictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3079: must NOT switch to the phase branch');
+    assert.strictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3207: must switch to the decimal phase branch');
     // Verify the correct branch name was resolved (not integer-only)
     const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-45.14-golden-capture'], { cwd: tmpDir });
     assert.ok(branchExists.trim(), 'decimal phase branch should be created (45.14, not 14)');
@@ -1610,14 +1614,20 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // #3079: the commit no longer switches to the phase branch. The phase-07
-    // branch should be CREATED (resolving correctly to 07, not the archived 02),
-    // but the commit lands on the current branch.
+    // #3207: the commit now CREATES and SWITCHES to the phase branch. The
+    // resolved branch is phase-07 (correct, not the archived 02), and HEAD
+    // moves onto it so the phase's work accumulates there.
     const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(
       branch,
       'gsd/phase-02-archived-phase',
       `must NOT be on the archived phase-02 branch (got ${branch})`
+    );
+    // #3207: HEAD must land on the CORRECT freshly-created phase-07 branch.
+    assert.strictEqual(
+      branch,
+      'gsd/phase-07-active-phase',
+      `must switch onto the correct phase-07 branch (got ${branch})`
     );
     // Verify the correct phase-07 branch was created (not the archived 02)
     const phase07Exists = gitOrThrow(
@@ -1700,6 +1710,96 @@ describe('commit command', () => {
     assert.ok(
       /Warning: resolved.*branch .* already exists/.test(stderr),
       `expected a non-silent warning on stderr when the resolved branch already exists; got stderr=${stderr}`
+    );
+  });
+
+  // #3207 AC3: the fresh-create path must NOT be silent. Pre-fix the first
+  // phase-scoped commit produced no output at all, so the divergence between
+  // "phase branch exists" and "phase work is on it" started invisibly. The fix
+  // logs the create+switch on stderr.
+  test('#3207: fresh phase-branch create is non-silent (logs create+switch)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    // Observe stderr on the success path via the process seam (execFileSync
+    // discards stderr on success — same reason the #2539 test uses runNode).
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const proc = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): add context',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(proc, 'gsd-tools commit (#3207 non-silent fixture)');
+    const stderr = proc.stderr || '';
+
+    // The fresh create must announce itself — not the "already exists" wording
+    // (that belongs to the existing-branch path) but a create+switch notice.
+    assert.ok(
+      /created.*switched|switched.*created/i.test(stderr) ||
+        /phase-01-setup/i.test(stderr),
+      `expected a non-silent create+switch notice on stderr; got stderr=${stderr}`
+    );
+  });
+
+  // #3207 AC5: once the first commit has switched HEAD onto the phase branch,
+  // a second phase-scoped commit must NOT emit the misleading "already exists"
+  // warning — the currentBranch === branchName guard skips the block entirely.
+  test('#3207: second phase commit does not re-warn once HEAD is on the phase branch', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    const { TOOLS_PATH } = require('./helpers.cjs');
+
+    // First commit — fresh create, switches onto the phase branch.
+    const first = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): first',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(first, 'gsd-tools commit (#3207 first)');
+    const branchAfterFirst = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(branchAfterFirst, 'gsd/phase-01-setup', 'first commit must switch onto the phase branch');
+
+    // Second commit — HEAD is already on the phase branch, so the block is
+    // skipped and NO "already exists" warning should appear.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '02-NOTES.md'), '# Notes\n'
+    );
+    const second = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): second',
+      '--files', '.planning/phases/01-setup/02-NOTES.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(second, 'gsd-tools commit (#3207 second)');
+    const secondStderr = second.stderr || '';
+    assert.ok(
+      !/already exists/i.test(secondStderr),
+      `second commit must not re-warn once on the phase branch; got stderr=${secondStderr}`
     );
   });
 });

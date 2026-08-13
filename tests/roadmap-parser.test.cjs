@@ -1233,6 +1233,53 @@ describe('roadmap-parser: getMilestonePhaseFilter', () => {
     assert.strictEqual(filter('02-01-setup'), true, 'bracket-prefixed phase 2-01 matched');
     assert.strictEqual(filter('02-02-build'), true, 'bracket-prefixed phase 2-02 matched');
   });
+
+  // #3213: the custom-ID branch used a greedy capture
+  // `^([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)` that swallowed the whole
+  // hyphenated directory name (A-tool-output-contract → captured
+  // "A-tool-output-contract", not "A"). Every letter-named phase directory
+  // (GSD's own Phase A:..Phase L: convention; ADR-612 first-class non-numeric
+  // IDs) was silently excluded and milestone counts were fabricated over
+  // whatever numeric dir survived. The fix is a segment-boundary membership
+  // test: a dir belongs if it equals a declared phase ID or begins with id + "-".
+  test('#3213: letter-named phase dir is included in the milestone', () => {
+    writeRoadmap(tmpDir, [
+      '## v1.0: Letters',
+      '### Phase A: Tool Output Contract',
+      '**Goal:** contract',
+      '',
+      '### Phase 01: Inventory',
+      '**Goal:** inventory',
+    ].join('\n'));
+
+    const filter = getMilestonePhaseFilter(tmpDir);
+    assert.strictEqual(filter.phaseCount, 2, 'Phase A + Phase 01 declared');
+    assert.strictEqual(filter('A-tool-output-contract'), true, 'letter phase A dir must be in-milestone (#3213)');
+    assert.strictEqual(filter('01-inventory'), true, 'numeric phase 01 dir still matches');
+    assert.strictEqual(filter('B-evidence-artifact-contract'), false, 'undeclared letter phase B stays excluded');
+  });
+
+  test('#3213: letter-named phases A..L all count (not just the numeric dir)', () => {
+    const headings = ['## v1.0: Alpha', '### Phase 00: Inventory', '**Goal:** inv', ''];
+    for (const letter of ['A','B','C','D','E','F','G','H','I','J','K','L']) {
+      headings.push(`### Phase ${letter}: Phase ${letter}`, '**Goal:** g', '');
+    }
+    writeRoadmap(tmpDir, headings.join('\n'));
+
+    const filter = getMilestonePhaseFilter(tmpDir);
+    assert.strictEqual(filter.phaseCount, 13, 'Phase 00 + A..L = 13 phases');
+    assert.strictEqual(filter('00-inventory-approval-gate'), true, '00 in-milestone');
+    const dirFor = {
+      A: 'A-tool-output-contract',
+      B: 'B-evidence-artifact-contract',
+      C: 'C-attention-triage',
+      L: 'L-framework-distribution',
+    };
+    for (const [letter, dir] of Object.entries(dirFor)) {
+      assert.strictEqual(filter(dir), true, `letter phase ${letter} dir "${dir}" must be in-milestone (#3213)`);
+    }
+    assert.strictEqual(filter('M-not-declared'), false, 'undeclared letter M stays excluded');
+  });
 });
 
 // ─── withPhaseSection (ADR-2143 §4 — bounded mutation) ────────────────────────

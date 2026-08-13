@@ -1533,6 +1533,8 @@ Cross-AI peer review of phase plans from external AI CLIs.
 
 Reviewers are prompted to verify the plan's claims against the actual repository source — opening the referenced files and citing `file:line` evidence with the mechanism — rather than reviewing the plan text in isolation. A reviewer that has no file access flags what it cannot verify instead of asserting it, and `file:line`-grounded findings are weighted more heavily during consensus synthesis.
 
+**The prompt-fed CLI reviewers all start from the same assembled prompt.** It is built before any reviewer runs and carries the PROJECT.md excerpt, the roadmap section, every PLAN file, CONTEXT.md, RESEARCH.md and REQUIREMENTS.md — reviewers then open repository files from there, as described above. To keep the Claude reviewer on the same starting footing as the others, its lane declares `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so it does **not** additionally inherit your global `CLAUDE.md`, the project `CLAUDE.md`, or Claude Code auto-memory (the two are independently-toggled mechanisms, so each gets its own variable). The pair is merged into that one spawn's environment — it does not affect the session you ran `/gsd-review` from or any other reviewer in the same run, and it suppresses those memory mechanisms only, not hooks, skills, or MCP configuration. (Inside Claude Code the Claude reviewer is skipped entirely for independence, so this applies when reviewing from another runtime.)
+
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `--phase N` | **Yes** | Phase number to review |

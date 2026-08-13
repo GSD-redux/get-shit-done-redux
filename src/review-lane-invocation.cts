@@ -95,6 +95,12 @@ export interface SpawnPlan {
   handler: LaneHandler;
   requiresBinaries: readonly string[];
   probe: LaneProbe;
+  /**
+   * Per-invocation environment pairs merged over the inherited environment at spawn, or `null`
+   * when the lane declares none (#2483). Only string-valued own entries survive resolution — a
+   * non-string value is dropped, not coerced, for the same reason model values are not (below).
+   */
+  env: Readonly<Record<string, string>> | null;
 }
 
 export interface HttpPlan {
@@ -459,6 +465,22 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     }
   }
 
+  // Per-invocation env pairs (#2483). Own string-valued entries only — a non-string is dropped,
+  // never coerced, and prototype members never resolve (same lookup discipline as the argv
+  // expansions above). An empty or absent declaration resolves to `null`, so the runner has one
+  // shape to test.
+  let env: Record<string, string> | null = null;
+  const declaredEnv: unknown = inv.env;
+  if (declaredEnv !== null && typeof declaredEnv === 'object' && !Array.isArray(declaredEnv)) {
+    const source = declaredEnv as Record<string, unknown>;
+    const pairs: Record<string, string> = {};
+    for (const k of Object.keys(source)) {
+      const v = source[k];
+      if (typeof v === 'string') pairs[k] = v;
+    }
+    if (Object.keys(pairs).length > 0) env = pairs;
+  }
+
   return {
     ok: true,
     warnings,
@@ -477,6 +499,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       handler,
       requiresBinaries,
       probe: lane.probe,
+      env,
     },
   };
 }

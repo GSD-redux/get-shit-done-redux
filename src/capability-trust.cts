@@ -234,6 +234,56 @@ interface ReviewerLaneSurface {
   /** The first-party handler module name that post-processes this lane's output, or '' when undeclared. */
   handler: string;
   /**
+   * spawn: the per-invocation environment pairs the lane declares (#2483), string-filtered for the
+   * human summary exactly as `args` is. Folded into the signature, and rendered key-by-key in the
+   * consent prompt, for the SAME reason MCP's `env` already is: env changes WHAT a command does
+   * without touching the command (`NODE_OPTIONS=--require evil.js`, `LD_PRELOAD`). Empty when the
+   * lane declares none, which keeps an env-free lane's signature byte-identical (D4.5).
+   */
+  env: Record<string, string>;
+  /**
+   * openai-http: the destination host the MANIFEST itself declares, used at runtime whenever
+   * `hostConfigKey` resolves to nothing (`resolveLanePlan`: `configured ?? declaredDefault`). It is
+   * NOT `resolvedHost` — that one is resolved from user config and is deliberately excluded from the
+   * signature (design constraint 2). This one is a pure function of the manifest, so it both signs
+   * and renders: without it a lane whose config key is unset discloses `(unresolved)` at consent
+   * time while shipping the egress payload classes to an address of the manifest's own choosing.
+   */
+  defaultHost: string;
+  /**
+   * Every OTHER own key the declared `invoke` object carries — the completeness backstop, and the
+   * direct analogue of `McpServerSurface.rawConfig` (#1459 finding 5). The explicit fields above are
+   * kept first for readability and stability; this catches the rest, so a field ADDED to the invoke
+   * vocabulary later is signed from the day it exists rather than from the day someone remembers to
+   * widen this list. The enumerated fields (`binary`/`args`/`hostConfigKey`/`promptChannel`) are
+   * excluded because they are already bound above; `env` and `defaultHost` are deliberately NOT
+   * excluded, mirroring the MCP line's own explicit-then-rawConfig overlap.
+   */
+  residualInvoke: Record<string, unknown>;
+  /**
+   * The same backstop for the lane body's OUTER fields, which `invoke`'s residual cannot reach.
+   * `probe` is the reason it exists and is not a hypothetical: `probeLane` SPAWNS `probe.binary`
+   * with `--help` (`review-lane-runner.cts`, `command-exists`/`command-capability`), so an overlay
+   * naming an arbitrary probe binary executes it — the same class as `invoke.env`, one level out.
+   * `requiresBinaries`, `emptyOutput`, `promptBudgetKey` and `modelConfigKey` ride along for the
+   * same reason the invoke residual exists: enumerating "the ones that matter" is what failed.
+   *
+   * TWO fields are deliberately excluded, and the exclusion is a DECISION, not an oversight:
+   * `reviewsSection` and `timeoutFloorMs` (D4.5 / matrix A10/A13 — cosmetic, and folding them in
+   * would force a re-consent prompt carrying no security information, training click-through).
+   * `slug`/`transport`/`handler`/`invoke` are excluded because they are already bound.
+   */
+  residualLane: Record<string, unknown>;
+  /**
+   * spawn: the binary this lane's availability probe touches, or '' when none. Paired with
+   * `probeKind` because the two probe kinds do DIFFERENT things and the prompt must not conflate
+   * them: `command-capability` SPAWNS `<binary> --help` and parses the output, while
+   * `command-exists` only asks `hasBinary` (a PATH/filesystem scan that spawns nothing).
+   */
+  probeBinary: string;
+  /** The declared probe `kind`, or '' — decides how `probeBinary` is described to the human. */
+  probeKind: string;
+  /**
    * The data classes that egress to this lane on every run (`EGRESS_PAYLOAD_CLASSES`) — named
    * honestly (Kerckhoffs's Principle) rather than disclosed as an unhelpful "sends data to the tool".
    */
@@ -664,6 +714,42 @@ function collectReviewerLaneSurfaces(
     const hostConfigKey = asString(invoke['hostConfigKey']);
     const promptChannel = asString(invoke['promptChannel']);
 
+    // #2483: the declared env pairs. String-filtered for the human line exactly as `args` is, and
+    // prototype-safe (own enumerable keys only, dangerous keys never copied) exactly as `rawConfig`
+    // is. Disclosure runs BEFORE validation, so a non-object or non-string-valued `env` reaches here
+    // and must degrade to "declares none" rather than throw.
+    const env: Record<string, string> = {};
+    const envRaw = invoke['env'];
+    if (typeof envRaw === 'object' && envRaw !== null && !Array.isArray(envRaw)) {
+      for (const [k, v] of Object.entries(envRaw as Record<string, unknown>)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        if (typeof v === 'string') env[k] = v;
+      }
+    }
+    const defaultHost = asString(invoke['defaultHost']);
+    // The completeness backstop (mirrors rawConfig). Everything the invoke object declares that the
+    // explicit fields above do not already bind. Same prototype-safe copy.
+    const residualInvoke: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(invoke)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      if (k === 'binary' || k === 'args' || k === 'hostConfigKey' || k === 'promptChannel') continue;
+      residualInvoke[k] = v;
+    }
+    // The outer half of the same backstop. `probe` is the one that matters most — its `binary` is
+    // spawned before dispatch — and the two exclusions below are ADR-2782's deliberate cosmetic
+    // carve-outs, not fields nobody got round to.
+    const residualLane: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      if (k === 'slug' || k === 'transport' || k === 'handler' || k === 'invoke') continue;
+      if (k === 'reviewsSection' || k === 'timeoutFloorMs') continue;
+      residualLane[k] = v;
+    }
+    const probeRaw = rec['probe'];
+    const probeIsObj = typeof probeRaw === 'object' && probeRaw !== null && !Array.isArray(probeRaw);
+    const probeBinary = probeIsObj ? asString((probeRaw as Record<string, unknown>)['binary']) : '';
+    const probeKind = probeIsObj ? asString((probeRaw as Record<string, unknown>)['kind']) : '';
+
     // An EMPTY (or wholly unrecognised) reviewer body declares no lane and must
     // not be treated as one. Without this, `reviewer: {}` alone flips
     // hasExecutable true and perturbs the disclosure signature — producing a
@@ -677,9 +763,13 @@ function collectReviewerLaneSurfaces(
     // enough. Requiring specifically a binary, or specifically a slug, would let
     // a lane declaring only the other slip through unconsented, which is the far
     // worse failure.
+    // `env`/`defaultHost` join the test for the reason the comment above gives for keeping it broad:
+    // a lane declaring ONLY an `env` pair would otherwise declare "nothing", disclose nothing, and
+    // still hand those pairs to a spawned child once #2927/#3062 made overlay lanes executable —
+    // the exact slip-through the broad test exists to refuse.
     const declaresSomething = Boolean(
       slug || transport || handler || binary || hostConfigKey || promptChannel
-      || rawArgsDeclared.length > 0,
+      || rawArgsDeclared.length > 0 || Object.keys(env).length > 0 || defaultHost || probeBinary,
     );
     if (!declaresSomething) return [];
 
@@ -725,6 +815,12 @@ function collectReviewerLaneSurfaces(
       isLocalDestination,
       promptChannel,
       handler,
+      env,
+      defaultHost,
+      residualInvoke,
+      residualLane,
+      probeBinary,
+      probeKind,
       // B5: every lane receives the same named egress payload classes — a fresh copy per surface so
       // no caller can mutate the shared constant through a returned surface.
       egressPayloadClasses: [...EGRESS_PAYLOAD_CLASSES],
@@ -1186,10 +1282,40 @@ function disclosureSignature(d: Disclosure): string {
   // 2 — the loader has no config resolver and must compute the SAME signature as the lifecycle, or a
   // resolver-bearing caller and a resolver-less caller would permanently disagree on one manifest's
   // signature).
+  // #2483: the eight-field enumeration above was a CLOSED list over an OPEN vocabulary, and it had
+  // already fallen behind by EIGHT fields before `env` made the ninth — `defaultHost` (the manifest's
+  // OWN fallback egress host), `path` (appended to it to build the URL), `outputChannel`, `outputArg`,
+  // `modelArg`, `effortChannel`, `modelDiscovery` and `fallbackModel` all reach `resolveLanePlan` and
+  // none was signed. Counted, because the number is easy to state ambiguously: `resolveLanePlan`
+  // reads THIRTEEN distinct `inv.*` fields once `env` is included (twelve before this PR added it),
+  // of which the pre-#2483 tuple bound four — so eight were unbound before `env`, nine including it.
+  // So the fix is not a ninth name: it is a residual, the same completeness backstop `rawConfig` gives
+  // the MCP line one screen up (#1459 finding 5). `env`/`defaultHost` are ALSO named explicitly,
+  // mirroring that line's deliberate explicit-then-backstop overlap, because they are the two the
+  // human summary renders and a reader should be able to find them in the signature by name.
+  //
+  // APPENDED ONLY WHEN NON-EMPTY, which is D4.5 one level down: a lane declaring nothing beyond the
+  // eight already-bound fields keeps a BYTE-IDENTICAL signature, so this cannot re-prompt every
+  // consented capability for a field it does not use. A lane that DOES declare one re-consents — which
+  // is the correct outcome, not a cost: those fields were executable and undisclosed.
   const lanes = d.reviewerLanes
-    .map((l) =>
-      stableJson(['lane', l.slug, l.transport, l.binary, l.rawArgs || [], l.hostConfigKey, l.promptChannel, l.handler]),
-    )
+    .map((l) => {
+      const tuple: unknown[] = [
+        'lane', l.slug, l.transport, l.binary, l.rawArgs || [], l.hostConfigKey, l.promptChannel, l.handler,
+      ];
+      const extra = {
+        env: l.env || {},
+        defaultHost: l.defaultHost || '',
+        residual: l.residualInvoke || {},
+        laneResidual: l.residualLane || {},
+      };
+      const declaresExtra = Object.keys(extra.env).length > 0
+        || extra.defaultHost !== ''
+        || Object.keys(extra.residual).length > 0
+        || Object.keys(extra.laneResidual).length > 0;
+      if (declaresExtra) tuple.push(extra);
+      return stableJson(tuple);
+    })
     .sort();
   // D4.5 (the highest-consequence line in this phase): the lane element is appended ONLY when at
   // least one lane is declared. A lane-free manifest's signature stays BYTE-IDENTICAL to before this
@@ -1225,6 +1351,22 @@ function signatureForManifest(manifest: CapabilityManifest, stagedDir?: string):
 
 /** Max characters of an env VALUE shown in the human consent prompt before it is truncated. */
 const ENV_VALUE_MAX = 60;
+
+/**
+ * Environment names that turn a declared pair into arbitrary code execution in a spawned child
+ * (#2483). This list drives the consent prompt's WARNING line. The capability validator carries its
+ * own denylist that REFUSES these names outright (`DENIED_LANE_ENV_KEYS`); the two are deliberately
+ * separate layers rather than one, because they answer different questions: the validator refuses a
+ * manifest it can reject, and this list makes sure anything that DOES reach a prompt is read loudly.
+ * Neither is the boundary — install-time consent is, since no enumeration of execution-primitive
+ * names can be complete against an arbitrary third-party child.
+ */
+const EXECUTION_PRIMITIVE_ENV = new Set([
+  'NODE_OPTIONS', 'NODE_REPL_EXTERNAL_MODULE', 'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'PYTHONSTARTUP', 'PYTHONPATH', 'BASH_ENV', 'ENV',
+  'PERL5OPT', 'RUBYOPT', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH', 'NODE_PATH',
+  'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'PATH',
+]);
 
 /** Truncate a long env value for the human prompt (the full value is still in the signature). */
 function truncateEnvValue(v: string): string {
@@ -1324,7 +1466,8 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
  *
  * #3248: every manifest-supplied value interpolated into a line (hook event/script, command
  * family/module/router, MCP name/transport/url/command/argv/header-keys/env-keys+values/cwd,
- * reviewer-lane slug/hostConfigKey/resolvedHost/binary/rawArgs/handler, missingArtifacts entries)
+ * reviewer-lane slug/hostConfigKey/resolvedHost/defaultHost/binary/rawArgs/handler/probe-binary/
+ * env-keys+values, missingArtifacts entries)
  * goes through `renderValueForPrompt` first, which escapes forging/rewriting control characters and
  * bounds the length. These lines are joined with `\n` and written RAW to stderr on the
  * needs-consent path (`capability-command-router.cjs`), so an unescaped value could forge a line or
@@ -1421,6 +1564,15 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
         const localTag = l.isLocalDestination ? ' [local]' : '';
         const hostConfigKey = l.hostConfigKey ? renderValueForPrompt(l.hostConfigKey) : '(hostConfigKey?)';
         lines.push(`    - ${slug} -> [openai-http] ${hostConfigKey} => ${renderValueForPrompt(l.resolvedHost)}${localTag}`);
+        // #2483: the MANIFEST's own fallback host, which `resolveLanePlan` uses whenever the config
+        // key resolves to nothing (`configured ?? declaredDefault`). Without this line a lane whose
+        // key is unset renders as "(unresolved)" — which reads as "no destination" — while actually
+        // shipping the egress payload classes below to an address the manifest chose. That is the
+        // understating-the-disclosure failure the branch test one comment up already refuses.
+        // Escaped like every other rendered value (#3248): it is manifest-supplied by the same route.
+        if (l.defaultHost) {
+          lines.push(`        fallback destination declared by this capability: ${renderValueForPrompt(l.defaultHost)}`);
+        }
       } else {
         // Render the RAW declared args, not the string-filtered view. The raw
         // array is what the host receives and what the consent signature binds,
@@ -1435,6 +1587,44 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
         lines.push(`    - ${slug} -> ${cmd || '(no binary declared)'}`);
       }
       if (l.handler) lines.push(`        handler: ${renderValueForPrompt(l.handler)}`);
+      // The probe binary belongs in the prompt beside the dispatch binary when it differs — but the
+      // two probe kinds are NOT the same disclosure and must not be rendered as one.
+      // `command-capability` SPAWNS `<binary> --help`; `command-exists` only asks `hasBinary`, which
+      // scans PATH and spawns nothing. An earlier revision of this line asserted the spawn for both,
+      // which is a FALSE statement in a consent prompt — the one place a claim must be exact.
+      if (l.probeBinary && l.probeBinary !== l.binary) {
+        const probeBinary = renderValueForPrompt(l.probeBinary);
+        lines.push(l.probeKind === 'command-capability'
+          ? `        probes by running: ${probeBinary} --help`
+          : `        probes for the presence of: ${probeBinary} (no process is started)`);
+      }
+      // #2483: identical treatment to the MCP `env` line above, for the identical reason stated
+      // there — env changes WHAT runs without touching the command, so the user consents to this
+      // exact environment or not at all. The parity is byte-level and deliberate: since #3248 the
+      // MCP line escapes BOTH key and value through `renderValueForPrompt`, and a lane's env is
+      // manifest-supplied by the same route — so rendering it raw here would reintroduce, on the
+      // newer surface, precisely the prompt-forging vector #3248 closed on the older one.
+      const laneEnvKeys = l.env ? Object.keys(l.env) : [];
+      if (laneEnvKeys.length > 0) {
+        lines.push(`        env: ${laneEnvKeys
+          .map((k) => `${renderValueForPrompt(k)}=${renderValueForPrompt(truncateEnvValue(l.env[k]))}`)
+          .join(', ')}`);
+        // Names that make an environment pair an EXECUTION primitive rather than configuration.
+        // The validator REFUSES these on a reviewer lane (`DENIED_LANE_ENV_KEYS`), so in practice a
+        // first-party or freshly-validated manifest never reaches this line. It still earns its
+        // place, and the reason is the reason to keep both layers:
+        //   - Disclosure runs BEFORE validation, and on manifests validation would reject outright.
+        //     A user consenting to an already-installed or hand-placed capability sees this line
+        //     whether or not the validator ever ran on it.
+        //   - No enumeration of execution-primitive names is complete against an arbitrary
+        //     third-party child, so consent — not either list — is the boundary. A name missing from
+        //     both costs a quieter line on a value that is still SHOWN, which is the only
+        //     incompleteness budget an enumeration like this can honestly carry.
+        const flagged = laneEnvKeys.filter((k) => EXECUTION_PRIMITIVE_ENV.has(k));
+        if (flagged.length > 0) {
+          lines.push(`        WARNING — ${flagged.map(renderValueForPrompt).join(', ')} can make this lane run code of the capability's choosing`);
+        }
+      }
       lines.push(`        sends: ${l.egressPayloadClasses.join(', ')}`);
     }
   }

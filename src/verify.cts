@@ -1568,17 +1568,35 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const diskPhases = collectDiskPhases(planBase, convention);
 
   for (const p of roadmapPhases) {
-    // #612: a backlog/icebox phase legitimately has no directory. `sentinelPhases`
-    // is empty unless the bracket convention is active, so the legacy reading —
-    // including its pre-existing wart that `### Phase 999:` still warns here
-    // while `validate health` suppresses it — is untouched.
-    if (sentinelPhases.has(p)) continue;
+    // A backlog/icebox phase legitimately has no directory. The two guards are
+    // DISJOINT, which is why both are needed and neither subsumes the other:
+    //
+    //   #612  `sentinelPhases` — bracket sentinels. Under the bracket convention
+    //         the sentinel-ness lives in the MILESTONE, not the token: the
+    //         heading `### [GSD.999] 07:` yields token `07`, so a bare-token test
+    //         cannot see it. `buildRoadmapPhaseVariants` carries the bracket id
+    //         alongside and reports the token here. Empty unless the bracket
+    //         convention is active, so no legacy repo's reading changes.
+    //   #3225 `isSentinelPhaseId` — the legacy/bare leading-int rule (999.x/0.x),
+    //         which sees `### Phase 999:` and is blind to `[GSD.999] 07`.
+    //
+    // #3225 also CLOSED the consistency↔health divergence an earlier revision of
+    // this comment recorded as a standing wart (`### Phase 999:` warned here
+    // while `validate health` suppressed it) — the two verbs now agree on the
+    // legacy reading, as `sentinelPhases` already made them agree on the bracket
+    // one. Upstream's call is kept one-arg verbatim: every `p` here is a bare
+    // token, never a `{CODE}.{MM}`-qualified id, so a convention argument could
+    // not change its result.
+    if (sentinelPhases.has(p) || isSentinelPhaseId(p)) continue;
     if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
       warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
     }
   }
 
   for (const p of diskPhases) {
+    // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+    // never-on-roadmap; it must not warn here (same guard as cmdValidateHealth).
+    if (isSentinelPhaseId(p)) continue;
     const variants = phaseVariants(p);
     if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
       warnings.push(`Phase ${p} exists on disk but not in ROADMAP.md`);
@@ -1588,7 +1606,10 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   if (config.phase_naming !== 'custom') {
     const integerPhases = [...diskPhases]
-      .filter((p) => !p.includes('.'))
+      // #3225: exclude sentinel phase ids (999.x/0.x) — they are never part of the
+      // sequential numbering, so a 999-interim dir must not produce a spurious
+      // "Gap in phase numbering: N → 999".
+      .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
       .map((p) => parseInt(p, 10))
       .sort((a, b) => a - b);
 
@@ -2124,13 +2145,16 @@ function cmdValidateHealth(
     const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent, phaseConvention);
 
     for (const p of roadmapPhases) {
-      // #2761 B2: a backlog/icebox phase legitimately has no directory.
-      // `sentinelPhases` is empty unless the bracket convention is active, so a
-      // legacy repo's reading is untouched. Mirrors cmdValidateConsistency's
-      // identical skip a few hundred lines up — without it, a bracket sentinel
-      // heading (`### [GSD.999] 07:`) gained a W006 here that `validate
-      // consistency` correctly stayed silent on for the same ROADMAP.
-      if (sentinelPhases.has(p)) continue;
+      // A sentinel heading shouldn't demand a directory. Same disjoint pair as
+      // cmdValidateConsistency's skip a few hundred lines up, and mirrored here
+      // for the same reason: #2761 B2 — without `sentinelPhases`, a bracket
+      // sentinel heading (`### [GSD.999] 07:`) gains a W006 that `validate
+      // consistency` correctly stays silent on for the same ROADMAP; #3225 —
+      // without `isSentinelPhaseId`, a legacy `### Phase 999:` gains one there.
+      // `sentinelPhases` reads the bracket MILESTONE (invisible to a bare-token
+      // test, which is all `isSentinelPhaseId` gets here); `isSentinelPhaseId`
+      // reads the legacy leading int. Neither covers the other's case.
+      if (sentinelPhases.has(p) || isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       const existsOnDisk = [...variants].some((v) => diskPhases.has(v));
       if (!existsOnDisk) {
@@ -2146,6 +2170,11 @@ function cmdValidateHealth(
     }
 
     for (const p of activeDiskPhases) {
+      // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+      // never-on-roadmap; it must not trigger W007 ("Add to roadmap or remove
+      // directory" — both wrong for a sentinel). Mirrors the isSentinelPhaseId
+      // guard phase.cts has at 10+ sites (#2786/#2949).
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
       if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
         addIssue(
