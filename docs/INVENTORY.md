@@ -540,6 +540,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `model-resolver.cjs` | Model/effort resolution policy — resolves model, tier, granularity, effort, and fast-mode for an agent from config + model profiles/catalog (extracted from `core.cjs`, ADR-857) |
 | `package-identity.cjs` | Generated single source for GSD's published-package coordinates (npm name, bin name, repo slug, changelog URL, manual-install command), derived from package.json; read by the update worker, `check-latest-version`, and installer (#498) |
 | `package-legitimacy.cjs` | Registry-API package legitimacy verdicts (OK/SUS/SLOP) from npm/PyPI/crates, slopcheck optional |
+| `pattern.cjs` | The pattern-construction seam — `escapeRegex` (delegates to the built-in `RegExp.escape`) and `literalPattern`; sole owner of building a `RegExp` from a runtime value (ADR-3212 §1, epic #3212 Phase 1, #3412) |
 | `phase-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools phase` |
 | `phase-estimation.cjs` | Pure phase-effort estimation — `estimate`/`actuals` schema parse+render, smart-zone budget classification, and estimate-vs-actual calibration (median ratio, clamped, sample-gated). Confidence is derived from calibration sample count, never self-rated (ADR-2629) |
 | `phase-id.cjs` | Pure phase-id parsing/matching helpers — normalize, token match, milestone/phase-dir id parsing, phase-markdown regex builders (extracted from `core.cjs`, ADR-857) |

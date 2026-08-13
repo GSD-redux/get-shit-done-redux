@@ -231,9 +231,12 @@ function extractCommandTokens(content) {
 
 /**
  * Walk a directory and return all .md files recursively.
- * Uses hand-rolled DFS for Node 20 compat (Node 22+ recursive readdirSync is
- * not available in all CI matrix entries). Surfaces permission-denied errors
- * as structured warnings (PRED.k302) rather than silently skipping.
+ * Uses hand-rolled DFS rather than `fs.readdirSync(dir, { recursive: true })`
+ * — the recursive option is available on every CI matrix entry now that the
+ * Node floor is >=24.0.0 (it landed in Node 20.1), but this walker predates
+ * that bump and was not rewritten as part of it; unchanged, not stale.
+ * Surfaces permission-denied errors as structured warnings (PRED.k302) rather
+ * than silently skipping.
  */
 function listMdFiles(dir) {
   if (!fs.existsSync(dir)) return [];

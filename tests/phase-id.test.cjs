@@ -2,7 +2,6 @@
  * Tests for src/phase-id.cts (compiled to gsd-core/bin/lib/phase-id.cjs).
  *
  * Verifies behavioural contracts of the extracted pure phase-id helpers:
- *   - escapeRegex
  *   - normalizePhaseName
  *   - comparePhaseNum
  *   - extractPhaseToken
@@ -24,51 +23,11 @@ const assert = require('node:assert/strict');
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const fc = require('fast-check');
 
-// ─── escapeRegex ─────────────────────────────────────────────────────────────
-
-describe('escapeRegex', () => {
-  test('escapes all regex special characters', () => {
-    assert.strictEqual(phaseId.escapeRegex('.'), '\\.');
-    assert.strictEqual(phaseId.escapeRegex('*'), '\\*');
-    assert.strictEqual(phaseId.escapeRegex('+'), '\\+');
-    assert.strictEqual(phaseId.escapeRegex('?'), '\\?');
-    assert.strictEqual(phaseId.escapeRegex('^'), '\\^');
-    assert.strictEqual(phaseId.escapeRegex('$'), '\\$');
-    assert.strictEqual(phaseId.escapeRegex('{'), '\\{');
-    assert.strictEqual(phaseId.escapeRegex('}'), '\\}');
-    assert.strictEqual(phaseId.escapeRegex('('), '\\(');
-    assert.strictEqual(phaseId.escapeRegex(')'), '\\)');
-    assert.strictEqual(phaseId.escapeRegex('|'), '\\|');
-    assert.strictEqual(phaseId.escapeRegex('['), '\\[');
-    assert.strictEqual(phaseId.escapeRegex(']'), '\\]');
-    assert.strictEqual(phaseId.escapeRegex('\\'), '\\\\');
-  });
-
-  test('leaves alphanumeric and hyphen characters unescaped', () => {
-    assert.strictEqual(phaseId.escapeRegex('abc'), 'abc');
-    assert.strictEqual(phaseId.escapeRegex('01-02'), '01-02');
-    assert.strictEqual(phaseId.escapeRegex('v1.0'), 'v1\\.0');
-  });
-
-  test('coerces non-string values via String()', () => {
-    assert.strictEqual(phaseId.escapeRegex(42), '42');
-    assert.strictEqual(phaseId.escapeRegex(null), 'null');
-    assert.strictEqual(phaseId.escapeRegex(undefined), 'undefined');
-  });
-
-  test('adversarial: path-traversal-like inputs are treated as literals', () => {
-    const result = phaseId.escapeRegex('../../../etc/passwd');
-    // The dots get escaped; slashes and alphanumeric pass through unchanged
-    assert.strictEqual(result, '\\.\\./\\.\\./\\.\\./etc/passwd');
-    // The result forms a valid regex (no throws)
-    assert.doesNotThrow(() => new RegExp(result));
-  });
-
-  test('unicode passthrough', () => {
-    assert.strictEqual(phaseId.escapeRegex('Phase Name'), 'Phase Name');
-    assert.strictEqual(phaseId.escapeRegex('中文'), '中文');
-  });
-});
+// escapeRegex moved off phase-id.cjs entirely in #3212 Phase 1 (#3412): it is
+// now owned by the pattern-construction seam (src/pattern.cts, tests in
+// tests/pattern.test.cjs) and phase-id.cjs no longer exports it — see
+// tests/phase-id-drift-guard.test.cjs's CANONICAL list, which drops it for
+// the same reason.
 
 // ─── normalizePhaseName ───────────────────────────────────────────────────────
 

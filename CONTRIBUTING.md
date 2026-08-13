@@ -195,7 +195,7 @@ Contributor requirements (summary):
 - **One concern per PR** — bug fixes, enhancements, and features must be separate PRs
 - **No drive-by formatting** — don't reformat code unrelated to your change
 - **Don't bundle test-fixture updates into `docs:` or unrelated commits** — when a production change makes an existing test assertion stale, the test correction MUST land as its own `test:` (or `fix:`) commit, not bundled into a `docs:` commit that also updates the explanation. The release-sdk hotfix cherry-pick filter routes by commit-subject prefix (`fix:`, `chore:`, `test:`); a test-fixture correction packed under a `docs:` prefix is invisible to the picker and ships a half-state to the hotfix branch — production code changed, test assertion stale. v1.42.3 hit this exact mode (#3621). The fix is upstream: keep the test-fixture commit separate.
-- **CI must pass** — all configured matrix jobs must be green. Node 22 remains the compatibility floor; Node 24 is the primary target; Node 26 compatibility must be preserved for code and tests even when a Node 26 CI lane is not yet available.
+- **CI must pass** — all configured matrix jobs must be green. Node 24 is the compatibility floor and primary target; Node 26 compatibility must be preserved for code and tests even when a Node 26 CI lane is not yet available.
 - **Scope matches the approved issue** — if your PR does more than what the issue describes, the extra changes will be asked to be removed or moved to a new issue
 
 ## CHANGELOG Entries — Drop a Fragment
@@ -871,17 +871,16 @@ For everything else, if a test reaches for `.includes()` / `.startsWith()` / `as
 
 ### Node.js Version Compatibility
 
-**Node 22 is the minimum supported version.** Node 24 is the primary CI target. Node 26 is the forward-compatibility target: do not add tests or production code that depend on deprecated behavior likely to fail there.
+**Node 24 is the minimum supported version.** Node 24 is also the primary CI target. Node 26 is the forward-compatibility target: do not add tests or production code that depend on deprecated behavior likely to fail there.
 
 | Version | Status |
 |---------|--------|
-| **Node 22** | Minimum required — Active LTS until October 2026, Maintenance LTS until April 2027 |
-| **Node 24** | Primary CI target — current Active LTS, all tests must pass |
+| **Node 24** | Minimum required and primary CI target — Active LTS, all tests must pass |
 | Node 26 | Forward-compatible target — avoid deprecated APIs and exact runtime-error prose |
 
 Do not use:
 - Deprecated APIs
-- APIs not available in Node 22
+- APIs not available in Node 24
 
 Safe to use:
 - `node:test` — stable since Node 18, fully featured in 24

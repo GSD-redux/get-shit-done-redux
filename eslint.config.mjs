@@ -15,6 +15,7 @@ import noElapsedAssertion from './eslint-rules/no-elapsed-assertion.cjs';
 import noRawRmsyncInTests from './eslint-rules/no-raw-rmsync-in-tests.cjs';
 import noTautologicalAssert from './eslint-rules/no-tautological-assert.cjs';
 import noAdhocMarkdownParsing from './eslint-rules/no-adhoc-markdown-parsing.cjs';
+import noAdhocRegexEscape from './eslint-rules/no-adhoc-regex-escape.cjs';
 import noPathLiteralInAssert from './eslint-rules/no-path-literal-in-assert.cjs';
 import noPosixModeBitAssert from './eslint-rules/no-posix-mode-bit-assert.cjs';
 import noUnguardedNonportableExec from './eslint-rules/no-unguarded-nonportable-exec.cjs';
@@ -36,6 +37,7 @@ const localPlugin = {
     'no-raw-rmsync-in-tests': noRawRmsyncInTests,
     'no-tautological-assert': noTautologicalAssert,
     'no-adhoc-markdown-parsing': noAdhocMarkdownParsing,
+    'no-adhoc-regex-escape': noAdhocRegexEscape,
     'no-path-literal-in-assert': noPathLiteralInAssert,
     'no-posix-mode-bit-assert': noPosixModeBitAssert,
     'no-unguarded-nonportable-exec': noUnguardedNonportableExec,
@@ -135,6 +137,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/configuration.cjs',
       'gsd-core/bin/lib/state-document.cjs',
       'gsd-core/bin/lib/planning-snapshot.cjs',
+      'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/health-diagnostic-types.cjs',
       'gsd-core/bin/lib/health-diagnostic.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/root-existence.cjs',
@@ -306,6 +309,11 @@ export default tseslint.config(
       // ADR-1372 T7: enforce use of the markdown-sectionizer seam; grandfather
       // pre-migration sites with // allow-adhoc-markdown: <reason>
       'local/no-adhoc-markdown-parsing': 'error',
+      // ADR-3212 Phase 1 (#3412): enforce the pattern-construction seam
+      // (src/pattern.cts's escapeRegex/literalPattern) — flags a re-inlined
+      // escape-all-metachars .replace() helper or an unrouted new RegExp()
+      // from a runtime value.
+      'local/no-adhoc-regex-escape': 'error',
       // ADR-1703 Phase 5: flag path-returning calls interpolated into content
       // (markdown @-references, workflow files, generated docs) without POSIX
       // normalization. Promoted to 'error' after precision review (path.basename
@@ -347,6 +355,10 @@ export default tseslint.config(
     rules: {
       'local/normalize-path-in-content': 'error',
       'local/require-fs-op-fallback': 'error',
+      // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition —
+      // scripts/build-hooks.js is a .js file, so it falls outside the
+      // scripts/**/*.cjs glob below and needs it registered here too.
+      'local/no-adhoc-regex-escape': 'error',
     },
   },
 
@@ -398,6 +410,9 @@ export default tseslint.config(
       // Promoted to error (#3313) — a fresh non-cached `npx eslint .` run found
       // zero live violations of this rule in this glob at promotion time.
       'local/no-source-grep': 'error',
+      // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition —
+      // see the src/**/*.cts block above for detail.
+      'local/no-adhoc-regex-escape': 'error',
     },
   },
 
@@ -414,6 +429,8 @@ export default tseslint.config(
       'no-empty': ['warn', { allowEmptyCatch: true }],
       'no-useless-escape': 'warn',
       'n/no-path-concat': 'error',
+      // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition.
+      'local/no-adhoc-regex-escape': 'error',
       // n/no-process-exit is deliberately OFF for hooks ONLY.
       //
       // A hook is a standalone process whose ENTIRE contract is its exit code: the
@@ -493,6 +510,12 @@ export default tseslint.config(
       // Ban a consolidation-epic folded suite appearing twice in one host file (#3271).
       // A second copy runs the same tests twice on every lane and drifts silently.
       'local/no-duplicate-fold-marker': 'error',
+      // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition —
+      // see the src/**/*.cts block above for detail. The historical oracle
+      // inlined in tests/pattern.test.cjs is exempted per-finding with
+      // // allow-adhoc-regex-escape: comments (design doc Notes: "not a 13th
+      // production copy").
+      'local/no-adhoc-regex-escape': 'error',
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',

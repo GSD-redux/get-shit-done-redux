@@ -438,6 +438,7 @@
       "onboard-projection.cjs",
       "package-identity.cjs",
       "package-legitimacy.cjs",
+      "pattern.cjs",
       "phase-command-router.cjs",
       "phase-estimation.cjs",
       "phase-id.cjs",

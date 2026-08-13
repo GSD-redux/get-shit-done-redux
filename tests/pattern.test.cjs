@@ -123,6 +123,7 @@ describe('migration equivalence (row-9 sweep)', () => {
     // doc "Ground truth" #1; ADR §7 Class 1 census). It is inlined here ONLY as
     // a test oracle for this equivalence sweep — this is NOT a 13th production
     // copy of the escape helper (design doc Notes: "not a 13th production copy").
+    // eslint-disable-next-line local/no-adhoc-regex-escape -- historical oracle for the row-15 equivalence sweep, not a production copy (#3412)
     const hand = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     fc.assert(
@@ -143,6 +144,7 @@ describe('migration equivalence (row-9 sweep)', () => {
   });
 
   test('row 16: the real corpus — phase tokens, milestone versions, STATE field names, runtime ids are match-equivalent', () => {
+    // eslint-disable-next-line local/no-adhoc-regex-escape -- historical oracle for the row-16 equivalence sweep, not a production copy (#3412)
     const hand = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const corpus = [
       '1A',
@@ -171,6 +173,7 @@ describe('migration equivalence (row-9 sweep)', () => {
     // Pre-migration (hand-rolled, verified): new RegExp('[' + hand('a-z') + ']').test('m') === true
     // — the unescaped '-' formed an unintended a-through-z RANGE that happened
     // to match 'm'. This is design row 10's confirmed latent bug.
+    // eslint-disable-next-line local/no-adhoc-regex-escape -- historical oracle for the row-17 latent-bug check, not a production copy (#3412)
     const hand = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.strictEqual(
       new RegExp('[' + hand('a-z') + ']').test('m'),

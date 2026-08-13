@@ -10,7 +10,8 @@
  *
  * Dependencies (leaf modules only — no loadConfig):
  *   - node:fs / node:path (stdlib)
- *   - ./phase-id.cjs        (escapeRegex, phaseMarkdownRegexSource)
+ *   - ./phase-id.cjs        (phaseMarkdownRegexSource)
+ *   - ./pattern.cjs         (escapeRegex — #3212 Phase 1 seam)
  *   - ./planning-workspace.cjs (planningDir)
  *   - ./shell-command-projection.cjs (platformReadSync)
  *   - ./markdown-sectionizer.cjs (tokenizeHeadings, stripTaggedBlocks, withSection, collectSection)
@@ -19,10 +20,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
 const {
-  escapeRegex,
   phaseMarkdownRegexSource,
   stripProjectCodePrefix,
   OPTIONAL_PHASE_TAG_SOURCE,

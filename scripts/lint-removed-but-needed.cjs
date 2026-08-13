@@ -33,6 +33,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCAN_ROOTS = ['.github/workflows', 'gsd-core', 'docs'];
@@ -41,10 +42,6 @@ const EXTRA_FILES = ['package.json'];
 // Skip these when walking SCAN_ROOTS — binary/generated content that can
 // never carry a meaningful basename reference, and is often large.
 const SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.zip']);
-
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Pure: does `content` contain a literal reference to `basename`, delimited
