@@ -225,7 +225,7 @@ describe('#1955: coincidental-reliance advisory — the report surface', () => {
   });
 });
 
-describe('#1955: cross-surface parity (agent, template, verify-phase workflow)', () => {
+describe('#1955: cross-surface parity (agent, template, verifier gate reference)', () => {
   test('PARITY: agent and standalone template agree on the advisory vocabulary', () => {
     // Generative-fix-divergence gate: two surfaces render the same report, so a
     // token added to one and not the other is the defect this test exists for.
@@ -245,7 +245,7 @@ describe('#1955: cross-surface parity (agent, template, verify-phase workflow)',
     assert.match(guidelines, /coincidental-reliance/);
   });
 
-  test('verify-phase workflow reaches the rule through its eager template import', () => {
+  test('verifier gate reference reaches the rule through the canonical template', () => {
     // The third surface. `gsd-core/references/verifier-phase-gates.md` is the
     // verifier agent's eagerly-imported gate reference (migrated from the
     // retired workflows/verify-phase.md in #1892). It does NOT reimplement the

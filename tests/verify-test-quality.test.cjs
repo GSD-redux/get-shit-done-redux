@@ -1,9 +1,10 @@
 // allow-test-rule: source-text-is-the-product
 // Structural guard: reads gsd-core/references/verifier-phase-gates.md (the
-// gsd-verifier agent's eagerly-imported gate reference, migrated from the
-// retired workflows/verifier-phase-gates.md in #1892) and asserts that
-// the audit_test_quality step contains the skip-pattern marker, circular-detection
-// marker, provenance-classification contract, and assertion-strength table markers.
+// gsd-verifier agent's eagerly-imported gate reference; its content was
+// migrated from the retired workflows/verify-phase.md orphan in #1892) and
+// asserts that the audit_test_quality step contains the skip-pattern marker,
+// circular-detection marker, provenance-classification contract, and
+// assertion-strength table markers.
 // Goes red if that guidance is removed or the step is renamed/deleted.
 
 'use strict';
