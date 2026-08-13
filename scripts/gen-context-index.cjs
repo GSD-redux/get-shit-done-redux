@@ -46,6 +46,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { normalizeEol } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONTEXT_PREDICATES_LIB_PATH = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'context-predicates.cjs');
@@ -142,16 +143,6 @@ function buildFreshIndex(contextPath = CONTEXT_PATH) {
  */
 function serializeIndex(index) {
   return JSON.stringify(index, null, 2) + '\n';
-}
-
-/**
- * Normalize line endings to LF for CRLF-agnostic full-content comparison.
- *
- * @param {string} content
- * @returns {string}
- */
-function normalizeLineEndings(content) {
-  return content.replace(/\r/g, '');
 }
 
 /**
@@ -431,7 +422,7 @@ module.exports = {
   readContextMarkdown,
   buildFreshIndex,
   serializeIndex,
-  normalizeLineEndings,
+  normalizeLineEndings: normalizeEol,
   duplicateIds,
   checkReport,
   parseArgs,
