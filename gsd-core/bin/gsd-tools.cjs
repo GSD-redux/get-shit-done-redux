@@ -1580,7 +1580,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeDispatchShouldFlatten({ args, cwd, raw, error }) {
     // #1708 / #853: typed query replacing the `RUNTIME === 'codex'` prose rule.
           //
-          // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+          // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+          // .gsd-runtime marker > 'claude'),
           // looks up registry.runtimes[id].runtime.hostIntegration.dispatch, and
           // calls shouldFlattenDispatch(dispatch) from host-integration.cjs.
           //
@@ -1634,7 +1635,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // #853) for exactly this reason — it replaced a `RUNTIME === 'codex'`
     // prose rule.
     //
-    // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+    // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+    // .gsd-runtime marker > 'claude'),
     // reads registry.runtimes[id].runtime.hostIntegration.dispatch.isolation,
     // and validates it against the closed vocabulary.
     //
@@ -1669,12 +1671,83 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `per-plan-worktree-gate.md`) override the naturally-resolved mode
     // while still going through this single write path. Best-effort: a
     // sentinel write failure here must never fail the wave.
-    const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+    const decision = resolveDispatchIsolationDecision({ args, cwd });
+    const runtimeId = decision.runtimeId;
+    let { isolation, exec, harnessFlag } = decision;
+
+    // `--force-isolation <mode>` overrides the naturally-resolved mode with
+    // context this resolver has no way to see on its own (e.g. the #2474
+    // per-plan submodule intersection). Invalid/unrecognized values are
+    // ignored rather than erroring — this is a best-effort recording call,
+    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
+    // neither applies to sequential dispatch.
+    const forceIdx = args.indexOf('--force-isolation');
+    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
+    if (forcedIsolation && DISPATCH_ISOLATION_VOCABULARY.has(forcedIsolation)) {
+      isolation = forcedIsolation;
+      if (isolation === 'none') {
+        harnessFlag = null;
+        exec = null;
+      }
+    }
+
+    const phaseIdx = args.indexOf('--phase');
+    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+    const planIdx = args.indexOf('--plan');
+    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
+
+    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
+    // Never allowed to affect this query's own stdout contract or throw.
+    try {
+      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
+    } catch {
+      // writeDispatchIsolationSentinel already swallows its own errors into
+      // a { recorded: false } result; this catch is defense in depth only.
+    }
+
+    if (args.indexOf('--json') !== -1) {
+      output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
+    } else {
+      process.stdout.write(isolation);
+    }
+  }
+
+  const DISPATCH_ISOLATION_VOCABULARY = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+
+  /**
+   * Shared, side-effect-free resolution of the negotiated dispatch isolation:
+   * runtime (GSD_RUNTIME > config.runtime > per-install .gsd-runtime marker >
+   * 'claude') → declared
+   * `dispatch.isolation` → harness-flag / orchestrator-exec degrade rules.
+   * Extracted (#2486) so `routeDispatchIsolation` (the #3045 recording
+   * dispatch path) and `routeInspectDispatchIsolation` (the read-only
+   * inspection path) share exactly one negotiation implementation and cannot
+   * drift apart. Resolution only — the caller decides whether the decision is
+   * recorded to the sentinel.
+   */
+  function resolveDispatchIsolationDecision({ args, cwd }) {
     let isolation = 'none';
     let runtimeId = null;
     let exec = null;
     let harnessFlag = null;
     try {
+      // Deliberately `resolveRuntime`, NOT `resolveActiveRuntime`/`loadConfig`:
+      // loadConfig normalizes and rewrites legacy keys back to disk, and this
+      // resolver backs the sentinel-free `inspect-dispatch-isolation` verb,
+      // which must never write. resolveRuntime reads config.json directly.
+      //
+      // KNOWN LIMITATION, tracked separately: resolveRuntime stops at
+      // GSD_RUNTIME > config.runtime > 'claude' and does not consult the
+      // per-install `.gsd-runtime` marker, so on a non-Claude install whose
+      // project config carries no `runtime` key this resolves 'claude'. That is
+      // open-gsd/gsd-core#2395 — a pre-existing defect in the canonical
+      // resolver, not introduced here, and deliberately NOT fixed in this PR
+      // (its blast radius reaches every consumer of that resolver, so it is
+      // being handled on its own).
       const { resolveRuntime } = require('./lib/runtime-slash.cjs');
       runtimeId = resolveRuntime(cwd);
 
@@ -1683,7 +1756,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         ? registry.runtimes[runtimeId]
         : null;
       const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
-      if (typeof declared === 'string' && VALID_ISOLATION.has(declared)) {
+      if (typeof declared === 'string' && DISPATCH_ISOLATION_VOCABULARY.has(declared)) {
         isolation = declared;
       }
 
@@ -1726,41 +1799,49 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       exec = null;
       harnessFlag = null;
     }
+    return { runtimeId, isolation, exec, harnessFlag };
+  }
 
-    // `--force-isolation <mode>` overrides the naturally-resolved mode with
-    // context this resolver has no way to see on its own (e.g. the #2474
-    // per-plan submodule intersection). Invalid/unrecognized values are
-    // ignored rather than erroring — this is a best-effort recording call,
-    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
-    // neither applies to sequential dispatch.
-    const forceIdx = args.indexOf('--force-isolation');
-    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
-    if (forcedIsolation && VALID_ISOLATION.has(forcedIsolation)) {
-      isolation = forcedIsolation;
-      if (isolation === 'none') {
-        harnessFlag = null;
-        exec = null;
-      }
+  function routeInspectDispatchIsolation({ args, cwd, raw }) {
+    // #2486: sentinel-free sibling of `dispatch-isolation` for INSPECTION
+    // surfaces — /gsd:health's W025 check and /gsd:settings' Worktrees
+    // branching. The dispatch verb above intentionally records its resolved
+    // decision to the isolation sentinel as an unconditional side effect
+    // (#3045 CORE REDESIGN): correct for executor dispatch, where the record
+    // must be structurally unskippable — but wrong for a read-only
+    // diagnostic. A health check that records a phase:null/plan:null
+    // sentinel can hard-block every executor dispatch for the sentinel's
+    // lifetime, across sessions sharing the main checkout. Inspection
+    // surfaces call this verb instead. Two claims, both narrower than
+    // "side-effect-free", and both exactly true (#2486 review, Majors 2 & 4):
+    //
+    //  1. SENTINEL-FREE, not write-free. This route writes nothing itself, and
+    //     in particular never writes .gsd/dispatch-isolation-sentinel.json —
+    //     the only write that can hard-block a later executor dispatch. It is
+    //     NOT a claim of total filesystem purity: like every gsd-tools
+    //     invocation, it runs the shared bootstrap and active-workstream
+    //     resolution first, and getActiveWorkstream self-heals (unlinks) a
+    //     stale or invalid pointer. That is pre-existing, verb-independent,
+    //     and harmless to dispatch.
+    //
+    //  2. SHARED NEGOTIATION, for the arguments this verb accepts. Both verbs
+    //     call resolveDispatchIsolationDecision, so the natural resolution
+    //     cannot drift. It is NOT a claim of byte-identical output for every
+    //     argv: routeDispatchIsolation applies --force-isolation AFTER the
+    //     shared helper returns, so the same argv could otherwise yield
+    //     'none' there and the declared capability here. Rather than let a
+    //     caller receive a silently different answer, this verb REJECTS the
+    //     recording-only knobs outright — they exist to be recorded, and a
+    //     read has nothing to record.
+    const RECORDING_ONLY_ARGS = ['--force-isolation', '--phase', '--plan'];
+    const rejected = RECORDING_ONLY_ARGS.filter((flag) => args.indexOf(flag) !== -1);
+    if (rejected.length > 0) {
+      error(
+        `inspect-dispatch-isolation: ${rejected.join(', ')} ${rejected.length === 1 ? 'is a' : 'are'} recording-only argument${rejected.length === 1 ? '' : 's'} and cannot be used on the inspection verb — it resolves the runtime's DECLARED capability and records nothing. Use 'query dispatch-isolation' if you need the override applied and the decision recorded.`,
+        ERROR_REASON.USAGE,
+      );
     }
-
-    const phaseIdx = args.indexOf('--phase');
-    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
-      ? args[phaseIdx + 1]
-      : null;
-    const planIdx = args.indexOf('--plan');
-    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
-      ? args[planIdx + 1]
-      : null;
-
-    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
-    // Never allowed to affect this query's own stdout contract or throw.
-    try {
-      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
-    } catch {
-      // writeDispatchIsolationSentinel already swallows its own errors into
-      // a { recorded: false } result; this catch is defense in depth only.
-    }
-
+    const { runtimeId, isolation, exec, harnessFlag } = resolveDispatchIsolationDecision({ args, cwd });
     if (args.indexOf('--json') !== -1) {
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
     } else {
@@ -3500,6 +3581,7 @@ const HOST_COMMAND_ROUTERS = {
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'inspect-dispatch-isolation': routeInspectDispatchIsolation,
     'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
     'agent-skills': routeAgentSkills,
@@ -3754,7 +3836,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
+  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +

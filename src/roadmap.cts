@@ -14,7 +14,12 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
+// #2528 moved this file's directory read off the `phaseTokenMatches` primitive
+// and onto the shared `matchPhaseDirs` selector, so the primitive is DROPPED
+// here rather than carried alongside — upstream's stated end state is that it
+// has no call sites outside phase-id.cts. The #612 bracket helpers are
+// untouched by that move and are kept.
+const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -474,7 +479,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     let hasContext = false;
     let hasResearch = false;
 
-    // DEAD catch removed (#2245 audit): _phaseDirNames.find(...) is a pure
+    // DEAD catch removed (#2245 audit): matchPhaseDirs(...) is a pure
     // array lookup on an already-resolved string array, and
     // countPhasePlansAndSummaries is itself fully defensive (its own
     // readdirSync is self-guarded, and it delegates to scanPhasePlans, which
@@ -488,13 +493,20 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     // dir name — while the same build resolved those same directories correctly
     // in three other places on the same repo (W006/W007 via phaseTokenFromDir,
     // `state json` via the milestone filter, and the W021 milestone-complete read
-    // through this very helper's three-argument form at verify.cts:2355). It
+    // through this very helper's three-argument form at the W021 site). It
     // failed ONLY for the directory shape the convention exists to name: a
     // mid-migration bracket repo carrying legacy `01-one` dirs resolved fine.
     // That is verbatim the asymmetry the note above the W021 site says this PR
     // closed — the directory read widens with the heading read, or every bracket
     // phase resolves to nothing.
-    const dirMatch = _phaseDirNames.find(d => phaseTokenMatches(d, normalized, convention));
+    //
+    // #2528 consolidated this read onto the shared `matchPhaseDirs` selector.
+    // The convention rides along into it, per the seam agreement recorded on
+    // that function: the selector's primary match IS `phaseTokenMatches`, so
+    // dropping the argument here would reinstate exactly the regression the
+    // paragraph above describes. `.matches[0]` reproduces the prior `.find()`
+    // choice — the selector filters without reordering.
+    const dirMatch = matchPhaseDirs(_phaseDirNames, normalized, convention).matches[0];
 
     if (dirMatch) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch));
