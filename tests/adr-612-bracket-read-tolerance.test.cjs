@@ -573,6 +573,18 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
     assert.match(w[0], /Phase 09/);
   });
 
+  // INVERTED by the merge of next @ 86101ee6. This case previously asserted the
+  // INHERITED WART — that a legacy `### Phase 999:` still warned here while
+  // `validate health` suppressed it — which this branch disclosed rather than
+  // fixed, because the legacy path was to stay byte-identical.
+  //
+  // ae7dc529 (#3225) fixed that wart upstream by adding the `isSentinelPhaseId`
+  // guard to this very loop, so the disagreement it pinned no longer exists and
+  // the old assertion inverted on the merge. The case is kept (not deleted) and
+  // flipped to assert the FIXED behaviour: it is the negative-space proof that
+  // this branch's `sentinelPhases` guard did not have to grow a legacy reading
+  // of its own, and it reds if a future resolution drops upstream's guard while
+  // keeping ours.
   test('#3225 (merged): a legacy `### Phase 999:` no longer warns here', () => {
     write(`# Roadmap
 
@@ -581,7 +593,25 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
 ### Phase 999: Backlog
 **Goal:** a
 `, undefined);
-    assert.deepEqual(consistencyWarnings(), []);
+    assert.deepEqual(
+      consistencyWarnings(), [],
+      'the legacy leading-int sentinel rule suppresses this since #3225',
+    );
+  });
+
+  // Negative space for the case above: the #3225 guard is SENTINEL-scoped, not a
+  // blanket silencer. Without this, dropping the whole loop would also pass.
+  test('#3225 scope: a legacy NON-sentinel phase with no directory still warns', () => {
+    write(`# Roadmap
+
+## v2.0
+
+### Phase 09: Real but absent
+**Goal:** a
+`, undefined);
+    const w = consistencyWarnings();
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 09/);
   });
 });
 
@@ -1107,21 +1137,34 @@ total_plans_in_phase: 3
     return JSON.parse(r.output);
   };
 
+  // #3310 (ADR-3180 Phase 12) replaced `cmdStateValidate`'s `drift`
+  // object with coded `warnings: Diagnostic[]`: phase-directory misses are
+  // S004 and plan-count drift is S005. Keep these tests on their behavior-level
+  // subject while reading the current upstream envelope.
+  const codes = (out, code) =>
+    (out.warnings || []).filter((w) => w.code === code).map((w) => w.message);
+  const phaseDirWarnings = (out) =>
+    codes(out, 'S004').filter((m) => /no phase directory matches/.test(m));
+  const planCountWarnings = (out) => codes(out, 'S005');
+
   test('a bracket phase directory is FOUND — no phantom "no phase directory matches"', () => {
     seed(BRK, 'bracket', 'GSD.02-05-real-work');
     const out = validateState();
-    assert.equal(out.drift.phase_directory, undefined,
-      'the directory exists and must resolve; a phase_directory drift entry means the lookup missed it');
-    assert.ok(
-      !out.warnings.some(w => /no phase directory matches/.test(w)),
-      `bracket dir GSD.02-05-real-work must match phase 05, got: ${JSON.stringify(out.warnings)}`);
+    assert.deepEqual(
+      phaseDirWarnings(out),
+      [],
+      `the directory exists and must resolve; an S004 phase-directory warning means the lookup missed it, got: ${JSON.stringify(out.warnings)}`,
+    );
   });
 
   test('and the drift scan actually RUNS — plan-count mismatch is reported', () => {
     seed(BRK, 'bracket', 'GSD.02-05-real-work');
     const out = validateState();
-    assert.deepEqual(out.drift.plan_count, { state: 3, disk: 1 },
-      'resolving the directory must let the plan-count drift check run');
+    assert.deepEqual(
+      planCountWarnings(out),
+      ['Plan count mismatch: STATE.md says 3 plans, disk has 1'],
+      'resolving the directory must let the plan-count drift check run',
+    );
   });
 
   test('and that answer equals its flat-legacy twin exactly', () => {
@@ -1131,24 +1174,30 @@ total_plans_in_phase: 3
     tmpDir = createTempProject('adr-612-validate-dir-leg-');
     seed(LEG, undefined, '05-real-work');
     const legacy = validateState();
-    assert.deepEqual(bracket.drift, legacy.drift,
+    assert.deepEqual(bracket.warnings, legacy.warnings,
       'bracket must validate exactly as the legacy twin does');
-    assert.deepEqual(legacy.drift.plan_count, { state: 3, disk: 1 },
-      'and the twin is the right answer, not a shared wrong one');
+    assert.deepEqual(
+      planCountWarnings(legacy),
+      ['Plan count mismatch: STATE.md says 3 plans, disk has 1'],
+      'and the twin is the right answer, not a shared wrong one',
+    );
   });
 
   test('a NON-bracket repo is unaffected by the threaded convention', () => {
     seed(LEG, undefined, '05-real-work');
     const out = validateState();
-    assert.equal(out.drift.phase_directory, undefined);
-    assert.deepEqual(out.drift.plan_count, { state: 3, disk: 1 });
+    assert.deepEqual(phaseDirWarnings(out), []);
+    assert.deepEqual(
+      planCountWarnings(out),
+      ['Plan count mismatch: STATE.md says 3 plans, disk has 1'],
+    );
   });
 
   test('a genuinely absent phase directory still reports not_found on bracket', () => {
     // Non-vacuity guard: the thread must not make the lookup match ANYTHING.
     seed(BRK, 'bracket', 'GSD.02-09-unrelated');
     const out = validateState();
-    assert.equal(out.drift.phase_directory.reason, 'not_found');
+    assert.equal(phaseDirWarnings(out).length, 1, JSON.stringify(out.warnings));
     assert.equal(out.valid, false);
   });
 });
