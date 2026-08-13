@@ -126,16 +126,25 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
 // ─── searchPhaseInContent ─────────────────────────────────────────────────────
 
 /**
+ * Build the phase-heading regex used by `searchPhaseInContent` for a given
+ * pre-escaped phase source. Extracted (#3412) so tests can assert against the
+ * exact production pattern instead of hand-duplicating it.
+ * #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
+ */
+function buildPhaseHeadingRegex(escapedPhase: string): RegExp {
+  return new RegExp(
+    `^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
+    'i'
+  );
+}
+
+/**
  * Search for a phase header (and its section) within the given content string.
  * Returns a result object if found (either a full match or a malformed_roadmap
  * checklist-only match), or null if the phase is not present at all.
  */
 function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: string): PhaseSearchResult | null {
-  // #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
-  const headingPattern = new RegExp(
-    `^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
-    'i'
-  );
+  const headingPattern = buildPhaseHeadingRegex(escapedPhase);
   const headings = tokenizeHeadings(content);
   const headingIndex = headings.findIndex((heading) => headingPattern.test(heading.text));
   const headerMatch = headingIndex === -1 ? null : headings[headingIndex].text.match(headingPattern);
@@ -1085,4 +1094,5 @@ export = {
   cmdRoadmapAnalyze,
   cmdRoadmapUpdatePlanProgress,
   cmdRoadmapAnnotateDependencies,
+  buildPhaseHeadingRegex,
 };

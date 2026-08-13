@@ -21,6 +21,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+const { buildPhaseHeadingRegex: headingRegex } = require('../gsd-core/bin/lib/roadmap.cjs');
 const fc = require('fast-check');
 
 // escapeRegex moved off phase-id.cjs entirely in #3212 Phase 1 (#3412): it is
@@ -35,16 +36,12 @@ const fc = require('fast-check');
 // RegExp.escape is MATCH-equivalent to the retired hand-rolled escaper but not
 // TEXT-equivalent (it hex-escapes the first character and all hyphens), so any
 // test that pinned the literal source text (e.g. `'0*29'`, `'PROJ-42'`) is
-// brittle to that internal encoding, not to actual behavior. This helper
-// compiles a lookup source into the SAME heading regex production builds it
-// into (src/roadmap.cts's searchPhaseInContent), so tests assert what matches
-// and what doesn't — the real contract — rather than the escaper's spelling.
-function headingRegex(source) {
-  return new RegExp(
-    `^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${source}${phaseId.OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
-    'i',
-  );
-}
+// brittle to that internal encoding, not to actual behavior. `headingRegex`
+// (imported above as `buildPhaseHeadingRegex` from gsd-core/bin/lib/roadmap.cjs)
+// is the SAME production function src/roadmap.cts's searchPhaseInContent uses to
+// build its heading regex — not a hand-duplicated copy — so tests assert what
+// matches and what doesn't — the real contract — rather than the escaper's
+// spelling, with no parity gap against the production pattern.
 
 // ─── normalizePhaseName ───────────────────────────────────────────────────────
 
@@ -382,12 +379,12 @@ describe('phaseMarkdownRegexSourceExact', () => {
     // Source text is RegExp.escape's business (#3412) — the actual contract
     // is a non-null, compilable source that matches its own prefixed heading
     // and rejects the bare-numeric heading.
-    for (const [id, bareHeadingNum] of [
-      ['PROJ-42', '42'],
-      ['AB-29', '29'],
-      ['MANIFOLD-117', '117'],
-      ['APP1-117', '117'],
-      ['APP_1-117', '117'],
+    for (const [id, bareHeadingNum, foreignPrefix] of [
+      ['PROJ-42', '42', 'OTHER'],
+      ['AB-29', '29', 'CK'],
+      ['MANIFOLD-117', '117', 'OTHER'],
+      ['APP1-117', '117', 'OTHER'],
+      ['APP_1-117', '117', 'OTHER'],
     ]) {
       const result = phaseId.phaseMarkdownRegexSourceExact(id);
       assert.ok(result !== null, id);
@@ -395,6 +392,14 @@ describe('phaseMarkdownRegexSourceExact', () => {
       const re = headingRegex(result);
       assert.ok(re.test(`Phase ${id}: Title`), `${id} must match its own heading`);
       assert.ok(!re.test(`Phase ${bareHeadingNum}: Title`), `${id} must not match the bare-numeric heading`);
+      // #3599 regression: the exact source must be tied to the FULL prefixed
+      // id, not just its trailing number — a different prefix with the same
+      // number must not match (an impl returning `[A-Z]+-42` would pass every
+      // assertion above but fail this one).
+      assert.ok(
+        !re.test(`Phase ${foreignPrefix}-${bareHeadingNum}: Title`),
+        `${id} must not match a foreign-prefixed heading with the same number`,
+      );
       // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
       // literal would, despite the hex escape (#3412).
       assert.ok(re.test(`phase ${id.toLowerCase()}: title`));
@@ -692,6 +697,9 @@ describe('roadmapPhaseLookupSources', () => {
     const reExact = headingRegex(sources[0]);
     assert.ok(reExact.test('Phase AB-29: Title'));
     assert.ok(!reExact.test('Phase 29: Title'));
+    // #3599 regression: the exact source is tied to the FULL prefix, not just
+    // the trailing number — a foreign prefix with the same number must not match.
+    assert.ok(!reExact.test('Phase CK-29: Title'));
     // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
     // literal would, despite the hex escape (#3412).
     assert.ok(reExact.test('phase ab-29: title'));
