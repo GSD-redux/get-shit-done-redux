@@ -3683,7 +3683,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
 
       const description = (frontmatter['description'] as string) || '';
       const triggers: string[] = [];
-      const bodyMatch = content.match(/^---[\s\S]*?---\s*\n([\s\S]*)$/);
+      const bodyMatch = content.match(/^---[\s\S]*?---\s*\r?\n([\s\S]*)$/);
       if (bodyMatch) {
         const body = bodyMatch[1];
         const triggerLines = body.match(/^TRIGGER\s+when:\s*(.+)$/gmi);

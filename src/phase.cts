@@ -62,6 +62,7 @@ import frontmatterMod = require('./frontmatter.cjs');
 import stateMod = require('./state.cjs');
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
+import { detectEol } from './text-lines.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
 import { updateTableCell, deleteTableRow, escapeCell } from './markdown-table.cjs';
@@ -1317,10 +1318,20 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
       const phaseLabel = useBold
         ? `**Phase ${_decimalPhase}: ${description}**`
         : `Phase ${_decimalPhase}: ${description}`;
-      const bulletEntry = `\n- [ ] ${phaseLabel}`;
+      // #3413: a hardcoded '\n' here corrupts a CRLF ROADMAP.md's EOL style —
+      // see the [^\r\n]* widening below for why. Preserve the file's own
+      // line terminator, matching the pattern established in roadmap.cts.
+      const eol = detectEol(rawContent);
+      const bulletEntry = `${eol}- [ ] ${phaseLabel}`;
 
+      // #3413: was `[^\n]*`, which on CRLF content swallows the line's
+      // trailing \r into the match, shifting bulletLineEnd to land BETWEEN
+      // the \r and \n of the original CRLF pair. That splits the pair when
+      // bulletEntry is spliced in, corrupting the file to mixed CRLF/LF.
+      // Widening to [^\r\n]* stops the match at the true line-content
+      // boundary so bulletLineEnd lands cleanly before the terminator.
       const targetBulletPattern = new RegExp(
-        `(-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*)`,
+        `(-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*)`,
         'i',
       );
       const bulletMatchResult = rawContent.match(targetBulletPattern);
@@ -1331,7 +1342,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
       const bulletLineEnd =
         rawContent.indexOf(bulletMatchResult![0]) + bulletMatchResult![0].length;
       const afterBullet = rawContent.slice(bulletLineEnd);
-      const nextBulletMatch = afterBullet.match(/\n-\s*\[[ x]\]\s*(?:\*\*)?Phase\s+\d/i);
+      const nextBulletMatch = afterBullet.match(/\r?\n-\s*\[[ x]\]\s*(?:\*\*)?Phase\s+\d/i);
 
       let insertIdx: number;
       if (nextBulletMatch) {
@@ -1357,7 +1368,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
 
       const headerIdx = rawContent.indexOf(headerMatch![0]);
       const afterHeader = rawContent.slice(headerIdx + headerMatch![0].length);
-      const nextPhaseMatch = afterHeader.match(/\n#{2,4}\s+Phase\s+\d[\d.]*/i);
+      const nextPhaseMatch = afterHeader.match(/\r?\n#{2,4}\s+Phase\s+\d[\d.]*/i);
 
       let insertIdx: number;
       if (nextPhaseMatch) {
@@ -1630,7 +1641,7 @@ function updateRoadmapAfterPhaseRemoval(
       // #1729: fold an optional pre-colon ( ) tag into the suffix capture so it
       // is re-emitted verbatim — a tagged later phase still gets renumbered.
       content = content.replace(
-        /(#{2,4}\s*Phase\s+)(\d+(?:\.\d+)?)((?:\s*\([^)\n]{0,200}\))?\s*:)/gi,
+        /(#{2,4}\s*Phase\s+)(\d+(?:\.\d+)?)((?:\s*\([^)\r\n]{0,200}\))?\s*:)/gi,
         (_match, prefix: string, num: string, suffix: string) =>
           `${prefix}${decrementRoadmapPhaseToken(num, removedInt)}${suffix}`,
       );

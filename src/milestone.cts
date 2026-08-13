@@ -824,7 +824,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
     } else {
       // Insert after the header line(s) for reverse chronological order (newest first)
-      const headerMatch = existing.match(/^(#{1,3}\s+[^\n]*\n\n?)/);
+      const headerMatch = existing.match(/^(#{1,3}\s+[^\r\n]*\r?\n(?:\r?\n)?)/);
       if (headerMatch) {
         const header = headerMatch[1];
         const rest = existing.slice(header.length);

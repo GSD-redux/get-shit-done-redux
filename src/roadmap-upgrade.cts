@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { retryRenameSync } from './shell-command-projection.cjs';
+import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -235,7 +236,12 @@ function computeMigrationPlan(cwd: string, options: Record<string, unknown> = {}
     throw new Error(`ROADMAP.md not found at ${roadmapPath}`);
   }
 
-  const lines = roadmapContent.split('\n');
+  // #3413: splitLines (not a bare '\n' split) so `oldLine`/`edit.from` built
+  // here match, character-for-character, the lines applyMigration() reads
+  // back at apply time — both sides must agree on CRLF handling or the
+  // `lines[edit.lineIndex] === edit.from` equality check in applyMigration
+  // silently stops matching.
+  const lines = splitLines(roadmapContent);
   const parsedPhases = parseRoadmapPhases(lines);
 
   // Check for any already-migrated headings
@@ -538,7 +544,11 @@ function applyMigration(cwd: string, plan: MigrationPlan, options: { dryRun?: bo
     // 2. Rewrite ROADMAP.md phase headings
     if (plan.roadmapEdits.length > 0) {
       const roadmapContent = fs.readFileSync(roadmapPath, 'utf8');
-      const lines = roadmapContent.split('\n');
+      const lines = splitLines(roadmapContent);
+      // #3413: preserve the file's own EOL style on write-back — splitLines
+      // strips \r from every line (not just edited ones), so joining with a
+      // bare '\n' would silently flatten a CRLF ROADMAP.md to LF wholesale.
+      const eol = detectEol(roadmapContent);
 
       // Sort edits by lineIndex to apply in order
       const sortedEdits = [...plan.roadmapEdits].sort((a, b) => a.lineIndex - b.lineIndex);
@@ -549,7 +559,7 @@ function applyMigration(cwd: string, plan: MigrationPlan, options: { dryRun?: bo
       }
 
       snapshotFile(roadmapPath);
-      fs.writeFileSync(roadmapPath, lines.join('\n'), 'utf8');
+      fs.writeFileSync(roadmapPath, joinLines(lines, eol), 'utf8');
       editedFiles.push('ROADMAP.md');
     }
 

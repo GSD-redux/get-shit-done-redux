@@ -553,7 +553,7 @@ function generateSkillsSection(cwd: string): SectionResult {
  */
 function extractSkillFrontmatter(content: string): { name: string; description: string } {
   const result = { name: '', description: '' };
-  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  const fmMatch = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
   if (!fmMatch) return result;
 
   const fmBlock = fmMatch[1];

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { platformReadSync } from './shell-command-projection.cjs';
 import { collectSection } from './markdown-sectionizer.cjs';
+import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
@@ -411,8 +412,8 @@ function scanTodos(planDir: string): TodoItem[] {
     const fm = extractFrontmatter(content, safeFilePath);
 
     // Extract first line of body after frontmatter
-    const bodyMatch = content.replace(/^---[\s\S]*?---\n?/, '');
-    const firstLine = bodyMatch.trim().split('\n')[0] || '';
+    const bodyMatch = content.replace(/^---[\s\S]*?---\r?\n?/, '');
+    const firstLine = splitLines(bodyMatch.trim())[0] || '';
     const summary = sanitizeForDisplay(firstLine.slice(0, 100));
 
     results.push({

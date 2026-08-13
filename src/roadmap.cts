@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { realClock } from './clock.cjs';
 import { escapeRegex } from './pattern.cjs';
+import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -973,6 +974,11 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
   let updated = false;
   withPlanningLock(cwd, () => {
     const content = fs.readFileSync(roadmapPath, 'utf-8');
+    // #3413: preserve the file's own EOL style when the checklist block below
+    // is rebuilt and spliced back in — splitLines() cleans each captured line
+    // of any dangling \r, so rejoining with a bare '\n' would silently
+    // downgrade a CRLF ROADMAP.md's rewritten block to LF only.
+    const eol = detectEol(content);
 
     // Find the phase section.
     // #3537: padding-tolerant fragment so the caller's resolved padded id
@@ -1006,12 +1012,12 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
     // Review fix (F2): `(?:^|\n)` anchors the match to start-of-line so mid-line
     // occurrences like `***Plans:***` embedded in a sentence or `OpenPlans: foo`
     // do not trigger a false match. Groups 1 and 2 retain the same semantics.
-    const plansBlockMatch = phaseSection.match(/(?:^|\n)(\*{0,2}Plans\*{0,2}:[^\n]*\n)((?:\s*-\s*\[[ x]\][^\n]*\n?)+)/i);
+    const plansBlockMatch = phaseSection.match(/(?:^|\r?\n)(\*{0,2}Plans\*{0,2}:[^\r\n]*\r?\n)((?:\s*-\s*\[[ x]\][^\r\n]*\r?\n?)+)/i);
     if (!plansBlockMatch) return;
 
     const plansHeader = plansBlockMatch[1];
     const existingList = plansBlockMatch[2];
-    const listLines = existingList.split('\n').filter(l => /^\s*-\s*\[/.test(l));
+    const listLines = splitLines(existingList).filter(l => /^\s*-\s*\[/.test(l));
 
     if (listLines.length === 0) return;
 
@@ -1065,10 +1071,14 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
       }
     }
 
-    const newListBlock = annotatedLines.join('\n') + '\n';
-    // #1103: when `(?:^|\n)` consumed a leading `\n` (mid-string match), re-emit it
-    // so the line preceding the Plans: header is not fused onto it.
-    const leadingNewline = plansBlockMatch[0].startsWith('\n') ? '\n' : '';
+    const newListBlock = joinLines(annotatedLines, eol) + eol;
+    // #1103: when `(?:^|\r?\n)` consumed a leading terminator (mid-string
+    // match), re-emit it verbatim so the line preceding the Plans: header is
+    // not fused onto it. #3413: the widened `(?:^|\r?\n)` can now consume a
+    // 2-char `\r\n` — re-emit whatever was actually captured (`''`, `'\n'`,
+    // or `'\r\n'`), not a hardcoded `'\n'`, or a CRLF file loses its `\r`.
+    const leadingMatch = /^\r?\n/.exec(plansBlockMatch[0]);
+    const leadingNewline = leadingMatch ? leadingMatch[0] : '';
     const newPhaseSection = phaseSection.replace(
       plansBlockMatch[0],
       leadingNewline + plansHeader + newListBlock
