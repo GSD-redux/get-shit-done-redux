@@ -22,6 +22,8 @@ const {
   checkFixtureProofInvariant,
   findHealthDiagnosticTestFiles,
   PERMANENTLY_INERT_CODES,
+  STATE_VALIDATE_TEST_FILE,
+  STATE_VALIDATE_CODES,
 } = guard;
 
 const FAKE_SEVERITY = Object.freeze({ ERROR: 'error', WARNING: 'warning', INFO: 'info' });
@@ -218,6 +220,57 @@ describe('checkFixtureProofInvariant — PERMANENTLY_INERT_CODES exemption (§8.
     assert.equal(typeof reason, 'string');
     assert.ok(reason.length > 0);
     assert.ok(/ambient I\/O|§8\.1/i.test(reason), 'reason should explain the §8.1 rule 1 constraint');
+  });
+});
+
+// ─── Check 3 — S0NN pass (Phase 12, #3310): checkFixtureProofInvariant
+// against the hardcoded STATE_VALIDATE_CODES list and tests/state.test.cjs.
+// These codes are not Rule-table entries (cmdStateValidate builds
+// Diagnostic[] inline), so this check exercises the SAME
+// checkFixtureProofInvariant helper the C0NN pass uses, just fed a
+// hardcoded code list instead of a Rule[] array — mirroring the original
+// W/E/I test structure above (no code-source-specific behavior to test
+// beyond that, since checkFixtureProofInvariant itself is already covered).
+
+describe('checkFixtureProofInvariant (S0NN pass, #3310)', () => {
+  test('flags a code with zero mentions anywhere in the scanned test files', (t) => {
+    const dir = createTempDir('gsd-lint-hd-rt-s0nn-nomention-');
+    t.after(() => cleanup(dir));
+    const file = writeTempTestFile(
+      dir,
+      'fake-state.test.cjs',
+      "describe('S001: something', () => { test('fires', () => {}); });\n",
+    );
+
+    const rules = [{ code: 'S001' }, { code: 'S999' }];
+    const { uncovered } = checkFixtureProofInvariant(rules, [file]);
+
+    assert.deepEqual(uncovered, ['S999']);
+  });
+
+  test('passes a code named in a test() block title', (t) => {
+    const dir = createTempDir('gsd-lint-hd-rt-s0nn-titled-');
+    t.after(() => cleanup(dir));
+    const file = writeTempTestFile(
+      dir,
+      'fake-state.test.cjs',
+      "test('S001: STATE.md corrupt (NUL byte) fires with the verbatim textEncodingError message', () => {});\n",
+    );
+
+    const rules = [{ code: 'S001' }];
+    const { uncovered } = checkFixtureProofInvariant(rules, [file]);
+
+    assert.deepEqual(uncovered, []);
+  });
+
+  test('all 7 real STATE_VALIDATE_CODES (S001-S007) are fixture-covered against the real tests/state.test.cjs', () => {
+    assert.ok(fs.existsSync(STATE_VALIDATE_TEST_FILE), 'tests/state.test.cjs must exist');
+    assert.deepEqual(STATE_VALIDATE_CODES, ['S001', 'S002', 'S003', 'S004', 'S005', 'S006', 'S007']);
+
+    const rules = STATE_VALIDATE_CODES.map((code) => ({ code }));
+    const { uncovered } = checkFixtureProofInvariant(rules, [STATE_VALIDATE_TEST_FILE], new Map());
+
+    assert.deepEqual(uncovered, []);
   });
 });
 
