@@ -681,8 +681,17 @@ function buildRoadmapBracketIncoherencesField(
   roadmapPath: string,
   convention: string | null,
 ): { value: BracketIncoherence[]; scope: Scope } {
-  if (convention !== 'bracket') return { value: [], scope: SCOPE.COMPLETE };
+  // File-readability is decided FIRST, so `scope` means the same thing on every
+  // repo: UNREADABLE iff ROADMAP.md could not be read, never "this convention
+  // was skipped." Ordering the convention gate first would have made an absent
+  // ROADMAP.md report COMPLETE on a legacy repo and UNREADABLE on a bracket one
+  // — the same "empty, nothing to say" state wearing two different scopes, which
+  // is precisely the non-answer/answer distinction ADR-3180 §8.1 gives `scope`
+  // to carry.
   if (!fs.existsSync(roadmapPath)) return { value: [], scope: SCOPE.UNREADABLE };
+  // A non-bracket repo has no bracket incoherences BY DEFINITION — a real,
+  // COMPLETE answer, not a skipped read.
+  if (convention !== 'bracket') return { value: [], scope: SCOPE.COMPLETE };
   let content: string;
   try {
     content = fs.readFileSync(roadmapPath, 'utf-8');
@@ -1066,15 +1075,20 @@ function buildPlanningSnapshot(cwd: string): PlanningSnapshot {
   // load-bearing rather than a micro-optimisation.
   const phaseIdConvention = resolvePhaseIdConvention(cwd) ?? null;
   const milestone = getMilestoneInfo(cwd);
-  // #612: passed EXPLICITLY rather than left to `listMilestonePhaseDirs`'s own
-  // lazy resolve. Behaviourally identical — the lazy path resolves the same
-  // federated answer — but it spends one config read instead of a second, and
-  // it makes the "every reader in this snapshot answers to one convention"
-  // invariant checkable by reading this function instead of by trusting a
-  // default. `undefined` vs `null` matters to that helper (`undefined` = "not
-  // resolved yet, resolve it"), which is exactly the ambiguity passing the
-  // resolved value removes here.
-  const phaseDirs = listMilestonePhaseDirs(paths.phases, { cwd, phaseIdConvention });
+  // #612: deliberately LEFT to `listMilestonePhaseDirs`'s own lazy resolve —
+  // this call is byte-identical to upstream's.
+  //
+  // Passing `phaseIdConvention` here would NOT be a no-op, which is exactly why
+  // it is not passed. The lazy path resolves `resolvePhaseIdConvention(cwd, ws)`
+  // with this call's `ws`, which defaults to `null` — the PROJECT-only reading,
+  // with no root fallback. The field above is resolved with `ws` undefined,
+  // i.e. the FEDERATED workstream -> root reading. On a workstream repo whose
+  // root opts into bracket while the workstream config does not, the two answers
+  // genuinely differ, and substituting one for the other would silently re-scope
+  // `phaseDirs` — a change this PR does not need and no test covers. The
+  // federation guarantee PR-2 exists to deliver is delivered where it is
+  // observable: in the rules that read `snapshot.phaseIdConvention`.
+  const phaseDirs = listMilestonePhaseDirs(paths.phases, { cwd });
 
   const phasesValue = phaseDirs.value.map((dir) => buildPhaseSnapshot(paths.phases, dir));
   const stateFields = buildStateFields(paths.state);

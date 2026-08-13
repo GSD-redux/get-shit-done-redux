@@ -202,6 +202,15 @@ function checkW006(snapshot: PlanningSnapshot): Diagnostic[] {
   const dirs = snapshot.allPhaseDirNames.value;
   const convention = snapshot.phaseIdConvention;
   const archivedTokens = new Set(snapshot.archivedPhaseTokens.value);
+  // No separate scope guard: `roadmapSentinelPhaseTokens` and
+  // `roadmapDeclaredPhases` are produced by ONE builder call
+  // (`buildRoadmapDeclaredPhasesField`) from ONE `buildRoadmapPhaseVariants`
+  // result, so their scopes are yoked by construction — the COMPLETE check
+  // above covers both. Stated rather than left implicit, because reading the
+  // sentinel set unconditionally would be a latent bug the day the two fields
+  // acquire independent builders: an UNREADABLE sentinel set silently degrades
+  // to "nothing is a sentinel," which ADDS W006 warnings rather than dropping
+  // them.
   const sentinelTokens = new Set(snapshot.roadmapSentinelPhaseTokens.value);
   const checkboxes = snapshot.roadmapPhaseCheckboxes.value;
   const diagnostics: Diagnostic[] = [];
