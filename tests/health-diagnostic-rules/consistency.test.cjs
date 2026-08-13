@@ -240,7 +240,7 @@ describe('C003 — orphan SUMMARY with no matching live PLAN', () => {
     const snapshot = buildPlanningSnapshot(cwd);
     const diagnostics = ruleFor('C003').check(snapshot);
     assert.equal(diagnostics.length, 1);
-    assert.equal(diagnostics[0].message, 'Summary 01-01-SUMMARY.md in 01-foo has no matching PLAN.md');
+    assert.equal(diagnostics[0].code, 'C003', 'a summary paired only to a superseded plan must still fire C003');
   });
 
   test('baseline: a paired plan+summary produces no diagnostics', (t) => {

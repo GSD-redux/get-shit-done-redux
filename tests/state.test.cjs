@@ -3312,11 +3312,6 @@ describe('state validate command', () => {
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'S006 must fire for passed verification against executing status');
     assert.strictEqual(s006.severity, SEVERITY.WARNING);
-    assert.strictEqual(
-      s006.message,
-      'Status drift: STATE.md says "executing" but 02-VERIFICATION.md shows verification passed — phase may be complete',
-      'template frontmatter phase must reach the existing disk-backed verification drift check',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3360,10 +3355,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'legacy phase fallback must expose verification drift');
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'S006 must fire for legacy Current Phase fallback');
-    assert.strictEqual(
-      s006.message,
-      'Status drift: STATE.md says "Executing Phase 2" but 02-VERIFICATION.md shows verification passed — phase may be complete',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3389,10 +3380,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'canonical phase fallback must expose verification drift');
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'S006 must fire for Current Position Phase fallback');
-    assert.strictEqual(
-      s006.message,
-      'Status drift: STATE.md says "Executing Phase 2" but 02-VERIFICATION.md shows verification passed — phase may be complete',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3424,17 +3411,11 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'conflicting sources must invalidate the result');
     const s003 = findWarning(output, 'S003');
     assert.ok(s003, 'S003 must fire for conflicting phase sources');
-    // S003's message is the verbatim pre-migration template — it names only
-    // the selected (authoritative) phase, not the individual disagreeing
-    // sources; the old `drift.phase_reference.sources` structured detail has
-    // no S0NN equivalent (disclosed breaking change, §8.4 rule 3).
-    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
+    // S003 names only the selected (authoritative) phase, not the individual
+    // disagreeing sources; the old `drift.phase_reference.sources` structured
+    // detail has no S0NN equivalent (disclosed breaking change, §8.4 rule 3).
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'disk evidence must come from the authoritative frontmatter phase');
-    assert.strictEqual(
-      s006.message,
-      'Status drift: STATE.md says "executing" but 02-VERIFICATION.md shows verification passed — phase may be complete',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3450,10 +3431,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'missing phase source must not validate cleanly');
     const s002 = findWarning(output, 'S002');
     assert.ok(s002, 'S002 must fire when no phase source resolves');
-    assert.strictEqual(
-      s002.message,
-      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3478,10 +3455,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'non-scalar phase source must not validate cleanly');
     const s002 = findWarning(output, 'S002');
     assert.ok(s002, 'S002 must fire when the frontmatter phase source is non-scalar');
-    assert.strictEqual(
-      s002.message,
-      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3499,7 +3472,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'missing phases root must not validate cleanly');
     const s004 = findWarning(output, 'S004');
     assert.ok(s004, 'S004 must fire when the phases directory is missing');
-    assert.strictEqual(s004.message, 'Cannot validate phase drift: phases directory is missing for phase 2');
     assertNoDriftKey(output);
   });
 
@@ -3515,7 +3487,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'missing phase-directory match must not validate cleanly');
     const s004 = findWarning(output, 'S004');
     assert.ok(s004, 'S004 must fire when no phase directory matches');
-    assert.strictEqual(s004.message, 'Cannot validate phase drift: no phase directory matches phase 2');
     assertNoDriftKey(output);
   });
 
@@ -3545,10 +3516,6 @@ describe('state validate command', () => {
     assert.strictEqual(output.valid, false, 'crafted phase reference must fail closed');
     const s002 = findWarning(output, 'S002');
     assert.ok(s002, 'S002 must fire when the crafted phase value fails to resolve');
-    assert.strictEqual(
-      s002.message,
-      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
-    );
     assert.ok(!findWarning(output, 'S006'), 'outside-root verification evidence must not be scanned');
     assertNoDriftKey(output);
   });
@@ -3573,7 +3540,6 @@ describe('state validate command', () => {
     assert.ok(output.warnings.length > 0, 'Should have warnings when executing but verification passed');
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'S006 must fire when executing but verification passed');
-    assert.match(s006.message, /verif/i, 'Warning should mention verification');
     assertNoDriftKey(output);
   });
 
@@ -3598,8 +3564,12 @@ describe('state validate command', () => {
     assert.ok(output.warnings.length > 0, 'Should have warnings for plan count mismatch');
     const s005 = findWarning(output, 'S005');
     assert.ok(s005, 'S005 must fire for a plan count mismatch');
-    assert.match(s005.message, /plan.*count|count.*mismatch/i, 'Warning should mention plan count mismatch');
-    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 12');
+    // The specific counts are the thing under test (STATE.md-authored count
+    // vs disk-scanned count); `.includes()` on the interpolated values, not
+    // full-string message equality (CONTRIBUTING.md's "Prohibited: Raw Text
+    // Matching on Test Outputs").
+    assert.ok(s005.message.includes('STATE.md says 3 plans'), 'message must report the STATE.md count');
+    assert.ok(s005.message.includes('disk has 12'), 'message must report the disk-scanned count');
     assertNoDriftKey(output);
   });
 
@@ -3675,7 +3645,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.strictEqual(s001.code, 'S001');
     assert.strictEqual(s001.severity, SEVERITY.ERROR);
     assert.strictEqual(s001.remedy.action, 'advise');
-    assert.match(s001.message, /^STATE\.md: file contains NUL bytes \(first at offset \d+\)\./, 'message must be reused verbatim from textEncodingError, not paraphrased');
     assertNoDriftKey(output);
   });
 
@@ -3691,10 +3660,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(s002);
     assert.strictEqual(s002.severity, SEVERITY.WARNING);
     assert.strictEqual(s002.remedy.action, 'advise');
-    assert.strictEqual(
-      s002.message,
-      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3722,7 +3687,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(s003);
     assert.strictEqual(s003.severity, SEVERITY.WARNING);
     assert.strictEqual(s003.remedy.action, 'advise');
-    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
     assertNoDriftKey(output);
   });
 
@@ -3739,7 +3703,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(missingRootS004, 'S004 must fire when phases/ root is missing');
     assert.strictEqual(missingRootS004.severity, SEVERITY.WARNING);
     assert.strictEqual(missingRootS004.remedy.action, 'advise');
-    assert.strictEqual(missingRootS004.message, 'Cannot validate phase drift: phases directory is missing for phase 2');
     assertNoDriftKey(missingRootOutput);
 
     // (b) phases/ exists, no matching subdir for the current phase.
@@ -3752,10 +3715,11 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     const notFoundOutput = JSON.parse(runGsdTools('state validate', tmpDir).output);
     const notFoundS004 = findWarning(notFoundOutput, 'S004');
     assert.ok(notFoundS004, 'S004 must fire when no phase directory matches');
-    assert.strictEqual(notFoundS004.message, 'Cannot validate phase drift: no phase directory matches phase 2');
     assertNoDriftKey(notFoundOutput);
 
-    // Same code, distinct message text per sub-condition — §8.2 rule 1.
+    // Same code, distinct message text per sub-condition — §8.2 rule 1. This
+    // is a relative comparison (message A !== message B), not a literal
+    // string match, so it stays within CONTRIBUTING.md's rule.
     assert.strictEqual(missingRootS004.code, notFoundS004.code);
     assert.notStrictEqual(missingRootS004.message, notFoundS004.message);
   });
@@ -3776,7 +3740,11 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(s005);
     assert.strictEqual(s005.severity, SEVERITY.WARNING);
     assert.strictEqual(s005.remedy.action, 'advise');
-    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 2');
+    // The interpolated counts are what this test is proving; `.includes()`
+    // on the specific values, not full-string message equality
+    // (CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test Outputs").
+    assert.ok(s005.message.includes('STATE.md says 3 plans'), 'message must report the STATE.md count');
+    assert.ok(s005.message.includes('disk has 2'), 'message must report the disk-scanned count');
     assertNoDriftKey(output);
   });
 
@@ -3796,10 +3764,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(s006);
     assert.strictEqual(s006.severity, SEVERITY.WARNING);
     assert.strictEqual(s006.remedy.action, 'advise');
-    assert.strictEqual(
-      s006.message,
-      'Status drift: STATE.md says "Executing Phase 1" but 01-VERIFICATION.md shows verification passed — phase may be complete',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3823,10 +3787,6 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assert.ok(s007);
     assert.strictEqual(s007.severity, SEVERITY.WARNING);
     assert.strictEqual(s007.remedy.action, 'advise');
-    assert.strictEqual(
-      s007.message,
-      'All 2 plans have summaries but status is still "Executing Phase 1" — phase may be ready for verification',
-    );
     assertNoDriftKey(output);
   });
 
@@ -3918,7 +3878,8 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, false, 'STATE.md says 5 plans, disk has 2 — drift must be reported');
     const s005 = findWarning(output, 'S005');
     assert.ok(s005, 'S005 must fire for the frontmatter-only phase drift');
-    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 5 plans, disk has 2');
+    assert.ok(s005.message.includes('STATE.md says 5 plans'), 'message must report the STATE.md count');
+    assert.ok(s005.message.includes('disk has 2'), 'message must report the disk-scanned count');
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
     assertNoDriftKey(output);
   });
@@ -3973,7 +3934,8 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, false);
     const s005 = findWarning(output, 'S005');
     assert.ok(s005, 'S005 must fire for the body-resolved plan-count drift');
-    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 1');
+    assert.ok(s005.message.includes('STATE.md says 3 plans'), 'message must report the STATE.md count');
+    assert.ok(s005.message.includes('disk has 1'), 'message must report the disk-scanned count');
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
     assertNoDriftKey(output);
   });
@@ -4010,7 +3972,6 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, false);
     const s004 = findWarning(output, 'S004');
     assert.ok(s004, 'S004 must fire when no phase directory matches');
-    assert.strictEqual(s004.message, 'Cannot validate phase drift: no phase directory matches phase 99');
     assertNoDriftKey(output);
   });
 
@@ -4047,7 +4008,6 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, false, 'an unreadable directory must not validate cleanly');
     const s004 = findWarning(output, 'S004');
     assert.ok(s004, 'S004 must fire when the phases directory itself is unreadable');
-    assert.strictEqual(s004.message, 'Cannot validate phase drift: phases directory is unreadable for phase 1');
     assertNoDriftKey(output);
   });
 
@@ -4070,7 +4030,6 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, false, 'an unreadable selected phase must not validate cleanly');
     const s004 = findWarning(output, 'S004');
     assert.ok(s004, 'S004 must fire when the selected phase directory itself is unreadable');
-    assert.strictEqual(s004.message, 'Cannot validate phase drift: phase directory is unreadable for phase 1');
     assertNoDriftKey(output);
   });
 
@@ -4110,15 +4069,12 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     // Per-file swallow (#2245 audit) is unchanged: the other verification
     // file is still consulted, so its S006 diagnostic still fires, and the
     // whole scan is NOT degraded to UNREADABLE just because one file 404s.
-    // Asserted on the S006 `Diagnostic`'s `code`/`message` fields
-    // (CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test Outputs")
-    // rather than a bare `warnings` prose regex — the vf filename isn't
-    // pinned since readdirSync order across the two verification files isn't
-    // guaranteed.
+    // Asserted on the S006 `Diagnostic`'s `code` alone, not its `message`
+    // prose (CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test
+    // Outputs") — the vf filename isn't pinned since readdirSync order
+    // across the two verification files isn't guaranteed.
     const s006 = findWarning(output, 'S006');
     assert.ok(s006, 'S006 must fire for the readable verification file despite the unreadable sibling');
-    assert.match(s006.message, /STATE\.md says "Executing Phase 1"/);
-    assert.match(s006.message, /shows verification passed/);
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
     assertNoDriftKey(output);
   });
@@ -4137,7 +4093,6 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     const [s001] = output.warnings;
     assert.strictEqual(s001.code, 'S001');
     assert.strictEqual(s001.severity, SEVERITY.ERROR, 'S001 is error-class severity, not a mere warning');
-    assert.match(s001.message, /STATE\.md: file contains NUL bytes/);
     assert.strictEqual(output.scope, undefined, 'the #2701 early return is explicitly unchanged — no scope key');
     assertNoDriftKey(output);
   });
@@ -4209,13 +4164,14 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
       }
       const output = JSON.parse(runGsdTools('state validate', dir).output);
       assert.strictEqual(output.valid, false, `n=${n} vs disk n+1 must be flagged`);
-      // Asserted on the S005 `Diagnostic`'s exact `message` rather than a
-      // bare `warnings` prose regex (CONTRIBUTING.md's "Prohibited: Raw Text
-      // Matching on Test Outputs") — `code`/`message` are the structured
-      // fields now, `drift` no longer exists.
+      // The boundary values (n, n+1) are what this loop proves flow through
+      // correctly; `.includes()` on the interpolated counts, not full-string
+      // message equality (CONTRIBUTING.md's "Prohibited: Raw Text Matching
+      // on Test Outputs") — `code` establishes S005 fired.
       const s005 = findWarning(output, 'S005');
       assert.ok(s005, `n=${n}: S005 must fire for the plan-count mismatch`);
-      assert.strictEqual(s005.message, `Plan count mismatch: STATE.md says ${n} plans, disk has ${n + 1}`);
+      assert.ok(s005.message.includes(`STATE.md says ${n} plans`), `n=${n}: message must report the STATE.md count`);
+      assert.ok(s005.message.includes(`disk has ${n + 1}`), `n=${n}: message must report the disk-scanned count`);
       assertNoDriftKey(output);
       cleanup(dir);
     }
@@ -4350,7 +4306,6 @@ describe('#3187 chain-owner identity — every consumer agrees with stateFieldVa
     assert.strictEqual(output.valid, false, 'conflicting phase sources must not validate cleanly');
     const s003 = findWarning(output, 'S003');
     assert.ok(s003, 'S003 must fire for conflicting phase sources');
-    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
     assert.ok(!findWarning(output, 'S005'), 'validate must scan phase 2, not the shadowed phase 1 (no plan-count drift)');
     assertNoDriftKey(output);
   });
@@ -10981,7 +10936,12 @@ describe('cmdStateValidate nested plans/ layout (#3257)', () => {
     assert.ok(parsed.warnings.length > 0, 'at least one drift warning expected');
     const s005 = findWarning(parsed, 'S005');
     assert.ok(s005, 'S005 diagnostic must be present');
-    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 5 plans, disk has 2', 'disk count must reflect nested scan (2 nested plans), state count must be 5');
+    // `.includes()` on the interpolated counts (not full-string message
+    // equality — CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test
+    // Outputs"): the disk count must reflect the nested scan (2 nested
+    // plans), not the pre-fix flat-scan under-count.
+    assert.ok(s005.message.includes('STATE.md says 5 plans'), 'message must report the STATE.md count');
+    assert.ok(s005.message.includes('disk has 2'), 'disk count must reflect nested scan (2 nested plans)');
     assertNoDriftKey(parsed);
   });
 

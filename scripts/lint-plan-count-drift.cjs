@@ -151,21 +151,15 @@ const CORE_UTILS_EXEMPT_FUNCTIONS = new Set([
 //     #2296/#2070/#2838) byte-for-behaviour rather than the phase-scoped
 //     plan-scan owner's root+nested rule — "rescue every summary before a
 //     merge blows it away" is not a live-plan/completion count.
-//   - verify.cts cmdValidateConsistency: the strict `-(\d{2})-PLAN\.md$`
-//     match extracts a zero-padded SEQUENCE NUMBER from filenames the owner
-//     (`allPlanFiles`) already classified as plans — it does not re-derive
-//     "is this a plan", it answers a different, narrower question (does the
-//     canonical 2-digit numbering sequence have a gap) that the owner's
-//     boolean plan/summary classification cannot answer. See the extended
-//     inline comment at that call site for the full Question 1/2/3 split.
 //   - planning-snapshot.cts buildPerPhasePlanScanFields (Phase 12, #3310,
-//     ADR-3180 §8.4): the SAME `-(\d{2})-PLAN\.md$` sequence-number
-//     extraction, relocated (not reinvented) from `verify.cts`'s
-//     `cmdValidateConsistency` above into the `perPhasePlanNumbering`
-//     `PlanningSnapshot` field so `validate.consistency`'s C002 rule can
-//     read it via the shared snapshot instead of re-scanning disk. Same
-//     rationale as the verify.cts entry immediately above — identical
-//     question, relocated call site.
+//     ADR-3180 §8.4): a strict `-(\d{2})-PLAN\.md$` match extracts a
+//     zero-padded SEQUENCE NUMBER from filenames the owner (`allPlanFiles`)
+//     already classified as plans, into the `perPhasePlanNumbering`
+//     `PlanningSnapshot` field so `validate.consistency`'s C002 rule can read
+//     it via the shared snapshot instead of re-scanning disk. It does not
+//     re-derive "is this a plan" — it answers a different, narrower question
+//     (does the canonical 2-digit numbering sequence have a gap) that the
+//     owner's boolean plan/summary classification cannot answer.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [CORE_UTILS_FILE, CORE_UTILS_EXEMPT_FUNCTIONS],
   [path.join('src', 'audit.cts'), new Set(['scanQuickTasks'])],
@@ -173,7 +167,6 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'estimate-cli.cts'), new Set(['collectCalibrationSamples'])],
   [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnnotateDependencies'])],
   [path.join('src', 'worktree-safety.cts'), new Set(['defaultFindSummaryFiles'])],
-  [path.join('src', 'verify.cts'), new Set(['cmdValidateConsistency'])],
   [path.join('src', 'planning-snapshot.cts'), new Set(['buildPerPhasePlanScanFields'])],
 ]);
 
