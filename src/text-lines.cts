@@ -62,7 +62,7 @@ export function detectEol(content: string): '\n' | '\r\n' {
   const crlfCount = (content.match(/\r\n/g) || []).length;
   const totalLfCount = (content.match(/\n/g) || []).length;
   const bareLfCount = totalLfCount - crlfCount;
-  if (bareLfCount === 0 || crlfCount > bareLfCount) return '\r\n';
+  if (bareLfCount === 0 || crlfCount >= bareLfCount) return '\r\n';
   return '\n';
 }
 

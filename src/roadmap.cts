@@ -1079,9 +1079,16 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
     // or `'\r\n'`), not a hardcoded `'\n'`, or a CRLF file loses its `\r`.
     const leadingMatch = /^\r?\n/.exec(plansBlockMatch[0]);
     const leadingNewline = leadingMatch ? leadingMatch[0] : '';
+    // Review fix (#3413 security): use the FUNCTION-replacement form. The
+    // string-replacement form expands String#replace's special patterns
+    // (`$&`, `` $` ``, `$'`, `$$`, `$1`-`$9`) inside the replacement — and
+    // newListBlock is built from author-controlled truths/plan-file content,
+    // so a line containing a literal `` $` `` (etc.) would splice unrelated
+    // surrounding phaseSection text into the result. A function replacer is
+    // never pattern-interpreted.
     const newPhaseSection = phaseSection.replace(
       plansBlockMatch[0],
-      leadingNewline + plansHeader + newListBlock
+      () => leadingNewline + plansHeader + newListBlock
     );
 
     const nextContent = content.slice(0, phaseStart) + newPhaseSection + content.slice(phaseEnd);

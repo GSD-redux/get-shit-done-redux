@@ -96,7 +96,11 @@ describe('detectEol', () => {
   });
 
   test('row 14: mixed content, LF majority wins', () => {
-    assert.strictEqual(detectEol('a\nb\r\nc'), '\n');
+    assert.strictEqual(detectEol('a\nb\nc\r\n'), '\n');
+  });
+
+  test('row 14b: an exact 1:1 tie resolves to \\r\\n per the documented default (#3413 review fix)', () => {
+    assert.strictEqual(detectEol('a\nb\r\nc'), '\r\n');
   });
 
   test('row 15: no terminator present returns the documented default', () => {

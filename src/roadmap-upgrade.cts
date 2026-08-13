@@ -11,7 +11,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { retryRenameSync } from './shell-command-projection.cjs';
-import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -236,12 +235,7 @@ function computeMigrationPlan(cwd: string, options: Record<string, unknown> = {}
     throw new Error(`ROADMAP.md not found at ${roadmapPath}`);
   }
 
-  // #3413: splitLines (not a bare '\n' split) so `oldLine`/`edit.from` built
-  // here match, character-for-character, the lines applyMigration() reads
-  // back at apply time — both sides must agree on CRLF handling or the
-  // `lines[edit.lineIndex] === edit.from` equality check in applyMigration
-  // silently stops matching.
-  const lines = splitLines(roadmapContent);
+  const lines = roadmapContent.split('\n');
   const parsedPhases = parseRoadmapPhases(lines);
 
   // Check for any already-migrated headings
@@ -471,6 +465,42 @@ function computeMigrationPlan(cwd: string, options: Record<string, unknown> = {}
   };
 }
 
+/**
+ * Apply roadmap line edits via character-offset splicing against the
+ * ORIGINAL content string — never a full split/rejoin (#3413). `lineIndex`
+ * boundaries are found by scanning for the next bare `\n`, exactly matching
+ * how computeMigrationPlan() itself indexes lines (`roadmapContent.split('\n')`)
+ * — both sides must agree on line indexing for `lineText === edit.from` to
+ * match, and this keeps a `\r` that precedes a `\n` as part of the LINE text
+ * rather than a separately-normalized terminator. Only a line whose text
+ * exactly equals an edit's `from` is replaced; every other character —
+ * including every line's own terminator, touched or not — is copied
+ * byte-for-byte from the original, so a mixed-EOL ROADMAP.md never has its
+ * untouched lines silently flattened to one dominant style.
+ */
+function applyRoadmapEdits(content: string, edits: RoadmapEdit[]): string {
+  const editByLine = new Map<number, RoadmapEdit>();
+  for (const edit of edits) editByLine.set(edit.lineIndex, edit);
+
+  let result = '';
+  let pos = 0;
+  let lineIndex = 0;
+
+  for (;;) {
+    const nlIdx = content.indexOf('\n', pos);
+    const lineEnd = nlIdx === -1 ? content.length : nlIdx;
+    const lineText = content.slice(pos, lineEnd);
+    const edit = editByLine.get(lineIndex);
+    result += edit && lineText === edit.from ? edit.to : lineText;
+    if (nlIdx === -1) break;
+    result += '\n';
+    pos = nlIdx + 1;
+    lineIndex++;
+  }
+
+  return result;
+}
+
 // ─── applyMigration ───────────────────────────────────────────────────────────
 
 /**
@@ -544,22 +574,10 @@ function applyMigration(cwd: string, plan: MigrationPlan, options: { dryRun?: bo
     // 2. Rewrite ROADMAP.md phase headings
     if (plan.roadmapEdits.length > 0) {
       const roadmapContent = fs.readFileSync(roadmapPath, 'utf8');
-      const lines = splitLines(roadmapContent);
-      // #3413: preserve the file's own EOL style on write-back — splitLines
-      // strips \r from every line (not just edited ones), so joining with a
-      // bare '\n' would silently flatten a CRLF ROADMAP.md to LF wholesale.
-      const eol = detectEol(roadmapContent);
-
-      // Sort edits by lineIndex to apply in order
-      const sortedEdits = [...plan.roadmapEdits].sort((a, b) => a.lineIndex - b.lineIndex);
-      for (const edit of sortedEdits) {
-        if (lines[edit.lineIndex] === edit.from) {
-          lines[edit.lineIndex] = edit.to;
-        }
-      }
+      const newRoadmapContent = applyRoadmapEdits(roadmapContent, plan.roadmapEdits);
 
       snapshotFile(roadmapPath);
-      fs.writeFileSync(roadmapPath, joinLines(lines, eol), 'utf8');
+      fs.writeFileSync(roadmapPath, newRoadmapContent, 'utf8');
       editedFiles.push('ROADMAP.md');
     }
 

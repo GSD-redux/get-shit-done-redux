@@ -62,7 +62,6 @@ import frontmatterMod = require('./frontmatter.cjs');
 import stateMod = require('./state.cjs');
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
-import { detectEol } from './text-lines.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
 import { updateTableCell, deleteTableRow, escapeCell } from './markdown-table.cjs';
@@ -1318,18 +1317,23 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
       const phaseLabel = useBold
         ? `**Phase ${_decimalPhase}: ${description}**`
         : `Phase ${_decimalPhase}: ${description}`;
-      // #3413: a hardcoded '\n' here corrupts a CRLF ROADMAP.md's EOL style —
-      // see the [^\r\n]* widening below for why. Preserve the file's own
-      // line terminator, matching the pattern established in roadmap.cts.
-      const eol = detectEol(rawContent);
-      const bulletEntry = `${eol}- [ ] ${phaseLabel}`;
+      // #3413 review fix: bulletEntry stays hardcoded '\n'. The on-disk EOL
+      // is decided at write time by platformWriteSync's normalizeContent /
+      // _normalizeMd (shell-command-projection.cts), which unconditionally
+      // converts \r\n -> \n for any .md target — so whatever terminator is
+      // used here in memory is erased before the file is ever written, and
+      // templating it via detectEol(rawContent) was inert dead code. '\n'
+      // matches what platformWriteSync enforces anyway.
+      const bulletEntry = `\n- [ ] ${phaseLabel}`;
 
       // #3413: was `[^\n]*`, which on CRLF content swallows the line's
       // trailing \r into the match, shifting bulletLineEnd to land BETWEEN
-      // the \r and \n of the original CRLF pair. That splits the pair when
-      // bulletEntry is spliced in, corrupting the file to mixed CRLF/LF.
-      // Widening to [^\r\n]* stops the match at the true line-content
-      // boundary so bulletLineEnd lands cleanly before the terminator.
+      // the \r and \n of the original CRLF pair — a pure splice-POSITION
+      // bug on the not-yet-write-normalized CRLF read (independent of the
+      // final on-disk EOL, which platformWriteSync always forces to LF for
+      // .md targets regardless). Widening to [^\r\n]* stops the match at the
+      // true line-content boundary so bulletLineEnd lands cleanly before the
+      // terminator.
       const targetBulletPattern = new RegExp(
         `(-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*)`,
         'i',
