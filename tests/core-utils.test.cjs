@@ -502,33 +502,38 @@ describe('extractOneLinerFromBody', () => {
     assert.strictEqual(coreUtils.extractOneLinerFromBody(''), null);
   });
 
+  // #3170: extractOneLinerFromBody anchors to a Summary/Overview/Accomplishments
+  // heading (the function is summary-specific — both callers extract a SUMMARY
+  // deliverable one-liner). These fixtures use Summary-shaped headings; the
+  // extraction mechanism under test (heading + bold → bold, frontmatter strip,
+  // colon-label → prose, CRLF, unicode) is unchanged.
   test('extracts bold text after a heading as one-liner', () => {
-    const content = '# Phase Title\n\n**Implement the feature**\n\nMore details here.\n';
+    const content = '# Phase Summary\n\n**Implement the feature**\n\nMore details here.\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), 'Implement the feature');
   });
 
   test('returns null when no bold text after heading', () => {
-    const content = '# Phase Title\n\nSome prose without bold.\n';
+    const content = '# Phase Summary\n\nSome prose without bold.\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), null);
   });
 
   test('strips frontmatter before searching', () => {
-    const content = '---\nstatus: done\n---\n# Title\n\n**One liner here**\n';
+    const content = '---\nstatus: done\n---\n# Summary\n\n**One liner here**\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), 'One liner here');
   });
 
   test('when bold ends with colon, returns text after the bold', () => {
-    const content = '# Title\n\n**Objective:** Complete the work\n';
+    const content = '# Summary\n\n**Objective:** Complete the work\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), 'Complete the work');
   });
 
   test('CRLF line endings are normalized', () => {
-    const content = '# Title\r\n\r\n**Bold line**\r\nmore\r\n';
+    const content = '# Summary\r\n\r\n**Bold line**\r\nmore\r\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), 'Bold line');
   });
 
   test('adversarial: unicode in bold text', () => {
-    const content = '# Title\n\n**中文 one-liner**\n\nMore.\n';
+    const content = '# Summary\n\n**中文 one-liner**\n\nMore.\n';
     assert.strictEqual(coreUtils.extractOneLinerFromBody(content), '中文 one-liner');
   });
 });
