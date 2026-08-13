@@ -39,6 +39,7 @@ const assert = require('node:assert/strict');
 const { RuleTester } = require('eslint');
 
 const noAdhocRegexEscape = require('../eslint-rules/no-adhoc-regex-escape.cjs');
+const { findViolations } = require('../scripts/lint-no-adhoc-regex-escape.cjs');
 
 const ruleTester = new RuleTester({
   languageOptions: {
@@ -285,5 +286,21 @@ describe('no-adhoc-regex-escape rule', () => {
         },
       ],
     });
+  });
+
+  // ── ReDoS regression — scripts/lint-no-adhoc-regex-escape.cjs's own regex ─
+
+  test('an adversarial [] run after .replace(/ terminates instead of backtracking exponentially (#3412)', () => {
+    // Pre-fix, REPLACE_CALL_RE's outer alternation let a `[...]` run be
+    // consumed either by the character-class branch or one char at a time
+    // by the catch-all branch, so a failing match explored both parses of
+    // every bracket pair: measured n=30 -> 3475ms (~2^n growth per +2). This
+    // adversarial input never closes the `.replace(/` call (no trailing
+    // `, '...')`), forcing the engine all the way through backtracking on a
+    // pre-fix regex. n=2000 is comfortably past where the pre-fix regex
+    // would already be unusable; a linear-time regex resolves it instantly.
+    const adversarial = '.replace(/' + '[]'.repeat(2000) + 'X';
+    const result = findViolations(adversarial);
+    assert.deepEqual(result, []);
   });
 });

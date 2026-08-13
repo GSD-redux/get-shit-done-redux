@@ -363,7 +363,7 @@ describe('phaseMarkdownRegexSource', () => {
 
   test('regex metacharacters in a phase id are neutralized, not interpreted (#3412)', () => {
     // The property RegExp.escape exists for: a literal metacharacter in the
-    // phase id (the dot in "1.2") must not act as a regex wildcard once the
+    // phase id (the dot in "1.2") must not behave as a regex wildcard once the
     // source is compiled into the same heading regex production uses.
     const src = phaseId.phaseMarkdownRegexSource('1.2');
     const re = headingRegex(src);

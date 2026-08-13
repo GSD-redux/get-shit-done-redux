@@ -109,7 +109,24 @@ function isGeneratedLibMirror(rel, root) {
 // multi-line-argument support) — this is a coverage backstop for the AST
 // rule, not a replacement for it; every real census copy is a single-line
 // `.replace(/[...]/g, '\$&')` call.
-const REPLACE_CALL_RE = /\.replace\(\s*\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])*)\/([a-z]*)\s*,\s*(['"`])((?:\\.|(?!\3)[^\\])*)\3\s*\)/g;
+//
+// ReDoS fix (#3412, CodeQL js/redos): the original outer alternation let a
+// `[...]` run be consumed EITHER by the character-class branch OR one
+// character at a time by the trailing catch-all branch, so on a failing
+// match the engine explored both parses of every bracket pair — exponential
+// (measured: n=26 -> 204ms, n=28 -> 791ms, n=30 -> 3475ms, ~2^n). Two
+// independent fixes, both required, neither alone sufficient long-term:
+//   (a) the trailing branch is now `[^/\\\n[\]]` — it excludes `[` and `]`,
+//       so a bracket can only ever be consumed by the character-class
+//       branch. This removes the ambiguity and makes matching linear.
+//       Consequence: a regex literal containing a BARE unescaped `]`
+//       outside a character class is no longer matched by this backstop —
+//       acceptable, since this is a coverage backstop for the AST rule, not
+//       a replacement for it, and no census shape has that form.
+//   (b) every `*` is now a bounded quantifier (ADR-3212's locked
+//       bounded-quantifiers decision) — a second line of defense that caps
+//       worst-case work even if the grammar above is later loosened.
+const REPLACE_CALL_RE = /\.replace\(\s{0,20}\/((?:\\.|\[(?:\\.|[^\]\\]){0,200}\]|[^/\\\n[\]]){1,400})\/([a-z]{0,10})\s{0,20},\s{0,20}(['"`])((?:\\.|(?!\3)[^\\]){0,400})\3\s{0,20}\)/g;
 
 function unescapeSimpleStringLiteral(raw) {
   // Handles the two-char escapes this specific replacement string ever uses
