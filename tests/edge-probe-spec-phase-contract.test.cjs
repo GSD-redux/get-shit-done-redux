@@ -193,6 +193,56 @@ test('adversarial review: Step 5.5 guards a zero-applicable coverage report', ()
   );
 });
 
+// #3102 (data-flow reachability): the validated $COVERAGE report must be RENDERED into the
+// model's visible context, not merely captured and reduced to `coverage.applicable`. Before
+// #3102, every emission of $COVERAGE on the success path piped it into a `node -e` consumer
+// (the shape guard, the count extract) whose output the model never sees — so the engine's
+// items[] were computed, validated, then discarded, and the resolution loop re-derived edge
+// categories from requirement prose (the sibling of #2733's control-flow discard, one layer
+// down). This asserts a BARE render: $COVERAGE emitted to stdout as the leading command, not
+// captured into a variable (`=$(`) and not piped into a consumer (`| node`).
+test('#3102: Step 5.5 renders the $COVERAGE report to stdout (not only the applicable count)', () => {
+  const content = readSpecPhase();
+  const block = extractStep55Block(content);
+  assert.ok(block.length > 0, 'Step 5.5 block must be extractable from spec-phase.md');
+
+  const rendersReport = block.split('\n').some((raw) => {
+    const line = raw.trim();
+    if (!/\$COVERAGE\b/.test(line)) return false; // must reference the captured report
+    if (line.startsWith('#')) return false; // not a comment mention
+    if (!/^(printf|echo|cat)\b/.test(line)) return false; // emitted as the leading command
+    if (/=\s*\$\(/.test(line)) return false; // a capture reaches a variable, not the model
+    if (/\|\s*node\b/.test(line)) return false; // piped into a consumer (shape guard / count extract)
+    return true;
+  });
+
+  assert.ok(
+    rendersReport,
+    'Step 5.5 must RENDER $COVERAGE to the model context — a bare `printf`/`echo`/`cat` of $COVERAGE that is not captured (`=$(`) and not piped into `node` — so the engine items[] reach the resolution loop (#3102 data-flow discard)'
+  );
+});
+
+// #3102: rendering without binding leaves the rows decorative. The resolution loop must
+// consume the rendered engine rows as a deterministic FLOOR — every proposed (requirement_id,
+// category) is resolved, and the model ADDS any category the classifier missed (floor, never
+// ceiling — the classifier has a measured recall gap: ADR-857 §98 / ADR-550 D7b). This guards
+// a future edit that renders the report but leaves the loop re-deriving categories from prose.
+test('#3102: Step 5.5 resolution loop binds the engine rows as a floor, not a ceiling', () => {
+  const content = readSpecPhase();
+  const block = extractStep55Block(content);
+  assert.ok(block.length > 0, 'Step 5.5 block must be extractable from spec-phase.md');
+  assert.match(
+    block,
+    /floor/i,
+    'Step 5.5 resolution loop must describe the rendered engine rows as a FLOOR the model unions with its own classification (ADR-550 D7b) — surfacing the report without binding it leaves it decorative'
+  );
+  assert.match(
+    block,
+    /recall gap|never a ceiling|not a ceiling|add(?:ing)? (?:any|the missed|categor)/i,
+    'the floor must NOT be a ceiling — the loop must instruct the model to add categories the classifier missed (ADR-857 §98 recall gap), not narrow to the engine rows'
+  );
+});
+
 // #3132: the retired covered/backstop-as-status vocabulary must not appear in
 // the workflow prose. probe-core.cts locks Status to resolved|dismissed|unresolved;
 // backstop survives only as a verification tier on a resolved item.

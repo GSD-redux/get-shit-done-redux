@@ -72,7 +72,7 @@ describe('UNUSABLE_REASON', () => {
     // (enum + call site + this assertion) instead of a silent widening.
     assert.deepStrictEqual(
       Object.keys(UNUSABLE_REASON).sort(),
-      ['FRONTMATTER_UNTERMINATED', 'LAST_ACTIVITY_UNPARSEABLE', 'ROADMAP_UNREADABLE'],
+      ['FRONTMATTER_UNTERMINATED', 'LAST_ACTIVITY_UNPARSEABLE', 'ROADMAP_UNREADABLE', 'STATE_UNREADABLE'],
     );
     assert.strictEqual(UNUSABLE_REASON.FRONTMATTER_UNTERMINATED, 'frontmatter_unterminated');
   });
@@ -84,6 +84,53 @@ describe('UNUSABLE_REASON', () => {
       assert.strictEqual(wrote, false, 'unknown reason must report that it wrote nothing');
     });
     assert.strictEqual(emitted, 0);
+  });
+});
+
+// ─── STATE_UNREADABLE: a STATE.md that exists but could not be read ─────────
+
+describe('STATE_UNREADABLE', () => {
+  test('a genuinely unreadable STATE.md produces exactly one diagnostic', () => {
+    _resetUnusableInputWarningsForTests();
+    const emitted = emissionsDuring(() => {
+      const wrote = warnUnusableInput({
+        reason: UNUSABLE_REASON.STATE_UNREADABLE,
+        source: '/u/state-unreadable.md',
+      });
+      assert.strictEqual(wrote, true);
+    });
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('the same STATE.md path reported twice yields one diagnostic', () => {
+    _resetUnusableInputWarningsForTests();
+    const source = '/u/state-unreadable-dedup/STATE.md';
+    const emitted = emissionsDuring(() => {
+      const first = warnUnusableInput({ reason: UNUSABLE_REASON.STATE_UNREADABLE, source });
+      const repeat = warnUnusableInput({ reason: UNUSABLE_REASON.STATE_UNREADABLE, source });
+      assert.strictEqual(first, true);
+      assert.strictEqual(repeat, false, 'same (path, cause) must dedup');
+    });
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('two different STATE.md paths are never suppressed as one', () => {
+    _resetUnusableInputWarningsForTests();
+    const emitted = emissionsDuring(() => {
+      warnUnusableInput({
+        reason: UNUSABLE_REASON.STATE_UNREADABLE,
+        source: '/u/state-unreadable-a/STATE.md',
+      });
+      warnUnusableInput({
+        reason: UNUSABLE_REASON.STATE_UNREADABLE,
+        source: '/u/state-unreadable-b/STATE.md',
+      });
+    });
+    assert.strictEqual(emitted, 2, 'keying too coarsely would hide a real second fault');
+  });
+
+  test('the reason value is the frozen string "state_unreadable"', () => {
+    assert.strictEqual(UNUSABLE_REASON.STATE_UNREADABLE, 'state_unreadable');
   });
 });
 

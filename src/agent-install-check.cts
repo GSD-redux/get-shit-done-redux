@@ -81,9 +81,17 @@ function truncatePostureValue(value: string): string {
  *
  * Priority:
  *   1. GSD_AGENTS_DIR env var (explicit override, any runtime)
- *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
- *      This is correct for both repo runs and real installs (the runtime config dir's
- *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
+ *   2. For claude runtime: __dirname-relative path (agents/ sibling of
+ *      gsd-core/) — correct for repo runs and runtime-config-dir installs,
+ *      where the sibling agents/ IS the user's agents dir — UNLESS that path
+ *      carries an exact node_modules segment. gsd-tools.cjs lives inside
+ *      gsd-core/bin/ in every install shape, but on an npm-global install
+ *      gsd-core/ sits inside the package (not the runtime config dir) and the
+ *      package ships its own agents/, so the install-relative path resolves
+ *      to the bundled copy and the check validates the package against
+ *      itself — agents_installed can never be false. In that case resolve
+ *      getGlobalConfigDir('claude')/agents (honours CLAUDE_CONFIG_DIR) like
+ *      every other runtime (#3203).
  *   3. For non-claude runtimes with a manifest-backed project-local install:
  *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
  *      the runtime's local install targets the project root). Requiring the
@@ -100,7 +108,16 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
   }
   const resolved = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
   if (resolved === 'claude') {
-    return path.join(__dirname, '..', '..', '..', 'agents');
+    const installRelative = path.join(__dirname, '..', '..', '..', 'agents');
+    // #3203: a lexical guard, not an install-shape test. It targets the
+    // layouts where the sibling agents/ is the package's own bundled copy and
+    // the check would otherwise validate the package against itself; a path
+    // merely carrying a directory of that name resolves the same way, and a
+    // non-empty GSD_AGENTS_DIR overrides both.
+    if (installRelative.split(path.sep).includes('node_modules')) {
+      return path.join(getGlobalConfigDir('claude'), 'agents');
+    }
+    return installRelative;
   }
   if (projectRoot) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

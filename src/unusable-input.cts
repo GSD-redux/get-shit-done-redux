@@ -57,6 +57,13 @@ const UNUSABLE_REASON = Object.freeze({
    * silent degradation is visible. (#3099, sixth #1879 site)
    */
   LAST_ACTIVITY_UNPARSEABLE: 'last_activity_unparseable',
+  /**
+   * A STATE.md exists but could not be read (EACCES/EIO/…). Distinct from a project that has
+   * not run `state.init` yet: absence returns the same non-answer, silently — only an
+   * exists-but-unreadable STATE.md is corruption. (#3308, seventh #1879 site —
+   * planning-snapshot's current-phase field)
+   */
+  STATE_UNREADABLE: 'state_unreadable',
 } as const);
 
 type UnusableReason = (typeof UNUSABLE_REASON)[keyof typeof UNUSABLE_REASON];
@@ -69,6 +76,8 @@ const REASON_PROSE: Readonly<Record<UnusableReason, string>> = Object.freeze({
     'ROADMAP.md exists but could not be read; phase and milestone lookups fell back to defaults',
   [UNUSABLE_REASON.LAST_ACTIVITY_UNPARSEABLE]:
     'last_activity in STATE.md is present but unparseable as a date; stale_activity fell back to false (idle-stranded suppressed)',
+  [UNUSABLE_REASON.STATE_UNREADABLE]:
+    'STATE.md exists but could not be read; the current-phase label fell back to unavailable',
 });
 
 // ─── Dedup state ──────────────────────────────────────────────────────────────

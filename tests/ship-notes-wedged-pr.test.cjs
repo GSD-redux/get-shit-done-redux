@@ -62,7 +62,11 @@ function runTrackShipping(responses) {
       '  sed -n "${_call}p" "$GH_RESPONSES"',
       '}',
       'jq() {',
-      '  "$NODE_BIN" -e "let d=\'\';process.stdin.on(\'data\',c=>d+=c);process.stdin.on(\'end\',()=>{const o=JSON.parse(d);process.stdout.write(String(o[process.argv[1].slice(1)] ?? \'\'));});" "$2"',
+      '  _field="${2#.}"',
+      '  _raw=$(sed -nE \'s/.*"\'"$_field"\'":("[^"]*"|[^,}]*).*/\\1/p\')',
+      '  _raw="${_raw%\\"}"',
+      '  _raw="${_raw#\\"}"',
+      '  printf \'%s\' "$_raw"',
       '}',
     ].join('\n');
 
@@ -77,7 +81,6 @@ function runTrackShipping(responses) {
         GH_CALLS: ghCallsPath,
         GH_RESPONSES: responsesPath,
         GIT_CALLS: gitCallsPath,
-        NODE_BIN: process.execPath,
         PHASE_NUMBER: '1',
         PR_NUMBER: '123',
         padded_phase: '01',

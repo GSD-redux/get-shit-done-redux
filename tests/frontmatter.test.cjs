@@ -295,6 +295,47 @@ describe('reconstructFrontmatter', () => {
     const extracted2 = extractFrontmatter(roundTrip);
     assert.deepStrictEqual(extracted2, extracted1, 'round-trip should preserve multiple data types');
   });
+
+  test('#3257: full-line comments survive an extract→reconstruct round-trip', () => {
+    const original = '---\ngsd_state_version: 1.0\n# NOTE: current_phase is hand-maintained here\ncurrent_phase: 3\nstatus: executing\n---';
+    const extracted = extractFrontmatter(original);
+    assert.strictEqual(extracted['gsd_state_version'], '1.0');
+    assert.strictEqual(extracted['current_phase'], '3');
+
+    const reconstructed = reconstructFrontmatter(extracted);
+    // #3257: the comment must survive in place (between gsd_state_version and current_phase).
+    assert.ok(
+      reconstructed.includes('# NOTE: current_phase is hand-maintained here'),
+      `comment should survive reconstruct; got:\n${reconstructed}`,
+    );
+    // data identity preserved alongside the comment.
+    assert.ok(reconstructed.includes('gsd_state_version: 1.0'));
+    assert.ok(reconstructed.includes('current_phase: 3'));
+    assert.ok(reconstructed.includes('status: executing'));
+    // the reconstructed output re-parses to the same data (idempotent round-trip).
+    const reextracted = extractFrontmatter(`---\n${reconstructed}\n---`);
+    assert.strictEqual(reextracted['current_phase'], '3');
+  });
+
+  test('#3257: leading (before first key) and trailing (after last key) comments survive', () => {
+    const original = '---\n# top comment\na: 1\nb: 2\n# trailing comment\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# top comment'), `leading comment lost:\n${reconstructed}`);
+    assert.ok(reconstructed.includes('# trailing comment'), `trailing comment lost:\n${reconstructed}`);
+  });
+
+  test('#3257: multiple consecutive comments survive in order', () => {
+    const original = '---\na: 1\n# first note\n# second note\nb: 2\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# first note') && reconstructed.includes('# second note'),
+      `consecutive comments lost:\n${reconstructed}`);
+    const aIdx = reconstructed.indexOf('a: 1');
+    const firstIdx = reconstructed.indexOf('# first note');
+    const secondIdx = reconstructed.indexOf('# second note');
+    assert.ok(aIdx < firstIdx && firstIdx < secondIdx, `order wrong (a:${aIdx} first:${firstIdx} second:${secondIdx})`);
+  });
 });
 
 // ─── spliceFrontmatter ──────────────────────────────────────────────────────
@@ -2239,6 +2280,92 @@ describe('#2847: schema name consistency between gsd-planner.md and src/frontmat
       '(the exact key registered in FRONTMATTER_SCHEMAS in src/frontmatter.cts) — a ' +
       'mismatched name would fail at runtime with "Unknown schema"'
     );
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2977-frontmatter-bom.test.cjs — test-hygiene sweep #3339 (H3 Wave 7)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2977-frontmatter-bom', () => {
+'use strict';
+
+/**
+ * Regression test for #2977 — `extractFrontmatter` returns {} for any file whose
+ * frontmatter fence is preceded by a UTF-8 BOM (Windows PowerShell `>`/`Out-File`,
+ * several editors). The `startsWith('---')` byte-0 check fails on any leading byte,
+ * so every frontmatter field silently disappears with no error.
+ *
+ * The fix strips a leading UTF-8 BOM (U+FEFF) before the fence check. Scope: BOM only
+ * (acceptance criteria 1-3). The generalized "arbitrary content before the fence" fork
+ * (tolerate vs diagnose) is a product-intent decision, surfaced in the PR — out of scope.
+ *
+ * Matrix: .gsd/bug/fix/2977-frontmatter-bom-tolerance/50-test-matrix.md
+ */
+
+const { describe, test } = require('node:test');
+const assert = require('node:assert/strict');
+const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+const BOM = '\uFEFF';
+
+describe('extractFrontmatter BOM tolerance (#2977)', () => {
+  test('bomPrefixedFrontmatterParses', () => {
+    // Row 1 (failing-first regression): a BOM-prefixed frontmatter document parses
+    // identically to the same document without the BOM.
+    const clean = '---\ntitle: T\nphase: "01"\nstatus: passed\n---\n\n# Body\n';
+    const bommed = BOM + clean;
+    const expected = extractFrontmatter(clean, 'a.md');
+    const actual = extractFrontmatter(bommed, 'a.md');
+    assert.deepEqual(actual, expected, 'BOM-prefixed frontmatter must parse identically to no-BOM');
+    assert.strictEqual(actual.title, 'T', 'title field recovered');
+    assert.strictEqual(actual.phase, '01', 'phase field recovered');
+    assert.strictEqual(actual.status, 'passed', 'status field recovered');
+  });
+
+  test('bomWithCrlfParses', () => {
+    // Row 2 (acceptance #2): BOM + CRLF line endings together still parse correctly.
+    const clean = '---\r\ntitle: T\r\nphase: "01"\r\n---\r\n\r\n# Body\r\n';
+    const bommed = BOM + clean;
+    const actual = extractFrontmatter(bommed, 'a.md');
+    assert.strictEqual(actual.title, 'T', 'title recovered (BOM + CRLF)');
+    assert.strictEqual(actual.phase, '01', 'phase recovered (BOM + CRLF)');
+  });
+
+  test('bomWithNoFrontmatterStaysEmpty', () => {
+    // Row 3 (acceptance #3): a BOM prefixing a document with no frontmatter (or genuinely
+    // empty frontmatter) returns {} with no false diagnostic — same as no-BOM.
+    assert.deepEqual(extractFrontmatter(BOM + 'just plain text', 'a.md'), {}, 'BOM + no frontmatter -> {}');
+    assert.deepEqual(extractFrontmatter(BOM + '', 'a.md'), {}, 'BOM + empty -> {}');
+    // A thematic-break-first-line Markdown doc (--- then prose) must stay {} — protected by
+    // the existing false-positive threshold; the BOM strip must not lower that bar.
+    assert.deepEqual(extractFrontmatter(BOM + '---\n\nA horizontal rule, not frontmatter.\n', 'a.md'), {},
+      'BOM + thematic-break Markdown -> {} (no false diagnostic)');
+  });
+
+  test('bomAcrossArtifactTypes', () => {
+    // Row 4 (acceptance #1 across artifact types): each frontmatter-bearing artifact shape
+    // recovers its fields when BOM-prefixed.
+    const cases = [
+      { name: 'STATE.md', body: '---\ncurrent_phase: "01"\nstatus: "In progress"\n---\n\n# State\n', expect: { current_phase: '01', status: 'In progress' } },
+      { name: 'PLAN.md', body: '---\nphase: "01"\nplan: "01-01"\nstatus: "done"\n---\n\n# Plan\n', expect: { phase: '01', plan: '01-01', status: 'done' } },
+      { name: 'SUMMARY.md', body: '---\none-liner: "shipped the thing"\n---\n\n# Summary\n', expect: { 'one-liner': 'shipped the thing' } },
+      { name: 'UAT.md', body: '---\nphase: "02"\nverdict: "pass"\n---\n\n# UAT\n', expect: { phase: '02', verdict: 'pass' } },
+    ];
+    for (const c of cases) {
+      const actual = extractFrontmatter(BOM + c.body, c.name);
+      assert.deepEqual(actual, c.expect, `${c.name}: BOM-prefixed frontmatter must recover fields`);
+    }
+  });
+
+  test('controlNoBom', () => {
+    // Row 5 (no regression): no BOM, valid frontmatter still parses correctly (unchanged).
+    const actual = extractFrontmatter('---\ntitle: T\nphase: "01"\n---\n\n# Body\n', 'a.md');
+    assert.strictEqual(actual.title, 'T');
+    assert.strictEqual(actual.phase, '01');
   });
 });
   });

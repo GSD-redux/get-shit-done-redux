@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "settings.md": "#2486 \u2014 the Worktrees question now branches on the runtime's declared dispatch.isolation capability (resolved via the sentinel-free inspect-dispatch-isolation query) instead of offering Claude-only worktree isolation everywhere. Growth is the isolation-none branch, its explanatory notice, and the tri-state pre-selection rule for the broken-inheritance repair."
+  }
+}

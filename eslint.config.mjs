@@ -134,6 +134,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/model-catalog.cjs',
       'gsd-core/bin/lib/configuration.cjs',
       'gsd-core/bin/lib/state-document.cjs',
+      'gsd-core/bin/lib/planning-snapshot.cjs',
       'gsd-core/bin/lib/shell-command-projection.cjs',
       'gsd-core/bin/lib/security.cjs',
       'gsd-core/bin/lib/command-aliases.cjs',
@@ -450,7 +451,9 @@ export default tseslint.config(
       'no-only-tests/no-only-tests': 'error',
       // Timing anti-patterns — ratcheted to error after cleanup (all violations fixed)
       'local/no-magic-sleep-in-tests': 'error',
-      'local/no-elapsed-assertion': 'warn',
+      // Promoted warn->error by #3331 once #3314 delivered its precondition (ADR-456 §(a) amended,
+      // direct-use modules backfilled with deterministic time control) — see TESTING-STANDARDS.md.
+      'local/no-elapsed-assertion': 'error',
       // Ban raw fs.rmSync in tests — use helpers.cleanup() for Windows-EBUSY retry budget
       'local/no-raw-rmsync-in-tests': 'error',
       // Ban tautological assertions (always-truthy arg or identical-literal equality)

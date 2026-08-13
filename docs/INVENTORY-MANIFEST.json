@@ -423,6 +423,7 @@
       "plan-drift-guard.cjs",
       "plan-scan.cjs",
       "planning-scope.cjs",
+      "planning-snapshot.cjs",
       "planning-workspace.cjs",
       "probe-core.cjs",
       "profile-output.cjs",
