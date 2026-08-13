@@ -279,6 +279,7 @@
 | `model-profile-resolution.md` | 모델 해석 알고리즘 문서. |
 | `verification-patterns.md` | 다양한 아티팩트 유형 검증 방법. |
 | `verification-overrides.md` | 아티팩트별 검증 재정의 규칙. |
+| `verifier-phase-gates.md` | gsd-verifier가 즉시 로드하는 검증 시점 게이트(폐기된 verify-phase 워크플로우에서 이전, #1892): 의사결정 커버리지 검증(#2492), 테스트 품질 감사, 인프라 페이즈 human-verification 스코핑(#2504). | |
 | `planning-config.md` | 전체 설정 스키마 및 동작. |
 | `git-integration.md` | Git 커밋, 브랜칭, 히스토리 패턴. |
 | `git-planning-commit.md` | 계획 디렉터리 커밋 관례. |

@@ -279,6 +279,7 @@
 | `model-profile-resolution.md` | モデル解決アルゴリズムのドキュメント。 |
 | `verification-patterns.md` | 異なるアーティファクトタイプの検証方法。 |
 | `verification-overrides.md` | アーティファクトごとの検証オーバーライドルール。 |
+| `verifier-phase-gates.md` | gsd-verifier が eager import する検証時ゲート（廃止された verify-phase ワークフローから移行、#1892）：デシジョンカバレッジ検証（#2492）、テスト品質監査、インフラストラクチャフェーズの human-verification スコープ（#2504）。 |
 | `planning-config.md` | 完全な設定スキーマと動作。 |
 | `git-integration.md` | git コミット、ブランチ、履歴パターン。 |
 | `git-planning-commit.md` | 計画ディレクトリのコミット規約。 |

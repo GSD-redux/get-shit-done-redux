@@ -279,6 +279,7 @@ Registro completo em `gsd-core/references/*.md`. Referências são documentos de
 | `model-profile-resolution.md` | Documentação do algoritmo de resolução de modelo. |
 | `verification-patterns.md` | Como verificar diferentes tipos de artefato. |
 | `verification-overrides.md` | Regras de substituição de verificação por artefato. |
+| `verifier-phase-gates.md` | Gates de verificação carregados eager pelo gsd-verifier (migrados do workflow verify-phase aposentado, #1892): validação de cobertura de decisões (#2492), auditoria de qualidade de testes, escopo de human-verification para fases de infraestrutura (#2504). | |
 | `planning-config.md` | Esquema completo de configuração e comportamento. |
 | `git-integration.md` | Padrões de commit git, ramificação e histórico. |
 | `git-planning-commit.md` | Convenções de commit do diretório de planejamento. |

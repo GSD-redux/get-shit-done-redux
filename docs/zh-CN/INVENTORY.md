@@ -279,6 +279,7 @@
 | `model-profile-resolution.md` | 模型解析算法文档。 |
 | `verification-patterns.md` | 如何验证不同的产物类型。 |
 | `verification-overrides.md` | 每种产物的验证覆盖规则。 |
+| `verifier-phase-gates.md` | 由 gsd-verifier 急切加载的验证期门禁（自已退役的 verify-phase 工作流迁移，#1892）：决策覆盖校验（#2492）、测试质量审计、基础设施阶段的 human-verification 划定（#2504）。 | |
 | `planning-config.md` | 完整的配置模式和行为。 |
 | `git-integration.md` | Git 提交、分支和历史模式。 |
 | `git-planning-commit.md` | 规划目录提交约定。 |
