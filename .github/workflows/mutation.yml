@@ -5,7 +5,7 @@ name: Mutation Testing
 # are "covered" (have meaningful test coverage for mutation). It computes
 # changed modules from git diff and emits a GitHub Actions matrix so each
 # changed module gets its own Stryker shard running in parallel.
-# If no covered modules changed the gate passes trivially (has_work: false).
+# If no covered modules changed the gate is skipped, not trivially passed (has_work: false).
 
 on:
   pull_request:
@@ -147,37 +147,36 @@ jobs:
           retention-days: 14
 
   # ── Job 3: mutation-gate ───────────────────────────────────────────────────
-  # Stable required-check name for branch protection. Passes when:
-  #   • has_work is false (nothing to mutate — trivial pass), OR
-  #   • all mutate shards succeeded.
-  # Fails when any shard failed.
+  # Stable required-check name for branch protection.
+  #   • has_work is false → job is SKIPPED (not run) — nothing to mutate is not
+  #     the same claim as "mutated and passed" (#3319).
+  #   • has_work is true and all mutate shards succeeded → PASSES.
+  #   • has_work is true and any shard failed, or detect itself failed → FAILS.
   # Summary job keeps the LEGACY check name so existing branch protection
   # (which requires "Stryker mutation score (changed files only)") needs no
   # change. The per-module shards report as "Stryker (<module>)".
   mutation-gate:
     name: Stryker mutation score (changed files only)
     needs: [detect, mutate]
-    if: always()
+    # has_work=false is rendered by SKIPPING this job entirely (job-level `if:`), not by an
+    # early `exit 0` inside the step — a step that runs and exits 0 always reports `success`,
+    # indistinguishable in the UI from "evaluated and passed". A job-level-skipped job reports
+    # `skipped` instead, matching the `coverage-gate` precedent in test.yml, and (verified)
+    # skipped required checks do not block merge. See #3319.
+    if: always() && (needs.detect.result != 'success' || needs.detect.outputs.has_work == 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate gate
         run: |
           DETECT="${{ needs.detect.result }}"
           MUTATE="${{ needs.mutate.result }}"
-          HAS_WORK="${{ needs.detect.outputs.has_work }}"
 
           echo "detect result : ${DETECT}"
           echo "mutate result : ${MUTATE}"
-          echo "has_work      : ${HAS_WORK}"
 
           if [ "${DETECT}" != "success" ]; then
             echo "FAIL: detect job did not succeed (${DETECT})"
             exit 1
-          fi
-
-          if [ "${HAS_WORK}" = "false" ]; then
-            echo "PASS: no covered modules changed — gate trivially green"
-            exit 0
           fi
 
           if [ "${MUTATE}" = "success" ]; then

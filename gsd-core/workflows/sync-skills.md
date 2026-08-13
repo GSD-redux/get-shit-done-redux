@@ -11,7 +11,7 @@ Sync managed `gsd-*` skill directories from one canonical runtime's skills root 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--from <runtime>` | Yes | *(none)* | Source runtime — the canonical runtime to copy from |
-| `--to <runtime\|all>` | Yes | *(none)* | Destination runtime or `all` supported runtimes |
+| `--to <runtime\|all>` | Yes | *(none)* | Destination runtime or `all` supported runtimes. **Must equal `--from`** — cross-runtime sync is refused (#3025: skill content/layout is runtime-specific and produced by the installer's per-runtime converters; use the installer for a different runtime). |
 | `--dry-run` | No | *on by default* | Preview changes without writing anything |
 | `--apply` | No | *off* | Execute the diff (overrides dry-run) |
 
@@ -50,6 +50,61 @@ fi
 - If `--from` is missing or unrecognized: print error and exit
 - If `--to` is missing or unrecognized: print error and exit
 - If `--from` == `--to` (single destination): print `[no-op: source and destination are the same runtime]` and exit
+- If any `--to` destination differs from `--from` (cross-runtime): REFUSE with the installer pointer below and exit. sync only supports identity sync — see the guard.
+- If `--from` or any `--to` value is not a runtime-id shape (`^[a-z0-9][a-z0-9-]*$`): REFUSE and exit — runtime ids are lowercase alphanumeric (+ hyphen); this rejects shell metacharacters before any interpolation (see security guard).
+
+**#3025 — Runtime-id shape validation (security: run BEFORE any interpolation):**
+
+`--from`/`--to` are interpolated into later `echo`/heredoc/`[[ ]]` contexts. Reject any value that is not a runtime-id shape BEFORE it reaches them, so a hostile value (e.g. `--to '$(cmd)'`, captured wholesale by the parser) cannot execute via command substitution in an error message.
+
+```bash
+# #3025 (security): runtime ids are lowercase alphanumeric (+ hyphen). Reject
+# anything else BEFORE any echo/heredoc/[[ ]] so a hostile --from/--to value
+# cannot execute via command substitution in a later error message.
+is_runtime_id() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]; }
+if ! is_runtime_id "$FROM_RUNTIME"; then
+  echo "error: invalid --from runtime id (not lowercase alphanumeric): '$FROM_RUNTIME'" >&2
+  exit 1
+fi
+for DEST in "${TO_RUNTIMES[@]}"; do
+  if ! is_runtime_id "$DEST"; then
+    echo "error: invalid --to runtime id (not lowercase alphanumeric): '$DEST'" >&2
+    exit 1
+  fi
+done
+```
+
+**#3025 — Cross-runtime refuse guard (run BEFORE Step 2 resolution / Step 5 copy):**
+
+Skill content and directory layout are runtime-specific. The installer applies per-runtime
+converters, adapter headers, brand swaps, and layout rules at install time, and two runtimes
+(`grok`, `gemini`) resolve to ANOTHER runtime's skills root. A verbatim copy from one runtime's
+skills root therefore produces content the installer would never have written for the destination,
+and can damage a runtime the user never named. Every cross-runtime pair is unsafe (content and/or
+layout and/or aliasing); only identity (`--from` == `--to`) is safe. Refuse cross-runtime and point
+the user at the installer — the only path that produces correctly converted skills.
+
+```bash
+# #3025: refuse cross-runtime skill sync before any resolution or copy.
+for DEST in "${TO_RUNTIMES[@]}"; do
+  if [[ "$DEST" != "$FROM_RUNTIME" ]]; then
+    cat >&2 <<EOF
+error: cross-runtime skill sync is not supported (--from $FROM_RUNTIME --to $DEST).
+       Skill content and directory layout are runtime-specific: the installer applies
+       per-runtime converters, adapter headers, brand swaps, and layout rules that a
+       verbatim copy cannot reproduce, and some runtimes share another runtime's skills
+       root — so a cross-runtime sync can damage a runtime you did not name.
+       To install correctly-converted skills for the '$DEST' runtime, run the GSD
+       installer for that runtime (not sync):
+         npx -y @opengsd/gsd-core@latest --global --<runtime>
+       (grok and gemini have no dedicated installer flag — they alias the codex and
+       claude skills roots respectively, which is itself why sync refuses them.)
+       sync only supports identity sync, where --from and --to are the same runtime.
+EOF
+    exit 1
+  fi
+done
+```
 
 ---
 
@@ -175,12 +230,12 @@ DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
 
 mkdir -p "$DEST_ROOT"
 
-# #3025: verbatim cp -r copies the SOURCE runtime's converted skill form, which
-# corrupts skills for destinations that need a different conversion (e.g. Claude
-# SKILL.md → Codex TOML agent). Until the installer exposes a per-skill conversion
-# CLI, sync is limited to runtime pairs that share the same skill format.
-# Run `gsd install --<dest-runtime> --local` to get correctly converted skills
-# for a destination that uses a different format.
+# #3025: cross-runtime sync is refused in Step 1's guard (skill content/layout is
+# runtime-specific; a verbatim copy corrupts destinations and can alias another
+# runtime's root). This loop is therefore reached only for IDENTITY sync, where
+# every skill is SKIP (source == destination) and the create/update lists are
+# empty. If per-runtime conversion is ever wired in, this is where it would go;
+# until then the cp -r must never run for a destination != source.
 
 for SKILL in $CREATE_LIST $UPDATE_LIST; do
   rm -rf "$DEST_ROOT/$SKILL"
@@ -215,6 +270,6 @@ Sync complete: <N> skills synced to <M> runtime(s).
 
 ## Limitations
 
-- Sync copies files verbatim and does not apply runtime-specific content transformations. Use the GSD installer directly for runtimes that require format conversion.
+- Sync copies files verbatim and does not apply runtime-specific content transformations. **Cross-runtime sync is refused** (#3025): skill content and layout are runtime-specific, and some runtimes alias another runtime's skills root, so a verbatim cross-runtime copy corrupts the destination (and can damage a runtime you did not name). Only identity sync (`--from` == `--to`) is supported. To install skills for a different runtime, run the GSD installer for that runtime (`npx -y @opengsd/gsd-core@latest --global --<runtime>`).
 - Cross-project skills (`.agents/skills/`) are out of scope — this command only touches global runtime skills roots.
 - Bidirectional sync is not supported. Choose one canonical source with `--from`.

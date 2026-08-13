@@ -49,7 +49,7 @@ const REPO_ROOT = path.join(__dirname, '..');
  * Recursively list every `.cjs` file under `tests/`, including subdirectories
  * (`tests/helpers/`, `tests/qa/`, `tests/observability/`, `tests/fixtures/`,
  * `tests/dispatch/`, etc.). `fs.readdirSync(dir, { recursive: true,
- * withFileTypes: true })` is available on the repo's Node floor (>=22.0.0 per
+ * withFileTypes: true })` is available on the repo's Node floor (>=24.0.0 per
  * package.json `engines`; the option landed in Node 20.1). Each returned
  * `Dirent` carries `parentPath` — its containing directory, which for a
  * nested entry is the subdirectory, not `TESTS_DIR` — so the joined path is

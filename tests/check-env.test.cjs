@@ -222,7 +222,8 @@ describe('check-env.cjs', () => {
     }
     assert.equal(typeof parsed.pass, 'boolean', 'Live repo JSON must have boolean pass');
     assert.ok(Array.isArray(parsed.checks), 'Live repo JSON must have checks array');
-    // Node version check must be present and pass (Node >=22 is installed)
+    // Node version check must be present and pass (Node >=24 is installed,
+    // per package.json engines.node)
     const nodeCheck = parsed.checks.find((c) => c.name === 'node-version');
     assert.ok(nodeCheck, 'node-version check must be present in live repo output');
     assert.equal(nodeCheck.status, 'pass', `node-version should pass on live repo, got: ${nodeCheck.status} — ${nodeCheck.message}`);

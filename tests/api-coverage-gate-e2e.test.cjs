@@ -26,6 +26,7 @@ const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 // file (#2365 review): readPhaseScope is the pure phase-scope reader behind the
 // gate. Those tests monkeypatch fs rather than drive a subprocess.
 const { readPhaseScope } = require('../gsd-core/bin/lib/check-command-router.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -342,7 +343,7 @@ describe('readPhaseScope — fail-closed on a real read failure (#2365 review)',
     tmpDir = makeProject({ api_coverage_gate: true });
     const phaseDir = makePhaseDir(tmpDir, '01-pay');
     writePlan(phaseDir, '01-PLAN.md', '# Plan\nIntegrate the Stripe API.');
-    const res = withFsThrow('readdirSync', new RegExp(phaseDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'), 'EACCES', () =>
+    const res = withFsThrow('readdirSync', new RegExp(escapeRegex(phaseDir) + '$'), 'EACCES', () =>
       readPhaseScope(tmpDir, phaseDir, '01'));
     assert.ok(res.readError, 'an unreadable phase directory must set readError, not read as empty');
   });

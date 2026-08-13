@@ -20,6 +20,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'gsd-core', 'workflows');
@@ -191,13 +192,6 @@ function parseLoopHostBlock(content, fileName) {
  * @param {string}   fileName    For error messages
  * @returns {string[]}           Array of error strings; empty = OK
  */
-/**
- * Escape a string for literal use in a RegExp.
- */
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function crossCheckRoles(content, agentRoles, fileName) {
   const errors = [];
   for (const role of agentRoles) {

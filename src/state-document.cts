@@ -11,15 +11,11 @@ import { splitTableRow } from './markdown-table.cjs';
 import { clampPercentFromFraction } from './phase-lifecycle.cjs';
 import { collectSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
-
-// Internal helpers
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function toFiniteNumber(value: unknown): number | null {
   const number = Number(value);

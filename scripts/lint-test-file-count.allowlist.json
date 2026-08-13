@@ -7,6 +7,7 @@
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
         "config-schema.property.test.cjs",
+        "config-validation.test.cjs",
         "config.test.cjs"
       ],
       "issue": "TBD"
@@ -33,6 +34,7 @@
     },
     "milestone": {
       "files": [
+        "milestone-archive-hygiene.test.cjs",
         "milestone-archive.test.cjs",
         "milestone-helper.test.cjs",
         "milestone-prefixed-convention.test.cjs",
@@ -47,12 +49,15 @@
       "files": [
         "phase-completion-single-owner.test.cjs",
         "phase-dependency-levels.test.cjs",
+        "phase-resolution-parity.test.cjs",
+        "phase-structure.test.cjs",
         "phase.test.cjs"
       ],
       "issue": "3186"
     },
     "roadmap": {
       "files": [
+        "roadmap-disk-consistency.test.cjs",
         "roadmap-mode-field.test.cjs",
         "roadmap-phase-fallback.test.cjs",
         "roadmap.test.cjs"
@@ -82,6 +87,7 @@
       "files": [
         "state-acquirestatelock-non-eexist.test.cjs",
         "state-command-cutover.test.cjs",
+        "state-consistency.test.cjs",
         "state-field-drift.test.cjs",
         "state-prune.test.cjs",
         "state-rebuild-cli.test.cjs",

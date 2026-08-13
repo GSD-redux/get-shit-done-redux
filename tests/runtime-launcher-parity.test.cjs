@@ -32,6 +32,7 @@ const os = require('node:os');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
@@ -87,7 +88,7 @@ function extractShellBlocks(content) {
         blockLang = (fenceOpen[2] || '').toLowerCase();
         blockLines = [];
         // Closing pattern: same indent prefix + ```
-        closingPattern = new RegExp('^' + blockIndent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '```\\s*$');
+        closingPattern = new RegExp('^' + escapeRegex(blockIndent) + '```\\s*$');
         continue;
       }
     } else {
@@ -1027,6 +1028,7 @@ const os = require('node:os');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
@@ -1104,7 +1106,7 @@ function extractShellBlocks(content) {
         blockIndent = fenceOpen[1];
         blockLang = (fenceOpen[2] || '').toLowerCase();
         blockLines = [];
-        closingPattern = new RegExp('^' + blockIndent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '```\\s*$');
+        closingPattern = new RegExp('^' + escapeRegex(blockIndent) + '```\\s*$');
         continue;
       }
     } else {

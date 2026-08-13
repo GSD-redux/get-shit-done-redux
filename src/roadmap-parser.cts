@@ -10,7 +10,8 @@
  *
  * Dependencies (leaf modules only — no loadConfig):
  *   - node:fs / node:path (stdlib)
- *   - ./phase-id.cjs        (escapeRegex, phaseMarkdownRegexSource)
+ *   - ./phase-id.cjs        (phaseMarkdownRegexSource)
+ *   - ./pattern.cjs         (escapeRegex — #3212 Phase 1 seam)
  *   - ./planning-workspace.cjs (planningDir)
  *   - ./shell-command-projection.cjs (platformReadSync)
  *   - ./markdown-sectionizer.cjs (tokenizeHeadings, stripTaggedBlocks, withSection, collectSection)
@@ -19,10 +20,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
 const {
-  escapeRegex,
   phaseMarkdownRegexSource,
   stripProjectCodePrefix,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -1379,7 +1380,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   // Built via new RegExp (no /i — the [A-Za-z] letter class does real case handling).
   const numericRe = roadmapUsesHyphenedIds
     ? new RegExp(
-        `^0*(\\d+(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE})*[A-Za-z]?(?:\\.\\d+)*)`,
+        `^0*(\\d+[A-Za-z]?(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?)*(?:\\.\\d+)*)(?=-|$)`,
       )
     // phase-id-owner: the [A-Za-z] letter class does real case handling here — this regex carries NO /i flag; kept literal, not source-byte-equal to the canonical PHASE_NUMBER_TOKEN_SOURCE.
     : /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;

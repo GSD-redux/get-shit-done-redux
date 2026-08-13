@@ -30,6 +30,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const ADR_DIR = path.join(ROOT, 'docs', 'adr');
@@ -95,19 +96,12 @@ const REASON = Object.freeze({
  * added to `STATUSES` now covers the bracket for free, and the corpus's
  * parity test iterates the real exported array rather than a copy.
  */
-/**
- * Escape a string for literal inclusion inside a dynamic RegExp alternation.
- * Defence-in-depth, not a live-bug fix: `STATUSES` is a static array literal
- * today, so nothing in it can currently carry a regex metacharacter. But
- * nothing enforces that it STAYS static — if a future change ever derives it
- * from external input (a config file, a corpus scan), an unescaped `join('|')`
- * would let a status token break out of the alternation it is meant to be one
- * branch of.
- */
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
+// Escaped for defence-in-depth, not a live-bug fix: `STATUSES` is a static
+// array literal today, so nothing in it can currently carry a regex
+// metacharacter. But nothing enforces that it STAYS static — if a future
+// change ever derives it from external input (a config file, a corpus scan),
+// an unescaped `join('|')` would let a status token break out of the
+// alternation it is meant to be one branch of.
 const STATUS_BRACKET_RE = new RegExp(String.raw`\s*\[(${STATUSES.map(escapeRegExp).join('|')})\]\s*$`, 'i');
 
 /**

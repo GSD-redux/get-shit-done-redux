@@ -567,6 +567,8 @@ node gsd-tools.cjs validate context
 node gsd-tools.cjs validate context --json
 ```
 
+`validate consistency`'s `warnings` entries are coded diagnostics (`{code, message, fix, repairable}`), not bare strings. A phase declared in ROADMAP.md with no directory on disk, or a directory on disk with no ROADMAP.md entry, reports under `W006`/`W007` — the same codes `validate health` uses for the identical check, since it's one enumeration with two callers, not a separate check. The four subjects unique to this command (numbering gaps in phases or plans, orphan `*-SUMMARY.md` files, plans missing `wave` frontmatter) use a new `C0NN` code range (`C001`-`C004`).
+
 `validate context` emits a structured envelope with `utilization`, `status`
 (`ok` / `warn` / `critical` at the 60 % / 70 % thresholds), and a
 `suggestion` string. The same data backs `/gsd-health --context`.
