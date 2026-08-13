@@ -3310,7 +3310,18 @@ describe('#2701: state validate rejects NUL-corrupted STATE.md', () => {
 
     const out = parseResult(t, ['state', 'validate'], tmpDir);
     assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
-    assert.ok(out.warnings.some((w) => /NUL/i.test(w)), `warning must name NUL: ${JSON.stringify(out.warnings)}`);
+    // `state validate` (Phase 12 migration) emits coded warning objects
+    // ({code, severity, message, remedy}), not bare strings — assert on the
+    // code as the primary check, with a message substring as a secondary,
+    // human-readable confirmation.
+    assert.ok(
+      out.warnings.some((w) => w.code === 'S001'),
+      `warning must carry code S001: ${JSON.stringify(out.warnings)}`,
+    );
+    assert.ok(
+      out.warnings.some((w) => /NUL/i.test(w.message)),
+      `warning must name NUL: ${JSON.stringify(out.warnings)}`,
+    );
   });
 });
 

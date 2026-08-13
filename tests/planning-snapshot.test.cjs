@@ -102,8 +102,12 @@ function makeDirUnreadableAsFile(fullPath) {
 // A matched plan/summary pair plus a passing `*-VERIFICATION.md` —
 // `isPhaseComplete` requires `verification.status === 'passed'` for
 // `complete: true`, which plan/summary pairing alone does not establish.
+// The plan carries `wave: 1` frontmatter so this fixture is also
+// wave-complete — callers that assert `perPhaseWaveMissingPlans` is empty
+// on a "healthy" phase (Phase 12, #3310) get a genuinely clean baseline
+// rather than a false positive from a plan that predates the `wave:` field.
 function makeCompletePhaseDir(cwd, relPhaseDir) {
-  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '# Plan\n');
+  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '---\nwave: 1\n---\n\n# Plan\n');
   writeFile(cwd, `${relPhaseDir}/01-01-SUMMARY.md`, '# Summary\n');
   writeFile(cwd, `${relPhaseDir}/01-VERIFICATION.md`, '---\nstatus: passed\n---\n');
 }
