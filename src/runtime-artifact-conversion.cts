@@ -2744,6 +2744,18 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = content.replace(/~\/\.claude\//g, pathPrefix);
       content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
       content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
+      // #3133: Claude Code expands `~` and absolute paths in @-file references
+      // but NOT `$HOME`. computePathPrefix returns the $HOME/.claude/ form for
+      // global installs under $HOME (correct for double-quoted shell commands —
+      // `~` does not expand inside double quotes, causing MODULE_NOT_FOUND,
+      // #1284), so the substitutions above rewrite @~/.claude/… → @$HOME/.claude/…
+      // which silently resolves to nothing and leaves skills with an empty
+      // execution_context. Restore the tilde form Claude expands (the form the
+      // shipped tarball uses). Local installs use an absolute pathPrefix (already
+      // @-resolvable) and are unaffected — the guard fires only for the $HOME form.
+      if (pathPrefix.startsWith('$HOME')) {
+        content = content.replace(/@\$HOME\/\.claude\//g, '@~/.claude/');
+      }
       content = processAttribution(content, attribution);
       break;
 

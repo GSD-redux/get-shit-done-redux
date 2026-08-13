@@ -2480,6 +2480,15 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
         'delegate or make those sites re-record inline',
     );
 
+    // #2486 note: the runtime-neutral diagnostics (health.md, settings.md)
+    // resolve isolation for a READ, not a dispatch, and deliberately name their
+    // state `INSPECTED_ISOLATION` rather than `ISOLATION`. That keeps them out
+    // of this scan by construction. An earlier revision exempted those two
+    // files instead; the exemption was file-wide, so any real dispatch block
+    // added to either one would have inherited it and escaped a guard whose
+    // name promises "every dispatch site" (#2486 review). Renaming the variable
+    // removes the carve-out entirely — a diagnostic that ever writes a literal
+    // `ISOLATION=none` is caught here like any other site.
     for (const file of scan) {
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
       if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
@@ -2502,3 +2511,103 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Folded from tests/issue-2939-dispatch-flatten-maxdepth.test.cjs (H3 Wave 7,
+// issue #3339). Two of the original nine cases (maxDepth:1 → true and
+// maxDepth:2 → false, both with the full codex-like descriptor) were exact
+// duplicates of the "Phase B: shouldFlattenDispatch — contract pin" describe
+// above (lines ~1014-1029) and were dropped; the remaining seven exercise
+// input shapes (maxDepth:-1 unbounded, nested:false, non-full toolkit,
+// background:false/backgroundDispatch:false with maxDepth:5, maxDepth:0,
+// and maxDepth missing/non-number) not covered elsewhere in this file.
+// ---------------------------------------------------------------------------
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2939-dispatch-flatten-maxdepth', () => {
+    /** The live Codex-shaped descriptor (the #2939 bug input), with per-test depth overrides. */
+    function codexLike(overrides = {}) {
+      return {
+        namedDispatch: true,
+        nested: true,
+        maxDepth: 1,
+        background: true,
+        subagentToolkit: 'full',
+        backgroundDispatch: true,
+        ...overrides,
+      };
+    }
+
+    test('maxDepthUnboundedBackgroundsUnchanged', () => {
+      // Row 3: maxDepth:-1 (unbounded) → background permitted, unchanged.
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ maxDepth: -1 })),
+        false,
+        'maxDepth:-1 (unbounded) → background permitted (unchanged)',
+      );
+    });
+
+    test('nestedFalseFlattensRegardlessOfDepth', () => {
+      // Row 4 / acceptance #4: nested:false cannot host a nesting orchestrator →
+      // flatten regardless of maxDepth.
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ nested: false, maxDepth: 5 })),
+        true,
+        'nested:false → flatten regardless of maxDepth',
+      );
+    });
+
+    test('nonFullToolkitFlattens', () => {
+      // Row 5 / acceptance #4: a non-full toolkit cannot delegate → flatten
+      // regardless of maxDepth.
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ subagentToolkit: 'read-only', maxDepth: 5 })),
+        true,
+        'subagentToolkit!=="full" → flatten regardless of maxDepth',
+      );
+    });
+
+    test('backgroundFalseStillFlattens', () => {
+      // Row 6 / negative-space: background:false → flatten (the existing
+      // background-boolean fail-closed path is unchanged).
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ background: false, maxDepth: 5 })),
+        true,
+        'background:false → flatten (unchanged)',
+      );
+    });
+
+    test('backgroundDispatchFalseStillFlattens', () => {
+      // Row 7 / negative-space: backgroundDispatch:false → flatten (unchanged).
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ backgroundDispatch: false, maxDepth: 5 })),
+        true,
+        'backgroundDispatch:false → flatten (unchanged)',
+      );
+    });
+
+    test('maxDepth0Flattens', () => {
+      // Row 9: maxDepth:0 (zero depth budget) → flatten.
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ maxDepth: 0 })),
+        true,
+        'maxDepth:0 → flatten (zero depth budget)',
+      );
+    });
+
+    test('maxDepthMissingFlattens', () => {
+      // Row 10: maxDepth missing/non-number → flatten (fail-closed on absent
+      // budget, mirrors degradationFor treating non-finite as 0).
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ maxDepth: undefined })),
+        true,
+        'maxDepth missing → flatten (fail-closed)',
+      );
+      assert.strictEqual(
+        hi.shouldFlattenDispatch(codexLike({ maxDepth: 'deep' })),
+        true,
+        'maxDepth non-number → flatten (fail-closed)',
+      );
+    });
+  });
+}

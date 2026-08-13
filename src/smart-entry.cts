@@ -50,7 +50,7 @@ import stateDocument = require('./state-document.cjs');
 const { stateFieldValue } = stateDocument;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseId = require('./phase-id.cjs');
-const { comparePhaseNum, extractPhaseToken, normalizePhaseName, phaseTokenMatches } = phaseId;
+const { comparePhaseNum, extractPhaseToken, matchPhaseDirs, normalizePhaseName, stripProjectCodePrefix } = phaseId;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateMod = require('./state.cjs');
 const { readStateHeadFreshness } = stateMod;
@@ -173,17 +173,118 @@ function parseIntOrNull(s: string | null): number | null {
 
 function phaseTokenFromDirName(name: string): string | null {
   const token = extractPhaseToken(name);
-  return /^\d+(?:[A-Z])?(?:\.\d+)*(?:-|$)/i.test(token) ? token : null;
+  // #2528: the shape probe runs on the PROJECT-CODE-STRIPPED token. A prefixed
+  // directory tokenizes to `MEM-05-80-20`, which does not start with a digit,
+  // so the unstripped probe rejected it and the entry was dropped before any
+  // resolution ran — every phase in a project-coded plan was invisible here.
+  // The full token is still what is returned: `comparePhaseNum` strips the
+  // prefix itself, so the sort is unaffected, and `matchPhaseDirs` needs the
+  // real directory name.
+  const probe = stripProjectCodePrefix(token);
+  return /^\d+(?:[A-Z])?(?:\.\d+)*(?:-|$)/i.test(probe) ? token : null;
 }
 
 /**
  * Parse a `last_activity` value that may be an ISO date or a free-form string
  * into an epoch-ms timestamp. Returns null when unparseable.
+ *
+ * #2570: `last_activity` routinely carries a trailing " — <description>" — the
+ * shape `templates/state.md` itself prescribes (`Last activity: [YYYY-MM-DD] —
+ * [What happened]`), which gsd-core's own STATE.md mirrors into frontmatter.
+ * `Date.parse` on the whole string returns NaN, and because `staleActivity`
+ * treats null as "not stale" (fails open), the ONLY idle/staleness detector
+ * never fired on any project whose last_activity retained its description.
+ * Be liberal in what we accept (Postel): read the leading ISO date/time token
+ * when the value carries one, so the description suffix — whatever separator
+ * (em dash or hyphen) it uses — no longer silently blinds the detector; fall
+ * back to a whole-string parse for any other shape a hand edit might use.
  */
+
+/** Leading ISO date, with an optional time-of-day and offset. */
+const ISO_LEADING_RE =
+  /^(\d{4})-(\d{2})-(\d{2})((?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/;
+
+/**
+ * A NAMED timezone designator at the start of the un-reconstructable remainder
+ * (#2571). ISO_LEADING_RE's offset group captures only `Z` / `±HH:MM`, so a
+ * named zone (GMT, EST, ...) is not in the leading token — it sits here.
+ * Reconstructing the token without it would let Date.parse read the time as
+ * LOCAL, shifting the instant by the host's offset (a wrong, host-dependent
+ * value), so a zone-shaped remainder must fail open (ADR-227).
+ *
+ * The shape is a short all-caps run (2–5 letters) that stands alone — the
+ * negative lookahead excludes the first letter of a Capitalised word like
+ * "Milestone", and an optional trailing offset is subsumed because the leading
+ * all-caps run already matches. Everything else — a lowercase or Capitalised
+ * description, a separator — is describable text and is reconstructed from the
+ * leading date.
+ *
+ * Consulted ONLY when the leading token captured a time-of-day (see the caller):
+ * a zone designator qualifies a clock time, so a BARE date can carry no zone
+ * hazard — reconstructing it is always just that date's UTC midnight, whatever
+ * trails it. Gating on the time keeps a description that merely opens with a
+ * tech acronym ("2026-06-08 CI green", "API refactor") on the reconstruct path
+ * instead of failing open. The prior "any letter" guard was too liberal — it
+ * failed open on every letter-led description and re-opened #2570.
+ */
+const ZONE_DESIGNATOR_RE = /^\s*[A-Z]{2,5}(?![A-Za-z])/;
+
+/**
+ * True only when y/m/d name a date that actually exists on the calendar.
+ *
+ * `Date.parse` validates shape but not value: it rolls an out-of-range day
+ * FORWARD rather than rejecting it (`2026-02-30` -> `2026-03-02`,
+ * `2026-04-31` -> `2026-05-01`). Shape-only validation would therefore
+ * propagate a different, wrong instant instead of failing safe — precisely
+ * what ADR-227 ("validate shape AND value; on failure of either layer coerce
+ * to the contract's safe default, never propagate") exists to prevent. A
+ * round-trip through Date.UTC detects the rollover: any component the
+ * constructor normalised comes back changed.
+ */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+  );
+}
+
 function parseActivityTimestamp(raw: string | null): number | null {
   if (!raw) return null;
-  const ms = Date.parse(raw);
-  return Number.isNaN(ms) ? null : ms;
+  const trimmed = raw.trim();
+  const iso = trimmed.match(ISO_LEADING_RE);
+  if (iso) {
+    const [, year, month, day, time] = iso;
+    // Reject an impossible calendar date outright rather than letting
+    // Date.parse substitute a rolled-forward one. null = "no activity signal",
+    // the safe default staleActivity already fails open on.
+    if (!isRealCalendarDate(Number(year), Number(month), Number(day))) return null;
+    // The date is real, so stay as liberal as before (Postel): a whole-string
+    // parse still wins when the engine can make sense of the value. Reading the
+    // token first would silently DROP a trailing zone name -- "2026-06-08
+    // 12:34:56 GMT" parses whole as 12:34:56Z but as local time from the token,
+    // shifting the instant by the host's UTC offset.
+    const whole = Date.parse(trimmed);
+    if (!Number.isNaN(whole)) return whole;
+    // Whole-string failed: the value carries a suffix the engine can't read as
+    // one instant (#2570). Reconstruct from the leading token UNLESS the remainder
+    // is a named zone the token dropped (GMT, EST, ...): reconstructing without it
+    // reads the time as LOCAL and shifts the instant by the host's offset, so a
+    // zone-shaped remainder fails open (ADR-227: never propagate a wrong instant;
+    // null is the base's not-stale default). An ordinary description -- the #2570
+    // template's " -- description", or a hand edit's bare-space/tab/colon suffix --
+    // carries no zone and IS reconstructed. See ZONE_DESIGNATOR_RE for the shape;
+    // the earlier "any letter" guard failed open on every description and re-opened
+    // #2570 for whitespace-separated suffixes.
+    const rest = trimmed.slice(iso[0].length);
+    if (time && ZONE_DESIGNATOR_RE.test(rest)) return null;
+    const ms = Date.parse(`${year}-${month}-${day}${time}`);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const direct = Date.parse(trimmed);
+  return Number.isNaN(direct) ? null : direct;
 }
 
 interface GitSignals {
@@ -251,7 +352,16 @@ function detectVerifyFailed(cwd: string, currentPhaseRaw: string | null): boolea
   let targetDir: string | undefined;
   if (phaseToken) {
     const normalized = normalizePhaseName(phaseToken);
-    targetDir = entries.find((name) => phaseTokenMatches(name, normalized));
+    // #2528: the fourth directory-resolution site, and the one where a miss is
+    // silent — a phase whose directory cannot be found reports "not failed",
+    // which reads identically to a healthy phase. It must therefore apply the
+    // same canonical selection as the locator and the two command scans, or a
+    // dir like `05-80-20-cleanup` (phase 5 named "80/20 Cleanup") never
+    // surfaces its own failed verification. `entries` is already sorted, and
+    // `matchPhaseDirs` filters without reordering, so taking the first match
+    // preserves the previous `.find()` selection exactly.
+    const { matches } = matchPhaseDirs(entries, normalized);
+    targetDir = matches[0];
     if (!targetDir) return false;
   } else {
     // No current phase in state — fall back to the highest-numbered phase dir.

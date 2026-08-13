@@ -33,7 +33,8 @@ The suite-suffix convention was chosen over a directory layout (`tests/security/
 
 ## Regression tests
 
-**Do not create new top-level `tests/bug-NNNN-*.test.cjs` files.** Add the
+**Do not create new top-level `tests/bug-NNNN-*.test.cjs`,
+`tests/fix-NNNN-*.test.cjs`, or `tests/issue-NNNN-*.test.cjs` files.** Add the
 regression case to the owning module's main test file instead (e.g. a
 `describe('regressions')` block in `tests/<module>.test.cjs`).
 
@@ -42,14 +43,16 @@ count — is the unit of CI overhead, and it is worst on Windows lanes where
 every spawn is Defender-scanned. The 2026-06 CI audit found 244 one-off
 `bug-*` files (~38% of the suite). That population is grandfathered in
 `scripts/lint-regression-test-names.allowlist.json` and enforced by an
-identity ratchet (`npm run lint:regression-names`, part of `npm run lint:ci`):
+identity ratchet (`npm run lint:regression-names`, part of `npm run lint:ci`),
+which also bans `fix-*` and `issue-*` NNNN-prefixed files the same way:
 
-- A **new** `bug-*` file fails CI — fold it into the owning module's file.
+- A **new** `bug-*`, `fix-*`, or `issue-*` NNNN-prefixed file fails CI — fold
+  it into the owning module's file.
 - **Deleting/consolidating** a grandfathered file requires pruning its
   allowlist entry, so the baseline only ever shrinks.
 - **Inherited drift** (the failure names files your PR didn't add — e.g. the
-  base branch merged `bug-*` files without feeding the allowlist, or you
-  rebased and carried a pre-rebase allowlist): run
+  base branch merged `bug-*`/`fix-*`/`issue-*` files without feeding the
+  allowlist, or you rebased and carried a pre-rebase allowlist): run
   `node scripts/lint-regression-test-names.cjs --update` and commit the
   regenerated allowlist. Snapshot artifacts like this allowlist (and
   `docs/INVENTORY.md`) must be regenerated **after** rebasing, never carried

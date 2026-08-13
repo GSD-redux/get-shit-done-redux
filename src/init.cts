@@ -88,7 +88,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
+const { escapeRegex, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -2244,7 +2244,11 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     );
 
     try {
-      const dirMatch = _phaseDirEntries.find((d) => phaseTokenMatches(d, normalized));
+      // #3185 (ADR-3180 Decision 2) moved this lookup off the
+      // milestone-scoped set and onto the physical one; that scope choice is
+      // kept. Only the matcher is this PR's: matchPhaseDirs resolves
+      // digit-leading directory names the token predicate cannot (#2528).
+      const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized).matches[0];
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);

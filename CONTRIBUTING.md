@@ -1049,6 +1049,47 @@ export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\.com$'
 With that exported, a push carrying a commit whose author email matches is blocked,
 and the hook names the offending commits. Unset the variable to disable it.
 
+### Every `commit` invocation in shipped content must declare `--files`
+
+`tests/commit-files-pathspec.test.cjs` scans every `.md` under `gsd-core/workflows/`,
+`gsd-core/references/`, `agents/`, `commands/`, `skills/` and `docs/` for invocations of
+the `commit` seam, and fails if any of them reaches the runtime without a `--files`
+scope. An unscoped invocation lands on the blanket-stage default and sweeps the whole
+`.planning/` index into a commit whose message names one artifact — that is [#2269](https://github.com/open-gsd/gsd-core/issues/2269),
+and `cmdCommit` is a CRITICAL-blast-radius seam, so the guard is repo-wide rather than
+keyed to the three sites that were reported.
+
+The scan decides what is an invocation by **command shape**, not by the markup around
+it — a fenced block, an indented block, a `cd … &&` prefix and a bare line are all
+scanned alike, because 96 of the live invocations sit inside fences and exempting them
+would blind the guard to every site the issue was filed about. Two consequences you may
+hit while editing shipped content, and the failure output names both:
+
+**A prose mention that runs into its sentence is flagged.** Nothing distinguishes
+`gsd_run query commit` followed by ordinary words from an invocation with arguments
+without guessing at English, so the scan does not try. Write the command reference in
+backticks — the repo's own convention — and it is correctly read as a mention.
+
+**A deliberate wrong-example must declare itself.** An example that *shows* the unscoped
+form is byte-identical to a regression, so no property of the surrounding markup can
+stand in for your intent. Declare it on the invocation's own line, in shell-comment
+position:
+
+```
+gsd_run query commit "docs: message"   # gsd-scan-ignore: #2269 counter-example for the docs
+```
+
+That block is a live example of itself: the invocation above really is unscoped, and it
+is the declaration — not the fence around it — that keeps the scan quiet.
+
+The reason **must** name a tracking issue (`#NNN`) or an `http(s)://` URL, exactly as
+[ADR-456](docs/adr/456-test-rigor-architecture.md) requires of the sibling
+`allow-test-rule:` marker — an exemption with no ledger never gets revisited. A marker
+with a free-text reason is reported as a malformed declaration rather than as an unscoped
+commit, so you are told which of the two problems you actually have. A marker that
+survives shell tokenization as an *argument* declares nothing: it reached argv, which
+means the runtime executed the line.
+
 ### CI Test Quality Checks
 
 The following checks run on every PR in addition to the test suite:
