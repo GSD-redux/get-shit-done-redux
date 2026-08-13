@@ -259,10 +259,9 @@
 | `thread.md` | クロスセッション作業のための永続的なコンテキストスレッドを作成、一覧表示、クローズ、または再開。 | `/gsd-thread` |
 | `update.md` | 変更履歴の表示付きで GSD を最新バージョンに更新。 | `/gsd-update` |
 | `validate-phase.md` | 完了したフェーズの Nyquist バリデーションのギャップを遡及監査して埋める。 | `/gsd-validate-phase` |
-| `verify-phase.md` | ゴール後退型分析によってフェーズ目標の達成を検証。 | `execute-phase.md` (post-execution) |
 | `verify-work.md` | 自動診断付きの会話型 UAT — UAT.md と修正プランを作成。 | `/gsd-verify-work` |
 
-> **注記:** 一部のワークフローには直接ユーザー向けのコマンドがありません（例: `execute-plan.md`、`verify-phase.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— これらはオーケストレーターワークフローによって内部的に呼び出されます。`discovery-phase.md` は `/gsd-new-project` の代替エントリーポイントです。
+> **注記:** 一部のワークフローには直接ユーザー向けのコマンドがありません（例: `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— これらはオーケストレーターワークフローによって内部的に呼び出されます。`discovery-phase.md` は `/gsd-new-project` の代替エントリーポイントです。
 
 ---
 

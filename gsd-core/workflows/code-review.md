@@ -306,7 +306,7 @@ fi
 
 **Post-processing (all tiers):**
 
-1. **Expand tilde paths:** SUMMARY.md `key-files` entries may record a `~/...`-prefixed path (e.g. `~/.claude/gsd-core/workflows/verify-phase.md`). Bash only tilde-expands a literal `~` written in source text, never one arriving as the value of an already-expanded variable, so every later `[ -f "$file" ]` check must see a real, expanded path or it misclassifies the file as deleted.
+1. **Expand tilde paths:** SUMMARY.md `key-files` entries may record a `~/...`-prefixed path (e.g. `~/.claude/gsd-core/workflows/verify-work.md`). Bash only tilde-expands a literal `~` written in source text, never one arriving as the value of an already-expanded variable, so every later `[ -f "$file" ]` check must see a real, expanded path or it misclassifies the file as deleted.
 ```bash
 EXPANDED_FILES=()
 for file in "${REVIEW_FILES[@]}"; do

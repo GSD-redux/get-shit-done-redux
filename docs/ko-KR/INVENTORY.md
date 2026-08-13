@@ -259,10 +259,9 @@
 | `thread.md` | 세션 간 작업을 위한 영속 컨텍스트 스레드 생성, 목록, 닫기, 재개. | `/gsd-thread` |
 | `update.md` | 체인지로그 표시와 함께 GSD를 최신 버전으로 업데이트. | `/gsd-update` |
 | `validate-phase.md` | 완료된 단계의 나이퀴스트 검증 공백을 소급 감사 및 채움. | `/gsd-validate-phase` |
-| `verify-phase.md` | 목표 역방향 분석을 통한 단계 목표 달성 검증. | `execute-phase.md` (실행 후) |
 | `verify-work.md` | 자동 진단이 포함된 대화형 UAT — UAT.md 및 수정 계획 생성. | `/gsd-verify-work` |
 
-> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `verify-phase.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다. `discovery-phase.md`는 `/gsd-new-project`의 대체 진입점입니다.
+> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다. `discovery-phase.md`는 `/gsd-new-project`의 대체 진입점입니다.
 
 ---
 
