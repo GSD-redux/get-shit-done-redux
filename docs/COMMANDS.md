@@ -992,11 +992,13 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 | Flag | Description |
 |------|-------------|
 | `--repair` | Auto-fix recoverable issues |
+| `--backfill` | Synthesize missing MILESTONES.md entries from `.planning/milestones/vX.Y-ROADMAP.md` snapshots |
 | `--context` | Probe context-window utilization; warns at 60 %, critical at 70 % |
 
 ```bash
 /gsd-health                         # Check integrity
 /gsd-health --repair                # Check and fix
+/gsd-health --backfill              # Backfill missing MILESTONES.md entries
 /gsd-health --context               # Context-utilization triage
 ```
 
@@ -1011,6 +1013,18 @@ command that writes STATE.md, so a low count means STATE.md was written recently
 rather than that its contents are correct. The advisory never changes health's
 pass/fail status, and stays silent when the stamp is absent or the project isn't
 a git repo — "unknown" is reported as unknown, not as fresh.
+
+**`--repair` does not apply destructive fixes.** Resetting config.json
+(`resetConfig`) and regenerating STATE.md (`regenerateState`) are destructive
+— the former loses custom settings, the latter loses session history — so
+`--repair` reports these fixes as available but never applies them
+automatically; the suggested command must be run by hand (ADR-3180,
+[#3309](https://github.com/open-gsd/gsd-core/issues/3309)). The same migration
+split two previously-conflated diagnostic codes: `W021` now covers only the
+phase-id-convention mismatch, with the STATE-vs-ROADMAP milestone-complete
+mismatch it used to also report moving to the new `W026`; likewise `W017` now
+covers only orphan worktrees, with the stale-worktree case moving to the new
+`W027`.
 
 ### `/gsd-cleanup`
 

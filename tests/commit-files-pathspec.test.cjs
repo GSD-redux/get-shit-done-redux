@@ -2813,7 +2813,13 @@ describe('workflow call sites declare --files (#2269)', () => {
     // Routed through tests/helpers/git-fixture.cjs rather than a bare spawn per
     // #3144 — local/no-unbounded-spawn fails an unbounded spawnSync in tests,
     // and this file's allowlist entry was retired when that migration landed.
-    const trackedMd = gitOrThrow(['ls-files', '-z', '--', '*.md'], {
+    // -c safe.directory=* is scoped to THIS invocation only (never a global
+    // `git config` write): unlike every other gitOrThrow call in this file,
+    // which targets a createTempGitProject() fixture it owns, this one runs
+    // against the real checked-out repoRoot, whose ownership can legitimately
+    // differ from the running UID inside a container-provisioned test runner
+    // (git's CVE-2022-24765 dubious-ownership guard would otherwise fire).
+    const trackedMd = gitOrThrow(['-c', 'safe.directory=*', 'ls-files', '-z', '--', '*.md'], {
       cwd: repoRoot, timeoutMs: GIT_TIMEOUT_MS,
     }).split('\0').filter(Boolean);
     assert.ok(trackedMd.length > 0, 'git ls-files reported no .md files at all — the walk is broken');
