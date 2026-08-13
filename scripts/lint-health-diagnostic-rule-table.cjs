@@ -35,6 +35,15 @@
  *    explicit and auditable instead of relying on a coincidental title
  *    match, and the PASS output now reports exempted codes SEPARATELY from
  *    genuinely fixture-covered ones rather than folding them together.
+ * 3. (Phase 12, #3310 — S0NN pass) `cmdStateValidate` (src/state.cts) emits
+ *    7 coded diagnostics (S001-S007) built inline via a local
+ *    `stateDiagnostic()` helper — NOT `Rule`-table entries, so they are not
+ *    read from the compiled module the way RULES/CONSISTENCY_RULES are.
+ *    This third pass hardcodes that code list (`STATE_VALIDATE_CODES`,
+ *    below) and applies the SAME §8.5 fixture-proof check against
+ *    `tests/state.test.cjs`, reported in its own PASS/FAIL section —
+ *    mirroring the C0NN pass's structure, just with a hardcoded list
+ *    instead of a `Rule[]` array as the code source.
  *
  * Design: .gsd/phase/refactor-3309-health-diagnostic-rule-table/40-design.md
  * ("The lint guard (§8.2 1:1 invariant + §8.5 fixture proof)").
@@ -63,6 +72,24 @@ const COMPILED_MODULE_REL = 'gsd-core/bin/lib/health-diagnostic.cjs';
 const COMPILED_MODULE_PATH = path.join(REPO_ROOT, COMPILED_MODULE_REL);
 const TEST_GROUP_DIR = path.join(REPO_ROOT, 'tests', 'health-diagnostic-rules');
 const SKELETON_TEST_FILE = path.join(REPO_ROOT, 'tests', 'health-diagnostic.test.cjs');
+
+// Phase 12 (#3310, ADR-3180 §8.4) — the C0NN namespace's own fixture-proof
+// test file. §8.5 extends to `CONSISTENCY_RULES`'s NEW codes only (C001-C004
+// — W006/W007 are already fixture-proofed above, against the SAME `Rule`
+// objects; re-checking them here would be redundant, not additional
+// coverage).
+const CONSISTENCY_TEST_FILE = path.join(REPO_ROOT, 'tests', 'health-diagnostic-rules', 'consistency.test.cjs');
+const CONSISTENCY_CODE_PREFIX_RE = /^C\d{3}$/;
+
+// Phase 12 (#3310, ADR-3180 §8.5 extension) — the S0NN namespace's own
+// fixture-proof pass. These 7 codes are NOT collected in any exported
+// `Rule[]` array: `cmdStateValidate` (src/state.cts) builds `Diagnostic[]`
+// directly via a local `stateDiagnostic()` helper, not via the rule-table
+// evaluator (out of scope for the RULES/CONSISTENCY_RULES-keyed passes
+// above). The list is therefore hardcoded here instead of read from the
+// compiled module.
+const STATE_VALIDATE_TEST_FILE = path.join(REPO_ROOT, 'tests', 'state.test.cjs');
+const STATE_VALIDATE_CODES = ['S001', 'S002', 'S003', 'S004', 'S005', 'S006', 'S007'];
 
 // Matches `describe(`/`test(`/`it(` calls whose first argument is a string
 // literal, capturing that literal as the block's title. Line/regex-based
@@ -221,12 +248,37 @@ function formatRepoRelative(absPath) {
 }
 
 function main() {
-  const { RULES, SEVERITY } = loadCompiledModule();
+  const { RULES, CONSISTENCY_RULES, SEVERITY } = loadCompiledModule();
 
   const { duplicates, badSeverities } = checkOneToOneInvariant(RULES, SEVERITY);
 
   const testFiles = findHealthDiagnosticTestFiles(REPO_ROOT);
   const { uncovered, exempted } = checkFixtureProofInvariant(RULES, testFiles);
+
+  // ─── C0NN check pass (Phase 12, #3310) — separate from the W/E/I pass
+  // above, own reporting section, does NOT re-check W006/W007's fixture
+  // proof (already covered above against the same `Rule` objects).
+  const consistencyNewRules = CONSISTENCY_RULES.filter((r) => CONSISTENCY_CODE_PREFIX_RE.test(r.code));
+  const { duplicates: consistencyDuplicates, badSeverities: consistencyBadSeverities } = checkOneToOneInvariant(
+    consistencyNewRules,
+    SEVERITY,
+  );
+  const consistencyTestFiles = fs.existsSync(CONSISTENCY_TEST_FILE) ? [CONSISTENCY_TEST_FILE] : [];
+  const { uncovered: consistencyUncovered } = checkFixtureProofInvariant(
+    consistencyNewRules,
+    consistencyTestFiles,
+    new Map(),
+  );
+
+  // ─── S0NN check pass (Phase 12, #3310) — separate from the W/E/I and C0NN
+  // passes above, own reporting section. Hardcoded code list (see the
+  // STATE_VALIDATE_CODES comment above) rather than read from a Rule[] array.
+  const stateValidateTestFiles = fs.existsSync(STATE_VALIDATE_TEST_FILE) ? [STATE_VALIDATE_TEST_FILE] : [];
+  const { uncovered: stateValidateUncovered } = checkFixtureProofInvariant(
+    STATE_VALIDATE_CODES.map((code) => ({ code })),
+    stateValidateTestFiles,
+    new Map(),
+  );
 
   const problems = [];
 
@@ -263,6 +315,50 @@ function main() {
     );
   }
 
+  if (consistencyDuplicates.length > 0) {
+    const list = consistencyDuplicates.map((d) => `  ${d.code} (${d.count} occurrences)`).join('\n');
+    problems.push(
+      `§8.2 rule 1 violated (C0NN namespace): ${consistencyDuplicates.length} duplicated rule code(s) in ` +
+        `CONSISTENCY_RULES (${COMPILED_MODULE_REL}):\n${list}\n` +
+        '  remedy: codes are append-only and 1:1 with a single Rule — rename or remove the duplicate.',
+    );
+  }
+
+  if (consistencyBadSeverities.length > 0) {
+    const list = consistencyBadSeverities
+      .map((b) => `  ${b.code}: severity=${JSON.stringify(b.severity)}`)
+      .join('\n');
+    problems.push(
+      `§8.2 rule 3 violated (C0NN namespace): ${consistencyBadSeverities.length} rule(s) with a severity not ` +
+        `in SEVERITY's values:\n${list}\n` +
+        '  remedy: severity is a property of the RULE — set it to SEVERITY.ERROR/WARNING/INFO.',
+    );
+  }
+
+  if (consistencyUncovered.length > 0) {
+    problems.push(
+      `§8.5 violated (C0NN namespace): ${consistencyUncovered.length} rule code(s) with no describe()/test() ` +
+        `block naming them (a comment or bare string mention does not count):\n  ${consistencyUncovered.join(', ')}\n\n` +
+        `  Searched: ${formatRepoRelative(CONSISTENCY_TEST_FILE)}` +
+        (consistencyTestFiles.length === 0 ? ' (file not found)' : '') +
+        '\n\n  remedy: add or extend a describe()/test() title in tests/health-diagnostic-rules/consistency.test.cjs ' +
+        `so the block title names the code verbatim (e.g. describe('${consistencyUncovered[0]} — ...', () => { ... })), ` +
+        'and drive the rule to fire against a real fixture built via createTempDir() + buildPlanningSnapshot().',
+    );
+  }
+
+  if (stateValidateUncovered.length > 0) {
+    problems.push(
+      `§8.5 violated (S0NN namespace): ${stateValidateUncovered.length} code(s) with no describe()/test() ` +
+        `block naming them (a comment or bare string mention does not count):\n  ${stateValidateUncovered.join(', ')}\n\n` +
+        `  Searched: ${formatRepoRelative(STATE_VALIDATE_TEST_FILE)}` +
+        (stateValidateTestFiles.length === 0 ? ' (file not found)' : '') +
+        '\n\n  remedy: add or extend a describe()/test() title in tests/state.test.cjs ' +
+        `so the block title names the code verbatim (e.g. test('${stateValidateUncovered[0]}: ...', () => { ... })), ` +
+        'mirroring the existing `#3310 state validate — S0NN coded diagnostics` describe block.',
+    );
+  }
+
   if (problems.length > 0) {
     throw new ExitError(1, `${problems.join('\n\n')}\n`);
   }
@@ -276,6 +372,16 @@ function main() {
     `lint-health-diagnostic-rule-table: PASS — ${RULES.length} rule code(s): ${coveredCount} covered by a ` +
       `real fixture, ${exempted.length} exempted across ${testFiles.length} test file(s).` +
       (exempted.length > 0 ? `\n  Exempted: ${exemptedDetail}` : ''),
+  );
+  console.log(
+    `lint-health-diagnostic-rule-table: PASS (C0NN namespace) — ${consistencyNewRules.length} new rule code(s) ` +
+      `(${consistencyNewRules.map((r) => r.code).join(', ')}), all fixture-covered in ` +
+      `${formatRepoRelative(CONSISTENCY_TEST_FILE)}.`,
+  );
+  console.log(
+    `lint-health-diagnostic-rule-table: PASS (S0NN namespace) — ${STATE_VALIDATE_CODES.length} code(s) ` +
+      `(${STATE_VALIDATE_CODES.join(', ')}), all fixture-covered in ` +
+      `${formatRepoRelative(STATE_VALIDATE_TEST_FILE)}.`,
   );
 }
 
@@ -292,4 +398,7 @@ module.exports = {
   COMPILED_MODULE_PATH,
   TEST_GROUP_DIR,
   SKELETON_TEST_FILE,
+  CONSISTENCY_TEST_FILE,
+  STATE_VALIDATE_TEST_FILE,
+  STATE_VALIDATE_CODES,
 };

@@ -145,6 +145,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/health-diagnostic-rules/roadmap-disk-consistency.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/milestone-archive-hygiene.cjs',
+      'gsd-core/bin/lib/health-diagnostic-rules/consistency.cjs',
       'gsd-core/bin/lib/shell-command-projection.cjs',
       'gsd-core/bin/lib/security.cjs',
       'gsd-core/bin/lib/command-aliases.cjs',
