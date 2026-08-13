@@ -26,7 +26,8 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const {

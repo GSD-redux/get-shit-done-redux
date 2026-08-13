@@ -2822,9 +2822,14 @@ describe('bug #557 — <details>/<summary> active milestone strip', () => {
     );
   });
 
-  // ── Health check W021: milestone_complete vs unstarted phases ─────────────
+  // ── Health check W026: milestone_complete vs unstarted phases ─────────────
+  // Phase 11 (#3309): this subject moved off the pre-migration 'W021' code
+  // onto the new 'W026' code (the split-off half of the two-subject
+  // conflation the design doc's "New codes for the two split subjects"
+  // section documents) — the OTHER W021 subject, phase_id_convention
+  // mismatch, kept its code.
 
-  test('validate health emits W021 when STATE says milestone complete but ROADMAP has unstarted phases', () => {
+  test('validate health emits W026 when STATE says milestone complete but ROADMAP has unstarted phases', () => {
     const planning = path.join(tmpDir, '.planning');
     // ROADMAP still has active phases in it
     fs.writeFileSync(path.join(planning, 'ROADMAP.md'), ROADMAP_DETAILS_SUMMARY, 'utf-8');
@@ -2849,11 +2854,19 @@ Phase: Milestone v1.3 complete
 
     const output = JSON.parse(result.output);
     const warnings = output.warnings || [];
-    const w021 = warnings.find(w => w.code === 'W021');
+    const w026 = warnings.find(w => w.code === 'W026');
     assert.ok(
-      w021 !== undefined,
-      `Expected W021 warning (milestone-status vs. roadmap-progress incoherence). ` +
+      w026 !== undefined,
+      `Expected W026 warning (milestone-status vs. roadmap-progress incoherence). ` +
       `Got warnings: ${JSON.stringify(warnings.map(w => w.code))}`
+    );
+    // W021/W026 independence (Phase 11, #3309 split): this fixture's subject
+    // is the W026 one (milestone-complete vs. unstarted phases) — it must
+    // NOT also produce a W021 (phase_id_convention mismatch, an unrelated
+    // subject this config.json-less fixture never triggers).
+    assert.ok(
+      warnings.every(w => w.code !== 'W021'),
+      `W026 fixture must not also fire W021: ${JSON.stringify(warnings.map(w => w.code))}`
     );
   });
 });

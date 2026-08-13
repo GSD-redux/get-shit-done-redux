@@ -26,6 +26,7 @@ const { getDirName } = runtimeNamePolicy;
 import capabilityRegistry = require('./capability-registry.cjs');
 import hostIntegration = require('./host-integration.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
+import { escapeRegex as escapeRegExp } from './pattern.cjs';
 // #2870: install-scope.cts is a leaf-tier sibling (imports only
 // runtime-homes.cjs + node builtins, never this module) — no cycle. See the
 // isGlobal sites below for why the boolean projection is centralized here too.
@@ -290,10 +291,6 @@ function buildKiloAgentPermissionBlock(claudeTools) {
   }
 
   return lines;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function replaceRelativePathReference(content, fromPath, toPath) {

@@ -16,6 +16,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { escapeRegex: escapeRe } = require('../gsd-core/bin/lib/pattern.cjs');
+
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 
 // Workflow file -> EVERY subagent type it spawns and must inject skills for.
@@ -28,10 +30,6 @@ const REVIEW_FAMILY = [
   { file: 'code-review-fix.md', agentTypes: ['gsd-code-fixer', 'gsd-code-reviewer'] },
   { file: 'eval-review.md', agentTypes: ['gsd-eval-auditor'] },
 ];
-
-function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 const cases = REVIEW_FAMILY.flatMap(({ file, agentTypes }) =>
   agentTypes.map((agentType) => ({ file, agentType })),

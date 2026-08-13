@@ -8558,6 +8558,7 @@ const { cleanup, runGsdTools } = require('./helpers.cjs');
 // phase-command-router.cjs delegates to SDK when available; we must test the
 // CJS implementation directly since that is where the bug lives.
 const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const { cmdPhaseComplete } = phaseModule;
 
 function writePassedVerificationFile(phaseDir, phase = '01') {
@@ -8698,7 +8699,7 @@ function roadmapCompletionSnapshot(roadmapContent) {
 }
 
 function extractField(stateContent, fieldName) {
-  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(fieldName);
   const boldMatch = stateContent.match(new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i'));
   if (boldMatch) return boldMatch[1].trim();
   const plainMatch = stateContent.match(new RegExp(`^${escaped}:[ \\t]*(.+)`, 'im'));

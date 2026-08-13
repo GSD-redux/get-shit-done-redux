@@ -6,7 +6,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "ES2025.RegExp"],
     "types": ["node"],
     "strict": true,
     "declaration": false,

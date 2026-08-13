@@ -188,23 +188,13 @@ const OWNER_FILE = path.join('src', 'roadmap-parser.cts');
 //     question `computeMilestoneSectionEnd` answers — so it cannot diverge
 //     from that computation; it answers a narrower, different question this
 //     derivation does not own.
-//   - verify.cts checkMilestonePrefixMismatches: `sectionRx` ENUMERATES
-//     every milestone heading in the document to build a list of
-//     `{version, start, end}` sections (each section's `end` is provisionally
-//     "rest of document" until the NEXT heading is found, then backfilled) —
-//     it is answering "what are ALL the milestone sections", to check every
-//     phase against its OWN enclosing milestone, not "where does THIS ONE
-//     milestone (the current/asserted one) end" — `computeMilestoneSectionEnd`
-//     takes a single heading and returns a single boundary; this function
-//     never calls anything with that shape. (Design brief named this
-//     `cmdValidateConsistency` — the code actually lives in the sibling
-//     function `checkMilestonePrefixMismatches`, called from
-//     `cmdValidateHealth`; `cmdValidateConsistency` itself does not contain
-//     `sectionRx`. Exempted here under its ACTUAL containing function.) Also:
-//     `sectionRx` (`/^#{1,3}\s+(?:\[[^\]]{1,200}\]\s*)?.*v(\d+\.\d+)/gim`)
-//     does not itself carry token (b) as this guard defines it (no
-//     `(?!Phase` lookahead, no marker-emoji pairing) — this exemption
-//     currently documents intent rather than suppressing a live match.
+//   - (Phase 11, #3309: `verify.cts`'s pre-migration `checkMilestonePrefixMismatches`
+//     — formerly exempted here — was DELETED when `cmdValidateHealth` migrated
+//     onto the rule table; its `sectionRx` walk relocated verbatim into
+//     `planning-snapshot.cts`'s `buildRoadmapDeclaredPhasesField`, which needs
+//     no exemption of its own: like the deleted function, its `sectionRx`
+//     never carries token (b) as this guard defines it — no `(?!Phase`
+//     lookahead, no marker-emoji pairing — so it was never a live match.)
 //   - roadmap-parser.cts isMilestoneShippedInRoadmap: composes the heading
 //     quantifier with the shipped/active MARKER check (via
 //     isClosedMilestoneHeading) to answer "is THIS milestone version marked
@@ -235,9 +225,22 @@ const OWNER_FILE = path.join('src', 'roadmap-parser.cts');
 //     source span. It is a named canonical function defining the grammar,
 //     not a copy of it — replacing the third independent re-derivation the
 //     widened guard found at `roadmap.cts:454`.
+//   - planning-snapshot.cts buildMilestoneArchiveStatusField (Phase 11,
+//     #3309): its `## <version>` heading scan reads `MILESTONES.md` — a
+//     FLAT version registry, not `ROADMAP.md` — asking "which versions does
+//     the registry already document", never "where does THIS milestone's
+//     ROADMAP section begin/end" (`computeMilestoneSectionEnd`/
+//     `locateMilestoneHeadings`'s own question). A different document, a
+//     different question; not a re-derivation of ROADMAP windowing.
+//   - health-diagnostic.cts computeMissingMilestoneVersions (Phase 11,
+//     #3309): `applyRepairs` is not a `Rule` and is not handed a
+//     `PlanningSnapshot` (see that file's header comment), so
+//     `backfillMilestones` recomputes the IDENTICAL `MILESTONES.md`
+//     heading-membership check `buildMilestoneArchiveStatusField` already
+//     performs for the W018 rule's read side — same non-ROADMAP-windowing
+//     question as that function, for the same reason.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap-command-router.cts'), new Set(['checkW021'])],
-  [path.join('src', 'verify.cts'), new Set(['checkMilestonePrefixMismatches'])],
   [
     OWNER_FILE,
     new Set([
@@ -248,6 +251,8 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
       'extractCurrentMilestoneScoped',
     ]),
   ],
+  [path.join('src', 'planning-snapshot.cts'), new Set(['buildMilestoneArchiveStatusField'])],
+  [path.join('src', 'health-diagnostic.cts'), new Set(['computeMissingMilestoneVersions'])],
 ]);
 
 // Optional `export ` modifier, mirroring `lint-plan-count-drift.cjs`'s

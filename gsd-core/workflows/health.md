@@ -216,14 +216,14 @@ Report final status.
 </process>
 
 <error_codes>
-
 | Code | Severity | Description | Repairable |
 |------|----------|-------------|------------|
 | E001 | error | .planning/ directory not found | No |
 | E002 | error | PROJECT.md not found | No |
 | E003 | error | ROADMAP.md not found | No |
-| E004 | error | STATE.md not found | Yes |
-| E005 | error | config.json parse error | Yes |
+| E004 | error | STATE.md not found | No |
+| E005 | error | config.json parse error | No |
+| E010 | error | CWD resolves to the user's home directory — health check would target the wrong .planning/ | No |
 | W001 | warning | PROJECT.md missing required section | No |
 | W002 | warning | STATE.md references invalid phase | No |
 | W003 | warning | config.json not found | Yes |
@@ -233,24 +233,38 @@ Report final status.
 | W007 | warning | Phase on disk but not in ROADMAP | No |
 | W008 | warning | config.json: workflow.nyquist_validation absent (defaults to enabled but agents may skip) | Yes |
 | W009 | warning | Phase has Validation Architecture in RESEARCH.md but no VALIDATION.md | No |
+| W010 | warning | GSD agent installation missing or incomplete | No |
+| W011 | warning | STATE.md current-phase status disagrees with ROADMAP.md checkbox | No |
+| W012 | warning | config.json invalid branching_strategy value | No |
+| W013 | warning | config.json context_window not a positive integer | No |
+| W014 | warning | config.json phase_branch_template missing {phase} placeholder | No |
+| W015 | warning | config.json milestone_branch_template missing {milestone} placeholder | No |
+| W016 | warning | config.json: workflow.ai_integration_phase absent (defaults to enabled but agents may skip AI-integration-phase planning) | Yes |
+| W017 | warning | Orphan git worktree (path no longer exists on disk) | No |
 | W018 | warning | MILESTONES.md missing entry for archived milestone snapshot | Yes (`--backfill`) |
 | W019 | warning | Unrecognized .planning/ root file — not a canonical GSD artifact | No |
+| W020 | warning | Worktree health scan degraded — git worktree list timed out, failed, or a finding could not be verified | No |
+| W021 | warning | Phase's integer prefix implies a different milestone than its ROADMAP section (phase_id_convention: milestone-prefixed) | No |
+| W022 | warning | config.json models entry malformed (unknown phase type, invalid tier, or non-object value) | No |
+| W023 | warning | Phase directories collide on normalized key | No |
 | W024 | warning | STATE.md was written many commits ago — treat its contents as approximate | No |
-| W025 | warning | config.json: workflow.use_worktrees enabled on a runtime whose dispatch.isolation is none (#2486) | No |
+| W026 | warning | STATE says milestone complete but ROADMAP lists an unstarted phase for that milestone | No |
+| W027 | warning | Stale git worktree (not modified in a long time) | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
+| I010 | info | Resolved CWD reported alongside the E010 home-directory guard | No |
 
-Note: the `W0NN` warning-code namespace is owned by `src/verify.cts` (`validate.health`), which also emits codes this table does not list (`W010`–`W017` and `W020`–`W023` as of #2486). `W001`–`W024` are all allocated, so this workflow's isolation warning is `W025`. Before assigning a new code here, grep `src/verify.cts` for the next free number — the table alone under-represents the live namespace, and two PRs in flight can otherwise claim the same code (which is exactly what happened between #2486 and #2573).
+Note: this table is **generated** — do not hand-edit it. It is produced by `node scripts/gen-health-docs.cjs --write` from `src/health-diagnostic.cts`'s `RULES` table (31 rules as of #3309, each carrying a static `description`/`repairable` on its `Rule` entry — see `src/health-diagnostic-types.cts`) plus the 3 pre-checks that stay outside the rule table by design (`E001`, `E010`, `I010` — safety rails in `cmdValidateHealth`, `src/verify.cts`, never `.planning/` findings). `scripts/lint-health-diagnostic-rule-table.cjs` already enforces the 1:1 code invariant this table depends on (no duplicate codes; severity is always a `Rule` property, never set per emit call) — before assigning a new code, add a `Rule` entry under `src/health-diagnostic-rules/` (its `code` is simply the next free number the lint guard has not yet seen) and run `node scripts/gen-health-docs.cjs --write` to regenerate this table; `npm run lint:generated-sync` fails if it drifts. `W025` (the `workflow.use_worktrees`/`dispatch.isolation` check, #2486) is a workflow-layer diagnostic emitted directly by this file's own `run_health_check` step, not by `cmdValidateHealth` — it stays documented in that step, not in this generated table.
 
 </error_codes>
 
 <repair_actions>
-
 | Action | Effect | Risk |
 |--------|--------|------|
 | createConfig | Create config.json with defaults | None |
 | resetConfig | Delete + recreate config.json | Loses custom settings |
 | regenerateState | Create STATE.md from ROADMAP structure when it is missing | Loses session history |
 | addNyquistKey | Add workflow.nyquist_validation: true to config.json | None — matches existing default |
+| addAiIntegrationPhaseKey | Add workflow.ai_integration_phase: true to config.json | None — matches existing default |
 | backfillMilestones | Synthesize missing MILESTONES.md entries from `.planning/milestones/vX.Y-ROADMAP.md` snapshots | None — additive only; triggered by `--backfill` flag |
 
 **Not repairable (too risky):**

@@ -900,7 +900,7 @@ Two rows join the roster (declared here rather than inserted above):
 
 | Derivation | Owner | Guard | Scan surface | Status |
 |---|---|---|---|---|
-| Diagnostic subject (8.1) | `planning-snapshot.cts` (Phase 10) | `lint-planning-snapshot-bypass-drift.cjs` | `src/` | contract only |
+| Diagnostic subject (8.1) | `planning-snapshot.cts` (Phase 10) | `lint-planning-snapshot-bypass-drift.cjs` | `src/` | enforced |
 | Planning-artifact registration (8.4) | `artifacts.cts` | `lint-planning-artifact-writer-drift.cjs` (Phase 12) | `src/` | contract only |
 
 **The second row is a different shape, recorded as such rather than filed under a contract it does
@@ -969,7 +969,7 @@ is a further amendment to this ADR. Decision 8 **consumes** §7.1–7.7 and does
 of them — in particular §7.7 already governs `state validate`'s unconditional `{valid: true}`, and
 Decision 8 does not re-decide it.
 
-#### 8.1 The subject a rule may read — *Required — Phase 10*
+#### 8.1 The subject a rule may read — *Enforced (Phase 10, #3308)*
 
 **Question.** What may a diagnostic rule look at?
 
@@ -1107,7 +1107,7 @@ apply.
 | Phase | Issue | Deliverable | Status |
 |---|---|---|---|
 | 9 | #3287 | this design lock (Decision 8) | docs-only |
-| 10 | to file | `src/planning-snapshot.cts` (8.1) + `lint-planning-snapshot-bypass-drift.cjs`, ratcheted | ready — Phase 5 merged |
+| 10 | #3308 | `src/planning-snapshot.cts` (8.1) + `lint-planning-snapshot-bypass-drift.cjs`, ratcheted | PR pending (Amendment 9) |
 | 11 | to file | `src/health-diagnostic.cts` (8.2/8.3/8.5), `validate.health` migrated, W021/W017 second subjects take new codes, `health.md` tables generated | follows Phase 10 |
 | 12 | to file | `validate.consistency` + `state.validate` onto the envelope (8.4); `lint-planning-artifact-writer-drift.cjs` | follows Phase 11 |
 
@@ -1314,3 +1314,49 @@ narrowly.
 
 `.changeset/bold-otters-scope.md` is updated to disclose this write-path change alongside the two
 Amendment 7 already recorded.
+
+### Amendment 9 — Phase 10 (#3308) validation: the guard's real baseline, not the issue's estimate
+
+Phase 10 (`src/planning-snapshot.cts`, PR pending) shipped the diagnostic subject §8.1 specifies:
+`buildPlanningSnapshot(cwd)`, a parsed projection of `.planning/` composed **exclusively** from the
+already-consolidated §7 owners — `getMilestoneInfo`, `listMilestonePhaseDirs`, `isPhaseComplete`,
+`scanPhasePlans`, `stateFieldValue`, `planningPaths`. It introduces exactly one new piece of
+coordination logic: `worstScope(...scopes)`, a severity-ordered combinator (`COMPLETE` best,
+`UNREADABLE` worst) folding several independently-scoped owner answers into one composite `Scope`
+per phase record. This is not a re-derivation of any owner — each input `scope` is already that
+owner's final verdict; `worstScope` only picks the worst of several finals, which is new coordination
+no single §7 owner has visibility to express on its own.
+
+**The guard's real baseline, per Amendment 4a's standing rule ("N found by the guard, never N per
+the epic").** The ratcheted guard `scripts/lint-planning-snapshot-bypass-drift.cjs`, scoped to
+`DIAGNOSTIC_RULE_FUNCTIONS = {src/verify.cts: {cmdValidateHealth}}`, found **15 distinct (file, text)
+raw-read sites, 21 total acknowledged occurrences** inside `cmdValidateHealth`
+(`scripts/baselines/planning-snapshot-bypass-baseline.json`). Contrast this against the epic's own
+code-COUNT estimate: `cmdValidateHealth` is described, both in the issue and in this ADR's own
+Amendment 6 (§ *Why the diagnostic layer is the same failure class*), as emitting "30+" diagnostic
+codes through one nested `addIssue` closure — a figure about how many **codes** the function emits,
+not how many **raw-read call sites** produce them. The two are different measures, exactly as
+Amendments 2/3/4/7 found for their own derivations: a code-count estimate is not a call-site count,
+and the whole-repo, function-scoped guard is what makes the real number visible instead of assumed.
+The gap runs the expected direction — several codes share a read (`configRaw`'s
+`fs.readFileSync(configPath, 'utf-8')` alone accounts for 4 of the 21 occurrences) — so 15 sites
+covering 21 occurrences behind 30+ codes is consistent with, not contradictory to, the epic's figure.
+
+**The contract held on the first pass.** No amendment to §8.1 rules 1–4 was needed. Rule 2 — parsed
+values only, never raw text — is what the guard now mechanically enforces going forward for any
+**new** diagnostic-rule-shaped code: an unrecorded raw-read site inside a `DIAGNOSTIC_RULE_FUNCTIONS`
+entry fails lint immediately. `cmdValidateHealth`'s existing 15 sites are ratcheted debt explicitly
+owned by Phase 11 (#3309), not silently left unwatched — the baseline can only shrink, and a site that
+stops firing without being pruned from the baseline also fails, per Decision 4(e)'s invariants.
+
+**One open judgment call, surfaced for a maintainer's eyes rather than silently resolved — not a
+defect, per this ADR's own "written rule, not silent implementation choice" philosophy.** §8.1 rule 4's
+text ("Read failures are reported via `warnUnusableInput`... and the field's `scope` is `UNREADABLE`")
+could read as implying every `UNREADABLE` scope correlates with a reported diagnostic. Phase 10's
+`currentPhaseLabel` field (`buildCurrentPhaseLabel`, `src/planning-snapshot.cts`) treats a genuinely
+**absent** STATE.md as `UNREADABLE` too, but does **not** call `warnUnusableInput` for that case — only
+an actual read error (e.g. EISDIR) fires it. This mirrors §7's own absence-vs-corruption distinction
+elsewhere in this ADR (e.g. the `unusable-input.cts` glossary entry's `#1881` note on ROADMAP.md): a
+project that never ran `state.init` legitimately has no STATE.md yet, and that is a non-answer, not
+corruption. Recorded as the intended reading rather than a gap, since it is symmetric with how every
+other §7 owner already treats absence vs. unreadable.
