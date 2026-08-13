@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { realClock } from './clock.cjs';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -19,7 +20,11 @@ import phaseIdMod = require('./phase-id.cjs');
 // here rather than carried alongside — upstream's stated end state is that it
 // has no call sites outside phase-id.cts. The #612 bracket helpers are
 // untouched by that move and are kept.
-const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
+// #3212 Phase 1 drops `escapeRegex` from this destructure as well: the symbol
+// left phase-id.cts entirely and `src/pattern.cts` is its sole owner, imported
+// at the top of this file. A re-homing of one unrelated import — no #612
+// helper's provenance changes.
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -130,18 +135,36 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
 // ─── searchPhaseInContent ─────────────────────────────────────────────────────
 
 /**
+ * Build the phase-heading regex used by `searchPhaseInContent` for a given
+ * pre-escaped phase source. Extracted (#3412) so tests can assert against the
+ * exact production pattern instead of hand-duplicating it.
+ * #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
+ *
+ * #612: the heading intro is SELECTED by the resolved convention rather than
+ * spelled literally. `convention` is OPTIONAL and trails #3412's signature, so
+ * every convention-less caller — including `tests/phase-id.test.cjs:24`, which
+ * imports this function precisely to assert the exact production pattern —
+ * compiles the byte-identical source the literal previously spelled: at the
+ * ANY_BRACKET baseline with no convention the selector returns
+ * `(?:\[[^\]]{1,200}\]\s*)?Phase\s+` verbatim. Threading the parameter through
+ * #3412's extraction rather than reinstating a second inline construction keeps
+ * this function the single owner of the pattern, which is the whole point of
+ * the extraction.
+ */
+function buildPhaseHeadingRegex(escapedPhase: string, convention?: string | null): RegExp {
+  return new RegExp(
+    `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention)}${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
+    'i'
+  );
+}
+
+/**
  * Search for a phase header (and its section) within the given content string.
  * Returns a result object if found (either a full match or a malformed_roadmap
  * checklist-only match), or null if the phase is not present at all.
  */
 function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: string, convention?: string | null): PhaseSearchResult | null {
-  // #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
-  // #612: the intro is SELECTED by the resolved convention — a non-bracket repo
-  // compiles the same source this line spelled before.
-  const headingPattern = new RegExp(
-    `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention)}${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
-    'i'
-  );
+  const headingPattern = buildPhaseHeadingRegex(escapedPhase, convention);
   const headings = tokenizeHeadings(content);
   const headingIndex = headings.findIndex((heading) => headingPattern.test(heading.text));
   const headerMatch = headingIndex === -1 ? null : headings[headingIndex].text.match(headingPattern);
@@ -1212,4 +1235,5 @@ export = {
   cmdRoadmapAnalyze,
   cmdRoadmapUpdatePlanProgress,
   cmdRoadmapAnnotateDependencies,
+  buildPhaseHeadingRegex,
 };

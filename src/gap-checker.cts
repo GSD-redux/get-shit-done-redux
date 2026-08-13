@@ -21,9 +21,7 @@ import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
 const { output, error } = io;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import phaseId = require('./phase-id.cjs');
-const { escapeRegex } = phaseId;
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningDir, findContextMdIn } = planningWorkspace;

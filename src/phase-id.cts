@@ -7,14 +7,14 @@
  * boundary moved. The core.cjs re-export spine was retired in epic #1267;
  * callers import phase-id helpers from phase-id.cjs directly.
  *
- * Dependencies: none (pure string/regex, no Node built-ins required).
+ * Dependencies:
+ *   - ./pattern.cjs (escapeRegex — #3212 Phase 1 seam; this module is no
+ *     longer the owner of pattern-escaping, only a consumer)
  */
 
-// ─── Phase-id helpers ─────────────────────────────────────────────────────────
+import { escapeRegex } from './pattern.cjs';
 
-function escapeRegex(value: unknown): string {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// ─── Phase-id helpers ─────────────────────────────────────────────────────────
 
 // project_code values start with an uppercase letter (e.g. PROJ, APP_CODE);
 // leading underscores are not valid project codes per .planning/config.json.
@@ -600,7 +600,11 @@ function phaseMarkdownRegexSource(phaseNum: unknown): string {
 
   // Plain numeric phase: 1, 01, 12A, 12.1
   const match = stripped.match(/^0*(\d+)([A-Z])?((?:\.\d+)*)$/i);
-  if (!match) return escapeRegex(phaseNum);
+  // #3212: escapeRegex now requires a string (the seam owns coercion policy,
+  // not this module) — String(...) here preserves this function's own
+  // pre-existing `unknown` acceptance for callers that pass a non-string
+  // phaseNum through to this fallback branch.
+  if (!match) return escapeRegex(String(phaseNum));
 
   const integer = match[1].replace(/^0+/, '') || '0';
   const letter = match[2] ? escapeRegex(match[2]) : '';
@@ -1166,7 +1170,6 @@ function roadmapPhaseLookupSources(phaseNum: unknown): string[] {
 }
 
 export = {
-  escapeRegex,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,

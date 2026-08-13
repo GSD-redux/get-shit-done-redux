@@ -20,7 +20,7 @@ const MANIFEST_PATH = path.join(ROOT, 'docs', 'INVENTORY-MANIFEST.json');
 // a family added to the generator but not here left this test silently verifying a
 // subset while still reporting green. Importing makes divergence impossible rather than
 // merely detectable.
-const { FAMILIES, NESTED_FAMILIES, collectNested } = require('../scripts/gen-inventory-manifest.cjs');
+const { FAMILIES, NESTED_FAMILIES, collectNested, collectOneLevelSubdirs } = require('../scripts/gen-inventory-manifest.cjs');
 
 test('docs/INVENTORY-MANIFEST.json matches the filesystem', () => {
   const committed = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
@@ -28,11 +28,14 @@ test('docs/INVENTORY-MANIFEST.json matches the filesystem', () => {
   const removals = [];
 
   for (const { name, dir, filter, toName } of FAMILIES) {
-    const live = new Set(
-      fs.readdirSync(dir)
-        .filter((f) => fs.statSync(path.join(dir, f)).isFile() && filter(f))
-        .map(toName),
-    );
+    const flat = fs.readdirSync(dir)
+      .filter((f) => fs.statSync(path.join(dir, f)).isFile() && filter(f))
+      .map(toName);
+    // `cli_modules` also ships one level of subdirectory modules (#3309); mirror
+    // buildManifest's special-case merge exactly, or this test would report every
+    // subdirectory file as a phantom removal.
+    const nested = name === 'cli_modules' ? collectOneLevelSubdirs({ dir, filter }) : [];
+    const live = new Set([...flat, ...nested]);
     const recorded = new Set((committed.families || {})[name] || []);
 
     for (const entry of live) {

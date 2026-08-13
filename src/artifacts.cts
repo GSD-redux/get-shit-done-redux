@@ -25,6 +25,7 @@ export const CANONICAL_EXACT: ReadonlySet<string> = new Set([
   'CLAUDE.md',
   'RETROSPECTIVE.md',
   'WINDOWS.md', // #3224: broken-windows ledger (src/broken-windows.cts, LEDGER_FILE_NAME)
+  'STATE-ARCHIVE.md', // state.cts's cmdStatePrune writes this at the .planning/ root
 ]);
 
 // Pattern-match canonical file names (regex tests on the basename)

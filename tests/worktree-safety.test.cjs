@@ -23,6 +23,7 @@ const fc = require('fast-check');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { createFixture } = require('./fixtures/index.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // 30000ms: this file's single named bound for every migrated subprocess call
 // below (git plumbing on small mkdtemp fixtures, gsd-tools.cjs/hook CLI runs,
@@ -974,7 +975,7 @@ describe('planWorktreeRecordAgent', () => {
     });
     assert.equal(plan.reason, 'missing_field');
     for (const flag of ['--agent-id', '--path', '--branch', '--base']) {
-      assert.match(plan.hint, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(plan.hint, new RegExp(escapeRegex(flag)));
     }
   });
 
@@ -4526,13 +4527,15 @@ describe('bug #3384: adjacent worktree data-loss guards', () => {
   });
 
   test('validate health warns when worktree inventory cannot be listed', () => {
-    const source = read('gsd-core/bin/lib/verify.cjs');
-    // Accept both hand-written dot access and the tsc-compiled bracket form
-    // (ADR-457: verify.cjs is now emitted from src/verify.cts):
-    //   hand-written: worktreeHealth.reason === 'git_list_failed'
-    //   tsc-compiled:  worktreeHealth['reason'] === 'git_list_failed'
-    const failureBranch = source.search(/worktreeHealth(?:\.reason|\['reason'\]) === 'git_list_failed'/);
-    const warning = source.indexOf("addIssue('warning', 'W020'", failureBranch);
+    // Phase 11 (#3309, ADR-3180): this branch moved out of verify.cts into
+    // the W020 rule (src/health-diagnostic-rules/worktree-health.cts),
+    // compiled to gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs.
+    // Accept both hand-written dot access and the tsc-compiled bracket form:
+    //   hand-written: reason === 'git_list_failed'
+    //   tsc-compiled:  reason === 'git_list_failed' (unchanged shape either way)
+    const source = read('gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs');
+    const failureBranch = source.search(/reason === 'git_list_failed'/);
+    const warning = source.indexOf("code: 'W020'", failureBranch);
 
     assert.ok(failureBranch > 0, 'verify health should branch on git_list_failed');
     assert.ok(warning > failureBranch, 'git_list_failed should emit W020 degraded-health warning');

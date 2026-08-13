@@ -439,14 +439,17 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
     });
 
     test(`${name} — roadmap-driven consumers`, () => {
-      // 5. validate health, W021: STATE must claim the milestone is done for
-      //    the roadmap-vs-disk consistency check to run at all.
+      // 5. validate health, W026 (Phase 11, #3309 — split off the
+      //    pre-migration 'W021' site for this exact subject; the OTHER W021
+      //    subject, phase_id_convention mismatch, kept its code): STATE must
+      //    claim the milestone is done for the roadmap-vs-disk consistency
+      //    check to run at all.
       const health = json('validate health', project(dirs, query, 'milestone complete'));
-      const w021 = health.warnings.filter((w) => w.code === 'W021');
+      const w026 = health.warnings.filter((w) => w.code === 'W026');
       assert.strictEqual(
-        w021.length > 0,
+        w026.length > 0,
         !resolves,
-        `W021 disagreed on whether Phase ${query} is started: ${JSON.stringify(w021)}`,
+        `W026 disagreed on whether Phase ${query} is started: ${JSON.stringify(w026)}`,
       );
 
       const tmpDir = project(dirs, query);

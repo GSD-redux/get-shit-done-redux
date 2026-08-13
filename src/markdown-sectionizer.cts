@@ -10,6 +10,8 @@
  * ADR-457 build-at-publish: compiled by tsc to gsd-core/bin/lib/markdown-sectionizer.cjs.
  */
 
+import { escapeRegex } from './pattern.cjs';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** Result of stripping fenced code blocks from markdown content. */
@@ -940,7 +942,7 @@ export function extractTaggedBlocks(content: string, tagName: string, allowAttri
  * open>` marks the ACTIVE milestone and must be preserved, not stripped (#557).
  */
 function taggedBlockPattern(tagName: string, flags: string, allowAttributes: boolean): RegExp {
-  const esc = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const esc = escapeRegex(tagName);
   const open = allowAttributes ? `<${esc}(?:\\s[^>]{0,1000})?>` : `<${esc}>`;
   const boundary = allowAttributes ? `<${esc}[\\s>]` : `<${esc}>`;
   return new RegExp(`${open}((?:(?!${boundary})[\\s\\S])*?)</${esc}>`, flags);

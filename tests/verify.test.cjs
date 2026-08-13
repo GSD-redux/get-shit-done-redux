@@ -97,8 +97,14 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
     assert.ok(output.warning_count > 0, 'should have warnings');
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP')),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP')),
       'should warn about orphan directory'
+    );
+    // W007 is REUSED verbatim from `validate.health`'s rule table (design doc,
+    // "Which rules run where") — the code is proof of reuse, not a mistake.
+    assert.ok(
+      output.warnings.some(w => w.code === 'W007'),
+      `expected code W007 for the orphan-on-disk warning; got: ${JSON.stringify(output.warnings)}`
     );
   });
 
@@ -119,7 +125,7 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
 
     const sentinelWarnings = output.warnings.filter(
-      w => w.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w)
+      w => w.message.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelWarnings.length, 0,
@@ -127,14 +133,14 @@ describe('validate consistency command', () => {
     );
     // Negative space: the real orphan must still warn.
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP') && /02\b/.test(w)),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP') && /02\b/.test(w.message)),
       `expected a warning for the real orphan 02; got: ${JSON.stringify(output.warnings)}`
     );
     // #3225 (review finding): a sentinel dir must NOT produce a spurious
     // "Gap in phase numbering: N → 999" either (the gap check builds its integer
     // sequence from diskPhases and would otherwise include 999).
     const sentinelGaps = output.warnings.filter(
-      w => w.includes('Gap in phase numbering') && /999\b/.test(w)
+      w => w.message.includes('Gap in phase numbering') && /999\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelGaps.length, 0,
@@ -155,8 +161,14 @@ describe('validate consistency command', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(
-      output.warnings.some(w => w.includes('Gap in phase numbering')),
+      output.warnings.some(w => w.message.includes('Gap in phase numbering')),
       'should warn about gap'
+    );
+    // C001 — new code namespace (design doc, "Code namespace"): not a W0NN,
+    // since this subject has no `validate.health` equivalent.
+    assert.ok(
+      output.warnings.some(w => w.code === 'C001'),
+      `expected code C001 for the phase-numbering gap; got: ${JSON.stringify(output.warnings)}`
     );
   });
 });
@@ -1938,6 +1950,76 @@ test('--backfill synthesizes missing MILESTONES.md entry from snapshot', () => {
   assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
 });
 
+// Phase 11 (#3309): pre-migration, `--backfill` ALONE (without `--repair`)
+// was dead code — `verify.cts:2504`'s inner backfill gate was unreachable
+// because the outer `if (options['repair'] && repairs.length > 0)` gate
+// already required `repair`. The migrated `applyRepairs` threads `backfill`
+// as its own boolean (`repair || backfill` for `backfillMilestones`
+// specifically), so `--backfill` alone now actually works — a disclosed
+// latent-bug fix (design doc, "Known limits"), not a preservation
+// requirement.
+test('--backfill alone (without --repair) now synthesizes the missing MILESTONES.md entry', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    '.planning/config.json': '{}',
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should create MILESTONES.md');
+  const content = fs.readFileSync(milestonesPath, 'utf-8');
+  assert.ok(content.includes('## v1.0'), 'backfilled entry should contain v1.0');
+  assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
+});
+
+test('--backfill alone does NOT apply an unrelated NONE-risk repair (createConfig) — only backfillMilestones is gated by backfill', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    // No config.json — W003 (createConfig) would fire and be repairable, but
+    // must NOT be applied by --backfill alone (only --repair applies it).
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const configPath = path.join(dir, '.planning', 'config.json');
+  assert.strictEqual(fs.existsSync(configPath), false, 'config.json must not be created by --backfill alone');
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should still create MILESTONES.md');
+});
+
+// Phase 11 (#3309): W021 (phase_id_convention integer-prefix/milestone
+// mismatch) and W026 (STATE milestone-complete vs. unstarted ROADMAP
+// phases) are the split-off halves of the pre-migration 'W021' code — two
+// genuinely unrelated subjects (design doc, "New codes for the two split
+// subjects" section). This fixture triggers ONLY the phase_id_convention
+// mismatch (W021's remaining subject) and must not also produce W026.
+test('W021 (phase_id_convention mismatch) fires independently of W026 — same fixture never also emits W026', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n\n## [GSD] v2.0 — Expansion\n\n### Phase 1-01: Setup\n**Goal:** g\n',
+    // STATE.md status is plainly "In progress" — never "milestone complete"
+    // or "archived", so W026's precondition never holds for this fixture.
+    '.planning/STATE.md': '# State\n\n## Current Position\n\nPhase: 1-01\n\n**Status:** In progress\n',
+    '.planning/config.json': JSON.stringify({ phase_id_convention: 'milestone-prefixed' }),
+  });
+
+  const result = cmdValidateHealth(dir, { repair: false }, false);
+
+  const w021 = result.warnings.find(w => w.code === 'W021');
+  assert.ok(w021, `expected W021 for phase 1-01 (implies v1.0) listed under v2.0: ${JSON.stringify(result.warnings)}`);
+  assert.ok(
+    result.warnings.every(w => w.code !== 'W026'),
+    `W021 fixture must not also fire W026: ${JSON.stringify(result.warnings.map(w => w.code))}`
+  );
+});
+
 test('health.md mentions --backfill flag', () => {
   const healthMd = fs.readFileSync(
     path.join(__dirname, '../gsd-core/workflows/health.md'), 'utf-8'
@@ -3228,7 +3310,18 @@ describe('#2701: state validate rejects NUL-corrupted STATE.md', () => {
 
     const out = parseResult(t, ['state', 'validate'], tmpDir);
     assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
-    assert.ok(out.warnings.some((w) => /NUL/i.test(w)), `warning must name NUL: ${JSON.stringify(out.warnings)}`);
+    // `state validate` (Phase 12 migration) emits coded warning objects
+    // ({code, severity, message, remedy}), not bare strings — assert on the
+    // code as the primary check, with a message substring as a secondary,
+    // human-readable confirmation.
+    assert.ok(
+      out.warnings.some((w) => w.code === 'S001'),
+      `warning must carry code S001: ${JSON.stringify(out.warnings)}`,
+    );
+    assert.ok(
+      out.warnings.some((w) => /NUL/i.test(w.message)),
+      `warning must name NUL: ${JSON.stringify(out.warnings)}`,
+    );
   });
 });
 

@@ -474,8 +474,8 @@ function classify(files) {
       // the scoped windows lane instead of triggering the three full parity
       // lanes. (full_matrix fired on 15/15 sampled PRs because test-driven
       // PRs always touch tests/, costing ~25 runner-minutes each.) Changed
-      // tests already run on ubuntu-22 and ubuntu-24 via targeted_tests; the
-      // residual macOS / windows-node-22 cross-product is covered by the full
+      // tests already run on the two ubuntu-24 lanes via targeted_tests; the
+      // residual macOS / windows cross-product is covered by the full
       // matrix on every push to next.
       windows.add(file);
     }

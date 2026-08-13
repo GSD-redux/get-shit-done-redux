@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -19,7 +20,10 @@ import phaseIdMod = require('./phase-id.cjs');
 // #2761 M3: `bracketMilestoneIntroSrcFor` is the owner of the bracket milestone
 // intro grammar AND its pad2 spelling rule — `isMilestoneBounded` below re-typed
 // both.
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketMilestoneIntroSrcFor } = phaseIdMod;
+// #3212 Phase 1 drops `escapeRegex` from this destructure: the symbol left
+// phase-id.cts and `src/pattern.cts` is its sole owner, imported at the top of
+// this file. Unrelated to #612 — a re-homed import, not a widened read.
+const { parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketMilestoneIntroSrcFor } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 // #3185 moved this file's two PRE-EXISTING `getMilestonePhaseFilter` call
@@ -78,6 +82,11 @@ import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
 import { clampPercent } from './phase-lifecycle.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import healthDiagnosticTypesMod = require('./health-diagnostic-types.cjs');
+const { SEVERITY, adviseRemedy } = healthDiagnosticTypesMod;
+type Severity = healthDiagnosticTypesMod.Severity;
+type Diagnostic = healthDiagnosticTypesMod.Diagnostic;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -3447,6 +3456,22 @@ function readStateFrontmatterScoped(content: string, statePath: string): { fm: R
   return { fm, body, scope };
 }
 
+/**
+ * Builds an S0NN `Diagnostic` for `cmdStateValidate` (§8.4 rule 3 —
+ * `cmdStateValidate` is a plain imperative function, not a `Rule.check`, so
+ * it builds `Diagnostic[]` directly rather than going through
+ * `evaluateRuleTable`/the `RULES` array machinery). Every S0NN subject is
+ * advisory-only today (`cmdStateValidate` has never had a repair path), so
+ * every remedy is `adviseRemedy` — `advice` is the short imperative command
+ * text shown to the operator, matching the style Phase 11's rule-group files
+ * already use for their own ADVISE-only findings (e.g.
+ * `roadmap-disk-consistency.cts`'s `adviseRemedy('Create phase directory or
+ * remove from roadmap')`).
+ */
+function stateDiagnostic(code: string, severity: Severity, message: string, advice: string): Diagnostic {
+  return { code, severity, message, remedy: adviseRemedy(advice) };
+}
+
 function cmdStateValidate(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
@@ -3460,11 +3485,17 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   // searchers downstream, reading as "absent" rather than "corrupt."
   const encErr = textEncodingError(content, 'STATE.md');
   if (encErr) {
-    output({ valid: false, warnings: [encErr], drift: {} }, raw, undefined);
+    // S001 — error-class severity (this branch has always set `valid: false`
+    // unconditionally and returned immediately, matching every other
+    // error-class code, not a mere warning). Message reused verbatim from
+    // `textEncodingError`, not paraphrased.
+    output({
+      valid: false,
+      warnings: [stateDiagnostic('S001', SEVERITY.ERROR, encErr, 'Re-save STATE.md as UTF-8 text with the embedded NUL byte(s) removed')],
+    }, raw, undefined);
     return;
   }
-  const warnings: string[] = [];
-  const drift: Record<string, unknown> = {};
+  const warnings: Diagnostic[] = [];
 
   // #1255/#3187: parse frontmatter and strip it from the body ONCE, so the
   // chain owner sees the same fm/body precedence every other migrated call
@@ -3482,20 +3513,32 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
 
   if (currentPhase === null) {
-    warnings.push('Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value');
-    drift['phase_reference'] = { reason: 'unresolved', selected: null, sources: resolvedPhase.sources };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S002',
+      SEVERITY.WARNING,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+      'Set current_phase (frontmatter) or Current Phase / Current Position Phase (body) in STATE.md',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   const selectedPhaseKey = phaseKeyFromToken(currentPhase);
   if (Object.values(resolvedPhase.sources).some(source => source !== null && phaseKeyFromToken(source) !== selectedPhaseKey)) {
-    warnings.push(`Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`);
-    drift['phase_reference'] = { reason: 'conflict', selected: currentPhase, sources: resolvedPhase.sources };
+    warnings.push(stateDiagnostic(
+      'S003',
+      SEVERITY.WARNING,
+      `Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`,
+      'Align STATE.md phase sources (frontmatter, Current Phase, Current Position Phase) on one phase',
+    ));
   }
   if (!fs.existsSync(phasesDir)) {
-    warnings.push(`Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'missing_root', selected: currentPhase };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`,
+      'Create the phases directory or correct current_phase to a phase that exists on disk',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   // #612: #3208 replaced this lookup's `startsWith` prefix test with the
@@ -3521,16 +3564,24 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name, validateConvention) === selectedPhaseKey);
     if (!phaseDir) {
-      warnings.push(`Cannot validate phase drift: no phase directory matches phase ${currentPhase}`);
-      drift['phase_directory'] = { reason: 'not_found', selected: currentPhase };
-      output({ valid: false, warnings, drift, scope }, raw, undefined);
+      warnings.push(stateDiagnostic(
+        'S004',
+        SEVERITY.WARNING,
+        `Cannot validate phase drift: no phase directory matches phase ${currentPhase}`,
+        'Create a phase directory matching the current phase or correct current_phase',
+      ));
+      output({ valid: false, warnings, scope }, raw, undefined);
       return;
     }
     phaseDirPath = path.join(phasesDir, phaseDir.name);
   } catch {
-    warnings.push(`Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`,
+      'Check phases directory permissions and re-run validate',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   try {
@@ -3542,8 +3593,12 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
 
         // Check plan count mismatch
         if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
-          warnings.push(`Plan count mismatch: STATE.md says ${totalPlansInPhase} plans, disk has ${diskPlans}`);
-          drift['plan_count'] = { state: totalPlansInPhase, disk: diskPlans };
+          warnings.push(stateDiagnostic(
+            'S005',
+            SEVERITY.WARNING,
+            `Plan count mismatch: STATE.md says ${totalPlansInPhase} plans, disk has ${diskPlans}`,
+            'Run state sync or correct Total Plans in Phase to match the plans on disk',
+          ));
         }
 
         // Check for VERIFICATION.md
@@ -3553,8 +3608,12 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
           try {
             const vContent = fs.readFileSync(path.join(phaseDirPath, vf), 'utf-8');
             if (/status:\s*passed/i.test(vContent) && /executing/i.test(status)) {
-              warnings.push(`Status drift: STATE.md says "${status}" but ${vf} shows verification passed — phase may be complete`);
-              drift['verification_status'] = { state_status: status, verification: 'passed' };
+              warnings.push(stateDiagnostic(
+                'S006',
+                SEVERITY.WARNING,
+                `Status drift: STATE.md says "${status}" but ${vf} shows verification passed — phase may be complete`,
+                'Run state complete-phase (or otherwise advance STATE.md status past "executing")',
+              ));
             }
           } catch { /* best-effort (#2245 audit): cmdStateValidate is a diagnostic
              * warnings scan across N VERIFICATION.md files — one unreadable file
@@ -3567,16 +3626,29 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         if (diskPlans > 0 && diskSummaries >= diskPlans && /executing/i.test(status)) {
           // Only warn if no verification exists (if verification passed, the above warning covers it)
           if (verificationFiles.length === 0) {
-            warnings.push(`All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`);
+            // S007 stays WARNING (not INFO): closely related to S006 (both
+            // signal "phase may be ready to advance"), and S006 is WARNING —
+            // giving the sibling condition a different severity for the same
+            // underlying signal would be a false distinction.
+            warnings.push(stateDiagnostic(
+              'S007',
+              SEVERITY.WARNING,
+              `All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`,
+              'Run phase verification, then advance STATE.md status past "executing"',
+            ));
           }
         }
   } catch {
-    warnings.push(`Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`,
+      'Check phase directory permissions and re-run validate',
+    ));
   }
 
   const valid = warnings.length === 0;
-  output({ valid, warnings, drift, scope }, raw, undefined);
+  output({ valid, warnings, scope }, raw, undefined);
 }
 
 /**

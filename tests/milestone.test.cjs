@@ -2106,6 +2106,60 @@ describe('bug #2660: extractOneLinerFromBody', () => {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+describe('#3170: extractOneLinerFromBody anchors to a summary-shaped heading', () => {
+  // Self-contained require (the #2660 block's require is fold-scoped).
+  const path = require('path');
+  const { extractOneLinerFromBody } = require(
+    path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'core-utils.cjs')
+  );
+
+  test('row 1 — an incidental first heading does not contribute its bold run; the Summary heading does', () => {
+    const content = [
+      '# Rules',
+      '',
+      '**Rule 1 - Bug** Task 2 spawned a real agent CLI process on first attempt.',
+      '',
+      '## Summary',
+      '',
+      '**Shipped unattended dogfooding resume.** Real deliverable description.',
+      '',
+    ].join('\n');
+    assert.strictEqual(
+      extractOneLinerFromBody(content),
+      'Shipped unattended dogfooding resume.',
+      `must anchor to the Summary heading, not the incidental # Rules one`
+    );
+  });
+
+  test('row 2 — no summary-shaped heading at all returns null (not the wrong text)', () => {
+    const content = [
+      '# Deviation Notes',
+      '',
+      '**NeutralPath** is the production fix.',
+      '',
+      '## Follow-ups',
+      '',
+      '**The production fix is one expression.** Not a deliverable summary.',
+      '',
+    ].join('\n');
+    assert.strictEqual(
+      extractOneLinerFromBody(content),
+      null,
+      `no Summary/Overview/Accomplishments heading → null, not incidental bold text`
+    );
+  });
+
+  test('row 3 — an Overview heading is recognized', () => {
+    const content = '# Overview\n\n**Shipped the thing.** Details follow.\n';
+    assert.strictEqual(extractOneLinerFromBody(content), 'Shipped the thing.');
+  });
+
+  test('row 4 — #2660 form (heading contains "Summary") is unchanged', () => {
+    const content = '# Phase 1: Foundation Summary\n\n**One-liner:** Real prose here.\n';
+    assert.strictEqual(extractOneLinerFromBody(content), 'Real prose here.');
+  });
+});
+
 // Folded from tests/enh-72-business-context.test.cjs — consolidation epic #1969 (B8 #1977)
 // ────────────────────────────────────────────────────────────────────────
 {

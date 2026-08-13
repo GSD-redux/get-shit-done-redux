@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // --- Test Environment Setup ---
 
@@ -747,7 +748,7 @@ describe('bug-2839: /gsd-code-review-fix cleanup is transactional', () => {
     // (`rm -f .../.review-fix-recovery-pending.json`) or a shell-variable form
     // referring to the previously-declared `sentinel` variable
     // (`rm -f "$sentinel"` / `rm -f "${sentinel}"`).
-    const escapedName = SENTINEL_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedName = escapeRegex(SENTINEL_NAME);
     const sentinelRemovalRe = new RegExp(
       `(rm\\s+(?:-f\\s+)?[^\\n]*(?:${escapedName}|\\$\\{?sentinel\\}?)|unlink[^\\n]*(?:${escapedName}|\\$\\{?sentinel\\}?))`
     );

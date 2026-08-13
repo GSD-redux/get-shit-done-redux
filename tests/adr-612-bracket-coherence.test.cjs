@@ -63,20 +63,34 @@ const COHERENT = `# Roadmap
 
 // ─── B6 / the ungated milestone-complete warning ───────────────────────────
 
-describe('#612 PR-2: bracket phases resolve to their dirs, so W021 stays silent', () => {
+describe('#612 PR-2: bracket phases resolve to their dirs, so W026 stays silent', () => {
   beforeEach(() => { tmpDir = createTempProject('adr-612-b6-'); });
   afterEach(() => { cleanup(tmpDir); });
+
+  // W026, not W021, since the merge of next @ dc3c81e9. #3309 SPLIT the two
+  // `addIssue('warning', 'W021', ...)` call sites `cmdValidateHealth` used to
+  // carry into two separate rules: W021 keeps the milestone-prefixed
+  // integer-prefix gate (see the M-NN block further down, still W021), and this
+  // one — the ungated "STATE says milestone complete but ROADMAP lists an
+  // unstarted phase" check, B6 — became W026 with its own message text. Same
+  // check, same subject, renumbered by upstream.
+  //
+  // Re-pointing these five assertions at W026 also RESTORES their
+  // non-vacuity: four of them assert emptiness, and against the retired code
+  // they would have passed for the wrong reason (nothing ever emits W021 here
+  // any more) rather than because the bracket dirs resolve.
+  const w026 = (env) => codes('W026', env);
 
   test('milestone complete + every bracket dir present => NO W021', () => {
     writeProject({ roadmap: COHERENT, convention: 'bracket', status: 'milestone complete',
       phaseDirs: ['GSD.02-05-real-work', 'GSD.02-06-follow-up'] });
-    assert.deepEqual(w021(), []);
+    assert.deepEqual(w026(), []);
   });
 
   test('a missing dir still fires — the check is not merely disabled', () => {
     writeProject({ roadmap: COHERENT, convention: 'bracket', status: 'milestone complete',
       phaseDirs: ['GSD.02-05-real-work'] });
-    const m = w021();
+    const m = w026();
     assert.equal(m.length, 1, JSON.stringify(m));
     assert.match(m[0], /ROADMAP lists 1 unstarted phase/);
   });
@@ -91,7 +105,7 @@ describe('#612 PR-2: bracket phases resolve to their dirs, so W021 stays silent'
 ### [RFC.2119] 5: Keyword definitions
 **Goal:** not a phase
 `, convention: undefined, status: 'milestone complete' });
-    assert.deepEqual(w021(), []);
+    assert.deepEqual(w026(), []);
     assert.deepEqual(codes('W006'), []);
   });
 
@@ -106,12 +120,12 @@ describe('#612 PR-2: bracket phases resolve to their dirs, so W021 stays silent'
 ### [GSD.02] 05: Real work
 **Goal:** Build it
 `, convention: 'bracket', status: 'milestone complete', phaseDirs: ['GSD.02-05-real-work'] });
-    assert.deepEqual(w021(), []);
+    assert.deepEqual(w026(), []);
   });
 
   test('DISCLOSED: a bracket roadmap with the convention unset is invisible, not false-firing', () => {
     writeProject({ roadmap: COHERENT, convention: undefined, status: 'milestone complete' });
-    assert.deepEqual(w021(), [], 'silent invisibility, never a phantom unstarted phase');
+    assert.deepEqual(w026(), [], 'silent invisibility, never a phantom unstarted phase');
   });
 });
 
@@ -126,11 +140,30 @@ describe('#612 PR-2: workstream repos resolve one convention, not two', () => {
       phaseDirs: ['GSD.02-05-real-work', 'GSD.02-06-follow-up'] });
     const env = { GSD_WORKSTREAM: 'ws1' };
     const consistency = JSON.parse(runGsdTools(['validate', 'consistency'], tmpDir, env).output);
+    // #3310 (merged in at next @ dc3c81e9) changed `validate consistency`'s
+    // warnings from `string[]` to the coded `IssueEntry[]` shape health already
+    // emitted — both verbs now evaluate the SAME W006 `Rule`. Read `.code`
+    // rather than regexing the element: a bare regex stringifies an object to
+    // `[object Object]`, so this emptiness assertion would pass vacuously and
+    // stop witnessing the split-config bug it exists for.
     assert.deepEqual(
-      (consistency.warnings || []).filter(w => /no directory on disk/.test(w)), [],
+      (consistency.warnings || []).filter(w => w.code === 'W006').map(w => w.message), [],
       'the ROADMAP read and the directory read must resolve from the same config',
     );
     assert.deepEqual(codes('W005', env), [], 'and health must not call the same dirs malformed');
+  });
+
+  test('CONTROL: the same workstream repo DOES warn when a bracket dir is absent', () => {
+    // Non-vacuity for the assertion above — silence there must come from the
+    // dirs resolving, not from W006 having been renumbered away or the fixture
+    // having nothing to say.
+    writeProject({ roadmap: COHERENT, convention: 'bracket', ws: 'ws1',
+      phaseDirs: ['GSD.02-05-real-work'] });
+    const env = { GSD_WORKSTREAM: 'ws1' };
+    const consistency = JSON.parse(runGsdTools(['validate', 'consistency'], tmpDir, env).output);
+    const w006 = (consistency.warnings || []).filter(w => w.code === 'W006').map(w => w.message);
+    assert.equal(w006.length, 1, JSON.stringify(consistency.warnings));
+    assert.match(w006[0], /Phase 06/);
   });
 });
 

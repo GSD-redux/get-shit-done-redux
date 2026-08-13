@@ -116,7 +116,23 @@ const BASE_SITES = [
   { file: 'state.cts', site: 'cmdStateSync roadmapPhaseCount', baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'state.cts', site: 'extractRetiredPhaseNumbers phaseRef',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
-  { file: 'verify.cts', site: 'cmdValidateHealth milestone-complete (B6)',
+  // #3309/#3310 RE-HOMING (merge of next @ dc3c81e9). Both rows below were ONE
+  // row — `verify.cts / cmdValidateHealth milestone-complete (B6)`. That epic
+  // migrated `cmdValidateHealth` and `cmdValidateConsistency` onto the
+  // health-diagnostic rule table and deleted every raw read they performed, so
+  // `verify.cts` no longer consumes the selector at all; the reads moved into
+  // `planning-snapshot.cts`'s parsed-projection builders, which is where the
+  // baselines are pinned now. Same questions, same baselines, new owner.
+  //   - the B6 milestone-complete scan is now W026's
+  //     `currentMilestoneRoadmapPhaseIds` builder;
+  //   - the checkbox read is NEW to this census: pre-migration, W006's
+  //     not-started exclusion came from `buildNotStartedPhaseVariants`
+  //     (`validate.cts`, already pinned above), and the rule table replaced that
+  //     call with `roadmapPhaseCheckboxes`. Left unpinned it is a second,
+  //     silently-narrower reader of the same ROADMAP checklist lines.
+  { file: 'planning-snapshot.cts', site: 'buildCurrentMilestoneRoadmapPhaseIdsField (W026, ex-verify.cts B6)',
+    baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
+  { file: 'planning-snapshot.cts', site: 'buildRoadmapPhaseCheckboxesField (W011/W006 not-started)',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
 ];
 
@@ -675,11 +691,15 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
   const CENSUS = scanSelectorBaselines(require('path').join(__dirname, '..'));
 
   // file -> [ANY_BRACKET count, LABEL_ONLY count]
+  // #3309/#3310 re-homing: `verify.cts` dropped out entirely (0 selector calls
+  // after `cmdValidateHealth`/`cmdValidateConsistency` moved onto the rule
+  // table) and `planning-snapshot.cts` took over its one LABEL_ONLY site plus
+  // the rule table's own checkbox read. See BASE_SITES' re-homing note.
   const EXPECTED = {
     'roadmap.cts': [3, 3],
     'validate.cts': [1, 2],
     'state.cts': [0, 3],
-    'verify.cts': [0, 1],
+    'planning-snapshot.cts': [0, 2],
     'roadmap-parser.cts': [2, 0],
   };
 

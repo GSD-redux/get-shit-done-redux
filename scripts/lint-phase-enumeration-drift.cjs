@@ -67,10 +67,6 @@
  *     see the PHYSICAL set so a heading already scoped by
  *     `extractCurrentMilestoneScoped` can find its directory; filtering it
  *     through the owner would scope the same set twice.
- *   - `src/verify.cts` `collectDiskPhases`: a DRIFT DIAGNOSTIC comparing
- *     what is on disk against what the ROADMAP declares. It wants the
- *     physical set by definition — scoping it would make the diagnostic
- *     unable to see the very drift it exists to report.
  *   - `src/verify.cts` `cmdValidateHealth`: a project-wide HEALTH-CHECK sweep
  *     (config drift, phase-directory naming, duplicate-directory collisions,
  *     unsummarized-plan detection) — same "sweep everything, report gaps"
@@ -206,6 +202,20 @@
  *     spanning every milestone ever shipped — the union is a strict
  *     superset of any one milestone's window by design; scoping the live
  *     half would silently drop history the digest exists to preserve.
+ *   - `src/planning-snapshot.cts` `buildAllPhaseDirNamesField` (Phase 11,
+ *     #3309): the un-windowed twin of `phaseDirs`/`listMilestonePhaseDirs` —
+ *     every directory actually present under the active `phases/` root,
+ *     UNFILTERED by current-milestone-window membership. Backs the migrated
+ *     `cmdValidateHealth`'s W007 rule ("an on-disk phase directory has no
+ *     matching ROADMAP entry"): sourcing that check from the WINDOWED owner
+ *     would make it structurally unable to fire on the exact orphan
+ *     directory it exists to find (an orphan-by-definition can never be a
+ *     member of a set defined as "directories the roadmap already
+ *     declares") — see that field's own doc comment on `PlanningSnapshot`
+ *     for the full, empirically-verified rationale. Same "must see the
+ *     physical set by definition" shape as `collectDiskPhases`/
+ *     `cmdValidateHealth` above, generalized from a raw `readdirSync` call
+ *     site to a dedicated snapshot-builder function.
  *
  * The tree-walk / root-confinement / regex-literal-tokenizer / sanitizer
  * machinery is SHARED with the sibling drift guards via
@@ -271,7 +281,7 @@ const OWNER_FILES = new Set([
 // See the header comment for the full written reason behind each entry.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnalyze'])],
-  [path.join('src', 'verify.cts'), new Set(['collectDiskPhases', 'cmdValidateHealth', 'cmdVerifySchemaDrift'])],
+  [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'cmdVerifySchemaDrift'])],
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
@@ -281,6 +291,7 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
   [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter'])],
+  [path.join('src', 'planning-snapshot.cts'), new Set(['buildAllPhaseDirNamesField'])],
 ]);
 
 // Optional `export ` modifier, mirroring the sibling guards' function

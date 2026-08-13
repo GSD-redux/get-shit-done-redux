@@ -74,7 +74,7 @@ branch-protection context is the single aggregate `Required tests` job.
 Doc-only PRs run the lightweight lint and aggregate jobs only. Code-touching PRs
 run the default required matrix:
 
-- Ubuntu / Node 22 scoped tests
+- Ubuntu / Node 24 scoped tests
 - Ubuntu / Node 24 unit, integration, and security suites
 - Windows / Node 24 scoped Windows/path/shell tests
 - Ubuntu / Node 24 coverage
@@ -83,8 +83,7 @@ PRs that touch workflow, package, test-runner, install, release, or Windows
 sensitive surfaces also run install/slow on the primary Ubuntu lane and the full
 parity matrix:
 
-- Windows / Node 22
-- macOS / Node 22
+- Windows / Node 24
 - macOS / Node 24
 
 ### Canonical code-paths list

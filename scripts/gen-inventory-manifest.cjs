@@ -117,6 +117,47 @@ function statOrNull(p) {
   }
 }
 
+/**
+ * Collect `<dir>/<subdir>/<file>` entries as `<subdir>/<file>` keys — ONE level of
+ * subdirectory beneath `dir` itself, where the subdirectory's NAME is the thing being
+ * collected (unlike `collectNested`, there is no fixed subdir name to look for; every
+ * child directory of `dir` is scanned). This is what makes `gsd-core/bin/lib/<subdir>/*.cjs`
+ * (e.g. `health-diagnostic-rules/`, `installer-migrations/`, `host-integration-adapters/`,
+ * `observability/`) visible to the `cli_modules` family, mirroring the shape
+ * `docs/INVENTORY.md`'s CLI Modules table already uses for these files.
+ *
+ * Same defensive `statOrNull`-based style as `collectNested`: a stat/readdir failure on
+ * one entry is swallowed rather than thrown, so one unreadable subdirectory cannot take
+ * down `--check` for the whole repo.
+ */
+function collectOneLevelSubdirs({ dir, filter }) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  let children;
+  try {
+    children = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  for (const child of children) {
+    const childStat = statOrNull(path.join(dir, child));
+    if (!childStat || !childStat.isDirectory()) continue;
+    const subdirPath = path.join(dir, child);
+    let files;
+    try {
+      files = fs.readdirSync(subdirPath);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const fileStat = statOrNull(path.join(subdirPath, file));
+      if (!fileStat || !fileStat.isFile() || !filter(file)) continue;
+      out.push([child, file].join('/'));
+    }
+  }
+  return out.sort();
+}
+
 function collectNested({ root, subdir, filter }) {
   if (!fs.existsSync(root)) return [];
   const out = [];
@@ -150,11 +191,16 @@ function collectNested({ root, subdir, filter }) {
 function buildManifest() {
   const manifest = { families: {} };
   for (const { name, dir, filter, toName } of FAMILIES) {
-    manifest.families[name] = fs
+    const flat = fs
       .readdirSync(dir)
       .filter((f) => fs.statSync(path.join(dir, f)).isFile() && filter(f))
-      .map(toName)
-      .sort();
+      .map(toName);
+    // `cli_modules` also ships subdirectory modules (`health-diagnostic-rules/`,
+    // `installer-migrations/`, `host-integration-adapters/`, `observability/`) invisible to
+    // the flat readdirSync above; merge them into the SAME sorted array, matching the single
+    // "CLI Modules" table shape docs/INVENTORY.md already uses (#3309).
+    const nested = name === 'cli_modules' ? collectOneLevelSubdirs({ dir, filter }) : [];
+    manifest.families[name] = [...flat, ...nested].sort();
   }
   for (const family of NESTED_FAMILIES) {
     manifest.families[family.name] = collectNested(family);
@@ -209,4 +255,4 @@ if (require.main === module) {
 // `DEFECT.GENERATIVE-FIX` divergence class: adding a family here while the test kept
 // its own list meant the test silently verified fewer families than shipped, and still
 // passed. The test now imports these, so the two surfaces cannot drift.
-module.exports = { FAMILIES, NESTED_FAMILIES, collectNested, buildManifest };
+module.exports = { FAMILIES, NESTED_FAMILIES, collectNested, collectOneLevelSubdirs, buildManifest };
