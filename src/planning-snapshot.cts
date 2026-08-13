@@ -39,6 +39,9 @@ import { platformReadSync, execGit } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatterMod = require('./frontmatter.cjs');
 const { extractFrontmatter, stripFrontmatter } = frontmatterMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
+import coreUtilsMod = require('./core-utils.cjs');
+const { findOrphanSummaries } = coreUtilsMod;
 import { stateFieldValue, stateCurrentPositionSlice } from './state-document.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
@@ -197,6 +200,16 @@ interface PlanningSnapshot {
   // original behavior. This field is W026's own, independently-scoped
   // phase-id list — additive-only, no change to `roadmapDeclaredPhases`.
   currentMilestoneRoadmapPhaseIds: { value: string[]; scope: Scope };
+  // ─── Phase 12 (#3310, ADR-3180 §8.4) additions ─────────────────────────────
+  // Backs C002/C003/C004 (`src/health-diagnostic-rules/consistency.cts`,
+  // `cmdValidateConsistency`'s migration target). All three relocate
+  // `verify.cts:1556-1603`'s per-phase-directory plan scan verbatim; see
+  // `buildPerPhasePlanScanFields`'s own doc comment for why the three share
+  // one builder and one enumeration base (`allPhaseDirNames`, NOT the
+  // current-milestone-windowed `phaseDirs`).
+  perPhasePlanNumbering: { value: { phaseDir: string; planNums: number[] }[]; scope: Scope };
+  perPhaseOrphanSummaries: { value: { phaseDir: string; orphanSummary: string }[]; scope: Scope };
+  perPhaseWaveMissingPlans: { value: { phaseDir: string; plan: string }[]; scope: Scope };
 }
 
 /**
@@ -788,6 +801,104 @@ function buildCurrentMilestoneRoadmapPhaseIdsField(
 }
 
 /**
+ * Resolve `perPhasePlanNumbering`/`perPhaseOrphanSummaries`/
+ * `perPhaseWaveMissingPlans` — Phase 12 (#3310, ADR-3180 §8.4), backing
+ * C002/C003/C004. One shared per-phase-directory scan serves all three
+ * fields (mirrors `buildStateFields`'s "one builder, several named outputs"
+ * convention above): each of the three questions below reads the exact same
+ * `scanPhasePlans(fullPhaseDir)` result, so scanning each phase directory
+ * three separate times (one function per field) would triple the
+ * `readdirSync`/frontmatter-read cost for zero behavioral gain — the three
+ * subjects are independent QUESTIONS, not independent SCANS.
+ *
+ * Enumerated over `allPhaseDirNames`, NOT `phaseDirs` (the
+ * current-milestone-windowed twin): the pre-migration `cmdValidateConsistency`
+ * (`verify.cts:1521-1608`) walks `collectPhaseRoots(planBase)`'s flat
+ * `phases/` root via a plain, unfiltered `readdirSync` — every phase
+ * directory on disk, not just the ones the current milestone window
+ * resolves as "in scope" — exactly the un-windowed shape `allPhaseDirNames`
+ * already exposes for W007 (see that field's own doc comment). Using the
+ * windowed `phaseDirs` here would silently narrow C002/C003/C004's coverage
+ * relative to the behavior being relocated. Disclosed fidelity note: this
+ * does NOT walk `collectPhaseRoots`'s second root (an active archived
+ * milestone's `<ver>-phases/` directory) — `allPhaseDirNames` is scoped to
+ * the flat `phases/` root only, the same scope every other
+ * `allPhaseDirNames`-sourced field already carries.
+ *
+ * QUESTION 1 — `perPhasePlanNumbering`: the sorted list of `-NN-PLAN.md`
+ * sequence numbers physically present (superseded or not — a retired plan
+ * still occupied a number), from `allPlanFiles` via the exact
+ * `/-(\d{2})-PLAN\.md$/` regex `verify.cts:1558` already uses. This field
+ * exposes the raw per-phase number list only; the future C002 rule computes
+ * the gap itself.
+ *
+ * QUESTION 2 — `perPhaseOrphanSummaries`: every SUMMARY.md with no matching
+ * LIVE PLAN.md, via `findOrphanSummaries(planFiles, summaryFiles)`
+ * (`core-utils.cjs`, `verify.cts:1584` — the same owner
+ * `src/health-diagnostic-rules/phase-structure.cts`'s I001 rule already
+ * consumes indirectly via `PhaseSnapshot.planCount`/`summaryCount`, for the
+ * INVERSE question). Uses the live (superseded-excluded) `planFiles`, not
+ * `allPlanFiles` — a superseded plan's summary is still an orphan.
+ *
+ * QUESTION 3 — `perPhaseWaveMissingPlans`: every LIVE plan (`planFiles`,
+ * same live set as Question 2 — a superseded plan legitimately carries no
+ * `wave`) whose frontmatter has no `wave` key, via `extractFrontmatter`,
+ * mirroring `verify.cts:1596-1603` exactly. A plan file that cannot be read
+ * is silently skipped, mirroring `cmdValidateConsistency`'s own outer
+ * `catch { intentionally empty }` (`verify.cts:1605-1607`) around this exact
+ * loop — a fail-open match to the pre-migration behavior, not a new scope
+ * degradation.
+ */
+function buildPerPhasePlanScanFields(
+  phasesDir: string,
+  phaseDirNames: string[],
+  enumerationScope: Scope,
+): {
+  perPhasePlanNumbering: { value: { phaseDir: string; planNums: number[] }[]; scope: Scope };
+  perPhaseOrphanSummaries: { value: { phaseDir: string; orphanSummary: string }[]; scope: Scope };
+  perPhaseWaveMissingPlans: { value: { phaseDir: string; plan: string }[]; scope: Scope };
+} {
+  const planNumbering: { phaseDir: string; planNums: number[] }[] = [];
+  const orphanSummaries: { phaseDir: string; orphanSummary: string }[] = [];
+  const waveMissingPlans: { phaseDir: string; plan: string }[] = [];
+
+  for (const phaseDir of phaseDirNames) {
+    const fullPhaseDir = path.join(phasesDir, phaseDir);
+    const { allPlanFiles, planFiles, summaryFiles } = scanPhasePlans(fullPhaseDir);
+
+    const planNums = allPlanFiles
+      .map((p) => {
+        const m = p.match(/-(\d{2})-PLAN\.md$/);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter((n): n is number => n !== null)
+      .sort((a, b) => a - b);
+    planNumbering.push({ phaseDir, planNums });
+
+    for (const orphan of findOrphanSummaries(planFiles, summaryFiles)) {
+      orphanSummaries.push({ phaseDir, orphanSummary: orphan });
+    }
+
+    for (const plan of planFiles) {
+      try {
+        const planFilePath = path.join(fullPhaseDir, plan);
+        const content = fs.readFileSync(planFilePath, 'utf-8');
+        const fmData = extractFrontmatter(content, planFilePath);
+        if (!fmData['wave']) waveMissingPlans.push({ phaseDir, plan });
+      } catch {
+        /* unreadable plan file — mirrors verify.cts:1605-1607's own silent skip */
+      }
+    }
+  }
+
+  return {
+    perPhasePlanNumbering: { value: planNumbering, scope: enumerationScope },
+    perPhaseOrphanSummaries: { value: orphanSummaries, scope: enumerationScope },
+    perPhaseWaveMissingPlans: { value: waveMissingPlans, scope: enumerationScope },
+  };
+}
+
+/**
  * Build the full `.planning/` projection for `cwd`. Composes the six §7
  * owners named in the design doc's "Owners consumed" table, plus (Phase 11,
  * #3309) the three additive subject-surface fields `config`/`agentInstall`/
@@ -802,6 +913,12 @@ function buildPlanningSnapshot(cwd: string): PlanningSnapshot {
 
   const phasesValue = phaseDirs.value.map((dir) => buildPhaseSnapshot(paths.phases, dir));
   const stateFields = buildStateFields(paths.state);
+  const allPhaseDirNames = buildAllPhaseDirNamesField(paths.phases);
+  const perPhasePlanScanFields = buildPerPhasePlanScanFields(
+    paths.phases,
+    allPhaseDirNames.value,
+    allPhaseDirNames.scope,
+  );
 
   return {
     cwd: path.resolve(cwd),
@@ -823,9 +940,12 @@ function buildPlanningSnapshot(cwd: string): PlanningSnapshot {
     researchValidationStatus: buildResearchValidationStatusField(paths.phases, phaseDirs.value, phaseDirs.scope),
     milestoneArchiveStatus: buildMilestoneArchiveStatusField(cwd),
     planningRootFiles: buildPlanningRootFilesField(cwd),
-    allPhaseDirNames: buildAllPhaseDirNamesField(paths.phases),
+    allPhaseDirNames,
     archivedPhaseTokens: buildArchivedPhaseTokensField(paths.planning),
     currentMilestoneRoadmapPhaseIds: buildCurrentMilestoneRoadmapPhaseIdsField(cwd, paths.roadmap),
+    perPhasePlanNumbering: perPhasePlanScanFields.perPhasePlanNumbering,
+    perPhaseOrphanSummaries: perPhasePlanScanFields.perPhaseOrphanSummaries,
+    perPhaseWaveMissingPlans: perPhasePlanScanFields.perPhaseWaveMissingPlans,
   };
 }
 
