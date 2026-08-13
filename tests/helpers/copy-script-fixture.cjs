@@ -127,7 +127,18 @@ function copyScriptWithDeps(repoRoot, fixtureRoot, scriptRel) {
         unresolved.push(`require('${spec}') from ${rel}`);
         continue;
       }
-      copyOne(toPosix(path.relative(repoRoot, depAbs)));
+      const depRel = path.relative(repoRoot, depAbs);
+      // A require that resolves OUTSIDE the repo would make `path.join(
+      // fixtureRoot, depRel)` climb out of the fixture and write into the
+      // surrounding temp dir. Nothing in the tree does this today; refuse
+      // rather than leave the sandbox escape available to whatever lands next.
+      if (depRel.startsWith('..') || path.isAbsolute(depRel)) {
+        unresolved.push(
+          `require('${spec}') from ${rel} resolves outside the repo (${depAbs}) — refusing to copy outside the fixture`,
+        );
+        continue;
+      }
+      copyOne(toPosix(depRel));
     }
   }
 
