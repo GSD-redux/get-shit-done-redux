@@ -59,7 +59,7 @@ Parse current values (default to `true` if not present):
 - `graphify.auto_update` — opt-in: auto-rebuild graph after main HEAD advances (#3347) (default: `false`)
 - `model_profile` — which model each agent uses (default: `balanced`)
 - `git.branching_strategy` — branching approach (default: `"none"`)
-- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (default: `true`)
+- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (honored when the runtime declares a `dispatch.isolation` primitive — `harness-worktree` or `orchestrator-worktree`; runtimes declaring `none` default it to `false` and fail closed on an explicit `true` — #1521, #2486, #2584)
 - `model_policy.provider` — provider slug for model policy (default: `null`; known values: anthropic, openai, google, qwen; set via /gsd:config --advanced)
 - `model_policy.budget` — budget level for model policy (default: `null`; known values: high, medium, low; set via /gsd:config --advanced)
 - `model_policy.high` — model ID for high-cost tier (default: `null`; set via /gsd:config --advanced)
@@ -87,6 +87,30 @@ configure `model_overrides` manually in .planning/config.json to target specific
 models per agent.
 ```
 
+**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. Sentinel-free is the exact claim: the shared CLI bootstrap still runs, but nothing it does can block a dispatch. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on.
+
+A failed query is not a capability verdict, so track the two apart: settings still fails closed, but
+says so instead of claiming the runtime declares no primitive. The verb fail-closes an unknown runtime — or an
+internal resolution error — to `none` and exits 0, so `INSPECTED_RESOLVED=false` means only "the query did not answer"
+(#2486 review):
+
+```bash
+_INSPECTED_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_INSPECTED_RAW" ]; then
+  INSPECTED_ISOLATION=none
+  INSPECTED_RESOLVED=false      # no verdict learned — not the same as "declares none"
+else
+  INSPECTED_ISOLATION="$_INSPECTED_RAW"
+  INSPECTED_RESOLVED=true
+fi
+case "$INSPECTED_ISOLATION" in
+  harness-worktree|orchestrator-worktree|none) ;;
+  *) INSPECTED_ISOLATION=none; INSPECTED_RESOLVED=false ;;   # out of vocabulary is not a verdict either
+esac
+USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
+```
+
 Use AskUserQuestion with current values pre-selected. Questions are grouped into six visual sections; the first question in each section carries the section-denoting `header` field (AskUserQuestion renders abbreviated section tags for grouping, max 12 chars).
 
 Section layout:
@@ -112,6 +136,46 @@ Context Warnings, Research Qs
 **Conditional visibility — code_review_depth:** This question is shown only when the user's chosen `code_review` value (after they answer that question, or the pre-selected value if unchanged) is on. If `code_review` is off, omit the `code_review_depth` question from the AskUserQuestion block and preserve the existing `workflow.code_review_depth` value in config (do not overwrite). Implementation: ask the Model + Planning + Execution-up-to-Code-Review questions first; if `code_review=on`, include `code_review_depth` in the same batch; otherwise skip it. Conceptually this is a one-branch split on the `code_review` answer.
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
+
+**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584): `harness-worktree` (the host isolates each executor) and `orchestrator-worktree` (GSD drives the worktrees) both run parallel; `none` fails closed on an explicit `true`. Branch on the same negotiation the execution gate resolves, via the sentinel-free `inspect-dispatch-isolation` verb, which fail-closes unknown/undeclared/`undocumented` to `none`. The rule is one-directional: **never persist a value the isolation gate would fail closed on.** **Do not add a runtime-name test here.** Branch on `$INSPECTED_ISOLATION`:
+
+- **If `INSPECTED_ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): present the Worktrees question exactly as written below — unchanged behavior. The `none` branch is the entirety of the #2486 change.
+- **If `INSPECTED_ISOLATION` = `none`:** replace the question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
+
+```
+{
+  question: "Use git worktrees for parallel agent isolation?",
+  header: "Worktrees",
+  multiSelect: false,
+  options: [
+    { label: "No (Recommended)", description: "Write use_worktrees: false. {FINDING}, so parallel plans run sequentially and {CONSEQUENCE}." },
+    { label: "Leave unchanged", description: "Do not write the key. {ABSENCE}; an existing explicit value is kept intact (e.g. for a worktree-capable install sharing this config)." }
+  ]
+}
+```
+
+**The three placeholders** carry the only difference between a capability GSD resolved and one it could not, so no text in this branch ever asserts a verdict that was not reached. Substitute them everywhere they appear — the two `description`s above, the pre-selection rationale, and the notice — from whichever column applies:
+
+| | `INSPECTED_RESOLVED=true` | `INSPECTED_RESOLVED=false` |
+|---|---|---|
+| `{FINDING}` | this runtime has no usable executor-isolation primitive | GSD could not resolve this runtime's executor-isolation capability |
+| `{CONSEQUENCE}` | execution fails closed on an explicit true | GSD cannot tell whether execution will accept an explicit true |
+| `{ABSENCE}` | absent, it resolves to false wherever this emit stamped that default | absent, it is the safe state until the capability resolves |
+
+Failing closed is right in both columns — never write `workflow.use_worktrees: true` from this branch either way. Only the explanation changes.
+
+  Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
+
+  Pre-selection: the generic "current values pre-selected" rule does not apply when `INSPECTED_ISOLATION` is `none` — an explicit `true` has no matching option by design. Pre-select "No (Recommended)" in every case, including an absent key (`$USE_WORKTREES_CURRENT` empty, the no-`--default` read's absent signal): absence resolves to `false` only where this emit stamped that default and to `true` otherwise, so leaving it absent can preserve the very state this branch prevents, while an explicit `false` is correct under either emit (#2486 review). The same applies when it is an explicit non-false value — the broken-inheritance case the notice below covers. "Leave unchanged" remains available for the deliberate shared-config case, but is never the default here. The default must be the repair the "(Recommended)" label points to, so accepting it never keeps a value this branch could not justify. In TEXT_MODE, mark that option as the default in the numbered list.
+
+  Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
+
+```
+Note: the project config currently sets workflow.use_worktrees: true.
+{FINDING}, so {CONSEQUENCE}. Choose "No" to repair it for this runtime, or
+"Leave unchanged" to keep it for a worktree-capable install that shares this
+config.
+```
 
 ```
 // Model profile is selected via a two-question split because AskUserQuestion enforces a
@@ -411,7 +475,7 @@ Merge new settings into existing config.json:
     "research_before_questions": true/false,
     "discuss_mode": "discuss" | "assumptions",
     "skip_discuss": true/false,
-    "use_worktrees": true/false
+    "use_worktrees": true/false   // never written as true when the runtime's dispatch.isolation is none; omitted entirely when the user chose "Leave unchanged" (#2486)
   },
   "plan_review": {
     "source_grounding": true/false

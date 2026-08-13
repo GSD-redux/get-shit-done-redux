@@ -47,6 +47,7 @@
       "files": [
         "phase-completion-single-owner.test.cjs",
         "phase-dependency-levels.test.cjs",
+        "phase-resolution-parity.test.cjs",
         "phase.test.cjs"
       ],
       "issue": "3186"

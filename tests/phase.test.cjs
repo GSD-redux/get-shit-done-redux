@@ -1627,6 +1627,109 @@ describe('phase add command', () => {
 // phase add — orphan directory collision prevention (#2026)
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe('#3163: phase add inserts in the active milestone phase list, not the trailing archive', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Fixture: a v1.0 ACTIVE milestone with a phase list, followed by a shipped
+  // v0.9 archive whose own `---` is the FILE's last `---`. The bug places the
+  // new phase before that archive `---`; the fix scopes to v1.0's window.
+  function writeArchiveRoadmap(dir, { singlePhase = false } = {}) {
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'STATE.md'),
+      'milestone: v1.0\ncurrent_phase: 2\n'
+    );
+    const phases = singlePhase
+      ? '### Phase 1: Foundation\n**Goal:** setup\n'
+      : '### Phase 1: Foundation\n**Goal:** setup\n\n### Phase 2: API\n**Goal:** build\n';
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## v1.0: Active Milestone\n\n' +
+        phases +
+        '\n---\n\n## v0.9: Shipped Archive\n\n### Phase 0 (original scope): Bootstrap\n**Goal:** init\n\n#### Operator decisions\n- decided X\n\n---\n'
+    );
+  }
+
+  test('row 1 — phase add lands in the active milestone, before the archive', () => {
+    writeArchiveRoadmap(tmpDir);
+    const result = runGsdTools('phase add New Feature', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase3 = roadmap.indexOf('### Phase 3: New Feature');
+    const phase2 = roadmap.indexOf('### Phase 2: API');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    assert.notStrictEqual(phase3, -1, 'new phase entry should exist in the roadmap');
+    assert.ok(phase2 > -1 && phase2 < phase3, `Phase 3 must come after Phase 2; got p2@${phase2} p3@${phase3}`);
+    assert.ok(
+      phase3 < archive,
+      `#3163: Phase 3 must land INSIDE the active v1.0 milestone (before the v0.9 archive), not before the file's last \`---\`; got phase3@${phase3} archive@${archive}`
+    );
+  });
+
+  test('row 2 — phase add-batch is also scoped to the active milestone', () => {
+    writeArchiveRoadmap(tmpDir);
+    const result = runGsdTools(
+      ['phase', 'add-batch', '--descriptions', '["First Add","Second Add"]'],
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    for (const [num, title] of [['3', 'First Add'], ['4', 'Second Add']]) {
+      const at = roadmap.indexOf(`### Phase ${num}: ${title}`);
+      assert.notStrictEqual(at, -1, `Phase ${num} (${title}) should exist`);
+      assert.ok(
+        at < archive,
+        `#3163: Phase ${num} must land before the archive; got @${at} archive@${archive}`
+      );
+    }
+  });
+
+  test('row 3 — no-milestone fallback keeps legacy insertion before the trailing ---', () => {
+    // No STATE.md milestone field and no WIP marker → currentMilestoneRawRanges
+    // returns null → the legacy whole-file lastIndexOf('\n---') path is used.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Foundation\n**Goal:** setup\n\n---\n'
+    );
+    const result = runGsdTools('phase add Next Phase', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase2 = roadmap.indexOf('### Phase 2: Next Phase');
+    const sep = roadmap.indexOf('\n---');
+    assert.notStrictEqual(phase2, -1, 'Phase 2 should exist');
+    assert.ok(
+      phase2 < sep,
+      `no-milestone fallback must preserve legacy placement (before the trailing ---); got phase2@${phase2} sep@${sep}`
+    );
+  });
+
+  test('row 4 — single-phase milestone still scopes to the active window', () => {
+    writeArchiveRoadmap(tmpDir, { singlePhase: true });
+    const result = runGsdTools('phase add Second Phase', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase2 = roadmap.indexOf('### Phase 2: Second Phase');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    assert.notStrictEqual(phase2, -1, 'Phase 2 should exist');
+    assert.ok(
+      phase2 < archive,
+      `Phase 2 must land inside the single-phase v1.0 window, before the archive; got @${phase2} archive@${archive}`
+    );
+  });
+});
+
 describe('phase add — orphan directory collision prevention (#2026)', () => {
   let tmpDir;
 
