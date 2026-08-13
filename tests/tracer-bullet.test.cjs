@@ -337,13 +337,25 @@ describe('#1945 glossary + docs', () => {
     const block = PLANNER.slice(i, i + 1200);
     const verify = block.match(/<verify>[\s\S]*?<\/verify>/);
     assert.ok(verify, 'the tracer template must contain a <verify> element');
-    assert.match(
-      verify[0],
-      /<automated>/,
-      'the tracer template\'s <verify> must wrap its command in <automated> — the #3299 gate '
-      + 'auto-continues only on an automated-only verify, so a bare-text template makes the fix '
-      + 'unreachable for every tracer the planner generates',
+    // Finding <automated> ANYWHERE inside <verify> is not enough: peer review
+    // defeated that with `<verify>[…]<!--<automated>--></verify>`, which keeps the
+    // legacy bare form operative while the substring check passes. Pin the whole
+    // element exactly (normalized), so a commented-out or sibling wrapper cannot
+    // satisfy it.
+    const EXPECTED_VERIFY = '<verify><automated>[a real END-TO-END check of the one path '
+      + '— not a per-layer unit test]</automated></verify>';
+    assert.strictEqual(
+      verify[0].replace(/\s+/g, ' ').trim(),
+      EXPECTED_VERIFY,
+      'the planner tracer template\'s <verify> drifted. The #3299 gate auto-continues only on a '
+      + '<verify> carrying ONLY <automated>, so a bare-text (or commented-out-wrapper) template makes '
+      + 'the fix unreachable for every tracer the planner generates. Update template and expectation together.',
     );
+    // Structural backstop: no bare text may sit directly inside <verify>, and the
+    // <automated> child must be non-empty.
+    const inner = verify[0].replace(/^<verify>/, '').replace(/<\/verify>$/, '').trim();
+    assert.match(inner, /^<automated>[^<]+<\/automated>$/, 'the <verify> body must be exactly one non-empty <automated> child');
+    assert.doesNotMatch(verify[0], /<!--/, 'the tracer template must not contain commented-out markup');
   });
 
   test('docs/how-to and docs/AGENTS reflect tracer-first + the executor gate', () => {
@@ -500,6 +512,21 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     ['gsd-core/workflows/execute-plan.md', executePlanTracerGate(EXECUTE_PLAN)],
   ];
 
+  // The exact auto-continue clause each operative copy must carry, normalized on
+  // whitespace. The two differ in wording because one is agent prose and the
+  // other is inline workflow dispatch; both must be pinned, not pattern-matched.
+  const CLAUSE2_EXPECTED = {
+    'agents/gsd-executor.md':
+      'Next, `HUMAN_VERIFY_MODE` is `end-of-phase` AND `<verify>` carries only `<automated>` '
+      + '(no `<human-check>`) → re-run it: on **failure** HALT and surface it as a deviation exactly '
+      + 'as above — never a checkpoint; on success continue with NO checkpoint.',
+    'gsd-core/workflows/execute-plan.md':
+      'Next, `HUMAN_VERIFY_MODE` is `end-of-phase` (default) AND the tracer\'s `<verify>` carries only '
+      + '`<automated>` (no `<human-check>`) → re-run the tracer `<verify>`; on failure HALT and surface '
+      + 'as a deviation exactly as in the auto-mode branch — never a checkpoint; on success log '
+      + '`⚡ Tracer verified end-to-end — expanding` and continue to expansion, do NOT synthesize a checkpoint.',
+  };
+
   // Guard the extractors themselves: if they ever silently return the pre-fix
   // text (or nothing), every assertion below would pass vacuously again.
   test('extractors isolate a real, non-trivial decision point in both copies', () => {
@@ -564,21 +591,30 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
       assert.match(c.automated, /failure[^.;]*HALT/i, `${name}: clause 2 must bind HALT to the failure case`);
       assert.match(c.automated, /never a checkpoint/i, `${name}: clause 2 must forbid turning a failure into a checkpoint`);
       assert.match(c.automated, /success[^.;]*continue/i, `${name}: clause 2 must bind continue to the success case`);
-      // Positive vocabulary alone is not binding: peer review defeated an earlier
-      // revision by APPENDING "then immediately STOP and return a
-      // checkpoint:human-verify" to this very clause. Every required phrase above
-      // still matched, so 35/35 passed with interactive checkpointing restored
-      // unconditionally. The auto-continue clause must contain no STOP outcome at
-      // all — "never a checkpoint" has to be true of the clause, not just said in it.
-      assert.doesNotMatch(
-        c.automated,
-        /\bSTOP\b/,
-        `${name}: clause 2 is the auto-continue path — it must not contain a STOP outcome`,
+      // Blacklisting outcome verbs does not work. Two successive peer-review
+      // rounds defeated that approach: first by appending "then immediately STOP
+      // and return a checkpoint:human-verify", then — after STOP and the two
+      // "return a"/"present a" forms were banned — by appending "then pause and
+      // invoke checkpoint_protocol with a checkpoint:human-verify before
+      // expansion", which uses none of the banned tokens and still restores the
+      // interruption after every successful tracer. Both passed clean.
+      //
+      // Synonyms are unbounded; the clause is not. Pin it exactly (normalized
+      // whitespace). Deliberately brittle: this clause IS the safety contract, so
+      // changing it must be a conscious edit here too.
+      assert.strictEqual(
+        c.automated.replace(/\s+/g, ' ').trim(),
+        CLAUSE2_EXPECTED[name],
+        `${name}: the auto-continue clause drifted from its pinned contract. This is the clause that `
+        + `decides whether a successful tracer continues — if the behavior genuinely changed, update `
+        + `the prose AND this expected string together; do not relax the assertion to a keyword check.`,
       );
+      // Defence in depth: whatever the wording, no checkpoint-emitting outcome
+      // may appear in the auto-continue path at all.
       assert.doesNotMatch(
         c.automated,
-        /return a `checkpoint:human-verify`|present a `checkpoint:human-verify`/i,
-        `${name}: clause 2 must not emit a checkpoint — that is clause 3's job`,
+        /\bSTOP\b|checkpoint_protocol|\bpause\b|\bwait\b|checkpoint_return_format/i,
+        `${name}: clause 2 must contain no checkpoint-emitting or blocking outcome in any wording`,
       );
     }
   });
