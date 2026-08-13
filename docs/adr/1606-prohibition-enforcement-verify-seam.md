@@ -262,4 +262,4 @@ the control fails and the proof does not pass.
 - **`gsd-core/references/prohibition-probe.md`** — the portable runtime reference.
 - **`docs/how-to/resolve-prohibition-findings.md`** — user-facing resolution guide.
 - Code: `src/prohibition-enforcement.cts`, `src/probe-core.cts` (`projectProhibitions`),
-  `gsd-core/workflows/verify-phase.md`. Issues: #644, #1259, #1278, #1279, #1346, #1906.
+  `gsd-core/workflows/verify-phase (retired in #1892)`. Issues: #644, #1259, #1278, #1279, #1346, #1906.

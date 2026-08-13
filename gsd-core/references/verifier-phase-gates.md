@@ -1,7 +1,7 @@
 # Verifier Phase Gates
 
 > Loaded eagerly by `agents/gsd-verifier.md` (`<required_reading>`). Carries the three
-> verification-time gates that lived in the retired `gsd-core/workflows/verify-phase.md`
+> verification-time gates that lived in the retired `verify-phase` workflow
 > (#1892 / epic #1891 F7): decision-coverage validation (#2492), the test-quality audit,
 > and infrastructure-phase human-verification scoping (#2504). Run each at its named
 > agent step; `gsd_run` is the launcher shim defined in the agent's own Step 1 block.

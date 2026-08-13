@@ -266,7 +266,7 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 | `validate-phase.md` | Retroactively audit and fill Nyquist validation gaps for a completed phase. | `/gsd-validate-phase` |
 | `verify-work.md` | Conversational UAT with auto-diagnosis — produces UAT.md and fix plans. | `/gsd-verify-work` |
 
-> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`. (The former `verify-phase.md` — goal-backward verification with no loader of its own — was deleted in #1892; its still-live gates moved to `references/verifier-phase-gates.md` behind `gsd-verifier`.)
+> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`. (The former `verify-phase` workflow — goal-backward verification with no loader of its own — was deleted in #1892; its still-live gates moved to `references/verifier-phase-gates.md` behind `gsd-verifier`.)
 
 ### Workflow Sub-Files
 
@@ -304,7 +304,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `model-profile-resolution.md` | Model resolution algorithm documentation. |
 | `verification-patterns.md` | How to verify different artifact types. |
 | `verification-overrides.md` | Per-artifact verification override rules. |
-| `verifier-phase-gates.md` | Verifier-time gates eagerly imported by `gsd-verifier` (migrated from the retired `verify-phase.md` workflow, #1892): decision-coverage validation (#2492), test-quality audit, and infrastructure-phase human-verification scoping (#2504). |
+| `verifier-phase-gates.md` | Verifier-time gates eagerly imported by `gsd-verifier` (migrated from the retired `verify-phase` workflow, #1892): decision-coverage validation (#2492), test-quality audit, and infrastructure-phase human-verification scoping (#2504). |
 | `planning-config.md` | Full config schema and behavior. |
 | `security-asvs-levels.md` | OWASP ASVS level definitions for GSD threat modeling — per-level planner disposition rigor and auditor verification depth (L1 opportunistic, L2 standard, L3 comprehensive). |
 | `git-integration.md` | Git commit, branching, and history patterns. |
