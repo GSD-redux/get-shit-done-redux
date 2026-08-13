@@ -26,7 +26,15 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
-const { toPosixPath, generateSlugInternal, readSubdirectories, findUnsummarizedPlans } = coreUtilsMod;
+// #2528: `extractCanonicalPlanId` used to exist here as a byte-identical second
+// copy, and this PR had to patch BOTH with the same rewind rule — the exact
+// generative-fix divergence CLAUDE.md warns about. Collapsed onto core-utils'
+// copy, which was already the leaf owner, so there is no second surface left to
+// drift and no parity test needed to police one.
+const {
+  toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId,
+  findUnsummarizedPlans,
+} = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const {
@@ -34,7 +42,7 @@ const {
   normalizePhaseName,
   phaseMarkdownRegexSource,
   comparePhaseNum,
-  phaseTokenMatches,
+  matchPhaseDirs,
   isSentinelPhaseId,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -164,30 +172,6 @@ function describeNonCanonicalPlans(dirFiles: string[], matchedFiles: string[]): 
   );
 }
 
-function extractCanonicalPlanId(filename: string): string {
-  const base = filename
-    .replace(/-PLAN\.md$/i, '')
-    .replace(/-SUMMARY\.md$/i, '')
-    .replace(/\.md$/i, '');
-  const parts = base.split('-').filter(Boolean);
-  // #2043: a phase/plan token component is either a zero-padded number (≥2 digits)
-  // or a single-digit-plus-letter id ("3A"); a *bare* single digit is a slug word,
-  // so "46-6-rs-…" is not paired into a "46-6" id while "3A-01" stays intact.
-  const tokenRe = /^(?:\d{2,}[A-Z]?|\d[A-Z])(?:\.\d+)*$/i;
-  // #2232: the PAIRED plan component is a zero-padded continuation segment
-  // (exactly 2 digits), so a ≥3-digit slug word (a year) is not paired into a
-  // bogus "14-2026" id. The leading phase component keeps tokenRe's unbounded
-  // \d{2,} — phase numbers ≥100 are legitimate; only continuations are capped.
-  const planTokenRe = new RegExp(
-    `^(?:${phaseIdMod.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?|\\d[A-Z])(?:\\.\\d+)*$`,
-    'i',
-  );
-  const phaseIdx = parts.findIndex((p) => tokenRe.test(p));
-  if (phaseIdx >= 0 && phaseIdx + 1 < parts.length && planTokenRe.test(parts[phaseIdx + 1])) {
-    return `${parts[phaseIdx]}-${parts[phaseIdx + 1]}`;
-  }
-  return base;
-}
 
 interface PhaseListOptions {
   type?: string;
@@ -241,7 +225,11 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
       // LOOKUP (b): search the physical set, plus archived when asked.
       const lookupPool = [...readSubdirectories(phasesDir, true), ...archivedLabels];
       const normalized = normalizePhaseName(phase);
-      const match = lookupPool.find((d) => phaseTokenMatches(d, normalized));
+      // The pool is #3185's (physical set + archived); the matcher is this
+      // PR's. `dirs` is deliberately not read here: on this base it is not
+      // assigned until the branch below picks a match.
+      const { matches } = matchPhaseDirs(lookupPool, normalized);
+      const match = matches[0];
       if (!match) {
         output({ files: [], count: 0, phase_dir: null, error: 'Phase not found' }, raw, '');
         return;
@@ -328,7 +316,7 @@ function cmdPhaseNextDecimal(cwd: string, basePhase: string, raw: boolean): void
     if (fs.existsSync(phasesDir)) {
       const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      baseExists = dirs.some((d) => phaseTokenMatches(d, normalized));
+      baseExists = matchPhaseDirs(dirs, normalized).matches.length > 0;
 
       const dirPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(normalized)}\\.(\\d+)`);
       for (const dir of dirs) {
@@ -502,7 +490,10 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
       // #2237: fail loud when multiple directories match the same bare phase
       // number — prevents cross-project file writes when unrelated projects
       // share a .planning/phases/ tree.
-      const matches = dirs.filter((d) => phaseTokenMatches(d, normalized));
+      // #2528: selection delegates to the canonical two-pass matcher (exact
+      // token match, then the bare-integer leading-digit-run fallback) shared
+      // with the locator and the phase-plan-index scan.
+      const { matches } = matchPhaseDirs(dirs, normalized);
       if (matches.length === 0) continue;
       if (matches.length > 1) {
         output({
@@ -692,19 +683,39 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
   let phaseDir: string | null = null;
   let phaseDirName: string | null = null;
+  let ambiguousMatches: string[] | null = null;
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const dirs = entries
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort((a, b) => comparePhaseNum(a, b));
-    const match = dirs.find((d) => phaseTokenMatches(d, normalized));
-    if (match) {
-      phaseDir = path.join(phasesDir, match);
-      phaseDirName = match;
+    // #2528: selection delegates to the canonical two-pass matcher shared with
+    // the locator and the find-phase scan (this site previously first-matched
+    // with `.find()` and had no multi-match guard — the #2237 fail-loud rule
+    // now applies here too, so the three resolution paths cannot disagree).
+    const { matches } = matchPhaseDirs(dirs, normalized);
+    if (matches.length > 1) {
+      ambiguousMatches = matches;
+    } else if (matches.length === 1) {
+      phaseDir = path.join(phasesDir, matches[0]);
+      phaseDirName = matches[0];
     }
   } catch {
     // phases dir doesn't exist
+  }
+
+  if (ambiguousMatches) {
+    output(
+      {
+        phase: normalized,
+        error: `Phase ${normalized} is ambiguous: ${ambiguousMatches.length} directories match (${ambiguousMatches.map((m) => `"${m}"`).join(', ')}).`,
+        ambiguous_matches: ambiguousMatches,
+        plans: [], waves: {}, incomplete: [], has_checkpoints: false,
+      },
+      raw,
+    );
+    return;
   }
 
   if (!phaseDir) {
@@ -982,6 +993,27 @@ function describeGoalShapedTitle(description: string): string | null {
   );
 }
 
+/**
+ * #3163: compute the byte offset in `rawContent` where a new `### Phase N:`
+ * entry should be inserted — at the end of the active phase list, scoped to the
+ * CURRENT MILESTONE so the entry can never land before a trailing `---` in
+ * shipped/history/backlog material (the file's last `---` on a long roadmap
+ * sits deep in archive). When no current milestone can be resolved (no
+ * STATE.md `milestone:` and no in-progress `🚧`/`🔄` marker), fall back to the
+ * legacy whole-file lastIndexOf('\n---') so simple no-milestone roadmaps keep
+ * their existing behavior.
+ */
+function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
+  const ranges = currentMilestoneRawRanges(rawContent, cwd);
+  if (!ranges) {
+    const legacy = rawContent.lastIndexOf('\n---');
+    return legacy > 0 ? legacy : rawContent.length;
+  }
+  const window = rawContent.slice(ranges.primary.start, ranges.primary.end);
+  const lastSeparator = window.lastIndexOf('\n---');
+  return lastSeparator > 0 ? ranges.primary.start + lastSeparator : ranges.primary.end;
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
@@ -1072,13 +1104,8 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
     const phaseEntry =
       `\n### Phase ${_newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${_newPhaseId} to break down)\n`;
 
-    let updatedContent: string;
-    const lastSeparator = rawContent.lastIndexOf('\n---');
-    if (lastSeparator > 0) {
-      updatedContent = rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator);
-    } else {
-      updatedContent = rawContent + phaseEntry;
-    }
+    const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+    const updatedContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
 
     platformWriteSync(roadmapPath, updatedContent);
     return { newPhaseId: _newPhaseId, dirName: _dirName };
@@ -1163,11 +1190,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           : `\n**Depends on:** Phase ${typeof newPhaseId === 'number' ? newPhaseId - 1 : 'TBD'}`;
       const phaseEntry =
         `\n### Phase ${newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${newPhaseId} to break down)\n`;
-      const lastSeparator = rawContent.lastIndexOf('\n---');
-      rawContent =
-        lastSeparator > 0
-          ? rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator)
-          : rawContent + phaseEntry;
+      const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+      rawContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
       added.push({
         phase_number: typeof newPhaseId === 'number' ? newPhaseId : String(newPhaseId),
         padded:
@@ -1750,7 +1774,32 @@ function cmdPhaseRemove(
   const force = options.force || false;
 
   const subdirs = readSubdirectories(phasesDir, true);
-  const targetDir = subdirs.find((d) => phaseTokenMatches(d, normalized)) || null;
+  // #2237/#2528: every other resolution path refuses to choose between multiple
+  // directories claiming one phase number. This one is the DESTRUCTIVE path, so
+  // taking `matches[0]` silently is strictly worse than anywhere else: it turns
+  // "resolve nothing" into "delete one of two candidates, unrecoverably, and
+  // renumber every phase after it". Refuse before any file is touched.
+  const { matches: phaseDirMatches } = matchPhaseDirs(subdirs, normalized);
+  if (phaseDirMatches.length > 1) {
+    output(
+      {
+        removed: null,
+        error:
+          `Phase ${normalized} is ambiguous: ${phaseDirMatches.length} directories match `
+          + `(${phaseDirMatches.map((m) => `"${m}"`).join(', ')}). Refusing to remove any of them. `
+          + 'Set a distinct project_code in .planning/config.json, or pass the full directory name.',
+        ambiguous_matches: phaseDirMatches,
+        directory_deleted: null,
+        renamed_directories: [],
+        renamed_files: [],
+        roadmap_updated: false,
+        state_updated: false,
+      },
+      raw,
+    );
+    return;
+  }
+  const targetDir = phaseDirMatches[0] || null;
 
   if (targetDir && !force) {
     // #3183: canonical summary set (root+nested) from the single owner —
@@ -1838,9 +1887,17 @@ function cmdPhaseRemove(
         if (targetDir && modified === stateContent) {
           // subdirs was read before the deletion; excluding the removed target
           // gives the remaining count. Renumbering changes names but not count.
-          const remainingPhases = subdirs.filter(
-            (d) => phaseTokenMatches(d, normalized) === false,
-          ).length;
+          //
+          // #2528: exclude the directory that was ACTUALLY deleted, by identity,
+          // rather than re-deriving "which dir was the target" from the query.
+          // The two are not the same predicate here: `targetDir` comes from
+          // `matchPhaseDirs`, whose bare-integer fallback resolves digit-leading
+          // dirs (`05-80-20-cleanup` for query `5`) that `phaseTokenMatches`
+          // reports as non-matching — so a token re-derivation would count the
+          // just-deleted directory as still present and write a `Total Phases`
+          // one too high. Identity is also what the comment above already
+          // claims this filter does, and the block is gated on targetDir.
+          const remainingPhases = subdirs.filter((d) => d !== targetDir).length;
           if (totalRaw) {
             modified =
               stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;

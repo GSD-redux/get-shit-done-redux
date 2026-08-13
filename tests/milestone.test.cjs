@@ -1959,6 +1959,59 @@ describe('bug #2946: unstarted-phase guard runs independent of STATE.md mileston
       `Phase 0 / 999 sentinels must not fire the guard; got: ${result.error}`,
     );
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // #2946 × #2528: the guard now runs unconditionally, so whether it fires
+  // rides entirely on the directory-resolution owner. `05-80-20-cleanup` is
+  // a digit-leading slug (phase 05, slug "80-20-cleanup") — the exact shape
+  // #2528 is about. Both directions must hold, and each fails a different
+  // way: a phase whose directory does resolve must not be reported unstarted
+  // (fail-closed: the guard blocks a legitimate one-way-door operation), and
+  // a phase whose only lookalike on disk belongs to another phase must still
+  // be reported (fail-open: the guard waves through an unstarted phase).
+  // STATE.md carries no `milestone:` field in both fixtures, so the #2946
+  // path — scan runs without a STATE match — is the one under test.
+  // ──────────────────────────────────────────────────────────────────────
+
+  function makeDigitLeadingFixture(tmpDir, roadmapPhase, dirName) {
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dirName), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap v1.0\n\n### Phase ${roadmapPhase}: Digit Leading\n**Goal:** g\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\n---\n# State\n\n**Status:** In progress\n`,
+    );
+  }
+
+  test('guard does not fire for a started phase whose directory is digit-leading (#2528)', () => {
+    makeDigitLeadingFixture(tmpDir, '5', '05-80-20-cleanup');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Digit Leading', '--dry-run'],
+      tmpDir,
+    );
+    assert.ok(
+      result.success,
+      `Phase 5 has a directory on disk (05-80-20-cleanup) — the guard must not call it unstarted; got: ${result.error}`,
+    );
+  });
+
+  test('guard still fires for an unstarted phase whose only lookalike on disk is digit-leading (#2528)', () => {
+    // Phase 80 is genuinely unstarted: `05-80-20-cleanup` is phase 05, and the
+    // 80 inside it is slug text. Resolving it to Phase 80 would disarm the
+    // guard on a one-way-door operation.
+    makeDigitLeadingFixture(tmpDir, '80', '05-80-20-cleanup');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Digit Leading', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must fire — Phase 80 has no directory');
+    assert.ok(
+      result.error.includes('Phase 80') && result.error.includes('Re-run with --force to override'),
+      `expected the guard to name Phase 80; got: ${result.error}`,
+    );
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────

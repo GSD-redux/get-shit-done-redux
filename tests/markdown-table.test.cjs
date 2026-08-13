@@ -639,6 +639,29 @@ describe('updateTableCell', () => {
     assert.match(result.reason, /no table found/);
   });
 
+  test('#3255: reaches a later table when the first table lacks the requested column', () => {
+    // A ## Traceability section holding a phase-summary table (no Status) ABOVE
+    // the requirement table (with Status). The prior code bound to the FIRST
+    // table and returned 'unknown column: Status' without ever reaching the
+    // requirement table, so requirements.mark-complete left the row at Pending.
+    const multiTable = [
+      '| Phase | Name | Requirements |',
+      '|-------|------|--------------|',
+      '| 1 | Portal Spec | 4 (PORTAL-01..04) |',
+      '',
+      '| Requirement | Phase | Status |',
+      '|-------------|-------|--------|',
+      '| AUTHZ-02 | Phase 02.2 | Pending |',
+    ].join('\n');
+    const byReq = (row) => (Object.values(row)[0] ?? '').trim().toLowerCase() === 'authz-02';
+    const result = updateTableCell(multiTable, byReq, 'Status', ' Complete ');
+
+    assert.equal(result.ok, true, `expected ok:true (should reach the requirement table); got: ${result && result.reason}`);
+    assert.ok(result.value.includes('| Phase | Name | Requirements |'), 'first (summary) table header untouched');
+    assert.ok(result.value.includes('| 1 | Portal Spec | 4 (PORTAL-01..04) |'), 'first (summary) data row untouched');
+    assert.ok(/AUTHZ-02 \| Phase 02\.2 \| Complete/.test(result.value), 'second table Status cell flipped Pending → Complete');
+  });
+
   test('5-column milestone table: Milestone cell and other columns stay byte-identical', () => {
     const byPhase = (row) => row['Phase'].trim() === '1. Alpha';
     const result = updateTableCell(fiveCol, byPhase, 'Plans Complete', ' 2/2 ');

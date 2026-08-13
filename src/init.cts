@@ -88,7 +88,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
+const { escapeRegex, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -2244,7 +2244,11 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     );
 
     try {
-      const dirMatch = _phaseDirEntries.find((d) => phaseTokenMatches(d, normalized));
+      // #3185 (ADR-3180 Decision 2) moved this lookup off the
+      // milestone-scoped set and onto the physical one; that scope choice is
+      // kept. Only the matcher is this PR's: matchPhaseDirs resolves
+      // digit-leading directory names the token predicate cannot (#2528).
+      const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized).matches[0];
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);
@@ -2659,7 +2663,7 @@ function cmdInitDocsUpdate(cwd: string, raw: boolean, options: Record<string, un
  * `state:chunked-mode`/`state:plan-strategy-converge`). This DELIBERATELY
  * does not replace `update.md`'s own `parse_update_channel` case-statement
  * (`TAG="next"`/`TAG="latest"`) — issue #815's regression test
- * (`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+ * (`tests/update-workflow.test.cjs`) asserts that literal
  * case-statement text stays in `update.md` verbatim (the npm dist-tag
  * selection has to run in the workflow's own shell before any `gsd_run`
  * round-trip), so `next_channel` exists purely to gate the `channel-banner`

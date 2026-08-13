@@ -1366,6 +1366,10 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   );
 
   const roadmapUsesHyphenedIds = [...normalized].some(n => n.includes('-'));
+  // #3213: longest-first so a hyphenated declared ID (e.g. "proj-42") is tested
+  // before a prefix of it (e.g. "proj") in the segment-boundary membership loop
+  // below — otherwise the shorter id would admit a dir that belongs to the longer.
+  const normalizedIdsLongestFirst = [...normalized].sort((a, b) => b.length - a.length);
   // #2043: milestone-prefixed sub-phase components must be zero-padded — so a
   // single-digit slug word after the phase
   // number (e.g. dir "46-6-rs-…") captures "46" and is not silently excluded from
@@ -1375,7 +1379,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   // Built via new RegExp (no /i — the [A-Za-z] letter class does real case handling).
   const numericRe = roadmapUsesHyphenedIds
     ? new RegExp(
-        `^0*(\\d+(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE})*[A-Za-z]?(?:\\.\\d+)*)`,
+        `^0*(\\d+[A-Za-z]?(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?)*(?:\\.\\d+)*)(?=-|$)`,
       )
     // phase-id-owner: the [A-Za-z] letter class does real case handling here — this regex carries NO /i flag; kept literal, not source-byte-equal to the canonical PHASE_NUMBER_TOKEN_SOURCE.
     : /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;
@@ -1383,8 +1387,27 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   function isDirInMilestone(dirName: string): boolean {
     const m2 = dirName.match(numericRe);
     if (m2 && normalized.has(normalizePhaseIdSegments(m2[1]).toLowerCase())) return true;
-    const customMatch = dirName.match(/^([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)/);
-    if (customMatch && normalized.has(customMatch[1].toLowerCase())) return true;
+    // #3213: segment-boundary membership test, scoped to LETTER-LEADING (custom-
+    // ID) directories only. The prior greedy capture
+    // `^([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)` swallowed the WHOLE hyphenated
+    // directory name (A-tool-output-contract was captured as
+    // "A-tool-output-contract", not "A"), so every letter-named phase directory
+    // (Phase A:..Phase L: — GSD's own convention, ADR-612 first-class non-numeric
+    // IDs) fell out of the milestone and counts were silently fabricated over
+    // whatever numeric directory survived. A letter-leading directory belongs if
+    // its lowercased name EQUALS a declared phase ID, or BEGINS with that ID
+    // followed by "-" (so "A-tool-output-contract" matches ID "a";
+    // "PROJ-42-description" matches ID "proj-42"; "AB-combined" does NOT match
+    // "a"). SCOPED TO LETTER-LEADING DIRS because numeric dirs are owned by
+    // numericRe above, which respects the #2232 continuation grammar — a bare
+    // startsWith here would wrongly admit "14-02-photos-…" to phase "14" when its
+    // real token is "14-02" (continuation-absorbed, not declared).
+    if (/^[A-Za-z]/.test(dirName)) {
+      const lowerDir = dirName.toLowerCase();
+      for (const id of normalizedIdsLongestFirst) {
+        if (lowerDir === id || lowerDir.startsWith(id + '-')) return true;
+      }
+    }
     const stripped = stripProjectCodePrefix(dirName);
     if (stripped !== dirName) {
       const sm = stripped.match(numericRe);

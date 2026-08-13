@@ -46,7 +46,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -1313,7 +1313,7 @@ function forEachArchivedPhaseToken(planBase: string, onPhase: (token: string) =>
       for (const e of entries) {
         if (!e.isDirectory()) continue;
         const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-        if (m) onPhase(m[1]);
+        if (m) onPhase(stripProjectCodePrefix(m[1]));
       }
     } catch {
       /* archive dir absent/unreadable */
@@ -1354,8 +1354,24 @@ function collectPhaseRoots(planBase: string): string[] {
   return roots;
 }
 
-function collectDiskPhases(planBase: string): Set<string> {
-  const diskPhases = new Set<string>();
+/**
+ * #2528: the disk-side phase inventory, keyed by extracted token but KEEPING the
+ * directory names behind each token.
+ *
+ * The token alone is what made `validate health` the ninth site of the #2528
+ * class. W006/W007 pair roadmap phases against disk by intersecting TOKEN SETS
+ * (`phaseVariants(p)` vs these keys), which is a dir→token labelling, not the
+ * query→dir selection `matchPhaseDirs` owns — so a `grep phaseTokenMatches`
+ * never surfaced it. On a digit-leading slug the label is wrong in both
+ * directions at once: `05-80-20-cleanup` labels itself `05-80-20`, so phase 5
+ * "has no directory" (W006) AND that directory "is not in the roadmap" (W007).
+ *
+ * Carrying the names lets both warnings ask the canonical matcher whether a
+ * roadmap phase actually resolves to a directory, instead of asking whether two
+ * independently-derived labels happen to be equal.
+ */
+function collectDiskPhaseEntries(planBase: string): Map<string, string[]> {
+  const entriesByToken = new Map<string, string[]>();
   const phaseRoots = collectPhaseRoots(planBase);
   const scanDir = (dir: string) => {
     try {
@@ -1363,7 +1379,11 @@ function collectDiskPhases(planBase: string): Set<string> {
       for (const e of entries) {
         if (e.isDirectory()) {
           const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-          if (m) diskPhases.add(m[1]);
+          if (!m) continue;
+          const token = stripProjectCodePrefix(m[1]);
+          const dirs = entriesByToken.get(token);
+          if (dirs) dirs.push(e.name);
+          else entriesByToken.set(token, [e.name]);
         }
       }
     } catch {
@@ -1373,7 +1393,31 @@ function collectDiskPhases(planBase: string): Set<string> {
 
   for (const root of phaseRoots) scanDir(root);
 
-  return diskPhases;
+  return entriesByToken;
+}
+
+function collectDiskPhases(planBase: string): Set<string> {
+  return new Set(collectDiskPhaseEntries(planBase).keys());
+}
+
+/**
+ * #2528: archived phase DIRECTORY NAMES, the name-side twin of
+ * `forEachArchivedPhaseToken`. W006 must not warn about a roadmap phase whose
+ * only directory lives in a shipped-milestone archive, and deciding that needs
+ * the same name-based resolution the active roots get.
+ */
+function collectArchivedPhaseDirNames(planBase: string): string[] {
+  const names: string[] = [];
+  for (const archiveDir of listMilestoneArchiveDirs(planBase)) {
+    try {
+      for (const e of fs.readdirSync(archiveDir, { withFileTypes: true })) {
+        if (e.isDirectory() && PHASE_TOKEN_FROM_DIR_RE.test(e.name)) names.push(e.name);
+      }
+    } catch {
+      /* archive dir absent/unreadable */
+    }
+  }
+  return names;
 }
 
 interface MilestoneMismatch {
@@ -1442,12 +1486,17 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const diskPhases = collectDiskPhases(planBase);
 
   for (const p of roadmapPhases) {
+    // #3225: sentinel phase ids are never-on-roadmap by convention.
+    if (isSentinelPhaseId(p)) continue;
     if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
       warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
     }
   }
 
   for (const p of diskPhases) {
+    // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+    // never-on-roadmap; it must not warn here (same guard as cmdValidateHealth).
+    if (isSentinelPhaseId(p)) continue;
     const variants = phaseVariants(p);
     if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
       warnings.push(`Phase ${p} exists on disk but not in ROADMAP.md`);
@@ -1457,7 +1506,10 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   if (config.phase_naming !== 'custom') {
     const integerPhases = [...diskPhases]
-      .filter((p) => !p.includes('.'))
+      // #3225: exclude sentinel phase ids (999.x/0.x) — they are never part of the
+      // sequential numbering, so a 999-interim dir must not produce a spurious
+      // "Gap in phase numbering: N → 999".
+      .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
       .map((p) => parseInt(p, 10))
       .sort((a, b) => a - b);
 
@@ -1979,19 +2031,46 @@ function cmdValidateHealth(
     const roadmapContent = extractCurrentMilestone(roadmapContentRaw, cwd);
 
     const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent);
-    const { roadmapPhaseVariants: fullRoadmapPhaseVariants } =
+    const { roadmapPhases: fullRoadmapPhases, roadmapPhaseVariants: fullRoadmapPhaseVariants } =
       buildRoadmapPhaseVariants(roadmapContentRaw);
 
     const diskPhases = collectDiskPhases(planBase);
     forEachArchivedPhaseToken(planBase, (token) => diskPhases.add(token));
 
-    const activeDiskPhases = collectDiskPhases(planBase);
+    const activeDiskEntries = collectDiskPhaseEntries(planBase);
+
+    // #2528: the name side of the same inventory. The token sets above answer
+    // "do two independently-derived labels agree"; these answer "does the
+    // canonical matcher resolve this roadmap phase to a real directory" — the
+    // question W006/W007 are actually asking. Both are kept: the token
+    // intersection still decides every shape it already decided correctly, and
+    // the resolution below only ever REMOVES a warning, so a phase the tokens
+    // already paired up cannot start warning because of this.
+    const activeDirNames = [...activeDiskEntries.values()].flat();
+    const allDirNames = [...activeDirNames, ...collectArchivedPhaseDirNames(planBase)];
+
+    // A directory is CLAIMED when some roadmap phase resolves to it. This is the
+    // inverse mapping W007 never had: it iterates directories, so it has no query
+    // to resolve, and a dir whose label does not appear in the roadmap looked
+    // orphaned even when the roadmap phase that owns it resolves to it exactly.
+    // Built from the FULL roadmap (shipped milestones included), matching the
+    // variant set W007 already compares against.
+    const claimedDirs = new Set<string>();
+    for (const p of fullRoadmapPhases) {
+      for (const d of matchPhaseDirs(activeDirNames, normalizePhaseName(p)).matches) {
+        claimedDirs.add(d);
+      }
+    }
 
     const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent);
 
     for (const p of roadmapPhases) {
+      // #3225: sentinel phase ids (999.x/0.x) are never-on-roadmap by convention;
+      // a sentinel heading shouldn't demand a directory.
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
-      const existsOnDisk = [...variants].some((v) => diskPhases.has(v));
+      const existsOnDisk = [...variants].some((v) => diskPhases.has(v))
+        || matchPhaseDirs(allDirNames, normalizePhaseName(p)).matches.length > 0;
       if (!existsOnDisk) {
         const isNotStarted = [...variants].some((v) => notStartedPhases.has(v));
         if (isNotStarted) continue;
@@ -2004,16 +2083,21 @@ function cmdValidateHealth(
       }
     }
 
-    for (const p of activeDiskPhases) {
+    for (const [p, dirsForToken] of activeDiskEntries) {
+      // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
+      // never-on-roadmap; it must not trigger W007 ("Add to roadmap or remove
+      // directory" — both wrong for a sentinel). Mirrors the isSentinelPhaseId
+      // guard phase.cts has at 10+ sites (#2786/#2949).
+      if (isSentinelPhaseId(p)) continue;
       const variants = phaseVariants(p);
-      if (![...variants].some((v) => fullRoadmapPhaseVariants.has(v))) {
-        addIssue(
-          'warning',
-          'W007',
-          `Phase ${p} exists on disk but not in ROADMAP.md`,
-          'Add to roadmap or remove directory',
-        );
-      }
+      if ([...variants].some((v) => fullRoadmapPhaseVariants.has(v))) continue;
+      if (dirsForToken.every((d) => claimedDirs.has(d))) continue;
+      addIssue(
+        'warning',
+        'W007',
+        `Phase ${p} exists on disk but not in ROADMAP.md`,
+        'Add to roadmap or remove directory',
+      );
     }
   }
 
@@ -2299,7 +2383,7 @@ function cmdValidateHealth(
         while ((pm = phasePattern.exec(scopedContent)) !== null) {
           const phaseNum = pm[1];
           const normalizedPh = normalizePhaseName(phaseNum);
-          const hasDirectory = phaseDirNames2.some((d) => phaseTokenMatches(d, normalizedPh));
+          const hasDirectory = matchPhaseDirs(phaseDirNames2, normalizedPh).matches.length > 0;
           if (!hasDirectory) {
             unstarted.push(phaseNum);
           }
@@ -2533,21 +2617,19 @@ function cmdVerifySchemaDrift(
     return;
   }
 
-  // Resolve the phase directory with the canonical phase-token matcher
-  // (phase-id.cjs), not a naive substring test. A bare `.includes(phaseArg)`
-  // lets a non-existent phase silently match a different phase whose directory
-  // name merely contains the requested token (e.g. "1" matching "11-expansion"),
-  // making the drift gate inspect the wrong phase. This mirrors find-phase /
-  // verify phase-completeness, which both use phaseTokenMatches. (#1571)
+  // Resolve the phase directory with the canonical phase-directory matcher
+  // (phase-id.cjs::matchPhaseDirs), not a naive substring test. A bare
+  // `.includes(phaseArg)` lets a non-existent phase silently match a different
+  // phase whose directory name merely contains the requested token (e.g. "1"
+  // matching "11-expansion"), making the drift gate inspect the wrong phase.
+  // This shares the one selection rule with find-phase / verify
+  // phase-completeness rather than restating it. (#1571, #2528)
   let phaseDir: string | null = null;
   const normalizedPhase = normalizePhaseName(phaseArg);
   const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory() && phaseTokenMatches(entry.name, normalizedPhase)) {
-      phaseDir = path.join(phasesDir, entry.name);
-      break;
-    }
-  }
+  const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const drift = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+  if (drift) phaseDir = path.join(phasesDir, drift);
 
   if (!phaseDir) {
     const exact = path.join(phasesDir, phaseArg);

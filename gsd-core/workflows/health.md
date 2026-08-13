@@ -81,6 +81,55 @@ Parse JSON output:
 - `info[]`: Informational notes
 - `repairable_count`: Number of auto-fixable issues
 - `repairs_performed[]`: Actions taken if --repair was used
+
+**Isolation/worktrees compatibility check (#2486):** the SDK is runtime-neutral, so this check runs here, using the same negotiation the execution-workflow guards use. It catches a config that carries an explicit `workflow.use_worktrees: true` on a runtime whose declared `dispatch.isolation` is `none` (e.g. inherited from a worktree-capable install sharing the repo) — a value `/gsd:execute-phase` and `/gsd:quick` fail closed on. The gate is the **declared capability, not the runtime name** (#2584), and the resolver fail-closes unknown/undeclared/`undocumented` values to `none`. Use `inspect-dispatch-isolation`, the **sentinel-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a read-only diagnostic must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. "Sentinel-free" is the precise claim and the only one this check depends on: like every `gsd-tools` invocation, inspection still runs the shared CLI bootstrap, which may self-heal a stale `.planning/active-workstream` pointer or rebuild compiled modules. Those are pre-existing, verb-independent, and cannot block a dispatch; writing the sentinel can:
+
+The worktrees read deliberately carries no `--default`/fallback, exactly as `settings.md` does
+it: W025's claim is that the config **sets** the key to a non-false value, so an absent key
+(empty output) must stay distinguishable from an explicit `true`. A `|| echo "true"` fallback
+collapses that distinction and makes the check fire on a config that never set the key —
+correct only on an emit where `_stampNonClaudeRuntimeDefaults` happened to rewrite the line to
+`--default false`, and wrong on the un-stamped source/Claude emit. The `[ -n … ]` guard below
+removes that dependency on stamping entirely (#2486 review, Major 1).
+
+A failed query is **not** a capability verdict. `|| echo "none"` would collapse "this runtime
+declares no primitive" and "the query did not answer" into the same value, and W025's text asserts
+the former — telling a Claude Code user their runtime declares no executor-isolation primitive,
+which is false. Track the two apart and report which one happened.
+
+Know the limit of that signal (#2486 review): the verb itself fail-closes an unknown, undeclared or
+out-of-vocabulary runtime — and any internal resolution error — to `none` and exits 0, so `INSPECTED_RESOLVED=true` means "the query
+answered", not "the runtime published a declaration". W025's resolved-case wording below is
+therefore written to be true of every path that reaches it — a declared `none` and an
+internally-fail-closed `none` alike. Distinguishing those two would need the verb to report
+provenance, which is out of scope here.
+
+```bash
+_INSPECTED_RAW=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null)
+_ISOLATION_RC=$?
+if [ $_ISOLATION_RC -ne 0 ] || [ -z "$_INSPECTED_RAW" ]; then
+  INSPECTED_ISOLATION=none
+  INSPECTED_RESOLVED=false      # no verdict learned — not the same as "declares none"
+else
+  INSPECTED_ISOLATION="$_INSPECTED_RAW"
+  INSPECTED_RESOLVED=true
+fi
+case "$INSPECTED_ISOLATION" in
+  harness-worktree|orchestrator-worktree|none) ;;
+  *) INSPECTED_ISOLATION=none; INSPECTED_RESOLVED=false ;;   # out of vocabulary is not a verdict either
+esac
+
+USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
+if [ "$INSPECTED_ISOLATION" = "none" ] && [ -n "$USE_WORKTREES" ] && [ "$USE_WORKTREES" != "false" ]; then
+  if [ "$INSPECTED_RESOLVED" = "true" ]; then
+    echo "W025: the project config sets workflow.use_worktrees to a non-false value, but this runtime has no usable executor-isolation primitive — dispatch.isolation resolves to none, declared as none, or fail-closed because the capability could not be determined — so /gsd:execute-phase and /gsd:quick will fail closed. Fix: run /gsd:settings and answer No to Worktrees, or set workflow.use_worktrees: false in the project config (the active workstream's config.json when one is active). Set it explicitly rather than deleting the key — an absent key resolves to false only on an emit whose default was stamped to false, and to true otherwise."
+  else
+    echo "W025: the project config sets workflow.use_worktrees to a non-false value, and GSD could not resolve this runtime's executor-isolation capability ('gsd_run query inspect-dispatch-isolation' failed or returned nothing) — so it cannot tell whether /gsd:execute-phase and /gsd:quick will fail closed on that value. This is a report of an unverifiable config, NOT a finding that the runtime declares no primitive. Fix: re-run once the gsd-tools shim resolves; if the warning persists, run /gsd:settings and answer No to Worktrees."
+  fi
+fi
+```
+
+If the check prints, append it to the Warnings section of the report as `[W025]` with the printed fix, include it in the displayed warning count, and report `Status: DEGRADED` if `validate.health` returned `healthy` (a config the execution workflows fail closed on is not a healthy planning state). It is not auto-repairable: an explicit `true` may be intentional for a worktree-capable install sharing the same `.planning/config.json`, so the remedy is the user's call (#2486).
 </step>
 
 <step name="format_output">
@@ -187,7 +236,10 @@ Report final status.
 | W018 | warning | MILESTONES.md missing entry for archived milestone snapshot | Yes (`--backfill`) |
 | W019 | warning | Unrecognized .planning/ root file — not a canonical GSD artifact | No |
 | W024 | warning | STATE.md was written many commits ago — treat its contents as approximate | No |
+| W025 | warning | config.json: workflow.use_worktrees enabled on a runtime whose dispatch.isolation is none (#2486) | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
+
+Note: the `W0NN` warning-code namespace is owned by `src/verify.cts` (`validate.health`), which also emits codes this table does not list (`W010`–`W017` and `W020`–`W023` as of #2486). `W001`–`W024` are all allocated, so this workflow's isolation warning is `W025`. Before assigning a new code here, grep `src/verify.cts` for the next free number — the table alone under-represents the live namespace, and two PRs in flight can otherwise claim the same code (which is exactly what happened between #2486 and #2573).
 
 </error_codes>
 

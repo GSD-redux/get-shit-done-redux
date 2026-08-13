@@ -977,6 +977,41 @@ describe('validate health command', () => {
     assert.strictEqual(output.errors.length, 0, 'should have no errors');
     assert.ok(output.warnings.length > 0, 'should have warnings');
   });
+
+  // #3225: sentinel phase dirs (999.x backlog/interim, 0.x drafts) are defined as
+  // never-on-roadmap (SENTINEL_RANGES=[0,999]). The W006/W007 disk↔roadmap loops
+  // never had the isSentinelPhaseId guard that phase.cts has, so every sentinel dir
+  // produced a spurious W007 with wrong fix advice ("Add to roadmap or remove
+  // directory"). Sentinels must be excluded; a real (non-sentinel) orphan must still warn.
+  test('#3225: sentinel phase dirs (999/0) do not trigger W007; real orphans still do', () => {
+    writeMinimalRoadmap(tmpDir, ['1']);
+    writeMinimalStateMd(tmpDir);
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    // Sentinel dirs — never-on-roadmap by convention.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999-interim'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '0-drafts'), { recursive: true });
+    // A real orphan (non-sentinel) that SHOULD still trigger W007.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '77-orphan'), { recursive: true });
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const sentinelW007s = output.warnings.filter(
+      w => w.code === 'W007' && /\b(0|999)\b/.test(w.message)
+    );
+    assert.strictEqual(
+      sentinelW007s.length, 0,
+      `sentinel phase dirs must not trigger W007; got: ${JSON.stringify(sentinelW007s)}`
+    );
+
+    // Negative space: the non-sentinel orphan must still be flagged.
+    assert.ok(
+      output.warnings.some(w => w.code === 'W007' && /77\b/.test(w.message)),
+      `expected W007 for the real orphan 77; got: ${JSON.stringify(output.warnings.filter(w => w.code === 'W007'))}`
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

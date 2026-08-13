@@ -191,8 +191,9 @@ ADR-2719 §7 deliberately keeps and `npm run gen:install-tree` regenerates.
 exist in the tree. ADR-1239's Codex-binding section still names the retired fixture; it is recorded
 here so a Phase-1 implementer does not go looking for a gate that was removed a release ago.
 
-`tests/codex-config.test.cjs` and `tests/issue-2517-runtime-aware-profiles.test.cjs` assert the
-embedding today and flip to assert omission in the same phase.
+`tests/codex-config.test.cjs` and `tests/model-resolver.test.cjs` (folds former
+`issue-2517-runtime-aware-profiles`) assert the embedding today and flip to assert omission in the
+same phase.
 
 ## Alternatives considered
 

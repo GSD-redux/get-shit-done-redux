@@ -23,7 +23,7 @@ describe('CANONICAL_EXACT', () => {
     const expected = [
       'PROJECT.md', 'ROADMAP.md', 'STATE.md', 'REQUIREMENTS.md',
       'MILESTONES.md', 'BACKLOG.md', 'LEARNINGS.md', 'THREADS.md',
-      'config.json', 'CLAUDE.md', 'RETROSPECTIVE.md',
+      'config.json', 'CLAUDE.md', 'RETROSPECTIVE.md', 'WINDOWS.md',
     ];
     for (const name of expected) {
       assert.ok(CANONICAL_EXACT.has(name), `expected ${name} in CANONICAL_EXACT`);
@@ -56,6 +56,15 @@ describe('isCanonicalPlanningFile', () => {
 
   test('returns true for exact match config.json', () => {
     assert.strictEqual(isCanonicalPlanningFile('config.json'), true);
+  });
+
+  test('#3224: WINDOWS.md (broken-windows ledger) is a canonical .planning/ artifact', () => {
+    // gsd-core itself writes .planning/WINDOWS.md (src/broken-windows.cts,
+    // LEDGER_FILE_NAME = 'WINDOWS.md'). Before #3224 it was absent from the
+    // registry, so validate health flagged it W019 "Unrecognized" with advice to
+    // delete a ledger that can gate /gsd-ship under workflow.windows_enforce.
+    assert.ok(CANONICAL_EXACT.has('WINDOWS.md'), 'WINDOWS.md must be in CANONICAL_EXACT');
+    assert.strictEqual(isCanonicalPlanningFile('WINDOWS.md'), true);
   });
 
   test('returns false for unrecognized file', () => {
