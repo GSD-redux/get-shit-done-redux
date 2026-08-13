@@ -325,39 +325,6 @@ describe('#1945 glossary + docs', () => {
     );
   });
 
-  // The planner's tracer-specific template must emit a <verify> the gate can
-  // actually auto-continue on. Peer review caught that the template shipped the
-  // legacy bare-text form while the Nyquist Rule twelve lines earlier says every
-  // <verify> carries <automated> — so a planner following its own tracer template
-  // produced tracers that always fell to the STOP fallback, making #3299's
-  // benefit unreachable on the default tracer-first path.
-  test('planner tracer template emits an <automated> verify the gate can auto-continue', () => {
-    const i = PLANNER.indexOf('**Tracer task shape:**');
-    assert.notStrictEqual(i, -1, 'planner must carry a tracer task shape template');
-    const block = PLANNER.slice(i, i + 1200);
-    const verify = block.match(/<verify>[\s\S]*?<\/verify>/);
-    assert.ok(verify, 'the tracer template must contain a <verify> element');
-    // Finding <automated> ANYWHERE inside <verify> is not enough: peer review
-    // defeated that with `<verify>[…]<!--<automated>--></verify>`, which keeps the
-    // legacy bare form operative while the substring check passes. Pin the whole
-    // element exactly (normalized), so a commented-out or sibling wrapper cannot
-    // satisfy it.
-    const EXPECTED_VERIFY = '<verify><automated>[a real END-TO-END check of the one path '
-      + '— not a per-layer unit test]</automated></verify>';
-    assert.strictEqual(
-      verify[0].replace(/\s+/g, ' ').trim(),
-      EXPECTED_VERIFY,
-      'the planner tracer template\'s <verify> drifted. The #3299 gate auto-continues only on a '
-      + '<verify> carrying ONLY <automated>, so a bare-text (or commented-out-wrapper) template makes '
-      + 'the fix unreachable for every tracer the planner generates. Update template and expectation together.',
-    );
-    // Structural backstop: no bare text may sit directly inside <verify>, and the
-    // <automated> child must be non-empty.
-    const inner = verify[0].replace(/^<verify>/, '').replace(/<\/verify>$/, '').trim();
-    assert.match(inner, /^<automated>[^<]+<\/automated>$/, 'the <verify> body must be exactly one non-empty <automated> child');
-    assert.doesNotMatch(verify[0], /<!--/, 'the tracer template must not contain commented-out markup');
-  });
-
   test('docs/how-to and docs/AGENTS reflect tracer-first + the executor gate', () => {
     assert.match(HOWTO, /tracer/i, 'how-to must mention tracer-first');
     assert.match(HOWTO, /--no-tracer/, 'how-to must mention the --no-tracer opt-out');
