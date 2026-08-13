@@ -70,15 +70,26 @@ function extractOneLinerFromBody(content: string | null | undefined): string | n
   if (!content) return null;
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const body = normalized.replace(/^---\n[\s\S]*?\n---\n*/, '');
-  const match = body.match(/^#[^\n]*\n+\*\*([^*\n]+)\*\*([^\n]*)/m);
-  if (!match) return null;
-  const boldInner = match[1].trim();
-  const afterBold = match[2];
-  if (/:\s*$/.test(boldInner)) {
-    const prose = afterBold.trim();
-    return prose.length > 0 ? prose : null;
+  // #3170: anchor to a summary-shaped heading (Summary / Overview /
+  // Accomplishments) so an incidental first heading (a rule list, task
+  // breakdown, deviation note) does not contribute its first bold run as the
+  // deliverable one-liner. Iterate headings in document order and extract from
+  // the first summary-shaped one that has a bold run; fall back to null (not the
+  // wrong text) when no such heading exists.
+  const headingRe = /^#+\s*([^\n]*)\n+\*\*([^*\n]+)\*\*([^\n]*)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = headingRe.exec(body)) !== null) {
+    if (!/summary|overview|accomplish/i.test(match[1])) continue;
+    const boldInner = match[2].trim();
+    const afterBold = match[3];
+    if (/:\s*$/.test(boldInner)) {
+      const prose = afterBold.trim();
+      if (prose.length > 0) return prose;
+    } else if (boldInner.length > 0) {
+      return boldInner;
+    }
   }
-  return boldInner.length > 0 ? boldInner : null;
+  return null;
 }
 
 // ─── Misc utilities ───────────────────────────────────────────────────────────
