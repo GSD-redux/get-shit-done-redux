@@ -67,7 +67,18 @@ describe('escapeRegex', () => {
     }
   });
 
-  test('row 8: non-string input throws TypeError (matches the 12 deleted copies\' .replace throw)', () => {
+  // #3212 Spec-axis review correction: this throw behavior matches MOST of the
+  // deleted copies' `.replace` throw, but NOT ALL of them — `src/phase-id.cts`'s
+  // original `escapeRegex(value: unknown)` did `String(value).replace(...)` and
+  // never threw (`escapeRegex(42) === '42'`, `escapeRegex(null) === 'null'`, per
+  // the deleted `tests/phase-id.test.cjs` assertions). That is a deliberate,
+  // disclosed behavior change for phase-id's former callers: the seam's locked
+  // signature (`escapeRegex(value: string): string`, ADR §1) does not coerce, so
+  // a non-string reaching it now throws instead of silently stringifying.
+  // Mitigated by an explicit `String(...)` wrap at the one former phase-id call
+  // site that genuinely needed it (phaseMarkdownRegexSource's fallback branch,
+  // src/phase-id.cts) — the seam's throw itself is intentional and stays.
+  test('row 8: non-string input throws TypeError (matches 11 of the 12 deleted copies\' .replace throw — phase-id.cts\'s copy coerced instead, see comment above)', () => {
     for (const bad of [null, undefined, 42, {}, [], true]) {
       assert.throws(() => escapeRegex(bad), TypeError, `escapeRegex(${JSON.stringify(bad)}) must throw TypeError`);
     }

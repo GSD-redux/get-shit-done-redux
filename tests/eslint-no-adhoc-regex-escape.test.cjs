@@ -47,6 +47,16 @@ const ruleTester = new RuleTester({
   },
 });
 
+// Separate instance for the ES-module `import` binding case (row 27b) — the
+// default instance above uses sourceType 'commonjs', which cannot parse
+// `import` statements.
+const moduleRuleTester = new RuleTester({
+  languageOptions: {
+    ecmaVersion: 2022,
+    sourceType: 'module',
+  },
+});
+
 describe('no-adhoc-regex-escape rule', () => {
   test('rule module exports a create function', () => {
     assert.strictEqual(typeof noAdhocRegexEscape.create, 'function');
@@ -157,6 +167,95 @@ describe('no-adhoc-regex-escape rule', () => {
         {
           code: String.raw`const isMetachar = /^[.*+?]$/.test(char);`,
           filename: 'src/some-validator.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── #3412 Standards-review Finding 1: _SOURCE naming-only evasion closed ──
+  //    A rule that trusts the `_SOURCE` suffix on spelling alone (no
+  //    scope/binding check) is exactly #3410's guard-evasion class: naming a
+  //    genuinely dynamic value with a matching suffix defeats it. These
+  //    cases lock that the fallback is now bound to the identifier's ACTUAL
+  //    BINDING KIND (import / require()-derived const), not its name.
+
+  test('Finding 1 invalid: a function-parameter identifier named *_SOURCE is NOT exempted by naming alone', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          // The evasion: naming a plain, unescaped function parameter with
+          // the `_SOURCE` suffix used to sail past condition (b) because
+          // that check was pure identifier-name regex matching with no
+          // scope/binding verification. It must fire now.
+          code: String.raw`
+            function f(userInput_SOURCE) {
+              return new RegExp(userInput_SOURCE);
+            }
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('Finding 1 invalid: a reassigned let identifier named *_SOURCE is NOT exempted by naming alone', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          // A `let` binding holding genuinely dynamic content (not a
+          // static const, not an import, not a require()-derived const) —
+          // the suffix alone must not exempt it.
+          code: String.raw`
+            let mutable_SOURCE = getUserInput();
+            const re = new RegExp(mutable_SOURCE);
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('Finding 1 valid: a require()-derived *_SOURCE const (destructured) still passes', () => {
+    // The legitimate cross-module case condition (b) exists to cover:
+    // `const { X_SOURCE } = require('./mod.cjs')`. Proves the tightened
+    // check did not regress this repo's dominant CJS import shape.
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        {
+          code: String.raw`
+            const { PHASE_NUMBER_TOKEN_SOURCE } = require('./phase-id.cjs');
+            const re = new RegExp(PHASE_NUMBER_TOKEN_SOURCE);
+          `,
+          filename: 'src/roadmap-parser.cts',
+        },
+        {
+          // The other require()-derived shape condition (b) covers:
+          // `const X_SOURCE = require('./mod.cjs').X_SOURCE`.
+          code: String.raw`
+            const PHASE_NUMBER_TOKEN_SOURCE = require('./phase-id.cjs').PHASE_NUMBER_TOKEN_SOURCE;
+            const re = new RegExp(PHASE_NUMBER_TOKEN_SOURCE);
+          `,
+          filename: 'src/roadmap-parser.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('Finding 1 valid: an ES `import`-derived *_SOURCE binding still passes', () => {
+    moduleRuleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        {
+          code: String.raw`
+            import { PHASE_NUMBER_TOKEN_SOURCE } from './phase-id.cts';
+            const re = new RegExp(PHASE_NUMBER_TOKEN_SOURCE);
+          `,
+          filename: 'src/roadmap-parser.cts',
         },
       ],
       invalid: [],

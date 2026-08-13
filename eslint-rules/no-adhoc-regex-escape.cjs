@@ -41,12 +41,25 @@
  *           a rule keyed only on an identifier's NAME is defeated by a
  *           rename; a rule keyed on the const/static-initializer SHAPE is
  *           not).
- *       (b) NAMING CONVENTION (fallback) — the identifier ends in `_SOURCE`.
- *           Kept for the cross-module-import case where the initializer
- *           itself is not in scope to inspect (condition (a) cannot see
- *           into another file), e.g. an imported
- *           `PHASE_NUMBER_TOKEN_SOURCE`. (a) is the real check; (b) only
- *           covers what (a) structurally cannot see.
+ *       (b) NAMING CONVENTION (fallback) — the identifier ends in `_SOURCE`
+ *           AND resolves (via scope walk) to one of: an ES `import` binding,
+ *           or a `require(...)`-derived module-scope `const` (either
+ *           `const { X_SOURCE } = require('./mod.cjs')` or
+ *           `const X_SOURCE = require('./mod.cjs').X_SOURCE`). Kept for the
+ *           cross-module case where the initializer itself is not in scope
+ *           to inspect (condition (a) cannot see into another file), e.g. an
+ *           imported `PHASE_NUMBER_TOKEN_SOURCE`. (a) is the real check; (b)
+ *           only covers what (a) structurally cannot see — and is bound to
+ *           the identifier's ACTUAL BINDING KIND, not just its spelling: a
+ *           function parameter, a `let`/`var`, a reassigned binding, or an
+ *           unresolvable identifier is NEVER exempted by naming alone, no
+ *           matter what it's called. A naming-only check (no scope/binding
+ *           verification) is exactly #3410's guard-evasion class — a rule
+ *           keyed on spelling is defeated by picking a matching name for a
+ *           genuinely dynamic value (e.g. a function parameter named
+ *           `userInput_SOURCE`). If scope analysis cannot resolve the
+ *           identifier's binding at all, this fails CLOSED (flags it) —
+ *           an unresolvable binding is not evidence of safety.
  *     A `new RegExp(<CallExpression>)` argument that already routes through
  *     the seam (`escapeRegex(...)` / `literalPattern(...)`, by name or as a
  *     `pattern.escapeRegex(...)` member call) is also treated as safe — that
@@ -142,9 +155,10 @@ function isSelfReferenceReplacement(node) {
 /**
  * Walk up the scope chain from `scope` looking for `identifierName`'s
  * declaration. Returns `{ def, kind }` where `kind` is 'param' for a
- * function-parameter binding, or the VariableDeclaration `kind`
- * ('const'/'let'/'var') for a variable binding — or `null` if unresolved in
- * any enclosing scope reachable from here.
+ * function-parameter binding, 'import' for an ES `import` binding, or the
+ * VariableDeclaration `kind` ('const'/'let'/'var') for a variable binding —
+ * or `null` if unresolved in any enclosing scope reachable from here (fails
+ * closed: callers must treat `null` as "not provably safe").
  */
 function resolveBinding(identifierName, scope) {
   let s = scope;
@@ -154,6 +168,7 @@ function resolveBinding(identifierName, scope) {
       const def = variable.defs && variable.defs[0];
       if (!def) return null;
       if (def.type === 'Parameter') return { def, kind: 'param' };
+      if (def.type === 'ImportBinding') return { def, kind: 'import' };
       if (
         def.node
         && def.node.type === 'VariableDeclarator'
@@ -167,6 +182,35 @@ function resolveBinding(identifierName, scope) {
     s = s.upper;
   }
   return null;
+}
+
+/** Is `node` a `require(...)` call expression? */
+function isRequireCallExpression(node) {
+  return !!node && node.type === 'CallExpression'
+    && node.callee && node.callee.type === 'Identifier' && node.callee.name === 'require';
+}
+
+/**
+ * Provenance condition (b), require branch — does `identifierName` resolve
+ * to a module-scope `const` whose initializer is EITHER `require(...)`
+ * itself (the `const { X_SOURCE } = require('./mod.cjs')` destructure shape)
+ * OR a non-computed member access on a `require(...)` call (the
+ * `const X_SOURCE = require('./mod.cjs').X_SOURCE` shape)?
+ */
+function resolvesToRequireDerivedConstBinding(identifierName, scope) {
+  const binding = resolveBinding(identifierName, scope);
+  if (!binding || binding.kind !== 'const') return false;
+  const init = binding.def.node.init;
+  if (!init) return false;
+  if (isRequireCallExpression(init)) return true;
+  if (init.type === 'MemberExpression' && !init.computed && isRequireCallExpression(init.object)) return true;
+  return false;
+}
+
+/** Provenance condition (b), import branch — does `identifierName` resolve to an ES `import` binding? */
+function resolvesToImportBinding(identifierName, scope) {
+  const binding = resolveBinding(identifierName, scope);
+  return !!binding && binding.kind === 'import';
 }
 
 /**
@@ -243,7 +287,16 @@ function isSoleReturnOfOwnParameter(newExprNode, argIdentifier) {
 
 function isReviewedPatternFragmentIdentifier(identifierName, scope) {
   if (resolvesToStaticConstFragment(identifierName, scope)) return true; // (a) structural
-  if (SOURCE_SUFFIX_RE.test(identifierName)) return true; // (b) naming fallback
+  if (SOURCE_SUFFIX_RE.test(identifierName)) {
+    // (b) naming fallback — only trusted when the identifier's ACTUAL
+    // BINDING is an import or a require()-derived module-scope const.
+    // A function parameter, a let/var, a reassigned binding, or an
+    // unresolvable identifier is never exempted by spelling alone (#3410
+    // guard-evasion class) — fails closed via resolveBinding returning null.
+    if (resolvesToImportBinding(identifierName, scope)) return true;
+    if (resolvesToRequireDerivedConstBinding(identifierName, scope)) return true;
+    return false;
+  }
   return false;
 }
 
@@ -343,6 +396,25 @@ const rule = {
           if (isReviewedPatternFragmentIdentifier(arg.name, scope)) {
             return;
           }
+
+          // The `_SOURCE` suffix exists ONLY to claim provenance exemption
+          // (b). An identifier that carries the suffix but did NOT resolve
+          // to a legitimate import/require-derived binding above (or is
+          // unresolvable at all) IS the #3410-class evasion this check
+          // exists to close — flag it unconditionally, independent of the
+          // narrower sole-return-of-parameter shape below. This cannot
+          // reproduce the ~25 unrelated false positives an earlier, broader
+          // "any non-literal identifier" heuristic produced (see
+          // isSoleReturnOfOwnParameter's doc comment): those identifiers
+          // never carried the `_SOURCE` naming convention in the first
+          // place, so this branch never reaches them.
+          if (SOURCE_SUFFIX_RE.test(arg.name)) {
+            if (!isAllowed(node)) {
+              context.report({ node, messageId: 'unsafeNewRegExp' });
+            }
+            return;
+          }
+
           // Narrow, false-positive-free shape only — see
           // isSoleReturnOfOwnParameter's doc comment for why the broader
           // "any non-literal identifier" heuristic was rejected.
