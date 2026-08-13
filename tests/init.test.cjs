@@ -1733,11 +1733,11 @@ describe('cmdInitQuick quick_id — exact value under GSD_NOW_MS+TZ pin', () => 
   // runtime output — so this test can actually catch a broken implementation.
   function expectedQuickId(ms) {
     const d = new Date(ms);
-    const yy = String(d.getFullYear()).slice(-2);
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+    const yy = String(d.getUTCFullYear()).slice(-2);
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
     const dateStr = yy + mm + dd;
-    const secondsSinceMidnight = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+    const secondsSinceMidnight = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
     const timeBlocks = Math.floor(secondsSinceMidnight / 2);
     const timeEncoded = timeBlocks.toString(36).padStart(3, '0');
     return dateStr + '-' + timeEncoded;
