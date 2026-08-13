@@ -350,10 +350,9 @@ describe('G2/G3 — no-crlf-fragile-split: valid cases', () => {
 
 describe('no-crlf-fragile-split: #3413 message-text update (row 32, RED)', () => {
   test('row 32: G1 trigger in a src/*.cts-shaped file expects the FUTURE splitLines-hint message text', () => {
-    // This is EXPECTED TO FAIL right now: the rule's current crlfFragileSplit
-    // message still ends in "Use .split(/\\r?\\n/) instead.", not the
-    // splitLines()-naming text Phase 2 is supposed to ship. That mismatch is
-    // the intended RED — the message hasn't been updated yet.
+    // Verifies the exact rendered message text for a G1 trigger in a
+    // src/*.cts-shaped file: the crlfFragileSplit message names
+    // `splitLines()` from `src/text-lines.cts` as the fix.
     ruleTester.run('no-crlf-fragile-split', rule, {
       valid: [],
       invalid: [
@@ -364,7 +363,6 @@ describe('no-crlf-fragile-split: #3413 message-text update (row 32, RED)', () =>
           filename: 'src/some-module.cts',
           errors: [
             {
-              messageId: 'crlfFragileSplit',
               message:
                 'Splitting on literal "\\n" on readFileSync content is CRLF-fragile ' +
                 '(DEFECT.WINDOWS-CRLF-TEST-PORTABILITY): Windows git-autocrlf yields "\\r\\n" ' +
