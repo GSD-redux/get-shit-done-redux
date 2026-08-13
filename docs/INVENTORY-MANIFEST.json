@@ -578,6 +578,7 @@
       "execute-phase/steps/executor-isolation-dispatch.md",
       "execute-phase/steps/gap-closure-artifacts.md",
       "execute-phase/steps/partial-wave.md",
+      "execute-phase/steps/per-plan-executor-routing.md",
       "execute-phase/steps/per-plan-worktree-gate.md",
       "execute-phase/steps/post-merge-gate.md",
       "execute-phase/steps/regression-gate-run.md",

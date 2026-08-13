@@ -28,6 +28,7 @@
     "verifier": true,
     "nyquist_validation": true,
     "ai_integration_phase": true,
+    "agent_hint_routing": true,
     "human_verify_mode": "end-of-phase",
     "auto_advance": false,
     "_auto_chain_active": false,

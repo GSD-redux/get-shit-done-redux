@@ -172,21 +172,7 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   }
 
   for (const agent of expectedAgents) {
-    const agentFile = path.join(agentsDir, `${agent}.md`);
-    const agentFileCopilot = path.join(agentsDir, `${agent}.agent.md`);
-    const agentFileCodex = path.join(agentsDir, `${agent}.toml`);
-    const agentFileKimiYaml = path.join(agentsDir, 'subagents', `${agent}.yaml`);
-    const agentFileKimiPrompt = path.join(agentsDir, 'subagents', `${agent}.md`);
-    const kimiAgentInstalled =
-      resolvedRuntime === 'kimi' &&
-      fs.existsSync(agentFileKimiYaml) &&
-      fs.existsSync(agentFileKimiPrompt);
-    if (
-      fs.existsSync(agentFile) ||
-      fs.existsSync(agentFileCopilot) ||
-      fs.existsSync(agentFileCodex) ||
-      kimiAgentInstalled
-    ) {
+    if (agentFileExists(agentsDir, agent, resolvedRuntime)) {
       installed.push(agent);
     } else {
       missing.push(agent);
@@ -359,9 +345,71 @@ function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexMo
   };
 }
 
+/**
+ * Probe a single agents dir for `<name>` across runtime filename variants.
+ * Mirrors {@link checkAgentsInstalled}'s probe (`.md`, `.agent.md`, `.toml`,
+ * and the kimi `subagents/<name>.{yaml,md}` pair) so the two can never disagree
+ * about which on-disk shapes count as "installed". Not exported — internal to
+ * {@link resolveAgentHint}.
+ */
+function agentFileExists(agentsDir: string, name: string, runtime: string): boolean {
+  const base = path.join(agentsDir, `${name}.md`);
+  const copilot = path.join(agentsDir, `${name}.agent.md`);
+  const codex = path.join(agentsDir, `${name}.toml`);
+  if (fs.existsSync(base) || fs.existsSync(copilot) || fs.existsSync(codex)) {
+    return true;
+  }
+  // kimi requires BOTH the persona yaml and the prompt md (same as checkAgentsInstalled).
+  const kimiYaml = path.join(agentsDir, 'subagents', `${name}.yaml`);
+  const kimiPrompt = path.join(agentsDir, 'subagents', `${name}.md`);
+  return runtime === 'kimi' && fs.existsSync(kimiYaml) && fs.existsSync(kimiPrompt);
+}
+
+/**
+ * Resolve a per-plan `agent_hint` specialist name to a dispatchable subagent
+ * type on the active runtime (#1689). Unlike {@link checkAgentsInstalled},
+ * which validates the fixed GSD roster, this answers "does an agent file for
+ * this ARBITRARY name exist in the active runtime's agent dir(s)?" — so a plan
+ * can opt into a domain specialist (e.g. a Flutter engineer) that shares the
+ * gsd-executor contract without being part of the built-in roster.
+ *
+ * Probes BOTH the runtime-canonical agents dir ({@link getAgentsDir}, which
+ * honors `GSD_AGENTS_DIR`, project-local manifest-backed installs, and the
+ * claude install-relative path) AND the runtime's global config agents dir, so
+ * a specialist installed at either level is recognized. The decision in #1689
+ * explicitly requires consulting the active runtime's agent dir rather than
+ * only the Claude `~/.claude/agents/` + `.claude/agents/` pair.
+ *
+ * @returns the name when a matching agent file exists; `null` when it does not
+ *   (the caller falls back to `gsd-executor`). An empty/whitespace name always
+ *   returns `null`.
+ */
+function resolveAgentHint(name: string, runtime?: string, projectRoot?: string): string | null {
+  const trimmed = String(name ?? '').trim();
+  if (trimmed === '') return null;
+  // A hint is a bare agent name. Reject path separators and `..` so a value
+  // like `../../README` cannot path-traverse out of the agents dir via
+  // path.join and match an unrelated file — that would echo an invalid
+  // subagent_type and block the wave, defeating fail-closed resolution.
+  if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('..')) return null;
+  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+
+  const candidateDirs = new Set<string>();
+  candidateDirs.add(getAgentsDir(resolvedRuntime, projectRoot));
+  candidateDirs.add(path.join(getGlobalConfigDir(resolvedRuntime), 'agents'));
+
+  for (const dir of candidateDirs) {
+    if (agentFileExists(dir, trimmed, resolvedRuntime)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
 export = {
   getAgentsDir,
   checkAgentsInstalled,
   checkCodexModelPosture,
   POSTURE_REASON,
+  resolveAgentHint,
 };

@@ -594,6 +594,8 @@ interface RawPlan {
   hasSummary: boolean;
   /** #2830: true iff this plan's own SUMMARY declares `status: halted` (a designed stop). */
   halted: boolean;
+  /** #1689: optional per-plan specialist executor hint (frontmatter `agent_hint:`). null when unset. */
+  agentHint: string | null;
 }
 
 /**
@@ -814,6 +816,18 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       filesModified = Array.isArray(fmFiles) ? fmFiles.map(String) : [String(fmFiles)];
     }
 
+    // #1689: optional per-plan specialist executor hint. Read verbatim here; the
+    // orchestrator resolves it against the active runtime's agent dir at dispatch
+    // time (execute-phase.md -> `gsd_run query resolve-agent`), falling back to
+    // gsd-executor when the field is unset or the named agent does not resolve.
+    let agentHint: string | null = null;
+    const fmAgentHint = fm['agent_hint'];
+    if (fmAgentHint !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+      const hintStr = String(fmAgentHint).trim();
+      agentHint = hintStr !== '' ? hintStr : null;
+    }
+
     const hasSummary = !unsummarizedPlanFiles.has(planFile);
 
     // #2830: a plan can have a SUMMARY (hasSummary=true) and still be halted —
@@ -833,6 +847,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous,
       objective: extractObjective(content) || (fm['objective'] as string | null) || null,
       filesModified,
+      agentHint,
       taskCount,
       hasSummary,
       halted,
@@ -935,6 +950,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
+      agent_hint: rawPlan.agentHint,
       task_count: rawPlan.taskCount,
       has_summary: rawPlan.hasSummary,
       // #2830: additive fields — halted is this plan's OWN status; blocked_by
