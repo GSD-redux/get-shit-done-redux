@@ -22,6 +22,19 @@ const stateDocument = require('../gsd-core/bin/lib/state-document.cjs');
 const frontmatterLib = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const workstreamInventory = require('../gsd-core/bin/lib/workstream-inventory.cjs');
+// Phase 12 (#3310, ADR-3180 §8.4 rule 3): `cmdStateValidate`'s `warnings` are
+// now `Diagnostic[]` (S0NN codes), not bare strings, and `drift` is gone.
+const { SEVERITY } = require('../gsd-core/bin/lib/health-diagnostic-types.cjs');
+
+/** First `Diagnostic` in `output.warnings` carrying the given S0NN code, or `undefined`. */
+function findWarning(output, code) {
+  return (output.warnings || []).find((w) => w.code === code);
+}
+
+/** Phase 12 breaking-change proof (§8.4 rule 3, test matrix row 18): `drift` never appears. */
+function assertNoDriftKey(output) {
+  assert.ok(!Object.prototype.hasOwnProperty.call(output, 'drift'), 'output must not contain a drift key');
+}
 
 function writePassedVerification(tmpDir, phaseDirName, paddedPhase) {
   fs.writeFileSync(
@@ -3296,11 +3309,15 @@ describe('state validate command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'passed verification must invalidate executing state');
     assert.ok(output.warnings.length > 0, 'passed verification drift must emit a warning');
-    assert.deepStrictEqual(
-      output.drift.verification_status,
-      { state_status: 'executing', verification: 'passed' },
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'S006 must fire for passed verification against executing status');
+    assert.strictEqual(s006.severity, SEVERITY.WARNING);
+    assert.strictEqual(
+      s006.message,
+      'Status drift: STATE.md says "executing" but 02-VERIFICATION.md shows verification passed — phase may be complete',
       'template frontmatter phase must reach the existing disk-backed verification drift check',
     );
+    assertNoDriftKey(output);
   });
 
   test('template-equivalent phase identities remain clean without disk drift', () => {
@@ -3320,7 +3337,7 @@ describe('state validate command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, true, 'equivalent phase identities without disk drift must stay valid');
     assert.deepStrictEqual(output.warnings, [], 'clean control must not emit warnings');
-    assert.deepStrictEqual(output.drift, {}, 'clean control must not report drift');
+    assertNoDriftKey(output);
   });
 
   test('legacy Current Phase fallback reaches passed-verification drift on disk', () => {
@@ -3341,10 +3358,13 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'legacy phase fallback must expose verification drift');
-    assert.deepStrictEqual(
-      output.drift.verification_status,
-      { state_status: 'Executing Phase 2', verification: 'passed' },
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'S006 must fire for legacy Current Phase fallback');
+    assert.strictEqual(
+      s006.message,
+      'Status drift: STATE.md says "Executing Phase 2" but 02-VERIFICATION.md shows verification passed — phase may be complete',
     );
+    assertNoDriftKey(output);
   });
 
   test('Current Position Phase fallback reaches passed-verification drift on disk', () => {
@@ -3367,10 +3387,13 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'canonical phase fallback must expose verification drift');
-    assert.deepStrictEqual(
-      output.drift.verification_status,
-      { state_status: 'Executing Phase 2', verification: 'passed' },
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'S006 must fire for Current Position Phase fallback');
+    assert.strictEqual(
+      s006.message,
+      'Status drift: STATE.md says "Executing Phase 2" but 02-VERIFICATION.md shows verification passed — phase may be complete',
     );
+    assertNoDriftKey(output);
   });
 
   test('frontmatter phase wins conflicts and scans its selected directory', () => {
@@ -3399,15 +3422,20 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'conflicting sources must invalidate the result');
-    assert.strictEqual(output.drift.phase_reference.reason, 'conflict');
-    assert.strictEqual(output.drift.phase_reference.selected, '2');
-    assert.strictEqual(output.drift.phase_reference.sources.frontmatter, '2');
-    assert.strictEqual(output.drift.phase_reference.sources.current_position_phase, '1');
-    assert.deepStrictEqual(
-      output.drift.verification_status,
-      { state_status: 'executing', verification: 'passed' },
-      'disk evidence must come from the authoritative frontmatter phase',
+    const s003 = findWarning(output, 'S003');
+    assert.ok(s003, 'S003 must fire for conflicting phase sources');
+    // S003's message is the verbatim pre-migration template — it names only
+    // the selected (authoritative) phase, not the individual disagreeing
+    // sources; the old `drift.phase_reference.sources` structured detail has
+    // no S0NN equivalent (disclosed breaking change, §8.4 rule 3).
+    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'disk evidence must come from the authoritative frontmatter phase');
+    assert.strictEqual(
+      s006.message,
+      'Status drift: STATE.md says "executing" but 02-VERIFICATION.md shows verification passed — phase may be complete',
     );
+    assertNoDriftKey(output);
   });
 
   test('missing phase sources fail closed with phase-reference drift', () => {
@@ -3420,9 +3448,13 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'missing phase source must not validate cleanly');
-    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
-    assert.strictEqual(output.drift.phase_reference.selected, null);
-    assert.ok(output.warnings.some(warning => /phase/i.test(warning)), 'warning must identify phase resolution');
+    const s002 = findWarning(output, 'S002');
+    assert.ok(s002, 'S002 must fire when no phase source resolves');
+    assert.strictEqual(
+      s002.message,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+    );
+    assertNoDriftKey(output);
   });
 
   test('non-scalar frontmatter phase fails closed without a body fallback', () => {
@@ -3444,8 +3476,13 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'non-scalar phase source must not validate cleanly');
-    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
-    assert.strictEqual(output.drift.phase_reference.sources.frontmatter, null);
+    const s002 = findWarning(output, 'S002');
+    assert.ok(s002, 'S002 must fire when the frontmatter phase source is non-scalar');
+    assert.strictEqual(
+      s002.message,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+    );
+    assertNoDriftKey(output);
   });
 
   test('missing phases root fails closed with phase-directory drift', () => {
@@ -3460,8 +3497,10 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'missing phases root must not validate cleanly');
-    assert.strictEqual(output.drift.phase_directory.reason, 'missing_root');
-    assert.ok(output.warnings.some(warning => /director/i.test(warning)), 'warning must identify the missing directory');
+    const s004 = findWarning(output, 'S004');
+    assert.ok(s004, 'S004 must fire when the phases directory is missing');
+    assert.strictEqual(s004.message, 'Cannot validate phase drift: phases directory is missing for phase 2');
+    assertNoDriftKey(output);
   });
 
   test('missing canonical phase-directory match fails closed', () => {
@@ -3474,8 +3513,10 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'missing phase-directory match must not validate cleanly');
-    assert.strictEqual(output.drift.phase_directory.reason, 'not_found');
-    assert.strictEqual(output.drift.phase_directory.selected, '2');
+    const s004 = findWarning(output, 'S004');
+    assert.ok(s004, 'S004 must fire when no phase directory matches');
+    assert.strictEqual(s004.message, 'Cannot validate phase drift: no phase directory matches phase 2');
+    assertNoDriftKey(output);
   });
 
   test('crafted path-like phase cannot scan verification evidence outside phases root', () => {
@@ -3502,8 +3543,14 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.valid, false, 'crafted phase reference must fail closed');
-    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
-    assert.ok(!output.drift.verification_status, 'outside-root verification evidence must not be scanned');
+    const s002 = findWarning(output, 'S002');
+    assert.ok(s002, 'S002 must fire when the crafted phase value fails to resolve');
+    assert.strictEqual(
+      s002.message,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+    );
+    assert.ok(!findWarning(output, 'S006'), 'outside-root verification evidence must not be scanned');
+    assertNoDriftKey(output);
   });
 
   test('STATE says executing + VERIFICATION.md shows passed emits warning', () => {
@@ -3524,7 +3571,10 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.ok(output.warnings.length > 0, 'Should have warnings when executing but verification passed');
-    assert.ok(output.warnings.some(w => /verif/i.test(w)), 'Warning should mention verification');
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'S006 must fire when executing but verification passed');
+    assert.match(s006.message, /verif/i, 'Warning should mention verification');
+    assertNoDriftKey(output);
   });
 
   test('STATE plan count 3 but 12 SUMMARY.md on disk emits mismatch warning', () => {
@@ -3546,7 +3596,11 @@ describe('state validate command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.ok(output.warnings.length > 0, 'Should have warnings for plan count mismatch');
-    assert.ok(output.warnings.some(w => /plan.*count|count.*mismatch/i.test(w)), 'Warning should mention plan count mismatch');
+    const s005 = findWarning(output, 'S005');
+    assert.ok(s005, 'S005 must fire for a plan count mismatch');
+    assert.match(s005.message, /plan.*count|count.*mismatch/i, 'Warning should mention plan count mismatch');
+    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 12');
+    assertNoDriftKey(output);
   });
 
   test('perfect state returns valid: true, no warnings', () => {
@@ -3592,6 +3646,228 @@ describe('state validate command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 12 (#3310, ADR-3180 §8.4 rule 3) — S0NN coded-diagnostic fixtures for
+// `cmdStateValidate`. `warnings` is now `Diagnostic[]` (not bare strings) and
+// `drift` is gone from every output shape. One test per code, title naming
+// the code (test-matrix §4 / §8.5's "known-bad fixture proves it can fire"
+// discipline extended to the S0NN codes, which are NOT `Rule`-table entries —
+// `cmdStateValidate` builds `Diagnostic[]` directly, per the design doc).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3310 state validate — S0NN coded diagnostics', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('S001: STATE.md corrupt (NUL byte) fires with the verbatim textEncodingError message', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), Buffer.from('# Project State\0corrupt'));
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(output.warnings.length, 1);
+    const [s001] = output.warnings;
+    assert.strictEqual(s001.code, 'S001');
+    assert.strictEqual(s001.severity, SEVERITY.ERROR);
+    assert.strictEqual(s001.remedy.action, 'advise');
+    assert.match(s001.message, /^STATE\.md: file contains NUL bytes \(first at offset \d+\)\./, 'message must be reused verbatim from textEncodingError, not paraphrased');
+    assertNoDriftKey(output);
+  });
+
+  test('S002: no usable current-phase value fires the verbatim pre-migration message', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['# Project State', '', '**Status:** Planning', ''].join('\n'),
+    );
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s002 = findWarning(output, 'S002');
+    assert.ok(s002);
+    assert.strictEqual(s002.severity, SEVERITY.WARNING);
+    assert.strictEqual(s002.remedy.action, 'advise');
+    assert.strictEqual(
+      s002.message,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+    );
+    assertNoDriftKey(output);
+  });
+
+  test('S003: conflicting phase-reference sources fires the verbatim template with interpolated phase', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'current_phase: 2',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 1',
+        '**Status:** Executing Phase 2',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-core'), { recursive: true });
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s003 = findWarning(output, 'S003');
+    assert.ok(s003);
+    assert.strictEqual(s003.severity, SEVERITY.WARNING);
+    assert.strictEqual(s003.remedy.action, 'advise');
+    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
+    assertNoDriftKey(output);
+  });
+
+  test('S004: phases directory question collapses three sub-conditions to one code with distinct messages', () => {
+    // (a) phases/ root missing entirely.
+    cleanup(tmpDir);
+    tmpDir = createFixture({ planning: false, projectDoc: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: 2', 'status: planning', '---', '', '# Project State', ''].join('\n'),
+    );
+    const missingRootOutput = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    const missingRootS004 = findWarning(missingRootOutput, 'S004');
+    assert.ok(missingRootS004, 'S004 must fire when phases/ root is missing');
+    assert.strictEqual(missingRootS004.severity, SEVERITY.WARNING);
+    assert.strictEqual(missingRootS004.remedy.action, 'advise');
+    assert.strictEqual(missingRootS004.message, 'Cannot validate phase drift: phases directory is missing for phase 2');
+    assertNoDriftKey(missingRootOutput);
+
+    // (b) phases/ exists, no matching subdir for the current phase.
+    cleanup(tmpDir);
+    tmpDir = createFixture();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'current_phase: 2', 'status: planning', '---', '', '# Project State', ''].join('\n'),
+    );
+    const notFoundOutput = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    const notFoundS004 = findWarning(notFoundOutput, 'S004');
+    assert.ok(notFoundS004, 'S004 must fire when no phase directory matches');
+    assert.strictEqual(notFoundS004.message, 'Cannot validate phase drift: no phase directory matches phase 2');
+    assertNoDriftKey(notFoundOutput);
+
+    // Same code, distinct message text per sub-condition — §8.2 rule 1.
+    assert.strictEqual(missingRootS004.code, notFoundS004.code);
+    assert.notStrictEqual(missingRootS004.message, notFoundS004.message);
+  });
+
+  test('S005: plan-count mismatch fires the verbatim template with both counts interpolated', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 3\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s005 = findWarning(output, 'S005');
+    assert.ok(s005);
+    assert.strictEqual(s005.severity, SEVERITY.WARNING);
+    assert.strictEqual(s005.remedy.action, 'advise');
+    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 2');
+    assertNoDriftKey(output);
+  });
+
+  test('S006: verification passed but status still executing fires the verbatim template', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006);
+    assert.strictEqual(s006.severity, SEVERITY.WARNING);
+    assert.strictEqual(s006.remedy.action, 'advise');
+    assert.strictEqual(
+      s006.message,
+      'Status drift: STATE.md says "Executing Phase 1" but 01-VERIFICATION.md shows verification passed — phase may be complete',
+    );
+    assertNoDriftKey(output);
+  });
+
+  test('S007: all plans have summaries but status still executing fires the verbatim template (never a drift entry pre-migration either)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 2\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-SUMMARY.md'), '# Summary\n');
+    // No VERIFICATION.md — otherwise S006 would cover it instead (see the
+    // production code's own "Only warn if no verification exists" guard).
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s007 = findWarning(output, 'S007');
+    assert.ok(s007);
+    assert.strictEqual(s007.severity, SEVERITY.WARNING);
+    assert.strictEqual(s007.remedy.action, 'advise');
+    assert.strictEqual(
+      s007.message,
+      'All 2 plans have summaries but status is still "Executing Phase 1" — phase may be ready for verification',
+    );
+    assertNoDriftKey(output);
+  });
+
+  test('output never carries a drift key, across clean/warning/error shapes (breaking-change proof, test matrix row 18)', () => {
+    // Clean shape.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    const clean = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.ok(!('drift' in clean));
+    assert.ok(!Object.keys(clean).includes('drift'));
+
+    // Warning shape (S005).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 5\n`,
+    );
+    const warned = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.ok(!('drift' in warned));
+    assert.ok(!Object.keys(warned).includes('drift'));
+
+    // Error shape (S001, corrupt STATE.md).
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), Buffer.from('# Project State\0bad'));
+    const corrupt = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.ok(!('drift' in corrupt));
+    assert.ok(!Object.keys(corrupt).includes('drift'));
+
+    // `{error: 'STATE.md not found'}` pre-check shape.
+    cleanup(tmpDir);
+    tmpDir = createFixture();
+    const missing = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.ok(!('drift' in missing));
+    assert.ok(!Object.keys(missing).includes('drift'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3187 (ADR-3180 §7.7) — matrix section B: `state validate`'s scope field,
 // including the #3162 headline regression and #1255 frontmatter shadowing.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3612,7 +3888,8 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     // at all. Pre-#3187, cmdStateValidate read `Current Phase` off the body
     // only, resolved null, and the ENTIRE drift block was skipped —
     // "could not look" was output-identical to "looked, all clean"
-    // ({valid:true, warnings:[], drift:{}}).
+    // (originally {valid:true, warnings:[], drift:{}}; post-#3310 the
+    // equivalent clean shape is {valid:true, warnings:[]}, `drift` removed).
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       [
@@ -3639,9 +3916,11 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     // The RIGHT reason to fail before the fix: valid was true and no
     // plan-count warning was ever generated, not a crash.
     assert.strictEqual(output.valid, false, 'STATE.md says 5 plans, disk has 2 — drift must be reported');
-    assert.ok(output.warnings.some((w) => /plan.*count|count.*mismatch/i.test(w)));
-    assert.deepEqual(output.drift.plan_count, { state: 5, disk: 2 });
+    const s005 = findWarning(output, 'S005');
+    assert.ok(s005, 'S005 must fire for the frontmatter-only phase drift');
+    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 5 plans, disk has 2');
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assertNoDriftKey(output);
   });
 
   test('B2: validate passes cleanly when it actually looked (frontmatter-only phase, counts match)', () => {
@@ -3670,6 +3949,7 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     assert.strictEqual(output.valid, true);
     assert.strictEqual(output.warnings.length, 0);
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assertNoDriftKey(output);
   });
 
   test('B3: validate still detects body-resolved drift (regression guard, unchanged today)', () => {
@@ -3691,8 +3971,11 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
     assert.strictEqual(output.valid, false);
-    assert.ok(output.warnings.some((w) => /plan.*count|count.*mismatch/i.test(w)));
+    const s005 = findWarning(output, 'S005');
+    assert.ok(s005, 'S005 must fire for the body-resolved plan-count drift');
+    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 3 plans, disk has 1');
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assertNoDriftKey(output);
   });
 
   test('B4: unresolvable phase is not reported as clean (distinguishable from B2)', () => {
@@ -3704,7 +3987,9 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
     assert.strictEqual(output.valid, false);
-    assert.strictEqual(output.drift.phase_reference.reason, 'unresolved');
+    const s002 = findWarning(output, 'S002');
+    assert.ok(s002, 'S002 must fire when the phase is unresolvable');
+    assertNoDriftKey(output);
   });
 
   test('B5: missing phase dir differs from could-not-look (distinguishable from B4)', () => {
@@ -3723,7 +4008,10 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
     assert.strictEqual(output.valid, false);
-    assert.strictEqual(output.drift.phase_directory.reason, 'not_found');
+    const s004 = findWarning(output, 'S004');
+    assert.ok(s004, 'S004 must fire when no phase directory matches');
+    assert.strictEqual(s004.message, 'Cannot validate phase drift: no phase directory matches phase 99');
+    assertNoDriftKey(output);
   });
 
   test('B6: unreadable phases dir is surfaced, not swallowed', (t) => {
@@ -3757,7 +4045,10 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
     const output = JSON.parse(raw);
     assert.strictEqual(output.valid, false, 'an unreadable directory must not validate cleanly');
-    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
+    const s004 = findWarning(output, 'S004');
+    assert.ok(s004, 'S004 must fire when the phases directory itself is unreadable');
+    assert.strictEqual(s004.message, 'Cannot validate phase drift: phases directory is unreadable for phase 1');
+    assertNoDriftKey(output);
   });
 
   test('B6b: unreadable selected phase directory fails closed', (t) => {
@@ -3777,7 +4068,10 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
 
     const output = JSON.parse(captureStdout(() => stateLib.cmdStateValidate(tmpDir, false)));
     assert.strictEqual(output.valid, false, 'an unreadable selected phase must not validate cleanly');
-    assert.strictEqual(output.drift.phase_directory.reason, 'unreadable');
+    const s004 = findWarning(output, 'S004');
+    assert.ok(s004, 'S004 must fire when the selected phase directory itself is unreadable');
+    assert.strictEqual(s004.message, 'Cannot validate phase drift: phase directory is unreadable for phase 1');
+    assertNoDriftKey(output);
   });
 
   test('B7: one unreadable verification file does not abort the scan', (t) => {
@@ -3814,13 +4108,19 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     const raw = captureStdout(() => stateLib.cmdStateValidate(tmpDir, false));
     const output = JSON.parse(raw);
     // Per-file swallow (#2245 audit) is unchanged: the other verification
-    // file is still consulted, so its drift still fires, and the whole
-    // scan is NOT degraded to UNREADABLE just because one file 404s.
-    // Asserted on the structured `drift` field (CONTRIBUTING.md's "Prohibited:
-    // Raw Text Matching on Test Outputs"), not a `warnings` prose regex —
-    // `drift.verification_status` is a typed record, not free-form text.
-    assert.deepStrictEqual(output.drift.verification_status, { state_status: 'Executing Phase 1', verification: 'passed' });
+    // file is still consulted, so its S006 diagnostic still fires, and the
+    // whole scan is NOT degraded to UNREADABLE just because one file 404s.
+    // Asserted on the S006 `Diagnostic`'s `code`/`message` fields
+    // (CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test Outputs")
+    // rather than a bare `warnings` prose regex — the vf filename isn't
+    // pinned since readdirSync order across the two verification files isn't
+    // guaranteed.
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, 'S006 must fire for the readable verification file despite the unreadable sibling');
+    assert.match(s006.message, /STATE\.md says "Executing Phase 1"/);
+    assert.match(s006.message, /shows verification passed/);
     assert.strictEqual(output.scope, SCOPE.COMPLETE);
+    assertNoDriftKey(output);
   });
 
   test('B8: absent STATE.md unchanged', () => {
@@ -3834,7 +4134,12 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
     assert.strictEqual(output.valid, false);
     assert.strictEqual(output.warnings.length, 1);
+    const [s001] = output.warnings;
+    assert.strictEqual(s001.code, 'S001');
+    assert.strictEqual(s001.severity, SEVERITY.ERROR, 'S001 is error-class severity, not a mere warning');
+    assert.match(s001.message, /STATE\.md: file contains NUL bytes/);
     assert.strictEqual(output.scope, undefined, 'the #2701 early return is explicitly unchanged — no scope key');
+    assertNoDriftKey(output);
   });
 
   test('B10: json and default output agree (validate has no distinct raw-text mode; --raw is a no-op for it)', () => {
@@ -3904,10 +4209,14 @@ describe('#3187 state validate — scope field (matrix section B)', () => {
       }
       const output = JSON.parse(runGsdTools('state validate', dir).output);
       assert.strictEqual(output.valid, false, `n=${n} vs disk n+1 must be flagged`);
-      // Asserted on the structured `drift.plan_count` record rather than a
-      // `warnings` prose regex (CONTRIBUTING.md's "Prohibited: Raw Text
-      // Matching on Test Outputs") — `drift` is typed, `warnings` is free-form.
-      assert.deepStrictEqual(output.drift.plan_count, { state: n, disk: n + 1 });
+      // Asserted on the S005 `Diagnostic`'s exact `message` rather than a
+      // bare `warnings` prose regex (CONTRIBUTING.md's "Prohibited: Raw Text
+      // Matching on Test Outputs") — `code`/`message` are the structured
+      // fields now, `drift` no longer exists.
+      const s005 = findWarning(output, 'S005');
+      assert.ok(s005, `n=${n}: S005 must fire for the plan-count mismatch`);
+      assert.strictEqual(s005.message, `Plan count mismatch: STATE.md says ${n} plans, disk has ${n + 1}`);
+      assertNoDriftKey(output);
       cleanup(dir);
     }
   });
@@ -4039,9 +4348,11 @@ describe('#3187 chain-owner identity — every consumer agrees with stateFieldVa
 
     const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
     assert.strictEqual(output.valid, false, 'conflicting phase sources must not validate cleanly');
-    assert.strictEqual(output.drift.phase_reference.reason, 'conflict');
-    assert.strictEqual(output.drift.phase_reference.selected, '2');
-    assert.ok(!output.drift.plan_count, 'validate must scan phase 2, not the shadowed phase 1');
+    const s003 = findWarning(output, 'S003');
+    assert.ok(s003, 'S003 must fire for conflicting phase sources');
+    assert.strictEqual(s003.message, 'Phase reference conflict: validating authoritative phase 2; align STATE.md phase sources');
+    assert.ok(!findWarning(output, 'S005'), 'validate must scan phase 2, not the shadowed phase 1 (no plan-count drift)');
+    assertNoDriftKey(output);
   });
 
   test('C3: prune resolves the same phase as the owner', () => {
@@ -10637,7 +10948,8 @@ describe('cmdStateValidate nested plans/ layout (#3257)', () => {
     const parsed = JSON.parse(result.output);
     assert.ok(parsed.valid, `state validate should be valid; warnings: ${JSON.stringify(parsed.warnings)}`);
     assert.deepStrictEqual(parsed.warnings, [], 'no drift warnings for nested-layout phase with correct plan count');
-    assert.ok(!parsed.drift.plan_count, 'no plan_count drift when nested scan matches STATE.md');
+    assert.ok(!findWarning(parsed, 'S005'), 'no S005 (plan-count drift) when nested scan matches STATE.md');
+    assertNoDriftKey(parsed);
   });
 
   test('emits drift warning when STATE.md plan count does not match nested disk count', () => {
@@ -10667,9 +10979,10 @@ describe('cmdStateValidate nested plans/ layout (#3257)', () => {
     const parsed = JSON.parse(result.output);
     assert.ok(!parsed.valid, 'state validate should report invalid when plan counts differ');
     assert.ok(parsed.warnings.length > 0, 'at least one drift warning expected');
-    assert.ok(parsed.drift.plan_count, 'plan_count drift object must be present');
-    assert.strictEqual(parsed.drift.plan_count.disk, 2, 'disk count must reflect nested scan (2 nested plans)');
-    assert.strictEqual(parsed.drift.plan_count.state, 5, 'state count from STATE.md must be 5');
+    const s005 = findWarning(parsed, 'S005');
+    assert.ok(s005, 'S005 diagnostic must be present');
+    assert.strictEqual(s005.message, 'Plan count mismatch: STATE.md says 5 plans, disk has 2', 'disk count must reflect nested scan (2 nested plans), state count must be 5');
+    assertNoDriftKey(parsed);
   });
 
   test('PLAN-OUTLINE.md excluded from nested count in validate', () => {
@@ -10697,7 +11010,8 @@ describe('cmdStateValidate nested plans/ layout (#3257)', () => {
 
     const parsed = JSON.parse(result.output);
     assert.ok(parsed.valid, `should be valid (outline excluded); warnings: ${JSON.stringify(parsed.warnings)}`);
-    assert.ok(!parsed.drift.plan_count, 'no plan_count drift when outline excluded from nested count');
+    assert.ok(!findWarning(parsed, 'S005'), 'no S005 (plan-count drift) when outline excluded from nested count');
+    assertNoDriftKey(parsed);
   });
 });
 
