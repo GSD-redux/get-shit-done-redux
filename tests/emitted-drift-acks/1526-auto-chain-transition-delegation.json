@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "transition.md": {
+      "reason": "#1526 (delegate, user decision 2026-08-13): added a `post_completion_mode` step at the top of <process> so transition.md is reusable when invoked by execute-phase AFTER phase.complete + verification already ran. The mode documents two invocations — standalone (run all steps) and post-completion delegation (SKIP verify_completion + update_roadmap_and_state to avoid a double phase.complete; RUN cleanup_handoff; BEGIN at evolve_project). Growth (~1.4 KB) is this one new step; no other step changed. (execute-phase.md, also touched by this PR, shrank slightly — its inline update_project_md + offer_next were replaced by a shorter delegation step — so it needs no ack.)"
+    }
+  }
+}

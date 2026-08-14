@@ -7,10 +7,25 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
+
+/**
+ * #3188: write the canonical flat planning docs so an init-query "present" test
+ * actually has the file it asserts. The emitter now returns null for
+ * state_path / roadmap_path / requirements_path when the file is absent; tests
+ * that exercise the present-case must therefore create the file. Phase
+ * resolution is directory-based (findPhaseInternal) and unaffected by these.
+ */
+function writePlanningDocs(tmpDir, { state = true, roadmap = true, requirements = true } = {}) {
+  const planning = path.join(tmpDir, '.planning');
+  fs.mkdirSync(planning, { recursive: true });
+  if (state) fs.writeFileSync(path.join(planning, 'STATE.md'), '# State\n');
+  if (roadmap) fs.writeFileSync(path.join(planning, 'ROADMAP.md'), '# Roadmap\n');
+  if (requirements) fs.writeFileSync(path.join(planning, 'REQUIREMENTS.md'), '# Requirements\n');
+}
 
 describe('init commands', () => {
   let tmpDir;
@@ -32,6 +47,9 @@ describe('init commands', () => {
     seedPhase(tmpDir, '03-api', {
       '03-01-PLAN.md': '# Plan',
     });
+    // #3188: these are present-case assertions — the docs must exist on disk
+    // or the emitter now (correctly) returns null for the *_path fields.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init execute-phase 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -86,6 +104,8 @@ describe('init commands', () => {
       '03-VERIFICATION.md': '# Verification',
       '03-UAT.md': '# UAT',
     });
+    // #3188: present-case assertions — create the planning docs the emitter keys on.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init plan-phase 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -326,6 +346,8 @@ describe('init commands', () => {
       '03-VERIFICATION.md': '# Verification',
       '03-UAT.md': '# UAT',
     });
+    // #3188: present-case assertions — create the planning docs the emitter keys on.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init phase-op 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -719,6 +741,65 @@ describe('init commands', () => {
     assert.strictEqual(output.phase_found, true);
     assert.strictEqual(output.phase_name, 'Details Block Regression');
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3188: init execute-phase / plan-phase / phase-op must return null for
+// state_path / roadmap_path / requirements_path when the planning doc is
+// absent — matching the contract the conditional sibling fields (patterns_path,
+// context_path, …) already honour, and that ultraplan-phase.md:104 gates on.
+// The WRITING emitters (new-project / new-milestone / ingest-docs) are
+// intentionally NOT changed and keep returning a non-null write-target path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3188 — init query path fields are null when the planning file is absent', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    // #2376 macOS fix: realpath so absPlanningPath matches process.cwd()-anchored output.
+    tmpDir = fs.realpathSync(createFixture());
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // All three READING (projection) sites share the identical field group; the
+  // absent/present boundary must hold uniformly across them.
+  const COMMANDS = [
+    ['init execute-phase', 'init execute-phase 03'],
+    ['init plan-phase', 'init plan-phase 03'],
+    ['init phase-op', 'init phase-op 03'],
+  ];
+
+  for (const [label, argv] of COMMANDS) {
+    test(`${label}: state_path / roadmap_path / requirements_path are null when the docs are absent`, () => {
+      // No STATE.md / ROADMAP.md / REQUIREMENTS.md written.
+      const result = runGsdTools(argv, tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.state_path, null,
+        'state_path must be null when STATE.md is absent');
+      assert.strictEqual(output.roadmap_path, null,
+        'roadmap_path must be null when ROADMAP.md is absent');
+      assert.strictEqual(output.requirements_path, null,
+        'requirements_path must be null when REQUIREMENTS.md is absent');
+    });
+
+    test(`${label}: state_path / roadmap_path / requirements_path are absolute when the docs exist`, () => {
+      writePlanningDocs(tmpDir);
+
+      const result = runGsdTools(argv, tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.state_path, absPlanningPath(tmpDir, 'STATE.md'));
+      assert.strictEqual(output.roadmap_path, absPlanningPath(tmpDir, 'ROADMAP.md'));
+      assert.strictEqual(output.requirements_path, absPlanningPath(tmpDir, 'REQUIREMENTS.md'));
+    });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1733,11 +1814,11 @@ describe('cmdInitQuick quick_id — exact value under GSD_NOW_MS+TZ pin', () => 
   // runtime output — so this test can actually catch a broken implementation.
   function expectedQuickId(ms) {
     const d = new Date(ms);
-    const yy = String(d.getFullYear()).slice(-2);
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+    const yy = String(d.getUTCFullYear()).slice(-2);
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
     const dateStr = yy + mm + dd;
-    const secondsSinceMidnight = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+    const secondsSinceMidnight = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
     const timeBlocks = Math.floor(secondsSinceMidnight / 2);
     const timeEncoded = timeBlocks.toString(36).padStart(3, '0');
     return dateStr + '-' + timeEncoded;
@@ -2322,6 +2403,9 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
       path.join(wsDir, 'ROADMAP.md'),
       '# Roadmap\n\n### Phase 1: Setup\n**Goal:** Bootstrap\n**Requirements**: R-01\n**Plans:** 1 plans\n'
     );
+    // #3188: REQUIREMENTS.md present so the workstream-scoped requirements_path
+    // present-case assertion holds (STATE/ROADMAP already written above).
+    fs.writeFileSync(path.join(wsDir, 'REQUIREMENTS.md'), '# Requirements\n');
     fs.writeFileSync(
       path.join(wsDir, 'config.json'),
       JSON.stringify({})
@@ -2371,6 +2455,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
       // Flat fixture: the workstream fixture exists but we do NOT pass GSD_WORKSTREAM.
       // Handler should resolve flat .planning/ → state/roadmap/config are flat,
       // and the workstream phase is NOT found (flat phases/ is empty).
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init execute-phase 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2464,6 +2550,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
     });
 
     test('plan-phase WITHOUT GSD_WORKSTREAM resolves flat paths (boundary control)', () => {
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init plan-phase 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2510,6 +2598,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
     });
 
     test('phase-op WITHOUT GSD_WORKSTREAM does not find workstream-only phase (negative discrimination)', () => {
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init phase-op 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -4064,5 +4154,110 @@ describe('init section manifest', () => {
         );
       }
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3171 (Claim 3): the phase-start flow must not land a directory slug in
+// STATE.md's `current_phase_name`. When a phase directory already exists on
+// disk, `init execute-phase`'s disk-lookup path derived `phase_name` from the
+// directory-name remainder — itself an already-slugified value (`phase.add`
+// writes `${num}-${slug}` dirs) — so `phase_name` and `phase_slug` came out
+// byte-identical, and the execute-phase workflow forwarded that slug into
+// `state begin-phase --name`. The milestone-name half of #3171 was subsumed
+// by #3216 / PR #3226; these tests cover the remaining current_phase_name half.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3171: init execute-phase emits the display name, not the directory slug', () => {
+  const DISPLAY_NAME = 'Loop-Termination and Baseline Correctness';
+  const PHASE_SLUG_DIR = '35-loop-termination-and-baseline-correctness';
+  const ROADMAP_3171 = [
+    '# Roadmap',
+    '',
+    `### Phase 35: ${DISPLAY_NAME}`,
+    '**Goal:** Fix loop termination',
+    '**Plans:** 1 plans',
+    '',
+  ].join('\n');
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+    seedPhase(tmpDir, PHASE_SLUG_DIR, { '35-01-PLAN.md': '# Plan' });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP_3171);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('phase_name is the ROADMAP display name when the phase directory exists', () => {
+    const result = runGsdTools('init execute-phase 35 --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_found, true, 'phase must be found on disk');
+    assert.ok(
+      typeof output.phase_dir === 'string' && output.phase_dir.includes(PHASE_SLUG_DIR),
+      `phase_dir must point at the on-disk directory; got ${JSON.stringify(output.phase_dir)}`,
+    );
+    assert.strictEqual(
+      output.phase_name,
+      DISPLAY_NAME,
+      `phase_name must be the ROADMAP display name, not the directory slug; got ${JSON.stringify(output.phase_name)}`,
+    );
+    assert.strictEqual(output.phase_slug, 'loop-termination-and-baseline-correctness');
+    assert.notStrictEqual(output.phase_name, output.phase_slug,
+      'phase_name must differ from phase_slug — a byte-identical pair is the #3171 defect signature');
+  });
+
+  test('the phase-start flow does not land a slug in current_phase_name', () => {
+    // 1. init execute-phase → the value the execute-phase workflow forwards to begin-phase.
+    const initResult = runGsdTools('init execute-phase 35 --raw', tmpDir);
+    assert.ok(initResult.success, `init execute-phase failed: ${initResult.error}`);
+    const initOutput = JSON.parse(initResult.output);
+    assert.strictEqual(initOutput.phase_name, DISPLAY_NAME);
+
+    // 2. Seed a STATE.md the transition module can rewrite (frontmatter + body).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 34',
+        'current_phase_name: Prior Phase',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 34 — Prior Phase',
+        'Plan: Not started',
+        'Status: Ready to execute',
+        '',
+      ].join('\n'),
+    );
+
+    // 3. The orchestrator wiring: feed init's phase_name into begin-phase --name.
+    const beginResult = runGsdTools(
+      ['state', 'begin-phase', '--phase', '35', '--name', initOutput.phase_name, '--plans', '1'],
+      tmpDir,
+    );
+    assert.ok(beginResult.success, `state begin-phase failed: ${beginResult.error}`);
+
+    // 4. current_phase_name in STATE.md must be the display name, never the slug.
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = parseFrontmatter(stateContent);
+    assert.strictEqual(
+      fm.current_phase_name,
+      DISPLAY_NAME,
+      `current_phase_name must hold the display name, not a directory slug; got ${JSON.stringify(fm.current_phase_name)}`,
+    );
+    assert.ok(
+      !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(String(fm.current_phase_name)),
+      `current_phase_name must not be slug-shaped; got ${JSON.stringify(fm.current_phase_name)}`,
+    );
   });
 });

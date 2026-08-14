@@ -51,7 +51,7 @@ const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf-8');
 const verifier = read('agents', 'gsd-verifier.md');
 const template = read('gsd-core', 'templates', 'verification-report.md');
 const agentsDoc = read('docs', 'AGENTS.md');
-const verifyPhase = read('gsd-core', 'workflows', 'verify-phase.md');
+const verifyPhase = read('gsd-core', 'references', 'verifier-phase-gates.md');
 
 const QUALIFIER = '✓ VERIFIED (coincidental-reliance)';
 const REASONS = ['undeclared-precondition', 'incidental-ordering', 'fixture-only'];
@@ -225,7 +225,7 @@ describe('#1955: coincidental-reliance advisory — the report surface', () => {
   });
 });
 
-describe('#1955: cross-surface parity (agent, template, verify-phase workflow)', () => {
+describe('#1955: cross-surface parity (agent, template, verifier gate reference)', () => {
   test('PARITY: agent and standalone template agree on the advisory vocabulary', () => {
     // Generative-fix-divergence gate: two surfaces render the same report, so a
     // token added to one and not the other is the defect this test exists for.
@@ -245,20 +245,19 @@ describe('#1955: cross-surface parity (agent, template, verify-phase workflow)',
     assert.match(guidelines, /coincidental-reliance/);
   });
 
-  test('verify-phase workflow reaches the rule through its eager template import', () => {
-    // The third surface. `gsd-core/workflows/verify-phase.md` is the
-    // non-subagent verification path and reimplements the truth rubric inline,
-    // but it sits 29 bytes under the DEFAULT tier hard cap in
-    // tests/workflow-size-budget.test.cjs, so the rule is NOT duplicated into
-    // it. It reaches the rule instead through the eager `@`-import of the
-    // template, whose Guidelines carry the instruction — not merely the output
-    // shape. Both halves of that claim are asserted here, because either one
-    // silently failing turns the workflow surface into an undetected
-    // divergence.
+  test('verifier gate reference reaches the rule through the canonical template', () => {
+    // The third surface. `gsd-core/references/verifier-phase-gates.md` is the
+    // verifier agent's eagerly-imported gate reference (migrated from the
+    // retired workflows/verify-phase.md in #1892). It does NOT reimplement the
+    // truth rubric — the rule is NOT duplicated into it. It reaches the rule
+    // instead through its pointer to the canonical report template, whose
+    // Guidelines carry the instruction — not merely the output shape. Both
+    // halves of that claim are asserted here, because either one silently
+    // failing turns the reference surface into an undetected divergence.
     assert.match(
       verifyPhase,
       /@[^\n]*gsd-core\/templates\/verification-report\.md/,
-      'verify-phase.md must eagerly import the verification-report template',
+      'verifier-phase-gates.md must point at the verification-report template',
     );
     const guidelines = template.slice(template.indexOf('**Per-truth states'));
     assert.match(
@@ -269,16 +268,16 @@ describe('#1955: cross-surface parity (agent, template, verify-phase workflow)',
   });
 
   test('the workflow surface carries no divergent copy of the rule', () => {
-    // Characterization, not aspiration: verify-phase.md deliberately holds NO
-    // copy of the detection prose today. If a future change adds one, this
-    // assertion fails and forces a decision — duplicate it deliberately and
-    // update this test, or keep the single template-carried source. Silent
-    // partial duplication across the two surfaces is the failure mode
+    // Characterization, not aspiration: verifier-phase-gates.md deliberately
+    // holds NO copy of the detection prose today. If a future change adds one,
+    // this assertion fails and forces a decision — duplicate it deliberately
+    // and update this test, or keep the single template-carried source. Silent
+    // partial duplication across the surfaces is the failure mode
     // (generative fix divergence) this locks out.
     assert.doesNotMatch(
       verifyPhase,
       /coincidental-reliance/,
-      'verify-phase.md must not grow a second copy of the rule without a deliberate decision',
+      'verifier-phase-gates.md must not grow a second copy of the rule without a deliberate decision',
     );
   });
 

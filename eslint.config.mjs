@@ -138,6 +138,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/state-document.cjs',
       'gsd-core/bin/lib/planning-snapshot.cjs',
       'gsd-core/bin/lib/pattern.cjs',
+      'gsd-core/bin/lib/text-lines.cjs',
+      'gsd-core/bin/lib/token-scanner.cjs',
       'gsd-core/bin/lib/health-diagnostic-types.cjs',
       'gsd-core/bin/lib/health-diagnostic.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/root-existence.cjs',
@@ -314,6 +316,8 @@ export default tseslint.config(
       // escape-all-metachars .replace() helper or an unrouted new RegExp()
       // from a runtime value.
       'local/no-adhoc-regex-escape': 'error',
+      // ADR-3212 Phase 2 (#3413): widen the CRLF-fragile-split prohibition from tests/ to src/.
+      'local/no-crlf-fragile-split': 'error',
       // ADR-1703 Phase 5: flag path-returning calls interpolated into content
       // (markdown @-references, workflow files, generated docs) without POSIX
       // normalization. Promoted to 'error' after precision review (path.basename

@@ -124,8 +124,6 @@ const ALLOWLIST = {
   'fast.md': ['time_sizing'],
   // Execute-phase uses a configurable test-gate timeout (workflow.test_gate_timeout, #1857)
   'execute-phase.md': ['time_sizing'],
-  // Verify-phase uses a configurable test-gate timeout (workflow.test_gate_timeout, #1857)
-  'verify-phase.md': ['time_sizing'],
   // Map-codebase documents subagent_timeout
   'map-codebase.md': ['time_sizing'],
   // Help documents CodeRabbit timing

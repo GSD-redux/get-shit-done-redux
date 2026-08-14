@@ -44,9 +44,9 @@ const BASE_SITES = [
   // --- baseline: the site already tolerates `[anything] Phase N`
   { file: 'roadmap.cts', site: 'searchPhaseInContent headingPattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
-  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze phasePattern',
+  { file: 'roadmap.cts', site: 'collectAnalyzePhases phasePattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
-  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze nextHeader',
+  { file: 'roadmap.cts', site: 'collectAnalyzePhases nextHeader',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   { file: 'validate.cts', site: 'buildRoadmapPhaseVariants phasePattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
@@ -103,7 +103,7 @@ const BASE_SITES = [
   // --- baseline: the site spells a BARE `Phase ` with no bracket tolerance
   { file: 'roadmap.cts', site: 'searchPhaseInContent checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
-  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze checkboxPattern',
+  { file: 'roadmap.cts', site: 'collectAnalyzePhases checkboxPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },

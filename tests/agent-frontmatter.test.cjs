@@ -106,6 +106,14 @@ describe('HOOK: hooks frontmatter pattern', () => {
 // ─── Spawn Type Consistency ──────────────────────────────────────────────────
 
 describe('SPAWN: spawn type consistency', () => {
+  // #1689: `subagent_type="{TOKEN}"` is a workflow-bound placeholder for
+  // parameterized executor dispatch (resolved at runtime via `gsd-tools
+  // resolve-agent`, defaulting to gsd-executor), not a concrete agent name.
+  // The static spawn-type checks below skip these — the effective value is
+  // validated at dispatch time, and execute-phase.md still documents the
+  // built-in roster (incl. gsd-executor) in <available_agent_types>.
+  const PARAMETERIZED_SPAWN_TYPE = /^\{[^}]+\}$/;
+
   test('no "First, read agent .md" workaround pattern remains', () => {
     const dirs = [WORKFLOWS_DIR, COMMANDS_DIR];
     for (const dir of dirs) {
@@ -137,6 +145,7 @@ describe('SPAWN: spawn type consistency', () => {
         const matches = content.matchAll(/subagent_type="([^"]+)"/g);
         for (const match of matches) {
           const agentType = match[1];
+          if (PARAMETERIZED_SPAWN_TYPE.test(agentType)) continue;
           assert.ok(
             validAgentTypes.has(agentType),
             `${file} references unknown agent type: ${agentType}`
@@ -168,11 +177,13 @@ describe('SPAWN: spawn type consistency', () => {
       const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
       for (const file of files) {
         const content = fs.readFileSync(path.join(dir, file), 'utf-8');
-        // Find all named subagent_type references (excluding general-purpose)
+        // Find all named subagent_type references (excluding general-purpose
+        // and #1689 runtime placeholders)
         const matches = [...content.matchAll(/subagent_type="([^"]+)"/g)];
         const namedAgents = matches
           .map(m => m[1])
-          .filter(t => t !== 'general-purpose');
+          .filter(t => t !== 'general-purpose')
+          .filter(t => !PARAMETERIZED_SPAWN_TYPE.test(t));
 
         if (namedAgents.length === 0) continue;
 

@@ -782,6 +782,126 @@ describe('FIX B gate-level: parse-miss → passed:false regardless of covered de
   });
 });
 
+// ─── #3169: nested cross-reference bullet must not zero out coverage (#3212 Phase 3) ─
+//
+// parseDecisionLines' parse-miss guard fires on any line whose bold run starts
+// with `D-`, including a cross-reference bullet NESTED (deeper-indented) under
+// an already-open decision — e.g. a decision's own body elaborating on how it
+// relates to a sibling decision. A single such miss forces the whole extraction
+// to `could-not-parse`, discarding every decision that DID parse correctly.
+//
+// Fix (design doc §1.3): track the indent width of the currently-open decision's
+// bullet. A subsequent bulleted line indented DEEPER than that is nested content
+// under the open decision (append to its text, like a continuation line) rather
+// than a fresh declaration attempt — never tested against the parse-miss guard.
+// A bullet at the same-or-shallower indent is unchanged (still tested normally),
+// which is what keeps the existing FIX-B fixtures (`D-02`, "no colon no dash")
+// still failing as genuine misses — see rows 21-22 below.
+
+describe('#3169: nested cross-reference bullet does not increment parseMisses', () => {
+  test('FAIL-FIRST row 18: a bullet nested under an open decision is elaboration, not a fresh declaration attempt', () => {
+    const md = [
+      '<decisions>',
+      "- **D-15:** some decision",
+      "  - **D-06's fix does not close this.** Gating the Passed arm on the derived status passes cleanly here.",
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `Nested cross-reference must not force could-not-parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-15'],
+      `Only D-15 should be extracted as a decision — the nested bullet is elaboration, not a second entry. Got: ${JSON.stringify(result.decisions.map((d) => d.id))}`);
+    assert.ok(
+      result.decisions[0].text.includes("D-06's fix does not close this"),
+      `The nested bullet's text should be folded into D-15's own text (continuation-style). Got: ${JSON.stringify(result.decisions[0].text)}`,
+    );
+  });
+
+  test('FAIL-FIRST row 19: a second nested bullet under the same open decision is also elaboration', () => {
+    const md = [
+      '<decisions>',
+      "- **D-15:** some decision",
+      "  - **D-06's fix does not close this.** first note.",
+      '  - **D-13 (999.76) must not land without this fix.** second note.',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `Two nested cross-references must not force could-not-parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-15']);
+  });
+
+  test('FAIL-FIRST row 20: end-to-end — /gsd-plan-phase §13a gate reports full coverage with nested cross-reference bullets present', () => {
+    const tmpDir = createTempProject('gsd-3169-');
+    const planningDir = path.join(tmpDir, '.planning');
+    const phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    try {
+      // Compact 3-decision analog of the issue's 15-decision repro: D-03 carries
+      // the same nested-cross-reference shape that zeroed coverage in the report.
+      writeContextFile(phaseDir, [
+        '<decisions>',
+        '- **D-01:** use JWT tokens',
+        '- **D-02:** use Redis sessions',
+        '- **D-03:** derive status from the Passed arm',
+        "  - **D-01's token choice does not close this.** Criterion 3 and criterion 4 are separate deliverables.",
+        '  - **D-02 (session store) must not land without this fix.** Moving discovery to the execution root makes this common.',
+        '</decisions>',
+      ].join('\n'));
+      writePlanFile(phaseDir, '01', [
+        '# Plan',
+        '',
+        '## Must Haves',
+        '',
+        '- D-01: implement JWT token issuance and validation',
+        '- D-02: wire Redis session storage',
+        '- D-03: derive status from the Passed arm',
+      ].join('\n'));
+
+      const contextPath = path.join(phaseDir, 'CONTEXT.md');
+      const result = runDecisionCoveragePlan(phaseDir, contextPath, tmpDir);
+      const parsed = JSON.parse(result.output || '');
+      assert.strictEqual(parsed.passed, true,
+        `Gate must pass — all 3 decisions are covered and the nested bullets are not parse-misses. Got: ${JSON.stringify(parsed)}`);
+      assert.strictEqual(parsed.total, 3, `Got: ${JSON.stringify(parsed)}`);
+      assert.strictEqual(parsed.covered, 3,
+        `Must report 3/3 covered, not the false 0/3 #3169 reports today. Got: ${JSON.stringify(parsed)}`);
+      assert.deepStrictEqual(parsed.uncovered, [], `Got: ${JSON.stringify(parsed)}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('row 21 (negative control, disproven-design record): a top-level malformed bullet with no open decision above it still forces could-not-parse', () => {
+    // This is tests/decisions.test.cjs's OWN existing FIX-B fixture (line ~651/709),
+    // re-asserted here to record it as the case that disproved an earlier
+    // bold-run-content-classification design for #3169 (design doc §1.3) — a
+    // content-only rule cannot distinguish this from the #3169 cross-reference
+    // shape above; indentation (0, nothing open to nest under) is what does.
+    const md = '<decisions>\n- **D-01:** Use OAuth 2.0\n- **D-02** ratio 3:1\n</decisions>';
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A standalone top-level malformed bullet must still be a genuine miss. Got: ${JSON.stringify(result)}`);
+  });
+
+  test('row 22: another standalone top-level malformed bullet still forces could-not-parse', () => {
+    const md = '<decisions>\n- **D-01 no colon no dash here** just text\n</decisions>';
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `Got: ${JSON.stringify(result)}`);
+  });
+
+  test('row 23: a bullet indented as if nested, but with no decision open above it, falls through to normal handling', () => {
+    // No `current` is open when this line is reached, so the nesting check
+    // cannot apply (there is nothing to nest under) — it must be tested as an
+    // ordinary top-level bullet, exactly as before this fix.
+    const md = '<decisions>\n  - **D-01** malformed, nothing open above it\n</decisions>';
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A leading indented bullet with nothing open above it must still be tested normally. Got: ${JSON.stringify(result)}`);
+  });
+});
+
 // ─── FIX C regressions: curly-quote Claude's Discretion ───────────────────────
 
 describe('FIX C: curly-quote Claude’s Discretion → trackable:false (#1372)', () => {
