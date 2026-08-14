@@ -25,6 +25,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'debug.md');
 const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
@@ -41,7 +42,7 @@ describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
   });
 
   test('the sole init.debug call receives a prevalidated continue slug (#3128)', () => {
-    const invocation = /gsd_run query init\.debug([^\r\n]*)/.exec(workflow);
+    const invocation = /gsd_run query init\.debug([^\r\n]{0,2048})/.exec(workflow);
     assert.ok(invocation, 'expected the one init.debug invocation');
 
     const beforeInit = workflow.slice(0, invocation.index);
@@ -70,7 +71,7 @@ describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
     const directlyProjectsContinueSlug =
       /\bcontinue\b/.test(invocationArgs) && parameterNames.some((name) => /slug/i.test(name));
     const indirectlyProjectsContinueSlug = parameterNames.some((name) => {
-      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedName = escapeRegex(name);
       for (const ref of beforeInit.matchAll(new RegExp(`\\b${escapedName}\\b`, 'g'))) {
         const context = beforeInit.slice(Math.max(0, ref.index - 500), ref.index + 500);
         if (/\bcontinue\b/i.test(context) && /\bslug\b/i.test(context)) return true;
