@@ -303,6 +303,119 @@ describe('W011 — STATE current-phase status disagrees with ROADMAP [x] checkbo
     const snapshot = buildPlanningSnapshot(cwd);
     assert.deepEqual(ruleFor('W011').check(snapshot), []);
   });
+
+  // ─── #3280 — the machine-readable frontmatter format gsd-tools itself
+  // writes (`state update` / `state begin-phase` persist `current_phase` +
+  // `status` via syncStateFrontmatter). W011's phase extraction previously
+  // never consulted frontmatter, so the exact staleness class it exists to
+  // catch went undetected on the PRIMARY written format. Fixtures added
+  // alongside the legacy-prose cases above (not by retrofitting them), so the
+  // legacy path real user repos still carry keeps its coverage.
+
+  test('#3280 AC1: fires when the current phase is recorded in frontmatter (the format gsd-tools writes), even when a body Phase field would shadow it', (t) => {
+    const cwd = createTempDir('gsd-3280-w011-fm-1-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '- [x] Phase 2: Auth', '- [ ] Phase 3: Billing', ''].join('\n'));
+    // The shape `state.cts`'s syncStateFrontmatter persists: frontmatter owns
+    // current_phase/status; the body's `Phase:` line is a stale remnant the
+    // frontmatter must override (resolveStatePhase's own ladder order).
+    writeState(
+      cwd,
+      [
+        '---',
+        'gsd_state_version: \'1.0\'',
+        'milestone: v1.0',
+        'current_phase: 2',
+        'status: executing',
+        '---',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 5 of 5 (Legacy remnant)',
+        '',
+      ].join('\n'),
+    );
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.equal(snapshot.currentPhaseLabel.value, '2', 'frontmatter current_phase must win over the body Phase field');
+    const diagnostics = ruleFor('W011').check(snapshot);
+
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W011');
+    assert.equal(diagnostics[0].severity, SEVERITY.WARNING);
+    assert.match(diagnostics[0].message, /STATE\.md says current phase is 2 \(status: executing\) but ROADMAP\.md shows it as \[x\] complete/);
+  });
+
+  test('#3280 AC1: fires when frontmatter carries current_phase and the body has no Phase field at all', (t) => {
+    const cwd = createTempDir('gsd-3280-w011-fm-2-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '- [x] Phase 2: Auth', ''].join('\n'));
+    writeState(
+      cwd,
+      ['---', 'current_phase: 2', 'status: planning', '---', '', '## Session', '', 'Last activity: 2026-08-01', ''].join('\n'),
+    );
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.equal(snapshot.currentPhaseLabel.value, '2');
+    const diagnostics = ruleFor('W011').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W011');
+  });
+
+  test('#3280 AC3: does not fire when frontmatter status reports completion in the state writer\'s own vocabulary (status: completed)', (t) => {
+    const cwd = createTempDir('gsd-3280-w011-fm-3-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '- [x] Phase 2: Auth', ''].join('\n'));
+    // `normalizeStateStatus` — the vocabulary `syncStateFrontmatter` persists —
+    // emits `completed` (not `complete`/`done`), so an exact-token comparison
+    // here would turn every legitimately completed frontmatter STATE.md into a
+    // false positive the moment the phase read is fixed.
+    writeState(
+      cwd,
+      ['---', 'current_phase: 2', 'status: completed', '---', '', '## Current Position', '', 'Phase: 5 of 5', ''].join('\n'),
+    );
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.equal(snapshot.currentPhaseLabel.value, '2');
+    assert.deepEqual(ruleFor('W011').check(snapshot), []);
+  });
+
+  test('#3280 AC3: does not fire when frontmatter status is "done" either', (t) => {
+    const cwd = createTempDir('gsd-3280-w011-fm-4-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '- [x] Phase 2: Auth', ''].join('\n'));
+    writeState(cwd, ['---', 'current_phase: 2', 'status: done', '---', ''].join('\n'));
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W011').check(snapshot), []);
+  });
+
+  test('#3280 AC2 (locked): fires when the current phase is recorded in a pipe table under ## Current Position', (t) => {
+    const cwd = createTempDir('gsd-3280-w011-pipe-1-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '- [x] Phase 2: Auth', ''].join('\n'));
+    writeState(
+      cwd,
+      [
+        '---',
+        'status: discussing',
+        '---',
+        '',
+        '## Current Position',
+        '',
+        '| Phase | 2 of 5 |',
+        '| --- | --- |',
+        '| Status | discussing |',
+        '',
+      ].join('\n'),
+    );
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.equal(snapshot.currentPhaseLabel.value, '2 of 5');
+    const diagnostics = ruleFor('W011').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W011');
+  });
 });
 
 // ─── W021 — phase_id_convention integer-prefix/milestone mismatch ──────────
