@@ -1567,7 +1567,7 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
     );
   });
 
-  const unchchangedChanged = {
+  const lastActivityDescChangedDeltas = {
     status: { pre: 'x', post: 'x' },
     stopped_at: { pre: 'x', post: 'x' },
     current_phase_name: { pre: 'x', post: 'x' },
@@ -1622,7 +1622,7 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       preFmSnapshot: { last_activity_desc: 'old description' },
       postFm: { last_activity_desc: 'new description from transition' },
       resync: true,
-      bodyDeltas: { ...unchchangedChanged }, // body 'Last Activity Description' moved
+      bodyDeltas: { ...lastActivityDescChangedDeltas }, // body 'Last Activity Description' moved
     });
     assert.equal(r.postFm.last_activity_desc, 'new description from transition');
     assert.equal(r.mutated, false);
@@ -1993,12 +1993,8 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
 describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §8.2)', () => {
   test('B1: a declared preserve-when-unchanged row missing from bodyDeltas throws, naming the field', () => {
-    const bodyDeltas = {
-      current_phase: { pre: 'x', post: 'x' },
-      // current_plan intentionally NOT wired — the unenforced row.
-      paused_at: { pre: 'x', post: 'x' },
-      last_activity_desc: { pre: 'x', post: 'x' },
-    };
+    const bodyDeltas = neutralBodyDeltas();
+    delete bodyDeltas.current_plan; // the ONLY unwired row
     assert.throws(
       () => applyStatePreservation({
         preFm: null,
