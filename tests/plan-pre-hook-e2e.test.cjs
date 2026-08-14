@@ -295,19 +295,69 @@ describe('check ui.plan-gate — frontend phase, no UI-SPEC', () => {
       ].join('\n'),
       'utf8',
     );
+    // Static frontend evidence (#3312): block requires token match AND structural
+    // corroboration — this fixture is a real frontend repo.
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'src', 'App.tsx'), 'export function App() { return null; }\n', 'utf8');
     // No UI-SPEC.md in phase dir
   });
   after(() => cleanup(tmpDir));
 
-  test('[happy] frontend phase + no UI-SPEC: block:true, frontend:true, hasUiSpec:false, exit 0', () => {
+  test('[happy] frontend phase + evidence + no UI-SPEC: block:true, frontend:true, hasUiSpec:false, exit 0', () => {
     const result = runTools(['check', 'ui.plan-gate', '1', '--raw'], tmpDir);
     assert.strictEqual(result.status, 0, `exit non-zero. stderr=${result.stderr?.slice(0, 300)}`);
     const out = parseEnvelope(result, 'ui-plan-gate-no-spec');
 
     assert.strictEqual(out.frontend, true, 'frontend must be true for frontend-keyword phase');
+    assert.strictEqual(out.hasFrontendEvidence, true, 'src/App.tsx is frontend evidence');
     assert.strictEqual(out.hasUiSpec, false, 'hasUiSpec must be false when no spec file exists');
-    assert.strictEqual(out.block, true, 'block must be true (frontend && !hasUiSpec)');
+    assert.strictEqual(out.block, true, 'block must be true (frontend && hasFrontendEvidence && !hasUiSpec)');
     assert.strictEqual(out.uiSpecPath, null, 'uiSpecPath must be null when spec absent');
+    assert.strictEqual(out.matchedToken, 'ui', 'matchedToken surfaces what tripped the sniffer');
+  });
+});
+
+// ─── 6b. check ui.plan-gate: #3312 — token match without frontend evidence ────
+
+describe('check ui.plan-gate — #3312 proper-noun token match, no frontend evidence', () => {
+  let tmpDir;
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-pre-ui-gate-3312-'));
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(path.join(planningDir, 'phases', '01-infra'), { recursive: true });
+    fs.writeFileSync(path.join(planningDir, 'config.json'), '{}', 'utf8');
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Project Roadmap',
+        '',
+        '## Phase 1: Infra',
+        '',
+        'Fix broken references in dashboard-financeiro, update .env.tpl and CI workflows.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    // Markdown/bash/config repo by design: no src/, no package.json, no component files.
+  });
+  after(() => cleanup(tmpDir));
+
+  test('[regression] dashboard-financeiro mention in non-frontend repo: frontend:true but block:false', () => {
+    const result = runTools(['check', 'ui.plan-gate', '1', '--raw'], tmpDir);
+    assert.strictEqual(result.status, 0, `exit non-zero. stderr=${result.stderr?.slice(0, 300)}`);
+    const out = parseEnvelope(result, 'ui-plan-gate-3312');
+
+    assert.strictEqual(out.frontend, true,
+      'sniffer still matches `dashboard` at the hyphen boundary (micro-frontend rule)');
+    assert.strictEqual(out.hasFrontendEvidence, false,
+      'markdown/bash repo has no component files and no UI-framework dependency');
+    assert.strictEqual(out.block, false,
+      '#3312: token match without structural evidence must NOT block planning');
+    assert.strictEqual(out.matchedToken, 'dashboard', 'matchedToken surfaces the proper-noun trigger');
+    assert.ok(
+      typeof out.matchedLine === 'string' && out.matchedLine.includes('dashboard-financeiro'),
+      'matchedLine surfaces the line for one-second operator triage',
+    );
   });
 });
 

@@ -503,6 +503,7 @@
       "uat-predicate.cjs",
       "uat.cjs",
       "ui-consideration-probe.cjs",
+      "ui-frontend-evidence.cjs",
       "ui-safety-gate.cjs",
       "unusable-input.cjs",
       "update-context.cjs",

@@ -104,6 +104,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/command-arg-projection.cjs',
       'gsd-core/bin/lib/clock.cjs',
       'gsd-core/bin/lib/ui-safety-gate.cjs',
+      // #3312: tsc-generated runtime artifact — lint the src/ui-frontend-evidence.cts source.
+      'gsd-core/bin/lib/ui-frontend-evidence.cjs',
       'gsd-core/bin/lib/review-reviewer-selection.cjs',
       'gsd-core/bin/lib/review-lane-descriptor.cjs',
       'gsd-core/bin/lib/review-lane-invocation.cjs',
