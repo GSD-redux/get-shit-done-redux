@@ -1694,8 +1694,19 @@ function milestoneCompleteCore(
  * Apply a `patch` transition to STATE.md content.
  *
  * Migrates `cmdStatePatch` (state.cts) onto the substrate. Applies each
- * caller-supplied `{field: value}` pair via `stateReplaceField` against the
- * BODY only, tracking which fields were updated vs. not found.
+ * caller-supplied `{field: value}` pair, partitioned by shape:
+ *
+ * - Body-shaped keys (not present as a parsed frontmatter key) are applied
+ *   via `stateReplaceField` against the STRIPPED body, exactly as before.
+ * - Frontmatter-shaped keys (present as a parsed frontmatter key — determined
+ *   structurally, never by a naming heuristic) are routed through the seam:
+ *   `FIELD_CLASSIFICATION` governs them. A CLASSIFIED key (has a row, e.g.
+ *   `current_phase`, `current_phase_name`) is NOT writable by an arbitrary
+ *   patch — policy owns it — and is reported `failed`, same as an unmatched
+ *   body field. An UNCLASSIFIED key (no row, e.g. a custom `risk_level`) is a
+ *   pass-through per Phase 1 behavior-table row 19 ("field absent from
+ *   FIELD_CLASSIFICATION → untouched pass-through"): it is applied directly
+ *   to the frontmatter object before reassembly and reported `updated`.
  *
  * ADR-3408 §8.3(b): this used to run `stateReplaceField` over the FULL
  * document (body + frontmatter), which — because `field` is an arbitrary,
@@ -1705,15 +1716,14 @@ function milestoneCompleteCore(
  * patch key (e.g. `status`, `current_phase`) match and rewrite the YAML
  * frontmatter block directly via `stateReplaceField`'s case-insensitive
  * `^field:` line pattern, entirely outside `FIELD_CLASSIFICATION` and the
- * write-seam preservation policy: a second, undeclared writer. `updateCore`
- * already strips frontmatter first (the correct shape); `patchCore` now
- * matches it. A frontmatter-shaped key therefore behaves like any other
- * unmatched field — reported `failed`, exactly like a nonexistent body field
- * name — which is the fix: a frontmatter write no longer happens outside the
- * declared policy table, not that `patch` grows a new frontmatter-write
- * feature. Body-shaped keys (`Status`, `Current Plan`, `Phase`, ...) are the
- * LEGITIMATE case and are unaffected — they were always matched against the
- * body text, and still are.
+ * write-seam preservation policy: a second, undeclared writer. The fix is
+ * that a CLASSIFIED frontmatter key no longer writes outside the declared
+ * policy table — not that every frontmatter-shaped key stops working.
+ * `.gsd/phase/refactor-3469-one-write-seam/40-design.md` row 9 requires
+ * frontmatter changes to route through the seam (still work, governed by
+ * FIELD_CLASSIFICATION), not to stop working outright. Body-shaped keys
+ * (`Status`, `Current Plan`, `Phase`, ...) are the LEGITIMATE case and are
+ * unaffected — they were always matched against the body text, and still are.
  *
  * The curated-field preservation that fixes #1743/#1695 is NOT in this core —
  * it lives in the write seam's post-sync delta (table-driven via
@@ -1734,11 +1744,25 @@ function patchCore(
   const existingFm = extractFrontmatter(content) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  const fm: Record<string, unknown> = { ...existingFm };
 
   const updated: string[] = [];
   const failed: string[] = [];
 
   for (const [field, value] of Object.entries(intent.patches)) {
+    if (Object.prototype.hasOwnProperty.call(existingFm, field)) {
+      // Frontmatter-shaped key: route through the seam. A classified field
+      // is policy-owned — a raw patch may not bypass it. An unclassified
+      // field is an untouched pass-through (behavior-table row 19).
+      if (getFieldClassification(field) !== null) {
+        failed.push(field);
+      } else {
+        fm[field] = value;
+        updated.push(field);
+      }
+      continue;
+    }
+
     const replaced = stateReplaceField(body, field, value);
     if (replaced !== null) {
       body = replaced;
@@ -1749,18 +1773,18 @@ function patchCore(
   }
 
   if (updated.length === 0) {
-    // No field matched the body — return `content` VERBATIM (mirrors
-    // `updateCore`'s null-result branch): reassembling via
-    // stripFrontmatter/reconstructFrontmatter even when nothing changed can
-    // round-trip the frontmatter block to different bytes than the original
-    // (key order, formatting), which would falsely defeat
-    // `readModifyWriteStateMd`'s #948 no-op write guard for every patch that
-    // updates nothing, not just a frontmatter-shaped one.
+    // No field matched — return `content` VERBATIM (mirrors `updateCore`'s
+    // null-result branch): reassembling via stripFrontmatter/
+    // reconstructFrontmatter even when nothing changed can round-trip the
+    // frontmatter block to different bytes than the original (key order,
+    // formatting), which would falsely defeat `readModifyWriteStateMd`'s
+    // #948 no-op write guard for every patch that updates nothing, not just
+    // a frontmatter-shaped one.
     return { content, updated, data: { updated, failed } };
   }
 
   const result = hasFrontmatter
-    ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${body}`
+    ? `---\n${reconstructFrontmatter(fm as unknown as Frontmatter)}\n---\n\n${body}`
     : body;
 
   return { content: result, updated, data: { updated, failed } };

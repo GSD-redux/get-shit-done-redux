@@ -614,7 +614,13 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
   // always fires "changed" for `status`; the stale curated frontmatter value
   // must NOT be restored, and no warning is emitted for it.
   test('B4: a body field genuinely changed by this write is not preserved, and emits no warning', () => {
-    writeStateWithSession(tmpDir, { fmStatus: 'completed', fmStoppedAt: undefined, sessionStoppedAt: undefined });
+    // #3469: `normalizeStateStatus` keyword-maps any "complete"-containing
+    // text to 'completed', and this write's own new body value ("v1.0
+    // milestone complete") legitimately derives to 'completed' too — so a
+    // stale curated value of 'completed' cannot discriminate "body won" from
+    // "stale value survived". Use a stale value that cannot collide with the
+    // derived result.
+    writeStateWithSession(tmpDir, { fmStatus: 'executing', fmStoppedAt: undefined, sessionStoppedAt: undefined });
 
     const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -625,13 +631,18 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
 
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     const fm = parseFrontmatter(state);
-    assert.notStrictEqual(fm.status, 'completed', 'the stale curated status must not survive — body won');
+    assert.notStrictEqual(fm.status, 'executing', 'the stale curated status must not survive — body won');
+    assert.strictEqual(fm.status, 'completed', 'body-derived status must land');
   });
 
   // B5 (boundary): no pre-existing curated frontmatter to diverge from — no
   // warning is emitted at all, and output is otherwise unaffected.
   test('B5: no divergence at all — preservation_warnings is empty', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n`);
+    // #3469: give Phase 1 a matching phase directory so the pre-existing
+    // unstarted-phase guard (src/milestone.cts) does not trip before any
+    // write-seam code runs — keeps this test exercising the real happy path.
+    mkPhaseDir(tmpDir, '01-foundation', { oneLiner: 'Setup' });
     writeState(tmpDir); // no frontmatter at all — nothing curated to diverge from
 
     const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);

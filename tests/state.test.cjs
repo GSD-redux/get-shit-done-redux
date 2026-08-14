@@ -10111,6 +10111,18 @@ describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam compo
   }
 
   test('property: syncAndPreserveStateMd persists the same bytes whether reached via cmdPhaseComplete\'s shape or readModifyWriteStateMd', (t) => {
+    // Clock Seam: both paths stamp `last_updated` from `realClock.nowIso()`
+    // (Date.now() under the hood — src/clock.cts). Without freezing `Date`,
+    // the two invocations inside each property run happen milliseconds
+    // apart and `last_updated` genuinely differs, defeating the byte-for-byte
+    // comparison regardless of the composition itself. Both paths run
+    // in-process (required directly, not subprocessed), so mocking the
+    // global `Date` reaches `realClock` without any production change —
+    // same pattern as tests/commands.test.cjs's HTTP-date pin.
+    const PINNED_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+    t.mock.timers.enable(['Date']);
+    t.mock.timers.setTime(PINNED_MS);
+
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 99 }),

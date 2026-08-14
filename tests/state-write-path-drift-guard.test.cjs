@@ -257,18 +257,23 @@ describe('D8 — comments are not drift', () => {
 
 describe('D9 — owner functions are exempt', () => {
   test('guard: owner functions are exempt', () => {
-    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('readModifyWriteStateMd'));
+    // #3469: `readModifyWriteStateMd` now calls the single
+    // `syncAndPreserveStateMd` symbol rather than assembling the two seam
+    // calls itself, so it needs no exemption — `syncAndPreserveStateMd` is
+    // the sole legitimate place `syncStateFrontmatter(` and
+    // `applyPostSyncPreservation(` appear together (the composition every
+    // OTHER caller, including `readModifyWriteStateMd`, now routes through).
+    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('syncAndPreserveStateMd'));
 
     const text = [
-      'function readModifyWriteStateMd(cwd) {',
-      '  const modified = compute();',
-      '  writeStateMd(statePath, modified, cwd);',
-      '  return modified;',
+      'function syncAndPreserveStateMd(originalContent, transformedContent, statePath, cwd, resync) {',
+      '  const synced = syncStateFrontmatter(transformedContent, cwd);',
+      '  return applyPostSyncPreservation(originalContent, transformedContent, synced, statePath, resync);',
       '}',
     ].join('\n');
 
-    // The seam's own internal plumbing (the I/O wrapper calling the pure
-    // sync stage) is not a bypass.
+    // The seam's own internal plumbing (the one owned composition —
+    // sync then post-sync preservation) is not a bypass.
     assert.deepStrictEqual(findSeamBypasses(SEAM_OWNER_FILE, text), []);
   });
 });
