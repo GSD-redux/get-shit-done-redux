@@ -1694,19 +1694,26 @@ function milestoneCompleteCore(
  * Apply a `patch` transition to STATE.md content.
  *
  * Migrates `cmdStatePatch` (state.cts) onto the substrate. Applies each
- * caller-supplied `{field: value}` pair, partitioned by shape:
+ * caller-supplied `{field: value}` pair, resolved BODY-FIRST:
  *
- * - Body-shaped keys (not present as a parsed frontmatter key) are applied
- *   via `stateReplaceField` against the STRIPPED body, exactly as before.
- * - Frontmatter-shaped keys (present as a parsed frontmatter key — determined
- *   structurally, never by a naming heuristic) are routed through the seam:
- *   `FIELD_CLASSIFICATION` governs them. A CLASSIFIED key (has a row, e.g.
- *   `current_phase`, `current_phase_name`) is NOT writable by an arbitrary
- *   patch — policy owns it — and is reported `failed`, same as an unmatched
- *   body field. An UNCLASSIFIED key (no row, e.g. a custom `risk_level`) is a
+ * - A key that resolves against the STRIPPED body (via `stateReplaceField`,
+ *   case-insensitive on the field name) is applied there and reported
+ *   `updated` — this is the legitimate, documented case (display-cased body
+ *   fields — Status, Current Plan, Phase — which are never frontmatter
+ *   keys). It wins deterministically even when the same key also happens to
+ *   exist as a parsed frontmatter key (e.g. `status` matches both the
+ *   frontmatter key and a `Status:` body line) — frontmatter is inert for
+ *   that key.
+ * - Only when the body has no match is the key checked against parsed
+ *   frontmatter (determined structurally, never by a naming heuristic), and
+ *   routed through the seam: `FIELD_CLASSIFICATION` governs it. A CLASSIFIED
+ *   key (has a row, e.g. `current_phase`, `current_phase_name`) is NOT
+ *   writable by an arbitrary patch — policy owns it — and is reported
+ *   `failed`. An UNCLASSIFIED key (no row, e.g. a custom `risk_level`) is a
  *   pass-through per Phase 1 behavior-table row 19 ("field absent from
  *   FIELD_CLASSIFICATION → untouched pass-through"): it is applied directly
  *   to the frontmatter object before reassembly and reported `updated`.
+ * - A key matching neither the body nor the frontmatter is reported `failed`.
  *
  * ADR-3408 §8.3(b): this used to run `stateReplaceField` over the FULL
  * document (body + frontmatter), which — because `field` is an arbitrary,
@@ -1750,6 +1757,21 @@ function patchCore(
   const failed: string[] = [];
 
   for (const [field, value] of Object.entries(intent.patches)) {
+    // Body-first: a key that resolves against a body field is the
+    // legitimate, documented case (display-cased body fields — Status,
+    // Current Plan, Phase — are never frontmatter keys) and wins
+    // deterministically even when the same key also happens to exist as a
+    // frontmatter key (case-insensitively, via stateReplaceField's
+    // `^field:` pattern — e.g. `status` matching both the frontmatter key
+    // and a `Status:` body line). Frontmatter is only consulted when the
+    // body has no match for this key.
+    const replaced = stateReplaceField(body, field, value);
+    if (replaced !== null) {
+      body = replaced;
+      updated.push(field);
+      continue;
+    }
+
     if (Object.prototype.hasOwnProperty.call(existingFm, field)) {
       // Frontmatter-shaped key: route through the seam. A classified field
       // is policy-owned — a raw patch may not bypass it. An unclassified
@@ -1763,13 +1785,7 @@ function patchCore(
       continue;
     }
 
-    const replaced = stateReplaceField(body, field, value);
-    if (replaced !== null) {
-      body = replaced;
-      updated.push(field);
-    } else {
-      failed.push(field);
-    }
+    failed.push(field);
   }
 
   if (updated.length === 0) {
