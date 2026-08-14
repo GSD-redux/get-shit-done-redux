@@ -1,6 +1,5 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product
 // Workflow markdown is runtime contract; these assertions verify deployed behavior text.
 
 const { describe, test } = require('node:test');
@@ -158,7 +157,6 @@ describe('review workflow source-grounding requirement in build_prompt (#1318)',
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-687-agy-timeout (consolidation epic #1969 B4 #1973)", () => {
-// allow-test-rule: source-text-is-the-product (see #687)
 // review.md is a workflow file whose deployed text IS the runtime contract; the
 // agy -p invocation cannot be run in CI, so we assert on its content (issue #687).
 'use strict';
@@ -247,7 +245,6 @@ describe('bug #687 → #2073: agy print mode is bounded, and its fallback chain 
   __foldDescribe("folded:enh-773-codex-exec-automation-flags (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
 
-// allow-test-rule: source-text-is-the-product (see #773)
 // Workflow markdown is runtime contract; these assertions verify that
 // automated codex exec invocations carry the correct automation flags.
 
@@ -333,7 +330,6 @@ describe('#1698 regression: codex review is captured via --output-last-message, 
   __foldDescribe('#1936: OpenCode reviewer empty-output hardening', () => {
 'use strict';
 
-// allow-test-rule: source-text-is-the-product (see #1936)
 // review.md is a workflow file whose embedded bash IS the runtime contract; the
 // `opencode run` invocation on a large agentic prompt cannot be run in CI, so we
 // assert on its content.

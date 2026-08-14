@@ -25,6 +25,14 @@ const workstreamInventory = require('../gsd-core/bin/lib/workstream-inventory.cj
 // Phase 12 (#3310, ADR-3180 §8.4 rule 3): `cmdStateValidate`'s `warnings` are
 // now `Diagnostic[]` (S0NN codes), not bare strings, and `drift` is gone.
 const { SEVERITY } = require('../gsd-core/bin/lib/health-diagnostic-types.cjs');
+// #3468 matrix B8: distinguishes a controlled, structured CLI failure (an
+// `error()` call, which always emits plain text even under --json-errors —
+// see `#2979` in tests/cli-exit.test.cjs) from an uncaught internal crash
+// (any non-ExitError throw, which under --json-errors emits a JSON envelope
+// carrying `reason: ERROR_REASON.SDK_FAIL_FAST`). The §8.2 invariant throw is
+// exactly the latter shape, so this is the structured, non-prose signal B8
+// asserts against.
+const { ERROR_REASON } = require('../gsd-core/bin/lib/io.cjs');
 
 /** First `Diagnostic` in `output.warnings` carrying the given S0NN code, or `undefined`. */
 function findWarning(output, code) {
@@ -13540,4 +13548,166 @@ const HEX_RE = /^[0-9a-f]{4,40}$/i;
       'an empty sub_repos list is a normal single-repo project — it must resolve');
     assert.strictEqual(r.commits_behind, 0);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3468 matrix section B, rows B7/B8 — ADR-3408 §8.2's bright line, exercised
+// through the REAL production write path rather than a hand-built
+// applyStatePreservation input (CONTRIBUTING.md § Fixture provenance #2371:
+// a test constructing its own convenient input proves a property no shipping
+// caller exercises).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3468 B7: the production caller wires every declared preserve-when-unchanged row', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3468-b7-');
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('B7: readModifyWriteStateMd never throws the §8.2 invariant on a normal write', () => {
+    // The real caller (state.cts:2744-2795, the ONLY call site of
+    // applyStatePreservation) computes and wires bodyDeltas for every
+    // declared preserve-when-unchanged row. Driving a normal transform
+    // through the real function — not a hand-built applyStatePreservation
+    // call — is what proves B1's throw can never fire in production.
+    assert.doesNotThrow(() => {
+      stateLib.readModifyWriteStateMd(
+        statePath,
+        (content) => `${content}\n<!-- #3468 B7 probe -->\n`,
+        tmpDir,
+      );
+    });
+    // Also exercise the resync:false (body-only) branch — a second,
+    // independently-reachable call shape into the same pipeline.
+    assert.doesNotThrow(() => {
+      stateLib.readModifyWriteStateMd(
+        statePath,
+        (content) => `${content}\n<!-- #3468 B7 probe 2 -->\n`,
+        tmpDir,
+        { resync: false },
+      );
+    });
+  });
+});
+
+describe('#3468 B8: a drifted / malformed / unparseable STATE.md never reaches the invariant throw (§8.2 bright line)', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3468-b8-');
+    statePath = path.join(tmpDir, '.planning', 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Each fixture replaces the fixture-generated STATE.md with a document that
+  // is drifted, malformed, or unparseable in a distinct way. None of these
+  // are internal invariant violations — they are exactly the "ordinary,
+  // expected user-document state" ADR-3408 §8.5 names, so the command must
+  // never surface the §8.2 invariant (an uncaught internal Error).
+  const fixtures = [
+    {
+      name: 'drifted: frontmatter current_phase disagrees with the body Phase: line',
+      content: [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: "7"',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 (Stale Name) — EXECUTING',
+        'Plan: 1 of 3',
+        'Status: Executing Phase 2',
+        '',
+      ].join('\n'),
+    },
+    {
+      name: 'malformed: frontmatter fields carry the wrong YAML type',
+      content: [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: 42',
+        'progress: "not-an-object"',
+        'current_phase_name: [Unexpected, Array]',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 (Some Phase) — EXECUTING',
+        'Plan: 1 of 3',
+        'Status: Executing Phase 2',
+        '',
+      ].join('\n'),
+    },
+    {
+      name: 'unparseable: frontmatter fence opens but never closes',
+      content: [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '',
+        '# Project State (frontmatter never terminated above)',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 (Some Phase) — EXECUTING',
+        'Plan: 1 of 3',
+        'Status: Executing Phase 2',
+        '',
+      ].join('\n'),
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    test(`B8: ${fixture.name}`, () => {
+      fs.writeFileSync(statePath, fixture.content);
+
+      const result = runGsdTools(['state', 'sync', '--json-errors'], tmpDir);
+
+      if (result.success) {
+        assert.doesNotThrow(
+          () => JSON.parse(result.output),
+          `${fixture.name}: success output must be well-formed JSON; got: ${result.output}`,
+        );
+        return;
+      }
+
+      // A non-zero exit is allowed (a drifted document may be a legitimate
+      // domain-level failure) — but it must be a CONTROLLED failure. Under
+      // --json-errors, an ExitError (a deliberate error() call) always
+      // writes PLAIN TEXT to stderr (never JSON — see tests/cli-exit.test.cjs
+      // #2979), while an uncaught internal Error (what the §8.2 invariant
+      // throw would be, since it is deliberately never caught by a discriminator
+      // per ADR-3408 §8.2's "Rejected: Return a ScopedResult") is the ONLY
+      // path that emits the JSON envelope with reason: SDK_FAIL_FAST. So: if
+      // stderr parses as that envelope, the command crashed on an uncaught
+      // internal error — the exact bright line B8 forbids.
+      let structured = null;
+      try { structured = JSON.parse(result.error); } catch { /* plain text — a controlled ExitError, expected */ }
+      if (structured) {
+        assert.notStrictEqual(
+          structured.reason,
+          ERROR_REASON.SDK_FAIL_FAST,
+          `${fixture.name}: command crashed on an uncaught internal error instead of a controlled failure — ` +
+          `this is the §8.2 invariant bright line: a user document must never trigger it. stderr: ${result.error}`,
+        );
+      }
+    });
+  }
 });
