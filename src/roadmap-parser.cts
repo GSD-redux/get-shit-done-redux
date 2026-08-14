@@ -590,6 +590,173 @@ function hasPhaseEntries(markdown: string): boolean {
 }
 
 /**
+ * #3262: the sole owner of "which phase ids does THIS milestone window
+ * declare". Extracted verbatim from `getMilestonePhaseFilter`'s former inline
+ * heading scan + bullet scan so the new `roadmap milestone-scope` probe (the
+ * write-time milestone-scope guard's capture/compare signal) reads the SAME
+ * derivation the phase filter builds its membership set from — never a second
+ * copy of either scan.
+ *
+ * Fence-aware on both scans (tokenizeHeadings + stripFencedCode), matching
+ * `hasPhaseEntries` above: a fenced markdown EXAMPLE of either syntax is not
+ * a declared phase.
+ *
+ * #3185: deliberately NOT isSentinelPhaseId here for the BARE TOKEN. That
+ * predicate treats a leading 0 as sentinel milestone 0, which would swallow
+ * the #2554 decimal phase ids ("00.1" is a real phase, not milestone 0). This
+ * scan asks a narrower question — "which phase ids does this window declare"
+ * — where only the 999 icebox range is excluded. (The bracket leg below asks
+ * a DIFFERENT question — "is this heading's MILESTONE reserved" — and DOES
+ * route through the owner; see its own comment.)
+ *
+ * #612 (re-homed here by the #3446 merge): `convention` is the RESOLVED
+ * `phase_id_convention` value and is REQUIRED, deliberately not optional.
+ * This function is the one derivation two consumers now share, and a
+ * convention-BLIND third caller would read zero phases on a bracket ROADMAP —
+ * the pass-all degrade `getMilestonePhaseFilter` exists to prevent, and a
+ * vacuous before/after compare for the `roadmap milestone-scope` probe. A new
+ * call site must therefore fail to COMPILE rather than fail quietly (the
+ * `collectAnalyzePhases` precedent from the #3428 merge).
+ *
+ * Callers pass the resolved VALUE, never a `cwd`/`ws` pair: each resolves
+ * against its own scope. An owner that resolved for its callers would silently
+ * re-scope workstream repos (the `listMilestonePhaseDirs` correction).
+ *
+ * Both derived sets are returned TOGETHER because `qualifiedIds` is only
+ * meaningful for the exact heading set `ids` came from — they swap
+ * both-or-neither, so no caller can pair one with a stale other.
+ */
+function scanMilestonePhaseIds(window: string, convention: string | null | undefined): { ids: Set<string>; qualifiedIds: Set<string> } {
+  const ids = new Set<string>();
+  // #612: the milestone-QUALIFIED form (`{CODE}.{MM}-{PP}`) of each in-scope
+  // bracket heading, kept in its OWN set — deliberately NOT folded into `ids`.
+  // See `getMilestonePhaseFilter`'s declaration comment for the full reason
+  // (a qualified id always contains a hyphen, which would flip
+  // `roadmapUsesHyphenedIds` on every bracket repo and silently move the
+  // LEGACY dir path).
+  const qualifiedIds = new Set<string>();
+  // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
+  // T4 seam migration: phase headings inside fences are excluded automatically.
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  // #612: the 14th selected read. This scan feeds the DISK-side milestone
+  // filter, and on a bracket ROADMAP it collected nothing — so the filter
+  // degraded to pass-all and buildStateFrontmatter counted every other
+  // milestone's directories, making the bracket convention strictly worse than
+  // the M-NN one it supersedes on the property that matters most here: totals
+  // must track the ROADMAP, not the disk.
+  //
+  // #612: `capturing` puts the bracket id in group 1, so the token moves to
+  // group 1+bg — the same offset idiom the two sibling counters spell
+  // (validate.cts:218, state.cts:1752). A non-bracket convention ignores
+  // `capturing` inside phaseHeadingPrefixSrcFor and compiles the base source
+  // with zero added groups, so bg is 0 and every index below is unmoved —
+  // the whole function is then byte-equivalent to the #3262 extraction.
+  // The bracket id is what makes the DIR side able to scope: READING-B puts
+  // the milestone in the bracket, so the token alone (`01`) cannot tell this
+  // milestone's phase 01 from the previous milestone's.
+  const capturing = convention === 'bracket';
+  const bg = capturing ? 1 : 0;
+  const phaseHeadingPattern = new RegExp(
+    `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention, capturing)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
+    'i',
+  );
+  for (const h of tokenizeHeadings(window)) {
+    if (h.level < 2 || h.level > 4) continue;
+    const pm = phaseHeadingPattern.exec(h.text);
+    if (!pm) continue;
+    const bracketId = bg ? pm[1] : undefined;
+    const token = pm[1 + bg];
+    // #612 READING-B: a bracket heading carries its sentinel in the BRACKET,
+    // so `### [GSD.999] 01:` is an icebox item even though its token is `01`.
+    // Composed with — not substituted for — the legacy token rule, exactly as
+    // buildStateFrontmatter and cmdStateSync compose it, so this scan's
+    // phaseCount cannot disagree with the counters it is scoping for.
+    if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+    // #3185: the BARE-TOKEN rule is deliberately NOT isSentinelPhaseId — see
+    // the docstring above. The bracket check one line up is a DIFFERENT
+    // question and correctly routes through the owner.
+    if (/^999\b/.test(token)) continue;
+    ids.add(token);
+    // #612: a QUALIFIED key is formed only for a token that is itself a bracket
+    // phase token. `${bracketId}-${token}` is a string SPLICE, so a
+    // mid-migration heading carrying an M-NN label — `### [GSD.02] Phase 02-01:`
+    // — spliced to `GSD.02-02-01`, which BRACKET_QUALIFIED_KEY_RE reads as
+    // milestone 02 / phase 02: the trailing `-01` is silently truncated, both
+    // such headings collapse to the one key `GSD.2-2`, and the heading then
+    // claimed `GSD.02-02-two` — the directory it does NOT name — while
+    // rejecting `GSD.02-01-one`, the one it does. Skipping the key leaves the
+    // heading to the unqualified legacy path in `isDirInMilestone`, which is
+    // byte-identical to base on this shape.
+    //
+    // The token still enters `ids`, exactly as it does at base, so
+    // `roadmapUsesHyphenedIds` downstream still flips for this shape. That is
+    // deliberate, and it is what keeps the shape base-equivalent: base matches
+    // `[GSD.02] Phase 02-01:` through the un-widened `(?:\[…\]\s*)?Phase\s+`
+    // alternative and puts the same hyphenated token into the same set.
+    if (bracketId && !token.includes('-')) qualifiedIds.add(`${bracketId}-${token}`);
+  }
+  // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
+  // so a bullet-house-style ROADMAP populates the milestone phase set instead of
+  // collapsing to a zero-count pass-all filter.
+  //
+  // #612: NOT convention-selected. `BULLET_PHASE_LINE_PATTERN` is the
+  // house-style checklist grammar, whose bracket-form counterpart is owned by
+  // the `missing_phase_details` reader, not by this scan — widening it here
+  // would double-count a bracket checklist entry that already reached `ids`
+  // through its own `### [GSD.02] 05:` heading. Byte-identical to the #3262
+  // extraction on every convention.
+  let bm: RegExpExecArray | null;
+  const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
+  const unfenced = stripFencedCode(window).text;
+  while ((bm = scanner.exec(unfenced)) !== null) {
+    if (!/^999\b/.test(bm[1])) ids.add(bm[1]);
+  }
+  return { ids, qualifiedIds };
+}
+
+/**
+ * #3262 (write-time milestone-scope guard): does this free-text value contain
+ * a heading line that would TERMINATE the current milestone window if spliced
+ * into ROADMAP.md? Returns the offending heading texts (empty array = safe).
+ *
+ * Mirrors the parser's own terminator vocabulary (`computeMilestoneSectionEnd`):
+ * a heading terminates the window when it is level 1-3, is NOT a Phase heading
+ * (`/^Phase\s+\S/i` — the phase's OWN numbered heading is existing, correct,
+ * load-bearing behavior and is never a violation), and carries a milestone
+ * signal. The signal test is the union of `MILESTONE_HEADING_SIGNAL_PATTERN`
+ * (this module's "is this heading a milestone heading" vocabulary) and `🔄`
+ * (which terminates in `extractCurrentMilestoneScoped`'s own preamble pattern)
+ * — deliberately the CONSERVATIVE union: a field value whose line is a level
+ * 1-3 heading naming a version, a status marker, or the word "Milestone" is
+ * exactly the shape that silently narrows the window, so the guard rejects on
+ * any of them rather than re-deriving which specific marker a given roadmap's
+ * terminator would fire on.
+ *
+ * Two deliberate conservatisms, both one-directional (reject more, never less):
+ *  - `computeMilestoneSectionEnd` also bounds by the milestone heading's own
+ *    level (a `###` marker only terminates a `###`-level milestone heading);
+ *    this predicate flags every level 1-3 marker regardless, because which
+ *    level the active milestone heading uses is a property of the document at
+ *    write time, not of the text being validated.
+ *  - level 4+ headings never terminate any window and are not flagged.
+ *
+ * Fence-aware via `tokenizeHeadings`: a FENCED example of a milestone heading
+ * inside a field value does not terminate the real window, so it must not be
+ * a violation either — the parser and this guard must agree on fences.
+ */
+function findMilestoneScopeHeadingLines(text: string): string[] {
+  const out: string[] = [];
+  for (const h of tokenizeHeadings(text)) {
+    if (h.level > 3) continue;
+    if (/^Phase\s+\S/i.test(h.text)) continue;
+    if (MILESTONE_HEADING_SIGNAL_PATTERN.test(h.text) || /🔄/.test(h.text)) {
+      out.push(h.text.trim());
+    }
+  }
+  return out;
+}
+
+/**
  * #3184: pure decision table (no I/O, no regex construction from caller
  * data) implementing the design's Behavior table rows 1-8 (the remaining
  * rows 9-17 reduce to one of these six through how the caller constructs its
@@ -1767,16 +1934,8 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       });
     }
 
-    // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
-    // T4 seam migration: phase headings inside fences are excluded automatically.
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    // #612: the 14th selected read. This scan feeds the DISK-side milestone
-    // filter, and on a bracket ROADMAP it collected nothing — so the filter
-    // degraded to pass-all and buildStateFrontmatter counted every other
-    // milestone's directories, making the bracket convention strictly worse than
-    // the M-NN one it supersedes on the property that matters most here: totals
-    // must track the ROADMAP, not the disk. Resolved lazily; `phaseIdConvention`
-    // is honoured when the caller already has it.
+    // #612: resolved lazily; `phaseIdConvention` is honoured when the caller
+    // already has it.
     //
     // #2761 B1 (trek-e review): resolved with THIS call's `ws`, the same one
     // `planningDir` above used to locate the ROADMAP being scanned. The
@@ -1787,84 +1946,16 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     headingConvention = phaseIdConvention === undefined
       ? resolvePhaseIdConvention(cwd, ws)
       : phaseIdConvention;
-    // #612: `capturing` puts the bracket id in group 1, so the token moves to
-    // group 1+bg — the same offset idiom the two sibling counters spell
-    // (validate.cts:218, state.cts:1752). A non-bracket convention ignores
-    // `capturing` inside phaseHeadingPrefixSrcFor and compiles the base source
-    // with zero added groups, so bg is 0 and every index below is unmoved.
-    // The bracket id is what makes the DIR side able to scope: READING-B puts
-    // the milestone in the bracket, so the token alone (`01`) cannot tell this
-    // milestone's phase 01 from the previous milestone's.
-    const capturing = headingConvention === 'bracket';
-    const bg = capturing ? 1 : 0;
-    const phaseHeadingPattern = new RegExp(
-      `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, headingConvention, capturing)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
-      'i',
-    );
-    for (const h of tokenizeHeadings(roadmap)) {
-      if (h.level < 2 || h.level > 4) continue;
-      const pm = phaseHeadingPattern.exec(h.text);
-      if (!pm) continue;
-      const bracketId = bg ? pm[1] : undefined;
-      const token = pm[1 + bg];
-      // #612 READING-B: a bracket heading carries its sentinel in the BRACKET,
-      // so `### [GSD.999] 01:` is an icebox item even though its token is `01`.
-      // Composed with — not substituted for — the legacy token rule, exactly as
-      // buildStateFrontmatter and cmdStateSync compose it, so this filter's
-      // phaseCount cannot disagree with the counters it is scoping for.
-      if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
-      // #3185: the BARE-TOKEN rule below is deliberately NOT isSentinelPhaseId.
-      // That predicate treats a leading 0 as sentinel milestone 0, which would
-      // swallow the #2554 decimal phase ids ("00.1" is a real phase, not
-      // milestone 0). This scan asks a narrower question -- "which phase ids
-      // does this milestone's window declare" -- where only the 999 icebox
-      // range is excluded. The bracket check one line above is a DIFFERENT
-      // question ("is this heading's MILESTONE reserved") and correctly routes
-      // through the owner.
-      // Exclude 999.x backlog phases from milestone phase set. Mirrors init.cts filter.
-      if (/^999\b/.test(token)) continue;
-      milestonePhaseNums.add(token);
-      // #612: a QUALIFIED key is formed only for a token that is itself a bracket
-      // phase token. `${bracketId}-${token}` is a string SPLICE, so a
-      // mid-migration heading carrying an M-NN label — `### [GSD.02] Phase 02-01:`
-      // — spliced to `GSD.02-02-01`, which BRACKET_QUALIFIED_KEY_RE reads as
-      // milestone 02 / phase 02: the trailing `-01` is silently truncated, both
-      // such headings collapse to the one key `GSD.2-2`, and the heading then
-      // claimed `GSD.02-02-two` — the directory it does NOT name — while
-      // rejecting `GSD.02-01-one`, the one it does. Skipping the key leaves the
-      // heading to the unqualified legacy path below, which is byte-identical to
-      // base on this shape.
-      //
-      // The token still enters milestonePhaseNums, exactly as it does at base, so
-      // `roadmapUsesHyphenedIds` below still flips for this shape. That is
-      // deliberate, and it is what keeps the shape base-equivalent: base matches
-      // `[GSD.02] Phase 02-01:` through the un-widened `(?:\[…\]\s*)?Phase\s+`
-      // alternative and puts the same hyphenated token into the same set. The
-      // isolation described where milestoneQualifiedIds is declared is therefore
-      // narrower than it reads — it keeps QUALIFIED IDS out of that flag's input,
-      // not hyphens in general.
-      if (bracketId && !token.includes('-')) milestoneQualifiedIds.add(`${bracketId}-${token}`);
-    }
-    // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
-    // so a bullet-house-style ROADMAP populates the milestone phase set instead of
-    // collapsing to a zero-count pass-all filter.
-    // #3184 review finding: this scan must be fence-aware like `hasPhaseEntries`
-    // above — otherwise a fenced markdown EXAMPLE of the bullet syntax inflates
-    // milestonePhaseNums / phaseCount. Strip fences through the canonical seam
-    // first.
-    {
-      let bm: RegExpExecArray | null;
-      const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
-      const roadmapUnfenced = stripFencedCode(roadmap).text;
-      while ((bm = scanner.exec(roadmapUnfenced)) !== null) {
-        // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
-        // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
-        // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
-        // narrower question -- "which phase ids does this milestone's window
-        // declare" -- where only the 999 icebox range is excluded.
-        if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
-      }
-    }
+    // #3262: the set-building scan lives in its own named owner
+    // (`scanMilestonePhaseIds`) so the new `roadmap milestone-scope` probe
+    // reads the SAME derivation this filter does — never a second copy.
+    // #612 (this merge): that owner now takes the RESOLVED convention and
+    // returns BOTH sets the scan derives, so the probe and this filter cannot
+    // read a bracket ROADMAP differently. See the owner's docstring for why
+    // the parameter is required rather than optional.
+    const scanned = scanMilestonePhaseIds(roadmap, headingConvention);
+    for (const id of scanned.ids) milestonePhaseNums.add(id);
+    for (const qualified of scanned.qualifiedIds) milestoneQualifiedIds.add(qualified);
   } catch {
     /* best-effort (#2245 audit): the real throw source is platformReadSync
      * at the top of this try (re-throws for a non-ENOENT read failure). On
@@ -2107,4 +2198,10 @@ export = {
   // #1956: sole owner of the #2012 decoy-avoidance scope for the
   // `drift-guard phase-status` CLI seam.
   findRoadmapProgressTable,
+  // #3262 (write-time milestone-scope guard): the window phase-id scan owner
+  // (consumed by getMilestonePhaseFilter above and the roadmap milestone-scope
+  // CLI probe) and the free-text predicate the phase add/add-batch/insert
+  // guards and the edit-phase workflow's pre/post capture are built on.
+  scanMilestonePhaseIds,
+  findMilestoneScopeHeadingLines,
 };

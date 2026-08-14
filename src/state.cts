@@ -1479,18 +1479,18 @@ function preferNewerLastActivity(
   const exDate = exRaw.slice(0, 10);
   const derDate = derRaw.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
+  // #3258: this guard now protects only `last_activity` (a `derive` row) against
+  // the stale-archive regression (#2567). `last_activity_desc` used to be
+  // restored here too (both the older-date and the #3052 same-date branches),
+  // but that was a date-comparison rule — a DIFFERENT policy from the
+  // `preserve-when-unchanged` row its FIELD_CLASSIFICATION entry declares.
+  // Keeping both was two rules that could disagree. last_activity_desc is now
+  // governed by exactly one rule: its table row, enforced by
+  // applyStatePreservation's #1230 delta heuristic on the RMW path (where every
+  // desc-preserving transition — planned-phase / advance / complete / milestone
+  // — runs). The #3052 same-date contract still holds via that delta rule.
   if (derDate < exDate) {
     derivedFm['last_activity'] = exRaw;
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
-  } else if (derDate === exDate) {
-    // #3052: same-date — frontmatter is authoritative for this date, so
-    // preserve its last_activity_desc rather than letting the derived body
-    // prose (which may be stale) overwrite it.
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
   }
 }
 
@@ -2893,6 +2893,24 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // table's preserve-always row so the rule lives in one place.
     const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
 
+    // #3258: snapshot the body sources for the additional preserve-when-unchanged
+    // rows applyStatePreservation now honors (last_activity_desc, paused_at,
+    // current_phase, current_plan). Each mirrors buildStateFrontmatter's
+    // derivation so the #1230 delta ("did THIS write change the source?") is
+    // accurate: current_phase combines `Current Phase` with the prose `Phase:`
+    // fallback (parseProsePhaseField, scoped to ## Current Position); paused_at
+    // is session-scoped (mirrors stopped_at); last_activity_desc combines the
+    // `Last Activity Description` field with the prose desc fallback.
+    const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
+    const preBodyCurrentPlan = stateExtractField(preBody, 'Current Plan');
+    const preBodyCurrentPhase = stateExtractField(preBody, 'Current Phase')
+      ?? parseProsePhaseField(stateExtractField(preCurrentPositionScope, 'Phase')).phase;
+    const preBodyPausedAt = stateExtractField(preSessionScope, 'Paused At');
+    const preBodyLastActivityRaw = stateExtractField(preBody, 'Last Activity')
+      ?? stateExtractField(preBody, 'Last activity');
+    const preBodyLastActivityDesc = stateExtractField(preBody, 'Last Activity Description')
+      ?? parseProseLastActivityField(preBodyLastActivityRaw).description;
+
     const modified = transformFn(content);
 
     // Bug #948: no-op guard — if the transform produced no change, do NOT write
@@ -2921,18 +2939,39 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
     // current_phase_name delta comparison.
     const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
+    // #3258: post-transform body sources for the preserve-when-unchanged rows
+    // added in #3258 (mirrors the pre-transform block above).
+    const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
+    const postBodyCurrentPlan = stateExtractField(postBody, 'Current Plan');
+    const postBodyCurrentPhase = stateExtractField(postBody, 'Current Phase')
+      ?? parseProsePhaseField(stateExtractField(postCurrentPositionScope, 'Phase')).phase;
+    const postBodyPausedAt = stateExtractField(postSessionScope, 'Paused At');
+    const postBodyLastActivityRaw = stateExtractField(postBody, 'Last Activity')
+      ?? stateExtractField(postBody, 'Last activity');
+    const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
+      ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
+    const bodyDeltas = {
+      last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
+      paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
+      current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
+      current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
+    };
 
     // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
     // preservation block is now the pure, table-driven `applyStatePreservation`
     // in the STATE.md Transition Module. progress / status / stopped_at /
     // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
-    // one policy source, not three drifting encodings. Behavior-identical to
-    // the pre-#1796 inline block; this is the absorption ADR-1769 / CONTEXT.md
+    // one policy source, not three drifting encodings. #3258 extends the same
+    // pass to last_activity_desc / paused_at / current_phase / current_plan
+    // (preserve-when-unchanged) and milestone / milestone_name (preserve-if-
+    // placeholder). Behavior-identical to the pre-#1796 inline block for the
+    // original four fields; this is the absorption ADR-1769 / CONTEXT.md
     // already claimed shipped.
     const postFm = extractFrontmatter(synced, statePath) as Record<string, unknown>;
     const preservation = applyStatePreservation({
       preFm, postFm, preFmSnapshot, resync,
       deriveProgressKeys: options?.deriveProgressKeys === true,
+      bodyDeltas,
       preBodyStatus, postBodyStatus,
       preBodyStoppedAt, postBodyStoppedAt,
       preBodyPhaseSource, postBodyPhaseSource,

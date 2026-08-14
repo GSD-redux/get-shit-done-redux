@@ -1476,6 +1476,228 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3258: every FIELD_CLASSIFICATION row declaring a preservation policy must be
+// honored by applyStatePreservation (the table-consuming pass). The table's own
+// docstring promises "a policy change is a one-row table edit" — this invariant
+// proves it: for every non-`derive`/non-`clear` row, a minimal input where the
+// declared policy would restore the snapshot value DOES restore it. Adding a
+// new preservation row without an implementation branch makes this fail.
+//
+// Written FIRST and RED before the fix. Before the fix this fails for six rows:
+// last_activity_desc, paused_at, current_phase, current_plan (preserve-when-
+// unchanged, only approximated by the weaker #905 absent-fallback) and
+// milestone, milestone_name (preserve-if-placeholder, enforced only by the
+// #948/#2135 guard in syncStateFrontmatter). See issue #3258.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3258: applyStatePreservation honors every declared preservation row', () => {
+  const GOOD_PLACEHOLDER = 'preserved-by-table';
+  // Universal "body source unchanged this write" deltas. Every
+  // preserve-when-unchanged probe reuses these so the delta condition (pre ===
+  // post) is satisfied and the only variable is whether the branch exists.
+  const SAME = { pre: 'unchanged-source', post: 'unchanged-source' };
+  const unchangedBodyDeltas = {
+    status: SAME,
+    stopped_at: SAME,
+    paused_at: SAME,
+    current_phase: SAME,
+    current_plan: SAME,
+    last_activity_desc: SAME,
+  };
+  // Dedicated-channel deltas (the four pre-#3258 rows use these, unchanged).
+  const sameStatus = { preBodyStatus: 'x', postBodyStatus: 'x' };
+  const sameStoppedAt = { preBodyStoppedAt: 'x', postBodyStoppedAt: 'x' };
+  const samePhaseSource = { preBodyPhaseSource: 'x', postBodyPhaseSource: 'x' };
+
+  // Per-policy probe. Returns whether applyStatePreservation restored the
+  // field's snapshot value under an input crafted so the declared policy fires.
+  function honored(field) {
+    const cls = getFieldClassification(field);
+    if (!cls) return false;
+    const policy = cls.preservation;
+    if (policy === 'derive' || policy === 'clear') return true; // not a preservation policy
+
+    const GOOD = 'preserved-by-table';
+    const BAD = 'clobbered-by-derive';
+
+    if (policy === 'preserve-always') {
+      if (field === 'progress') {
+        const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
+        const r = applyStatePreservation({
+          preFm: curated, preFmSnapshot: curated,
+          postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } },
+          resync: false, bodyDeltas: unchangedBodyDeltas,
+          ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+        });
+        return JSON.stringify(r.postFm.progress) === JSON.stringify(curated.progress);
+      }
+      // current_phase_name: preserve-always, restored when body Phase source unchanged.
+      const r = applyStatePreservation({
+        preFm: null, preFmSnapshot: { [field]: GOOD },
+        postFm: { [field]: BAD }, resync: false, bodyDeltas: unchangedBodyDeltas,
+        ...sameStatus, ...sameStoppedAt, preBodyPhaseSource: '3', postBodyPhaseSource: '3',
+      });
+      return r.postFm[field] === GOOD;
+    }
+
+    if (policy === 'preserve-when-unchanged') {
+      const r = applyStatePreservation({
+        preFm: null, preFmSnapshot: { [field]: GOOD },
+        postFm: { [field]: BAD }, resync: true, bodyDeltas: unchangedBodyDeltas,
+        ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+      });
+      return r.postFm[field] === GOOD;
+    }
+
+    if (policy === 'preserve-if-placeholder') {
+      // Derived name is the placeholder 'milestone'; snapshot holds a real
+      // name+version. Mirrors the #948/#2135 contract: name restored to the
+      // curated snapshot, version restored alongside it.
+      const r = applyStatePreservation({
+        preFm: null,
+        preFmSnapshot: { milestone: GOOD, milestone_name: GOOD },
+        postFm: { milestone: 'derived-version', milestone_name: 'milestone' },
+        resync: true, bodyDeltas: unchangedBodyDeltas,
+        ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+      });
+      return r.postFm[field] === GOOD;
+    }
+
+    return false;
+  }
+
+  test('every non-derive/non-clear preservation row is honored (the one-row-table-edit contract)', () => {
+    const expected = [];
+    for (const [field, cls] of Object.entries(FIELD_CLASSIFICATION)) {
+      if (cls.preservation !== 'derive' && cls.preservation !== 'clear') {
+        expected.push(field);
+      }
+    }
+    const missing = expected.filter((f) => !honored(f));
+    assert.deepEqual(
+      missing,
+      [],
+      `applyStatePreservation does not honor these declared preservation rows (expected every ` +
+        `non-derive/non-clear row to restore its snapshot value): ${JSON.stringify(missing)}. ` +
+        `Add a branch per ADR-1769 §4 so the table is the single policy source (#3258).`,
+    );
+  });
+
+  const unchchangedChanged = {
+    status: { pre: 'x', post: 'x' },
+    stopped_at: { pre: 'x', post: 'x' },
+    paused_at: { pre: 'x', post: 'x' },
+    current_phase: { pre: 'x', post: 'x' },
+    current_plan: { pre: 'x', post: 'x' },
+    last_activity_desc: { pre: 'old description', post: 'new description from transition' }, // changed
+  };
+
+  test('a row declaring a preservation policy with no implementation would be caught (sentinel)', () => {
+    // Proves the invariant above actually catches a missing implementation: a
+    // field with a preservation policy but no body-delta wiring / branch does
+    // not get restored. We simulate this by probing a field whose body-source
+    // delta the caller forgot to supply (the realistic regression shape).
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { current_plan: GOOD_PLACEHOLDER },
+      postFm: { current_plan: 'derived' },
+      resync: true,
+      bodyDeltas: {}, // caller forgot to wire current_plan's body-source delta
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.notEqual(r.postFm.current_plan, GOOD_PLACEHOLDER,
+      'a preserve-when-unchanged row with no body-source delta wiring must NOT be restored ' +
+      '(proves the invariant would catch a new unimplemented row)');
+  });
+
+  // Per-field restore tests (clearer failure messages than the set-equality
+  // invariant alone, and they document each row's declared semantics).
+
+  test('last_activity_desc: preserve-when-unchanged restores snapshot when body source unchanged', () => {
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { last_activity_desc: 'authoritative description' },
+      postFm: { last_activity_desc: 'stale derived description' },
+      resync: true,
+      bodyDeltas: { ...unchangedBodyDeltas },
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.last_activity_desc, 'authoritative description');
+    assert.equal(r.mutated, true);
+  });
+
+  test('last_activity_desc: derived wins when the body source changed this write (no over-preservation)', () => {
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { last_activity_desc: 'old description' },
+      postFm: { last_activity_desc: 'new description from transition' },
+      resync: true,
+      bodyDeltas: { ...unchchangedChanged }, // body 'Last Activity Description' moved
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.last_activity_desc, 'new description from transition');
+    assert.equal(r.mutated, false);
+  });
+
+  test('paused_at: preserve-when-unchanged restores curated value over a stale-but-present derived value', () => {
+    // Group 2: the declared #1230 delta heuristic beats the weaker #905
+    // absent-fallback. Derived is PRESENT but stale; body source unchanged →
+    // curated frontmatter value wins.
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { paused_at: '2026-02-02' },
+      postFm: { paused_at: '2026-01-01' },
+      resync: true,
+      bodyDeltas: { ...unchangedBodyDeltas },
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.paused_at, '2026-02-02');
+    assert.equal(r.mutated, true);
+  });
+
+  test('current_phase: preserve-when-unchanged restores curated value over a stale derived value', () => {
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { current_phase: '4' },
+      postFm: { current_phase: '2' },
+      resync: true,
+      bodyDeltas: { ...unchangedBodyDeltas },
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.current_phase, '4');
+    assert.equal(r.mutated, true);
+  });
+
+  test('current_plan: preserve-when-unchanged restores curated value over a stale derived value', () => {
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { current_plan: '5' },
+      postFm: { current_plan: '3' },
+      resync: true,
+      bodyDeltas: { ...unchangedBodyDeltas },
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.current_plan, '5');
+    assert.equal(r.mutated, true);
+  });
+
+  test('milestone / milestone_name: preserve-if-placeholder restores curated name when derived is placeholder', () => {
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: { milestone: '0.1', milestone_name: 'Real Curated Name' },
+      postFm: { milestone: '0.x', milestone_name: 'milestone' }, // placeholder derive
+      resync: true,
+      bodyDeltas: { ...unchangedBodyDeltas },
+      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
+    });
+    assert.equal(r.postFm.milestone_name, 'Real Curated Name',
+      'placeholder-derived milestone_name must yield to the curated snapshot (#948/#2135 contract)');
+    assert.equal(r.postFm.milestone, '0.1',
+      'milestone version must stay consistent with the preserved name');
+  });
+});
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-21-state-md-template-frontmatter.test.cjs — consolidation epic #1969 (B8 #1977)

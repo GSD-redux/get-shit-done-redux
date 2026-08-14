@@ -35,7 +35,7 @@ const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings, scanMilestonePhaseIds } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 import { clampPercent } from './phase-lifecycle.cjs';
@@ -825,6 +825,56 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   output(result, raw, undefined);
 }
 
+// ─── cmdRoadmapMilestoneScope ────────────────────────────────────────────────
+
+/**
+ * #3262 (write-time milestone-scope guard): read-only probe emitting the
+ * current milestone window's IDENTITY — its scope classification and the
+ * phase ids it declares — so the edit-phase workflow can capture it before
+ * its in-place section write, re-derive it after, and roll back on any
+ * change. This is the milestone-scope sibling of the workflow's existing
+ * `depends_on` gate, expressed as a command because the workflow's write is
+ * assistant-driven free-text surgery, not a code path.
+ *
+ * Deliberately NOT `cmdRoadmapAnalyze`: analyze's #3165 recovery re-populates
+ * `phases` from the shipped-milestone-stripped document when the scoped
+ * window is suspect, which is right for a human-facing progress report and
+ * wrong for a before/after equality probe — the refill would mask exactly
+ * the narrowing this guard exists to detect. This probe reports the RAW
+ * window (`extractCurrentMilestoneScoped` + `scanMilestonePhaseIds`), no
+ * fallback, so a narrowed window is always visible as a changed phase set.
+ */
+function cmdRoadmapMilestoneScope(cwd: string, raw: boolean): void {
+  const roadmapPath = planningPaths(cwd).roadmap;
+
+  if (!fs.existsSync(roadmapPath)) {
+    output({ error: 'ROADMAP.md not found', scope: SCOPE.UNREADABLE, phases: [], phase_count: 0 }, raw, undefined);
+    return;
+  }
+
+  const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
+  const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
+  // Document order (Set insertion order) — deterministic for a given document.
+  //
+  // #612: SELECTED by the resolved convention, like every other heading read on
+  // this branch — and here the selection is load-bearing for the GUARD, not
+  // just for the report. `scanMilestonePhaseIds` recognizes `### [GSD.02] 05:`
+  // only when the convention says bracket, so a convention-BLIND call returns
+  // the EMPTY set on a bracket ROADMAP: `phases: []` before the write and
+  // `phases: []` after it, and edit-phase's before/after comparison passes on
+  // exactly the narrowing it exists to catch. Resolved HERE, from this
+  // command's own `cwd` (the same one `extractCurrentMilestoneScoped` above
+  // resolves its own bracket scoping from), never inside the owner — an owner
+  // that resolved for its callers would silently re-scope workstream repos.
+  //
+  // KNOWN GAP, deliberately NOT closed here: the `scope` axis above still runs
+  // through `hasPhaseEntries`, which is convention-blind, so a pure-bracket
+  // window classifies COMPLETE. This threading fixes the `phases` axis of the
+  // probe; `scope` stays blind until the convention-less-readers slice lands.
+  const phases = [...scanMilestonePhaseIds(window, resolvePhaseIdConvention(cwd)).ids];
+  output({ scope, phases, phase_count: phases.length }, raw, undefined);
+}
+
 // ─── cmdRoadmapUpdatePlanProgress ─────────────────────────────────────────────
 
 /**
@@ -1356,6 +1406,7 @@ export = {
   cmdRoadmapGetPhase,
   getRoadmapPhaseWithFallback,
   cmdRoadmapAnalyze,
+  cmdRoadmapMilestoneScope,
   cmdRoadmapUpdatePlanProgress,
   cmdRoadmapAnnotateDependencies,
   buildPhaseHeadingRegex,

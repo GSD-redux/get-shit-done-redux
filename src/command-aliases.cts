@@ -629,6 +629,14 @@ export const ROADMAP_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "roadmap.milestone-scope",
+    "aliases": [
+      "roadmap milestone-scope"
+    ],
+    "subcommand": "milestone-scope",
+    "mutation": false
+  },
+  {
     "canonical": "roadmap.get-phase",
     "aliases": [
       "roadmap get-phase"

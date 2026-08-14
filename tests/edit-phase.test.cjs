@@ -309,6 +309,51 @@ describe('edit-phase workflow: phase number and position preservation', () => {
   });
 });
 
+// ─── Workflow: milestone scope guard (#3262) ─────────────────────────────────
+
+describe('edit-phase workflow: milestone scope guard (#3262)', () => {
+  test('workflow captures the milestone scope before writing the updated phase', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
+    assert.ok(writeStep, 'write_updated_phase step must exist');
+    assert.match(
+      writeStep[1],
+      /milestone-scope/,
+      'write_updated_phase must run the roadmap milestone-scope probe before writing'
+    );
+    assert.match(writeStep[1], /SCOPE_BEFORE/i, 'the pre-write capture must be named for the post-write comparison');
+  });
+
+  test('workflow re-derives the milestone scope after the write and rolls back on mismatch', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
+    assert.ok(writeStep, 'write_updated_phase step must exist');
+    assert.match(writeStep[1], /SCOPE_AFTER/i, 'the post-write re-derivation must be present');
+    assert.match(writeStep[1], /scope|phases/i, 'the comparison must cover the scope and the phase set');
+    assert.match(
+      writeStep[1],
+      /rollback|restore|revert|rolled back/i,
+      'a scope or phase-set mismatch must trigger rollback'
+    );
+    assert.match(
+      writeStep[1],
+      /milestone scope changed|scope changed/i,
+      'the rollback path must surface an explicit error'
+    );
+  });
+
+  test('milestone scope guard success criterion is checked (#3262)', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const criteria = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
+    assert.ok(criteria, 'workflow should have a success_criteria section');
+    assert.match(
+      criteria[1],
+      /milestone scope/i,
+      'success criteria must include the milestone-scope verification'
+    );
+  });
+});
+
 // ─── Workflow: STATE.md update ────────────────────────────────────────────────
 
 describe('edit-phase workflow: STATE.md roadmap evolution', () => {

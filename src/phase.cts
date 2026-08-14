@@ -53,7 +53,7 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -1030,10 +1030,36 @@ function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
   return lastSeparator > 0 ? ranges.primary.start + lastSeparator : ranges.primary.end;
 }
 
+/**
+ * #3262 (write-time milestone-scope guard): the phase-creation and
+ * phase-insertion entry templates interpolate the caller's `description`
+ * verbatim into `### Phase N: ${description}`. A description embedding a
+ * level 1-3 heading that carries a milestone marker (version token,
+ * ✅/📋/🚧/🔄, or the word "Milestone") would splice a heading that TERMINATES
+ * the current milestone window (`computeMilestoneSectionEnd`) and silently
+ * drops every later phase out of the derived milestone phase set. Reject
+ * before any write or phase-directory creation — the fail-loud sibling of
+ * the edit-phase workflow's depends_on gate. The predicate itself
+ * (`findMilestoneScopeHeadingLines`) is fence-aware and Phase-heading-exempt,
+ * so ordinary descriptions and the phase's own numbered heading never trip it.
+ */
+function assertDescriptionPreservesMilestoneScope(description: string, command: string): void {
+  const offending = findMilestoneScopeHeadingLines(description);
+  if (offending.length === 0) return;
+  error(
+    `${command}: description contains a milestone-scoping heading line — writing it to ROADMAP.md would terminate ` +
+      `the current milestone window and silently drop later phases out of the milestone scope. ` +
+      `Offending line(s): ${offending.map((line) => JSON.stringify(line)).join(', ')}. ` +
+      `Rewrite the line so it is not a level 1-3 "#" heading carrying a milestone marker ` +
+      `(a vN.N version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone").`
+  );
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase add');
 
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1149,6 +1175,12 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
   if (!Array.isArray(descriptions) || descriptions.length === 0) {
     error('descriptions array required for phase add-batch');
   }
+  // #3262: validate every description BEFORE the lock — the batch is
+  // all-or-nothing, so one offending description must reject the whole batch
+  // with no ROADMAP write and no phase directories created.
+  for (const description of descriptions) {
+    assertDescriptionPreservesMilestoneScope(description, 'phase add-batch');
+  }
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {
@@ -1230,6 +1262,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
   if (!afterPhase || !description) {
     error('after-phase and description required for phase insert');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase insert');
 
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {

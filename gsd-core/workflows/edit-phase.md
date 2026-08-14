@@ -233,11 +233,34 @@ Wait for confirmation. If the user says `n`, exit without writing.
 </step>
 
 <step name="write_updated_phase">
+Before writing, capture the current milestone scope (window scope + phase set) so the write can be verified against it:
+
+```bash
+SCOPE_BEFORE=$(gsd_run query roadmap milestone-scope)
+```
+
 Write the updated phase back in place in ROADMAP.md.
 
 Read the full ROADMAP.md content, locate the phase section by its header (`## Phase {N}:` or `### Phase {N}:`), and replace exactly the old section text with the new section text. All content before and after the section (including other phases, milestone headers, and the summary checklist) must be left unchanged.
 
-After writing ROADMAP.md, update STATE.md Roadmap Evolution:
+After writing, re-derive the milestone scope and compare it to the capture:
+
+```bash
+SCOPE_AFTER=$(gsd_run query roadmap milestone-scope)
+```
+
+If `scope` or `phases` differs from SCOPE_BEFORE, the replacement text introduced a heading that terminates the current milestone window (a level 1-3 heading carrying a version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone"). Restore ROADMAP.md by replacing the new section text with the original section text, then report and stop — do NOT update STATE.md and do NOT retry the write:
+
+```
+ERROR: edit rejected — milestone scope changed
+Phase set before: {SCOPE_BEFORE phases} / after: {SCOPE_AFTER phases}
+ROADMAP.md rolled back to the original section.
+The updated phase text must not introduce a milestone-scoping heading; rewrite the offending line as plain text or a list item.
+```
+
+Exit.
+
+If the milestone scope is unchanged, update STATE.md Roadmap Evolution:
 
 ```bash
 gsd_run query state.add-roadmap-evolution \
@@ -277,6 +300,7 @@ Fields changed: {changed_field_list}
 - Don't edit in_progress/completed phases without --force
 - Don't use raw Write on ROADMAP.md without reading it first; always replace section in place
 - Don't modify the phase directory structure — only ROADMAP.md changes
+- Don't introduce a milestone-scoping heading (level 1-3 with a version token, ✅/📋/🚧/🔄 marker, or "Milestone") in field values — it terminates the current milestone window; the post-write scope check rolls the edit back
 - Don't commit the change — that's the user's decision
 </anti_patterns>
 
@@ -290,6 +314,7 @@ Edit-phase is complete when:
 - [ ] depends_on references validated; invalid references blocked
 - [ ] Diff shown and confirmed by user
 - [ ] Updated phase written back in place; number, position, and status preserved
+- [ ] Milestone scope verified unchanged after the write (rollback + error on mismatch)
 - [ ] STATE.md Roadmap Evolution updated
 - [ ] User informed of next steps
 </success_criteria>
