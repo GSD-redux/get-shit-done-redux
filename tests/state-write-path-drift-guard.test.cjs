@@ -45,7 +45,20 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const guard = require('../scripts/lint-state-write-path-drift.cjs');
-const { REASON, findSeamBypasses, findPromptSeamUses, findPolicyDispatchDrift, applyRatchet, loadBaseline, SEAM_OWNER_FILE, SEAM_OWNER_EXEMPT_FUNCTIONS, EXECUTOR_FILE, REPO_ROOT, BASELINE_PATH } = guard;
+const {
+  REASON,
+  findSeamBypasses,
+  findPromptSeamUses,
+  findPolicyDispatchDrift,
+  applyRatchet,
+  loadBaseline,
+  buildBaselineEntries,
+  SEAM_OWNER_FILE,
+  SEAM_OWNER_EXEMPT_FUNCTIONS,
+  EXECUTOR_FILE,
+  REPO_ROOT,
+  BASELINE_PATH,
+} = guard;
 
 const GUARD_PATH = path.join(REPO_ROOT, 'scripts', 'lint-state-write-path-drift.cjs');
 
@@ -482,5 +495,72 @@ describe('D14 — field-name-keyed branch comparisons are caught', () => {
     ].join('\n');
 
     assert.deepStrictEqual(findPolicyDispatchDrift(EXECUTOR_FILE, text), []);
+  });
+});
+
+// ─── D15: `file` (and other attacker-derived fields) are sanitized AT
+// CONSTRUCTION, not just by the human formatter ─────────────────────────────
+// Security review finding: a repo can legally track a filename containing C1
+// control bytes or bidi-override codepoints — exactly as attacker-controlled
+// on a fork PR as the `source` fragment this guard already sanitized before
+// this fix. Before this fix `file` reached `--json` stdout and the committed
+// baseline (`scripts/state-write-path-drift-baseline.json`) unsanitized —
+// only the human formatter wrapped it. A finding's `file` (and any other
+// attacker-derived field, like `field`) must come back escaped from the
+// FINDER itself, so every consumer (human, `--json`, baseline) inherits the
+// sanitization uniformly.
+//
+// The two attack codepoints are built via `String.fromCharCode` rather than
+// embedded as literal bytes, so this test file's own source never carries a
+// live control/bidi codepoint on disk.
+
+describe('D15 — file (and field) values are sanitized at construction', () => {
+  const RLO = String.fromCharCode(0x202e); // RIGHT-TO-LEFT OVERRIDE (bidi)
+  const C1_CSI = String.fromCharCode(0x9b); // C1 CONTROL: CSI
+  const ATTACK_FILE = `src/evil${RLO}${C1_CSI}name.cts`;
+  const ESCAPED_FILE = 'src/evil\\u202e\\x9bname.cts';
+
+  test('findSeamBypasses: an attacker-controlled filename comes back escaped', () => {
+    const text = ['function cmdSomethingElse(cwd) {', '  writeStateMd(statePath, modified, cwd);', '}'].join('\n');
+
+    const out = findSeamBypasses(ATTACK_FILE, text);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].file, ESCAPED_FILE);
+    // Neither raw attack codepoint survives in the finding at all — this is
+    // exactly what reaches `--json` stdout verbatim (JSON.stringify
+    // neutralizes C0 but NOT C1 or bidi codepoints, which is why
+    // construction-time escaping — not JSON.stringify — is load-bearing).
+    assert.ok(!out[0].file.includes(RLO));
+    assert.ok(!out[0].file.includes(C1_CSI));
+
+    // The SAME escaped value is what a regenerated baseline entry persists —
+    // proving the fix reaches the committed
+    // scripts/state-write-path-drift-baseline.json, not just the finding.
+    const entries = buildBaselineEntries(out, null);
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].file, ESCAPED_FILE);
+    assert.ok(!entries[0].file.includes(RLO));
+    assert.ok(!entries[0].file.includes(C1_CSI));
+  });
+
+  test('findPromptSeamUses: an attacker-controlled filename comes back escaped', () => {
+    const text = 'Run gsd-tools state.patch --field status --value done to record completion directly.';
+
+    const out = findPromptSeamUses(ATTACK_FILE, text);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].file, ESCAPED_FILE);
+    assert.ok(!out[0].file.includes(RLO));
+    assert.ok(!out[0].file.includes(C1_CSI));
+  });
+
+  test('findPolicyDispatchDrift: filename AND the field literal are both escaped', () => {
+    const text = ["  if (field === 'status" + RLO + C1_CSI + "') return;"].join('\n');
+
+    const out = findPolicyDispatchDrift(ATTACK_FILE, text);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].file, ESCAPED_FILE);
+    assert.strictEqual(out[0].field, 'status\\u202e\\x9b');
+    assert.ok(!out[0].field.includes(RLO));
+    assert.ok(!out[0].field.includes(C1_CSI));
   });
 });

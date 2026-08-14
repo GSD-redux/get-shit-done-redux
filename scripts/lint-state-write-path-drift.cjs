@@ -308,15 +308,24 @@ function findPolicyDispatchDrift(rel, text) {
   for (let i = 0; i < stripped.length; i++) {
     const line = stripped[i];
     if (!line.trim()) continue;
+    // `file` is sanitized here, at construction, not just at the human
+    // formatter: `rel` is exactly as attacker-controlled as `source` on a
+    // fork PR (a tracked filename can legally carry C1 bytes or bidi
+    // overrides), and it reaches the committed baseline and `--json` stdout
+    // unfiltered otherwise — see `sanitizeForReport`'s own header.
     FIELD_NAME_DISPATCH_RE.lastIndex = 0;
     let m;
     while ((m = FIELD_NAME_DISPATCH_RE.exec(line)) !== null) {
       out.push({
         reason: REASON.FIELD_NAME_DISPATCH,
         axis: 'policy-dispatch',
-        file: rel,
+        file: sanitizeForReport(rel),
         line: i + 1,
-        field: m[2],
+        // `field` is captured straight out of a quoted string literal in
+        // repo source — attacker-controlled on the same fork-PR basis as
+        // `file`/`source`, so sanitize it too rather than let it reach
+        // `--json` stdout / the baseline raw.
+        field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
     }
@@ -325,9 +334,13 @@ function findPolicyDispatchDrift(rel, text) {
       out.push({
         reason: REASON.FIELD_NAME_DISPATCH,
         axis: 'policy-dispatch',
-        file: rel,
+        file: sanitizeForReport(rel),
         line: i + 1,
-        field: m[2],
+        // `field` is captured straight out of a quoted string literal in
+        // repo source — attacker-controlled on the same fork-PR basis as
+        // `file`/`source`, so sanitize it too rather than let it reach
+        // `--json` stdout / the baseline raw.
+        field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
     }
@@ -336,9 +349,13 @@ function findPolicyDispatchDrift(rel, text) {
       out.push({
         reason: REASON.FIELD_NAME_DISPATCH,
         axis: 'policy-dispatch',
-        file: rel,
+        file: sanitizeForReport(rel),
         line: i + 1,
-        field: m[2],
+        // `field` is captured straight out of a quoted string literal in
+        // repo source — attacker-controlled on the same fork-PR basis as
+        // `file`/`source`, so sanitize it too rather than let it reach
+        // `--json` stdout / the baseline raw.
+        field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
     }
@@ -362,12 +379,16 @@ function findUnimplementedPolicies(text, rel) {
   for (const member of members) {
     const memberRe = new RegExp(`preservation\\s*===\\s*'${escapeRegex(member)}'`);
     if (memberRe.test(strippedText)) continue;
+    // `file` and `policy` are sanitized here for the same reason as
+    // `findPolicyDispatchDrift` above: both `rel` and a `FieldPreservation`
+    // union member are attacker-controlled on a fork PR, exactly like
+    // `source`.
     out.push({
       reason: REASON.UNIMPLEMENTED_POLICY,
       axis: 'policy-dispatch',
-      file: rel,
+      file: sanitizeForReport(rel),
       line: 0,
-      policy: member,
+      policy: sanitizeForReport(member),
       source: sanitizeForReport(`FieldPreservation member '${member}' has no executor`),
     });
   }
@@ -404,9 +425,14 @@ function findSeamBypasses(rel, text) {
         const fn = enclosingFunction(stripped, i);
         if (fn && SEAM_OWNER_EXEMPT_FUNCTIONS.includes(fn)) continue;
       }
+      // `file` is sanitized here, at construction, not just at the human
+      // formatter: `rel` is exactly as attacker-controlled as `source` on a
+      // fork PR (a tracked filename can legally carry C1 bytes or bidi
+      // overrides), and it reaches the committed baseline and `--json`
+      // stdout unfiltered otherwise — see `sanitizeForReport`'s own header.
       out.push({
         axis: 'write-seam',
-        file: rel,
+        file: sanitizeForReport(rel),
         line: i + 1,
         symbol: m[1],
         source: sanitizeForReport(rawLines[i].trim()),
@@ -480,9 +506,12 @@ function findPromptSeamUses(rel, text) {
     let m;
     while ((m = PROMPT_SEAM_RE.exec(line)) !== null) {
       if (isInsideCodeSpan(line, m.index)) continue;
+      // `file` is sanitized here for the same reason as `findSeamBypasses`
+      // above: `rel` is attacker-controlled on a fork PR, exactly like
+      // `source`.
       out.push({
         axis: 'write-seam',
-        file: rel,
+        file: sanitizeForReport(rel),
         line: i + 1,
         symbol: 'prompt-layer-state-write',
         source: sanitizeForReport(line.trim()),
