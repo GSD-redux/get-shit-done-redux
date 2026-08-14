@@ -18,6 +18,9 @@ const { extractFrontmatter } = frontmatterMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
+const { isSummaryFileBlocked } = planDependencyGraphMod;
 
 // Excluded derivative files
 const PLAN_OUTLINE_RE = /-OUTLINE\.md$/i;
@@ -207,7 +210,20 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
   // 30-GAPCLOSURE-SUMMARY.md) must not inflate summary_count or flip a phase to
   // Complete when plans are still missing summaries. summaryFiles (the array)
   // still holds every summary on disk for callers that read/list them.
-  const summaryCount = countMatchedSummaries(planFiles, summaryFiles);
+  //
+  // #3345: a SUMMARY whose frontmatter declares `status: blocked` is a failure
+  // record, not a completion record — it is dropped from the COUNTABLE pairing
+  // set before matching. The bounded-prefix status read is the SHARED predicate
+  // (plan-dependency-graph.cjs's isSummaryFileBlocked) that phase.cts's read
+  // path also filters through, so the count and the `incomplete` list cannot
+  // diverge. Fail-open: a SUMMARY with no `status` key, or one that cannot be read,
+  // keeps its pre-#3345 filename-existence meaning — untouched projects are
+  // byte-for-behaviour identical. `status: halted` stays counted (#2830: a
+  // designed stop still writes a completion record).
+  const countableSummaryFiles = summaryFiles.filter(
+    (f) => !isSummaryFileBlocked(join(phaseDir, f)),
+  );
+  const summaryCount = countMatchedSummaries(planFiles, countableSummaryFiles);
 
   return {
     planCount,

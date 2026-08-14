@@ -79,7 +79,7 @@ import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
-const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphMod;
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
@@ -769,7 +769,20 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   // `plans/SUMMARY-01.md` correctly) instead of a bespoke ID-Set built from
   // extractCanonicalPlanId, which only ever handled the root-canonical
   // `-PLAN.md`/`-SUMMARY.md` naming form.
-  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, summaryFiles));
+  //
+  // #3345: the summary list is filtered through the SAME shared predicate
+  // scanPhasePlans filters its countable set with
+  // (plan-dependency-graph.cjs's isSummaryFileBlocked), so a SUMMARY declaring
+  // `status: blocked` reads as NO completion record here — has_summary false,
+  // the plan lands in `incomplete` — exactly matching the count side. Fail-open
+  // on a SUMMARY with no status key / unreadable file (filename fallback);
+  // `status: halted` stays summarized (#2830 designed stop). summaryFileByPlanId
+  // below still indexes EVERY summary on disk because the halted lookup is a
+  // file resolution for reading status, not a completion pairing.
+  const countableSummaryFiles = summaryFiles.filter(
+    (f) => !isSummaryFileBlocked(path.join(phaseDir, f)),
+  );
+  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, countableSummaryFiles));
   // #2830: reverse lookup from a completed plan's id (exact or canonical) to
   // the actual summary filename, so a plan's own SUMMARY frontmatter can be
   // read for its `status`. Shared builder (also used by phase-locator.cts's
