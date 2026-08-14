@@ -480,10 +480,13 @@ ${heading}
   });
 
   test('a milestone that does NOT match STATE is not scoped in', () => {
-    // Use two genuine milestone sections, neither matching STATE's v2.0. With
-    // upstream #3354/#3480, neither the whole-document count nor the on-disk
-    // directory count is authoritative for this shape, so the total is
-    // withheld rather than guessed.
+    // Use two genuine milestone sections, neither matching STATE's v2.0. This
+    // removes the old fixture's accidental dependence on the word "milestone"
+    // appearing in a bracket phase title. Upstream #3354/#3480, strengthened by
+    // #3642 for the single-section sibling, classifies this as milestoned but
+    // unbounded: neither the whole-document count nor the on-disk directory
+    // count is authoritative. With no stored total, `state json` reports null
+    // rather than guessing.
     writeProject(`# Roadmap
 
 ## [GSD.03] Later milestone
