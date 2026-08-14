@@ -24,6 +24,7 @@ const { runNode } = require('./process-seam.cjs');
 const {
   resolveRuntimeArtifactLayout,
 } = require('../../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+const { escapeRegex: escapeRegExp } = require('../../gsd-core/bin/lib/pattern.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', '..', 'bin', 'install.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
@@ -227,9 +228,6 @@ function stripAnsi(str) {
 // A version string can itself contain regex metacharacters (`.`, and — via
 // prerelease/build metadata — `-`/`+`), so it must be escaped before being spliced
 // into a RegExp source, or e.g. the `.` in "1.9.0" would match ANY character.
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 // Loosely semver-shaped: leading `MAJOR.MINOR.PATCH`, optional `-prerelease` and/or
 // `+build` metadata (e.g. `1.9.0`, `1.9.0-rc.1`, `1.9.0+abc`). Deliberately loose

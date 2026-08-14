@@ -341,7 +341,7 @@ export function extractFrontmatterBlock(text: unknown, key: string): Record<stri
   if (typeof text !== 'string') return null;
 
   // Anchor at byte 0 — CRLF-tolerant.
-  const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?(?:\n|$)/.exec(text);
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|\r?$)/.exec(text);
   if (fm === null) return null;
 
   const lines = fm[1].split(/\r?\n/);

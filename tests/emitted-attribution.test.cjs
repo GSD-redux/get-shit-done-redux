@@ -41,6 +41,7 @@ const fc = require('fast-check');
 
 const { cleanup, createTempDir } = require('./helpers.cjs');
 const { BUILD_SCRIPT, buildParityManifest, buildInstallTree, PKG_VERSION } = require('./helpers/install-shared.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const {
   resolveChangedPaths,
   resolveBase,
@@ -891,7 +892,7 @@ test('listFragmentFiles: exactly MAX_ACK_FRAGMENTS entries passes, one over fail
     assert.throws(
       () => listFragmentFiles(dir),
       (err) => {
-        assert.match(err.message, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(err.message, new RegExp(escapeRegex(dir)));
         assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS + 1)));
         assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS)));
         return true;
@@ -1233,7 +1234,7 @@ test('listAckFragmentFiles: exactly MAX_ACK_FRAGMENTS entries passes, one over f
     assert.throws(
       () => listAckFragmentFiles(dir),
       (err) => {
-        assert.match(err.message, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(err.message, new RegExp(escapeRegex(dir)));
         assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS + 1)));
         assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS)));
         return true;
@@ -1262,7 +1263,7 @@ test('listAckFragmentFilesAtRef: exactly MAX_ACK_FRAGMENTS entries passes, one o
   assert.throws(
     () => listAckFragmentFilesAtRef(SHA_A, { run: overCap }),
     (err) => {
-      assert.match(err.message, new RegExp(`${ACK_DIR_REPO_PATH}/ at "${SHA_A}"`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(err.message, new RegExp(escapeRegex(`${ACK_DIR_REPO_PATH}/ at "${SHA_A}"`)));
       assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS + 1)));
       assert.match(err.message, new RegExp(String(MAX_ACK_FRAGMENTS)));
       return true;

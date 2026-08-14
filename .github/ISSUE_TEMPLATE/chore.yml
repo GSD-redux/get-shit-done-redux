@@ -89,7 +89,7 @@ body:
       placeholder: |
         - [ ] All test files use `node:assert/strict`
         - [ ] Zero `try/finally` cleanup blocks in test lifecycle code
-        - [ ] CI green on all matrix entries (Node 22/24, Ubuntu/macOS/Windows)
+        - [ ] CI green on all matrix entries (Node 24, Ubuntu/macOS/Windows)
         - [ ] No change to user-facing behavior
     validations:
       required: true

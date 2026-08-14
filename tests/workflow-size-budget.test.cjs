@@ -91,14 +91,14 @@ const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 // headroom (vs the old GRACE=3000 hug):
 //   XL      96 KiB — high-water execute-phase.md 93,400 → ~4.8 KB headroom
 //   LARGE   60 KiB — high-water docs-update.md 55,468 → ~5.8 KB headroom
-//   DEFAULT 40 KiB — high-water verify-phase.md 40,931 → 29 BYTES headroom
+//   DEFAULT 40 KiB — high-water settings.md 40,352 → ~608 B headroom
 // (DEFAULT is deliberately the tightest: a single-purpose workflow approaching
-// 40 KiB is the strongest extraction signal of the three. verify-phase.md is
-// effectively AT the red line — the next edit to it must be preceded by a lazy
-// extraction, not absorbed. Measured 2026-08-09 via measureWorkflows(); the
-// previous note here named settings-advanced.md at 39,160 with ~1.8 KB of
-// headroom, which was stale on both the file and the number and invited an
-// edit that would have crossed the cap.)
+// 40 KiB is the strongest extraction signal of the three. The previous DEFAULT
+// high-water, verify-phase.md at 40,931 (29 bytes of headroom), was deleted as
+// an orphan in #1892 — 0 loaders, with its still-live gates migrated to
+// gsd-core/references/verifier-phase-gates.md behind the gsd-verifier agent.
+// Measured 2026-08-13 via measureWorkflows() after that deletion; the note
+// before that named settings-advanced.md at 39,160, stale on both counts.)
 const XL_CAP = 98304;       // 96 KiB
 const LARGE_CAP = 61440;    // 60 KiB
 const DEFAULT_CAP = 40960;  // 40 KiB

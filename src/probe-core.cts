@@ -494,7 +494,7 @@ export function dispositionForProhibition(
   }
 
   // D4 GUARD: a judgment-tier (or unknown-tier) prohibition is NEVER a silent green from this
-  // deterministic helper — it always routes to human/LLM judgment review (ADR-550 D4; verify-phase.md).
+  // deterministic helper — it always routes to human/LLM judgment review (ADR-550 D4; gsd-verifier.md + references/verifier-phase-gates.md).
   // Only a test-tier item with wired enforcement evidence may go green; the producer that supplies
   // that evidence (`prohibition-enforcement`, #1259) runs the wired check and requires a genuine pass.
   if (tier === 'test') {

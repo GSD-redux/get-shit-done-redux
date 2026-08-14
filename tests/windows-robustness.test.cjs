@@ -90,7 +90,6 @@ describe('workflow shell robustness', () => {
     'resume-project.md',
     'progress.md',
     'transition.md',
-    'verify-phase.md',
     'verify-work.md',
     'discuss-phase.md',
     'plan-phase.md',

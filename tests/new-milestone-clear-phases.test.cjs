@@ -565,7 +565,7 @@ test('execute-phase.md: close_phase_todos runs after update_roadmap', () => {
 test('execute-phase.md: auto-close never blocks phase completion', () => {
   const closeTodosSection = EXECUTE_PHASE.slice(
     EXECUTE_PHASE.indexOf('name="close_phase_todos"'),
-    EXECUTE_PHASE.indexOf('name="update_project_md"')
+    EXECUTE_PHASE.indexOf('name="delegate_post_completion_to_transition"')
   );
   assert.ok(
     closeTodosSection.includes('never blocks') || closeTodosSection.includes('additive'),

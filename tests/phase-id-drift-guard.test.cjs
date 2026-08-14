@@ -32,8 +32,15 @@ const phaseId = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'phase-id.cjs'
 // The locked canonical surface (ADR-2121 Decision 1/2; PHASE_NUMBER_TOKEN_SOURCE
 // added in Phase 4). Every name is exported by phase-id.cjs; the identity guard
 // forbids any other module from re-exporting a divergent copy of one.
+// #3212 Phase 1: `escapeRegex` moved off this locked surface entirely — it is
+// no longer owned (or re-exported) by phase-id.cjs, it is owned by the
+// pattern-construction seam (src/pattern.cts / gsd-core/bin/lib/pattern.cjs).
+// Dropped from CANONICAL rather than kept: phase-id.cjs no longer exports the
+// name at all, so `name in phaseId` below would fail if it stayed listed, and
+// the identity-guard test's job (no consumer re-exports a DIVERGENT copy) is
+// now the pattern seam's own single-owner property, not phase-id's.
 const CANONICAL = [
-  'escapeRegex', 'OPTIONAL_PROJECT_CODE_PREFIX_SOURCE', 'OPTIONAL_PHASE_TAG_SOURCE',
+  'OPTIONAL_PROJECT_CODE_PREFIX_SOURCE', 'OPTIONAL_PHASE_TAG_SOURCE',
   'PHASE_NUMBER_TOKEN_SOURCE', 'stripProjectCodePrefix', 'normalizePhaseName',
   'getMilestoneFromPhaseId', 'getPhaseDirFromPhaseId', 'phaseMarkdownRegexSource',
   'phaseMarkdownRegexSourceExact', 'comparePhaseNum', 'extractPhaseToken',

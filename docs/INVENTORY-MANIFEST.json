@@ -199,7 +199,6 @@
       "undo.md",
       "update.md",
       "validate-phase.md",
-      "verify-phase.md",
       "verify-work.md"
     ],
     "references": [
@@ -299,6 +298,7 @@
       "user-story-template.md",
       "verification-overrides.md",
       "verification-patterns.md",
+      "verifier-phase-gates.md",
       "verifier-wiring-patterns.md",
       "verify-mvp-mode.md",
       "workstream-flag.md",
@@ -438,6 +438,7 @@
       "onboard-projection.cjs",
       "package-identity.cjs",
       "package-legitimacy.cjs",
+      "pattern.cjs",
       "phase-command-router.cjs",
       "phase-estimation.cjs",
       "phase-id.cjs",
@@ -497,6 +498,7 @@
       "task-command-router.cjs",
       "teams-status.cjs",
       "template.cjs",
+      "text-lines.cjs",
       "uat-predicate.cjs",
       "uat.cjs",
       "ui-consideration-probe.cjs",

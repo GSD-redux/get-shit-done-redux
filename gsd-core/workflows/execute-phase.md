@@ -1519,30 +1519,15 @@ fi
 **No matches:** skip silently (always additive, non-blocking).
 </step>
 
-<step name="update_project_md">
-**Evolve PROJECT.md to reflect phase completion (prevents planning document drift — #956):**
+<step name="delegate_post_completion_to_transition">
+**#1526 — Delegate post-completion to the transition workflow** (parity: the auto-chain
+path must run the SAME post-processing as a normal transition). `phase.complete`
+(`update_roadmap` above) and verification (`verify_phase_goal`) already ran, so invoke
+transition in **post-completion mode**: SKIP its `verify_completion` and
+`update_roadmap_and_state` (re-running `phase.complete` would double-write state) and
+BEGIN at `evolve_project`, running the full set through `offer_next_phase`.
 
-PROJECT.md tracks validated requirements, decisions, and current state. Without this step,
-PROJECT.md falls behind silently over multiple phases.
-
-1. Read `.planning/PROJECT.md`
-2. If the file exists and has a `## Validated Requirements` or `## Requirements` section:
-   - Move any requirements validated by this phase from Active → Validated
-   - Add a brief note: `Validated in Phase {X}: {Name}`
-3. If the file has a `## Current State` or similar section:
-   - Update it to reflect this phase's completion (e.g., "Phase {X} complete — {one-liner}")
-4. Update the `Last updated:` footer to today's date
-5. Commit the change:
-
-```bash
-gsd_run query commit "docs(phase-{X}): evolve PROJECT.md after phase completion" --files .planning/PROJECT.md
-```
-
-**Skip this step if** `.planning/PROJECT.md` does not exist.
-</step>
-
-<step name="offer_next">
-@~/.claude/gsd-core/references/offer-next.md
+@~/.claude/gsd-core/workflows/transition.md
 </step>
 
 </process>

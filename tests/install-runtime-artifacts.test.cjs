@@ -42,6 +42,7 @@ const {
 } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
 
 const { applySurface } = require('../gsd-core/bin/lib/surface.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const {
   loadSkillsManifest,
@@ -433,7 +434,7 @@ describe('installOpencodeFamilySkills — emits skills/<name>/SKILL.md (#784)', 
         );
         // Regression guard for the prefix-overlap double-rewrite (e.g. kilo-alt-alt).
         assert.ok(
-          !new RegExp(`${defaultBase.replace(/[\\.*+?^${}()|[\]]/g, '\\$&')}-[^/\\s]*-`).test(body),
+          !new RegExp(`${escapeRegex(defaultBase)}-[^/\\s]*-`).test(body),
           `${skillName}: must not contain a doubled config-dir suffix`,
         );
       }

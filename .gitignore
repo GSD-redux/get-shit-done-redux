@@ -196,6 +196,8 @@ build/
 /gsd-core/bin/lib/planning-workspace.cjs
 /gsd-core/bin/lib/planning-scope.cjs
 /gsd-core/bin/lib/planning-snapshot.cjs
+/gsd-core/bin/lib/pattern.cjs
+/gsd-core/bin/lib/text-lines.cjs
 /gsd-core/bin/lib/health-diagnostic-types.cjs
 /gsd-core/bin/lib/health-diagnostic.cjs
 /gsd-core/bin/lib/health-diagnostic-rules/root-existence.cjs
