@@ -1106,6 +1106,15 @@ function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
 }
 
+// #3329: rewrite already-registered managed `.sh` hook commands to the shape
+// the current installer would generate (the #580/#3393 bash-runner-omission
+// migration the register-only-if-absent path never applied to existing
+// entries). Invoked inside applySettingsJsonHooks in the compiled surface
+// module; re-bound here for tests/consumers, mirroring the #2979 rewriter.
+function reconcileManagedShellHookCommands(settings, expected, opts) {
+  return hooksSurface.reconcileManagedShellHookCommands(settings, expected, opts);
+}
+
 /**
  * Build the GSD-managed Codex SessionStart hook block for config.toml.
  *
@@ -13784,6 +13793,7 @@ module.exports = {
     referencesHook,
     applySettingsJsonHooks,
     rewriteLegacyManagedNodeHookCommands,
+    reconcileManagedShellHookCommands,
     buildCodexHookBlock,
     rewriteLegacyCodexHookBlock,
     buildCodexHookWindowsShimIR,
