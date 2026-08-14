@@ -1208,6 +1208,123 @@ describe('#3185 buildStateFrontmatter total_phases — directory-enumeration ind
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3355 — same-milestone phase-dir collision: the seenPhaseNums dedup loop in
+// buildStateFrontmatter resolved duplicate phase keys by fs mtime, which
+// encodes checkout write order, not repository content — identical commits
+// reported different progress.total_plans / completed_plans across clones.
+// The tie-break must be content-derived and the collision surfaced, while the
+// Bug #2445 one-survivor-per-key invariant is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3355 phase-dir dedup — collision tie-break must not consult mtime', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+
+  // Both normalize to phase key '3' (phaseKeyFromDir) and are IN scope on a
+  // flat roadmap, so they reach the dedup loop unfiltered. Distinct plan /
+  // summary counts make the survivor observable in the derived progress
+  // counts. Lexicographically 'mi' < 'mv', so DIR_LEX is the deterministic
+  // survivor; DIR_MTIME is the pre-fix winner whenever it is mtime-newer.
+  const DIR_LEX = '03-mi-cuenta-y-contactos';
+  const DIR_MTIME = '03-mvp-modulos-portal-cliente';
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3355-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function buildCollisionFixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Phase 1: One', '## Phase 2: Two', '## Phase 3: Three', ''].join('\n'),
+    );
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), buildStateMd({ totalPhases: 3 }));
+    seedPhaseDirs(tmpDir, [1, 2]); // phases 01 + 02, one plan each
+
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    const lexDir = path.join(phasesDir, DIR_LEX);
+    fs.mkdirSync(lexDir, { recursive: true });
+    fs.writeFileSync(path.join(lexDir, '03-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(lexDir, '03-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(lexDir, '03-01-SUMMARY.md'), '# Summary\n');
+    const mtimeDir = path.join(phasesDir, DIR_MTIME);
+    fs.mkdirSync(mtimeDir, { recursive: true });
+    for (let i = 1; i <= 5; i++) {
+      fs.writeFileSync(path.join(mtimeDir, `03-0${i}-PLAN.md`), '# Plan\n');
+    }
+    for (let i = 1; i <= 3; i++) {
+      fs.writeFileSync(path.join(mtimeDir, `03-0${i}-SUMMARY.md`), '# Summary\n');
+    }
+    return { phasesDir, lexDir, mtimeDir };
+  }
+
+  function readProgress() {
+    const result = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(result.success, `state json --raw failed: ${result.error}`);
+    return JSON.parse(result.output).progress;
+  }
+
+  test('#3355 flipping the colliding dirs\' mtimes keeps counts byte-identical, warns naming both dirs, one survivor per key', () => {
+    const { lexDir, mtimeDir } = buildCollisionFixture();
+
+    // The issue reported a 0.133 ms mtime margin flipping the winner, but
+    // filesystem timestamp granularity is platform-dependent (APFS rounds
+    // utimes to whole ms), so the flip uses a margin guaranteed to register
+    // everywhere — pre-fix, the mtime-newer duplicate then won the dedup
+    // regardless of repository content. `_diskScanCache` is process-local
+    // and runGsdTools spawns a fresh node per call, so each read below is a
+    // cold scan exactly like a fresh checkout.
+    const base = new Date('2026-01-01T00:00:00.000Z');
+    const margin = new Date(base.getTime() + 1500);
+    fs.utimesSync(lexDir, base, base);
+    fs.utimesSync(mtimeDir, margin, margin); // DIR_MTIME mtime-newer — must NOT win
+
+    const first = readProgress();
+
+    // Deterministic lexicographic survivor: 01 (1 plan) + 02 (1 plan) +
+    // DIR_LEX (2 plans) = 4 — never the mtime-newer DIR_MTIME's 7, never the
+    // un-deduped sum of both (Bug #2445 invariant, 9).
+    assert.strictEqual(
+      Number(first.total_plans),
+      4,
+      `#3355: total_plans must follow the lexicographic survivor (${DIR_LEX}: 1+1+2=4), got ${first && first.total_plans} — mtime still deciding the collision?`,
+    );
+    assert.strictEqual(
+      Number(first.completed_plans),
+      1,
+      `#3355: completed_plans must count only the survivor's summaries (1), got ${first && first.completed_plans}`,
+    );
+
+    // The collision must be surfaced: stderr warning naming BOTH dirs
+    // (runGsdTools discards stderr on success, so drive the seam directly).
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'json', '--raw'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state json --raw failed: ${rec.stderr}`);
+    assert.ok(
+      (rec.stderr || '').includes(DIR_LEX) && (rec.stderr || '').includes(DIR_MTIME),
+      `#3355: expected a stderr warning naming both colliding dirs, got stderr=${JSON.stringify(rec.stderr)}`,
+    );
+
+    // Flip the mtimes — byte content unchanged, only checkout order would
+    // differ. Every derived count must stay byte-identical.
+    fs.utimesSync(mtimeDir, base, base);
+    fs.utimesSync(lexDir, margin, margin);
+
+    const second = readProgress();
+    assert.strictEqual(second.total_plans, first.total_plans, `#3355: total_plans moved after the mtime flip (${first.total_plans} → ${second.total_plans})`);
+    assert.strictEqual(second.completed_plans, first.completed_plans, `#3355: completed_plans moved after the mtime flip (${first.completed_plans} → ${second.completed_plans})`);
+    assert.strictEqual(second.percent, first.percent, `#3355: percent moved after the mtime flip (${first.percent} → ${second.percent})`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3354 — milestoned-but-unbounded: a genuinely milestone-sectioned ROADMAP
 // whose asserted milestone token matches no H1–H3 heading must not have its
 // progress.total_phases clobbered to the on-disk phase-directory count.
