@@ -37,6 +37,7 @@ describe('workflow.discuss_mode config', () => {
       path.join(__dirname, '..', 'commands', 'gsd', 'discuss-phase.md'), 'utf8'
     );
     // Extract the <process> block
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const processMatch = command.match(/<process>([\s\S]*?)<\/process>/);
     assert.ok(processMatch, 'should have a <process> block');
     const processBlock = processMatch[1];

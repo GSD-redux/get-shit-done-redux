@@ -41,7 +41,9 @@ const PROJECTION_PATH = path.join(
 
 function codeOnly(file) {
   return fs.readFileSync(file, 'utf8')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/lib source, not adversarial input
     .replace(/\/\*[\s\S]*?\*\//g, '')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks source, not adversarial input
     .replace(/(^|[^:])\/\/[^\r\n]*/g, '$1');
 }
 
@@ -316,7 +318,9 @@ const { PACKAGE_NAME } = require('../gsd-core/bin/check-latest-version.cjs');
 function workerCodeOnly() {
   const src = fs.readFileSync(WORKER_PATH, 'utf8');
   return src
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks source, not adversarial input
     .replace(/\/\*[\s\S]*?\*\//g, '')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks source, not adversarial input
     .replace(/(^|[^:])\/\/[^\r\n]*/g, '$1');
 }
 
@@ -415,6 +419,7 @@ describe('bug-2784: update.md cache-clear covers shared cache path', () => {
   test('gsd-check-update.js hook constructs cache dir from .cache and gsd path segments', () => {
     const hookContent = fs.readFileSync(CHECK_UPDATE_HOOK, 'utf-8');
     // Parse the path.join() call structurally rather than text-grepping.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/gsd-check-update.js source, not adversarial input
     const m = hookContent.match(/const cacheDir\s*=\s*path\.join\(([^)]+)\)/);
     assert.ok(
       m !== null,
@@ -434,6 +439,7 @@ describe('bug-2784: update.md cache-clear covers shared cache path', () => {
   test('update.md run_update bash commands include rm for shared gsd cache file', () => {
     const workflowContent = fs.readFileSync(UPDATE_WORKFLOW, 'utf-8');
     // Parse the step block structurally, then extract only bash fenced code lines.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = workflowContent.match(/<step name="run_update">[\s\S]*?<\/step>/);
     assert.ok(stepMatch, 'update.md must have a <step name="run_update"> block');
     const stepContent = stepMatch[0];

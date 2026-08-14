@@ -2101,6 +2101,7 @@ describe('bug-967 verify key-links strict file-path contract', () => {
 
     // Also assert the corrected example actually uses a path-like value
     // (must contain at least one '/' and not start with 'http')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/reference/plan-md.md, bounded prose, not adversarial input
     const toMatch = content.match(/key_links:[\s\S]*?to:\s*"([^"]+)"/);
     assert.ok(
       toMatch,

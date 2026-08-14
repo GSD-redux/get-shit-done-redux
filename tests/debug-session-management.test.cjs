@@ -213,6 +213,7 @@ describe('debug skill dispatch and sub-orchestrator (#2148, #2151)', () => {
     assert.ok(debugMatch, 'DEBUG.md must state a "N-field structured reasoning record" claim for reasoning_checkpoint');
     const claimedCount = /^\d+$/.test(debugMatch[1]) ? parseInt(debugMatch[1], 10) : NUMWORDS[debugMatch[1].toLowerCase()];
     assert.ok(typeof claimedCount === 'number', `unrecognized field-count token: ${debugMatch[1]}`);
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
     const yamlBlock = agentContent.match(/reasoning_checkpoint:\s*\r?\n([\s\S]*?)```/);
     assert.ok(yamlBlock, 'gsd-debugger.md must define a fenced reasoning_checkpoint YAML block');
     const keys = new Set();

@@ -139,6 +139,7 @@ describe('autonomous --to N flag (#1644)', () => {
 
   test('success criteria include --to N requirements', () => {
     const content = fs.readFileSync(workflowPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const criteriaMatch = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
     const criteria = criteriaMatch ? criteriaMatch[1] : '';
     assert.ok(criteria.includes('--to'),

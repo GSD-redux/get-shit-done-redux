@@ -117,6 +117,7 @@ function readLiveState(cwd) {
   const statePath = path.join(cwd, '.planning', 'STATE.md');
   const content = fs.readFileSync(statePath, 'utf8');
   // Strip ## Rebuild Log and everything after for shape assertions.
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test wrote via a fixture, fixed-size test-controlled content
   return content.replace(/^## Rebuild Log[\s\S]*$/m, '');
 }
 

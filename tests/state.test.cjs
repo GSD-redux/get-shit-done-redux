@@ -75,6 +75,7 @@ function captureStdout(fn) {
 function readShippedStateTemplateBody(replacements) {
   const templatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md');
   const template = fs.readFileSync(templatePath, 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own state.md template, fixed-size author-controlled content
   const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/);
   assert.ok(fencedDocument, 'gsd-core/templates/state.md must contain a fenced markdown document');
 
@@ -1988,6 +1989,7 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
     assert.ok(!updated.includes('- Single blocker'), 'resolved blocker should be removed');
 
     // Section should contain "None" placeholder, not be empty
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const sectionMatch = updated.match(/## Blockers\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(sectionMatch, 'Blockers section should still exist');
     assert.ok(sectionMatch[1].includes('None'), 'Blockers section should contain None placeholder');
@@ -2311,6 +2313,7 @@ Progress: [..........] 0%
     );
 
     // Extract the Current Position section
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section should exist');
     const posSection = posMatch[1];
@@ -2412,6 +2415,7 @@ Progress: [..........] 0%
     const content = fs.readFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'
     );
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section should exist after advance-plan');
     const posSection = posMatch[1];
@@ -3115,6 +3119,7 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
 
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     // Extract only the frontmatter (between --- fences) to check the desc
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
     assert.ok(
@@ -3210,6 +3215,7 @@ Progress: [##########] 20%
     );
 
     // Current Position Status: line must also be "Ready to execute"
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
@@ -3265,6 +3271,7 @@ Progress: [##########] 20%
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     // Locate the Current Position section and verify the Status line there.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
@@ -6139,6 +6146,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Primary assertion: frontmatter status must advance to 'executing'
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after begin-phase');
       const fm = fmMatch[1];
@@ -6181,6 +6189,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -6193,6 +6202,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Last activity cell must include date + narrative (not bare date)
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 execution started\s*\|/i.test(cpSection),
         `Current Position Last activity cell must include narrative '— Phase 1 execution started'; got Current Position:\n${cpSection}`
       );
@@ -6214,6 +6224,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Primary assertion: frontmatter status must be 'completed'
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after complete-phase');
       const fm = fmMatch[1];
@@ -6255,6 +6266,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -6277,6 +6289,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Bug 2: Last activity cell must include date + narrative (not bare date)
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 marked complete\s*\|/i.test(cpSection),
         `Current Position Last activity cell must include narrative '— Phase 1 marked complete'; got Current Position:\n${cpSection}`
       );
@@ -6316,6 +6329,7 @@ Last activity: 2026-06-01 -- Roadmap created
       );
       assert.ok(result.success, `begin-phase failed on inline format: ${result.error || result.output}`);
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'must have frontmatter');
       const fm = fmMatch[1];
@@ -6424,6 +6438,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       // Extract the ## Configuration section (stops before ## Current Position)
       // to avoid false-positive from the Current Position table (which IS updated
       // by updateCurrentPositionFields).
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cfgMatch = after.match(/##\s*Configuration\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cfgMatch, '## Configuration section must exist');
       const cfgSection = cfgMatch[1];
@@ -6449,6 +6464,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       );
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after planned-phase');
       const fm = fmMatch[1];
@@ -6480,12 +6496,14 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 
       // The pipe-table Phase cell must be updated to reflect the executing phase
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Phase\s*\|[^|]*1[^|]*EXECUTING[^|]*\|/i.test(cpSection),
         `Current Position pipe-table Phase cell must contain phase 1 EXECUTING; got Current Position:\n${cpSection}`
       );
@@ -6514,6 +6532,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -11513,6 +11532,7 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
 
     // Read back and parse frontmatter to verify it reflects 2 phases, not 1
     const result = fs.readFileSync(statePath, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = result.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'STATE.md should have frontmatter after writeStateMd');
 

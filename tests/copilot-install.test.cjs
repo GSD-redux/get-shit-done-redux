@@ -840,6 +840,7 @@ describe('Copilot agent conversion - real files', () => {
     assert.ok(toolsLine.includes("'execute'"), 'Bash mapped to execute');
     assert.ok(toolsLine.includes("'search'"), 'Grep/Glob deduplicated to search');
     // Input tools count > output tools count (deduplication occurred)
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agents/gsd-executor.md frontmatter, bounded, not adversarial input
     const inputTools = content.match(/^tools:\s*\[([^\]]+)\]/m)?.[1].split(',').length ?? 0;
     const outputTools = toolsLine.replace(/^tools:\s*\[/, '').replace(/\].*$/, '').split(',').length;
     assert.ok(inputTools === 0 || outputTools <= inputTools, 'deduplication reduced or preserved tool count');

@@ -31,10 +31,12 @@ describe('detectConfigDir search order (#1860)', () => {
     const content = fs.readFileSync(CHECK_UPDATE_PATH, 'utf8');
 
     // Extract the search order array from the for..of loop in detectConfigDir
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/gsd-check-update.js source, not adversarial input
     const arrayMatch = content.match(/for\s*\(const dir of\s*\[([^\]]+)\]/);
     assert.ok(arrayMatch, 'should find the for..of search array in detectConfigDir');
 
     const arrayLiteral = arrayMatch[1];
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/gsd-check-update.js source, not adversarial input
     const entries = arrayLiteral.match(/'([^']+)'/g).map(s => s.replace(/'/g, ''));
 
     const claudeIndex = entries.indexOf('.claude');
@@ -89,6 +91,7 @@ describe('detectConfigDir runtime behavior (#1860)', () => {
     const hookSource = fs.readFileSync(CHECK_UPDATE_PATH, 'utf8');
 
     // Extract detectConfigDir function body (from 'function detectConfigDir' to the closing brace)
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own hook script source, fixed-size author-controlled content
     const fnMatch = hookSource.match(/(function detectConfigDir\(baseDir\)\s*\{[\s\S]*?\r?\n\})/);
     assert.ok(fnMatch, 'should be able to extract detectConfigDir function from hook source');
     const fnSource = fnMatch[1];
@@ -126,6 +129,7 @@ describe('detectConfigDir runtime behavior (#1860)', () => {
     fs.writeFileSync(path.join(openCodeVersionDir, 'VERSION'), '1.0.0\n');
 
     const hookSource = fs.readFileSync(CHECK_UPDATE_PATH, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own hook script source, fixed-size author-controlled content
     const fnMatch = hookSource.match(/(function detectConfigDir\(baseDir\)\s*\{[\s\S]*?\r?\n\})/);
     assert.ok(fnMatch, 'should be able to extract detectConfigDir function from hook source');
     const fnSource = fnMatch[1];

@@ -577,6 +577,7 @@ describe('gsd-health --context flag is wired into command + workflow', () => {
     const raw = fs.readFileSync(HEALTH_WORKFLOW, 'utf-8');
     // Extract just the context_check step's body so a stray reference
     // elsewhere in the file can't satisfy this assertion.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = raw.match(/<step name="context_check">([\s\S]*?)<\/step>/);
     assert.ok(stepMatch, 'context_check step must be a closed <step>...</step> block');
     const stepBody = stepMatch[1];

@@ -1115,6 +1115,7 @@ describe('roadmap update-plan-progress command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*50\. Build[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -1892,6 +1893,7 @@ const THREE_PLAN_ROADMAP = `# Roadmap
 describe('bug #2661: execute-plan.md update_roadmap gating', () => {
   const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
   const stepMatch = content.match(
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     /<step name="update_roadmap">([\s\S]*?)<\/step>/
   );
   const step = stepMatch && stepMatch[1];
