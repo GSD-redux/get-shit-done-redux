@@ -121,9 +121,13 @@ export function detectHostRuntime(deps?: DetectionDeps): HostRuntimeDetection {
 
 /**
  * Resolve the runtime to report from init: explicit sources first, then the
- * host-detection rung, then the 'claude' default. This is intentionally
- * separate from resolveRuntime — only init's agent_runtime reporting call
- * site uses this ladder; every other resolveRuntime caller is unaffected.
+ * host-detection rung, then the per-install `.gsd-runtime` marker (#3364),
+ * then the 'claude' default. This is intentionally separate from
+ * resolveRuntime — only init's agent_runtime reporting call site uses this
+ * ladder. The two ladders now BOTH carry the marker but order it differently:
+ * here it sits below detection (a live session signal outranks what a tree was
+ * merely installed for), while `resolveRuntime` has no detection rung and
+ * places the marker directly above the default.
  *
  * Never throws: degrades to the 'claude' default on any unexpected error
  * (e.g. a throwing `deps.env`), matching detectHostRuntime's no-throw

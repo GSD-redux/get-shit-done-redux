@@ -316,7 +316,7 @@ function getLatestCompletedMilestone(cwd: string): { version: string; name: stri
 
 function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<string, unknown> {
   result['project_root'] = cwd;
-  // #3245: the reported agent_runtime gets a host-detection rung below the two explicit sources; every other resolveRuntime caller keeps the old ladder (ADR-2313 scope boundary).
+  // #3245: the reported agent_runtime gets a host-detection rung below the two explicit sources. #3364 then added the per-install `.gsd-runtime` marker to BOTH ladders — here below detection, and in resolveRuntime directly above the default — so a marker-only install reports what it was installed as instead of 'claude'.
   const activeRuntime = resolveReportedRuntime(cwd);
   const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;

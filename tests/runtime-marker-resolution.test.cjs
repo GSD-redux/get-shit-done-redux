@@ -68,7 +68,12 @@ function neutralProject(t) {
 
 /** Query the SHIPPED CLI of a given install, with GSD_RUNTIME deliberately unset. */
 function query(installDir, cwd, args) {
-  const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
+  // installSpawnEnv (not a raw process.env spread) so ambient host-session
+  // signals are scrubbed — CODEX_SANDBOX / CODEX_SANDBOX_NETWORK_DISABLED are
+  // exactly what detectHostRuntime keys on, so running this suite from inside a
+  // Codex session otherwise flips the detected runtime and the marker-only
+  // assertions fail for a reason that has nothing to do with the marker.
+  const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir });
   delete env.GSD_RUNTIME;   // production does not set it; only tests do
   const res = runNode(
     [path.join(installDir, 'gsd-core', 'bin', 'gsd-tools.cjs'), ...args],
@@ -85,7 +90,7 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
 
     // Drive the INSTALLED lib, not the source tree: the marker is resolved
     // relative to the module's own directory, so it follows the install.
-    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
+    const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir });
     delete env.GSD_RUNTIME;
     const res = runNode(
       ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],
@@ -105,7 +110,7 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     t.after(() => cleanup(proj));
     fs.writeFileSync(path.join(proj, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
 
-    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
+    const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir });
     delete env.GSD_RUNTIME;
     const res = runNode(
       ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],
@@ -164,7 +169,10 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     // CODEX_HOME would NOT do: that branch additionally probes for a
     // config.toml under it, which a kimi install tree does not have, so it
     // would fall through to the marker and the test would pass vacuously.
-    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir, CODEX_SANDBOX: '1' };
+    // CODEX_SANDBOX is set DELIBERATELY here — this is the one test that wants a
+    // live host signal. Still via installSpawnEnv so every OTHER ambient signal
+    // is scrubbed and this test proves detection, not leakage.
+    const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir, CODEX_SANDBOX: '1' });
     delete env.GSD_RUNTIME;
     const res = runNode(
       [path.join(installDir, 'gsd-core', 'bin', 'gsd-tools.cjs'), 'init', 'quick', 'session signal wins', '--raw'],
@@ -174,21 +182,28 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     assert.equal(
       JSON.parse(res.stdout).agent_runtime,
       'codex',
-      'an exported CODEX_HOME is a current-session signal and must outrank the install marker',
+      'an exported CODEX_SANDBOX is a current-session signal and must outrank the install marker',
     );
   });
 
   // Review Minor (#3382): the two degenerate marker states were relied on but
-  // never pinned. Both must fall through to the pre-marker behavior rather than
-  // throw or resolve to garbage — a marker rung that can crash the resolver is
-  // worse than the bug it fixes, since ~71 consumers sit on this call.
+  // never pinned. They have DIFFERENT correct behaviors, and conflating them
+  // would be its own defect:
+  //   - UNREADABLE marker (EISDIR) -> fall through to the default. A rung that
+  //     can crash the resolver is worse than the bug it fixes, with ~71
+  //     consumers on this call.
+  //   - UNRECOGNIZED name -> pass through, exactly as GSD_RUNTIME and
+  //     config.runtime already do. Rejecting it here would invent a stricter
+  //     policy for this rung than its siblings, and silently rewriting an
+  //     unknown installed identity to 'claude' would recreate the very
+  //     misidentification #3364 exists to fix.
   test('an unrecognized runtime string in the marker behaves exactly like the other rungs', (t) => {
     const installDir = realInstall(t, 'qwen');
     const proj = neutralProject(t);
     fs.writeFileSync(path.join(installDir, 'gsd-core', '.gsd-runtime'), 'notarealruntime-v9\n');
 
     const probe = (extraEnv, cwd) => {
-      const env = { ...process.env, HOME: installDir, USERPROFILE: installDir, ...extraEnv };
+      const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir, ...extraEnv });
       if (!('GSD_RUNTIME' in extraEnv)) delete env.GSD_RUNTIME;
       const res = runNode(
         ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],
@@ -223,7 +238,7 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     fs.unlinkSync(markerPath);
     fs.mkdirSync(markerPath, { recursive: true });
 
-    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
+    const env = installSpawnEnv({ HOME: installDir, USERPROFILE: installDir });
     delete env.GSD_RUNTIME;
     const res = runNode(
       ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],

@@ -20,10 +20,13 @@ GSD answers "which runtime am I?" from the first of these that produces a value:
 |---|---|---|---|
 | 1 | `GSD_RUNTIME` environment variable | `GSD_RUNTIME=opencode` in the environment | everything below |
 | 2 | `runtime` in `.planning/config.json` | `"runtime": "codex"` | detection and the default |
-| 3 | **Host detection** (added in v1.11) | nothing — it is automatic | the default only |
-| 4 | Default | — | — (`claude`) |
+| 3 | **Host detection** (added in v1.11) | nothing — it is automatic | the install marker and the default |
+| 4 | **Per-install `.gsd-runtime` marker** (added in v1.12, #3364) | nothing — the installer writes it | the default only |
+| 5 | Default | — | — (`claude`) |
 
 Rungs 1 and 2 are *explicit* — you stated an intent, and GSD does not second-guess it. Rung 3 only ever runs when **both** are unset. This is what preserves the behavior of every existing config: if you have ever set `runtime`, nothing about your setup changes.
+
+Rung 4 is what your install was created as: `bin/install.js` writes `<install>/gsd-core/.gsd-runtime`, so a Kimi install with a runtime-neutral `config.json` now reports `kimi` rather than falling to `claude`. It sits BELOW detection on purpose — an exported `CODEX_HOME` says what you are running *right now*, while the marker only says what this tree was installed for.
 
 ---
 
@@ -37,7 +40,7 @@ Detection answers a narrow question — *is this process running inside a Codex 
 | `CODEX_SANDBOX_NETWORK_DISABLED` is set and non-empty | Codex injects it when running the shell tool with the network sandbox on | same source |
 | `CODEX_HOME` is set **and** `$CODEX_HOME/config.toml` exists | you exported it | Exporting `CODEX_HOME` is you designating a Codex state root; the `config.toml` check confirms the directory is a real one |
 
-Anything else — no signal — means no detection, and rung 4 applies.
+Anything else — no signal — means no detection, and rung 4 (the per-install marker) applies, then rung 5.
 
 ---
 
@@ -54,7 +57,7 @@ Work down the ladder:
 | Is your Codex sandbox off? | With `sandbox_mode = "danger-full-access"`, Codex sets **neither** sandbox variable, so there is nothing for GSD to detect. This is the most common cause. |
 | Still nothing? | Set it explicitly. Detection is a convenience, not a contract — `"runtime": "codex"` in `.planning/config.json` is the supported, permanent answer. |
 
-Detection is deliberately conservative: when it cannot tell, it reports the old default rather than guessing. A wrong `agent_runtime` sends GSD looking for agents in the wrong directory, so silence is the safer failure.
+Detection is deliberately conservative: when it cannot tell, it hands off to the per-install marker (rung 4) and only then to the default, rather than guessing. A wrong `agent_runtime` sends GSD looking for agents in the wrong directory, so silence is the safer failure.
 
 ### "It says `codex` and I am not using Codex"
 
