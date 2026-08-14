@@ -3424,3 +3424,21 @@ test('#3514: an install with a supplied --integrity pin aborts with a pinned dis
   assert.strictEqual(res.status, 'aborted');
   assert.strictEqual(res.disclosure.integrityStatus, 'pinned');
 });
+
+test('#3514: a git #sha:<hex-commit> source renders commit-pinned; a #sha:<mutable-ref> does not', async () => {
+  const dir = runtime();
+  const shaPin = await lifecycle.installCapability('https://example.com/repo.git#sha:0123456789abcdef0123456789abcdef01234567', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    _resolve: fakeResolve(execCap('exec', '1.0.0')),
+  });
+  assert.strictEqual(shaPin.status, 'aborted');
+  assert.strictEqual(shaPin.disclosure.integrityStatus, 'commit-pinned');
+
+  const mutable = await lifecycle.installCapability('https://example.com/repo.git#sha:main', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    _resolve: fakeResolve(execCap('exec', '1.0.0')),
+  });
+  assert.strictEqual(mutable.status, 'aborted');
+  assert.strictEqual(mutable.disclosure.integrityStatus, 'unverified',
+    'a #sha:<non-hex> ref is a moving ref and must not render as pinned');
+});

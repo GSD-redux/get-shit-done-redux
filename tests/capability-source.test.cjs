@@ -1870,8 +1870,10 @@ describe('#3514 F21a — loopback/metadata denylist in realHttpsGet', () => {
     ['link-local v6 high', 'https://[febf::1]/cap.tgz'],
     ['unspecified v6', 'https://[::]/cap.tgz'],
     ['v4-mapped loopback', 'https://[::ffff:127.0.0.1]/cap.tgz'],
+    ['v4-mapped loopback (hex-normalized)', 'https://[::ffff:7f00:1]/cap.tgz'],
     ['localhost', 'https://localhost/cap.tgz'],
     ['subdomain of localhost', 'https://svc.localhost/cap.tgz'],
+    ['localhost with trailing FQDN dot', 'https://localhost./cap.tgz'],
   ]) {
     test(`denied host (${label}) rejects before the transport is called`, async () => {
       const fake = makeCountingFake([Buffer.from('x')]);
@@ -1931,6 +1933,22 @@ describe('#3514 F21a — loopback/metadata denylist in realHttpsGet', () => {
     });
     assert.strictEqual(result.id, 'gate-control-cap');
     assert.strictEqual(fake.calls, 1, 'the denylist is not an allowlist — public hosts fetch');
+  });
+
+  // Isolated-review Major 1: the fe80::/10 prefix test runs only on IPv6 literals — a
+  // registered domain never contains ':'. A domain-shaped host starting fe8/fe9/fea/feb
+  // (feather.internal, february.example.com) must NOT be denied.
+  test('CONTROL: fe-prefixed DOMAIN hosts are not denied (the v6 branch requires a colon)', async () => {
+    for (const host of ['feather.internal', 'february.example.com', 'fe9cdn.example.com']) {
+      const fake = makeCountingFake([Buffer.from('x')]);
+      _setHttpsGetImpl(fake);
+      await assert.rejects(
+        () => resolveCapabilitySource(`https://${host}/cap.tgz`, { gsdHome, hostVersion: '1.5.0' }),
+        (err) => !/internal host|denylist|loopback/i.test(String(err && err.message)),
+        `${host} is a domain, not an IPv6 literal — it must reach the transport`
+      );
+      assert.strictEqual(fake.calls, 1, `${host} must reach the transport`);
+    }
   });
 
   test('CONTROL: a private-range mirror host is NOT denied (internal mirrors are legitimate)', async () => {

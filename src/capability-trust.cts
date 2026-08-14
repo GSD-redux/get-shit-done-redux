@@ -339,15 +339,16 @@ interface Disclosure {
    */
   missingArtifacts: string[];
   /**
-   * #3514 (epic #1900 F21c): whether the source's content was PINNED and verified before staging
-   * ('pinned') or staged with no pin ('unverified'). PROMPT-ONLY: set by evaluateInstallTrust when
-   * the caller supplies `integrityPinned`, rendered by summarizeDisclosure, and deliberately
-   * EXCLUDED from `disclosureSignature` — consent's content binding is `bundleContentHash`
-   * (#1459), and a rendered line must never read as a changed executable set (which would fire a
-   * spurious re-consent on every upgrade). Mirrors the instructionSurfaces exclusion precedent
-   * (ADR-2363 D4) one field over.
+   * #3514 (epic #1900 F21c): what pinned the source content before staging — 'pinned' (a verified
+   * sha512 `--integrity` pin), 'commit-pinned' (a git source checked out at a `#sha:<40-hex>`
+   * commit), or 'unverified' (no pin). PROMPT-ONLY: set by evaluateInstallTrust when the caller
+   * supplies `integrityPin`, rendered by summarizeDisclosure, and deliberately EXCLUDED from
+   * `disclosureSignature` — consent's content binding is `bundleContentHash` (#1459), and a
+   * rendered line must never read as a changed executable set (which would fire a spurious
+   * re-consent on every upgrade). Mirrors the instructionSurfaces exclusion precedent (ADR-2363
+   * D4) one field over.
    */
-  integrityStatus?: 'pinned' | 'unverified';
+  integrityStatus?: 'pinned' | 'commit-pinned' | 'unverified';
 }
 
 type StrictKnownRegistries = string[] | null | undefined;
@@ -388,13 +389,13 @@ interface InstallTrustArgs {
    */
   resolveHost?: ReviewerHostResolver;
   /**
-   * #3514 (epic #1900 F21c): true when the source content was hash-pinned and verified before
-   * staging (a supplied `--integrity`, or a git source pinned by `#sha:<commit>` — the commit is
-   * the git analog of a hash pin), false when staged with no pin. Optional: absent ⇒ the
-   * disclosure carries no `integrityStatus` and the prompt renders no integrity line (legacy
-   * callers see byte-identical output).
+   * #3514 (epic #1900 F21c): what kind of pin the source content carries — 'sha512' (a supplied
+   * `--integrity` pin, verified by the resolver before the verdict runs), 'git-commit' (a git
+   * source pinned by `#sha:<40-hex-commit>`), or 'none'. Optional: absent ⇒ the disclosure
+   * carries no `integrityStatus` and the prompt renders no integrity line (legacy callers see
+   * byte-identical output).
    */
-  integrityPinned?: boolean;
+  integrityPin?: 'sha512' | 'git-commit' | 'none';
 }
 
 interface InstallTrustVerdict {
@@ -1180,9 +1181,9 @@ function evaluateInstallTrust(args: InstallTrustArgs): InstallTrustVerdict {
   // #3514 (F21c): prompt-only integrity status. Set AFTER discloseExecutableSurfaces so the
   // surface builder (and every signature computed from it) is untouched — see the field's
   // disclosure-interface comment for why this must never reach disclosureSignature.
-  if (typeof args.integrityPinned === 'boolean') {
-    disclosure.integrityStatus = args.integrityPinned ? 'pinned' : 'unverified';
-  }
+  if (args.integrityPin === 'sha512') disclosure.integrityStatus = 'pinned';
+  else if (args.integrityPin === 'git-commit') disclosure.integrityStatus = 'commit-pinned';
+  else if (args.integrityPin === 'none') disclosure.integrityStatus = 'unverified';
 
   // A manifest that declares a hook script or command module NOT present in the staged bundle
   // (missing, or escaping the bundle via an absolute/`..` path) is rejected: such an artifact
@@ -1669,12 +1670,17 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
 
 /**
  * #3514 (F21c): the one-line integrity status for the consent prompt, or null when the caller
- * supplied no `integrityPinned` (legacy — no line, byte-identical output). GSD-authored literals,
- * never manifest data — no escaping needed.
+ * supplied no `integrityPin` (legacy — no line, byte-identical output). GSD-authored literals,
+ * never manifest data — no escaping needed. A consent-prompt claim must be EXACT: a git
+ * commit-pinned source renders its own line, never "sha512 pin" — no sha512 was supplied
+ * (isolated review finding).
  */
 function integrityStatusLine(disclosure: Disclosure): string | null {
   if (disclosure.integrityStatus === 'pinned') {
     return '  content: sha512 pin supplied and verified before staging';
+  }
+  if (disclosure.integrityStatus === 'commit-pinned') {
+    return '  content: pinned to a git commit, checked out before staging';
   }
   if (disclosure.integrityStatus === 'unverified') {
     return '  content: NO PINNED HASH — staged unverified (a computed sha512 is recorded in the ledger at install)';

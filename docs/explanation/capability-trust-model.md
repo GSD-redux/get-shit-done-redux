@@ -282,6 +282,10 @@ whose bytes were verified against a commitment from one that was not
 ([#3514](https://github.com/open-gsd/gsd-core/issues/3514)). A computed
 sha512 of what was actually fetched is still recorded in the ledger at
 install, so a later `trust` inspection shows exactly which bytes landed.
+Prompt claims are exact per kind: a sha512 `--integrity` pin renders as
+*supplied and verified*, a git source checked out at a `#sha:<commit>` ref
+renders as *pinned to a git commit* (never as a sha512 pin — none was
+supplied), and a mutable `#sha:<branch>` ref is not a pin at all.
 
 ### Fetch-host denylist
 

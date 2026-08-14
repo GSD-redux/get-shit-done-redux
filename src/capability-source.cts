@@ -243,8 +243,9 @@ function assertFetchableUrl(rawUrl: string): void {
     );
   }
   // Node's URL.hostname KEEPS the brackets on IPv6 literals ('[::1]') — strip them so the
-  // v6 checks below see the bare address.
-  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // v6 checks below see the bare address. A single trailing dot is FQDN syntax ('localhost.'
+  // is the same name as 'localhost'; some resolvers synthesize loopback for it) — strip it.
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   const deniedHost = () =>
     new Error(
       `refusing to fetch capability source from internal host "${host}" (loopback/link-local/metadata denylist)`
@@ -262,10 +263,17 @@ function assertFetchableUrl(rawUrl: string): void {
     if (a === 127 || a === 0 || (a === 169 && b === 254)) throw deniedHost();
     return;
   }
-  // IPv6 literal. An IPv4-mapped address re-checks as IPv4 — in EITHER spelling, because the URL
-  // parser may preserve the dotted form ('::ffff:127.0.0.1') or normalize to hex hextets
-  // ('::ffff:7f00:1'). Otherwise deny ::1 (loopback), :: (unspecified), and fe80::/10 (link-local,
-  // hex prefix range fe80–febf).
+  // IPv6-literal checks. A registered domain NEVER contains ':' after bracket-strip, while every
+  // IPv6 literal does — that colon is the guard. Without it, the fe80::/10 prefix test below
+  // would deny legitimate domains like 'feather.internal' or 'february.example.com' (isolated
+  // review finding — a domain-shaped host must never reach the v6 branch).
+  if (!host.includes(':')) {
+    return;
+  }
+  // An IPv4-mapped address re-checks as IPv4 — in EITHER spelling, because the URL parser may
+  // preserve the dotted form ('::ffff:127.0.0.1') or normalize to hex hextets ('::ffff:7f00:1').
+  // Otherwise deny ::1 (loopback), :: (unspecified), and fe80::/10 (link-local, hex prefix range
+  // fe80–febf).
   if (host.startsWith('::ffff:')) {
     const suffix = host.slice('::ffff:'.length);
     let v4str: string | null = null;

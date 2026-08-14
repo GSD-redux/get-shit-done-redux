@@ -634,7 +634,7 @@ test('#3514: integrityPinned:true verdict carries integrityStatus "pinned" and r
     parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
     manifest: EXEC_MANIFEST_3514,
     hostVersion: '1.6.0',
-    integrityPinned: true,
+    integrityPin: 'sha512',
   });
   assert.strictEqual(v.disclosure.integrityStatus, 'pinned');
   const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
@@ -647,7 +647,7 @@ test('#3514: integrityPinned:false verdict carries integrityStatus "unverified" 
     parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
     manifest: EXEC_MANIFEST_3514,
     hostVersion: '1.6.0',
-    integrityPinned: false,
+    integrityPin: 'none',
   });
   assert.strictEqual(v.disclosure.integrityStatus, 'unverified');
   const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
@@ -655,7 +655,20 @@ test('#3514: integrityPinned:false verdict carries integrityStatus "unverified" 
   assert.match(joined, /staged unverified/i);
 });
 
-test('#3514: legacy callers (no integrityPinned) see no integrity line — byte-identical rendering', () => {
+test('#3514: integrityPin git-commit renders the commit-pinned line, never a sha512 claim', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'git', raw: 'https://example.com/cap.git#sha:0123456789abcdef0123456789abcdef01234567', target: 'https://example.com/cap.git' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPin: 'git-commit',
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'commit-pinned');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /pinned to a git commit/i);
+  assert.doesNotMatch(joined, /sha512 pin/i, 'a commit pin must not be reported as a sha512 pin');
+});
+
+test('#3514: legacy callers (no integrityPin) see no integrity line — byte-identical rendering', () => {
   const base = {
     parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
     manifest: EXEC_MANIFEST_3514,
