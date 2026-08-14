@@ -9,6 +9,8 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const { resolveLanePlan, LANE_UNAVAILABLE } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
@@ -19,10 +21,13 @@ const {
   writeReviewOrStub,
   handleOpencodeOutput,
   stampBlindReview,
+  stampUngroundedReview,
   antigravityWatermark,
   antigravityTranscriptFallback,
   runOpenAiCompatible,
 } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
+
+const REVIEW_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 
 const RUN = '/run';
 const ROOT = '/repo';
@@ -276,11 +281,14 @@ describe('runner — opencode handler (#1936)', () => {
 
   test('the raw JSON envelope never becomes the review', async () => {
     // The regression this locks: a plain stdout copy would write the JSON stream into REVIEWS.md.
+    // #3194: 'THE REVIEW' cites no file:line evidence, so the runner stamps it before
+    // writing — the assertion is therefore anchored on the review BODY, not byte-exact
+    // equality with the whole file.
     const p = plan('opencode');
     const stream = JSON.stringify({ type: 'text', part: { text: 'THE REVIEW' } });
     const d = deps({ spawn: () => ({ status: 0, stdout: stream, stderr: '' }) });
     await runLane(p, d, { repoRoot: ROOT });
-    assert.equal(d.files[p.reviewPath].trim(), 'THE REVIEW');
+    assert.ok(d.files[p.reviewPath].endsWith('THE REVIEW\n'));
     assert.ok(!d.files[p.reviewPath].includes('"type"'));
   });
 
@@ -1006,5 +1014,158 @@ describe('#2794 qwen reviewer stderr capture', () => {
       assert.ok(p.errPath.endsWith('.err'), `${lane.slug} must declare a stderr sidecar`);
       assert.notEqual(p.errPath, '/dev/null');
     }
+  });
+});
+
+// #3194 — a source-grounded lane's grounding is VERIFIED from its review output, never trusted
+// from its declaration. The gemini lane declares evidenceClass 'source-grounded', but nothing at
+// invocation obliged grounding and nothing verified it, so measured plan-only reviews (zero real
+// file:line citations, invented PLAN-line references) rode the declared class at full consensus
+// weight — the weakest review getting the strongest weight, silently. The fix stamps a
+// down-weight marker onto a citation-free review BEFORE it reaches {run_dir}/gsd-review-<slug>.md,
+// and the Consensus Summary step recognizes the marker exactly as it already recognizes
+// [reviewed-without-repo-access] (#2176).
+describe('#3194 — evidence grounding is verified from review output, not declared', () => {
+  const MARKER = '[reviewed-without-source-citations]';
+
+  // The measured failure shape: a review of the pasted plan text only, restating the plan's own
+  // claims with invented plan-line references — "line 42", "L12-L18" — and NO file path anywhere,
+  // which is what separates a plan-line reference from a source citation.
+  const PLAN_ONLY = [
+    '## Review',
+    '',
+    'The plan looks broadly sound. Per step 2 (see line 42) the executor writes the phase',
+    'artifact, and the roadmap item at line 5 is already covered by step 1 (L12-L18).',
+    'One concern: the verification at line 77 lacks a timeout.',
+  ].join('\n');
+
+  const CITED = `${PLAN_ONLY}\n\nHowever, src/executor/run-phase.cts:214 has no timeout guard.`;
+
+  describe('stampUngroundedReview — the citation check, table-tested at 0 vs 1', () => {
+    test('a plan-only review with invented plan-line references IS stamped', () => {
+      const out = stampUngroundedReview(PLAN_ONLY);
+      assert.ok(out.startsWith(`> ${MARKER}`), 'the marker must be prepended to the head');
+      assert.ok(/down-weight/i.test(out), 'the stamp must instruct down-weighting');
+      assert.ok(out.endsWith(PLAN_ONLY), 'the review body must survive verbatim after the stamp');
+    });
+
+    test('a single real file:line citation keeps the review at full weight', () => {
+      assert.equal(stampUngroundedReview(CITED), CITED, 'a grounded review passes through untouched');
+    });
+
+    test('citation shapes: paths, backticks, root files, ranges, windows separators, absolutes', () => {
+      for (const body of [
+        'see src/foo.cts:42 for the guard',
+        'see `src/foo.cts:42` for the guard',
+        'README.md:12 documents the flag',
+        'a/b/c.py:7-9 duplicates the loop',
+        'src\\foo.cts:42 windows path',
+        '(src/foo.cts:42) in parens',
+        'absolute /Users/u/repo/src/x.ts:9 citation',
+      ]) {
+        assert.ok(!stampUngroundedReview(body).includes(MARKER), `${body} must count as grounded`);
+      }
+    });
+
+    test('non-citations: bare line refs, times, URLs — none count as grounding', () => {
+      for (const body of [
+        'see line 42',
+        'plan line 5 says',
+        'the run took 12:30',
+        'server at http://localhost:8080 responded',
+        'fetch https://example.com/x first',
+      ]) {
+        assert.ok(stampUngroundedReview(body).includes(MARKER), `${body} must not count as grounded`);
+      }
+    });
+
+    test('empty and whitespace-only reviews pass through unstamped', () => {
+      // The empty-output policy owns that case with a diagnostic stub; the stamp must not
+      // decorate a stub.
+      assert.equal(stampUngroundedReview(''), '');
+      assert.equal(stampUngroundedReview('  \n'), '  \n');
+    });
+
+    test('an already-stamped review is not stamped twice', () => {
+      const once = stampUngroundedReview(PLAN_ONLY);
+      assert.ok(once.includes(MARKER));
+      assert.equal(stampUngroundedReview(once), once, 'stamping must be idempotent');
+    });
+  });
+
+  describe('runLane — the stamp reaches {run_dir}/gsd-review-<slug>.md', () => {
+    test('gemini: zero citations → the review file carries the down-weight marker', async () => {
+      const p = plan('gemini');
+      const d = deps({ spawn: () => ({ status: 0, stdout: PLAN_ONLY, stderr: '' }) });
+      await runLane(p, d, { repoRoot: ROOT });
+      assert.ok(
+        d.files[p.reviewPath].startsWith(`> ${MARKER}`),
+        'the marker must be prepended before the review is written',
+      );
+    });
+
+    test('gemini: one citation → full weight, no marker', async () => {
+      const p = plan('gemini');
+      const d = deps({ spawn: () => ({ status: 0, stdout: CITED, stderr: '' }) });
+      await runLane(p, d, { repoRoot: ROOT });
+      assert.ok(!d.files[p.reviewPath].includes(MARKER));
+    });
+
+    test('coderabbit (diff-only): NOT stamped — its existing weighting must not change', async () => {
+      // Out-of-scope surface: CodeRabbit is already down-weighted via its declared diff-only
+      // class; the citation check must not add a second, redundant signal on top.
+      const p = plan('coderabbit');
+      const d = deps({ spawn: () => ({ status: 0, stdout: PLAN_ONLY, stderr: '' }) });
+      await runLane(p, d, { repoRoot: ROOT });
+      assert.ok(!d.files[p.reviewPath].includes(MARKER));
+    });
+
+    test('ollama (openai-http, source-grounded): the http path stamps too', async () => {
+      // The probe GET on /v1/models must be answered separately or the lane never reaches the
+      // chat call these assertions are about (same shape as the #2605 suite's reachableThen).
+      const laneDeps = (content) => deps({
+        httpJson: async (url, opts) =>
+          opts.method === 'GET'
+            ? { ok: true, status: 200, body: JSON.stringify({ data: [{ id: 'stub-model' }] }) }
+            : {
+                ok: true, status: 200,
+                body: JSON.stringify({ choices: [{ message: { content } }] }),
+              },
+      });
+
+      const d0 = laneDeps(PLAN_ONLY);
+      const p0 = plan('ollama');
+      await runLane(p0, d0, { repoRoot: ROOT });
+      assert.ok(
+        d0.files[p0.reviewPath].startsWith(`> ${MARKER}`),
+        'zero citations must stamp on the http path',
+      );
+
+      const d1 = laneDeps(CITED);
+      const p1 = plan('ollama');
+      await runLane(p1, d1, { repoRoot: ROOT });
+      assert.ok(!d1.files[p1.reviewPath].includes(MARKER), 'a citation must not stamp');
+    });
+  });
+
+  test('the resolved plan carries the declared evidenceClass (#3194 seam)', () => {
+    // The runner gates the stamp on this field; before #3194 the plan did not carry it at all,
+    // so the executor had no access to the declaration it was supposed to verify.
+    assert.equal(plan('gemini').evidenceClass, 'source-grounded');
+    assert.equal(plan('ollama').evidenceClass, 'source-grounded');
+    assert.equal(plan('coderabbit').evidenceClass, 'diff-only');
+  });
+
+  test('the Consensus Summary step recognizes the marker, like [reviewed-without-repo-access]', () => {
+    // The down-weight only happens if the consensus instruction knows the marker. This locks
+    // the review.md prose to the runner's stamp so the two cannot drift apart silently.
+    const prose = fs.readFileSync(REVIEW_MD, 'utf-8');
+    const step = prose.slice(prose.indexOf('## Consensus Summary'));
+    assert.ok(step.length > 0, 'review.md must carry a Consensus Summary step');
+    assert.ok(step.includes(MARKER), 'the consensus step must name the ungrounded marker');
+    assert.ok(
+      step.includes('[reviewed-without-repo-access]'),
+      'the existing blind-review recognition must survive alongside it',
+    );
   });
 });
