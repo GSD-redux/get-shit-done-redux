@@ -1,6 +1,6 @@
-// allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
-// runtime loads — testing text content tests the deployed contract.
+// runtime loads — testing text content tests the deployed contract. (No
+// .cjs/.js/.ts source-grep remains in this file — see #3466.)
 
 /**
  * Installer Module — Sections 1–5.
@@ -736,15 +736,16 @@ describe('configureKiloPermissions', () => {
 });
 
 describe('Kilo integration — install/uninstall behaviour', () => {
-  // Product-text reads for test 6 only — update.md and update-context.cjs
-  // are deployed artifacts whose text IS the runtime contract (allow-test-rule).
+  // update.md IS the deployed workflow contract — its literal command lines are
+  // what the runtime loads, and there is no runtime seam that executes update.md
+  // here, so this .md read stays a text assertion (does not trigger no-source-grep).
   const updateWorkflowSrc = fs.readFileSync(
     path.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md'), 'utf8');
   // #498: update.md's runtime/scope/config-dir resolution moved into the tested
-  // projection gsd-core/bin/lib/update-context.cjs. Custom-config-dir
-  // detection (kilo.jsonc, KILO_CONFIG) is now asserted there.
-  const updateContextSrc = fs.readFileSync(
-    path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'update-context.cjs'), 'utf8');
+  // projection gsd-core/bin/lib/update-context.cjs. Custom-config-dir detection
+  // (kilo.jsonc, KILO_CONFIG) is asserted behaviorally below via
+  // inferPreferredRuntime() itself, not via a source grep on update-context.cjs.
+  const { inferPreferredRuntime } = require('../gsd-core/bin/lib/update-context.cjs');
 
   let tmpDir;
   let previousCwd;
@@ -882,10 +883,35 @@ describe('Kilo integration — install/uninstall behaviour', () => {
   test('update workflow checks preferred custom config dirs', () => {
     // update.md still derives the preferred config dir from execution_context…
     assert.ok(updateWorkflowSrc.includes('PREFERRED_CONFIG_DIR'));
-    // …and the custom-dir detection (kilo.jsonc config marker, KILO_CONFIG env)
-    // now lives in the tested update-context projection (#498).
-    assert.ok(updateContextSrc.includes('kilo.jsonc'));
-    assert.ok(updateContextSrc.includes('KILO_CONFIG'));
+  });
+
+  test('inferPreferredRuntime infers "kilo" from a kilo.jsonc marker in preferredConfigDir', () => {
+    // Behavioural replacement for the update-context.cjs source grep (#3466):
+    // the custom-dir detection (kilo.jsonc config marker) lives in this exact
+    // projection (#498) — calling it directly, with an injected fs seam, proves
+    // the kilo branch actually resolves rather than merely that the string
+    // "kilo.jsonc" appears in the file.
+    const fakeFs = {
+      exists: (p) => String(p).endsWith('kilo.jsonc'),
+    };
+    const runtime = inferPreferredRuntime({
+      fs: fakeFs,
+      env: {},
+      preferredConfigDir: '/fake/kilo-config-dir',
+    });
+    assert.strictEqual(runtime, 'kilo');
+  });
+
+  test('inferPreferredRuntime infers "kilo" from KILO_CONFIG_DIR / KILO_CONFIG env when no config-dir marker is present', () => {
+    const fakeFs = { exists: () => false };
+    assert.strictEqual(
+      inferPreferredRuntime({ fs: fakeFs, env: { KILO_CONFIG_DIR: '/custom/kilo' }, preferredConfigDir: '' }),
+      'kilo',
+    );
+    assert.strictEqual(
+      inferPreferredRuntime({ fs: fakeFs, env: { KILO_CONFIG: '/custom/kilo/kilo.jsonc' }, preferredConfigDir: '' }),
+      'kilo',
+    );
   });
 });
 
@@ -1156,7 +1182,6 @@ describe('readCmdNames() — tolerates missing commands/gsd directory (#1223)', 
 });
 
 // ─── Section N: Antigravity .agents canonical workspace dir (#791) ─────────────
-// allow-test-rule: source-text-is-the-product
 // Reads deployed agent .md files whose text IS the product surface the
 // Antigravity runtime loads at startup (path references, command names).
 
@@ -1292,7 +1317,6 @@ describe('install — --devin-desktop CLI flag routes to windsurf runtime (#792)
   });
 });
 // ─── Section N: Windsurf workflow slash-command install (#1615) ─────────────
-// allow-test-rule: source-text-is-the-product
 // Reads deployed workflow .md files whose text IS the product surface the
 // Windsurf runtime loads at startup (path references, command names).
 
@@ -5985,7 +6009,6 @@ test('install.js tier-defaults object has exactly the same keys as manifest effo
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-1367-claude-local-flat-command-layout (consolidation epic #1969 B6 #1975)", () => {
-// allow-test-rule: source-text-is-the-product #1367
 // Installed command `.md` files — their on-disk path determines the slash-command
 // namespace registered by Claude Code. Asserting the layout (flat vs. subdirectory)
 // IS a behavioral test of the deploy contract, not source-grep theater.
@@ -6189,8 +6212,7 @@ describe('bug #1367 — Claude local install uses flat gsd-<cmd>.md command layo
   __gtmAfter(() => { if (__savedGsdTestMode === undefined) delete process.env.GSD_TEST_MODE; else process.env.GSD_TEST_MODE = __savedGsdTestMode; });
 'use strict';
 
-// allow-test-rule: source-text-is-the-product (see #2380)
-// Reads .md/.json/.yml product files whose deployed text IS what the
+// (see #2380) Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
 
 /**
@@ -7453,8 +7475,7 @@ describe('#3184: scripts/lib/ and scripts/changeset/ install/uninstall parity', 
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:issue-607-installer-dry-run (test-hygiene sweep #3336 H3 Wave 4)", () => {
-// allow-test-rule: integration-test-input (#607)
-// Test-created temp dirs are the only filesystem reads here — not repo source files.
+// (#607) Test-created temp dirs are the only filesystem reads here — not repo source files.
 // This is an integration test that seeds fixture files in OS temp dirs and
 // asserts that the installer correctly handles --dry-run and the
 // cleanupLegacyGsdCc exported helper.

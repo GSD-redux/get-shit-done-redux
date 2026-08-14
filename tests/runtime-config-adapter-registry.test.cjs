@@ -35,6 +35,7 @@ const { resolveRuntimeArtifactLayout } = require(
   path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-artifact-layout.cjs'),
 );
 const { getGlobalConfigDir } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-homes.cjs'));
+const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const sorted = (iterable) => [...iterable].sort();
 
@@ -492,7 +493,8 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
   // structural guard over bin/install.js source. Behavioral assertions
   // cannot observe inline `runtime === '...'` config branching, so this enforces that
   // every inline per-runtime branch references a runtime the adapter registry knows
-  // about — a NEW branch against an unregistered runtime name fails here.
+  // about — a NEW branch against an unregistered runtime name fails here. ESLint cannot
+  // currently see this grep because no-source-grep's TEXT_METHODS omits matchAll (#3464).
   test('every inline `runtime === "..."` branch references a registry-known runtime', () => {
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
     const literals = new Set(
@@ -514,7 +516,8 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
   // allow-test-rule: structural-regression-guard (#2103)
   // VS Code is a registry runtime but is NEVER CLI-installed (Marketplace/VSIX
   // extension); it must stay fully descriptor-driven — bin/install.js must
-  // never special-case it by name.
+  // never special-case it by name. ESLint cannot currently see this grep because
+  // no-source-grep's TEXT_METHODS omits matchAll (#3464).
   test('#2103: bin/install.js has ZERO runtime === "vscode" / isVscode branches (vscode stays fully descriptor-driven)', () => {
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
     const runtimeComparisons = [...src.matchAll(/runtime === (?:'vscode'|"vscode")/g)];
@@ -534,19 +537,63 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     );
   });
 
-  // allow-test-rule: structural-regression-guard (#3336)
-  // delegation-presence guard. Catches wholesale removal of the registry
-  // dispatch (a regression to scattered per-runtime config branching).
-  test('bin/install.js requires the config adapter registry and dispatches through it', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
-    assert.ok(
-      src.includes('runtime-config-adapter-registry'),
-      'bin/install.js no longer requires the runtime config adapter registry',
-    );
-    assert.ok(
-      src.includes('resolveInstallPlan('),
-      'bin/install.js no longer dispatches config through resolveInstallPlan',
-    );
+  // Behavioral replacement for the delegation-presence source grep (#3466).
+  //
+  // The EXPECTED_TABLE / resolveInstallPlan projection-contract tests above
+  // (`resolveInstallPlan — descriptor-projection contract`) prove resolveInstallPlan
+  // ITSELF maps every registry descriptor correctly — but they call the registry
+  // function directly and never touch bin/install.js, so they cannot by themselves
+  // prove install.js actually CONSULTS it rather than reimplementing an equivalent
+  // per-runtime branch. This test closes that gap: it stubs the registry's
+  // resolveInstallPlan (the SAME module object bin/install.js requires and
+  // destructures) so it reports a different installSurface for every runtime,
+  // re-requires a fresh bin/install.js so its destructured reference picks up the
+  // stub, and asserts a REAL install(false, 'copilot') run STOPS producing the
+  // copilot-instructions.md artifact that installSurface === 'copilot-instructions'
+  // gates directly inside install() (bin/install.js:~12164 — no finishInstall/CLI
+  // orchestration layer involved, so this is reachable from install() alone). If
+  // install.js ever reverts to a `runtime === 'copilot'` inline branch instead of
+  // reading resolveInstallPlan(runtime).installSurface, the stub has no effect on
+  // that branch and the artifact keeps getting written — which is exactly the
+  // divergence this test would then catch (verified by mutating install.js to that
+  // exact inline form during authoring: the assertion below goes red).
+  test('bin/install.js dispatches config through the REAL resolveInstallPlan (stubbing it changes install() output)', () => {
+    const installPath = require.resolve('../bin/install.js');
+    const registryPath = require.resolve('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
+    const registryModule = require(registryPath);
+    const originalResolveInstallPlan = registryModule.resolveInstallPlan;
+
+    registryModule.resolveInstallPlan = (runtime) => ({
+      ...originalResolveInstallPlan(runtime),
+      // Force every gate bin/install.js checks against
+      // resolveInstallPlan(runtime).installSurface to read as "nothing special for
+      // this runtime" — including copilot's own surface, which the real descriptor
+      // sets to 'copilot-instructions'.
+      installSurface: 'settings-json',
+    });
+
+    delete require.cache[installPath];
+    const stubbedInstaller = require(installPath);
+
+    const tmpDir = createTempDir('gsd-3466-delegation-guard-');
+    const previousCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      const result = stubbedInstaller.install(false, 'copilot');
+      const instructionsPath = path.join(result.configDir, 'copilot-instructions.md');
+      assert.equal(
+        fs.existsSync(instructionsPath), false,
+        'with resolveInstallPlan stubbed to report installSurface: "settings-json" for every '
+          + 'runtime, install(\'copilot\') must NOT write copilot-instructions.md — if it still '
+          + 'does, bin/install.js is not actually gating on resolveInstallPlan(runtime) for this '
+          + 'decision (a regression to scattered per-runtime branching)',
+      );
+    } finally {
+      process.chdir(previousCwd);
+      cleanup(tmpDir);
+      registryModule.resolveInstallPlan = originalResolveInstallPlan;
+      delete require.cache[installPath];
+    }
   });
 });
   });
