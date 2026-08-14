@@ -668,11 +668,10 @@ describe('checkUiPresence() return value API', () => {
     assert.strictEqual(uiCount, 1, 'Duplicate tokens must be deduplicated');
   });
 
-  test('non-string input returns { hasUI: false, tokens: [], matchedToken: null, matchedLine: null }', () => {
-    // #3312: matchedToken/matchedLine added for gate-level operator triage.
-    assert.deepStrictEqual(checkUiPresence(null), { hasUI: false, tokens: [], matchedToken: null, matchedLine: null });
-    assert.deepStrictEqual(checkUiPresence(undefined), { hasUI: false, tokens: [], matchedToken: null, matchedLine: null });
-    assert.deepStrictEqual(checkUiPresence(42), { hasUI: false, tokens: [], matchedToken: null, matchedLine: null });
+  test('non-string input returns { hasUI: false, tokens: [] }', () => {
+    assert.deepStrictEqual(checkUiPresence(null), { hasUI: false, tokens: [] });
+    assert.deepStrictEqual(checkUiPresence(undefined), { hasUI: false, tokens: [] });
+    assert.deepStrictEqual(checkUiPresence(42), { hasUI: false, tokens: [] });
   });
 
   test('multiple distinct UI tokens on same line are ALL captured', () => {

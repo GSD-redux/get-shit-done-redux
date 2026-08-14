@@ -313,7 +313,9 @@ describe('check ui.plan-gate — frontend phase, no UI-SPEC', () => {
     assert.strictEqual(out.hasUiSpec, false, 'hasUiSpec must be false when no spec file exists');
     assert.strictEqual(out.block, true, 'block must be true (frontend && hasFrontendEvidence && !hasUiSpec)');
     assert.strictEqual(out.uiSpecPath, null, 'uiSpecPath must be null when spec absent');
-    assert.strictEqual(out.matchedToken, 'ui', 'matchedToken surfaces what tripped the sniffer');
+    // matchedToken is the FIRST match in the phase section — the "## Phase 1:
+    // Dashboard" heading precedes the body, so the first match is `dashboard`.
+    assert.strictEqual(out.matchedToken, 'dashboard', 'matchedToken surfaces what tripped the sniffer');
   });
 });
 
