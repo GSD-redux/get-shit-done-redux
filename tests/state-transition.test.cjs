@@ -1145,13 +1145,148 @@ describe('ADR-1769 Phase 6: patch transition — field updates', () => {
     assert.deepStrictEqual(result.data && result.data.failed, ['Nonexistent']);
   });
 
-  test('patching a frontmatter YAML key directly updates the YAML line', () => {
-    // patch operates on the full content (body + frontmatter), so a lowercase
-    // frontmatter key like `stopped_at` is matched and replaced.
+  // ADR-3408 §8.3(b) / #3469: STALE as of this phase — patch now strips
+  // frontmatter FIRST (matching updateCore), so a lowercase frontmatter key
+  // like `stopped_at` can no longer reach the YAML block through this path.
+  // The old assertion here ("patch operates on the full content... a
+  // lowercase frontmatter key is matched and replaced") is the exact bypass
+  // ADR-3408 §8.3(b) closes: it let an arbitrary caller-supplied patch key
+  // rewrite YAML frontmatter outside FIELD_CLASSIFICATION, undetected by the
+  // write-seam guard's Axis 2 (every step called an owner). See the Matrix D
+  // section below for the corrected contract.
+  test('patching a frontmatter-shaped key no longer reaches the YAML line (ADR-3408 §8.3(b) / #3469)', () => {
     const input = ['---', 'status: executing', 'stopped_at: 2026-01-01', '---', '', '# State', ''].join('\n');
     const result = transitionCore(input, { kind: 'patch', patches: { stopped_at: '2026-06-27' } }, deps);
-    assert.ok(/^stopped_at: 2026-06-27$/m.test(result.content), 'YAML stopped_at must be patched');
-    assert.deepStrictEqual(result.data && result.data.updated, ['stopped_at']);
+    assert.ok(!/^stopped_at: 2026-06-27$/m.test(result.content), 'YAML stopped_at must NOT be patched directly');
+    assert.ok(/^stopped_at: 2026-01-01$/m.test(result.content), 'YAML stopped_at must survive unchanged');
+    assert.deepStrictEqual(result.data && result.data.updated, []);
+    assert.deepStrictEqual(result.data && result.data.failed, ['stopped_at']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3408 §8.3(b) Matrix D (#3469): patchCore strips frontmatter first,
+// matching updateCore — closes Phase 1's declared known gap (a
+// frontmatter-shaped patch key could rewrite the YAML block outside
+// FIELD_CLASSIFICATION). Test matrix: .gsd/phase/refactor-3469-one-write-seam/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ADR-3408 §8.3(b) Matrix D: patchCore strips frontmatter first (#3469)', () => {
+  const deps = { clock: fixedClock };
+
+  // D1: a frontmatter-shaped key (snake_case, no Title-Case body counterpart)
+  // can never match — patch is body-only now, so the write "routes through
+  // the seam": a frontmatter change can only happen via FIELD_CLASSIFICATION's
+  // own preservation/sync machinery, never via a direct patch bypass.
+  test('D1: a frontmatter-shaped key (current_phase) is reported failed, and the frontmatter is untouched', () => {
+    const input = [
+      '---',
+      'current_phase: "3"',
+      '---',
+      '',
+      '# State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 (alpha)',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'patch', patches: { current_phase: '9' } }, deps);
+    assert.deepStrictEqual(result.data && result.data.updated, []);
+    assert.deepStrictEqual(result.data && result.data.failed, ['current_phase']);
+    assert.ok(/^current_phase: "3"$/m.test(result.content), 'frontmatter current_phase must be unchanged');
+    assert.strictEqual(result.content, input, 'no-op: content returned verbatim when nothing in the body matched');
+  });
+
+  // D2: a body-shaped key (Title-Case) is the legitimate case and is
+  // unaffected by the strip-first fix — it was always matched against the
+  // body, and still is.
+  test('D2: a body-shaped key (Status) still updates the body — the legitimate, unaffected case', () => {
+    const input = ['---', 'status: executing', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+    const result = transitionCore(input, { kind: 'patch', patches: { Status: 'Paused' } }, deps);
+    assert.deepStrictEqual(result.data && result.data.updated, ['Status']);
+    assert.deepStrictEqual(result.data && result.data.failed, []);
+    assert.ok(result.content.includes('**Status:** Paused'), 'body Status must be updated');
+    assert.ok(/^status: executing$/m.test(result.content), 'frontmatter status is untouched by patchCore itself');
+  });
+
+  // D3 (boundary, extend #3351 variants A/B): a display-cased key matching
+  // the body field succeeds; the SAME field's lower-cased/frontmatter-shaped
+  // spelling fails — same content, two spellings, two outcomes.
+  test('D3: display-cased "Current Phase" succeeds; lower-cased "current_phase" fails, on the same content', () => {
+    const input = [
+      '---',
+      'current_phase: "1"',
+      '---',
+      '',
+      '# State',
+      '',
+      '**Current Phase:** 1',
+      '',
+    ].join('\n');
+    const displayCased = transitionCore(input, { kind: 'patch', patches: { 'Current Phase': '2' } }, deps);
+    assert.deepStrictEqual(displayCased.data && displayCased.data.updated, ['Current Phase']);
+    assert.ok(displayCased.content.includes('**Current Phase:** 2'));
+
+    const lowerCased = transitionCore(input, { kind: 'patch', patches: { current_phase: '2' } }, deps);
+    assert.deepStrictEqual(lowerCased.data && lowerCased.data.updated, []);
+    assert.deepStrictEqual(lowerCased.data && lowerCased.data.failed, ['current_phase']);
+  });
+
+  // D4 (hostile): a key that is simultaneously frontmatter-shaped AND
+  // case-insensitively matches a body field (stateReplaceField's `^field:`
+  // pattern is case-insensitive) — the body is the ONE deterministic winner,
+  // asserted explicitly, because frontmatter is stripped out of the matching
+  // surface before any pattern ever runs.
+  test('D4: a key matching both a frontmatter key and a body field — body wins deterministically, frontmatter inert', () => {
+    const input = ['---', 'status: executing', '---', '', '# State', '', '**Status:** In progress', ''].join('\n');
+    const result = transitionCore(input, { kind: 'patch', patches: { status: 'Aborted' } }, deps);
+    assert.deepStrictEqual(result.data && result.data.updated, ['status']);
+    assert.ok(result.content.includes('**Status:** Aborted'), 'body Status must be the one that changed');
+    assert.ok(/^status: executing$/m.test(result.content), 'frontmatter status key must never be touched by patchCore');
+  });
+
+  // D5 (boundary, extend): an empty patch is a true no-op — no write, both
+  // report arrays empty.
+  test('D5: an empty patch {} is a no-op — content returned verbatim, both arrays empty', () => {
+    const input = '# State\n\n**Status:** Planning\n';
+    const result = transitionCore(input, { kind: 'patch', patches: {} }, deps);
+    assert.strictEqual(result.content, input);
+    assert.deepStrictEqual(result.data && result.data.updated, []);
+    assert.deepStrictEqual(result.data && result.data.failed, []);
+  });
+
+  // D6 (hostile): __proto__ / constructor as patch keys must not pollute
+  // Object.prototype. `intent.patches` is built via JSON.parse (the shape a
+  // real `state.patch` JSON payload takes) specifically because object-
+  // literal syntax special-cases `__proto__` — JSON.parse does not, and is
+  // the classic prototype-pollution vector this test must exercise for real.
+  test('D6: __proto__ / constructor patch keys do not pollute Object.prototype', () => {
+    const patches = JSON.parse('{"__proto__":"evil","constructor":"evil2"}');
+    const input = '# State\n\n**Status:** Planning\n';
+    const result = transitionCore(input, { kind: 'patch', patches }, deps);
+
+    // Object.prototype itself must be untouched.
+    assert.strictEqual(Object.getPrototypeOf({}), Object.prototype);
+    assert.strictEqual(({}).polluted, undefined);
+    assert.strictEqual(typeof ({}).constructor, 'function');
+
+    // Behaves like any other unmatched field — no body line named
+    // `__proto__` or `constructor` exists, so both are reported failed.
+    assert.deepStrictEqual((result.data && result.data.updated) || [], []);
+    assert.deepStrictEqual((result.data && result.data.failed || []).sort(), ['__proto__', 'constructor']);
+    assert.strictEqual(result.content, input);
+  });
+
+  // D7 (independence, extend): updateCore is unchanged — it already strips
+  // frontmatter first, the correct shape patchCore now matches. A
+  // frontmatter-shaped `field` still cannot reach the YAML block through it.
+  test('D7: updateCore is unchanged — a frontmatter-shaped field still cannot reach the YAML block', () => {
+    const input = ['---', 'current_phase: "3"', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+    const result = transitionCore(input, { kind: 'update', field: 'current_phase', value: '9' }, deps);
+    assert.strictEqual(result.content, input);
+    assert.strictEqual(result.data && result.data.updated, false);
+    assert.ok(/^current_phase: "3"$/m.test(result.content));
   });
 });
 

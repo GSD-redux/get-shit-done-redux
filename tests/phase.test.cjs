@@ -6546,6 +6546,137 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       );
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADR-3408 §8.3 Matrix A (#3469): cmdPhaseComplete now calls the ONE
+  // write-seam composition (syncAndPreserveStateMd) directly instead of
+  // hand-assembling syncStateFrontmatter + applyPostSyncPreservation itself
+  // (Finding 3's re-derivation). Rows A2/A3's general identity claim (the
+  // composition agrees with itself regardless of caller) is covered by the
+  // required fast-check property test in tests/state.test.cjs; this block
+  // covers the ones that need a REAL cmdPhaseComplete run — A6/A7's atomic
+  // 3-file commit, plus a concrete consumer-level demonstration that BOTH
+  // sync (a body-derived field advances) and preservation (an untouched
+  // curated field survives) fire together through the real CLI path.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('ADR-3408 §8.3 Matrix A: cmdPhaseComplete write-seam composition (#3469)', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3469-a-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // A2/A3 (concrete, consumer-level): the same real cmdPhaseComplete call
+    // both advances a body-derived field (progress.completed_phases, via the
+    // transition) AND restores a CLASSIFIED preserve-when-unchanged field
+    // (`paused_at`) completePhaseCore's transform never touches — proof the
+    // seam applies sync AND `applyPostSyncPreservation`'s policy TOGETHER
+    // through the real adapter, not just the transition alone.
+    test('A2/A3: phase.complete advances the body-derived phase AND restores an untouched preserve-when-unchanged field, in one write', () => {
+      setupPhase3517Project(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      // Seed a curated `paused_at` — completePhaseCore never writes the
+      // `## Session` `Paused At` body line, so its pre/post body source is
+      // unchanged (both absent) and the classified preserve-when-unchanged
+      // row must restore this curated value over the sync's empty derive.
+      const before = fs.readFileSync(statePath, 'utf8');
+      fs.writeFileSync(statePath, before.replace(/^gsd_state_version: 1\.0$/m, 'gsd_state_version: 1.0\npaused_at: "curated pause note — must survive"'));
+
+      const r = runSdkQuery(['phase.complete', '5'], tmpDir);
+      assert.ok(r.success, `call failed: ${r.error}`);
+
+      const state = fs.readFileSync(statePath, 'utf8');
+      const fm = extractFrontmatter(state);
+
+      // A2/A3: the transition genuinely advanced the body-derived phase...
+      assert.equal(Number(fm.progress && fm.progress.completed_phases), 2);
+
+      // ...while `applyPostSyncPreservation`'s classified restore fired in
+      // the SAME write — the composition's preservation stage ran, not just
+      // its sync stage.
+      assert.equal(
+        fm.paused_at,
+        'curated pause note — must survive',
+        'a classified preserve-when-unchanged field completePhaseCore never touches must survive the same write',
+      );
+    });
+
+    // A6 (independence): the composition returns content; the adapter's own
+    // atomic 3-file envelope is unaffected — ROADMAP, REQUIREMENTS, and
+    // STATE.md all change together as one unit.
+    test('A6: STATE.md, ROADMAP.md, and REQUIREMENTS.md commit atomically as one unit', () => {
+      setupPhase3517Project(tmpDir);
+      const paths = {
+        state: path.join(tmpDir, '.planning', 'STATE.md'),
+        roadmap: path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      };
+      const before = {
+        state: fs.readFileSync(paths.state, 'utf8'),
+        roadmap: fs.readFileSync(paths.roadmap, 'utf8'),
+      };
+
+      const r = runSdkQuery(['phase.complete', '5'], tmpDir);
+      assert.ok(r.success, `call failed: ${r.error}`);
+
+      const after = {
+        state: fs.readFileSync(paths.state, 'utf8'),
+        roadmap: fs.readFileSync(paths.roadmap, 'utf8'),
+      };
+      assert.notStrictEqual(after.state, before.state, 'STATE.md must change');
+      assert.notStrictEqual(after.roadmap, before.roadmap, 'ROADMAP.md must change');
+    });
+
+    // A7 (IO failure, filesystem-failure category): a mid-commit failure on
+    // the FIRST file in the atomic set (ROADMAP.md) leaves NONE of the three
+    // partially written — including STATE.md, which now flows through the
+    // shared syncAndPreserveStateMd composition before writePlanningFileSet
+    // ever sees it. `t.mock.method` auto-restores at test end — never
+    // chmod 0o000, which root bypasses under Docker/CI.
+    test('A7: a failure writing ROADMAP.md (first in the atomic set) leaves STATE.md and REQUIREMENTS.md untouched', (t) => {
+      setupPhase3517Project(tmpDir);
+      const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+      const reqPath = path.join(tmpDir, '.planning', 'REQUIREMENTS.md');
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+      const before = {
+        roadmap: fs.readFileSync(roadmapPath, 'utf8'),
+        req: fs.existsSync(reqPath) ? fs.readFileSync(reqPath, 'utf8') : null,
+        state: fs.readFileSync(statePath, 'utf8'),
+      };
+
+      writePassedVerificationForPhase(tmpDir, '5');
+      const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
+      const originalWriteFileSync = fs.writeFileSync;
+      t.mock.method(fs, 'writeFileSync', function injectedRoadmapWriteFailure(target, ...args) {
+        const targetPath = String(target);
+        if (targetPath === roadmapPath || targetPath === `${roadmapPath}.tmp.${process.pid}`) {
+          const err = new Error('injected ROADMAP.md write failure');
+          err.code = 'EIO';
+          throw err;
+        }
+        return originalWriteFileSync.call(this, target, ...args);
+      });
+
+      assert.throws(
+        () => phaseModule.cmdPhaseComplete(tmpDir, '5', false),
+        /injected ROADMAP\.md write failure/,
+      );
+
+      const after = {
+        roadmap: fs.readFileSync(roadmapPath, 'utf8'),
+        req: fs.existsSync(reqPath) ? fs.readFileSync(reqPath, 'utf8') : null,
+        state: fs.readFileSync(statePath, 'utf8'),
+      };
+      assert.strictEqual(after.roadmap, before.roadmap, 'ROADMAP.md must be unchanged');
+      assert.strictEqual(after.req, before.req, 'REQUIREMENTS.md must be unchanged');
+      assert.strictEqual(after.state, before.state, 'STATE.md must be unchanged — none of the three partially written');
+    });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

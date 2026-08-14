@@ -111,6 +111,9 @@ describe('milestone complete command', () => {
     const milestones = fs.readFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), 'utf-8');
     assert.ok(milestones.includes('v1.0 MVP Foundation'));
     assert.ok(milestones.includes('Set up project infrastructure'));
+    // B6 (ADR-3408 §8.3/#3469, independence): the new preservation-warnings
+    // channel must not disturb archival/roadmap behavior — it is additive.
+    assert.ok(Array.isArray(output.preservation_warnings), 'preservation_warnings must be an array');
   });
 
   test('#2118 — --dry-run does NOT mutate: no archive, no STATE.md rewrite, no phase move', () => {
@@ -511,6 +514,131 @@ describe('milestone complete command', () => {
     assert.strictEqual(output.phases, 0);
     assert.strictEqual(output.plans, 0);
     assert.strictEqual(output.tasks, 0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3408 §8.3 Matrix B (#3469): cmdMilestoneComplete now routes through the
+// shared write-seam composition (syncAndPreserveStateMd) instead of the bare
+// writeStateMd — the "real exposure" Finding 2 identified (the #3374 shape,
+// applied to milestone.complete). Test matrix:
+// .gsd/phase/refactor-3469-one-write-seam/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469)', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // Frontmatter + a ## Session Stopped at body line milestoneCompleteCore
+  // never touches — the delta is therefore always "unchanged" for this
+  // field, exactly the #3374 shape (a stale body value vs. a curated
+  // frontmatter value) that Finding 2 says was silently clobbered pre-#3469.
+  function writeStateWithSession(dir, { fmStoppedAt, sessionStoppedAt, fmStatus = 'executing' } = {}) {
+    const fmLines = ['---', 'gsd_state_version: 1.0'];
+    if (fmStatus !== null) fmLines.push(`status: ${fmStatus}`);
+    if (fmStoppedAt !== undefined && fmStoppedAt !== null) fmLines.push(`stopped_at: "${fmStoppedAt}"`);
+    fmLines.push('---', '');
+    const bodyLines = [
+      '# State',
+      '',
+      '**Status:** In progress',
+      '**Last Activity:** 2025-01-01',
+      '**Last Activity Description:** Working',
+      '',
+      '## Session',
+      '',
+      '**Last session:** 2025-01-01T00:00:00.000Z',
+    ];
+    if (sessionStoppedAt !== undefined && sessionStoppedAt !== null) {
+      bodyLines.push(`**Stopped at:** ${sessionStoppedAt}`);
+    }
+    bodyLines.push('');
+    fs.writeFileSync(path.join(dir, '.planning', 'STATE.md'), fmLines.concat(bodyLines).join('\n'));
+  }
+
+  // B1: stale body stopped_at, fresher frontmatter — frontmatter preserved.
+  test('B1: stale body Stopped at does not clobber a fresher curated frontmatter stopped_at', () => {
+    writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
+
+    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = parseFrontmatter(state);
+    assert.strictEqual(
+      fm.stopped_at,
+      'Phase 7 verified PASS',
+      `frontmatter stopped_at must be preserved over the stale body value; got ${JSON.stringify(fm.stopped_at)}`,
+    );
+  });
+
+  // B2 (consumer-level, the criterion-6 substitute): the preserved value is
+  // observable through a SEPARATE subsequent CLI call reading the persisted
+  // file — not just this test's own fs.readFileSync of the writer's output.
+  test('B2: the preserved frontmatter value is observable via a separate `state get` call', () => {
+    writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
+
+    const complete = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(complete.success, `Command failed: ${complete.error}`);
+
+    const got = runGsdTools('state get stopped_at', tmpDir);
+    assert.ok(got.success, `state get failed: ${got.error}`);
+    const gotOutput = JSON.parse(got.output);
+    assert.ok(
+      typeof gotOutput.stopped_at === 'string' && gotOutput.stopped_at.includes('Phase 7 verified PASS'),
+      `a second, independent CLI call must observe the preserved value; got ${JSON.stringify(gotOutput)}`,
+    );
+  });
+
+  // B3: divergence emits a structured, typed warning — never a rendered
+  // message. `preservation_warnings` (NOT `warnings`) is a distinct field
+  // shape from cmdPhaseComplete's prose `warnings: string[]` — see
+  // milestone.cts's own comment on Generative Fix Divergence.
+  test('B3: a preserved divergence emits preservation_warnings[0].field === "stopped_at"', () => {
+    writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
+
+    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(Array.isArray(output.preservation_warnings));
+    assert.ok(output.preservation_warnings.length > 0, 'a divergence must produce at least one warning');
+    assert.strictEqual(output.preservation_warnings[0].field, 'stopped_at');
+    assert.strictEqual(output.preservation_warnings[0].reason, 'preserved-over-disagreeing-derived');
+  });
+
+  // B4 (the false-positive guard): the body is genuinely newer THIS write —
+  // milestoneCompleteCore unconditionally rewrites body Status, so the delta
+  // always fires "changed" for `status`; the stale curated frontmatter value
+  // must NOT be restored, and no warning is emitted for it.
+  test('B4: a body field genuinely changed by this write is not preserved, and emits no warning', () => {
+    writeStateWithSession(tmpDir, { fmStatus: 'completed', fmStoppedAt: undefined, sessionStoppedAt: undefined });
+
+    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const statusWarning = output.preservation_warnings.find((w) => w.field === 'status');
+    assert.strictEqual(statusWarning, undefined, 'status changed this write — must not be reported preserved');
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = parseFrontmatter(state);
+    assert.notStrictEqual(fm.status, 'completed', 'the stale curated status must not survive — body won');
+  });
+
+  // B5 (boundary): no pre-existing curated frontmatter to diverge from — no
+  // warning is emitted at all, and output is otherwise unaffected.
+  test('B5: no divergence at all — preservation_warnings is empty', () => {
+    writeRoadmap(tmpDir, `# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n`);
+    writeState(tmpDir); // no frontmatter at all — nothing curated to diverge from
+
+    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(output.preservation_warnings, []);
   });
 });
 

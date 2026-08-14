@@ -13,6 +13,9 @@ const os = require('os');
 const path = require('path');
 const { runGsdTools, createTempDir, createTempProject, cleanup } = require('./helpers.cjs');
 const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
+// ADR-3408 §8.3 Matrix A2/A3 (#3469): required fast-check property test — the
+// composed cmdPhaseComplete/readModifyWriteStateMd write-seam identity.
+const fc = require('fast-check');
 // #3187 (ADR-3180 §7.7) matrix sections B/C: in-process access to the chain
 // owner and its raw inputs, needed to compute the "owner's answer" a
 // consumer's OBSERVABLE output is compared against (Decision 4c) — never the
@@ -4906,6 +4909,151 @@ describe('state sync command', () => {
 
     const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     assert.strictEqual(before, after, 'File should not be modified in verify mode');
+  });
+
+  // ADR-3408 §8.3 Matrix C3 (#3469, extend): `--verify` stays a true dry run
+  // for the sanctioned-exception path too — no write happens even though the
+  // (unwritten) sync would have let the body win over a curated frontmatter
+  // value.
+  test('C3 (#3469): --verify does not write even when the body would win over a curated frontmatter value', () => {
+    const content = [
+      '---',
+      'gsd_state_version: 1.0',
+      'stopped_at: "curated stale value"',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Session',
+      '',
+      '**Stopped at:** fresh body value',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+
+    const result = runGsdTools('state sync --verify', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.dry_run, true);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, content, '--verify must not write, regardless of what a real sync would change');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3408 §8.3 Matrix C (#3469): cmdStateSync is a SANCTIONED EXCEPTION.
+// The most important section of this phase's matrix — a regression here
+// silently INVERTS a shipped feature (#905: "body annotation beats existing
+// frontmatter when both are present") with every OTHER gate green. state
+// sync exists to re-derive frontmatter FROM the body; routing it through
+// preservation would defeat the command. Test matrix:
+// .gsd/phase/refactor-3469-one-write-seam/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ADR-3408 §8.3 Matrix C: cmdStateSync — the sanctioned exception (#3469)', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createFixture(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // C1 — the whole point: body annotation vs existing frontmatter, both
+  // present, differing. `state sync` re-derives frontmatter FROM the body
+  // (#905) — the body must win, never the curated frontmatter.
+  test('C1: body annotation wins over existing (differing) frontmatter — the whole point of `state sync`', () => {
+    const content = [
+      '---',
+      'gsd_state_version: 1.0',
+      'stopped_at: "curated stale value — must NOT survive"',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Session',
+      '',
+      '**Stopped at:** fresh body value — must win',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+
+    const result = runGsdTools('state sync', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(state);
+    assert.strictEqual(
+      fm.stopped_at,
+      'fresh body value — must win',
+      `body must win over the curated frontmatter value; a preservation regression here would ` +
+      `silently invert #905 with every other gate green; got ${JSON.stringify(fm.stopped_at)}`,
+    );
+  });
+
+  // C2: a stale-LOOKING frontmatter value (a different field than C1, to pin
+  // the contract on a second, independent field) loses to a fresh body value.
+  test('C2: a stale-looking frontmatter current_phase_name loses to a fresh body Phase: name', () => {
+    const content = [
+      '---',
+      'gsd_state_version: 1.0',
+      'current_phase: "1"',
+      'current_phase_name: Old Stale Name',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 (Fresh Correct Name)',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+
+    const result = runGsdTools('state sync', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(state);
+    assert.strictEqual(
+      fm.current_phase_name,
+      'Fresh Correct Name',
+      `body must win over the stale-looking curated name; got ${JSON.stringify(fm.current_phase_name)}`,
+    );
+  });
+
+  // C4 — identity: cmdStateSync's output is byte-identical to pre-refactor —
+  // no preservation artifact of any kind reaches it. Proven two ways: (a) the
+  // command's own JSON report carries no `preservation_warnings` key (the
+  // field ONLY cmdPhaseComplete/cmdMilestoneComplete now expose), and (b) the
+  // SAME divergence C1 exercises resolves the SAME way (body wins, nothing
+  // restored) — proving this phase's refactor did not quietly wire the seam
+  // in here.
+  test('C4: cmdStateSync carries no preservation_warnings key and never restores a curated value (unchanged by #3469)', () => {
+    const content = [
+      '---',
+      'gsd_state_version: 1.0',
+      'stopped_at: "curated stale value — must NOT survive"',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Session',
+      '',
+      '**Stopped at:** fresh body value — must win',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), content);
+
+    const result = runGsdTools('state sync', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(output, 'preservation_warnings'),
+      'cmdStateSync must not gain the preservation_warnings channel this phase added to phase.complete/milestone.complete',
+    );
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(state);
+    assert.strictEqual(fm.stopped_at, 'fresh body value — must win', 'no curated value may be restored');
   });
 });
 
@@ -9927,6 +10075,95 @@ describe('bug #1230: readModifyWriteStateMd preserves frontmatter status/stopped
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3408 §8.3 Matrix A1/A2/A3 (#3469): the ONE write-seam composition
+// (`syncAndPreserveStateMd`) is now the single owner both `readModifyWriteStateMd`
+// and `cmdPhaseComplete`'s atomic-commit adapter call — "the two compositions
+// agree because they are one." Required fast-check property, per the matrix's
+// closing bullet: for any (content, transform, resync, authoritativeFm),
+// cmdPhaseComplete's composed output equals readModifyWriteStateMd's for the
+// same inputs. Both sides persist to a REAL file and are compared by reading
+// the file back (ADR-3180 Decision 4(c) — the consumer's output, never the
+// owner's in-memory return value compared directly). Seed pinned, runs
+// bounded, full replay data printed on failure (mirrors tests/state-transition
+// .test.cjs's #3468 matrix C3 property).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam composition', () => {
+  function baseStateMd(phaseNum, phaseName) {
+    return [
+      '---',
+      'gsd_state_version: 1.0',
+      `current_phase: "${phaseNum}"`,
+      `current_phase_name: ${phaseName}`,
+      'status: executing',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      `Phase: ${phaseNum} (${phaseName})`,
+      'Plan: 1 of 1',
+      'Status: Executing',
+      '',
+    ].join('\n');
+  }
+
+  test('property: syncAndPreserveStateMd persists the same bytes whether reached via cmdPhaseComplete\'s shape or readModifyWriteStateMd', () => {
+    const createdDirs = [];
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.constantFrom('Foundation', 'Execution', 'Wrap-up (final)'),
+        fc.boolean(), // touchPhaseLine — A2 (false, Phase: unchanged) vs A3 (true, Phase: changed)
+        fc.boolean(), // resync
+        fc.boolean(), // withAuthoritativeFm
+        (phaseNum, phaseName, touchPhaseLine, resync, withAuthoritativeFm) => {
+          const tmp = createTempDir('gsd-a1a2a3-');
+          createdDirs.push(tmp);
+
+          const original = baseStateMd(phaseNum, phaseName);
+          // Always change SOMETHING (Status) so neither path's own no-op
+          // guard short-circuits the comparison — the property is about the
+          // shared COMPOSITION, not the two different no-op-skip policies
+          // each adapter legitimately layers around it.
+          let transformed = original.replace(/^Status: Executing$/m, `Status: Executing phase ${phaseNum}`);
+          if (touchPhaseLine) {
+            transformed = transformed.replace(/^Phase: .*/m, `Phase: ${phaseNum} (${phaseName}) — COMPLETE`);
+          }
+          const authoritativeFm = withAuthoritativeFm ? { current_phase_name: phaseName } : undefined;
+
+          // Path A: cmdPhaseComplete's real adapter shape (phase.cts) —
+          // syncAndPreserveStateMd, then the adapter's own write.
+          const pathA = path.join(tmp, 'A.md');
+          fs.writeFileSync(pathA, original);
+          const composed = stateLib.syncAndPreserveStateMd(original, transformed, pathA, tmp, resync, authoritativeFm);
+          fs.writeFileSync(pathA, composed);
+
+          // Path B: readModifyWriteStateMd's owner shape — same composition,
+          // reached through the RMW wrapper every OTHER caller uses.
+          const pathB = path.join(tmp, 'B.md');
+          fs.writeFileSync(pathB, original);
+          stateLib.readModifyWriteStateMd(pathB, () => transformed, tmp, { resync, authoritativeFm });
+
+          const bytesA = fs.readFileSync(pathA, 'utf8');
+          const bytesB = fs.readFileSync(pathB, 'utf8');
+          if (bytesA !== bytesB) {
+            throw new Error(
+              `composition diverged: phaseNum=${phaseNum} phaseName=${JSON.stringify(phaseName)} ` +
+              `touchPhaseLine=${touchPhaseLine} resync=${resync} withAuthoritativeFm=${withAuthoritativeFm}\n` +
+              `--- pathA (cmdPhaseComplete shape) ---\n${bytesA}\n--- pathB (readModifyWriteStateMd) ---\n${bytesB}`,
+            );
+          }
+          return true;
+        },
+      ),
+      { seed: 3469, numRuns: 50 },
+    );
+    for (const dir of createdDirs) cleanup(dir);
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-948-state-noop-write-guard.test.cjs — consolidation epic #1969 (B2 #1971)
