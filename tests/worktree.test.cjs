@@ -141,6 +141,7 @@ function _findCommandIndex(statements, predicate) {
 
 describe('canonical worktree-branch-check fragment is the single source of truth', () => {
   const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
   const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
   const block = blockMatch ? blockMatch[1] : '';
 
@@ -244,6 +245,7 @@ describe('verify-only: worktree_branch_check must NOT run git reset (#48, supers
     const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
 
     // Extract the worktree_branch_check block from the canonical fragment
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
     const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
     assert.ok(blockMatch, 'worktree-branch-check.md must contain a <worktree_branch_check> block');
 
@@ -256,6 +258,7 @@ describe('verify-only: worktree_branch_check must NOT run git reset (#48, supers
 
   test('verify-only: execute-phase.md worktree_branch_check must not run git reset at all (#48, supersedes #2015)', () => {
     const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
     const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
     assert.ok(blockMatch, 'worktree-branch-check.md must contain a <worktree_branch_check> block');
 
@@ -268,6 +271,7 @@ describe('verify-only: worktree_branch_check must NOT run git reset (#48, supers
 
   test('quick.md worktree_branch_check does not use reset --soft', () => {
     const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
     const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
     assert.ok(blockMatch, 'worktree-branch-check.md must contain a <worktree_branch_check> block');
 
@@ -280,6 +284,7 @@ describe('verify-only: worktree_branch_check must NOT run git reset (#48, supers
 
   test('verify-only: quick.md worktree_branch_check must not run git reset at all (#48, supersedes #2015)', () => {
     const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
     const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
     assert.ok(blockMatch, 'worktree-branch-check.md must contain a <worktree_branch_check> block');
 
@@ -372,6 +377,7 @@ describe('bug-2075: worktree deletion safeguards', () => {
       );
 
       const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
       const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
       assert.ok(
         blockMatch,
@@ -397,6 +403,7 @@ describe('bug-2075: worktree deletion safeguards', () => {
       );
 
       const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
       const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
       assert.ok(
         blockMatch,
@@ -422,6 +429,7 @@ describe('bug-2075: worktree deletion safeguards', () => {
       );
 
       const fragmentContent = fs.readFileSync(WORKTREE_BRANCH_CHECK_FRAGMENT, 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow fragment .md content, fixed-size author-controlled content
       const blockMatch = fragmentContent.match(/<worktree_branch_check>([\s\S]*?)<\/worktree_branch_check>/);
       assert.ok(blockMatch, 'worktree-branch-check.md must contain a <worktree_branch_check> block');
       const block = blockMatch[1];

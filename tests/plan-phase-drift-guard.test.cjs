@@ -121,6 +121,7 @@ describe('plan-phase workflow: Artifacts this phase produces section (#22)', () 
 
   test('quality_gate checklist includes Artifacts this phase produces item', () => {
     // Find the quality_gate block and confirm the checklist item is there
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const qualityGateMatch = workflow.match(/<quality_gate>([\s\S]*?)<\/quality_gate>/);
     assert.ok(
       qualityGateMatch,
@@ -157,6 +158,7 @@ describe('plan-phase workflow: Artifacts this phase produces section (#22)', () 
 describe('plan-phase workflow: top-level spawn guard (#913)', () => {
   // Extract the runtime_compatibility block for targeted assertions
   const rtBlock = (() => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const m = workflow.match(/<runtime_compatibility>([\s\S]*?)<\/runtime_compatibility>/);
     return m ? m[1] : '';
   })();
@@ -219,6 +221,7 @@ describe('plan-phase workflow: top-level spawn guard (#913)', () => {
 describe('plan-phase workflow: attempt-based Agent availability gate (#922)', () => {
   // Extract the runtime_compatibility block for targeted assertions
   const rtBlock = (() => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const m = workflow.match(/<runtime_compatibility>([\s\S]*?)<\/runtime_compatibility>/);
     return m ? m[1] : '';
   })();
@@ -501,6 +504,7 @@ describe('bug-2949: sketch --wrap-up dispatch wiring', () => {
   test('commands/gsd/sketch.md has sketch-wrap-up in execution_context section', () => {
     const content = fs.readFileSync(SKETCH_COMMAND, 'utf8');
     // Find execution_context block
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const execCtxMatch = content.match(/<execution_context>([\s\S]*?)<\/execution_context>/);
     assert.ok(execCtxMatch, 'sketch.md must have an <execution_context> block');
     const execCtx = execCtxMatch[1];
@@ -1679,7 +1683,9 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
     const snippet = md.slice(gateIdx, gateIdx + 800);
     // Accept either an inline `|| exit 1` or a `|| { ...; exit 1; }` group.
     const hasJqGuard =
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a bounded slice of maintainer-authored workflow markdown, not adversarial input
       /jq[^\r\n]*\.data\.passed\s*==\s*true/.test(snippet) ||
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a bounded slice of maintainer-authored workflow markdown, not adversarial input
       /jq[^\r\n]*\(\.passed\s*\/\/\s*\.data\.passed\)\s*==\s*true/.test(snippet);
     const hasExitOne = /\|\|\s*(?:exit\s+1|\{[\s\S]{0,200}?exit\s+1)/.test(snippet);
     assert.ok(

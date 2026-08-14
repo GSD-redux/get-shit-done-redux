@@ -1073,6 +1073,7 @@ describe('feat-3210: workflow and config contracts', () => {
     );
 
     // Parse: the <step name="structural_pre_pass"> block must exist and be closed
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = workflow.match(/<step\s+name="structural_pre_pass">([\s\S]*?)<\/step>/);
     assert.ok(
       stepMatch,

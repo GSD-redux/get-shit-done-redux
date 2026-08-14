@@ -193,6 +193,7 @@ function read(relativePath) {
 
 function extractDeepWorkRules() {
   const workflow = fs.readFileSync(PLAN_PHASE_WORKFLOW, 'utf8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
   const match = workflow.match(/<deep_work_rules>[\s\S]*?<\/deep_work_rules>/);
   assert.ok(match, 'plan-phase.md must contain a deep_work_rules block');
   return match[0];

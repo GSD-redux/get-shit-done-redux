@@ -4032,6 +4032,7 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
     );
     assert.match(tomlContent, /^model\s*=\s*"gpt-5.6-sol"$/m,
       `gsd-planner.toml should pin Codex model when runtime:"codex" is configured\nActual:\n${tomlContent.slice(0, 500)}`);
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses output of an actual install run against test-controlled config, bounded, not adversarial input
     const match = tomlContent.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/m);
     assert.ok(match, `model_reasoning_effort must be present in .toml\nActual:\n${tomlContent.slice(0, 500)}`);
     assert.ok(VALID_EFFORTS.includes(match[1]),
@@ -4820,6 +4821,7 @@ describe('Bug #2973: profile-user.md confirmation message references the skills 
   test('the Display message points at $HOME/.claude/skills/gsd-dev-preferences/SKILL.md', () => {
     const md = fs.readFileSync(WORKFLOW, 'utf-8');
     // Match the structured Display: line; capture the path value.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored profile-user.md workflow, bounded prose, not adversarial input
     const m = md.match(/Display:\s*"[^"]*Generated\s*\/gsd-dev-preferences\s*at\s*([^"]+)"/);
     assert.notEqual(m, null, 'expected a Display: "Generated /gsd-dev-preferences at <path>" line');
     const referencedPath = m[1].trim();
@@ -5959,6 +5961,7 @@ describe('bug-2808: SKILL.md name: uses hyphen form', () => {
       const skillContent = fs.readFileSync(skillMdPath, 'utf-8');
       // Scope the name: lookup to the YAML frontmatter block so a stray
       // `name:` line in the body cannot satisfy the assertion.
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own generated SKILL.md frontmatter, fixed-size author-controlled content
       const fmMatch = skillContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, `${relPath}: generated SKILL.md must include frontmatter`);
       const nameLine = fmMatch[1].split(/\r?\n/).find((l) => /^name:\s*/.test(l));

@@ -64,6 +64,7 @@ describe('config-field-docs', () => {
     // Extract CONFIG_DEFAULTS keys from config-loader.cjs source (moved from core.cjs by ADR-857 phase 2e)
     const coreSource = fs.readFileSync(CORE_PATH, 'utf-8');
     const defaultsMatch = coreSource.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own config-loader.cjs source, fixed-size author-controlled content
       /const CONFIG_DEFAULTS\s*=\s*\{([\s\S]*?)\r?\n\};/
     );
     assert.ok(defaultsMatch, 'Could not find CONFIG_DEFAULTS in config-loader.cjs');

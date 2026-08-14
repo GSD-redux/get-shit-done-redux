@@ -282,6 +282,7 @@ describe('SIZE: discuss-phase progressive disclosure (#717 byte budget)', () => 
     const parent = fs.readFileSync(path.join(WORKFLOWS_DIR, 'discuss-phase.md'), 'utf-8');
     // The template reference must appear inside or near the write_context step,
     // not in the top-level <required_reading> block (which would defeat lazy load).
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const requiredReadingMatch = parent.match(/<required_reading>([\s\S]*?)<\/required_reading>/);
     if (requiredReadingMatch) {
       assert.ok(
@@ -471,6 +472,7 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
 
   test('plan-phase.md does not list MVP bodies in <required_reading>', () => {
     const planPhaseContent = fs.readFileSync(path.join(WORKFLOWS_DIR, 'plan-phase.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const requiredReadingMatch = planPhaseContent.match(/<required_reading>([\s\S]*?)<\/required_reading>/);
     if (requiredReadingMatch) {
       const block = requiredReadingMatch[1];

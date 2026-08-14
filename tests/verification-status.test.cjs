@@ -1292,6 +1292,7 @@ describe('#2868: verification status CLI drives the execute-phase stranded-phase
     // the jq form in order to explain why it is not used, and an assertion
     // over the whole file would fire on its own rationale.
     const content = fs.readFileSync(QUICK_VERIFICATION, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const fences = content.match(/```bash\r?\n[\s\S]*?```/g) || [];
     const statusFence = fences.find((f) => f.includes('gsd_run query verification.status'));
 

@@ -574,6 +574,7 @@ describe('REASON enum and docs "Fails closed" bullets stay in parity', () => {
     const docPath = path.join(__dirname, '..', 'docs', 'reference', 'workflow-fragments.md');
     const docText = fs.readFileSync(docPath, 'utf8');
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own docs .md content, fixed-size author-controlled content
     const sectionMatch = /## Fails closed\r?\n([\s\S]*?)\r?\n## /.exec(docText);
     assert.ok(sectionMatch, 'docs/reference/workflow-fragments.md must have a "## Fails closed" section');
     const sectionText = sectionMatch[1];

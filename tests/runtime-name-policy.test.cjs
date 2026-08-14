@@ -58,6 +58,7 @@ describe('runtime-name-policy windsurf alias parity — manifest vs FALLBACK_ALI
     // FALLBACK_ALIASES source text IS the product contract for runtimes that can't load the manifest at runtime; verifying
     // both surfaces contain the same windsurf aliases catches manual-mirror drift.
     const src = fs.readFileSync(srcPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded src/runtime-name-policy.cts source, not adversarial input
     const match = src.match(/windsurf:\s*\[([^\]]+)\]/);
     assert.ok(match, 'FALLBACK_ALIASES windsurf row must exist in src/runtime-name-policy.cts');
     const srcAliases = match[1]

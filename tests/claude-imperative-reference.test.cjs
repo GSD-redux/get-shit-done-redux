@@ -138,8 +138,11 @@ test('bin/install.js contains no `runtime === "claude"` / `runtime !== "claude"`
   // pattern (a comment explaining "not a string-equality branch") do not
   // false-positive — only LIVE code counts.
   const codeOnly = src
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
     .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
     .replace(/\/\/[^\r\n]*/g, '')        // line comments (CRLF-safe)
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
     .replace(/`[^`]*`/g, '');            // backtick / inline-code spans
   const offenders = codeOnly.match(/runtime\s*[!=]==\s*'claude'/g) || [];
   assert.deepEqual(

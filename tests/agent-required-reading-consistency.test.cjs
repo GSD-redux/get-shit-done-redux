@@ -196,6 +196,7 @@ describe('debugger agent references bug patterns', () => {
   test('reference is inside <required_reading> block', () => {
     const content = fs.readFileSync(DEBUGGER_AGENT_PATH, 'utf-8');
     const reqReadMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
       /<required_reading>([\s\S]*?)<\/required_reading>/
     );
     assert.ok(reqReadMatch, 'Debugger agent should have a <required_reading> block');
