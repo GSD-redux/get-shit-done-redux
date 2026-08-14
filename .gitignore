@@ -288,6 +288,15 @@ __pycache__/
 venv/
 target/
 vendor/
+# Vendored third-party artifacts under version control on purpose — see
+# gsd-core/bin/lib/vendor/README.md. bin/** must have zero external requires
+# (installed trees ship with no node_modules), so this one directory is a
+# deliberate, tracked exception to the blanket `vendor/` ignore above.
+!/gsd-core/bin/lib/vendor/
+# Source-side twin (tsc resolves a .cts module's relative imports against
+# src/, not the output dir) of the same vendored artifact — see
+# scripts/lint-vendored-deps.cjs, which keeps both copies in sync.
+!/src/vendor/
 *.log
 .cache/
 tmp/

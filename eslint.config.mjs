@@ -29,6 +29,7 @@ import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
 import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
 import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
+import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
 
 const localPlugin = {
   rules: {
@@ -52,6 +53,7 @@ const localPlugin = {
     'no-unbounded-spawn': noUnboundedSpawn,
     'no-duplicate-fold-marker': noDuplicateFoldMarker,
     'require-subprocess-timeout': requireSubprocessTimeout,
+    'no-external-require-in-bin': noExternalRequireInBin,
   },
 };
 
@@ -293,6 +295,15 @@ export default tseslint.config(
       'gsd-core/bin/lib/workflow-fragments.cjs',
       // ADR-1671 Phase 5 (#2932): tsc-generated runtime artifact — lint the src/section-manifest.cts source.
       'gsd-core/bin/lib/section-manifest.cjs',
+      // #3477 follow-up: verbatim third-party artifact vendored so gsd-core/bin/**
+      // carries zero external requires (installed trees have no node_modules).
+      // See gsd-core/bin/lib/vendor/README.md; never lint/edit these by hand.
+      'gsd-core/bin/lib/vendor/**',
+      // Source-side twin of the same vendored .d.cts (needed so tsc resolves
+      // types for the relative './vendor/re2js.cjs' import from
+      // src/pattern.cts — module resolution for a .cts source is relative to
+      // src/, not the output dir). Same verbatim-third-party exemption.
+      'src/vendor/**',
     ],
   },
 
@@ -342,6 +353,14 @@ export default tseslint.config(
       // repo/missing network (DEFECT.UNBOUNDED-SUBPROCESS in CONTEXT.md).
       // The 8 pre-existing call sites this surfaced were migrated in #2896.
       'local/require-subprocess-timeout': 'error',
+      // #3477 follow-up: every src/**/*.cts module compiles 1:1 into
+      // gsd-core/bin/lib/*.cjs, which ships into installed trees with no
+      // node_modules — and the emitted mirror is almost always
+      // eslint-ignored as a generated artifact (see the src/pattern.cts note
+      // in eslint-rules/no-external-require-in-bin.cjs), so this is the ONLY
+      // place a bad external import in an already-migrated module is still
+      // visible to lint.
+      'local/no-external-require-in-bin': 'error',
     },
   },
 
@@ -425,6 +444,34 @@ export default tseslint.config(
       // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition —
       // see the src/**/*.cts block above for detail.
       'local/no-adhoc-regex-escape': 'error',
+    },
+  },
+
+  // ── gsd-core/bin/**/*.cjs only — no-external-require-in-bin ────────────────
+  // A NARROWER block than the combined glob above on purpose: gsd-core/bin/**
+  // is the ONLY surface in that shared glob that is copied verbatim into
+  // installed trees with no node_modules (scripts/**, eslint-rules/**,
+  // bin/lib/**, pi/**, examples/**, vscode/*.js, .kilo/plugins/*.js, and
+  // .opencode/plugins/*.js all run inside THIS repo checkout, where
+  // node_modules exists, and legitimately require npm packages). Registering
+  // this rule on the shared block above would falsely flag every one of
+  // those. #3477 follow-up: re2js was the live instance of this defect —
+  // src/pattern.cts (compiled to gsd-core/bin/lib/pattern.cjs) shipped
+  // `import { RE2JS } from 're2js'` and broke `verify` for every installed
+  // user until the dependency was vendored under gsd-core/bin/lib/vendor/.
+  {
+    files: ['gsd-core/bin/**/*.cjs'],
+    plugins: {
+      local: localPlugin,
+    },
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'local/no-external-require-in-bin': 'error',
     },
   },
 

@@ -30,6 +30,7 @@ import { execGit, platformReadSync as safeReadFile } from './shell-command-proje
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { detectSchemaFiles, checkSchemaDrift } from './schema-detect.cjs';
 import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
+import { compileUserPattern, MAX_USER_PATTERN_LEN } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
 const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
@@ -1235,22 +1236,54 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
         check['detail'] = 'Source file not found (from: must be a relative file path; describe components/endpoints in via:)';
       }
     } else if (link['pattern']) {
-      try {
-        const regex = new RegExp(link['pattern'] as string);
-        if (regex.test(sourceContent)) {
-          check['verified'] = true;
-          check['detail'] = 'Pattern found in source';
-        } else {
-          const targetContent = safeReadFile(path.join(cwd, (link['to'] as string) || ''));
-          if (targetContent && regex.test(targetContent)) {
-            check['verified'] = true;
-            check['detail'] = 'Pattern found in target';
-          } else {
-            check['detail'] = `Pattern "${link['pattern'] as string}" not found in source or target`;
-          }
+      const pat = compileUserPattern(link['pattern']);
+      if (pat.neutralized !== null) {
+        // A neutralized pattern was refused and never compiled — that is NOT
+        // the check the plan author wrote, so it must never report verified
+        // regardless of what an unrelated fallback might otherwise have
+        // matched (#3477 regression: pattern "(" previously neutralized to a
+        // literal-escaped match that matched nearly any source file,
+        // producing a false verified: true / all_verified: true). The engine
+        // itself now guarantees `test()` returns false for a refused
+        // pattern; this explicit branch exists to produce the good message.
+        // The match-and-report path below is skipped entirely rather than
+        // run and then overwritten, which used to leave a misleading
+        // "Pattern found in source" detail alongside the neutralization note.
+        check['pattern_neutralized'] = pat.neutralized;
+        let reason: string;
+        switch (pat.neutralized) {
+          case 'empty':
+            reason = 'pattern is not a usable string — no match attempted';
+            break;
+          case 'too-long':
+            reason = `pattern exceeded ${MAX_USER_PATTERN_LEN} chars — not evaluated`;
+            break;
+          case 'unsupported':
+            reason = 'pattern is not valid RE2 syntax — backreferences and look-around are not supported';
+            break;
         }
-      } catch {
-        check['detail'] = `Invalid regex pattern: ${link['pattern'] as string}`;
+        check['detail'] = `Pattern not verified (${reason})`;
+      } else {
+        try {
+          if (pat.test(sourceContent)) {
+            check['verified'] = true;
+            check['detail'] = 'Pattern found in source';
+          } else {
+            const targetContent = safeReadFile(path.join(cwd, (link['to'] as string) || ''));
+            if (targetContent && pat.test(targetContent)) {
+              check['verified'] = true;
+              check['detail'] = 'Pattern found in target';
+            } else {
+              check['detail'] = `Pattern "${link['pattern'] as string}" not found in source or target`;
+            }
+          }
+        } catch (err) {
+          // Report the errno only — never the full error/message, which for a
+          // re-thrown non-ENOENT platformReadSync failure (e.g. EISDIR from an
+          // untrusted `to:` like "../..") embeds an absolute filesystem path.
+          const code = (err as NodeJS.ErrnoException)?.code ?? 'unknown';
+          check['detail'] = `Pattern check failed: ${code}`;
+        }
       }
     } else {
       if (sourceContent.includes((link['to'] as string) || '')) {
