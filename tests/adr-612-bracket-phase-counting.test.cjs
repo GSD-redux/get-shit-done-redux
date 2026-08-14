@@ -129,6 +129,7 @@ function syncedPercent() {
   const r = runGsdTools(['state', 'sync'], tmpDir);
   assert.ok(r.success, `state sync failed: ${r.error}`);
   const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses the STATE.md this test just wrote, fixed-size fixture output, not adversarial input
   const m = raw.match(/^\*\*Progress:\*\*[^\r\n]*?(\d+)%/m);
   assert.ok(m, `state sync must have written a Progress percent; got:\n${raw}`);
   return parseInt(m[1], 10);
@@ -652,6 +653,7 @@ function syncedProgress() {
   assert.ok(r.success, `state sync failed: ${r.error}`);
   const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
   const m = raw.match(
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses the STATE.md this test just wrote, fixed-size fixture output, not adversarial input
     /total_phases:\s*(\d+)[\s\S]*?completed_phases:\s*(\d+)[\s\S]*?total_plans:\s*(\d+)[\s\S]*?completed_plans:\s*(\d+)[\s\S]*?percent:\s*(-?\d+)/);
   assert.ok(m, `state sync must have written a full progress block; got:\n${raw}`);
   return m.slice(1).map(Number);
