@@ -390,6 +390,12 @@ describe('spliceFrontmatter', () => {
 
 // ─── parseMustHavesBlock ────────────────────────────────────────────────────
 
+// #3413 / #3360: LF -> CRLF fixture converter. Naming precedent:
+// tests/codex-agent-toml.test.cjs's toCrlf, tests/agent-install-check.test.cjs's toCrlf.
+function crlf(s) {
+  return s.replace(/\n/g, '\r\n');
+}
+
 describe('parseMustHavesBlock', () => {
   test('extracts truths as string array', () => {
     const content = `---
@@ -643,6 +649,122 @@ must_haves:
     assert.strictEqual(result[0].path, 'src/api.ts');
     // The nested array should be captured
     assert.ok(result[0].exports !== undefined, 'should have exports field');
+  });
+
+  test('#3360: parseMustHavesBlock returns real items for a CRLF plan (no leading blank line) — rows 24-25', () => {
+    // Exact #3360 repro (design doc 40-design.md, "Rubber-duck" section):
+    // \s inside an anchored /m pattern is not "whitespace on this line" — it
+    // is "whitespace, including the boundary I just anchored on." A CRLF
+    // pair inflates the captured indent by one char, tripping the
+    // blockIndent <= mustHavesIndent nesting guard on a block that IS
+    // legitimately nested. Today (pre-fix) this returns [] for both blocks.
+    const lfPlan = `---
+phase: 01
+must_haves:
+  truths:
+    - "first truth"
+    - "second truth"
+  prohibitions:
+    - "MUST NOT drop the table"
+---
+
+Body content.`;
+    const crlfPlan = crlf(lfPlan);
+    const truths = parseMustHavesBlock(crlfPlan, 'truths');
+    const prohibitions = parseMustHavesBlock(crlfPlan, 'prohibitions');
+    assert.ok(Array.isArray(truths), 'truths should return an array');
+    assert.deepStrictEqual(truths, ['first truth', 'second truth']);
+    assert.ok(Array.isArray(prohibitions), 'prohibitions should return an array');
+    assert.deepStrictEqual(prohibitions, ['MUST NOT drop the table']);
+  });
+
+  test('#3360: the silent-exit variant (blank line before must_haves:) also recovers — row 26', () => {
+    // #3360 "second variant": a blank line preceding `must_haves:` lets the
+    // (\s*) capture before it absorb the blank line's own terminator too —
+    // same indent-inflation mechanism, but with zero diagnostic emitted
+    // today (the silent exit the design doc calls out).
+    const lfPlanWithBlankLine = `---
+phase: 01
+
+must_haves:
+  truths:
+    - "first truth"
+    - "second truth"
+  prohibitions:
+    - "MUST NOT drop the table"
+---
+
+Body content.`;
+    const crlfPlanWithBlankLine = crlf(lfPlanWithBlankLine);
+    const truths = parseMustHavesBlock(crlfPlanWithBlankLine, 'truths');
+    assert.ok(Array.isArray(truths), 'should return an array');
+    assert.deepStrictEqual(truths, ['first truth', 'second truth']);
+  });
+
+  test('#3360 parity: CRLF and LF plans parse to identical must_haves for every block name (maintainer-established invariant — see #3360, Cortex-recorded prior art for repeated CRLF-fix parity assertions in this file\'s neighborhood) — row 28', () => {
+    // Reuses the ACTUAL fixture shapes already present in this describe
+    // block (not a fourth parallel fixture set) so this generalizes real
+    // existing coverage rather than adding new, narrower cases.
+    const fourSpaceIndentTruths = `---
+phase: 01
+must_haves:
+    truths:
+      - "All tests pass on CI"
+      - "Coverage exceeds 80%"
+---
+
+Body content.`;
+    const twoSpaceIndentTruths = `---
+phase: 01
+must_haves:
+  truths:
+    - "All tests pass on CI"
+    - "Coverage exceeds 80%"
+---
+`;
+    const quotedColonTruths = `---
+phase: 01
+must_haves:
+  truths:
+    - "App-side UUIDv4: generated locally"
+    - "No colon in this one"
+    - "Another colon: example"
+---
+`;
+
+    for (const fixture of [fourSpaceIndentTruths, twoSpaceIndentTruths, quotedColonTruths]) {
+      assert.deepStrictEqual(
+        parseMustHavesBlock(crlf(fixture), 'truths'),
+        parseMustHavesBlock(fixture, 'truths'),
+        `CRLF/LF parity diverged for fixture:\n${fixture}`
+      );
+    }
+  });
+
+  test('#3360 regression guard: the nesting guard still rejects a non-nested block on CRLF input — row 29', () => {
+    // `truths:` sits at the SAME indent (column 0) as `must_haves:` — a
+    // sibling, not a nested child — so the blockIndent <= mustHavesIndent
+    // guard must still reject it, even on CRLF input, post-fix.
+    const lfPlan = `---
+phase: 01
+must_haves:
+truths:
+  - "should not be picked up"
+---
+`;
+    const result = parseMustHavesBlock(crlf(lfPlan), 'truths');
+    assert.deepStrictEqual(result, []);
+  });
+
+  test('parseMustHavesBlock: CRLF content with no must_haves block still returns [] — row 30', () => {
+    const lfPlan = `---
+phase: 01
+truths:
+  - "Some truth"
+---
+`;
+    const result = parseMustHavesBlock(crlf(lfPlan), 'truths');
+    assert.deepStrictEqual(result, []);
   });
 });
 

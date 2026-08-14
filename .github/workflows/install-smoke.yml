@@ -9,7 +9,7 @@ name: Install Smoke
 # installing from an unpacked local directory, so any stale tsc output lacking
 # execute bits will be caught by the unpacked job before release.
 #
-# - PRs: path-filtered, minimal runner (ubuntu + Node LTS) for fast signal.
+# - PRs: path-filtered, minimal runner (ubuntu + Node 24) for fast signal.
 # - Push to release branches / main: full matrix.
 # - workflow_call: invoked from release.yml as a pre-publish gate.
 
@@ -65,16 +65,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs run the minimal path (ubuntu + LTS). Pushes / release branches
-        # and workflow_call add macOS + Node 24 coverage.
+        # PRs run the minimal path (ubuntu + Node 24, the engines.node floor).
+        # Pushes / release branches and workflow_call add macOS coverage.
+        # (Node floor is 24 everywhere now, so the prior "ubuntu + Node 24,
+        # full_only" row is identical to this minimal row and was dropped —
+        # it would otherwise re-run the same os/node combo twice on push.)
         include:
           - os: ubuntu-latest
-            node-version: 22
-            full_only: false
-            shell: bash
-          - os: ubuntu-latest
             node-version: 24
-            full_only: true
+            full_only: false
             shell: bash
           - os: macos-latest
             node-version: 24
@@ -218,10 +217,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: node scripts/ci-rebase-check.cjs
 
-      - name: Set up Node.js 22
+      - name: Set up Node.js 24
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
         with:
-          node-version: 22
+          node-version: 24
           cache: 'npm'
 
       - name: Install root deps

@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -16,7 +17,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
+const { parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;

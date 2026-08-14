@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execGit, platformWriteSync, platformReadSync, toNativePath, posixNormalize } from './shell-command-projection.cjs';
 import { realClock } from './clock.cjs';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import io = require('./io.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
@@ -88,7 +89,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
+const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -3682,7 +3683,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
 
       const description = (frontmatter['description'] as string) || '';
       const triggers: string[] = [];
-      const bodyMatch = content.match(/^---[\s\S]*?---\s*\n([\s\S]*)$/);
+      const bodyMatch = content.match(/^---[\s\S]*?---\s*\r?\n([\s\S]*)$/);
       if (bodyMatch) {
         const body = bodyMatch[1];
         const triggerLines = body.match(/^TRIGGER\s+when:\s*(.+)$/gmi);

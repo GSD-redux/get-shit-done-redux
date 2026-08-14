@@ -17,6 +17,7 @@ import fs from 'node:fs';
 // can intercept calls from this seam — destructured imports capture references
 // at load time and become un-mockable.
 import childProcess from 'node:child_process';
+import { escapeRegex } from './pattern.cjs';
 
 /**
  * Convert a filesystem path to POSIX form (forward slashes) by translating the
@@ -297,7 +298,7 @@ export function isManagedHookCommand(commandText: unknown, opts: { surface?: str
   }
 
   for (const basename of managedBasenames) {
-    const escapedBasename = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedBasename = escapeRegex(basename);
     const pattern = new RegExp(`(^|[\\\\/\\s"'` + '`' + `])${escapedBasename}(?=$|[\\s"'` + '`' + `])`);
     if (pattern.test(normalizedCommand)) return true;
   }

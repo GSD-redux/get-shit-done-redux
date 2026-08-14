@@ -14,7 +14,7 @@
  *      (transitively) a `readFileSync`/`fs.readFileSync` result — directly,
  *      via a chain, or via an Identifier that scope-resolves to a variable
  *      initialized from readFileSync.
- *      Message: use `.split(/\r?\n/)`.
+ *      Message: use `splitLines()` from `src/text-lines.cts`.
  *
  * G2/G3 — a RegExpLiteral whose pattern contains a bare `\n` (a `\n` not
  *      part of `\r?\n` / `\r\n` / `[\r\n]` etc.) used as the pattern of a
@@ -22,7 +22,8 @@
  *      call on a readFileSync-derived receiver. ALSO flags a RegExpLiteral
  *      with a bare `\n` whose source contains a markdown fence (```) or a
  *      frontmatter anchor (`^---`), since those shapes target file content.
- *      Message: use `\r?\n` (Windows git-autocrlf yields `\r\n`).
+ *      Message: use `splitLines()` from `src/text-lines.cts` (or the raw
+ *      `\r?\n` regex, for a file that cannot import the compiled seam).
  *
  * ## Known boundaries
  *
@@ -53,11 +54,11 @@ const rule = {
       crlfFragileSplit:
         'Splitting on literal "\\n" on readFileSync content is CRLF-fragile ' +
         '(DEFECT.WINDOWS-CRLF-TEST-PORTABILITY): Windows git-autocrlf yields "\\r\\n" ' +
-        'line endings. Use .split(/\\r?\\n/) instead.',
+        'line endings. Use splitLines() from src/text-lines.cts instead.',
       crlfFragileRegex:
         'RegExp with a bare "\\n" on readFileSync content is CRLF-fragile ' +
         '(DEFECT.WINDOWS-CRLF-TEST-PORTABILITY): Windows git-autocrlf yields "\\r\\n" ' +
-        'line endings. Use \\r?\\n (or [\\r\\n]) instead.',
+        'line endings. Use splitLines() from src/text-lines.cts instead.',
     },
   },
 

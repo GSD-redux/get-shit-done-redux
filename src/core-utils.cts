@@ -69,7 +69,7 @@ function detectSubRepos(cwd: string): string[] {
 function extractOneLinerFromBody(content: string | null | undefined): string | null {
   if (!content) return null;
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const body = normalized.replace(/^---\n[\s\S]*?\n---\n*/, '');
+  const body = normalized.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '');
   // #3170: anchor to a summary-shaped heading (Summary / Overview /
   // Accomplishments) so an incidental first heading (a rule list, task
   // breakdown, deviation note) does not contribute its first bold run as the

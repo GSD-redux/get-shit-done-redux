@@ -159,6 +159,7 @@
 const path = require('node:path');
 const driftScan = require('./lib/drift-scan.cjs');
 const { MAX_REGEX_LITERAL_LEN, sanitizeForReport, scanTree } = driftScan;
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // ─── SHARED TOKENIZER + FUNCTION ATTRIBUTION (mirrors lint-state-field-drift.cjs) ──
 //
@@ -696,7 +697,7 @@ function findScanPhasePlansCompletedReadDrift(text, relPath, exemptFunctions) {
   for (const [fnKey, varNames] of varsByFn) {
     if (fnKey !== FN_KEY_MODULE && exemptFunctions && exemptFunctions.has(fnKey)) continue;
     for (const varName of varNames) {
-      const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escaped = escapeRegex(varName);
       const readRe = new RegExp(`\\b${escaped}\\.completed\\b`);
       for (let i = 0; i < lines.length; i++) {
         const fnHere = innermostAt[i] || FN_KEY_MODULE;

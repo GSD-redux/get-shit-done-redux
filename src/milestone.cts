@@ -26,7 +26,8 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const {
@@ -823,7 +824,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
     } else {
       // Insert after the header line(s) for reverse chronological order (newest first)
-      const headerMatch = existing.match(/^(#{1,3}\s+[^\n]*\n\n?)/);
+      const headerMatch = existing.match(/^(#{1,3}\s+[^\r\n]*\r?\n(?:\r?\n)?)/);
       if (headerMatch) {
         const header = headerMatch[1];
         const rest = existing.slice(header.length);

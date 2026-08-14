@@ -20,6 +20,7 @@ const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 const lifecycle = require('../gsd-core/bin/lib/capability-lifecycle.cjs');
 const ledgerMod = require('../gsd-core/bin/lib/capability-ledger.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const { CAP_MARKER } = lifecycle;
 
 // ---------------------------------------------------------------------------
@@ -3218,7 +3219,7 @@ test('IC-05/WIN-2: a consent-store write failure leaves the install status:insta
   assert.ok(fs.existsSync(path.join(dir, '.gsd', 'capabilities', 'rofs-cap', 'capability.json')), 'the bundle is committed on disk');
   assert.match(buf, /capability consent:/i, 'a consent diagnostic was written to stderr');
   assert.match(buf, /could not write the consent record/i, 'the warning explains the write failure');
-  assert.match(buf, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the warning names the consent store path');
+  assert.match(buf, new RegExp(escapeRegex(home)), 'the warning names the consent store path');
 });
 
 // ---------------------------------------------------------------------------
