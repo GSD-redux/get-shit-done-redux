@@ -390,11 +390,16 @@ describe('check gap-analysis.plan-post — gate content E2E', () => {
     assert.strictEqual(out.counts.covered, 8, 'all 8 REQ-IDs are covered by the plan');
     assert.strictEqual(out.counts.uncovered, 1, 'the one uncovered item is P1-P3 (ID-shaped ghost, not prose)');
 
-    // The reported item set must be exactly REQ-01..REQ-08 + P1-P3.
-    const reqItems = out.rows.filter(row => row.source === 'REQUIREMENTS.md').map(row => row.item);
-    assert.deepStrictEqual(reqItems.sort(),
-      ['P1-P3', 'REQ-01', 'REQ-02', 'REQ-03', 'REQ-04', 'REQ-05', 'REQ-06', 'REQ-07', 'REQ-08'],
-      `the reported requirement items must be exactly REQ-01..REQ-08 + P1-P3; got ${JSON.stringify(reqItems)}`);
+    // Every surviving ID-shaped token must appear in the table. (The check
+    // query exposes `table`/`counts` but not the raw `rows` array, so assert
+    // via the rendered table.)
+    for (const id of ['REQ-01', 'REQ-02', 'REQ-03', 'REQ-04', 'REQ-05', 'REQ-06', 'REQ-07', 'REQ-08', 'P1-P3']) {
+      assert.ok(out.table.includes(id),
+        `${id} must appear in the table. Full table:\n${out.table}`);
+    }
+    // P1-P3 (the ID-shaped ghost) must be flagged Missing from REQUIREMENTS.md.
+    assert.ok(out.table.includes('Missing from REQUIREMENTS.md'),
+      `P1-P3 must be flagged Missing from REQUIREMENTS.md. Full table:\n${out.table}`);
 
     // No prose fragment may appear anywhere in the table — these are the exact
     // fragments the issue reported as fake missing requirements.
