@@ -786,13 +786,19 @@ describe('Bug 5 (#3191) — anchored, portable phase-mention grep at all three d
   // carries markdown-escaped quotes (\") in this fence — an authoring
   // artifact that survived #2994 fragmentization verbatim; the runtime agent
   // normalizes them when transcribing, so the test does the same before
-  // executing. Cut before the gsd_run invocation (needs the real gsd-tools).
+  // executing. Sliced from FALLOW_SCOPE_ARGS=() (skipping the gsd-tools
+  // runtime resolver line above it, which exits 1 on machines without an
+  // installed gsd-tools and is orthogonal to the base-derivation under test)
+  // to just before the gsd_run invocation (which needs the real binary).
   function extractFallowDerivation() {
     const src = readFileNormalized(PRE_PASS_STEP_PATH);
     const fence = fenceContaining(src, 'FALLOW_PHASE_COMMITS=$(git log');
+    const scopeStart = fence.indexOf('FALLOW_SCOPE_ARGS=()');
+    assert.ok(scopeStart !== -1, 'fallow fence must define FALLOW_SCOPE_ARGS=()');
     const cut = fence.indexOf('gsd_run run-with-timeout');
     assert.ok(cut !== -1, 'fallow fence must contain the gsd_run run-with-timeout call');
-    return fence.slice(0, cut).replace(/\\"/g, '"');
+    assert.ok(scopeStart < cut, 'FALLOW_SCOPE_ARGS must precede the gsd_run invocation');
+    return fence.slice(scopeStart, cut).replace(/\\"/g, '"');
   }
 
   // Execute a derivation snippet with PADDED_PHASE (and the fallow scope gate)
