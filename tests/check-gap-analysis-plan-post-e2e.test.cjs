@@ -401,13 +401,17 @@ describe('check gap-analysis.plan-post — gate content E2E', () => {
     assert.ok(out.table.includes('Missing from REQUIREMENTS.md'),
       `P1-P3 must be flagged Missing from REQUIREMENTS.md. Full table:\n${out.table}`);
 
-    // No prose fragment may appear anywhere in the table — these are the exact
-    // fragments the issue reported as fake missing requirements.
+    // No prose fragment may appear as a table row — these are the exact
+    // fragments the issue reported as fake missing requirements. Only table
+    // ROW lines (starting with `|`) are checked: the table string itself begins
+    // with the `## Post-Planning Gap Analysis` markdown heading, so a raw
+    // `out.table.includes('##')` would trivially be true.
+    const tableRows = out.table.split('\n').filter(line => line.startsWith('|'));
     const proseFragments = ['—', '##', '`NN-SPEC.md', '+', '0.12;', '<date>',
-      'ambiguity', 'locked', 'prohibitions', 'Requirements', 'canonical', 'source'];
+      'ambiguity', 'locked', 'prohibitions', 'Requirements;', 'canonical', 'source;'];
     for (const frag of proseFragments) {
-      assert.ok(!out.table.includes(frag),
-        `prose fragment ${JSON.stringify(frag)} must NOT appear in the table. Full table:\n${out.table}`);
+      assert.ok(!tableRows.some(line => line.includes(frag)),
+        `prose fragment ${JSON.stringify(frag)} must NOT appear in any table row. Full table:\n${out.table}`);
     }
   });
 
