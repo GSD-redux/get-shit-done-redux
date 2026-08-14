@@ -168,10 +168,79 @@ worktree isolation applied PER PLAN from the manifest's `use_worktree` field
   Omitting it from the tool invocation silently regresses phase-resume to a
   no-op: an interrupted phase re-runs completed plans.
 
-The orchestrator still runs steps 4–5.8 (wait for completion, worktree cleanup,
-post-merge gate, tracking update) exactly as it does for inline dispatch — the
-Workflow backend only replaces HOW agents are spawned for this wave, not what
-happens after they return.
+### After the run: manifest bridge into the merge chain (#3302)
+
+The single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also
+means step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on
+this path. The orchestrator MUST bridge the run's per-agent results into the SAME
+manifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run
+unchanged:
+
+1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,
+   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:
+
+   ```bash
+   if [ -z "${WAVE_WORKTREE_MANIFEST:-}" ]; then
+     M=$(mktemp "${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX") && mv "$M" "$M.json" && WAVE_WORKTREE_MANIFEST="$M.json" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)
+     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back
+     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.
+     ORCH_ROOT=$(git rev-parse --show-toplevel)
+     ORCH_ROOT="$ORCH_ROOT" MANIFEST="$WAVE_WORKTREE_MANIFEST" node -e 'const fs=require("fs");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+"\n")'
+     export WAVE_WORKTREE_MANIFEST
+   fi
+   ```
+
+2. **Invoke the Workflow tool with the emitted script and
+   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry
+   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that
+   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,
+   expected_base}` — captured by the executor itself per
+   `agents/gsd-executor.md`), or `null` when the agent's result carried none
+   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).
+
+3. **Record every worktree plan** exactly as inline dispatch does at step 3's
+   "After each `Agent()` returns" — one `worktree.record-agent` per returned entry
+   with `expects_worktree: true` and complete metadata:
+
+   ```bash
+   gsd_run query worktree.record-agent --manifest "$WAVE_WORKTREE_MANIFEST" \
+     --agent-id "<metadata.agent_id>" --path "<metadata.worktree_path>" \
+     --branch "<metadata.branch>" --base "<metadata.expected_base>" \
+     --files "<plan files_modified, space-separated>"
+   ```
+
+   The verb's write-strict validation applies as inline: on a non-zero exit or any
+   missing field, stop and ask for recovery — do not append an under-populated entry.
+
+4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**
+   After recording, the manifest must hold one entry per `expects_worktree: true`
+   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected
+   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count
+   mismatch — means commits are stranded on their `worktree-wf_*` branches and
+   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the
+   phase with the failing plan id and the recovery hint below; do NOT run
+   `worktree.cleanup-wave` and do NOT proceed to step 4.
+
+   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover
+   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one
+   `{"type":"result",…}` line per agent — in the Workflow run's transcript dir), re-run
+   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be
+   recovered either, merge the branch manually after review — never discard it.
+
+5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final
+   messages, so a previously-completed plan can return with `metadata: null`. Recover
+   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it
+   cannot be recovered, fail loudly per rule 4 — a resumed run must never report
+   success over silently-dropped agent work.
+
+6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the
+   manifest): they ran without isolation; their commits are already on the main working
+   tree. No record-agent entry, no manifest write.
+
+With the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's
+manifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run
+UNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their
+metadata; the merge chain itself is the inline path's own, now with real input.
 
 **If `backend == "inline"`** (any gate miss, or `resolve-wave-dispatch` itself
 unavailable/erroring): proceed to step 3's standard per-message `Agent()`

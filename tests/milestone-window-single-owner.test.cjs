@@ -688,9 +688,123 @@ test('roadmap analyze reports scope truncated on a truncated window', (t) => {
   assert.strictEqual(result.success, true, result.error);
   const analyzed = JSON.parse(result.output);
   assert.strictEqual(analyzed.scope, SCOPE.TRUNCATED);
-  // Deliberately unchanged: the count stays 0 either way -- `scope` is what
-  // carries the truncation signal, not `phase_count`.
+  // No phase directories on disk here, so #3165's on-disk-evidence fallback
+  // does not fire and phase_count stays 0 -- `scope` carries the truncation
+  // signal. The WITH-dirs companion below proves the recovery path.
   assert.strictEqual(analyzed.phase_count, 0);
+});
+
+test('roadmap analyze recovers phase_count when phase dirs exist on disk (#3165)', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  // #3165 layout: the ACTIVE milestone's own `### Phase N:` detail sections
+  // sit AFTER an intervening CLOSED milestone heading, so the scoped window
+  // closes over prose only. Phase directories on disk are the on-disk evidence
+  // that phases really exist -- the fallback re-scans the shipped-stripped
+  // document so the consuming resume gate (workflows/next.md Route 0) sees a
+  // non-empty `.phases[]` it can actually iterate.
+  writeState(cwd, { milestone: 'v3.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 Current 🚧',
+    '',
+    'Active milestone prose.',
+    '',
+    '## v2.0 Old ✅ SHIPPED',
+    '',
+    'Archived prose.',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '**Goal:** Do foo',
+    '',
+    '### Phase 2: Bar',
+    '',
+    '**Goal:** Do bar',
+  ].join('\n'));
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-foo'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '02-bar'), { recursive: true });
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  // Acceptance criterion 1: correct phase count + resolved current/next, not
+  // an empty result.
+  assert.strictEqual(analyzed.phase_count, 2);
+  assert.deepStrictEqual(analyzed.phases.map((p) => p.number).sort(), ['1', '2']);
+  assert.notStrictEqual(analyzed.next_phase, null, 'next_phase must resolve to a real phase');
+  // Acceptance criterion 3: scope stays non-COMPLETE so consumers can still
+  // tell this is a best-effort count, not a cleanly scoped one.
+  assert.strictEqual(analyzed.scope, SCOPE.TRUNCATED);
+});
+
+test('roadmap analyze fallback does not over-fire on a well-formed sectioned roadmap (#3165)', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  // Well-formed: the ACTIVE milestone's phases come right after its heading,
+  // BEFORE the CLOSED milestone. The scoped window is correct (COMPLETE), so
+  // the fallback must NOT fire -- phase_count reflects ACTIVE's phases only.
+  writeState(cwd, { milestone: 'v3.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 Current 🚧',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+    '',
+    '## v2.0 Old ✅ SHIPPED',
+    '',
+    '### Phase 3: Archived',
+  ].join('\n'));
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-foo'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '02-bar'), { recursive: true });
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  assert.strictEqual(analyzed.phase_count, 2);
+  assert.deepStrictEqual(analyzed.phases.map((p) => p.number).sort(), ['1', '2']);
+  assert.strictEqual(analyzed.scope, SCOPE.COMPLETE);
+});
+
+test('roadmap analyze fallback respects shipped <details> milestone stripping (#3165)', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  // #3165 layout + a <details> shipped block holding OTHER phases. The
+  // fallback scans stripShippedMilestones(rawContent), so phases inside a
+  // collapsed shipped <details> are NOT counted -- only the ACTIVE milestone's
+  // loose phase headings are.
+  writeState(cwd, { milestone: 'v3.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 Current 🚧',
+    '',
+    '## v2.0 Old ✅ SHIPPED',
+    '',
+    '<details>',
+    '<summary>v1.0 shipped</summary>',
+    '',
+    '### Phase 9: Legacy',
+    '',
+    '</details>',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+  ].join('\n'));
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-foo'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '02-bar'), { recursive: true });
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  assert.strictEqual(analyzed.phase_count, 2);
+  assert.deepStrictEqual(analyzed.phases.map((p) => p.number).sort(), ['1', '2']);
+  assert.notStrictEqual(analyzed.scope, SCOPE.COMPLETE);
 });
 
 test('roadmap analyze reports scope complete on a genuinely empty milestone', (t) => {

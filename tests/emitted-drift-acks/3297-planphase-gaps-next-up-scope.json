@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-phase.md": "#3297: the bash preamble now captures --gaps planning mode into GAPS_MODE and derives GAPS_EXEC_FLAG (empty or --gaps-only), and the <offer_next> Next Up command substitutes ${GAPS_EXEC_FLAG} into /gsd:execute-phase {X} so a completed --gaps planning run hands off execute-phase's matching gap-closure scope (--gaps-only) instead of the whole-phase run — the literal fix for the mode-blind handoff, plus the six-line gap-mode capture/derive block and the one-paragraph rendering note that tells the agent how to substitute the flag. Standard and --reviews runs leave the flag empty, so their rendered Next Up is byte-identical to before. Growth is the write side of the fix, not incidental prose. Supersedes the spent #3218 fragment (merged into next), which also named plan-phase.md and would otherwise double-ack the same path."
+  }
+}

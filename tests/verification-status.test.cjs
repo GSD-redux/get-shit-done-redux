@@ -138,6 +138,10 @@ describe('verification-status', () => {
       assert.equal(result.status, 'missing');
       assert.equal(result.next_command, '/gsd-execute-phase');
       assert.ok(result.next_action.includes('verify step never completed'));
+      assert.ok(
+        result.next_action.includes('does not re-run plans that already have a SUMMARY.md'),
+        `next_action must reassure the user execute-phase will not redo work (#1762); got: ${result.next_action}`,
+      );
     } finally {
       cleanup(dir);
     }
@@ -154,6 +158,10 @@ describe('verification-status', () => {
       assert.ok(
         result.next_action.includes('bogus'),
         `next_action should mention the raw value; got: ${result.next_action}`,
+      );
+      assert.ok(
+        result.next_action.includes('intentional non-standard marker'),
+        `next_action must acknowledge an unrecognized status may be an intentional marker (#1762); got: ${result.next_action}`,
       );
     } finally {
       cleanup(dir);

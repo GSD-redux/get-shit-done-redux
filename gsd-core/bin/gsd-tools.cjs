@@ -1386,10 +1386,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
         // gate used in runWithTimeout: detect .cmd/.bat and mediate through
         // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        //
+        // #3275: descriptors declare BARE names, so the gate above never saw an
+        // extension — resolve through the shared PATH+PATHEXT resolver FIRST
+        // (the same one `hasBinary` uses, so probe and spawn can never disagree
+        // about what the lane's binary is). POSIX keeps the bare name: Node's own
+        // PATH search already worked there, and the #3275 acceptance contract
+        // holds macOS/Linux behavior unchanged. A name that resolves to nothing
+        // falls back to the declared name so the ENOENT still surfaces (#3086).
         const isWin = process.platform === 'win32';
-        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(binary));
-        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : binary;
-        const spawnArgv = winShim ? ['/d', '/s', '/c', binary, ...argv] : argv;
+        const target = isWin ? (resolveSpawnBinary(binary) || binary) : binary;
+        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(target));
+        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : target;
+        const spawnArgv = winShim ? ['/d', '/s', '/c', target, ...argv] : argv;
         const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
@@ -1429,24 +1438,13 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // all (a probe that costs a process is a probe you avoid running, which is how the original
       // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
       // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
-      hasBinary: (name) => {
-        if (!name || name.includes('/') || name.includes('\\')) {
-          try { return fsx.statSync(name).isFile(); } catch { return false; }
-        }
-        const exts = process.platform === 'win32'
-          ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-          : [''];
-        for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
-          for (const ext of exts) {
-            const candidate = path.join(dir, name + ext);
-            try {
-              const st = fsx.statSync(candidate);
-              if (st.isFile()) return true;
-            } catch { /* next candidate */ }
-          }
-        }
-        return false;
-      },
+      //
+      // #3275: the scan lives in `resolveSpawnBinary` now, SHARED with `deps.spawn`
+      // above. Two private copies of "what is this declared binary?" is how the
+      // defect hid: the probe resolved WITH PATHEXT while spawn resolved WITHOUT,
+      // so a lane reported available for a spawn that could never start. One
+      // resolver, both seams — if one changes, the other changes with it.
+      hasBinary: (name) => resolveSpawnBinary(name) !== null,
       configGet,
       homeDir: os.homedir(),
       warn: (m) => process.stderr.write(`${m}\n`),
@@ -3558,6 +3556,60 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   }
 
 
+/**
+ * #3275: resolve a DECLARED command name to the file a spawn can actually start.
+ *
+ * Lane descriptors (src/review-lane-descriptor.cts) declare BARE, platform-unaware
+ * binary names ('codex', 'gemini', 'kimi', 'agy'), and `review-lane invoke`'s
+ * `deps.spawn` + `deps.hasBinary` both need the on-disk form of that name. Before
+ * this helper existed they disagreed: `hasBinary` scanned PATH WITH PATHEXT (so
+ * probes reported lanes AVAILABLE on Windows) while `spawn` received the bare name
+ * — `CreateProcess` performs no PATHEXT resolution, so every spawn-transport lane
+ * ENOENT'd there, and the #3086 `.cmd`/`.bat` cmd.exe mediation gate never fired
+ * because the declared name never carried an extension. One shared resolver is the
+ * only shape that cannot drift back apart.
+ *
+ * win32: tries PATHEXT entries ONLY — never the bare name. npm global installs
+ * drop an EXTENSIONLESS POSIX sh shim (`...\npm\codex`) next to `codex.CMD`; a
+ * bare-name-first scan resolves to it, the mediation gate sees no `.cmd`, and the
+ * ENOENT returns unchanged (field-reported on Windows 11 — see the #3275 issue
+ * comment pinning exactly this pitfall).
+ *
+ * POSIX: answers EXISTENCE only (the old `hasBinary` contract, preserved
+ * byte-for-byte) by scanning PATH for the bare name. `deps.spawn` does NOT consult
+ * this on POSIX — the bare name goes to spawnSync unchanged and Node's own PATH
+ * search does the work, so macOS/Linux behavior is untouched (#3275 acceptance).
+ *
+ * Path-like names (any '/' or '\') bypass the PATH scan: the name is already an
+ * address, so it passes through when the file exists and is a file.
+ */
+function resolveSpawnBinary(name, platform = process.platform, env = process.env) {
+  if (!name) return null;
+  if (name.includes('/') || name.includes('\\')) {
+    try { return fs.statSync(name).isFile() ? name : null; } catch { return null; }
+  }
+  const segments = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+  if (platform !== 'win32') {
+    for (const dir of segments) {
+      const candidate = path.join(dir, name);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* next candidate */ }
+    }
+    return null;
+  }
+  const exts = String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean);
+  for (const dir of segments) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* next candidate */ }
+    }
+  }
+  return null;
+}
+
 const HOST_COMMAND_ROUTERS = {
   // Each entry wraps its `route*Command` router so it receives the module-scope
   // lib the old `case` arm passed, plus the per-dispatch context
@@ -4294,5 +4346,8 @@ module.exports = {
   TOP_LEVEL_USAGE,
   skipsRootResolution,
   resolveMainWorktreeCwd,
+  // #3275: exported for tests — the shared PATH+PATHEXT resolver behind
+  // review-lane invoke's `deps.spawn` / `deps.hasBinary` seams.
+  resolveSpawnBinary,
 };
 

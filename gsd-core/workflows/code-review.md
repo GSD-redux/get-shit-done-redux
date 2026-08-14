@@ -237,12 +237,14 @@ against the diff and warn about (then add) any changed files the SUMMARY extract
 surface — so a partial SUMMARY result can no longer silently mask the rest of the phase.
 ```bash
 # Compute diff base from phase commits — fail closed if no reliable base found.
-# #2989: anchor the grep to the phase-mention convention ("Phase N" / "phase N"
-# with a word boundary) so a bare digit substring doesn't match version strings,
-# dates, issue refs, or other phases' numbers. With --extended-regexp, \b is
-# a word boundary. When no commit genuinely references the phase, this yields
-# empty and the fail-closed warning below actually fires.
-PHASE_COMMITS=$(git log --oneline --all --grep="[Pp]hase ${PADDED_PHASE}\b" --extended-regexp --format="%H" 2>/dev/null)
+# #2989: anchor the grep to the phase-mention convention ("Phase N" / "phase N")
+# so a bare digit substring doesn't match version strings, dates, issue refs,
+# or other phases' numbers. When no commit genuinely references the phase, this
+# yields empty and the fail-closed warning below actually fires.
+# #3191: the trailing boundary is the POSIX class ([^[:alnum:]_]|$), NOT \b —
+# \b is not a POSIX ERE token, so under --extended-regexp it silently matches
+# nothing on macOS regex(3), making this fallback dead on Apple platforms.
+PHASE_COMMITS=$(git log --oneline --all --grep="[Pp]hase ${PADDED_PHASE}([^[:alnum:]_]|$)" --extended-regexp --format="%H" 2>/dev/null)
 DIFF_BASE=""
 if [ -n "$PHASE_COMMITS" ]; then
   DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
@@ -423,11 +425,19 @@ Compute the review output path:
 REVIEW_PATH="${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md"
 ```
 
-Compute DIFF_BASE for agent context (in case agent needs it):
+Compute DIFF_BASE for agent context (in case agent needs it). #3191: this must be
+the SAME anchored, POSIX-portable derivation the Tier-3 scope step uses — the
+reviewer agent consumes `diff_base` exactly when `files:` is empty, i.e. the same
+fail-closed scenario Tier 3 protects, so a divergent unanchored recomputation here
+re-arms the mis-scoping one tier down:
 ```bash
-PHASE_COMMITS=$(git log --oneline --all --grep="${PADDED_PHASE}" --format="%H" 2>/dev/null)
+PHASE_COMMITS=$(git log --oneline --all --grep="[Pp]hase ${PADDED_PHASE}([^[:alnum:]_]|$)" --extended-regexp --format="%H" 2>/dev/null)
 if [ -n "$PHASE_COMMITS" ]; then
   DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
+  # Verify the parent commit exists (first commit in repo has no parent)
+  if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
+    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
+  fi
 else
   DIFF_BASE=""
 fi

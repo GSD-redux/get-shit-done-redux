@@ -266,11 +266,13 @@ done
 if [ -f ".planning/PROJECT.md" ]; then
   cp .planning/PROJECT.md "${RUN_DIR}/gsd-review-project.md"
 fi
-if ls "${PHASE_DIR}/"*"-CONTEXT.md" >/dev/null 2>&1; then
-  cat "${PHASE_DIR}/"*"-CONTEXT.md" > "${RUN_DIR}/gsd-review-context.md"
+_CTX=( "${PHASE_DIR}"/*-CONTEXT.md )
+if [ ${#_CTX[@]} -gt 0 ]; then
+  cat "${_CTX[@]}" > "${RUN_DIR}/gsd-review-context.md"
 fi
-if ls "${PHASE_DIR}/"*"-RESEARCH.md" >/dev/null 2>&1; then
-  cat "${PHASE_DIR}/"*"-RESEARCH.md" > "${RUN_DIR}/gsd-review-research.md"
+_RESEARCH=( "${PHASE_DIR}"/*-RESEARCH.md )
+if [ ${#_RESEARCH[@]} -gt 0 ]; then
+  cat "${_RESEARCH[@]}" > "${RUN_DIR}/gsd-review-research.md"
 fi
 if [ -f ".planning/REQUIREMENTS.md" ]; then
   cp .planning/REQUIREMENTS.md "${RUN_DIR}/gsd-review-requirements.md"
@@ -464,7 +466,7 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 
 ## Consensus Summary
 
-{synthesize common concerns across all reviewers. CodeRabbit is a diff-only reviewer (it never received the source-grounding prompt), so do not weight its verdict as a grounded plan review — fold in its diff findings, but base plan-level consensus on the prompt-fed reviewers. A reviewer output carrying the `[reviewed-without-repo-access]` marker (or beginning with `REVIEWED-WITHOUT-REPO-ACCESS`) ran without repo access (#2176) — treat it the same way: note its concerns, but do not count its verdict at full consensus weight.}
+{synthesize common concerns across all reviewers. CodeRabbit is a diff-only reviewer (it never received the source-grounding prompt), so do not weight its verdict as a grounded plan review — fold in its diff findings, but base plan-level consensus on the prompt-fed reviewers. A reviewer output carrying the `[reviewed-without-repo-access]` marker (or beginning with `REVIEWED-WITHOUT-REPO-ACCESS`) ran without repo access (#2176) — treat it the same way: note its concerns, but do not count its verdict at full consensus weight. A reviewer output carrying the `[reviewed-without-source-citations]` marker (#3194) declared source-grounded evidence but cited no `file:line` evidence, so it reviewed the plan text only — treat it the same way: note its concerns, but do not count its verdict at full consensus weight.}
 
 ### Agreed Strengths
 {strengths mentioned by 2+ reviewers}

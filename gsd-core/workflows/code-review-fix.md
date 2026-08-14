@@ -256,7 +256,11 @@ if [ "$AUTO_MODE" = "true" ]; then
   # Total fix passes = MAX_ITERATIONS. Loop uses -lt (not -le) intentionally.
   ITERATION=1
   MAX_ITERATIONS=3
-  
+  # #3190: track whether the loop converged (re-review came back clean) vs
+  # degraded (hit the cap). Convergence determines whether the .iterN.md backups
+  # are spent scratch (cleaned below) or retained for post-mortem analysis.
+  CONVERGED=false
+
   while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     ITERATION=$((ITERATION + 1))
     
@@ -315,6 +319,7 @@ ${AGENT_SKILLS_REVIEWER}")
     " 2>/dev/null)
     
     if [ "$NEW_STATUS" = "clean" ]; then
+      CONVERGED=true
       echo ""
       echo "✓ All issues resolved after iteration ${ITERATION}."
       break
@@ -353,14 +358,24 @@ ${AGENT_SKILLS_FIXER}")
     echo ""
     echo "⚠ Reached maximum iterations (${MAX_ITERATIONS}). Remaining issues documented in REVIEW-FIX.md."
   fi
+
+  # #3190: on convergence the .iterN.md backups are spent scratch — their
+  # stated purpose is post-mortem analysis "if iterations degrade", and
+  # convergence means no degradation. Remove them so the phase directory is
+  # clean (no dirty REVIEW.md or backup files after the run). They are RETAINED
+  # when the loop degraded (hit MAX_ITERATIONS / fixer failure) so the
+  # post-mortem trail survives. Backup CREATION (cp … .iterN.md) is unchanged.
+  if [ "$CONVERGED" = "true" ]; then
+    rm -f "${REVIEW_PATH%.md}.iter"*.md "${FIX_REPORT_PATH%.md}.iter"*.md 2>/dev/null || true
+  fi
 fi
 ```
 
 Key design decisions for --auto (addresses ALL review HIGH concerns):
 1. **Re-review scope**: Uses REVIEW_FILES_ARRAY from original REVIEW.md frontmatter, falling back to full phase scope. Scope is NOT lost between iterations. Uses portable while-read loop (bash 3.2+ compatible, handles spaces in paths).
 2. **Artifact semantics**: REVIEW.md is overwritten by each re-review (latest review state). REVIEW-FIX.md is overwritten by each fixer iteration (latest fix state with iteration count). There is ONE final version of each artifact, not per-iteration copies.
-   Backup files (.iterN.md) preserve history for post-mortem analysis if iterations degrade.
-3. **Commit timing**: Fix commits happen per-finding inside the agent. REVIEW-FIX.md is NOT committed until step 7 (after ALL iterations complete). Only ONE docs commit for REVIEW-FIX.md, not one per iteration.
+   Backup files (.iterN.md) preserve history for post-mortem analysis if iterations degrade. On successful convergence (#3190) the backups are spent scratch and removed; on degradation (hit MAX_ITERATIONS / fixer failure) they are retained for post-mortem.
+3. **Commit timing**: Fix commits happen per-finding inside the agent. REVIEW-FIX.md is NOT committed until step 7 (after ALL iterations complete). Only ONE docs commit, not one per iteration. In --auto that single commit also stages the converged REVIEW.md alongside REVIEW-FIX.md (#3190), so the two committed artifacts agree — the initial code-review commit held iteration-1 REVIEW.md content, and the --auto re-review loop overwrote it each iteration.
 </step>
 
 <step name="commit_fix_report">
@@ -369,7 +384,8 @@ After ALL iterations complete (or single pass in non-auto mode), validate and co
 ```bash
 if [ -f "${FIX_REPORT_PATH}" ]; then
   # Validate REVIEW-FIX.md has valid YAML frontmatter with status field
-  HAS_STATUS=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
+  # #3190: export FIX_REPORT_PATH (the var the body reads), not REVIEW_PATH.
+  HAS_STATUS=$(FIX_REPORT_PATH="${FIX_REPORT_PATH}" node -e "
     const fs = require('fs');
     const content = fs.readFileSync(process.env.FIX_REPORT_PATH, 'utf-8');
     const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
@@ -380,9 +396,19 @@ if [ -f "${FIX_REPORT_PATH}" ]; then
     echo "REVIEW-FIX.md created at ${FIX_REPORT_PATH}"
     
     if [ "$COMMIT_DOCS" = "true" ]; then
+      # #3190: --auto's re-review loop overwrote REVIEW.md each iteration
+      # (auto_iteration_loop), but the only prior REVIEW.md commit is the
+      # initial code-review pass (iteration-1 content). Stage the converged
+      # REVIEW.md alongside REVIEW-FIX.md in this single docs commit so the two
+      # committed artifacts agree. Non-auto single-pass runs never rewrite
+      # REVIEW.md, so it is left untouched (guarded on AUTO_MODE).
+      COMMIT_FILES=("${FIX_REPORT_PATH}")
+      if [ "$AUTO_MODE" = "true" ] && [ -f "${REVIEW_PATH}" ]; then
+        COMMIT_FILES+=("${REVIEW_PATH}")
+      fi
       gsd_run query commit \
         "docs(${PADDED_PHASE}): add code review fix report" \
-        --files "${FIX_REPORT_PATH}"
+        --files "${COMMIT_FILES[@]}"
     fi
   else
     echo "Warning: REVIEW-FIX.md has invalid frontmatter (no status field). Not committing."
@@ -426,7 +452,8 @@ Extract frontmatter fields:
 
 ```bash
 # Extract only the YAML frontmatter block (between first two --- lines)
-FIX_FRONTMATTER=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
+# #3190: export FIX_REPORT_PATH (the var the body reads), not REVIEW_PATH.
+FIX_FRONTMATTER=$(FIX_REPORT_PATH="${FIX_REPORT_PATH}" node -e "
   const fs = require('fs');
   const content = fs.readFileSync(process.env.FIX_REPORT_PATH, 'utf-8');
   const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
