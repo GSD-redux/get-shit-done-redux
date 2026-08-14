@@ -6,9 +6,6 @@
     },
     "plan-review-convergence.md": {
       "reason": "Issue #3218 (epic #3180 phase 8): replaced a raw `ls *-PLAN.md | wc -l` re-derivation with a `gsd_run query find-phase` call plus jq extraction of the count field, routing the plan count through scanPhasePlans (ADR-3180 §7.5) so superseded plans are excluded and the review converges on the live set."
-    },
-    "progress.md": {
-      "reason": "Issue #3218 (epic #3180 phase 8): replaced a raw `ls *-PLAN.md | wc -l` re-derivation with a `gsd_run query find-phase` call plus jq extraction of the count field, and additionally carries the Route-0 dead-path fix (a branch that previously reported zero plans on the nested plans/ layout is now reachable and correct)."
     }
   }
 }
