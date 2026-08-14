@@ -7,7 +7,6 @@
  *
  * These tests read files they create themselves in OS temp directories —
  * not repo source files. The fs reads are test-input reads, not source-grep.
- * // allow-test-rule: integration-test-input
  */
 
 'use strict';
