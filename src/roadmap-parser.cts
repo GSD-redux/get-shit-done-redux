@@ -774,13 +774,47 @@ function scanMilestonePhaseIds(
  * Fence-aware via `tokenizeHeadings`: a FENCED example of a milestone heading
  * inside a field value does not terminate the real window, so it must not be
  * a violation either — the parser and this guard must agree on fences.
+ *
+ * #612: `convention` is the resolved `phase_id_convention`. This predicate is
+ * defined as a MIRROR of the parser's terminator vocabulary, and on this
+ * branch that vocabulary is convention-SELECTED: `computeBracketSectionEnd`
+ * adds `isBracketMilestoneBoundary` as a terminator arm, so the ADR-canonical
+ * `## [GSD.09] Hidden` — no version token, no status emoji, not the word
+ * "Milestone" — terminates the window on an opted-in bracket repo while
+ * matching NONE of the signals above. Left unmirrored, the guard accepts
+ * exactly the description that narrows the window on the one convention this
+ * branch teaches the parser to read, which is the failure the guard exists to
+ * prevent. A non-bracket (or unresolvable) value takes the pre-existing path
+ * byte-identically.
+ *
+ * REQUIRED, not optional — the same tripwire `scanMilestonePhaseIds` carries,
+ * and for the sharper reason: a blind call here fails OPEN (the guard quietly
+ * ACCEPTS a window-narrowing description) rather than merely miscounting, so a
+ * future call site must fail to COMPILE. The census today is one caller,
+ * `assertDescriptionPreservesMilestoneScope`, which pays nothing for it.
  */
-function findMilestoneScopeHeadingLines(text: string): string[] {
+function findMilestoneScopeHeadingLines(text: string, convention: string | null | undefined): string[] {
   const out: string[] = [];
   for (const h of tokenizeHeadings(text)) {
     if (h.level > 3) continue;
     if (/^Phase\s+\S/i.test(h.text)) continue;
     if (MILESTONE_HEADING_SIGNAL_PATTERN.test(h.text) || /🔄/.test(h.text)) {
+      out.push(h.text.trim());
+      continue;
+    }
+    // #612: the bracket arm, routed through the SAME single-owner
+    // phase-vs-milestone discriminator `computeBracketSectionEnd` consults —
+    // never a second bracket-heading grammar here.
+    //
+    // `selectedBracketId` is deliberately `null`, so the same-milestone
+    // CONTINUATION exemption never fires and a value naming the ACTIVE
+    // milestone (`## [GSD.02] Foundation (Phase Details)`) is flagged even
+    // though the real parser would treat it as a continuation. That is the
+    // third instance of this function's stated conservatism and rests on the
+    // same argument as the other two: WHICH milestone is active is a property
+    // of the document at write time, not of the text being validated, and
+    // over-rejecting is one-directional (reject more, never less).
+    if (convention === 'bracket' && isBracketMilestoneBoundary(h.text, h.level, null)) {
       out.push(h.text.trim());
     }
   }

@@ -86,9 +86,12 @@ const { readVerificationStatus } = verificationMod;
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
 const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
 
+// #612: `resolvePhaseIdConvention` selects the write-time milestone-scope
+// guard's terminator vocabulary (see assertDescriptionPreservesMilestoneScope).
 const {
   planningDir, withPlanningLock, listAvailableWorkstreams,
   peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason,
+  resolvePhaseIdConvention,
 } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
 import milestoneLockMod = require('./milestone-lock.cjs');
@@ -1129,16 +1132,35 @@ function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
  * the edit-phase workflow's depends_on gate. The predicate itself
  * (`findMilestoneScopeHeadingLines`) is fence-aware and Phase-heading-exempt,
  * so ordinary descriptions and the phase's own numbered heading never trip it.
+ *
+ * #612: the predicate is convention-SELECTED, because the terminator
+ * vocabulary it mirrors is. On an opted-in bracket repo the ADR-canonical
+ * `## [GSD.09] Hidden` carries none of the markers listed above and yet
+ * terminates the window, so the blind call accepted the exact description the
+ * guard exists to reject — measured at this CLI seam, two `phase add` calls,
+ * the second phase silently outside the milestone phase set. Resolved through
+ * the same tolerant shape the read path uses (`planningDir` throws on a
+ * poisoned `GSD_PROJECT`/`GSD_WORKSTREAM` segment, and this guard runs BEFORE
+ * `loadConfig` and the ROADMAP existence check — an unresolvable convention
+ * must degrade to the pre-existing legacy vocabulary, never turn a rejection
+ * into a crash).
  */
-function assertDescriptionPreservesMilestoneScope(description: string, command: string): void {
-  const offending = findMilestoneScopeHeadingLines(description);
+function assertDescriptionPreservesMilestoneScope(cwd: string, description: string, command: string): void {
+  let convention: string | null = null;
+  try {
+    convention = resolvePhaseIdConvention(cwd);
+  } catch { /* unresolvable convention → treat as not-configured (base behaviour) */ }
+  const offending = findMilestoneScopeHeadingLines(description, convention);
   if (offending.length === 0) return;
+  const markerList = convention === 'bracket'
+    ? `(a vN.N version token, a ✅/📋/🚧/🔄 marker, the word "Milestone", or — under the bracket convention — a "[CODE.NN] Name" milestone heading)`
+    : `(a vN.N version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone")`;
   error(
     `${command}: description contains a milestone-scoping heading line — writing it to ROADMAP.md would terminate ` +
       `the current milestone window and silently drop later phases out of the milestone scope. ` +
       `Offending line(s): ${offending.map((line) => JSON.stringify(line)).join(', ')}. ` +
       `Rewrite the line so it is not a level 1-3 "#" heading carrying a milestone marker ` +
-      `(a vN.N version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone").`
+      markerList + `.`
   );
 }
 
@@ -1208,7 +1230,7 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
   if (!description) {
     error('description required for phase add');
   }
-  assertDescriptionPreservesMilestoneScope(description, 'phase add');
+  assertDescriptionPreservesMilestoneScope(cwd, description, 'phase add');
 
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1343,7 +1365,7 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
   // all-or-nothing, so one offending description must reject the whole batch
   // with no ROADMAP write and no phase directories created.
   for (const description of descriptions) {
-    assertDescriptionPreservesMilestoneScope(description, 'phase add-batch');
+    assertDescriptionPreservesMilestoneScope(cwd, description, 'phase add-batch');
   }
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1446,7 +1468,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
   if (!afterPhase || !description) {
     error('after-phase and description required for phase insert');
   }
-  assertDescriptionPreservesMilestoneScope(description, 'phase insert');
+  assertDescriptionPreservesMilestoneScope(cwd, description, 'phase insert');
 
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {
