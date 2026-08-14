@@ -10110,8 +10110,7 @@ describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam compo
     ].join('\n');
   }
 
-  test('property: syncAndPreserveStateMd persists the same bytes whether reached via cmdPhaseComplete\'s shape or readModifyWriteStateMd', () => {
-    const createdDirs = [];
+  test('property: syncAndPreserveStateMd persists the same bytes whether reached via cmdPhaseComplete\'s shape or readModifyWriteStateMd', (t) => {
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 99 }),
@@ -10121,7 +10120,7 @@ describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam compo
         fc.boolean(), // withAuthoritativeFm
         (phaseNum, phaseName, touchPhaseLine, resync, withAuthoritativeFm) => {
           const tmp = createTempDir('gsd-a1a2a3-');
-          createdDirs.push(tmp);
+          t.after(() => cleanup(tmp));
 
           const original = baseStateMd(phaseNum, phaseName);
           // Always change SOMETHING (Status) so neither path's own no-op
@@ -10161,7 +10160,6 @@ describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam compo
       ),
       { seed: 3469, numRuns: 50 },
     );
-    for (const dir of createdDirs) cleanup(dir);
   });
 });
 
