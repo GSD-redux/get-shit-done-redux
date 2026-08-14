@@ -758,12 +758,13 @@ describe('#3204 buildStateFrontmatter total_phases — negative space / boundari
     );
   });
 
-  test('#1761 sibling milestone sections still fall back to the disk count', () => {
+  test('#1761/#3354 sibling milestone sections preserve the stored total', () => {
     // Row 5 — TWO sibling (unversioned) milestone sections, asserted
     // milestone ('v3.0') absent from either. This is genuinely
     // milestone-sectioned (2 phase-bearing sections would conflate if
-    // whole-doc counted), so total_phases must stay the disk count. Passes
-    // today; a fix that touches hasMilestoneSectioning must not break it.
+    // whole-doc counted), so neither the whole-doc count NOR the on-disk dir
+    // count is an authoritative total (#3354): the stored value must be
+    // preserved instead. Pre-#3354 this row asserted the disk count (3).
     const roadmap = [
       '# Roadmap',
       '',
@@ -790,8 +791,8 @@ describe('#3204 buildStateFrontmatter total_phases — negative space / boundari
     const out = recordSessionAndReadTotalPhases(tmpDir);
     assert.strictEqual(
       Number(out.progress.total_phases),
-      3,
-      `#1761: unbounded sibling milestones must fall back to the disk count (3), got ${out.progress && out.progress.total_phases}`,
+      8,
+      `#1761/#3354: unbounded sibling milestones must preserve the stored total (8), not clobber to the disk count (3). Got ${out.progress && out.progress.total_phases}`,
     );
   });
 
@@ -977,7 +978,7 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     cleanup(tmpDir);
   });
 
-  test('BLOCKER: same-level sibling milestones fall back to the disk count', () => {
+  test('BLOCKER: same-level sibling milestones preserve the stored total', () => {
     // Adversarial review BLOCKER (#1761 regression): the #3184 rewrite
     // required a candidate milestone heading's owned Phase heading to be
     // STRICTLY DEEPER (next.level > candidate.level). Real sibling
@@ -985,8 +986,10 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     // headings ('## v1.0' / '## Phase 1:' / '## v2.0' / '## Phase 3:'), so
     // that predicate answered false and the whole-document count conflated
     // both milestones. The asserted milestone ('v3.0') is unbound (matches
-    // neither v1.0 nor v2.0), so this is genuinely sectioned and must fall
-    // back to the disk count.
+    // neither v1.0 nor v2.0), so this is genuinely sectioned and neither
+    // the whole-doc count NOR the disk count may be written (#3354): the
+    // stored value (4) must be preserved. Pre-#3354 this row asserted the
+    // disk count (2).
     const roadmap = [
       '# Roadmap',
       '',
@@ -1009,8 +1012,8 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     const out = recordSessionAndReadTotalPhases(tmpDir);
     assert.strictEqual(
       Number(out.progress.total_phases),
-      2,
-      `same-level sibling milestones must fall back to the disk count (2), got ${out.progress && out.progress.total_phases}`,
+      4,
+      `same-level sibling milestones must preserve the stored total (4), not clobber to the disk count (2). Got ${out.progress && out.progress.total_phases}`,
     );
   });
 
@@ -1200,6 +1203,121 @@ describe('#3185 buildStateFrontmatter total_phases — directory-enumeration ind
       afterSecond,
       afterFirst,
       're-running record-session on an unchanged tree with a pinned clock must produce a byte-identical STATE.md',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3354 — milestoned-but-unbounded: a genuinely milestone-sectioned ROADMAP
+// whose asserted milestone token matches no H1–H3 heading must not have its
+// progress.total_phases clobbered to the on-disk phase-directory count.
+// Surviving branch of #2828/#3204: #3204 closed only the flat-unmilestoned
+// case; the sectioned-but-unbounded arm of `safeToUseRoadmapCount` still
+// wrote phaseDirs.length (25 → 4 in the issue's report).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3354 buildStateFrontmatter total_phases — milestoned-but-unbounded roadmap', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** The #3354 crux fixture: 2 milestone-vocabulary sections, 25 phase headings across siblings. */
+  function buildSectionedRoadmap() {
+    const lines = ['# Roadmap', ''];
+    lines.push('## Milestone v2.0 — Alpha', '');
+    for (let i = 1; i <= 12; i++) lines.push(`### Phase ${i}: alpha-${i}`);
+    lines.push('');
+    lines.push('## Milestone v3.0 — Beta', '');
+    for (let i = 13; i <= 25; i++) lines.push(`### Phase ${i}: beta-${i}`);
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  test('#3354 stored total is preserved (not clobbered to the dir count), a stderr warning names the token, percent stays withheld', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    // milestone: v1.0 appears in NO heading of that roadmap — unbounded.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', milestoneName: 'Unbounded', totalPhases: 25 }),
+    );
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    // Drive the mutating command with stderr captured (runGsdTools discards
+    // stderr on success). The warning is asserted on THIS invocation.
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'record-session', '--stopped-at', 'Phase 1, Plan 1', '--resume-file', 'none'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    assert.ok(
+      /v1\.0/.test(rec.stderr || ''),
+      `#3354: expected a stderr warning naming the unbounded milestone token 'v1.0', got stderr=${JSON.stringify(rec.stderr)}`,
+    );
+
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    const out = JSON.parse(jsonResult.output);
+
+    assert.strictEqual(
+      Number(out.progress.total_phases),
+      25,
+      `#3354: total_phases must preserve the stored 25, not clobber to the on-disk dir count of 4. Got ${out.progress && out.progress.total_phases}`,
+    );
+    assert.ok(
+      !(out.progress && ('percent' in out.progress)),
+      `#3354: percent must stay withheld for an unbounded milestone (existing #1761 guard); got progress=${JSON.stringify(out.progress)}`,
+    );
+  });
+
+  test('#3354 with nothing stored, the key is omitted rather than written from the dir count', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    // No progress block in frontmatter, no "Total Phases" body annotation —
+    // nothing stored to preserve, so the key must be OMITTED (never 4).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'milestone: v1.0',
+        'milestone_name: Unbounded',
+        'current_phase: "01"',
+        'status: executing',
+        '---',
+        '',
+        '# GSD State',
+        '',
+        '## Current Position',
+        '',
+        '**Current Phase:** 01',
+        '**Status:** Executing',
+        '',
+      ].join('\n'),
+    );
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    const recordResult = runGsdTools(
+      ['state', 'record-session', '--stopped-at', 'Phase 1, Plan 1', '--resume-file', 'none'],
+      tmpDir,
+    );
+    assert.ok(recordResult.success, `state record-session failed: ${recordResult.error}`);
+
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    const out = JSON.parse(jsonResult.output);
+
+    assert.ok(
+      !(out.progress && ('total_phases' in out.progress)),
+      `#3354: with no stored total, the key must be omitted — never written from the dir count. Got progress=${JSON.stringify(out.progress)}`,
     );
   });
 });
