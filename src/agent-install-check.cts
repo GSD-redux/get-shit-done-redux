@@ -378,7 +378,7 @@ function agentFileExists(agentsDir: string, name: string, runtime: string): bool
  * claude install-relative path) AND the runtime's global config agents dir, so
  * a specialist installed at either level is recognized. The decision in #1689
  * explicitly requires consulting the active runtime's agent dir rather than
- * only the Claude `~/.claude/agents/` + `.claude/agents/` pair.
+ * only the Claude runtime's user-global and project-local agent dirs.
  *
  * @returns the name when a matching agent file exists; `null` when it does not
  *   (the caller falls back to `gsd-executor`). An empty/whitespace name always
