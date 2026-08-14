@@ -176,7 +176,18 @@ Decisions 1–7 answer *how* the write path is organized. This section says *wha
 
 **Owner.** `src/state.cts` · the pure sync + preservation pipeline, and `readModifyWriteStateMd` as its I/O wrapper.
 
-**Rule.** Every STATE.md write applies the pipeline. A caller needing a different I/O envelope — `cmdPhaseComplete`'s atomic three-file commit via `writePlanningFileSet` — calls the pipeline and supplies its own envelope. It does not re-assemble the stages, and it does not skip them. Assembling the stages at a call site is a re-derivation even when every step calls the owner.
+**Rule.** Every STATE.md write applies the pipeline **unless the command's own contract is to let the body win** (see the exception list below). A caller needing a different I/O envelope — `cmdPhaseComplete`'s atomic three-file commit via `writePlanningFileSet` — calls the pipeline and supplies its own envelope. It does not re-assemble the stages, and it does not skip them. Assembling the stages at a call site is a re-derivation even when every step calls the owner.
+
+**Sanctioned permanent exceptions — a closed list; adding to it is an amendment.** Preservation makes curated frontmatter win over a re-derived body value. Two commands exist precisely to do the opposite, and applying the pipeline to them would invert the feature rather than fix a bug:
+
+| Command | Why preservation must NOT apply |
+|---|---|
+| `state sync` (`cmdStateSync`) | Its contract is #905's *"body annotation beats existing frontmatter when both are present"* — `sync` exists to re-derive frontmatter **from** the body. A preservation pass re-locks the stale frontmatter the command was invoked to replace. |
+| `/gsd-health --repair`'s `REGENERATE_STATE` | A factory reset that rebuilds STATE.md from scratch. Preservation would restore exactly the values it was invoked to discard. |
+
+Both are **permanent entries in the ratchet with `owner: sanctioned-permanent`**, never debt. A guard reporting them is reporting correctly; a change that removes one is a regression, not progress.
+
+*This paragraph is Amendment 2. The rule previously read "Every STATE.md write applies the pipeline", which is false by design for both rows and would have had Phase 2 route `cmdStateSync` through preservation — inverting a shipped feature with every gate green.*
 
 **Rule.** `current_phase` and `current_phase_name` are written as a **pair**. A transaction that computes one from a phase number writes both from that same number, so the two cannot describe different phases (#3350).
 
@@ -304,4 +315,22 @@ The four are `cmdStateSync`, `cmdMilestoneComplete`, `cmdPhaseComplete`, and `RE
 
 **Complexity, measured before and after.** `applyStatePreservation` was 177 lines, cyclomatic 61, cognitive 107, `risk_level: critical`. It is now a 27-line dispatch loop over four executors of 28, 44, 26 and 3 lines. This was Kernighan's Law's contribution to the design — the justification for the refactor was debuggability, not line count, and the largest remaining unit is the one holding the genuinely intricate #2440/#2969 ratchet.
 
-*(Phase 3 records the §8.4 bucket decision here.)*
+### Amendment 2 — Phase 2 (#3469): §8.3 was over-broad, and the ratchet's target was wrong
+
+Decisions 1–5 held. §8.3's **rule** did not.
+
+**"Every STATE.md write applies the pipeline" is false by design.** `state sync` and `REGENERATE_STATE` exist to let the body win; preservation exists to stop the body winning. §8.3 now carries the closed exception list above, and both are permanent `owner: sanctioned-permanent` ratchet entries.
+
+This was not a theoretical over-reach. #3469's own scope line, inherited from the epic, said to route the direct `writeStateMd` callers through the pipeline — which for `cmdStateSync` would have inverted the command, silently, with every gate green. The correction came from reading `applyPostSyncPreservation`'s docstring and then **verifying the claim against the code**, because a stale comment had already misdirected this epic once (`CONTEXT.md` pointed at a `verify.cts:1925` call that had moved to `health-diagnostic.cts`).
+
+**Consequence: Decision 5's and Phase 4's "ratchet to 0" target is wrong.** This ADR's guard roster and #3471 both say Phase 4 drives the baseline to empty and deletes the file. It cannot — two entries are permanent. **The correct end state is 2 permanent entries, not 0**, and the honest report is *"0 removable bypasses, 2 sanctioned"*. A guard that could reach 0 here would only do so by having stopped looking at two real writers.
+
+**What Phase 2 actually found in the tree**, after `fix(#3374)` (#3491) landed part of §8.3 upstream mid-epic:
+
+1. **`cmdPhaseComplete` re-assembles the pipeline.** Upstream routed it through `applyPostSyncPreservation`, but it still calls `syncStateFrontmatter` directly first. Every step calls an owner, so Axis 2 and an owner-level test both stay green while the *composition* is duplicated between the adapter and `readModifyWriteStateMd`, free to diverge. This is ADR-3180 Amendment 2's composition-level re-derivation, repeating on the write side, and §8.3 already forbade it by name.
+2. **`cmdMilestoneComplete` is the remaining real exposure** — it writes through `writeStateMd`, so it gets sync and no preservation, the identical shape #3374 reported for `phase.complete`. Upstream flagged it as a follow-up in the same docstring; Phase 2 is that follow-up.
+3. **Phase 1's declared known gap closes here**, as promised rather than re-deferred: §8.3(b)'s frontmatter-write detection becomes tractable once the composition exists, because the invariant simplifies to "no transition core calls `stateReplaceField` on unstripped content".
+
+**Criterion 6 context.** All five of the epic's named instances were closed by point fixes while Phase 1 was in flight, so Phase 2 and Phase 4 are driven by **characterization tests at the consumer's output** (Decision 4(b)/(c)) rather than fail-first tests. Weaker, and stated as such.
+
+*(Phase 3 records the §8.4 bucket decision here — though see the epic: `fix(#3351)` (#3487) appears to have subsumed most of Phase 3.)*
