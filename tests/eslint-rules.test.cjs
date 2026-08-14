@@ -138,6 +138,557 @@ describe('no-source-grep rule', () => {
   });
 });
 
+// ─── no-source-grep widening (#3502 / Phase 3 of #3464) ─────────────────────
+//
+// One RuleTester case per row of .gsd/phase/chore-3464-widen-source-grep/
+// 50-test-matrix.md. Row numbers in test names refer to that matrix.
+
+describe('no-source-grep rule — widening (#3502)', () => {
+  test('row 1: baseline literal .cjs read + .includes() (happy regression)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            src.includes('x');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 2: .cts source read + .match() (gap B)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const ROOT = '/repo';
+            const src = fs.readFileSync(path.join(ROOT, 'src', 'verification.cts'), 'utf-8');
+            src.match(/x/);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 3: .mts source read + .match() (gap B)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const ROOT = '/repo';
+            const src = fs.readFileSync(path.join(ROOT, 'src', 'x.mts'), 'utf-8');
+            src.match(/x/);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 4: .mjs source read + .match() (gap B)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const ROOT = '/repo';
+            const src = fs.readFileSync(path.join(ROOT, 'src', 'x.mjs'), 'utf-8');
+            src.match(/x/);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 5: .matchAll() on a tracked read (gap A)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            src.matchAll(/x/g);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 6: regex.test(tracked) (gap A, argument-side detection)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const re = /x/;
+            re.test(src);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 7: /lit/.test(tracked) (gap A, argument-side detection)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            /x/.test(src);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 8: .split() / .replace() probes (gap A)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            src.split('\\n');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            src.replace(/x/, '');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 9: two-hop derived variable (gap C)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            function strip(x) { return x; }
+            const a = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const b = strip(a);
+            b.match(/x/);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 10: three-hop derived variable — at the depth bound (gap C, boundary)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const a = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const b = a;
+            const c = b;
+            c.includes('x');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 11: hop chain beyond the configured depth is a documented limit (gap C, boundary)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const a = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const b = a;
+            const c = b;
+            const d = c;
+            d.includes('x');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 12: shadowed same-name param — false-positive guard (gap D)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const fn = (src) => src.replace(/x/, 'y');
+            fn('unrelated');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 13: same name, sibling block scopes — false-positive guard (gap D)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            {
+              const c = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            }
+            {
+              const c = 'x';
+              c.includes('y');
+            }
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 14: .md literal read + .includes() (negative space, unchanged)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const content = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'a.md'), 'utf-8');
+            content.includes('x');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 15: .json literal read + .match() (negative space, unchanged)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const content = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.json'), 'utf-8');
+            content.match(/x/);
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 16: dynamic path variable → .includes() — deliberately not flagged (rejected widening)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            function readIt(p) {
+              const content = fs.readFileSync(p, 'utf-8');
+              content.includes('x');
+            }
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 17: tracked read, no text search (negative space, unchanged)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const data = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'));
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 18: require() of a .cjs (negative space, unchanged)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const mod = require('../lib/a.cjs');
+            mod.someMethod();
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 19: file carrying the file-level suppression annotation suppresses an otherwise-invalid fixture', () => {
+    // The raw marker text is assembled via string concatenation so this
+    // FILE's own bytes never contain a contiguous "allow" + "-test-rule:"
+    // token (scripts/lint-allow-test-rule-refs.cjs does a raw whole-file
+    // substring scan). At RuleTester-run time the concatenation resolves to
+    // a real single-line comment, which the rule under test honors normally.
+    const marker = '// ' + 'allow' + '-test-rule: split marker for row 19, see #3502';
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      marker,
+      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');",
+      "src.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('row 20: marker text inside a string literal (not a comment) does not suppress', () => {
+    // Same split-marker technique as row 19, applied to a STRING literal
+    // (not a comment) — this row exists to prove the rule's suppression
+    // check only honors an actual comment, per the #3465 discriminator.
+    const stringMarkerLine = "const note = '" + 'allow' + "-test-rule: this is just data, not a directive';";
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      stringMarkerLine,
+      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');",
+      'src.includes(note);',
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+});
+
+// ─── no-source-grep hop-propagation value-shape (adversarial-review fix) ────
+//
+// minTrackedHop() used to walk EVERY Identifier under a derivation's RHS
+// and treat any bare reference to a tracked variable as propagating,
+// regardless of whether the derived VALUE could still carry text (e.g.
+// `.length`). These rows cover the value-shape gate that replaced that
+// blind walk: propagate only through derivations that plausibly still
+// carry the source file's text; do not propagate through scalar-producing
+// shapes (member access, numeric/boolean methods, comparisons, Number()
+// et al).
+
+describe('no-source-grep rule — hop-propagation value-shape (adversarial-review fix)', () => {
+  test('valid: .length derivation does not propagate (reported false-positive repro)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const len = raw.length;
+            if (/^\\d+$/.test(len)) {}
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('invalid: numeric-returning method derivation does not cascade to a second error', () => {
+    // raw.indexOf('x') is itself already flagged directly (indexOf is one
+    // of the TEXT_METHODS this rule flags on a tracked receiver, unrelated
+    // to hop propagation). The important assertion here is that there is
+    // exactly ONE error, not two: the numeric result of .indexOf() must
+    // NOT stay tracked, so String(n).includes('1') is not a second finding.
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const n = raw.indexOf('x');
+            String(n).includes('1');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: boolean-returning method derivation does not cascade to a second error', () => {
+    // Same shape as above with a boolean-returning method: raw.includes('x')
+    // is itself already flagged directly. The boolean result must NOT stay
+    // tracked, so String(ok).includes('true') is not a second finding.
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const ok = raw.includes('x');
+            String(ok).includes('true');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: comparison of a tracked derivation does not propagate', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const same = raw.length === 0;
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('invalid: string-returning method derivation still propagates and is caught', () => {
+    // raw.replace(...) is flagged directly (replace is a TEXT_METHOD, same
+    // as the indexOf/includes rows above) AND the string-returning result
+    // (b) correctly stays tracked, so b.includes('y') is a second, distinct
+    // finding. Two errors total, both real.
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const b = raw.replace(/x/, '');
+            b.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }, { messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: template-literal derivation still propagates and is caught', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            const b = \`\${raw}\`;
+            b.match(/y/);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: direct .includes() on the tracked source read is unchanged (no regression)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const raw = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');
+            raw.includes('x');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+});
+
 // ─── no-magic-sleep-in-tests ─────────────────────────────────────────────────
 
 describe('no-magic-sleep-in-tests rule', () => {
