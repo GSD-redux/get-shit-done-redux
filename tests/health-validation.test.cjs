@@ -112,6 +112,87 @@ describe('W011: STATE/ROADMAP cross-validation', () => {
       `Should not have W011: ${JSON.stringify(output.warnings)}`
     );
   });
+
+  // ─── #3280 — the STATE.md format `gsd-tools state update` /
+  // `state begin-phase` actually persist: YAML frontmatter `current_phase` +
+  // `status` (syncStateFrontmatter), not the legacy bold-prose fields. New
+  // fixtures added alongside the legacy cases above (which stay, since real
+  // user repos still carry the prose format).
+
+  test('#3280: frontmatter current_phase + ROADMAP [x] -> W011 warning', () => {
+    writeMinimalProjectMd(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [x] Phase 3: Database Layer\n\n### Phase 3: Database Layer\n**Goal:** DB setup\n`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'current_phase: 3',
+        'current_phase_name: Database Layer',
+        'status: executing',
+        '---',
+        '',
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 3 of 4 (Database Layer)',
+        '',
+      ].join('\n')
+    );
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-database-layer'), { recursive: true });
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      output.warnings.some(w => w.code === 'W011'),
+      `Expected W011 in warnings: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('#3280: frontmatter current_phase + status completed (writer vocabulary) -> no W011 warning', () => {
+    writeMinimalProjectMd(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [x] Phase 3: Database Layer\n\n### Phase 3: Database Layer\n**Goal:** DB setup\n`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'current_phase: 3',
+        'current_phase_name: Database Layer',
+        'status: completed',
+        '---',
+        '',
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 3 of 4 (Database Layer)',
+        '',
+      ].join('\n')
+    );
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-database-layer'), { recursive: true });
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.warnings.some(w => w.code === 'W011'),
+      `Should not have W011 for a completed phase in the writer's own status vocabulary: ${JSON.stringify(output.warnings)}`
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

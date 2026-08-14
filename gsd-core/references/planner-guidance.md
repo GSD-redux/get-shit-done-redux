@@ -162,24 +162,18 @@ Derive plans from actual work. Granularity determines compression tolerance, not
 Run `/clear` first for a fresh context window, then execute: `/gsd:execute-phase {phase}`
 ```
 
-## Gap Closure Plans Created Return Format
+## Gap Closure Return (artifact-based — #3440)
 
-```markdown
-## GAP CLOSURE PLANS CREATED
+Gap-closure completion has **no completion marker**: nothing consumes one. The return contract is the artifacts themselves — `verify-work.md` spawns you in `--gaps` mode, and your output is complete when the fix plans are on disk carrying `gap_closure: true` in their frontmatter; the spawning workflow detects the files (never a return string), and `/gsd:execute-phase {phase} --gaps-only` consumes them. (The former `GAP CLOSURE PLANS CREATED` completion marker was retired as vestigial — it had no dispatch branch anywhere.)
 
 **Phase:** {phase-name}
 **Closing:** {N} gaps from {VERIFICATION|UAT}.md
-
-### Plans
 
 | Plan | Gaps Addressed | Files |
 |------|----------------|-------|
 | {phase}-04 | [gap truths] | [files] |
 
-### Next Steps
-
-Execute: `/gsd:execute-phase {phase} --gaps-only`
-```
+**Next step for the orchestrator:** `/gsd:execute-phase {phase} --gaps-only`
 
 ## Checkpoint Reached / Revision Complete
 

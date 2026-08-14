@@ -749,17 +749,22 @@ function extractPlanTaskInfos(content: string): PlanTaskInfo[] {
       name,
       type,
       hasName,
-      hasFiles: /<files>/.test(body),
-      hasAction: /<action>/.test(body),
-      hasVerify: /<verify>/.test(body),
-      hasDone: /<done>/.test(body),
-      hasWhatBuilt: /<what-built>/.test(body),
-      hasHowToVerify: /<how-to-verify>/.test(body),
-      hasDecision: /<decision>/.test(body),
-      hasOptions: /<options>/.test(body),
-      hasInstructions: /<instructions>/.test(body),
-      hasVerification: /<verification>/.test(body),
-      hasResumeSignal: /<resume-signal>/.test(body),
+      // #3193: child-tag presence uses /<tag[\s>]/ (attribute-tolerant) so an
+      // opener like <verify type="auto"> still counts as present, matching how
+      // the parent <task type="…"> is read by PLAN_TASK_BLOCK_RE. The [\s>]
+      // terminator (not \b) keeps <verify> from satisfying <verification> and
+      // prevents a hyphenated sibling like <verify-mode> from masking <verify>.
+      hasFiles: /<files[\s>]/.test(body),
+      hasAction: /<action[\s>]/.test(body),
+      hasVerify: /<verify[\s>]/.test(body),
+      hasDone: /<done[\s>]/.test(body),
+      hasWhatBuilt: /<what-built[\s>]/.test(body),
+      hasHowToVerify: /<how-to-verify[\s>]/.test(body),
+      hasDecision: /<decision[\s>]/.test(body),
+      hasOptions: /<options[\s>]/.test(body),
+      hasInstructions: /<instructions[\s>]/.test(body),
+      hasVerification: /<verification[\s>]/.test(body),
+      hasResumeSignal: /<resume-signal[\s>]/.test(body),
     });
 
     // Guard against zero-length matches looping forever.

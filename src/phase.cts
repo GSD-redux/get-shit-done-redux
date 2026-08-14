@@ -53,7 +53,7 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -83,6 +83,8 @@ const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = p
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { extractFrontmatter } = frontmatterMod;
 const {
   readModifyWriteStateMd,
@@ -594,6 +596,8 @@ interface RawPlan {
   hasSummary: boolean;
   /** #2830: true iff this plan's own SUMMARY declares `status: halted` (a designed stop). */
   halted: boolean;
+  /** #1689: optional per-plan specialist executor hint (frontmatter `agent_hint:`). null when unset. */
+  agentHint: string | null;
 }
 
 /**
@@ -814,6 +818,18 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       filesModified = Array.isArray(fmFiles) ? fmFiles.map(String) : [String(fmFiles)];
     }
 
+    // #1689: optional per-plan specialist executor hint. Read verbatim here; the
+    // orchestrator resolves it against the active runtime's agent dir at dispatch
+    // time (execute-phase.md -> `gsd_run query resolve-agent`), falling back to
+    // gsd-executor when the field is unset or the named agent does not resolve.
+    let agentHint: string | null = null;
+    const fmAgentHint = fm['agent_hint'];
+    if (fmAgentHint !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+      const hintStr = String(fmAgentHint).trim();
+      agentHint = hintStr !== '' ? hintStr : null;
+    }
+
     const hasSummary = !unsummarizedPlanFiles.has(planFile);
 
     // #2830: a plan can have a SUMMARY (hasSummary=true) and still be halted —
@@ -833,6 +849,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous,
       objective: extractObjective(content) || (fm['objective'] as string | null) || null,
       filesModified,
+      agentHint,
       taskCount,
       hasSummary,
       halted,
@@ -935,6 +952,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
+      agent_hint: rawPlan.agentHint,
       task_count: rawPlan.taskCount,
       has_summary: rawPlan.hasSummary,
       // #2830: additive fields — halted is this plan's OWN status; blocked_by
@@ -1014,10 +1032,36 @@ function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
   return lastSeparator > 0 ? ranges.primary.start + lastSeparator : ranges.primary.end;
 }
 
+/**
+ * #3262 (write-time milestone-scope guard): the phase-creation and
+ * phase-insertion entry templates interpolate the caller's `description`
+ * verbatim into `### Phase N: ${description}`. A description embedding a
+ * level 1-3 heading that carries a milestone marker (version token,
+ * ✅/📋/🚧/🔄, or the word "Milestone") would splice a heading that TERMINATES
+ * the current milestone window (`computeMilestoneSectionEnd`) and silently
+ * drops every later phase out of the derived milestone phase set. Reject
+ * before any write or phase-directory creation — the fail-loud sibling of
+ * the edit-phase workflow's depends_on gate. The predicate itself
+ * (`findMilestoneScopeHeadingLines`) is fence-aware and Phase-heading-exempt,
+ * so ordinary descriptions and the phase's own numbered heading never trip it.
+ */
+function assertDescriptionPreservesMilestoneScope(description: string, command: string): void {
+  const offending = findMilestoneScopeHeadingLines(description);
+  if (offending.length === 0) return;
+  error(
+    `${command}: description contains a milestone-scoping heading line — writing it to ROADMAP.md would terminate ` +
+      `the current milestone window and silently drop later phases out of the milestone scope. ` +
+      `Offending line(s): ${offending.map((line) => JSON.stringify(line)).join(', ')}. ` +
+      `Rewrite the line so it is not a level 1-3 "#" heading carrying a milestone marker ` +
+      `(a vN.N version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone").`
+  );
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase add');
 
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1133,6 +1177,12 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
   if (!Array.isArray(descriptions) || descriptions.length === 0) {
     error('descriptions array required for phase add-batch');
   }
+  // #3262: validate every description BEFORE the lock — the batch is
+  // all-or-nothing, so one offending description must reject the whole batch
+  // with no ROADMAP write and no phase directories created.
+  for (const description of descriptions) {
+    assertDescriptionPreservesMilestoneScope(description, 'phase add-batch');
+  }
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {
@@ -1214,6 +1264,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
   if (!afterPhase || !description) {
     error('after-phase and description required for phase insert');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase insert');
 
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {
@@ -2199,7 +2250,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let nextPhaseName: string | null = null;
   let isLastPhase = true;
 
+  // #3311: typed conflict descriptor surfaced on the result JSON alongside the
+  // warnings[] entry below (same parity pattern as
+  // verification_stale_check_indeterminate).
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+
   const verificationBlocked = withPlanningLock(cwd, () => {
+    // #3311: completing a phase while a live milestone claim (phase + session)
+    // holds a DIFFERENT phase means two sessions are working two phases against
+    // the single Current Position slot. Warn via the established warnings[]
+    // channel (rendered by execute-phase.md's "If has_warnings is true" step)
+    // rather than blocking — the claim may simply be stale-but-live.
+    milestoneConflict = milestoneLockMod.checkMilestoneConflictForPhase(cwd, phaseNum);
+    if (milestoneConflict) {
+      const holder = milestoneConflict.locked_session ?? 'an unknown (headless) session';
+      const actor = milestoneConflict.session ?? 'an unknown (headless) session';
+      warnings.push(
+        `milestone lock conflict (#3311): ${holder} holds the milestone claim for phase ` +
+          `${milestoneConflict.locked_phase}, but ${actor} is completing phase ${phaseNum} — ` +
+          `STATE.md's Current Position is a single slot; verify it before trusting it`,
+      );
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `phase.complete ${phaseNum}`);
+    }
     // #2617: pass the project's runtime so the blocked-completion error below
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
@@ -2920,6 +2992,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     } else {
       runPhaseCompleteTransaction();
     }
+    // #3311: a successful completion of the CLAIMED phase releases the
+    // milestone claim — regardless of which session completes it (an
+    // orchestrator cleaning up after a dead session must not be blocked by the
+    // dead session's own claim). No-ops when the claim names another phase.
+    milestoneLockMod.releaseMilestonePhase(cwd, phaseNum);
     return null;
   });
 
@@ -2978,6 +3055,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     warnings,
     has_warnings: warnings.length > 0,
     verification_stale_check_indeterminate: staleCheckIndeterminate,
+    milestone_conflict: milestoneConflict,
   };
 
   output(result, raw);

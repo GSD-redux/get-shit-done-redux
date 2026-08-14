@@ -3708,3 +3708,111 @@ describe('bug #2978: roadmap validate performs structural validation', () => {
     } finally { cleanup(tmpDir); }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bug #3263: roadmap validate is silent when the active milestone window is
+// truncated (phase entries exist in the document but are excluded from the
+// resolved window). The scope discriminator (#3184) already classifies this
+// as SCOPE.TRUNCATED; validate must surface it as V005 + non-zero exit.
+// Matrix: .gsd/bug/fix-3263-milestone-window-truncation-retest/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bug #3263: roadmap validate warns on a truncated milestone window', () => {
+  function writeFixture(tmpDir, roadmapContent, stateFields) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent);
+    if (stateFields) {
+      const lines = ['---'];
+      for (const [k, v] of Object.entries(stateFields)) lines.push(`${k}: ${v}`);
+      lines.push('---', '');
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), lines.join('\n'));
+    }
+  }
+
+  test('window closed before its phase entries → V005 warning, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-3263-truncated-');
+    try {
+      // v3.0's window closes at the intervening `## v4.0 Next` heading,
+      // before the phase entries — which exist in the document, under v4.0.
+      writeFixture(tmpDir, [
+        '# Roadmap',
+        '',
+        '## v3.0 In Progress 🚧',
+        '',
+        'Some preamble notes. No phase headings here.',
+        '',
+        '## v4.0 Next',
+        '',
+        '### Phase 1: Foo',
+        '',
+        '### Phase 2: Bar',
+      ].join('\n'), { milestone: 'v3.0' });
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'truncated window must exit non-zero');
+      const payload = JSON.parse(result.output);
+      const v005 = payload.warnings.find((w) => w.code === 'V005');
+      assert.ok(v005, `truncated window must produce a V005 warning; got: ${JSON.stringify(payload)}`);
+      assert.ok(v005.message.length > 0, 'V005 carries a message');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('phases inside the window → no V005, exit 0 (no false positive)', () => {
+    const tmpDir = createTempProject('gsd-3263-normal-');
+    try {
+      writeFixture(tmpDir, [
+        '# Roadmap',
+        '',
+        '## v3.0 In Progress 🚧',
+        '',
+        '### Phase 1: Foo',
+        '',
+        '### Phase 2: Bar',
+        '',
+        '## v4.0 Next',
+        '',
+        'Later plans.',
+      ].join('\n'), { milestone: 'v3.0' });
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `normal roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'normal roadmap must have no warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('genuinely phase-less milestone → V004 only, no V005', () => {
+    const tmpDir = createTempProject('gsd-3263-empty-');
+    try {
+      writeFixture(tmpDir, [
+        '# Roadmap',
+        '',
+        '## v1.0 Current 🚧',
+        '',
+        'Nothing planned yet.',
+      ].join('\n'), { milestone: 'v1.0' });
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'phase-less roadmap must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+        `V004 still owns the no-phase-entries case; got: ${JSON.stringify(payload)}`);
+      assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+        `a genuinely phase-less milestone must not produce V005; got: ${JSON.stringify(payload)}`);
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('unscoped versioned roadmap (no STATE.md milestone) → no V005 over-fire', () => {
+    const tmpDir = createTempProject('gsd-3263-unscoped-');
+    try {
+      // No STATE.md: scope is UNSCOPED, not TRUNCATED — must not fire V005.
+      writeFixture(tmpDir, [
+        '# Roadmap',
+        '',
+        '## v1.0 Old ✅ SHIPPED',
+        '',
+        '### Phase 1: Foo',
+      ].join('\n'));
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `unscoped roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'unscoped roadmap must have no warnings');
+    } finally { cleanup(tmpDir); }
+  });
+});

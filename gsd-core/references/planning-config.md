@@ -275,7 +275,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.code_review_command` | string\|null | `null` | Any shell command | External code-review command integrated into `/gsd:ship`. The diff is piped to the command via stdin; the command must output JSON with a `verdict` field (`"APPROVED"` or `"REVISE"`). Non-zero exit or `"REVISE"` verdict blocks the ship workflow. When unset, the built-in review flow runs. Example: `my-review-tool --review`. |
 | `workflow.inline_plan_threshold` | number | `2` | `0`–`10` | Plans with ≤N tasks execute inline instead of spawning a subagent |
 | `workflow.code_review` | boolean | `true` | `true`, `false` | Enable built-in code review step in the ship workflow |
-| `workflow.code_review_depth` | string | `"standard"` | `"light"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
+| `workflow.code_review_depth` | string | `"standard"` | `"quick"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
 | `workflow._auto_chain_active` | boolean | `false` | `true`, `false` | Internal: tracks whether autonomous chaining is active |
 | `workflow.security_enforcement` | boolean | `true` | `true`, `false` | Enable threat-model-anchored security verification via `/gsd:secure-phase`. When `false`, security checks are skipped entirely |
 | `workflow.security_asvs_level` | number | `1` | `1`, `2`, `3` | OWASP ASVS verification level. Level 1 = opportunistic, Level 2 = standard, Level 3 = comprehensive. Scales both planner threat-disposition rigor (which threats must be mitigated vs. accepted) and auditor verification depth (grep-level → boundary-placement check → full data-flow trace). See `gsd-core/references/security-asvs-levels.md`. |
@@ -362,7 +362,7 @@ Set via `manager.*` namespace (e.g., `"manager": { "flags": { "discuss": "--auto
 |-----|------|---------|----------------|-------------|
 | `parallelization` | boolean\|object | `true` | `true`, `false`, `{ "enabled": true }` | Enable parallel wave execution; object form allows additional sub-keys |
 | `model_overrides` | object\|null | `null` | `{ "<agent-type>": "<model-id>" }` | Override model selection per agent type |
-| `agent_skills` | object | `{}` | `{ "<agent-type>": "<skill-set>" }` | Assign skill sets to specific agent types |
+| `agent_skills` | object | `{}` | `{ "<agent-type>": "<skill-set>" }` or `{ "<agent-type>": ["<skill-set>", "<skill-set>", ...] }` | Assign skill sets to specific agent types. Each value is a single skill-set path (string) or an array of skill-set paths — the array form assigns multiple skill sets to one agent type. Paths cannot be comma-joined into one string; each path must be its own array element |
 | `sub_repos` | array | `[]` | Array of relative path strings | Child directories with independent `.git` repos (auto-detected) |
 
 ### Planning Fields

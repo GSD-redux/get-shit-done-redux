@@ -458,7 +458,17 @@ UAT.md exists with `status: partial` — testing session ended before all items 
 All plans have summaries, but canonical verification has not passed. The phase is implementation-complete, not phase-complete.
 
 ```
-`/gsd:execute-phase {phase} ${GSD_WS}` — re-run execution verification
+---
+
+## Verification Report Missing
+
+**Phase {phase}** has all plans summarized, but no canonical `*-VERIFICATION.md` exists yet. ${VERIFICATION_NEXT_ACTION}
+
+`/clear` then:
+
+`/gsd:execute-phase {phase} ${GSD_WS}` — resumes at the verification gates
+
+---
 ```
 
 ---
@@ -468,7 +478,17 @@ All plans have summaries, but canonical verification has not passed. The phase i
 VERIFICATION.md has an unexpected status. The phase is implementation-complete, not phase-complete.
 
 ```
+---
+
+## Verification Status Unexpected
+
+**Phase {phase}** has all plans summarized, but its `*-VERIFICATION.md` reports an unexpected status. ${VERIFICATION_NEXT_ACTION}
+
+`/clear` then:
+
 `/gsd:execute-phase {phase} ${GSD_WS}` — regenerate verification
+
+---
 ```
 
 ---

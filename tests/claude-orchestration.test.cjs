@@ -1693,9 +1693,14 @@ function firstStatement(script) {
 }
 
 describe('#2590: emitted Workflow scripts satisfy the Workflow tool contract', () => {
-  test('the emitted script is syntactically valid as an ES module', (t) => {
-    // `export const meta` + top-level `await` only parse in module context —
-    // which is exactly the context the Workflow tool runs the script in.
+  test('the emitted script parses in the Workflow tool\'s evaluation context', (t) => {
+    // #3302: the script now carries a top-level `return` (the documented way a
+    // Workflow script hands its result to the invoking model — see
+    // code.claude.com/docs/en/workflows), which plain ESM parsing rejects.
+    // The tool lifts the `export const meta` block out and evaluates the rest
+    // as an async function body — top-level `await` AND `return` are both
+    // valid there. Emulate that context: strip the export keyword and wrap the
+    // body in an async arrow, still parsed as ESM so everything else surfaces.
     const { script } = emit({
       waves: [
         { id: 'w1', plans: [
@@ -1710,9 +1715,14 @@ describe('#2590: emitted Workflow scripts satisfy the Workflow tool contract', (
     const dir = createTempDir('gsd-2590-parse-');
     t.after(() => cleanup(dir));
     const f = path.join(dir, 'emitted.mjs');
-    fs.writeFileSync(f, script);
+    fs.writeFileSync(
+      f,
+      'const gsdWorkflowScript = async () => {\n'
+        + script.replace(/^export /m, '')
+        + '\n};\nexport const __parsed = gsdWorkflowScript;\n',
+    );
     const result = runNode(['--check', f], { timeoutMs: PROBE_TIMEOUT_MS });
-    throwIfFailed(result, `node --check ${f} (emitted script must parse)`);
+    throwIfFailed(result, `node --check ${f} (emitted script must parse in the tool's async-body context)`);
   });
 
   test('1. `export const meta` is the first statement', () => {
@@ -1896,5 +1906,213 @@ describe('#2590: the backend is reachable without hand-passed flags', () => {
     ], { cwd: dir, env: { ...process.env, GSD_AGENT_SDK_VERSION: '0.3.149' }, timeoutMs: PROBE_TIMEOUT_MS });
     throwIfFailed(result, 'gsd-tools claude-orchestration resolve-wave-dispatch (GSD_AGENT_SDK_VERSION)');
     assert.equal(JSON.parse(result.stdout).backend, 'workflow');
+  });
+});
+
+// ─── #3302 — Workflow-backend manifest bridge (emit returns per-agent outcomes) ──
+//
+// The Workflow backend wrapped a whole wave in ONE tool call and discarded the
+// per-agent results, so nothing ever fed WAVE_WORKTREE_MANIFEST and executor
+// commits stayed stranded on worktree-wf_* branches while the phase looked
+// green. The fix has two halves, both pinned here:
+//
+//   code        — emitWorkflowScript captures each parallel() barrier's results
+//                 and top-level `return`s one { plan, expects_worktree, metadata }
+//                 outcome per dispatched plan (metadata extracted in-script from
+//                 the executor's <worktree_metadata> block, or null);
+//   instructions — the execute:wave:pre fragment bridges those outcomes into the
+//                 SAME record-agent -> cleanup-wave merge chain inline dispatch
+//                 uses, halting loudly when metadata cannot be captured.
+//
+// The execution tests below run the EMITTED script the way the Workflow tool
+// does (meta lifted out, body evaluated as an async function with phase()/
+// parallel()/agent() supplied), asserting runtime behavior, not script text.
+
+const ASYNC_FUNCTION_3302 = Object.getPrototypeOf(async function () {}).constructor;
+
+/**
+ * Execute an emitted Workflow script in a stub runtime mirroring the documented
+ * tool contract (code.claude.com/docs/en/workflows): phase() groups progress,
+ * parallel() takes an array of thunks and resolves to their results in thunk
+ * order, agent() resolves to the agent's final message (or null when
+ * interrupted), and the script's top-level `return` value is what the invoking
+ * model receives.
+ */
+async function executeEmittedScript3302(script, agentStub) {
+  const body = script.replace(/^export /m, '');
+  const harness = [
+    'const phase = () => {};',
+    'const parallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t)));',
+    'const agent = async (brief, opts) => agentStub(brief, opts);',
+    body,
+  ].join('\n');
+  const fn = new ASYNC_FUNCTION_3302('agentStub', harness);
+  return await fn(agentStub);
+}
+
+/** An executor final message carrying a valid <worktree_metadata> block. */
+function agentResultWithMetadata3302(fields) {
+  return [
+    '## PLAN COMPLETE',
+    '',
+    '<worktree_metadata>',
+    JSON.stringify(fields),
+    '</worktree_metadata>',
+    '',
+    '**Commits:**',
+    '- abc1234: fix(#000): example',
+  ].join('\n');
+}
+
+describe('#3302: emitted Workflow script returns per-agent outcomes for the manifest bridge', () => {
+  test('A1. the script returns one outcome entry per dispatched plan (today: undefined)', async () => {
+    const r = emitWorkflowScript(nonOverlappingManifest());
+    assert.strictEqual(r.ok, true);
+    const ret = await executeEmittedScript3302(r.script, () => agentResultWithMetadata3302({}));
+    assert.ok(Array.isArray(ret), 'the top-level return value must be the outcomes array');
+    assert.strictEqual(ret.length, 2, 'one entry per dispatched plan');
+  });
+
+  test('A2. entries are { plan, expects_worktree, metadata } with correct attribution', async () => {
+    const r = emitWorkflowScript(nonOverlappingManifest());
+    // Distinct branch per brief proves the positional mapping through the
+    // parallel() barrier attributes each agent's OWN metadata to its plan.
+    const stub = (brief) => agentResultWithMetadata3302({
+      agent_id: 'id-' + brief,
+      worktree_path: '/wt/' + brief,
+      branch: 'worktree-wf-run-' + brief,
+      expected_base: 'deadbee',
+    });
+    const ret = await executeEmittedScript3302(r.script, stub);
+    assert.deepEqual(
+      ret.map((e) => [e.plan, e.metadata && e.metadata.branch]),
+      [['p1', 'worktree-wf-run-Plan A'], ['p2', 'worktree-wf-run-Plan B']],
+      'plan ids in dispatch order, each with its own agent\'s metadata',
+    );
+    for (const e of ret) {
+      assert.strictEqual(e.expects_worktree, true, 'worktree plans expect metadata');
+      assert.deepEqual(
+        Object.keys(e.metadata).sort(),
+        ['agent_id', 'branch', 'expected_base', 'worktree_path'],
+        'metadata is the parsed <worktree_metadata> JSON object',
+      );
+    }
+  });
+
+  test('A3. expects_worktree mirrors use_worktree per plan (mixed wave)', async () => {
+    const r = emitWorkflowScript({
+      phaseDir: '.planning/phases/01-foo',
+      runId: 'run-abc-1143',
+      waves: [{
+        id: 'w1',
+        plans: [
+          { id: 'p1', brief: 'In worktree', files_modified: ['src/a.cts'] },
+          { id: 'p2', brief: 'No worktree', files_modified: ['src/b.cts'], use_worktree: false },
+        ],
+      }],
+    });
+    const ret = await executeEmittedScript3302(r.script, (brief) => (
+      brief === 'No worktree'
+        ? '## PLAN COMPLETE (no metadata — ran on the main tree)'
+        : agentResultWithMetadata3302({ agent_id: 'p1', worktree_path: '/wt/p1', branch: 'worktree-wf-run-1', expected_base: 'aa' })
+    ));
+    assert.strictEqual(ret[0].expects_worktree, true);
+    assert.strictEqual(ret[0].metadata.branch, 'worktree-wf-run-1');
+    assert.strictEqual(ret[1].expects_worktree, false, 'use_worktree:false -> expects_worktree:false');
+    assert.strictEqual(ret[1].metadata, null, 'non-worktree plans carry no metadata — not an error');
+    assert.strictEqual(r.summary.worktreePlans, 1, 'summary counts only worktree plans');
+  });
+
+  test('A4. null metadata is the loud-failure input: interrupted agent, missing block, bad JSON', async () => {
+    const cases = [
+      ['interrupted agent (agent() resolves to null)', null],
+      ['result without a <worktree_metadata> block', '## PLAN COMPLETE\n\n**Commits:** - x'],
+      ['unparseable JSON inside the block', '<worktree_metadata>{not json</worktree_metadata>'],
+      ['non-object JSON inside the block', '<worktree_metadata>"just a string"</worktree_metadata>'],
+    ];
+    for (const [label, rawResult] of cases) {
+      const r = emitWorkflowScript(singleWaveManifest());
+      const ret = await executeEmittedScript3302(r.script, () => rawResult);
+      assert.strictEqual(ret.length, 1, label);
+      assert.strictEqual(ret[0].expects_worktree, true, label);
+      assert.strictEqual(ret[0].metadata, null, `${label} -> metadata null (orchestrator must HALT, #3302)`);
+    }
+  });
+
+  test('A5. multi-wave and multi-stage manifests: every plan appears exactly once, in dispatch order', async () => {
+    const r = emitWorkflowScript({
+      phaseDir: '.planning/phases/01-foo',
+      runId: 'run-3302',
+      waves: [
+        { id: 'w1', plans: [
+          { id: 'a1', brief: 'A1', files_modified: ['src/shared.cts'] },
+          { id: 'a2', brief: 'A2', files_modified: ['src/shared.cts', 'src/b.cts'] }, // overlap -> stage split
+          { id: 'a3', brief: 'A3', files_modified: ['src/c.cts'] },                    // coalesces with a1
+        ] },
+        { id: 'w2', plans: [{ id: 'b1', brief: 'B1', files_modified: ['src/d.cts'] }] },
+      ],
+    });
+    const ret = await executeEmittedScript3302(r.script, (brief) => agentResultWithMetadata3302({ agent_id: brief, worktree_path: '/wt/' + brief, branch: 'br-' + brief, expected_base: 'ff' }));
+    // w1 stages: [a1, a3] then [a2] (greedy first-fit); then w2: [b1].
+    assert.deepEqual(ret.map((e) => e.plan), ['a1', 'a3', 'a2', 'b1']);
+    assert.strictEqual(ret.length, r.summary.plans);
+    assert.strictEqual(r.summary.worktreePlans, 4);
+  });
+
+  test('B1. the emitted script no longer claims an unbacked inline merge', () => {
+    const r = emitWorkflowScript(nonOverlappingManifest());
+    assert.ok(
+      !r.script.includes('exactly as in inline wave dispatch'),
+      'the pre-#3302 tail comment asserted a merge that no code performed',
+    );
+  });
+});
+
+describe('#3302: the execute:wave:pre fragment bridges Workflow results into the manifest merge chain', () => {
+  const FRAG_3302 = path.join(ROOT, 'capabilities', 'claude-orchestration', 'fragments', 'execute-wave-pre.md');
+
+  function fragContent() {
+    return fs.readFileSync(FRAG_3302, 'utf8');
+  }
+
+  test('C1. instructs recording outcomes via worktree.record-agent after the run', () => {
+    const c = fragContent();
+    assert.match(c, /worktree\.record-agent/, 'the record verb inline dispatch uses must be named');
+    assert.match(c, /WAVE_WORKTREE_MANIFEST/, 'against the wave manifest');
+  });
+
+  test('C2. instructs creating WAVE_WORKTREE_MANIFEST before invoking the tool (step 3 is skipped)', () => {
+    const c = fragContent();
+    assert.match(c, /orchestrator_root/, 'creation block must persist the orchestrator root (#630)');
+    assert.match(c, /mktemp/, 'same mktemp pattern as inline step 3');
+    assert.match(c, /worktrees:\[\]/, 'initialised empty — then populated from outcomes');
+  });
+
+  test('C3. mandates a HALT on uncapturable metadata — never a silently-empty manifest', () => {
+    const c = fragContent();
+    assert.match(c, /HALT on uncapturable metadata/);
+    assert.match(c, /worktreePlans/, 'count check against summary.worktreePlans');
+    assert.match(c, /do NOT run\s*\n?\s*`?worktree\.cleanup-wave/, 'cleanup must not run on a short manifest');
+  });
+
+  test('C4. covers resume: recover from the original run\'s journal or fail loudly', () => {
+    const c = fragContent();
+    assert.match(c, /journal\.jsonl/, 'the documented recovery source for per-agent results');
+    assert.match(c, /[Rr]esume/, 'resume path addressed');
+    assert.match(c, /never report\s*\n?\s*success over silently-dropped/, 'fail loudly, not silently');
+  });
+
+  test('C5. the false "exactly as inline dispatch" claim is gone', () => {
+    const c = fragContent();
+    assert.ok(
+      !c.includes('exactly as it does for inline dispatch'),
+      'the pre-#3302 fragment asserted steps 4-5.8 ran exactly as inline with no bridge',
+    );
+  });
+
+  test('C6. still continues into the unchanged cleanup-wave merge chain', () => {
+    const c = fragContent();
+    assert.match(c, /worktree\.cleanup-wave/, 'step 5.5 merge chain referenced');
+    assert.match(c, /UNCHANGED/, 'the chain itself is unchanged — only fed');
   });
 });

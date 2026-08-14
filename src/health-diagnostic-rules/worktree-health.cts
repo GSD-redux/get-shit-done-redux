@@ -153,8 +153,16 @@ function checkW027(snapshot: PlanningSnapshot): Diagnostic[] {
     diagnostics.push({
       code: 'W027',
       severity: SEVERITY.WARNING,
-      message: `Stale git worktree: ${finding.path} (last modified ${finding.ageMinutes} minutes ago). Run: git worktree remove ${finding.path} --force`,
-      remedy: adviseRemedy('git worktree remove <path> --force'),
+      // #3280: staleness is a pure mtime heuristic and carries no information
+      // about whether the tree is clean — git's own refusal of a non-forced
+      // removal on a dirty tree is the safety net, so the remediation must
+      // direct the operator (or an agent executing this literally) to check
+      // for uncommitted work FIRST and keep `--force` an explicit discard
+      // opt-in, never the default instruction.
+      message: `Stale git worktree: ${finding.path} (last modified ${finding.ageMinutes} minutes ago). Inspect uncommitted work first: git -C ${finding.path} status --porcelain; if clean run: git worktree remove ${finding.path}; only add --force to discard changes`,
+      remedy: adviseRemedy(
+        'git -C <path> status --porcelain; if clean: git worktree remove <path>; add --force only to discard changes',
+      ),
     });
   }
   return diagnostics;
