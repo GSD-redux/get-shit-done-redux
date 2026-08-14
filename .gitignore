@@ -100,6 +100,8 @@ build/
 /gsd-core/bin/lib/capability-consent.cjs
 /gsd-core/bin/lib/capability-lock.cjs
 /gsd-core/bin/lib/markdown-sectionizer.cjs
+# #3311: new module (milestone lock) — emitted artifact, never edited.
+/gsd-core/bin/lib/milestone-lock.cjs
 # #2657: these two (markdown-table.cjs, write-set.cjs) already had the
 # pattern below since #2248, but stayed tracked because `git rm --cached`
 # was never run — same untracking fix as the seven lines that follow.

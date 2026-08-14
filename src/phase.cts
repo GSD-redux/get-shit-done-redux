@@ -83,6 +83,8 @@ const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = p
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { extractFrontmatter } = frontmatterMod;
 const {
   readModifyWriteStateMd,
@@ -2248,7 +2250,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let nextPhaseName: string | null = null;
   let isLastPhase = true;
 
+  // #3311: typed conflict descriptor surfaced on the result JSON alongside the
+  // warnings[] entry below (same parity pattern as
+  // verification_stale_check_indeterminate).
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+
   const verificationBlocked = withPlanningLock(cwd, () => {
+    // #3311: completing a phase while a live milestone claim (phase + session)
+    // holds a DIFFERENT phase means two sessions are working two phases against
+    // the single Current Position slot. Warn via the established warnings[]
+    // channel (rendered by execute-phase.md's "If has_warnings is true" step)
+    // rather than blocking — the claim may simply be stale-but-live.
+    milestoneConflict = milestoneLockMod.checkMilestoneConflictForPhase(cwd, phaseNum);
+    if (milestoneConflict) {
+      const holder = milestoneConflict.locked_session ?? 'an unknown (headless) session';
+      const actor = milestoneConflict.session ?? 'an unknown (headless) session';
+      warnings.push(
+        `milestone lock conflict (#3311): ${holder} holds the milestone claim for phase ` +
+          `${milestoneConflict.locked_phase}, but ${actor} is completing phase ${phaseNum} — ` +
+          `STATE.md's Current Position is a single slot; verify it before trusting it`,
+      );
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `phase.complete ${phaseNum}`);
+    }
     // #2617: pass the project's runtime so the blocked-completion error below
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
@@ -2969,6 +2992,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     } else {
       runPhaseCompleteTransaction();
     }
+    // #3311: a successful completion of the CLAIMED phase releases the
+    // milestone claim — regardless of which session completes it (an
+    // orchestrator cleaning up after a dead session must not be blocked by the
+    // dead session's own claim). No-ops when the claim names another phase.
+    milestoneLockMod.releaseMilestonePhase(cwd, phaseNum);
     return null;
   });
 
@@ -3027,6 +3055,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     warnings,
     has_warnings: warnings.length > 0,
     verification_stale_check_indeterminate: staleCheckIndeterminate,
+    milestone_conflict: milestoneConflict,
   };
 
   output(result, raw);

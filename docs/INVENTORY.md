@@ -595,6 +595,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `health-diagnostic-rules/state-consistency.cjs` | Health-diagnostic rules: STATE.md consistency checks (W002, W011, W021, W026) against config/ROADMAP/disk, ported behavior-preserving from `cmdValidateHealth`; W024 (state_head freshness) is a documented gap, deliberately not migrated (ADR-3180 §8.2/§8.3/§8.5, Phase 11, #3309) |
 | `state.cjs` | STATE.md parsing, updating, progression, metrics |
 | `state-document.cjs` | Pure STATE.md field extraction, replacement, status normalization, and progress calculation transforms |
+| `milestone-lock.cjs` | Milestone lock (compiled from `src/milestone-lock.cts`, gitignored) — advisory (phase, session id) claim over STATE.md's single Current Position slot: `.planning/milestone.lock` claim IO, liveness (TTL + heartbeat), conflict detection, and the shared stderr warning; consumed by `state.begin-phase` / `state.advance-plan` / `phase.complete` so parallel phases in one working tree get a visible conflict instead of silently overwriting each other (#3311) |
 | `surface.cjs` | Runtime surface module — manages the runtime enable/disable surface state independently of the install-time profile marker (ADR-0011 Phase 2) |
 | `task-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools task` |
 | `template.cjs` | Template selection and filling with variable substitution |

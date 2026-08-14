@@ -47,6 +47,11 @@ import stateTransitionMod = require('./state-transition.cjs');
 // #2573 D5: used to pin `git rev-parse` to the project's own repo. Imports only
 // node builtins, so it introduces no cycle on this path.
 import { findProjectRoot } from './project-root.cjs';
+// #3311: advisory (phase, session) claim over the single Current Position slot.
+// Imports only node builtins + planning-workspace + active-workstream-store, so
+// it introduces no cycle on this path.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
@@ -592,7 +597,25 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   };
 
   let resultData: Record<string, unknown> | undefined;
+  // #3311: the milestone (phase + session) claim is consulted INSIDE the
+  // STATE.md lock, so the position read and the claim read cannot interleave
+  // with another session's Current Position write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    // advance-plan has no phase argument of its own — the phase it advances is
+    // whatever ## Current Position names. Compare that against the milestone
+    // claim: a mismatch means another session moved the single-slot position
+    // away from the claimed phase (the #3311 flip) and must be surfaced, not
+    // silently absorbed.
+    const body = stripFrontmatter(content);
+    const positionScope = matchCurrentPositionSection(body) ?? body;
+    const positionPhase = parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    if (positionPhase !== null) {
+      milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
+      if (milestoneConflict) {
+        milestoneLockMod.warnMilestoneConflict(milestoneConflict, 'state.advance-plan');
+      }
+    }
     const result = transitionCore(content, intent, deps);
     resultData = result.data;
     return result.content;
@@ -604,9 +627,9 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }
 
   if (resultData['advanced'] === false) {
-    output(resultData, raw, 'false');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'false');
   } else {
-    output(resultData, raw, 'true');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'true');
   }
 }
 
@@ -2891,7 +2914,17 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
   };
   let updated: string[] = [];
+  // #3311: begin-phase is the claim point — it is the one Current Position
+  // transition that explicitly names its phase, so it both records this
+  // session's claim and detects a conflicting live claim for a different
+  // phase. The check runs INSIDE the STATE.md lock so concurrent begin-phase
+  // calls cannot both read "no claim" and both write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    milestoneConflict = milestoneLockMod.claimMilestonePhase(cwd, String(phaseNumber));
+    if (milestoneConflict) {
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
+    }
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
     // #3127 resume: the core preserved the mid-flight Current Phase Name, so
@@ -2904,7 +2937,11 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     return result.content;
   }, cwd, rmwOptions);
 
-  output({ updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null }, raw, updated.length > 0 ? 'true' : 'false');
+  output(
+    { updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null, milestone_conflict: milestoneConflict },
+    raw,
+    updated.length > 0 ? 'true' : 'false',
+  );
 }
 
 /**
