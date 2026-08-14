@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -4064,5 +4064,110 @@ describe('init section manifest', () => {
         );
       }
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3171 (Claim 3): the phase-start flow must not land a directory slug in
+// STATE.md's `current_phase_name`. When a phase directory already exists on
+// disk, `init execute-phase`'s disk-lookup path derived `phase_name` from the
+// directory-name remainder — itself an already-slugified value (`phase.add`
+// writes `${num}-${slug}` dirs) — so `phase_name` and `phase_slug` came out
+// byte-identical, and the execute-phase workflow forwarded that slug into
+// `state begin-phase --name`. The milestone-name half of #3171 was subsumed
+// by #3216 / PR #3226; these tests cover the remaining current_phase_name half.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3171: init execute-phase emits the display name, not the directory slug', () => {
+  const DISPLAY_NAME = 'Loop-Termination and Baseline Correctness';
+  const PHASE_SLUG_DIR = '35-loop-termination-and-baseline-correctness';
+  const ROADMAP_3171 = [
+    '# Roadmap',
+    '',
+    `### Phase 35: ${DISPLAY_NAME}`,
+    '**Goal:** Fix loop termination',
+    '**Plans:** 1 plans',
+    '',
+  ].join('\n');
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+    seedPhase(tmpDir, PHASE_SLUG_DIR, { '35-01-PLAN.md': '# Plan' });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP_3171);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('phase_name is the ROADMAP display name when the phase directory exists', () => {
+    const result = runGsdTools('init execute-phase 35 --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_found, true, 'phase must be found on disk');
+    assert.ok(
+      typeof output.phase_dir === 'string' && output.phase_dir.includes(PHASE_SLUG_DIR),
+      `phase_dir must point at the on-disk directory; got ${JSON.stringify(output.phase_dir)}`,
+    );
+    assert.strictEqual(
+      output.phase_name,
+      DISPLAY_NAME,
+      `phase_name must be the ROADMAP display name, not the directory slug; got ${JSON.stringify(output.phase_name)}`,
+    );
+    assert.strictEqual(output.phase_slug, 'loop-termination-and-baseline-correctness');
+    assert.notStrictEqual(output.phase_name, output.phase_slug,
+      'phase_name must differ from phase_slug — a byte-identical pair is the #3171 defect signature');
+  });
+
+  test('the phase-start flow does not land a slug in current_phase_name', () => {
+    // 1. init execute-phase → the value the execute-phase workflow forwards to begin-phase.
+    const initResult = runGsdTools('init execute-phase 35 --raw', tmpDir);
+    assert.ok(initResult.success, `init execute-phase failed: ${initResult.error}`);
+    const initOutput = JSON.parse(initResult.output);
+    assert.strictEqual(initOutput.phase_name, DISPLAY_NAME);
+
+    // 2. Seed a STATE.md the transition module can rewrite (frontmatter + body).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 34',
+        'current_phase_name: Prior Phase',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 34 — Prior Phase',
+        'Plan: Not started',
+        'Status: Ready to execute',
+        '',
+      ].join('\n'),
+    );
+
+    // 3. The orchestrator wiring: feed init's phase_name into begin-phase --name.
+    const beginResult = runGsdTools(
+      ['state', 'begin-phase', '--phase', '35', '--name', initOutput.phase_name, '--plans', '1'],
+      tmpDir,
+    );
+    assert.ok(beginResult.success, `state begin-phase failed: ${beginResult.error}`);
+
+    // 4. current_phase_name in STATE.md must be the display name, never the slug.
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = parseFrontmatter(stateContent);
+    assert.strictEqual(
+      fm.current_phase_name,
+      DISPLAY_NAME,
+      `current_phase_name must hold the display name, not a directory slug; got ${JSON.stringify(fm.current_phase_name)}`,
+    );
+    assert.ok(
+      !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(String(fm.current_phase_name)),
+      `current_phase_name must not be slug-shaped; got ${JSON.stringify(fm.current_phase_name)}`,
+    );
   });
 });

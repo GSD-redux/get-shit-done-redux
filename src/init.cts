@@ -910,7 +910,17 @@ function cmdInitExecutePhase(
       ? toPosixPath(path.join(cwd, phaseInfo['directory'] as string))
       : null,
     phase_number: phaseInfo?.['phase_number'] || null,
-    phase_name: phaseInfo?.['phase_name'] || null,
+    // #3171: prefer the ROADMAP's curated display name for `phase_name`. When
+    // the phase directory already exists on disk, the disk-lookup path
+    // (searchPhaseInDir) derives phase_name from the directory-name remainder
+    // — itself an already-slugified value (`phase.add` writes `${num}-${slug}`
+    // dirs), so phase_name and phase_slug come out byte-identical. An
+    // orchestrator wiring this field into `state begin-phase --name` then
+    // lands a raw slug in STATE.md's current_phase_name. The ROADMAP carries
+    // the human-curated display name (`### Phase N: <Name>`); prefer it,
+    // matching the no-disk fallback above. phase_slug stays disk-derived — it
+    // correctly feeds branch-name construction below and is unchanged here.
+    phase_name: (roadmapPhase?.['phase_name']) || (phaseInfo?.['phase_name']) || null,
     phase_slug: phaseInfo?.['phase_slug'] || null,
     phase_req_ids,
 
