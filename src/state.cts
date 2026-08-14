@@ -3268,7 +3268,7 @@ function updatePerformanceMetricsSection(content: string, cwd: string, phaseNum:
  * Gate 3a: Record state after plan-phase completes.
  * Updates Status to "Ready to execute", Total Plans, Last Activity.
  */
-function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCount: number | null | undefined, raw: boolean): void {
+function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
     output({ error: 'STATE.md not found' }, raw, undefined);
@@ -3286,6 +3286,7 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   const intent: StateTransitionIntent = {
     kind: 'plannedPhase',
     phaseNumber,
+    phaseName: phaseName ?? null,
     planCount: planCount ?? null,
   };
   const deps: StateTransitionDeps = {
@@ -3293,12 +3294,23 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
     sourcePath: statePath,
   };
 
+  // #3395 / #2736: the transition holds the exact display name. plannedPhaseCore
+  // writes it into the Current Position `Phase: N (Name) — READY TO EXECUTE`
+  // line, and the prose re-derivation of current_phase_name truncates names
+  // that themselves contain a parenthetical — the authoritative override keeps
+  // the exact value, exactly as cmdStateBeginPhase does for its EXECUTING line.
+  const rmwOptions: ReadModifyWriteOptions = {
+    resync: false,
+    deriveProgressKeys: true,
+    authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
+  };
+
   let updated: string[] = [];
   readModifyWriteStateMd(statePath, (content) => {
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
     return result.content;
-  }, cwd, { resync: false, deriveProgressKeys: true });
+  }, cwd, rmwOptions);
 
   const result = updated.length === 0
     ? { updated, phase: phaseNumber, plan_count: planCount, warning: 'STATE.md Current Position has no recognized labels — transition was a no-op. Verify STATE.md uses the canonical labeled format (Status:, Total Plans in Phase:, etc.).' }

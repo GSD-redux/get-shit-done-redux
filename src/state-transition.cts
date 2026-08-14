@@ -462,7 +462,7 @@ export type StateTransitionIntent =
       planCount: number;
       summaryCount: number;
     }
-  | { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null }
+  | { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null }
   | { kind: 'milestoneSwitch'; version: string; name: string }
   | {
       kind: 'milestoneComplete';
@@ -845,7 +845,7 @@ function mutateCurrentPositionResume(
  */
 function mutateCurrentPositionForAdvance(
   content: string,
-  fields: { status?: string; lastActivity?: string; plan?: string },
+  fields: { phase?: string; status?: string; lastActivity?: string; plan?: string },
   statusDefaults: string[] | null | undefined,
   lastActivityDefaults: string[] | null | undefined,
 ): string {
@@ -853,6 +853,22 @@ function mutateCurrentPositionForAdvance(
   if (span === null) return content;
   let sectionBody = content.slice(span.start, span.end);
   let mutated = false;
+
+  // #3395: Phase is always replaced when a caller passes it — system-derived,
+  // not executor-authored (same rule as Plan below). plannedPhaseCore uses
+  // this so the transition that declares phase N planned also owns the `Phase:`
+  // line the frontmatter resync and `state json` re-derive current_phase from;
+  // before, the line survived stale from a previous phase and every
+  // body-derived consumer kept reading it (#948 class).
+  if (fields.phase) {
+    if (/^Phase:/m.test(sectionBody)) {
+      sectionBody = sectionBody.replace(/^Phase:.*$/m, `Phase: ${fields.phase}`);
+      mutated = true;
+    } else {
+      const replaced = stateReplaceField(sectionBody, 'Phase', fields.phase);
+      if (replaced !== null) { sectionBody = replaced; mutated = true; }
+    }
+  }
 
   if (fields.status) {
     const replaced = stateReplaceFieldIfTemplate(sectionBody, 'Status', statusDefaults, fields.status);
@@ -1198,7 +1214,10 @@ function completePhaseCore(
  * per-phase body fields after plan-phase runs: Status (template-aware — only
  * replaces handler-generated values, preserving executor-authored ones),
  * Total Plans in Phase, Last Activity (template-aware), Last Activity
- * Description, and the ## Current Position section. The adapter wraps this in
+ * Description, and the ## Current Position section — including its `Phase:`
+ * line, which this transition owns (#3395: the line is the body source
+ * `current_phase` re-derives from, so it must not survive stale from a
+ * previous phase). The adapter wraps this in
  * `readModifyWriteStateMd({ resync: false })` so the milestone-wide progress.*
  * frontmatter is NOT re-derived from a half-planned disk snapshot (#500 RC1).
  *
@@ -1208,7 +1227,7 @@ function completePhaseCore(
  */
 function plannedPhaseCore(
   content: string,
-  intent: { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null },
+  intent: { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null },
   deps: StateTransitionDeps,
 ): StateTransitionResult {
   const updated: string[] = [];
@@ -1270,11 +1289,22 @@ function plannedPhaseCore(
     updated.push('Last Activity Description');
   }
 
-  // ## Current Position section — Status + Last activity (template-aware).
+  // ## Current Position section — Phase + Status + Last activity.
+  // #3395: plannedPhaseCore owns the `Phase:` line for the same reason
+  // beginPhaseCore/completePhaseCore do — it is the body source the frontmatter
+  // resync and `state json` re-derive `current_phase` from. Before, a stale
+  // line from a previous phase survived this transition and every
+  // body-derived consumer kept reading it (the write path was already
+  // protected by the #3258 preserve-when-unchanged row; the source itself was
+  // never refreshed). The label mirrors beginPhaseCore's `N (Name) — EXECUTING`
+  // convention with this transition's status vocabulary ("Ready to execute").
+  // Phase is system-derived, always replaced (Knuth invariant does not apply);
+  // Status / Last activity stay template-aware.
   const beforePos = body;
   body = mutateCurrentPositionForAdvance(
     body,
     {
+      phase: `${intent.phaseNumber}${intent.phaseName ? ` (${intent.phaseName})` : ''} — READY TO EXECUTE`,
       status: 'Ready to execute',
       lastActivity: `${today} — Phase ${intent.phaseNumber} planning complete`,
     },

@@ -3215,6 +3215,171 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3395: state planned-phase must refresh the Current Position `Phase:` line
+// (the body source the frontmatter resync and `state json` re-derive
+// current_phase from) instead of leaving a stale one behind, and must persist
+// its --name argument instead of silently dropping it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3395: planned-phase refreshes the stale Phase line and persists --name', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const PINNED_ENV = { GSD_NOW_MS: String(Date.parse('2026-08-14T15:00:00.000Z')) };
+
+  function frontmatterBlock(stateContent) {
+    const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return m ? m[1] : '';
+  }
+
+  // The issue's repro shape: frontmatter already carries the correct decimal
+  // sub-phase, but the body's `## Current Position` still describes the
+  // PREVIOUS phase's completion prose.
+  function writeStalePhaseLineFixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "current_phase: '35.3'",
+        'current_phase_name: unattended-launch-prerequisites',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 35.1 (unattended-launch-prerequisites) — COMPLETE (4/4 plans)',
+        'Status: Planning',
+        'Total Plans in Phase: 4',
+        'Last Activity: 2026-08-01',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  test('issue repro: stale body Phase line is refreshed and current_phase stays coherent end to end', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '35.3', '--plans', '3'], tmpDir, PINNED_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterBlock(stateContent);
+    // AC #1 outcome: the correct frontmatter value survives the write.
+    assert.ok(/current_phase:[^\n]*35\.3/.test(fm),
+      `frontmatter current_phase must stay 35.3; frontmatter was:\n${fm}`);
+    // The stale body source must not survive the transition that just
+    // declared 35.3 planned — it is the source every body-derived consumer
+    // (state json included) re-reads.
+    assert.ok(!stateContent.includes('35.1'),
+      `the stale 35.1 phase prose must be refreshed away; STATE.md was:\n${stateContent}`);
+    assert.ok(/Phase: 35\.3 — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must read "Phase: 35.3 — READY TO EXECUTE"; STATE.md was:\n${stateContent}`);
+    // The read path must agree with the write path.
+    const json = JSON.parse(runGsdTools(['state', 'json', '--raw'], tmpDir, PINNED_ENV).output);
+    assert.strictEqual(json.current_phase, '35.3',
+      `state json must report the refreshed phase, got: ${json.current_phase}`);
+  });
+
+  test('--name is persisted into the Phase line and frontmatter, not silently dropped', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '36', '--name', 'Core Foundation', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/Phase: 36 \(Core Foundation\) — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must carry the passed name; STATE.md was:\n${stateContent}`);
+    const fm = frontmatterBlock(stateContent);
+    // AC #2: the body phase source genuinely changed this transition, so
+    // current_phase re-derives from the refreshed line.
+    assert.ok(/current_phase:[^\n]*36/.test(fm),
+      `current_phase must follow the genuinely changed body phase source (36); frontmatter was:\n${fm}`);
+    assert.ok(/current_phase_name:[^\n]*Core Foundation/.test(fm),
+      `current_phase_name must persist the passed name; frontmatter was:\n${fm}`);
+  });
+
+  test('--name containing a parenthetical survives intact in frontmatter (#2736 mirror)', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '36', '--name', 'auth (oauth) refresh', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_phase_name:[^\n]*auth \(oauth\) refresh/.test(fm),
+      `current_phase_name must carry the exact authoritative name (prose re-derivation is lossy for nested parens); frontmatter was:\n${fm}`);
+  });
+
+  test('canonical labeled fixture without frontmatter current_phase: Phase line still refreshed', () => {
+    // No YAML frontmatter disagreement here — pins that the Phase-line refresh
+    // also applies to the plain template shape (fields only, Current Position
+    // `Phase: 1 of 5 (setup)` template form).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 0',
+        '**Status:** Planning',
+        '**Last Activity:** 2026-03-20',
+        '',
+        '## Current Position',
+        'Phase: 1 of 5 (setup)',
+        'Plan: 0 of 5 in current phase',
+        'Status: Planning',
+        'Last activity: 2026-03-20 -- Phase 1 complete',
+        '',
+      ].join('\n'),
+    );
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '2', '--name', 'Core', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/Phase: 2 \(Core\) — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must be refreshed from the template form; STATE.md was:\n${stateContent}`);
+  });
+
+  test('no Current Position section: command still succeeds and body Current Phase field is untouched', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Planning',
+        '**Total Plans in Phase:** 0',
+        '**Last Activity:** 2024-01-01',
+        '**Current Phase:** 3',
+        '',
+      ].join('\n'),
+    );
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '3', '--plans', '5'], tmpDir, PINNED_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\* 3/.test(stateContent),
+      `body **Current Phase:** field must be untouched when no Current Position section exists; STATE.md was:\n${stateContent}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // bug #1070 regression: "Complete ✓" terminal status must yield to planned-phase
 // ─────────────────────────────────────────────────────────────────────────────
 
