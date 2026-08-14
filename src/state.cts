@@ -2880,11 +2880,27 @@ function applyPostSyncPreservation(
     ?? stateExtractField(postBody, 'Last activity');
   const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
     ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
+  // #3468: single channel for every preserve-when-unchanged row. Before this
+  // change, seven body-source pre/post pairs travelled in two different
+  // shapes — this map for four fields, six dedicated parameters
+  // (preBodyStatus/postBodyStatus, preBodyStoppedAt/postBodyStoppedAt,
+  // preBodyPhaseSource/postBodyPhaseSource) for the other three — same data,
+  // same purpose, which is exactly why applyStatePreservation needed a
+  // hand-written branch per field instead of one loop over the table. Every
+  // row FIELD_CLASSIFICATION declares preserve-when-unchanged MUST appear
+  // here — an omission now throws (STATE_PRESERVATION_UNWIRED_ROW, ADR-3408
+  // §8.2) at the first write rather than becoming a quiet preservation bug.
+  // Note current_phase_name's source is the body `Phase:` line, deliberately
+  // a DIFFERENT source from current_phase's: the key names the field the
+  // policy GUARDS, not the body field it reads.
   const bodyDeltas = {
     last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
     paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
     current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
     current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
+    status: { pre: preBodyStatus, post: postBodyStatus },
+    stopped_at: { pre: preBodyStoppedAt, post: postBodyStoppedAt },
+    current_phase_name: { pre: preBodyPhaseSource, post: postBodyPhaseSource },
   };
 
   // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
@@ -2902,9 +2918,6 @@ function applyPostSyncPreservation(
     preFm, postFm, preFmSnapshot, resync,
     deriveProgressKeys: deriveProgressKeys === true,
     bodyDeltas,
-    preBodyStatus, postBodyStatus,
-    preBodyStoppedAt, postBodyStoppedAt,
-    preBodyPhaseSource, postBodyPhaseSource,
   });
   // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
   // layouts with no body `Phase:` line, both phase-source snapshots are null
