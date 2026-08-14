@@ -1,6 +1,6 @@
 # ADR-0174: Retire @opengsd/gsd-sdk package boundary — single-runtime collapse
 
-- **Status:** Accepted (2026-05-23); amended #1642 (2026-06-23) — §5 reconciled to as-built Result type + `exitReason?` field added on `InvalidArgs`; amended #3484 (2026-08-14) — behavior-carry-forward amendment appended
+- **Status:** Accepted (2026-05-23); amended #1642 (2026-06-23) — §5 reconciled to as-built Result type + `exitReason?` field added on `InvalidArgs`
 - **Date:** 2026-05-23
 - **Tracking issue:** [#174](https://github.com/open-gsd/get-shit-done-redux/issues/174) — sub-issues #175–#197
 
@@ -161,46 +161,3 @@ Seven phases, ~15–18 PRs total. Each phase is a coherent slice that leaves the
 | 7 — Land this ADR's PR | The PR for this ADR closes the umbrella tracking issue. | 1 (this PR) |
 
 Implementation is tracked in [#174 — sub-issues #175–#197](https://github.com/open-gsd/get-shit-done-redux/issues/174).
-
-## Amendment (2026-08-14): Behavior carry-forward for lineage-retiring consolidations (#3484)
-
-This amendment was appended after the migration completed. It changes nothing about the
-collapse decision above — one runtime still cannot drift from itself, and ADR-3524's
-parity apparatus is still correctly gone. What this ADR lacked was a clause about the
-*instant of collapse*: the two lineages were not equivalent at the moment `sdk/` was
-deleted (drift had been accumulating for months — ADR-3524 itself names nine prior
-one-sided fixes), and the collapse took the CJS lineage as canonical. Everything the SDK
-side had and the CJS side did not was deleted with the package — and the parity tests
-that would have caught exactly that were deleted by Migration Plan Phase 3 in the same
-motion. The surviving tests were the CJS side's tests, and they passed throughout.
-
-**The requirement.** A consolidation that retires a lineage must enumerate the retiring
-side's behavior and record, per item, whether it was **`migrated`**, **`renamed → X`**,
-or **`dropped because Y`** — before the deletion merges. "The tests pass" is explicitly
-not sufficient evidence, because the surviving tests belong to the surviving side and
-cannot observe behavior only the deleted side had.
-
-**The evidence that produced this amendment — three confirmed losses through the gap:**
-
-| Lost in the collapse | Surviving site | Consequence |
-|---|---|---|
-| `shortFormToId` resolution tier + the `unresolved depends_on reference` warning | `src/phase.cts` | [#3427](https://github.com/open-gsd/gsd-core/issues/3427) — short-form `depends_on` edges silently dropped; dependency-ordered plans execute in parallel |
-| `regexForKeyLinkPattern`'s 512-char cap + nested-quantifier screen | `src/verify.cts` | [#3477](https://github.com/open-gsd/gsd-core/issues/3477) — ReDoS; `verify-phase` hangs on an untrusted plan pattern |
-| `MAX_JSON_SEARCH_DEPTH = 48` | `src/intel.cts` | unbounded recursion in `matchesInValue`; stack overflow on deeply nested intel JSON (carried by epic #3473, B5) |
-
-None was noticed for months; #3427 surfaced only when a user hit it in production. The
-`shortFormToId` loss is the sharpest: the gap was *known* — recorded as "tracked as a
-follow-up parity gap" in an archived changeset (`.changeset/archived/clever-yaks-cheer.md`)
-and marked with a `// KNOWN GAP:` comment — then the SDK was retired, the comment died
-with the lineage it annotated, and no issue was ever opened. A comment is attached to
-code; it is not a tracking mechanism. A gap that matters gets an issue.
-
-A fourth-loss audit run on 2026-08-14 (method recorded in [#3484](https://github.com/open-gsd/gsd-core/issues/3484)
-and in the contributor how-to) found no further losses — which calibrates the audit
-method, not a claim that the class is closed.
-
-**Where the rule lives now.** The general form of this requirement — not scoped to this
-ADR — is a merge gate in `CONTRIBUTING.md` ("Deleting a module that has a surviving
-counterpart"): the deleting PR carries a symbol-level disposition table, SCREAMING_CASE
-constants ranked first, with a mandatory positive control. Future lineage-retiring
-consolidations cite this amendment and satisfy that gate.

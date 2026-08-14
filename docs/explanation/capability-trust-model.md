@@ -276,6 +276,33 @@ An `integrity` field in `capability.json` carries a `sha512-<base64>` digest
 of the capability bundle. When present, GSD verifies this digest before
 extracting any files. A mismatch aborts the install.
 
+When NO pin is supplied, the consent prompt says so plainly: a
+`content: NO PINNED HASH — staged unverified` line distinguishes an install
+whose bytes were verified against a commitment from one that was not
+([#3514](https://github.com/open-gsd/gsd-core/issues/3514)). A computed
+sha512 of what was actually fetched is still recorded in the ledger at
+install, so a later `trust` inspection shows exactly which bytes landed.
+
+### Fetch-host denylist
+
+The URL importer's fetch transport refuses, before any bytes leave
+([#3514](https://github.com/open-gsd/gsd-core/issues/3514)):
+
+- **loopback, link-local, and unspecified hosts** — `127.0.0.0/8`,
+  `169.254.0.0/16` (which contains the cloud metadata addresses), `0.0.0.0/8`,
+  `::1`, `fe80::/10`, `::`, their IPv4-mapped IPv6 spellings, and
+  `localhost`/`*.localhost` names. No legitimate capability install fetches
+  these.
+- **plaintext `http://` URLs** — the transport is `https`-only; an `http://`
+  tarball spec still *classifies* (so an internal-mirror workflow fails with a
+  clear, named reason instead of a raw protocol error) but never fetches.
+
+Deliberate limits: RFC1918 private ranges (`10/8`, `172.16/12`,
+`192.168/16`) are **not** denied — an internal https mirror is a legitimate
+install source, and the denylist is not an allowlist. The check is on the
+URL's host literal; a public hostname that *resolves* via DNS to a denied
+range (rebinding) is out of scope.
+
 What integrity pinning defends against: a capability hosted at a URL or in a
 registry that is later replaced with a different bundle (whether by an attacker
 who has compromised the hosting, or by an author publishing a silent breaking

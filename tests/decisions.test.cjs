@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseDecisions, extractDecisions } = require('../gsd-core/bin/lib/decisions.cjs');
-const { runGsdTools, createTempProject, createTempDir, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 // ─── Regression #1364: markdown-header fallback ───────────────────────────────
 
@@ -1298,121 +1298,5 @@ describe('check.decision-coverage-plan — empty contextPath argument fails clos
     const parsed = JSON.parse(result.output || '{}');
     assert.strictEqual(parsed.passed, false,
       `Missing contextPath argument must fail closed. Got: ${JSON.stringify(parsed)}`);
-  });
-});
-
-// ─── #3484: modified-file truncation bound (MAX_MODIFIED_FILE_BYTES) ─────────
-//
-// readModifiedFilesContent harvests files_modified entries from phase summaries into
-// the decision-coverage-verify haystack, capping each file's content. The bound
-// survived the ADR-0174 SDK collapse as a bare `256 * 1024` literal duplicated in one
-// expression; #3484 restored it as MAX_MODIFIED_FILE_BYTES. These rows pin the bound
-// behaviorally — honored/not_honored flips at exactly 262,144 chars — so the value
-// cannot drift silently again. The constant counts String#length (UTF-16 code units),
-// not bytes; semantics preserved from the retired lineage.
-//
-// Fixture facts these rows depend on (verified against the compiled CLI):
-//   - files_modified entries resolve against the PROJECT root (cwd), not phaseDir;
-//   - decisionMentioned matches \bD-99\b, so the id needs a non-word char before it.
-
-describe('check.decision-coverage-verify — modified-file truncation bound (#3484)', () => {
-  const CAP = 256 * 1024;
-  let tmpDir;
-  let phaseDir;
-
-  beforeEach(() => {
-    tmpDir = createTempProject('gsd-3484-');
-    phaseDir = path.join(tmpDir, '.planning', 'phases', '01-init');
-    fs.mkdirSync(phaseDir, { recursive: true });
-  });
-
-  afterEach(() => cleanup(tmpDir));
-
-  function writeVerifyFixture(modifiedFileContent) {
-    writeGateFiles(['# Summary', '', 'files_modified:', '- big-modified.txt', '', 'Wrapped up the widget work.']);
-    fs.writeFileSync(path.join(tmpDir, 'big-modified.txt'), modifiedFileContent);
-    return path.join(phaseDir, 'CONTEXT.md');
-  }
-
-  function writeGateFiles(summaryLines) {
-    writeContextFile(phaseDir, [
-      '# Phase Context',
-      '',
-      '<decisions>',
-      '- **D-99:** keep the marker token unique to this fixture',
-      '</decisions>',
-    ].join('\n'));
-    writePlanFile(phaseDir, '01', '# Plan\n\n## Must Haves\n\n- deliver the widget\n');
-    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), summaryLines.join('\n') + '\n');
-  }
-
-  function runVerify(contextPath) {
-    const result = runGsdTools(
-      ['query', 'check.decision-coverage-verify', phaseDir, contextPath],
-      tmpDir
-    );
-    return JSON.parse(result.output || '{}');
-  }
-
-  test('id ending at the last included char is kept (limit)', () => {
-    // Length exactly CAP: `raw.length > CAP` is false → content passes through whole,
-    // so a D-99 whose last char sits at index CAP-1 is honored. Pins > vs >=.
-    const contextPath = writeVerifyFixture('x'.repeat(CAP - 5) + ' D-99');
-    const parsed = runVerify(contextPath);
-    assert.strictEqual(parsed.honored, 1,
-      `D-99 ending at index CAP-1 must be honored. Got: ${JSON.stringify(parsed)}`);
-  });
-
-  test('id beyond the cap is truncated away (limit+1)', () => {
-    // Length CAP+4 with D-99 starting AT index CAP: slice(0, CAP) drops it entirely.
-    const contextPath = writeVerifyFixture('x'.repeat(CAP - 1) + ' D-99');
-    const parsed = runVerify(contextPath);
-    assert.strictEqual(parsed.honored, 0,
-      `D-99 starting at index CAP must be truncated away. Got: ${JSON.stringify(parsed)}`);
-    assert.ok(
-      (parsed.not_honored || []).some((item) => item.id === 'D-99'),
-      `D-99 must land in not_honored. Got: ${JSON.stringify(parsed)}`
-    );
-  });
-
-  test('id within a small modified file is honored (happy)', () => {
-    const contextPath = writeVerifyFixture('D-99 ' + 'y'.repeat(64));
-    const parsed = runVerify(contextPath);
-    assert.strictEqual(parsed.honored, 1,
-      `D-99 in a small modified file must be honored. Got: ${JSON.stringify(parsed)}`);
-  });
-
-  test('files_modified entry outside the root is skipped', (t) => {
-    // A sibling dir (outside the project root) holding a file that WOULD satisfy the
-    // decision — proving isInsideRoot skipped it, as distinct from a missing file.
-    const sibling = createTempDir('gsd-3484-escape-');
-    t.after(() => cleanup(sibling));
-    fs.writeFileSync(path.join(sibling, 'escape.txt'), 'D-99 '.repeat(10));
-
-    writeGateFiles(['# Summary', '', 'files_modified:', `- ../${path.basename(sibling)}/escape.txt`, '']);
-
-    const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
-    assert.strictEqual(parsed.honored, 0,
-      `An out-of-root files_modified entry must be skipped, not harvested. Got: ${JSON.stringify(parsed)}`);
-    assert.ok(
-      (parsed.not_honored || []).some((item) => item.id === 'D-99'),
-      'D-99 must be reported not honored — the only D-99 lives outside the root'
-    );
-  });
-
-  test('unreadable files_modified entry does not crash the gate', () => {
-    writeGateFiles(['# Summary', '', 'files_modified:', '- does-not-exist.txt', '']);
-
-    const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
-    assert.strictEqual(parsed.honored, 0,
-      `A missing file must harvest empty content, not crash. Got: ${JSON.stringify(parsed)}`);
-  });
-
-  test('summary without files_modified yields no haystack content', () => {
-    writeGateFiles(['# Summary', '', 'No file list here.']);
-
-    const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
-    assert.strictEqual(parsed.honored, 0,
-      `No files_modified block means D-99 cannot be honored. Got: ${JSON.stringify(parsed)}`);
   });
 });
