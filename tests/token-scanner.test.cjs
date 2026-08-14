@@ -20,6 +20,14 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+// Seeded fast-check convention: require the shared setup helper (NOT
+// 'fast-check' directly) so numRuns/seed are configured globally before any
+// fc.assert() call — mirrors tests/pattern.test.cjs / tests/text-lines.test.cjs.
+// seed: 42, overridable via GSD_FC_SEED. Required by TESTING-STANDARDS.md:169
+// ("modules that implement parsing... must include at least one fast-check
+// property test asserting a domain invariant") — a review finding this phase
+// missed on first pass; both invariants below are added in response to it.
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const { tokenizeShellLike, indentWidth } = require('../gsd-core/bin/lib/token-scanner.cjs');
 const { tokenize: gitCmdTokenize } = require(path.join(__dirname, '..', 'hooks', 'lib', 'git-cmd.js'));
@@ -107,5 +115,40 @@ describe('indentWidth', () => {
 
   test('row 10: all-whitespace line returns its full length', () => {
     assert.strictEqual(indentWidth('   '), 3);
+  });
+});
+
+// ─── Property tests (TESTING-STANDARDS.md:169) ─────────────────────────────
+
+describe('property: indentWidth counts exactly the generated leading-space run', () => {
+  test('indentWidth(spaces + non-space content) === spaces.length', () => {
+    fc.assert(
+      fc.property(
+        fc.nat({ max: 30 }),
+        fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !/^[ \t]/.test(s)),
+        (n, content) => {
+          const line = ' '.repeat(n) + content;
+          assert.strictEqual(indentWidth(line), n);
+        },
+      ),
+    );
+  });
+});
+
+describe('property: tokenizeShellLike is the inverse of joining whitespace-free words with single spaces', () => {
+  test('tokenizeShellLike(words.join(" ")) deepStrictEqual words', () => {
+    // A "word" here is any non-empty run with no whitespace and no quote
+    // characters — the shape that round-trips through the tokenizer without
+    // needing quoting to survive the join (quoting is exercised separately
+    // by rows 1-2/5; this property covers the bijective unquoted case
+    // TESTING-STANDARDS.md:169 asks for).
+    const wordArb = fc
+      .string({ minLength: 1, maxLength: 12 })
+      .filter((s) => s.length > 0 && !/[\s'"]/.test(s));
+    fc.assert(
+      fc.property(fc.array(wordArb, { minLength: 0, maxLength: 10 }), (words) => {
+        assert.deepStrictEqual(tokenizeShellLike(words.join(' ')), words);
+      }),
+    );
   });
 });
