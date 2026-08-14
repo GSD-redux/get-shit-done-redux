@@ -267,4 +267,41 @@ One row per concern. A blank owner is a concern whose contract is locked (§8) b
 
 ## Amendments
 
-*(None yet. Phase 1 records its `clear` resolution (§8.6) and its guard's measured baseline here; Phase 3 records the §8.4 bucket decision.)*
+### Amendment 1 — Phase 1 (#3468) validation: the contract held; a policy had two implementations
+
+Decisions 1–5 needed **no change**. Every input class Phase 1 hit was expressible in the contract as written, and the closed guard vocabulary of Decision 1 proved sufficient at exactly the size predicted. What the contract did *not* anticipate was a divergence one level below the policy.
+
+**`preserve-always` had two divergent implementations, and one contradicted its own row.** Neither #3408 nor this ADR named it; it fell out of reading the code rather than the write-up.
+
+| Field | Declared | Implemented as | Gate |
+|---|---|---|---|
+| `progress` | `preserve-always` | preserve-always | `!resync`, no delta condition |
+| `current_phase_name` | `preserve-always` | **preserve-when-unchanged** | body `Phase:` delta, no resync gate |
+
+**Resolution: the row was wrong, the code was right.** `current_phase_name` is reclassified to `preserve-when-unchanged`. Its delta-gated behavior is regression-bound by #1743, #1695 and #2736, so changing the code to match the label would have broken deliberate decisions; changing the label is behavior-preserving and makes the table honest, which is the point of the epic. Matrix test C2 pins its exact outputs as literals, because a behavior-preserving change is precisely where a silent mistake hides.
+
+**§8.6 resolved: `clear` is DELETED.** No row used it and no executor existed — verified as the single occurrence of the token in `src/state-transition.cts`, with zero dependents and a clean `tsc`. Speculative Generality: a policy invented for a need that never arrived. `FieldPreservation` now has four members, each with exactly one executor.
+
+**The closed guard vocabulary is real and small.** Decision 1 mandated named guards over a predicate slot. Implementation found exactly **one** true executor-side guard in the entire codebase — `status`'s `'unknown'` sentinel — because `stopped_at`'s `## Session` scoping turned out to be caller-side *extraction*, not an executor condition. Shipped as `FieldGuard = 'non-sentinel-unknown'` plus `FieldMergeStrategy = 'progress-ratchet'` for the #2440/#2969 merge. Two single-member unions is deliberate: the alternative is the open predicate slot Greenspun's Tenth Rule rejects, and adding a member remains an amendment here.
+
+**Copy count, per Amendment 3's standing rule — "N found by the guard", never "N per the epic":**
+
+| | #3408 scoped | Guard found |
+|---|---|---|
+| Write-seam bypasses (Axis 2) | 2 | **4** |
+| Policy-dispatch violations (Axis 1) | not scoped | **7** — 5 field-name branches, plus `derive` and `clear` with no executor at all |
+
+The four are `cmdStateSync`, `cmdMilestoneComplete`, `cmdPhaseComplete`, and `REGENERATE_STATE`. **`patchCore` — one of the two this ADR named — is not among them**, because it bypasses via `stateReplaceField` rather than the seam calls. The epic's list was both short and partly wrong, a fourth consecutive confirmation that a hand-maintained list is a lower bound.
+
+**Two detectors were built and removed again, recorded because the guard is the instrument this epic trusts:**
+
+1. A prompt-layer detector reported **5 backticked prose mentions** as drift — ADR-3180 Amendment 3's recorded false-positive class. `CONTRIBUTING.md` already settles it: a backticked command reference is a mention. Now gated on inline-code spans.
+2. A `stateReplaceField` co-occurrence detector for §8.3(b), measured at **29 false positives to 1 true positive** — it matched the function's own *definition* and ~20 calls on frontmatter-free body slices. Banking 29 non-defects to catch one is Decision 5's own "ratchet as a parking lot" route, so shipping it would have made the guard violate this ADR.
+
+**DECLARED KNOWN GAP, owned by Phase 2 (#3469).** §8.3(b) — `patchCore` writing over frontmatter — is **not detected**. It needs genuine dataflow ("is this argument the whole document or a body slice?"), not co-occurrence. Phase 2 both fixes the defect and makes detection tractable, because once the pure pipeline exists the invariant simplifies to "no transition core calls `stateReplaceField` on unstripped content". Stated here so the gap has a named owner rather than being a silence.
+
+**Decision 5's anti-gaming list earned itself twice, in one phase.** After the refactor the guard reported `policyDispatchViolations: 0` while `applyPreserveIfPlaceholder` still opened with `if (field !== 'milestone_name') return` — a branch selected by field name, which §8.1 forbids outright, in a syntactic form Axis 1 did not match. That is the "route it through a differently-named local" row of Decision 5's table, live. The executor was already idempotent, so the test bought nothing and was deleted; Axis 1 is widened to catch field-variable comparisons against literals, with its remaining evasion (renaming the loop variable) declared in the guard's header rather than left implicit. Separately, the guard's own `loadBaseline` conflated an *unreadable* baseline with an *absent* one — a diagnostic collapsing two states into one identical result, which is this epic's defining failure shape reproduced inside the tool built to detect it. Both fixed in Phase 1.
+
+**Complexity, measured before and after.** `applyStatePreservation` was 177 lines, cyclomatic 61, cognitive 107, `risk_level: critical`. It is now a 27-line dispatch loop over four executors of 28, 44, 26 and 3 lines. This was Kernighan's Law's contribution to the design — the justification for the refactor was debuggability, not line count, and the largest remaining unit is the one holding the genuinely intricate #2440/#2969 ratchet.
+
+*(Phase 3 records the §8.4 bucket decision here.)*
