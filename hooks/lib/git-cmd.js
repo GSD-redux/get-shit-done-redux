@@ -19,9 +19,19 @@
  * hook's own __dirname:
  *
  *   const { isGitSubcommand } = require(path.join(__dirname, 'lib', 'git-cmd.js'));
+ *
+ * `tokenize()` delegates to the shared `src/token-scanner.cts` seam (ADR-3212
+ * §4, epic #3212 Phase 3, #3414) — the built `gsd-core/bin/lib/token-scanner.cjs`
+ * artifact, not a sibling hooks/-tree file, because hook scripts are staged as
+ * standalone files at install time and a sibling require is a staging
+ * dependency that can fail silently (see gsd-workflow-guard.js's own
+ * KIMI_TOOL_NAMES comment for the precedent this follows). Re-exported here
+ * unchanged — every existing caller's behavior is identical (parity-asserted
+ * in tests/token-scanner.test.cjs row 5).
  */
 
 const path = require('path');
+const { tokenizeShellLike } = require(path.join(__dirname, '..', '..', 'gsd-core', 'bin', 'lib', 'token-scanner.cjs'));
 
 /**
  * Git global options that take a following argument.
@@ -57,39 +67,87 @@ const BOOLEAN_FLAGS = new Set([
  * Handles single-quoted strings, double-quoted strings, and unquoted tokens.
  * Does NOT perform variable expansion or brace expansion.
  *
+ * Delegates to the shared `src/token-scanner.cts` seam — see the module
+ * header comment for why the built artifact, not a sibling require, is used.
+ *
  * @param {string} cmd
  * @returns {string[]}
  */
 function tokenize(cmd) {
-  const tokens = [];
+  return tokenizeShellLike(cmd);
+}
+
+/**
+ * Walk past leading env-prefix assignments and global git options, same as
+ * `isGitSubcommand`'s phases 1-3. Returns the index of the subcommand token,
+ * or -1 if the command does not resolve to a git invocation at all.
+ *
+ * @param {string[]} tokens
+ * @returns {number}
+ */
+function skipToSubcommand(tokens) {
   let i = 0;
-  const len = cmd.length;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
+    i++;
+  }
+  if (i >= tokens.length) return -1;
+  const gitToken = tokens[i++];
+  if (path.basename(gitToken) !== 'git') return -1;
 
-  while (i < len) {
-    // Skip whitespace
-    while (i < len && /\s/.test(cmd[i])) i++;
-    if (i >= len) break;
-
-    let token = '';
-    while (i < len && !/\s/.test(cmd[i])) {
-      if (cmd[i] === "'") {
-        // Single-quoted string: take everything until closing '
-        i++;
-        while (i < len && cmd[i] !== "'") token += cmd[i++];
-        if (i < len) i++; // consume closing '
-      } else if (cmd[i] === '"') {
-        // Double-quoted string: take everything until closing " (no escape handling)
-        i++;
-        while (i < len && cmd[i] !== '"') token += cmd[i++];
-        if (i < len) i++; // consume closing "
-      } else {
-        token += cmd[i++];
-      }
+  while (i < tokens.length) {
+    const t = tokens[i];
+    const eqIdx = t.indexOf('=');
+    const flagName = eqIdx !== -1 ? t.slice(0, eqIdx) : t;
+    if (ARGUMENT_TAKING_FLAGS.has(flagName)) {
+      i += eqIdx !== -1 ? 1 : 2;
+      continue;
     }
-    if (token) tokens.push(token);
+    if (BOOLEAN_FLAGS.has(t)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+/**
+ * Extract the branch-name argument from a git command line that creates or
+ * references one — `git checkout -b <name>` or `git branch <name>`. Returns
+ * null for any other command, including plain `git checkout <ref>` (switches
+ * branches, does not create one) and commands where a checkout/branch-shaped
+ * substring appears only inside a quoted argument (e.g. a commit message).
+ *
+ * New capability (ADR-3212 §4, epic #3212 Phase 3, #3414) exercising the
+ * shared scanner on the domain the ADR names ("a branch name... [is] not
+ * regular") — not a migration of existing duplicated logic; no prior
+ * implementation of this existed in the repo (design doc §1.2).
+ *
+ * @param {string} cmd
+ * @returns {string | null}
+ */
+function extractBranchArgument(cmd) {
+  if (!cmd) return null;
+  const tokens = tokenizeShellLike(cmd);
+  const subIdx = skipToSubcommand(tokens);
+  if (subIdx === -1 || subIdx >= tokens.length) return null;
+  const sub = tokens[subIdx];
+
+  if (sub === 'checkout') {
+    for (let j = subIdx + 1; j < tokens.length; j++) {
+      if (tokens[j] === '-b' && j + 1 < tokens.length) return tokens[j + 1];
+    }
+    return null;
   }
 
-  return tokens;
+  if (sub === 'branch') {
+    for (let j = subIdx + 1; j < tokens.length; j++) {
+      if (!tokens[j].startsWith('-')) return tokens[j];
+    }
+    return null;
+  }
+
+  return null;
 }
 
 /**
@@ -102,49 +160,15 @@ function tokenize(cmd) {
 function isGitSubcommand(cmd, sub) {
   if (!cmd || !sub) return false;
 
-  const tokens = tokenize(cmd);
-  let i = 0;
-
-  // Phase 1: skip leading VAR=VALUE environment assignments
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
-    i++;
-  }
-
-  // Phase 2: the next token must be the git executable
-  if (i >= tokens.length) return false;
-  const gitToken = tokens[i++];
-  if (path.basename(gitToken) !== 'git') return false;
-
-  // Phase 3: consume git global options
-  while (i < tokens.length) {
-    const t = tokens[i];
-
-    // --flag=value form for argument-taking flags
-    const eqIdx = t.indexOf('=');
-    const flagName = eqIdx !== -1 ? t.slice(0, eqIdx) : t;
-    if (ARGUMENT_TAKING_FLAGS.has(flagName)) {
-      if (eqIdx !== -1) {
-        // consumed as one token: --git-dir=.git
-        i++;
-      } else {
-        // consumed as two tokens: -C /path
-        i += 2;
-      }
-      continue;
-    }
-
-    if (BOOLEAN_FLAGS.has(t)) {
-      i++;
-      continue;
-    }
-
-    // Not a global option — this is the subcommand
-    break;
-  }
+  // Phases 1-3 (env-prefix skip, git-executable check, global-option consume)
+  // extracted verbatim into skipToSubcommand — byte-identical logic, shared
+  // with extractBranchArgument rather than a second copy (#3212 Phase 3).
+  const tokens = tokenizeShellLike(cmd);
+  const subIdx = skipToSubcommand(tokens);
 
   // Phase 4: check the subcommand
-  if (i >= tokens.length) return false;
-  return tokens[i] === sub;
+  if (subIdx === -1 || subIdx >= tokens.length) return false;
+  return tokens[subIdx] === sub;
 }
 
-module.exports = { isGitSubcommand, tokenize };
+module.exports = { isGitSubcommand, tokenize, extractBranchArgument };

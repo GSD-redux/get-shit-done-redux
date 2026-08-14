@@ -1,7 +1,6 @@
 ---
 name: gsd-next
 description: "Smart entry — detect project state and route to the right next GSD action."
-effort: low
 allowed-tools:
   - Read
   - Bash

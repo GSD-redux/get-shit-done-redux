@@ -328,6 +328,7 @@ describe('reapply-patches workflow contract (#1469)', () => {
     const updatePath = path.join(__dirname, '..', 'commands', 'gsd', 'update.md');
     const content = fs.readFileSync(updatePath, 'utf8');
     const blocks = [
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
       ...content.matchAll(/<execution_context(?:_extended)?>([\s\S]*?)<\/execution_context(?:_extended)?>/g),
     ].map((m) => m[1]);
     assert.ok(blocks.length > 0, 'update.md must define at least one <execution_context> block');
@@ -381,6 +382,7 @@ describe('reapply-patches gated hunk verification (#1999)', () => {
     // assert it both names the table and defines an explicit gate
     // condition tied to the `verified` column.
     const content = fs.readFileSync(workflowPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored reapply-patches.md workflow, bounded prose, not adversarial input
     const step5Match = content.match(/^##\s+Step 5[^\r\n]*\r?\n([\s\S]*?)(?=^##\s|Z)/m);
     assert.ok(step5Match, 'reapply-patches workflow must contain a "## Step 5" section');
     const step5 = step5Match[1];
@@ -405,6 +407,7 @@ describe('reapply-patches gated hunk verification (#1999)', () => {
   test('Step 5 also halts when the Hunk Verification Table is absent (Step 4 produced nothing)', () => {
     // Independent gate: missing-table is a separate halt path from any-no-row.
     const content = fs.readFileSync(workflowPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored reapply-patches.md workflow, bounded prose, not adversarial input
     const step5Match = content.match(/^##\s+Step 5[^\r\n]*\r?\n([\s\S]*?)(?=^##\s|Z)/m);
     assert.ok(step5Match, 'Step 5 section must exist');
     const step5 = step5Match[1];

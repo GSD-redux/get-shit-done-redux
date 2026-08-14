@@ -110,6 +110,28 @@ function extractXmlElement(text, tag) {
   return text.slice(start, end + tag.length + 3);
 }
 
+// Structural RULE locator (#3426): anchor on the `**RULE N:**` heading inside
+// <deviation_rules> — never on incidental word proximity elsewhere in the file,
+// which let unrelated edits re-anchor the old first-token-scan-hit window.
+// Returns { heading, lines } for the section spanning the heading up to (not
+// including) the next `**RULE N:**` heading, or null when <deviation_rules> is
+// missing or the requested rule has zero or duplicated headings.
+function extractRuleSection(text, ruleNumber) {
+  const block = extractXmlElement(text, 'deviation_rules');
+  if (!block) return null;
+  const lines = block.split(/\r?\n/);
+  const headingRe = /^\*\*RULE (\d+):/;
+  const headings = lines
+    .map((line, i) => ({ rule: Number((line.match(headingRe) || [])[1]), lineIndex: i }))
+    .filter((h) => Number.isInteger(h.rule));
+  const starts = headings.filter((h) => h.rule === ruleNumber);
+  if (starts.length !== 1) return null;
+  const start = starts[0].lineIndex;
+  const next = headings.find((h) => h.lineIndex > start);
+  const end = next ? next.lineIndex : lines.length;
+  return { heading: lines[start], lines: lines.slice(start, end) };
+}
+
 function normalizeTokens(text) {
   return text
     .toLowerCase()
@@ -432,10 +454,10 @@ describe('gsd-executor.md — package installs excluded from RULE 3 auto-fix', (
   });
 
   test('RULE 3 section explicitly excludes package-manager installs', () => {
-    const rule3Line = lineIndexes(model.lines, (line) => hasAllTokens(line, ['rule', '3']))[0];
-    assert.notEqual(rule3Line, undefined, 'executor must contain RULE 3 section');
+    const section = extractRuleSection(model.text, 3);
+    assert.ok(section, 'executor must contain exactly one RULE 3 section inside <deviation_rules>');
 
-    const window = model.lines.slice(rule3Line, rule3Line + 35);
+    const window = section.lines;
 
     const hasInstallCommands =
       anyLineHasAll(window, ['npm', 'install']) ||
@@ -451,10 +473,10 @@ describe('gsd-executor.md — package installs excluded from RULE 3 auto-fix', (
   });
 
   test('failed package installs surface checkpoint:human-verify', () => {
-    const rule3Line = lineIndexes(model.lines, (line) => hasAllTokens(line, ['rule', '3']))[0];
-    assert.notEqual(rule3Line, undefined, 'executor must contain RULE 3 section');
+    const section = extractRuleSection(model.text, 3);
+    assert.ok(section, 'executor must contain exactly one RULE 3 section inside <deviation_rules>');
 
-    const window = model.lines.slice(rule3Line, rule3Line + 50);
+    const window = section.lines;
     const hasFailureLanguage =
       anyLineHasAll(window, ['failed', 'install']) ||
       anyLineHasAll(window, ['install', 'fails']) ||
@@ -466,6 +488,66 @@ describe('gsd-executor.md — package installs excluded from RULE 3 auto-fix', (
       hasFailureLanguage && hasCheckpoint,
       'executor must emit checkpoint:human-verify when package install fails'
     );
+  });
+
+  // #3426: the RULE 3 tests must anchor on the `**RULE N:**` heading inside
+  // <deviation_rules>, never on incidental word proximity — a decoy line
+  // elsewhere in the file used to silently re-anchor the old token scan
+  // (first line containing both `rule` and `3` tokens), so unrelated edits
+  // could redirect or defeat the guardrail assertions.
+  test('RULE 3 locator anchors on the heading, not word proximity (#3426)', () => {
+    const fixture = [
+      '## Unrelated guidance',
+      'Apply each Rule in order: (1) fix bugs, (2) add tests, (3) verify.',
+      '',
+      '<deviation_rules>',
+      'Deviation Rule 3 applies only after steps (1) and (2) are exhausted.',
+      '',
+      '**RULE 1: Auto-fix bugs**',
+      '',
+      '---',
+      '',
+      '**RULE 3: Auto-fix blocking issues**',
+      '',
+      '**EXCLUDED from RULE 3 — package manager installs:**',
+      'Running `npm install <pkg>` is **NOT** auto-fixable.',
+      'If a referenced package fails to install, return a `checkpoint:human-verify` task.',
+      '',
+      '---',
+      '',
+      '**RULE 4: Ask about architectural changes**',
+      '',
+      '</deviation_rules>',
+    ].join('\n');
+    const fixtureLines = fixture.split('\n');
+
+    // Documents the #3390 failure mode: the pre-#3426 token scan anchors on
+    // the decoy numbered list above the real heading (index 1, not 10).
+    const legacyAnchor = lineIndexes(fixtureLines, (line) => hasAllTokens(line, ['rule', '3']))[0];
+    assert.equal(legacyAnchor, 1, 'token-scan locator is expected to hit the decoy line');
+
+    const section = extractRuleSection(fixture, 3);
+    assert.ok(section, 'structural locator must find RULE 3 inside <deviation_rules> despite decoys');
+    assert.match(section.heading, /^\*\*RULE 3:/);
+    assert.equal(
+      section.lines.includes(fixtureLines[1]),
+      false,
+      'structural window must not include the out-of-block decoy line'
+    );
+    assert.ok(
+      anyLineHasAll(section.lines, ['checkpoint:human-verify']),
+      'structural window must cover the real RULE 3 content'
+    );
+
+    // Missing rule (0 heading matches) and duplicated rule (2 matches) must
+    // both fail loudly rather than anchor on a guess.
+    assert.equal(extractRuleSection(fixture, 2), null, 'missing rule must return null');
+    assert.equal(
+      extractRuleSection(fixture.replace('</deviation_rules>', '**RULE 3: Duplicate**\n\n</deviation_rules>'), 3),
+      null,
+      'duplicated rule heading must return null'
+    );
+    assert.equal(extractRuleSection(fixture.replace('<deviation_rules>', '<other>'), 3), null, 'missing <deviation_rules> must return null');
   });
 
   test('auto mode does not auto-approve package-legitimacy checkpoints', () => {

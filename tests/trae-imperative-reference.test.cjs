@@ -390,12 +390,14 @@ describe('#2658: trae runtime detection and instruction path (folded from fix-26
 
     test('new-project.md recognizes /.trae/ path and TRAE_CONFIG_DIR before the claude fallback', () => {
       const content = fs.readFileSync(path.join(workflowsDir, 'new-project.md'), 'utf8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       const pathBlock = content.match(/Derive `RUNTIME`[\s\S]*?Otherwise → `RUNTIME=claude`/);
       assert.ok(pathBlock, 'runtime-detection path block must exist');
       assert.ok(
         /Path contains `\/\.trae\/` → `RUNTIME=trae`/.test(pathBlock[0]),
         'path-based detection must recognize /.trae/ before the claude fallback',
       );
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       const envBlock = content.match(/if \[ -n "\$CODEX_HOME" \][\s\S]*?else RUNTIME="claude"; fi/);
       assert.ok(envBlock, 'env-var fallback block must exist');
       assert.ok(
@@ -406,6 +408,7 @@ describe('#2658: trae runtime detection and instruction path (folded from fix-26
 
     test('ingest-docs.md carries the same trae detection (found during this remediation, not just new-project.md)', () => {
       const content = fs.readFileSync(path.join(workflowsDir, 'ingest-docs.md'), 'utf8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       const block = content.match(/\*\*Detect runtime\*\*[\s\S]*?else → `RUNTIME=claude`/);
       assert.ok(block, 'runtime-detection block must exist');
       assert.ok(

@@ -35,6 +35,7 @@
     "workflow.plan_chunked",
     "workflow.specless_probe_fallback",
     "workflow.plan_review_convergence",
+    "workflow.agent_hint_routing",
     "code_quality.fallow.enabled",
     "code_quality.fallow.scope",
     "code_quality.fallow.profile",

@@ -213,6 +213,7 @@ describe('debug skill dispatch and sub-orchestrator (#2148, #2151)', () => {
     assert.ok(debugMatch, 'DEBUG.md must state a "N-field structured reasoning record" claim for reasoning_checkpoint');
     const claimedCount = /^\d+$/.test(debugMatch[1]) ? parseInt(debugMatch[1], 10) : NUMWORDS[debugMatch[1].toLowerCase()];
     assert.ok(typeof claimedCount === 'number', `unrecognized field-count token: ${debugMatch[1]}`);
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
     const yamlBlock = agentContent.match(/reasoning_checkpoint:\s*\r?\n([\s\S]*?)```/);
     assert.ok(yamlBlock, 'gsd-debugger.md must define a fenced reasoning_checkpoint YAML block');
     const keys = new Set();
@@ -411,5 +412,148 @@ describe('#2257 debug non-terminal session-manager return contract', () => {
       assert.ok(/changes every cycle/i.test(section),
         `${label} must state WHY updated cannot be used: it is overwritten/changes every checkpoint cycle`);
     }
+  });
+});
+
+// Tests for #3448 (folded into the owning module's test file per
+// lint-regression-test-names): after a legitimate mid-investigation checkpoint is
+// answered (e.g. a native permission prompt for the first focused RED command) and the
+// session-manager instance returns non-terminal (## CONTINUE_REQUIRED — its own
+// turn/context budget ran out), the orchestrator's auto-resume re-spawned
+// gsd-debug-session-manager with IDENTICAL session_params. The respawn was therefore
+// prompt-indistinguishable from a cold start: the durable checkpoint's recorded
+// next_action — read only for terminal classification and the blocker message — never
+// reached the respawned agent, and neither did the fact that the earlier checkpoint had
+// already been answered. Two auto-resumes then made no progress and the
+// (correctly-behaving) no-progress guard stopped the loop, even though everything needed
+// to proceed was on disk.
+//
+// The fix threads resume state through BOTH orchestrator call sites (Section 1c
+// `continue` return handling and Section 4's non-terminal branch — textual duplicates,
+// so fixing one leaves the other broken) and makes the manager's Step 2 gsd-debugger
+// template consume it, using Step 3d's DATA_START/DATA_END checkpoint-response shape.
+// The anti-loop guard itself (next_action-only heuristic + absolute 3-resume hard cap)
+// is deliberately NOT weakened — out of scope, confirmed correct.
+describe('#3448 debug auto-resume must thread the recorded next_action', () => {
+  const debugContent3448 = fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-core', 'workflows', 'debug.md'),
+    'utf-8'
+  );
+  const managerContent3448 = fs.readFileSync(
+    path.join(__dirname, '..', 'agents', 'gsd-debug-session-manager.md'),
+    'utf-8'
+  );
+
+  const section4Start3448 = debugContent3448.indexOf('## 4. Session Management');
+  const section43448 = section4Start3448 !== -1 ? debugContent3448.slice(section4Start3448) : '';
+
+  const section1cStart3448 = debugContent3448.indexOf('## 1c. CONTINUE subcommand');
+  const section1dStart3448 = debugContent3448.indexOf('## 1d. Check Active Sessions');
+  const section1c3448 =
+    section1cStart3448 !== -1 && section1dStart3448 !== -1
+      ? debugContent3448.slice(section1cStart3448, section1dStart3448)
+      : '';
+
+  test('both auto-resume sections exist', () => {
+    assert.notEqual(section4Start3448, -1, 'debug.md must contain Section 4');
+    assert.notEqual(section1cStart3448, -1, 'debug.md must contain Section 1c');
+  });
+
+  // AC1 + AC3: the resume spawn must carry the checkpoint's recorded next_action,
+  // symmetrically across both resume trigger paths.
+  for (const [label, section] of [['Section 4', section43448], ['Section 1c', section1c3448]]) {
+    describe(`${label} resume spawn (#3448)`, () => {
+      test('forwards the recorded next_action into the resume spawn parameters', () => {
+        assert.ok(
+          /resume_next_action/i.test(section),
+          `${label} must pass the checkpoint's next_action into the respawn as an explicit resume parameter (not just read it for classification)`
+        );
+        assert.ok(
+          /next_action.{0,200}from.{0,40}\.planning\/debug\/\{sl?ug\}\.md/i.test(section) ||
+            /\.planning\/debug\/\{sl?ug\}\.md.{0,120}next_action/i.test(section),
+          `${label} must source resume_next_action from the on-disk checkpoint file`
+        );
+      });
+
+      test('forwards the checkpoint status so the respawn is not a cold start', () => {
+        assert.ok(
+          /resume_status/i.test(section),
+          `${label} must pass the checkpoint's status into the respawn`
+        );
+      });
+
+      test('resume spawn is explicitly NOT parameter-identical to the original spawn', () => {
+        assert.ok(
+          /not.{0,30}identical session_params|session_params.{0,80}plus|plus.{0,40}resume/i.test(section),
+          `${label} must append resume parameters to (not reuse verbatim) the original session_params — an identical-params respawn is the #3448 stall`
+        );
+      });
+
+      test('states the prior answered checkpoint must not be re-raised', () => {
+        assert.ok(
+          /already (been )?answered|answered checkpoint/i.test(section),
+          `${label} must carry the disposition that an earlier checkpoint was already answered, so the respawn does not re-raise it`
+        );
+      });
+    });
+  }
+
+  // AC1 + AC4: the manager must consume what the orchestrator now sends.
+  describe('gsd-debug-session-manager.md consumes resume state (#3448)', () => {
+    test('session_parameters documents the resume parameters', () => {
+      assert.ok(/resume_next_action/i.test(managerContent3448),
+        'the session_parameters list must document resume_next_action');
+      assert.ok(/resume_status/i.test(managerContent3448),
+        'the session_parameters list must document resume_status');
+    });
+
+    test("Step 2's gsd-debugger prompt conditionally carries the recorded next_action, DATA-bounded", () => {
+      const step2Start = managerContent3448.indexOf('## Step 2: Spawn gsd-debugger Agent');
+      const step3Start = managerContent3448.indexOf('## Step 3: Handle Agent Return');
+      assert.ok(step2Start !== -1 && step3Start !== -1, 'Step 2 must exist');
+      const step2 = managerContent3448.slice(step2Start, step3Start);
+      assert.ok(
+        /resume_next_action/i.test(step2),
+        'Step 2 template must reference resume_next_action when present'
+      );
+      assert.ok(
+        /DATA_START[\s\S]{0,600}resume_next_action[\s\S]{0,600}DATA_END/i.test(step2),
+        'the forwarded next_action must be bounded by DATA_START/DATA_END (checkpoint content is data — Step 3d shape)'
+      );
+    });
+
+    test("Step 2 instructs the debugger to proceed directly on the recorded next action without re-raising answered checkpoints", () => {
+      const step2Start = managerContent3448.indexOf('## Step 2: Spawn gsd-debugger Agent');
+      const step3Start = managerContent3448.indexOf('## Step 3: Handle Agent Return');
+      const step2 = managerContent3448.slice(step2Start, step3Start);
+      assert.ok(
+        /proceed (directly )?on|resume (from|with)|pick up/i.test(step2),
+        'Step 2 must tell the resumed debugger to act on the recorded next action'
+      );
+      assert.ok(
+        /already (been )?answered|do not re-?raise/i.test(step2),
+        'Step 2 must state that prior checkpoints were already answered and must not be re-raised'
+      );
+    });
+  });
+
+  // AC2: the circuit breaker must survive the fix unchanged.
+  describe('anti-loop guard unchanged by the #3448 fix (out-of-scope surface)', () => {
+    test('no-progress heuristic still keys off next_action alone with the 3-resume hard cap in both sections', () => {
+      for (const [label, section] of [['Section 4', section43448], ['Section 1c', section1c3448]]) {
+        assert.ok(/anti-loop guard/i.test(section), `${label} must still name the anti-loop guard`);
+        assert.ok(/\b3\b/.test(section) && /total auto-resumes/i.test(section),
+          `${label} must still encode the absolute 3-total-auto-resume hard cap`);
+        assert.ok(/next_action.{0,5}UNCHANGED/i.test(section),
+          `${label} no-progress detection must still compare next_action across resumes`);
+      }
+    });
+
+    test('resume directive must not suppress genuinely NEW human-input checkpoints', () => {
+      assert.ok(
+        /genuine|new human|pending user|AskUserQuestion/i.test(managerContent3448),
+        'the manager must still route genuine user-input checkpoints through AskUserQuestion (Step 3d), independent of resume dispatch'
+      );
+    });
   });
 });

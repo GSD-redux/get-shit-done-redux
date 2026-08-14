@@ -653,9 +653,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    `[checkpoint] phase {PHASE_NUMBER} wave {N}/{M} plan {plan_id} starting ({P}/{Q} plans done)`
 
-   Pass paths only — executors read files themselves with their fresh context window.
-   For 200k models, this keeps orchestrator context lean (~10-15%).
-   For 1M+ models (Opus 4.6, Sonnet 4.6), richer context can be passed directly.
+   Pass paths only — executors read files themselves.
+
+   **Executor routing (#1689/#3370).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
 
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
 
@@ -690,8 +690,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    ```text
    Agent(
-     subagent_type="gsd-executor",
-     description="Execute plan {plan_number} of phase {phase_number}",
+    subagent_type="{EXECUTOR_TYPE}",
+    description="Execute plan {plan_number} of phase {phase_number}",
      # Only include model= when executor_model is an explicit model name.
      # When executor_model is "inherit", omit this parameter entirely so
      # Claude Code inherits the orchestrator model automatically.
@@ -733,12 +733,13 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </parallel_execution>
 
        <execution_context>
-       @~/.claude/gsd-core/workflows/execute-plan.md
-       @~/.claude/gsd-core/templates/summary.md
-       @~/.claude/gsd-core/references/checkpoints.md
-       @~/.claude/gsd-core/references/tdd.md
-       @~/.claude/gsd-core/references/worktree-path-safety.md
-       ${CONTEXT_WINDOW < 200000 ? '' : '@~/.claude/gsd-core/references/executor-examples.md'}
+       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
+       - `~/.claude/gsd-core/workflows/execute-plan.md`
+       - `~/.claude/gsd-core/templates/summary.md`
+       - `~/.claude/gsd-core/references/checkpoints.md`
+       - `~/.claude/gsd-core/references/tdd.md`
+       - `~/.claude/gsd-core/references/worktree-path-safety.md`
+       ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>
 
        <files_to_read>

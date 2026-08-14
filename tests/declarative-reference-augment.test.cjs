@@ -202,6 +202,7 @@ test('legitimate isAugment destructure/enumeration sites survive (not eliminated
   const file = path.join(__dirname, '..', 'bin', 'install.js');
   const src = fs.readFileSync(file, 'utf8');
   assert.ok(/isAugment/.test(src), 'isAugment must still be destructured from runtimeFlags() for non-conversion uses');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
   assert.ok(/_DESCRIPTOR_AGENTS_RUNTIMES\s*=\s*new Set\(\[[^\]]*'augment'/.test(src),
     'augment must remain in _DESCRIPTOR_AGENTS_RUNTIMES (descriptor-driven agent layout)');
 });

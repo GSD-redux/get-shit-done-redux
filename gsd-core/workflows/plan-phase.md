@@ -73,6 +73,14 @@ INGEST_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--ingest[[:space:]]+([^[:s
 RESEARCH_PHASE_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--research-phase[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then RESEARCH_PHASE_PARAM="--research-phase ${BASH_REMATCH[2]}"; fi
 REVIEWS_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--reviews([[:space:]]|$) ]]; then REVIEWS_PARAM="--reviews"; fi
 CHUNKED_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--chunked([[:space:]]|$) ]]; then CHUNKED_PARAM="--chunked"; fi
+# Project the just-completed planning mode onto the execute-phase follow-up (#3297):
+# a --gaps run creates gap_closure plans, so the Next Up handoff must point at
+# execute-phase's matching --gaps-only scope rather than the whole-phase run.
+# Standard and --reviews runs leave GAPS_EXEC_FLAG empty → their Next Up is unchanged.
+GAPS_MODE=false
+if [[ "$ARGUMENTS" =~ (^|[[:space:]])--gaps([[:space:]]|$) ]]; then GAPS_MODE=true; fi
+GAPS_EXEC_FLAG=""
+if [ "$GAPS_MODE" = "true" ]; then GAPS_EXEC_FLAG="--gaps-only"; fi
 INIT=$(gsd_run query init.plan-phase "$PHASE" $GRAN_PARAM $PRD_PARAM $INGEST_PARAM $RESEARCH_PHASE_PARAM $REVIEWS_PARAM $CHUNKED_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)
@@ -453,7 +461,7 @@ Read the `activeHooks` array directly from `PLAN_PRE_HOOKS_JSON` / `HOOKS_JSON` 
 - If `ref.agent` is set, dispatch with `Agent(prompt=filled_hook_fragment, subagent_type=ref.agent, model="{researcher_model}")`. Use the hook's `fragment.inline` as the prompt body and fill phase fields before spawning.
 - The `research` hook is handled by §5.1's research decision. The `pattern-mapper` hook is handled by §7.8 after `RESEARCH_PATH` is known. Future plan:pre agent hooks use the same `ref.agent` fragment contract.
 
-**AI integration capability:** If the active `ai-integration` step hook is present, `AI_SPEC_PATH` is empty, and the phase goal contains AI keywords (`agent`, `llm`, `rag`, `chatbot`, `embedding`, `langchain`, `llamaindex`, `crewai`, `langgraph`, `openai`, `anthropic`, `vector`, `eval`, `ai system`), then:
+**AI integration capability:** If the active `ai-integration` step hook is present, `AI_SPEC_PATH` is empty, and the phase goal contains AI keywords (`agent`, `llm`, `rag`, `chatbot`, `embedding`, `langchain`, `llamaindex`, `crewai`, `langgraph`, `openai`, `anthropic`, `vector`, `llm eval`), then:
 - In pipeline / `--auto` mode, invoke the hook's `ref.skill` via `Skill(skill="gsd-${ref.skill}", args="${PHASE} --auto ${GSD_WS}")`.
 - In manual mode, display the existing non-blocking `/gsd:ai-integration-phase {N}` recommendation and let the user continue planning without AI-SPEC or stop to run the capability workflow first.
 
@@ -1472,6 +1480,8 @@ Route to `<offer_next>` (existing behavior).
 <offer_next>
 Output this markdown directly (not as a code block):
 
+`${GAPS_EXEC_FLAG}` projects the just-completed planning mode onto the follow-up execute command (#3297): it expands to `--gaps-only` for a `--gaps` planning run (so the handoff points at execute-phase's gap-closure scope — only the newly created `gap_closure: true` plans — not the whole phase) and to empty for a standard or `--reviews` run (whole-phase scope, unchanged). Substitute it verbatim; when empty, collapse the extra space.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  GSD ► PHASE {X} PLANNED ✓
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1494,7 +1504,7 @@ Verification: {Passed | Passed with override | Skipped}
 
 /clear then:
 
-/gsd:execute-phase {X} ${GSD_WS}
+/gsd:execute-phase {X} ${GAPS_EXEC_FLAG} ${GSD_WS}
 
 ───────────────────────────────────────────────────────────────
 

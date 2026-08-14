@@ -299,6 +299,7 @@ describe('agent-classification-parity: AGENTS.md section structure is the single
     // --- (c) parenthetical slug list ---
     // The prose lists short slugs without "gsd-" prefix, e.g.:
     //   (pattern-mapper, debug-session-manager, ...)
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses docs/AGENTS.md, a maintainer-authored repo doc with bounded prose, not adversarial input
     const parenMatch = rawAgentsMd.match(/\(([^)]+)\)\s+have concise stubs/);
     assert.ok(
       parenMatch,

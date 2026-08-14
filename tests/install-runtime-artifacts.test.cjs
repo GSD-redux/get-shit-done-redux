@@ -3388,50 +3388,22 @@ describe('#769/#1319 convertClaudeCommandToClaudeSkill: preserves context and em
       `SKILL.md frontmatter must include context: fork\nActual frontmatter:\n${fm}`);
   });
 
-  test('normalizes effort: xhigh/max to effort: high in emitted SKILL.md frontmatter (#1319/#3039)', () => {
-    const input = [
-      '---',
-      'name: gsd:test-heavy',
-      'description: Test heavy skill',
-      'context: fork',
-      'effort: xhigh',
-      'allowed-tools:',
-      '  - Read',
-      '  - Bash',
-      '---',
-      '',
-      'Heavy skill body.',
-    ].join('\n');
-
-    const result = convertClaudeCommandToClaudeSkill(input, 'test-heavy');
-    const end = result.indexOf('---', 3);
-    const fm = result.substring(3, end);
-
-    assert.match(fm, /^effort:[ \t]*high$/m,
-      `SKILL.md frontmatter must include portable effort: high (#3039)\nActual frontmatter:\n${fm}`);
-    assert.doesNotMatch(fm, /^effort:[ \t]*(xhigh|max)$/m,
-      `SKILL.md frontmatter must not include rejected effort: xhigh or max (#1319/#3039)\nActual frontmatter:\n${fm}`);
-  });
-
-  test('preserves effort: low in emitted SKILL.md frontmatter', () => {
-    const input = [
-      '---',
-      'name: gsd:test-light',
-      'description: Test light skill',
-      'effort: low',
-      'allowed-tools:',
-      '  - Read',
-      '---',
-      '',
-      'Light skill body.',
-    ].join('\n');
-
-    const result = convertClaudeCommandToClaudeSkill(input, 'test-light');
-    const end = result.indexOf('---', 3);
-    const fm = result.substring(3, end);
-
-    assert.match(fm, /^effort:[ \t]*low$/m,
-      `SKILL.md frontmatter must include effort: low\nActual frontmatter:\n${fm}`);
+  test('#3151: does NOT emit effort: into SKILL.md frontmatter (a static effort value invalidates the caller\'s prompt cache)', () => {
+    // Whatever effort the source command declares, the installed SKILL.md must
+    // NOT carry it: Claude Code applies SKILL.md `effort:` as output_config.effort,
+    // and any change from the session baseline invalidates the prompt cache at both
+    // scope boundaries (entry + exit). Verified by the reporter's owned measurement.
+    const inputs = [
+      ['xhigh source', '---\nname: gsd:test-heavy\ndescription: Heavy\ncontext: fork\neffort: xhigh\nallowed-tools:\n  - Read\n---\n\nBody.\n'],
+      ['low source', '---\nname: gsd:test-light\ndescription: Light\neffort: low\nallowed-tools:\n  - Read\n---\n\nBody.\n'],
+    ];
+    for (const [label, input] of inputs) {
+      const result = convertClaudeCommandToClaudeSkill(input, label === 'xhigh source' ? 'test-heavy' : 'test-light');
+      const end = result.indexOf('---', 3);
+      const fm = result.substring(3, end);
+      assert.doesNotMatch(fm, /^effort:/m,
+        `SKILL.md frontmatter must NOT include effort: for ${label} (#3151)\nActual frontmatter:\n${fm}`);
+    }
   });
 
   test('does NOT emit context: or effort: when absent from source', () => {
@@ -3461,7 +3433,7 @@ describe('#769/#1319 convertClaudeCommandToClaudeSkill: preserves context and em
 
 // #921/#922: after install, spawning orchestrators must NOT carry context: fork
 // in their emitted SKILL.md. #1319: heavyweight skills must use portable max effort.
-describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md files have effort: high (clamped from max) but NOT context: fork', () => {
+describe('#769/#921/#3151 Claude global install: SKILL.md files emit NO effort (#3151 — static effort invalidates caller cache) and NOT context: fork', () => {
   let tmpDir;
   let claudeHome;
 
@@ -3483,14 +3455,12 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
       `gsd-autonomous is a spawning orchestrator; its SKILL.md must NOT have context: fork (#921)\nActual:\n${fm}`);
   });
 
-  test('gsd-autonomous SKILL.md has effort: max after global install (#1319)', () => {
+  test('gsd-autonomous SKILL.md does NOT emit effort: after global install (#3151)', () => {
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'autonomous');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*high$/m,
-      `gsd-autonomous SKILL.md must have effort: high\nActual:\n${fm}`);
-    assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-autonomous SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:/m,
+      `gsd-autonomous SKILL.md must NOT emit effort: (#3151 — a static value invalidates the caller's prompt cache)\nActual:\n${fm}`);
   });
 
   test('gsd-execute-phase SKILL.md does NOT have context: fork after global install (#921)', () => {
@@ -3501,14 +3471,12 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
       `gsd-execute-phase is a spawning orchestrator; its SKILL.md must NOT have context: fork (#921)\nActual:\n${fm}`);
   });
 
-  test('gsd-execute-phase SKILL.md has effort: max after global install (#1319)', () => {
+  test('gsd-execute-phase SKILL.md does NOT emit effort: after global install (#3151)', () => {
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'execute-phase');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*high$/m,
-      `gsd-execute-phase SKILL.md must have effort: high\nActual:\n${fm}`);
-    assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-execute-phase SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:/m,
+      `gsd-execute-phase SKILL.md must NOT emit effort: (#3151)\nActual:\n${fm}`);
   });
 
   test('gsd-plan-phase SKILL.md does NOT have context: fork after global install (#921)', () => {
@@ -3519,30 +3487,28 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
       `gsd-plan-phase is a spawning orchestrator; its SKILL.md must NOT have context: fork (#921)\nActual:\n${fm}`);
   });
 
-  test('gsd-plan-phase SKILL.md has effort: max after global install (#1319)', () => {
+  test('gsd-plan-phase SKILL.md does NOT emit effort: after global install (#3151)', () => {
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'plan-phase');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*high$/m,
-      `gsd-plan-phase SKILL.md must have effort: high\nActual:\n${fm}`);
-    assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-plan-phase SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:/m,
+      `gsd-plan-phase SKILL.md must NOT emit effort: (#3151)\nActual:\n${fm}`);
   });
 
-  test('gsd-progress SKILL.md has effort: low after global install', () => {
+  test('gsd-progress SKILL.md does NOT emit effort: after global install (#3151)', () => {
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'progress');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*low$/m,
-      `gsd-progress SKILL.md must have effort: low\nActual:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:/m,
+      `gsd-progress SKILL.md must NOT emit effort: (#3151)\nActual:\n${fm}`);
   });
 
-  test('gsd-stats SKILL.md has effort: low after global install', () => {
+  test('gsd-stats SKILL.md does NOT emit effort: after global install (#3151)', () => {
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'stats');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*low$/m,
-      `gsd-stats SKILL.md must have effort: low\nActual:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:/m,
+      `gsd-stats SKILL.md must NOT emit effort: (#3151)\nActual:\n${fm}`);
   });
 });
   });
@@ -4066,6 +4032,7 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
     );
     assert.match(tomlContent, /^model\s*=\s*"gpt-5.6-sol"$/m,
       `gsd-planner.toml should pin Codex model when runtime:"codex" is configured\nActual:\n${tomlContent.slice(0, 500)}`);
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses output of an actual install run against test-controlled config, bounded, not adversarial input
     const match = tomlContent.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/m);
     assert.ok(match, `model_reasoning_effort must be present in .toml\nActual:\n${tomlContent.slice(0, 500)}`);
     assert.ok(VALID_EFFORTS.includes(match[1]),
@@ -4854,6 +4821,7 @@ describe('Bug #2973: profile-user.md confirmation message references the skills 
   test('the Display message points at $HOME/.claude/skills/gsd-dev-preferences/SKILL.md', () => {
     const md = fs.readFileSync(WORKFLOW, 'utf-8');
     // Match the structured Display: line; capture the path value.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored profile-user.md workflow, bounded prose, not adversarial input
     const m = md.match(/Display:\s*"[^"]*Generated\s*\/gsd-dev-preferences\s*at\s*([^"]+)"/);
     assert.notEqual(m, null, 'expected a Display: "Generated /gsd-dev-preferences at <path>" line');
     const referencedPath = m[1].trim();
@@ -5993,6 +5961,7 @@ describe('bug-2808: SKILL.md name: uses hyphen form', () => {
       const skillContent = fs.readFileSync(skillMdPath, 'utf-8');
       // Scope the name: lookup to the YAML frontmatter block so a stray
       // `name:` line in the body cannot satisfy the assertion.
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own generated SKILL.md frontmatter, fixed-size author-controlled content
       const fmMatch = skillContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, `${relPath}: generated SKILL.md must include frontmatter`);
       const nameLine = fmMatch[1].split(/\r?\n/).find((l) => /^name:\s*/.test(l));

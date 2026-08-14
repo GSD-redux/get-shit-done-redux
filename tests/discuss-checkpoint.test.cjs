@@ -74,6 +74,7 @@ describe('discuss-phase incremental checkpoint saves (#1485)', () => {
 
   test('success criteria include checkpoint requirements', () => {
     const content = fs.readFileSync(workflowPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const criteriaMatch = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
     const criteria = criteriaMatch ? criteriaMatch[1] : '';
     assert.ok(criteria.includes('checkpoint') || criteria.includes('Checkpoint'),

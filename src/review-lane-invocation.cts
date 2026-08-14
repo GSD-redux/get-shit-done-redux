@@ -24,6 +24,7 @@
 
 import type {
   EmptyOutputPolicy,
+  EvidenceClass,
   LaneHandler,
   LaneProbe,
   ReviewerLane,
@@ -92,6 +93,19 @@ export interface SpawnPlan {
   errPath: string;
   timeoutMs: number;
   emptyOutput: EmptyOutputPolicy;
+  /**
+   * The lane's declared evidence class, carried onto the plan so the runner can VERIFY the
+   * declaration against the review's actual output (#3194): a `source-grounded` lane whose
+   * review cites no `file:line` evidence is stamped and down-weighted in the Consensus
+   * Summary, while `diff-only` lanes are exempt (their verdict is already folded in as a
+   * diff observation).
+   *
+   * NORMALIZED, not trusted: this module is the overlay-manifest trust boundary and a
+   * third-party body can declare any value. Anything that is not exactly `'diff-only'`
+   * resolves as `'source-grounded'` — the fail-toward-verification direction, since the
+   * only behavioral consequence is whether the lane's OWN review gets down-weighted.
+   */
+  evidenceClass: EvidenceClass;
   handler: LaneHandler;
   requiresBinaries: readonly string[];
   probe: LaneProbe;
@@ -121,6 +135,8 @@ export interface HttpPlan {
   errPath: string;
   timeoutMs: number;
   emptyOutput: EmptyOutputPolicy;
+  /** Declared evidence class, carried for run-time verification — see `SpawnPlan`. */
+  evidenceClass: EvidenceClass;
   handler: LaneHandler;
   requiresBinaries: readonly string[];
   probe: LaneProbe;
@@ -319,6 +335,10 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       ? lane.timeoutFloorMs
       : 900_000;
   const emptyOutput: EmptyOutputPolicy = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
+  // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
+  // Anything else — including a missing or garbage value on a third-party overlay body —
+  // resolves as 'source-grounded', so the runner verifies rather than trusts it.
+  const evidenceClass: EvidenceClass = lane.evidenceClass === 'diff-only' ? 'diff-only' : 'source-grounded';
   const requiresBinaries = Array.isArray(lane.requiresBinaries)
     ? lane.requiresBinaries.filter((b): b is string => typeof b === 'string')
     : [];
@@ -378,6 +398,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
         errPath,
         timeoutMs,
         emptyOutput,
+        evidenceClass,
         handler,
         requiresBinaries,
         probe: lane.probe,
@@ -496,6 +517,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       errPath,
       timeoutMs,
       emptyOutput,
+      evidenceClass,
       handler,
       requiresBinaries,
       probe: lane.probe,

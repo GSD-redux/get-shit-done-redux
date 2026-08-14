@@ -75,6 +75,7 @@ function captureStdout(fn) {
 function readShippedStateTemplateBody(replacements) {
   const templatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md');
   const template = fs.readFileSync(templatePath, 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own state.md template, fixed-size author-controlled content
   const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/);
   assert.ok(fencedDocument, 'gsd-core/templates/state.md must contain a fenced markdown document');
 
@@ -1364,6 +1365,87 @@ describe('cmdStatePatch and cmdStateUpdate (state patch, state update)', () => {
     assert.ok(output.failed.includes('Missing'), 'Missing should be in failed list');
   });
 
+  // #3351: state.patch's `updated`/`failed` report must reflect what actually
+  // persisted to STATE.md after the write completes — not whether the internal
+  // text-replace matched frontmatter text that the write pipeline then
+  // re-derives away (syncStateFrontmatter re-derives current_phase /
+  // current_phase_name from the body `Phase:` line on every write, and the
+  // FIELD_CLASSIFICATION preservation rows restore the pre-write values when
+  // the body source did not change).
+  describe('#3351: state.patch report reconciled against persisted STATE.md', () => {
+    const phaseStateMd = [
+      '---',
+      'gsd_state_version: 1.0',
+      'current_phase: 1',
+      'current_phase_name: alpha',
+      'risk_level: low',
+      'status: executing',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 (alpha)',
+      '',
+    ].join('\n');
+
+    function readFm(dir) {
+      return frontmatterLib.extractFrontmatter(
+        fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf-8'),
+      );
+    }
+
+    test('body-derived/curated frontmatter fields re-derived by the write are reported failed, not updated', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), phaseStateMd);
+
+      const result = runGsdTools([
+        'query',
+        'state.patch',
+        JSON.stringify({ current_phase: '7', current_phase_name: 'omega' }),
+      ], tmpDir);
+      assert.ok(result.success, `state patch failed: ${result.error}`);
+
+      const report = JSON.parse(result.output);
+      assert.deepEqual(report.updated, [], `phantom updates must not be reported: ${result.output}`);
+      assert.deepEqual(report.failed.sort(), ['current_phase', 'current_phase_name'].sort());
+
+      // On-disk truth: neither requested value persisted.
+      const fm = readFm(tmpDir);
+      assert.notEqual(String(fm.current_phase), '7', 'current_phase was re-derived away by the write pipeline');
+      assert.notEqual(String(fm.current_phase_name), 'omega', 'current_phase_name was restored by the curated preservation row');
+    });
+
+    test('mixed patch reports an accurate updated/failed split (one lands, one is re-derived away)', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), phaseStateMd);
+
+      const result = runGsdTools([
+        'query',
+        'state.patch',
+        JSON.stringify({ risk_level: 'high', current_phase: '7' }),
+      ], tmpDir);
+      assert.ok(result.success, `state patch failed: ${result.error}`);
+
+      const report = JSON.parse(result.output);
+      assert.deepEqual(report.updated, ['risk_level']);
+      assert.deepEqual(report.failed, ['current_phase']);
+
+      const fm = readFm(tmpDir);
+      assert.equal(String(fm.risk_level), 'high', 'the custom frontmatter key must still land');
+      assert.notEqual(String(fm.current_phase), '7');
+    });
+
+    test('empty patch still reports both arrays empty', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), phaseStateMd);
+
+      const result = runGsdTools(['query', 'state.patch', '{}'], tmpDir);
+      assert.ok(result.success, `state patch failed: ${result.error}`);
+
+      const report = JSON.parse(result.output);
+      assert.deepEqual(report, { updated: [], failed: [] });
+    });
+  });
+
   test('state update changes a single field', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateMd);
 
@@ -1988,6 +2070,7 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
     assert.ok(!updated.includes('- Single blocker'), 'resolved blocker should be removed');
 
     // Section should contain "None" placeholder, not be empty
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const sectionMatch = updated.match(/## Blockers\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(sectionMatch, 'Blockers section should still exist');
     assert.ok(sectionMatch[1].includes('None'), 'Blockers section should contain None placeholder');
@@ -2123,6 +2206,86 @@ describe('cmdStateRecordSession (state record-session)', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.recorded, false, 'recorded should be false when no session fields found');
     assert.ok(output.reason !== undefined, 'should have a reason');
+  });
+
+  // #3374 Variant B: stateReplaceField returns the replaced string on any label
+  // MATCH, including when the value is already the target — so `updated` used
+  // to report 'Stopped At' for a write that never changed a byte (and that the
+  // #948 no-op guard then discarded entirely), leaving a stale frontmatter
+  // stopped_at undetectable to the caller. The report must reflect real change,
+  // and a matched-but-identical value must NOT arm the #944 DWIM insertion
+  // branch (which wholesale-rewrites the session section and would reset an
+  // executor-authored resume file to 'None').
+  test('#3374: --stopped-at with the value already in the body is not reported updated and writes nothing', () => {
+    const PINNED_MS = Date.parse('2020-09-01T09:00:00.000Z');
+    const PINNED_ISO = '2020-09-01T09:00:00.000Z';
+    const executorResume = '.planning/phases/02/02-01-PLAN.md';
+    const fixture = [
+      '# Project State',
+      '',
+      '## Session Continuity',
+      '',
+      `**Last session:** ${PINNED_ISO}`,
+      '**Stopped at:** Phase 2, Plan 1',
+      `**Resume file:** ${executorResume}`,
+    ].join('\n') + '\n';
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, fixture);
+
+    const result = runGsdTools('state record-session --stopped-at "Phase 2, Plan 1"', tmpDir, {
+      GSD_TEST_MODE: '1',
+      GSD_NOW_MS: String(PINNED_MS),
+    });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !((output.updated || []).includes('Stopped At')),
+      `updated must not report a Stopped At write that changed nothing; got ${JSON.stringify(output.updated)} (#3374 Variant B)`,
+    );
+
+    // The pinned clock makes the Last-session replacement an identity too, so
+    // the whole transform is a no-op and the #948 no-op guard must skip the
+    // write entirely — the file must be byte-identical.
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.strictEqual(
+      after,
+      fixture,
+      'no field changed, so no write may occur (#3374 Variant B)',
+    );
+    assert.strictEqual(
+      stateDocument.stateExtractField(after, 'Resume file'),
+      executorResume,
+      'an identical --stopped-at must not arm the #944 DWIM section rewrite (executor-authored resume file reset to None)',
+    );
+  });
+
+  test('#3374: --stopped-at with a new value still reports Stopped At and syncs the frontmatter', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), sessionFixture);
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const newValue = 'Phase 3 complete, ready to plan Phase 4';
+
+    const result = runGsdTools(['state', 'record-session', '--stopped-at', newValue], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      (output.updated || []).includes('Stopped At'),
+      `a real change must keep reporting Stopped At; got ${JSON.stringify(output.updated)}`,
+    );
+
+    const after = fs.readFileSync(statePath, 'utf-8');
+    assert.strictEqual(
+      stateDocument.stateExtractField(after, 'Stopped at'),
+      newValue,
+      'the body Stopped at line should carry the new value',
+    );
+    const fm = frontmatterLib.extractFrontmatter(after);
+    assert.strictEqual(
+      fm.stopped_at,
+      newValue,
+      `the RMW sync must reflect the new value in frontmatter; got ${JSON.stringify(fm.stopped_at)}`,
+    );
   });
 });
 
@@ -2311,6 +2474,7 @@ Progress: [..........] 0%
     );
 
     // Extract the Current Position section
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section should exist');
     const posSection = posMatch[1];
@@ -2412,6 +2576,7 @@ Progress: [..........] 0%
     const content = fs.readFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'
     );
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section should exist after advance-plan');
     const posSection = posMatch[1];
@@ -3115,6 +3280,7 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
 
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     // Extract only the frontmatter (between --- fences) to check the desc
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
     assert.ok(
@@ -3125,6 +3291,171 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
       !frontmatter.includes('stale description'),
       'stale body desc must NOT appear in frontmatter (it may remain in body prose)',
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3395: state planned-phase must refresh the Current Position `Phase:` line
+// (the body source the frontmatter resync and `state json` re-derive
+// current_phase from) instead of leaving a stale one behind, and must persist
+// its --name argument instead of silently dropping it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3395: planned-phase refreshes the stale Phase line and persists --name', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const PINNED_ENV = { GSD_NOW_MS: String(Date.parse('2026-08-14T15:00:00.000Z')) };
+
+  function frontmatterBlock(stateContent) {
+    const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return m ? m[1] : '';
+  }
+
+  // The issue's repro shape: frontmatter already carries the correct decimal
+  // sub-phase, but the body's `## Current Position` still describes the
+  // PREVIOUS phase's completion prose.
+  function writeStalePhaseLineFixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "current_phase: '35.3'",
+        'current_phase_name: unattended-launch-prerequisites',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 35.1 (unattended-launch-prerequisites) — COMPLETE (4/4 plans)',
+        'Status: Planning',
+        'Total Plans in Phase: 4',
+        'Last Activity: 2026-08-01',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  test('issue repro: stale body Phase line is refreshed and current_phase stays coherent end to end', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '35.3', '--plans', '3'], tmpDir, PINNED_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterBlock(stateContent);
+    // AC #1 outcome: the correct frontmatter value survives the write.
+    assert.ok(/current_phase:[^\n]*35\.3/.test(fm),
+      `frontmatter current_phase must stay 35.3; frontmatter was:\n${fm}`);
+    // The stale body source must not survive the transition that just
+    // declared 35.3 planned — it is the source every body-derived consumer
+    // (state json included) re-reads.
+    assert.ok(!stateContent.includes('35.1'),
+      `the stale 35.1 phase prose must be refreshed away; STATE.md was:\n${stateContent}`);
+    assert.ok(/Phase: 35\.3 — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must read "Phase: 35.3 — READY TO EXECUTE"; STATE.md was:\n${stateContent}`);
+    // The read path must agree with the write path.
+    const json = JSON.parse(runGsdTools(['state', 'json', '--raw'], tmpDir, PINNED_ENV).output);
+    assert.strictEqual(json.current_phase, '35.3',
+      `state json must report the refreshed phase, got: ${json.current_phase}`);
+  });
+
+  test('--name is persisted into the Phase line and frontmatter, not silently dropped', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '36', '--name', 'Core Foundation', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/Phase: 36 \(Core Foundation\) — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must carry the passed name; STATE.md was:\n${stateContent}`);
+    const fm = frontmatterBlock(stateContent);
+    // AC #2: the body phase source genuinely changed this transition, so
+    // current_phase re-derives from the refreshed line.
+    assert.ok(/current_phase:[^\n]*36/.test(fm),
+      `current_phase must follow the genuinely changed body phase source (36); frontmatter was:\n${fm}`);
+    assert.ok(/current_phase_name:[^\n]*Core Foundation/.test(fm),
+      `current_phase_name must persist the passed name; frontmatter was:\n${fm}`);
+  });
+
+  test('--name containing a parenthetical survives intact in frontmatter (#2736 mirror)', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '36', '--name', 'auth (oauth) refresh', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_phase_name:[^\n]*auth \(oauth\) refresh/.test(fm),
+      `current_phase_name must carry the exact authoritative name (prose re-derivation is lossy for nested parens); frontmatter was:\n${fm}`);
+  });
+
+  test('canonical labeled fixture without frontmatter current_phase: Phase line still refreshed', () => {
+    // No YAML frontmatter disagreement here — pins that the Phase-line refresh
+    // also applies to the plain template shape (fields only, Current Position
+    // `Phase: 1 of 5 (setup)` template form).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Current Phase:** 1',
+        '**Total Plans in Phase:** 0',
+        '**Status:** Planning',
+        '**Last Activity:** 2026-03-20',
+        '',
+        '## Current Position',
+        'Phase: 1 of 5 (setup)',
+        'Plan: 0 of 5 in current phase',
+        'Status: Planning',
+        'Last activity: 2026-03-20 -- Phase 1 complete',
+        '',
+      ].join('\n'),
+    );
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '2', '--name', 'Core', '--plans', '5'],
+      tmpDir,
+      PINNED_ENV,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/Phase: 2 \(Core\) — READY TO EXECUTE/m.test(stateContent),
+      `Current Position Phase line must be refreshed from the template form; STATE.md was:\n${stateContent}`);
+  });
+
+  test('no Current Position section: command still succeeds and body Current Phase field is untouched', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '**Status:** Planning',
+        '**Total Plans in Phase:** 0',
+        '**Last Activity:** 2024-01-01',
+        '**Current Phase:** 3',
+        '',
+      ].join('\n'),
+    );
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '3', '--plans', '5'], tmpDir, PINNED_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\* 3/.test(stateContent),
+      `body **Current Phase:** field must be untouched when no Current Position section exists; STATE.md was:\n${stateContent}`);
   });
 });
 
@@ -3210,6 +3541,7 @@ Progress: [##########] 20%
     );
 
     // Current Position Status: line must also be "Ready to execute"
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
@@ -3265,6 +3597,7 @@ Progress: [##########] 20%
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     // Locate the Current Position section and verify the Status line there.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
@@ -4819,6 +5152,120 @@ describe('last_activity / paused_at frontmatter not overwritten by historical pr
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3258: the FIELD_CLASSIFICATION preserve-when-unchanged rows for the Group 2
+// fields (paused_at, current_phase, current_plan) are now honored by
+// applyStatePreservation. Before the fix the only protection was the weaker
+// #905 absent-fallback in syncStateFrontmatter, which restores a field ONLY when
+// the derived value is falsy/absent — so a stale-but-present body value won
+// over a curated frontmatter value on every body-only write. These pin the
+// declared semantics end-to-end through the CLI: an unrelated `state update`
+// (which does NOT touch the Group 2 body source) must leave the curated
+// frontmatter values intact.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3258: Group 2 preserve-when-unchanged beats the weaker absent-fallback (paused_at / current_phase / current_plan)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function frontmatterBlock(stateContent) {
+    const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return m ? m[1] : '';
+  }
+
+  // STATE.md with curated frontmatter values and stale-but-present body values
+  // for all three Group 2 fields. A body-only write that does not touch any of
+  // them must NOT let the stale derived value win.
+  function writeGroup2Fixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        "current_phase: '4'",
+        "current_plan: '5'",
+        "paused_at: '2026-02-02'",
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 2',
+        '**Current Plan:** 3',
+        '**Status:** In progress',
+        '',
+        '## Current Position',
+        'Phase: 2',
+        'Plan: 3',
+        'Status: In progress',
+        '',
+        '## Session',
+        '',
+        'Last Date: 2026-02-01',
+        'Paused At: 2026-01-01',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  test('paused_at: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    // `state update` on Status is a body-only RMW write (resync=false) that does
+    // NOT touch the Paused At body source. The stale body value (2026-01-01)
+    // must not overwrite the curated frontmatter value (2026-02-02).
+    const result = runGsdTools('state update Status "Executing"', tmpDir);
+    assert.ok(result.success, `state update failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/paused_at:[^\n]*2026-02-02/.test(fm),
+      `paused_at must keep the curated value (2026-02-02); frontmatter was:\n${fm}`);
+    assert.ok(!/paused_at:[^\n]*2026-01-01/.test(fm),
+      `stale body-derived paused_at (2026-01-01) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('current_plan: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    runGsdTools('state update Status "Executing"', tmpDir);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_plan:[^\n]*5/.test(fm),
+      `current_plan must keep the curated value (5); frontmatter was:\n${fm}`);
+    assert.ok(!/current_plan:[^\n]*3\b/.test(fm),
+      `stale body-derived current_plan (3) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('current_phase: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    runGsdTools('state update Status "Executing"', tmpDir);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_phase:[^\n]*4/.test(fm),
+      `current_phase must keep the curated value (4); frontmatter was:\n${fm}`);
+    assert.ok(!/current_phase:[^\n]*2\b/.test(fm),
+      `stale body-derived current_phase (2) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('Group 2 fields still re-derive when the body source actually changes (no over-preservation)', () => {
+    // When the transform DOES change the body source, the derived value must
+    // win — preserve-when-unchanged must not freeze a field that a transition
+    // intentionally moved. Drive it via `state update "Current Plan"`.
+    writeGroup2Fixture();
+    const result = runGsdTools('state update "Current Plan" "7"', tmpDir);
+    assert.ok(result.success, `state update failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_plan:[^\n]*7/.test(fm),
+      `current_plan must take the new body value (7) when the body source changed; frontmatter was:\n${fm}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Bug #2445: stale phase dirs from closed milestone inflate phase counts
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -6025,6 +6472,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Primary assertion: frontmatter status must advance to 'executing'
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after begin-phase');
       const fm = fmMatch[1];
@@ -6067,6 +6515,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -6079,6 +6528,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Last activity cell must include date + narrative (not bare date)
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 execution started\s*\|/i.test(cpSection),
         `Current Position Last activity cell must include narrative '— Phase 1 execution started'; got Current Position:\n${cpSection}`
       );
@@ -6100,6 +6550,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Primary assertion: frontmatter status must be 'completed'
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after complete-phase');
       const fm = fmMatch[1];
@@ -6141,6 +6592,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -6163,6 +6615,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Bug 2: Last activity cell must include date + narrative (not bare date)
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 marked complete\s*\|/i.test(cpSection),
         `Current Position Last activity cell must include narrative '— Phase 1 marked complete'; got Current Position:\n${cpSection}`
       );
@@ -6202,6 +6655,7 @@ Last activity: 2026-06-01 -- Roadmap created
       );
       assert.ok(result.success, `begin-phase failed on inline format: ${result.error || result.output}`);
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'must have frontmatter');
       const fm = fmMatch[1];
@@ -6310,6 +6764,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       // Extract the ## Configuration section (stops before ## Current Position)
       // to avoid false-positive from the Current Position table (which IS updated
       // by updateCurrentPositionFields).
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cfgMatch = after.match(/##\s*Configuration\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cfgMatch, '## Configuration section must exist');
       const cfgSection = cfgMatch[1];
@@ -6335,6 +6790,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       );
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, 'STATE.md must have YAML frontmatter after planned-phase');
       const fm = fmMatch[1];
@@ -6366,12 +6822,14 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 
       // The pipe-table Phase cell must be updated to reflect the executing phase
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
         /\|\s*Phase\s*\|[^|]*1[^|]*EXECUTING[^|]*\|/i.test(cpSection),
         `Current Position pipe-table Phase cell must contain phase 1 EXECUTING; got Current Position:\n${cpSection}`
       );
@@ -6400,6 +6858,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
       const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
@@ -11399,6 +11858,7 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
 
     // Read back and parse frontmatter to verify it reflects 2 phases, not 1
     const result = fs.readFileSync(statePath, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = result.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'STATE.md should have frontmatter after writeStateMd');
 

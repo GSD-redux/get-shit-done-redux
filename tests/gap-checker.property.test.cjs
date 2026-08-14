@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Property-based tests for normalizePhaseReqIds range expansion (#1269).
+ * Property-based tests for normalizePhaseReqIds range expansion (#1269) and
+ * post-expand ID-shape filtering (#3189).
  *
  * Module: gsd-core/bin/lib/gap-checker.cjs
  * Exported: normalizePhaseReqIds(rawVal)
@@ -10,19 +11,27 @@
  * `<PREFIX>-NN..<PREFIX>-MM` (identical prefix both sides, identical bound digit
  * width, ascending numeric NN ≤ MM) expands in place to the individual IDs,
  * preserving the bounds' zero-pad width; ambiguous/invalid ranges stay literal
- * (fail-closed).
+ * (fail-closed) — and are then dropped by the post-expand shape filter (#3189),
+ * because they contain `.`/`..` and so cannot be requirement IDs.
+ *
+ * ID-shape filter (#3189): STRICTLY AFTER range expansion, every token is
+ * filtered through `PHASE_REQ_ID_SHAPE_RE` (`/^(?=.*\d)[A-Z][A-Z0-9]*(?:[-_][A-Za-z0-9]+)*$/`).
+ * Tokens that cannot be requirement IDs (prose, punctuation, dates, invalid
+ * range tokens left literal by expandPhaseReqIdToken) are dropped; an input
+ * whose every token is dropped collapses to `null`.
  *
  * Properties tested:
  *   (a) valid ascending same-prefix, same-width range → length == MM-NN+1, all
  *       elements share the prefix, suffixes are strictly monotonic NN..MM,
- *       width preserved
+ *       width preserved — and every expanded ID survives the shape filter
  *   (b) NN == MM → single-element expansion equal to the (re-padded) bound
  *   (c) literal preservation: a non-range token round-trips unchanged
- *   (d) fail-closed: descending and mismatched-prefix ranges stay literal
- *   (d3) fail-closed: differing-width bounds stay literal
- *   (d4) fail-closed: non-numeric bounds stay literal
- *   (d5) fail-closed: missing left/right bound stays literal
- *   (d6) fail-closed: multi-dot tokens stay literal
+ *   (d) descending range → dropped by the shape filter (returns null)
+ *   (d2) mismatched-prefix range → dropped by the shape filter (returns null)
+ *   (d3) differing-width bounds → dropped by the shape filter (returns null)
+ *   (d4) non-numeric bounds → dropped by the shape filter (returns null)
+ *   (d5) missing left/right bound → dropped by the shape filter (returns null)
+ *   (d6) multi-dot tokens → dropped by the shape filter (returns null)
  *   (e) never throws on arbitrary string input
  *
  * Lives in a sibling *.property.test.cjs file (the established property-test
@@ -41,8 +50,15 @@ const { normalizePhaseReqIds } = require('../gsd-core/bin/lib/gap-checker.cjs');
 // A safe prefix that always ends in '-', contains no whitespace, commas,
 // brackets, quotes, parens, or dots (those are stripped/split by the
 // normalizer), and never collides with the null/TBD/none sentinels.
+//
+// #3189: leading char MUST be uppercase and the rest uppercase-or-digit, to
+// match `PHASE_REQ_ID_SHAPE_RE`'s `[A-Z][A-Z0-9]*` prefix portion. A
+// lowercase-leading prefix (e.g. `a-`) would produce IDs the shape filter
+// rejects, so properties (a)/(b)/(c) — which assert the expanded IDs survive —
+// would fail for the wrong reason. The realistic requirement-ID format is
+// uppercase-leading anyway (`REQ-`, `SEL-`, `R1`).
 const prefixArb = fc
-  .stringMatching(/^[A-Za-z][A-Za-z0-9]{0,5}$/)
+  .stringMatching(/^[A-Z][A-Z0-9]{0,5}$/)
   .filter(s => !/^(null|tbd|none)$/i.test(s))
   .map(s => `${s}-`);
 
@@ -87,7 +103,7 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
     ));
   });
 
-  test('(d3) differing-width bounds stay literal (fail-closed)', () => {
+  test('(d3) differing-width bounds are dropped by the shape filter (#3189 — expandPhaseReqIdToken still fails closed, then the literal token is filtered)', () => {
     fc.assert(fc.property(
       prefixArb,
       fc.integer({ min: 0, max: 50 }),
@@ -102,12 +118,15 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
         // Only exercise the differing-width case here.
         fc.pre(loStr.length !== hiStr.length);
         const token = `${prefix}${loStr}..${prefix}${hiStr}`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        // expandPhaseReqIdToken returns [token] (fail-closed on differing
+        // width); the token contains `..`, so #3189's shape filter drops it
+        // and normalizePhaseReqIds collapses to null.
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
 
-  test('(d4) non-numeric bounds stay literal (fail-closed)', () => {
+  test('(d4) non-numeric bounds are dropped by the shape filter (#3189)', () => {
     fc.assert(fc.property(
       prefixArb,
       // A suffix containing at least one non-digit so the bound is non-numeric.
@@ -115,12 +134,14 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
       fc.stringMatching(/^[0-9]*[A-Za-z][0-9A-Za-z]*$/),
       (prefix, sLo, sHi) => {
         const token = `${prefix}${sLo}..${prefix}${sHi}`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        // expandPhaseReqIdToken fails closed (returns [token]); #3189's filter
+        // then drops the literal token (contains `..`).
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
 
-  test('(d5) missing left or right bound stays literal (fail-closed)', () => {
+  test('(d5) missing left or right bound is dropped by the shape filter (#3189)', () => {
     fc.assert(fc.property(
       prefixArb,
       fc.integer({ min: 0, max: 99 }),
@@ -129,12 +150,14 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
       (prefix, n, w, dropLeft) => {
         const bound = `${prefix}${pad(n, w)}`;
         const token = dropLeft ? `..${bound}` : `${bound}..`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        // expandPhaseReqIdToken fails closed (returns [token]); #3189's filter
+        // then drops the literal token (contains `..`).
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
 
-  test('(d6) multi-dot tokens stay literal (fail-closed)', () => {
+  test('(d6) multi-dot tokens are dropped by the shape filter (#3189)', () => {
     fc.assert(fc.property(
       prefixArb,
       fc.integer({ min: 0, max: 50 }),
@@ -143,7 +166,9 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
       widthArb,
       (prefix, a, b, c, w) => {
         const token = `${prefix}${pad(a, w)}..${prefix}${pad(b, w)}..${prefix}${pad(c, w)}`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        // expandPhaseReqIdToken fails closed (returns [token]); #3189's filter
+        // then drops the literal token (contains `..`).
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
@@ -177,7 +202,7 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
     ));
   });
 
-  test('(d) descending range stays literal (fail-closed)', () => {
+  test('(d) descending range is dropped by the shape filter (#3189 — expandPhaseReqIdToken still fails closed, then the literal token is filtered)', () => {
     fc.assert(fc.property(
       prefixArb,
       fc.integer({ min: 1, max: 50 }),
@@ -187,14 +212,16 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
         fc.pre(a !== b);
         const hi = Math.max(a, b);
         const lo = Math.min(a, b);
-        // Deliberately put the larger bound first → descending → must stay literal.
+        // Deliberately put the larger bound first → descending → expandPhaseReqIdToken
+        // returns [token] (fail-closed); the token contains `..`, so #3189's
+        // shape filter drops it and normalizePhaseReqIds collapses to null.
         const token = `${prefix}${pad(hi, w)}..${prefix}${pad(lo, w)}`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
 
-  test('(d2) mismatched-prefix range stays literal (fail-closed)', () => {
+  test('(d2) mismatched-prefix range is dropped by the shape filter (#3189)', () => {
     fc.assert(fc.property(
       prefixArb,
       prefixArb,
@@ -206,7 +233,9 @@ describe('#1269 normalizePhaseReqIds — range expansion properties', () => {
         const lo = Math.min(a, b);
         const hi = Math.max(a, b);
         const token = `${p1}${pad(lo, w)}..${p2}${pad(hi, w)}`;
-        assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+        // expandPhaseReqIdToken fails closed (returns [token]); #3189's filter
+        // then drops the literal token (contains `..`).
+        assert.strictEqual(normalizePhaseReqIds(token), null);
       },
     ));
   });
@@ -459,9 +488,13 @@ describe('gap-analysis --phase-req-ids scoping (#447)', () => {
  * as a literal ID, so a mapped range was reported as a coverage gap even when the
  * individual IDs existed. normalizePhaseReqIds now expands a valid ascending
  * same-prefix numeric range in place (preserving zero-pad width), and leaves any
- * ambiguous/invalid range literal (fail-closed). These unit fixtures are folded
- * here (the owning home for --phase-req-ids behavior) rather than a new
- * bug-NNNN-* file, per the regression-test-placement policy.
+ * ambiguous/invalid range literal (fail-closed). #3189 subsequently added a
+ * post-expand shape filter that DROPS those left-literal invalid-range tokens
+ * (they contain `..` and so cannot be requirement IDs) — the AC4 fixtures below
+ * were updated to assert the dropped behaviour. expandPhaseReqIdToken's internal
+ * fail-closed branch is unchanged. These unit fixtures are folded here (the
+ * owning home for --phase-req-ids behavior) rather than a new bug-NNNN-* file,
+ * per the regression-test-placement policy.
  */
 describe('#1269 — normalizePhaseReqIds range expansion', () => {
   // ── The core bug: a range token must expand, not stay literal ────────────────
@@ -494,29 +527,37 @@ describe('#1269 — normalizePhaseReqIds range expansion', () => {
     assert.strictEqual(normalizePhaseReqIds(''), null);
   });
 
-  // ── AC4: invalid/ambiguous ranges stay LITERAL (fail-closed) ─────────────────
+  // ── AC4: invalid/ambiguous ranges — expandPhaseReqIdToken still fails closed
+  //    (returns the token literal), but #3189's post-expand shape filter then
+  //    DROPS that literal token (it contains `.`/`..`, so it cannot be a
+  //    requirement ID). The token is no longer surfaced as a fake missing
+  //    requirement — it is silently dropped, and an all-invalid input collapses
+  //    to null (skip semantics). expandPhaseReqIdToken's internal fail-closed
+  //    branch is unchanged; this assertion verifies the composition.
 
-  test('AC4: mismatched-prefix range stays literal (no partial expansion)', () => {
-    assert.deepStrictEqual(normalizePhaseReqIds('SEL-01..TEST-03'), ['SEL-01..TEST-03']);
+  test('AC4: mismatched-prefix range is dropped (#3189 — was: stayed literal)', () => {
+    assert.strictEqual(normalizePhaseReqIds('SEL-01..TEST-03'), null);
   });
 
-  test('AC4: descending range stays literal', () => {
-    assert.deepStrictEqual(normalizePhaseReqIds('SEL-03..SEL-01'), ['SEL-03..SEL-01']);
+  test('AC4: descending range is dropped (#3189 — was: stayed literal)', () => {
+    assert.strictEqual(normalizePhaseReqIds('SEL-03..SEL-01'), null);
   });
 
-  test('AC4: non-numeric bound stays literal', () => {
-    assert.deepStrictEqual(normalizePhaseReqIds('SEL-0A..SEL-0C'), ['SEL-0A..SEL-0C']);
+  test('AC4: non-numeric bound is dropped (#3189 — was: stayed literal)', () => {
+    assert.strictEqual(normalizePhaseReqIds('SEL-0A..SEL-0C'), null);
   });
 
-  test('AC4: missing bound stays literal', () => {
-    assert.deepStrictEqual(normalizePhaseReqIds('SEL-01..'), ['SEL-01..']);
-    assert.deepStrictEqual(normalizePhaseReqIds('..SEL-03'), ['..SEL-03']);
+  test('AC4: missing bound is dropped (#3189 — was: stayed literal)', () => {
+    assert.strictEqual(normalizePhaseReqIds('SEL-01..'), null);
+    assert.strictEqual(normalizePhaseReqIds('..SEL-03'), null);
   });
 
-  test('AC4: an invalid range inside a mixed list stays literal while valid ones expand', () => {
+  test('AC4: an invalid range inside a mixed list is dropped while valid ones expand (#3189)', () => {
+    // SEL-01..SEL-03 expands (valid); BAD-3..BAD-1 fails-closed literal then is
+    // dropped by the shape filter. The valid expansions are preserved in order.
     assert.deepStrictEqual(
       normalizePhaseReqIds('SEL-01..SEL-03,BAD-3..BAD-1'),
-      ['SEL-01', 'SEL-02', 'SEL-03', 'BAD-3..BAD-1']);
+      ['SEL-01', 'SEL-02', 'SEL-03']);
   });
 
   // ── Boundary fixtures ────────────────────────────────────────────────────────
@@ -529,21 +570,20 @@ describe('#1269 — normalizePhaseReqIds range expansion', () => {
     assert.deepStrictEqual(normalizePhaseReqIds('SEL-01..SEL-02'), ['SEL-01', 'SEL-02']);
   });
 
-  test('boundary: differing zero-pad widths stay literal (fail-closed)', () => {
+  test('boundary: differing zero-pad widths are dropped (#3189 — was: stayed literal)', () => {
     // Bounds of differing digit width are ambiguous: padding 'SEL-9' to width 2
     // would invent 'SEL-09', which may never appear unpadded in REQUIREMENTS.
-    // Fail closed — leave the whole token literal rather than guess.
-    assert.deepStrictEqual(
-      normalizePhaseReqIds('SEL-9..SEL-11'),
-      ['SEL-9..SEL-11']);
+    // expandPhaseReqIdToken fails closed (returns the token literal); #3189's
+    // shape filter then drops the literal token (contains `..`).
+    assert.strictEqual(normalizePhaseReqIds('SEL-9..SEL-11'), null);
   });
 
-  test('AC4: a range exceeding MAX_PHASE_REQ_RANGE stays literal (DoS guard)', () => {
+  test('AC4: a range exceeding MAX_PHASE_REQ_RANGE is dropped (#3189 — DoS guard still fires, then shape filter drops the literal)', () => {
     // Same-width bounds (both 4 digits) so the differing-width guard does NOT fire
     // first; span = 1001 - 1 + 1 = 1001 > MAX_PHASE_REQ_RANGE (1000) → the DoS cap
     // is what keeps this literal. Isolates the cap branch from the width check.
-    const token = 'REQ-0001..REQ-1001';
-    assert.deepStrictEqual(normalizePhaseReqIds(token), [token]);
+    // #3189's shape filter then drops the literal token (contains `..`).
+    assert.strictEqual(normalizePhaseReqIds('REQ-0001..REQ-1001'), null);
   });
 
   test('multi-segment prefix with digits is handled (prefix compared verbatim)', () => {
@@ -604,3 +644,174 @@ describe('#1269 — gap-analysis --phase-req-ids range (integration)', () => {
 });
   });
 }
+
+// ─── #3189: normalizePhaseReqIds ID-shape filter (post-expand) ────────────────
+//
+// ROADMAP `**Requirements:**` lines routinely carry prose trailing the real ID
+// list (locked-decision annotations, ambiguity scores, prohibitions, dates).
+// The function's own contract says callers may pass that roadmap value through
+// verbatim, but the whitespace split + range expansion alone let every prose
+// word through as a "missing requirement", drowning the real coverage signal
+// (8 real gaps became 21 reported in the issue's reproduction).
+//
+// #3189 adds a shape filter (`PHASE_REQ_ID_SHAPE_RE`) STRICTLY AFTER range
+// expansion so:
+//   - real IDs survive (both hyphen-less `R1` and prefix-hyphen `SEL-01`);
+//   - prose / punctuation / dates / invalid range tokens are dropped;
+//   - an all-dropped input collapses to `null` (skip semantics);
+//   - valid range expansion still works (filter is post-expand, so
+//     `SEL-01..SEL-03` expands first, then each expanded ID passes the filter).
+//
+// These are the unit-level fixtures; the end-to-end CLI reproduction lives in
+// tests/check-gap-analysis-plan-post-e2e.test.cjs.
+
+describe('#3189 — normalizePhaseReqIds drops non-ID prose after range expansion', () => {
+  // ── AC1: prose trailing a real ID list — only ID-shaped tokens survive ──────
+
+  test('AC1 (issue repro): prose-annotated Requirements value yields only the ID-shaped tokens', () => {
+    // The exact reproduction string from the issue. After bracket/paren strip,
+    // whitespace split, range expansion, and the #3189 shape filter, only the
+    // ID-shaped tokens survive: R1..R8 plus `P1-P3`. Every prose fragment
+    // (locked, <date>, —, canonical, source, `NN-SPEC.md, ##, Requirements;,
+    // ambiguity, 0.12;, +, prohibitions) is dropped.
+    //
+    // `P1-P3` (from "prohibitions P1-P3") SURVIVES because it is syntactically
+    // ID-shaped: it matches `PHASE_REQ_ID_SHAPE_RE` exactly the way `SEL-01`
+    // does, and the issue's own note 1 lists `P1-P3` alongside `R1` and
+    // `SEL-01` as an example of a real requirement ID that carries a digit. It
+    // is consistent with the codebase's `ID_PATTERN` (`[A-Z][A-Z0-9]*-[A-Za-z0-9_-]+`),
+    // which ALSO accepts `P1-P3` — so a `P1-P3` requirement parsed from
+    // REQUIREMENTS.md would be a valid ID, and dropping the same token here
+    // would create a false mismatch. The 8 R-IDs are the "actual" requirement
+    // IDs in the issue's REQUIREMENTS.md; `P1-P3` is an additional ID-shaped
+    // token that the filter (correctly) cannot distinguish from a real ID
+    // without semantic context.
+    const raw = 'R1, R2, R3, R4, R5, R6, R7, R8 (locked <date> — canonical source `NN-SPEC.md ## Requirements`; ambiguity 0.12; + prohibitions P1-P3)';
+    assert.deepStrictEqual(
+      normalizePhaseReqIds(raw),
+      ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'P1-P3'],
+      'only ID-shaped tokens survive; every prose fragment is dropped');
+  });
+
+  test('AC1: every prose fragment named in the issue is dropped (no prose reaches the comparison)', () => {
+    const raw = 'R1, R2, R3, R4, R5, R6, R7, R8 (locked <date> — canonical source `NN-SPEC.md ## Requirements`; ambiguity 0.12; + prohibitions P1-P3)';
+    const result = normalizePhaseReqIds(raw);
+    // These are the exact fragments the issue reported as fake "missing
+    // requirements" — none may survive the shape filter.
+    const droppedProse = [
+      'locked', '<date>', '—', 'canonical', 'source', '`NN-SPEC.md',
+      '##', 'Requirements;', 'ambiguity', '0.12;', '+', 'prohibitions',
+    ];
+    for (const frag of droppedProse) {
+      assert.ok(!result.includes(frag),
+        `prose fragment ${JSON.stringify(frag)} must be dropped, but it survived in ${JSON.stringify(result)}`);
+    }
+  });
+
+  test('AC1: em-dash, markdown heading marker, bare +, version-like 0.12; and <date> are all dropped', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01 — ## + 0.12; <date>'), ['REQ-01']);
+  });
+
+  test('AC1: backtick filename fragment and trailing prose are dropped', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01 `NN-SPEC.md` canonical source'), ['REQ-01']);
+  });
+
+  // ── AC2: a pure-prose caps token with no digit is dropped ───────────────────
+  //
+  // The digit lookahead `(?=.*\d)` in PHASE_REQ_ID_SHAPE_RE is load-bearing:
+  // without it ALL-CAPS prose tokens that appear in annotations (LOCKED, NONE,
+  // TBD-as-prose) would pass the shape and still reach the report as fake IDs.
+
+  test('AC2: a pure-prose caps token with no digit is dropped (digit lookahead is load-bearing)', () => {
+    assert.strictEqual(normalizePhaseReqIds('LOCKED'), null);
+    assert.strictEqual(normalizePhaseReqIds('PROSE'), null);
+  });
+
+  test('AC2: a pure-prose caps token mixed with real IDs is dropped, real IDs survive', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01 LOCKED REQ-02'), ['REQ-01', 'REQ-02']);
+  });
+
+  // ── Edge case: ID-shaped prose tokens survive (filter is syntactic, not semantic) ─
+  //
+  // `P1-P3` (from "prohibitions P1-P3") is syntactically indistinguishable from
+  // a real requirement ID — it matches `PHASE_REQ_ID_SHAPE_RE` exactly as
+  // `SEL-01` does, and the codebase's own `ID_PATTERN` (`[A-Z][A-Z0-9]*-[A-Za-z0-9_-]+`)
+  // accepts it too. The filter is purely syntactic: it cannot know from shape
+  // alone that this particular `P1-P3` was prose describing a prohibition range
+  // rather than a real requirement ID. The issue's note 1 explicitly groups
+  // `P1-P3` with `R1` and `SEL-01` as a real-ID shape. Keeping it is consistent
+  // with how REQUIREMENTS.md parsing treats the same token; dropping it would
+  // create a false mismatch for any project that legitimately uses `P1-P3`-shaped
+  // IDs. Tightening the filter to reject this shape is a separate decision
+  // (would need a semantic signal the filter does not have).
+
+  test('edge: an ID-shaped prose token (P1-P3) survives the syntactic filter, consistent with ID_PATTERN', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('P1-P3'), ['P1-P3']);
+    // And it does NOT collapse a mixed list to null — real IDs alongside it survive.
+    assert.deepStrictEqual(normalizePhaseReqIds('R1 P1-P3 R8'), ['R1', 'P1-P3', 'R8']);
+  });
+
+  // ── AC3: range + trailing prose — expand THEN filter ────────────────────────
+  //
+  // Filter ordering is load-bearing: filtering BEFORE expandPhaseReqIdToken
+  // would discard the range token itself (`SEL-01..SEL-03` matches no single-ID
+  // shape), silently undoing #1269 / #1419.
+
+  test('AC3: range followed by trailing prose still expands, then the prose is dropped', () => {
+    assert.deepStrictEqual(
+      normalizePhaseReqIds('SEL-01..SEL-03 (locked <date>)'),
+      ['SEL-01', 'SEL-02', 'SEL-03']);
+  });
+
+  test('AC3: range + single ID + trailing prose preserves order, drops prose', () => {
+    assert.deepStrictEqual(
+      normalizePhaseReqIds('SEL-01..SEL-03, TEST-01 (notes: locked)'),
+      ['SEL-01', 'SEL-02', 'SEL-03', 'TEST-01']);
+  });
+
+  // ── AC4: empty/null/tbd/none sentinel skip behavior is unchanged ────────────
+
+  test('AC4: undefined / null / empty / tbd / none sentinel skip behavior is unchanged', () => {
+    assert.strictEqual(normalizePhaseReqIds(undefined), undefined);
+    assert.strictEqual(normalizePhaseReqIds(null), null);
+    assert.strictEqual(normalizePhaseReqIds(''), null);
+    assert.strictEqual(normalizePhaseReqIds('TBD'), null);
+    assert.strictEqual(normalizePhaseReqIds('tbd'), null);
+    assert.strictEqual(normalizePhaseReqIds('none'), null);
+    assert.strictEqual(normalizePhaseReqIds('NONE'), null);
+  });
+
+  test('AC4: an all-prose input (every token dropped) collapses to null (skip semantics)', () => {
+    assert.strictEqual(normalizePhaseReqIds('locked <date> — ambiguity 0.12; prohibitions'), null);
+  });
+
+  // ── AC5: real coverage detection is NOT narrowed ────────────────────────────
+  //
+  // A genuinely-missing requirement ID (no prose involved) must still be
+  // returned so the caller can report it as "Missing from REQUIREMENTS.md".
+
+  test('AC5: a genuinely-missing requirement ID is still returned (no narrowing)', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01,REQ-99'), ['REQ-01', 'REQ-99']);
+  });
+
+  test('AC5 (backstop): hyphen-less digit-bearing IDs (R-family) are preserved', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('R1,R8'), ['R1', 'R8']);
+  });
+
+  test('AC5 (backstop): prefix-hyphen IDs and multi-segment-prefix IDs are preserved', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('SEL-01,REQ-02'), ['SEL-01', 'REQ-02']);
+    assert.deepStrictEqual(
+      normalizePhaseReqIds('REQ2-01..REQ2-03'),
+      ['REQ2-01', 'REQ2-02', 'REQ2-03']);
+  });
+
+  // ── AC5 (backstop): existing input shapes that already worked are unchanged ─
+
+  test('AC5 (backstop): comma/space/newline/JSON-array-ish inputs unchanged for real IDs', () => {
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01,REQ-02'), ['REQ-01', 'REQ-02']);
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01 REQ-02'), ['REQ-01', 'REQ-02']);
+    assert.deepStrictEqual(normalizePhaseReqIds('REQ-01\nREQ-02'), ['REQ-01', 'REQ-02']);
+    assert.deepStrictEqual(normalizePhaseReqIds(['REQ-01', 'REQ-02']), ['REQ-01', 'REQ-02']);
+  });
+});
+

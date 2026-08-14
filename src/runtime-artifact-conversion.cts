@@ -392,16 +392,6 @@ function skillFrontmatterName(skillDirName) {
   return skillDirName;
 }
 
-function normalizeClaudeSkillEffort(effort) {
-  // #3039: `max` is rejected by Anthropic models when extended thinking is
-  // disabled (400: output_config.effort 'max' is not supported when thinking
-  // is disabled). The frontmatter is static at install time and the installer
-  // cannot know whether thinking will be on or off at invocation. `high` is the
-  // maximum value that works in both states on all supported models.
-  if (effort === 'xhigh' || effort === 'max') return 'high';
-  return effort;
-}
-
 /**
  * Qwen Code skills accept an optional numeric `priority` frontmatter field.
  * Per the Qwen skills spec (qwen-code/docs/users/features/skills.md, verified
@@ -458,10 +448,13 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   const description = extractFrontmatterField(frontmatter, 'description') || '';
   const argumentHint = extractFrontmatterField(frontmatter, 'argument-hint');
   const agent = extractFrontmatterField(frontmatter, 'agent');
-  // #769: preserve context: and effort: from source command files so they
-  // are emitted into the installed SKILL.md frontmatter unchanged.
+  // #769: preserve context: from source command files so it is emitted into
+  // the installed SKILL.md frontmatter unchanged. (#3151: effort: is no longer
+  // emitted into skill frontmatter — a static effort value changes
+  // output_config.effort on invocation and invalidates the caller's prompt
+  // cache at both scope boundaries; the reporter's owned measurement confirms
+  // the mechanism. The separate agent-effort surface is tracked by #3160.)
   const context = extractFrontmatterField(frontmatter, 'context');
-  const effort = extractFrontmatterField(frontmatter, 'effort');
 
   // Preserve allowed-tools as YAML multiline list (Claude native format)
   const toolsMatch = frontmatter.match(/^allowed-tools:\s*\n((?:\s+-\s+.+\n?)*)/m);
@@ -498,12 +491,13 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   }
   if (argumentHint) fm += `argument-hint: ${yamlQuote(argumentHint)}\n`;
   if (agent) fm += `agent: ${agent}\n`;
-  // #769: emit context: and effort: when present so the runtime can honour
-  // them natively (context: fork = isolated subagent window; effort: =
-  // token-budget tier). Fields are Claude-specific; unknown frontmatter
-  // fields are silently ignored by other runtimes (backward-compatible).
+  // #769: emit context: when present so the runtime can honour it natively
+  // (context: fork = isolated subagent window). Claude-specific; unknown
+  // frontmatter fields are silently ignored by other runtimes (backward-compatible).
+  // (#3151: effort: is intentionally NOT emitted into skill frontmatter — a
+  // static effort value changes output_config.effort on invocation and
+  // invalidates the caller's prompt cache at both scope boundaries.)
   if (context) fm += `context: ${context}\n`;
-  if (effort) fm += `effort: ${normalizeClaudeSkillEffort(effort)}\n`;
   if (toolsBlock) fm += toolsBlock;
   fm += '---';
 
@@ -2376,6 +2370,102 @@ function convertClaudeAgentToQwenAgent(content) {
   return `${fm}\n${body}`;
 }
 
+/**
+ * Convert a Claude Code agent .md for ZCode (#3384).
+ *
+ * ZCode is Claude-shaped (same frontmatter, same named-dispatch subagents), so
+ * the file is preserved verbatim EXCEPT the `tools:` grant list: ZCode's
+ * dispatcher treats every `mcp__<server>__*` entry as a REQUIRED MCP server and
+ * hard-fails the subagent spawn (CONFIGURATION_ERROR: "Required MCP server is
+ * not connected") whenever it is not connected, whereas Claude Code treats the
+ * same entries as an optional allowlist. The `mcp__*` entries are stripped at
+ * install time — the same exclusion Kimi's converter applies via
+ * convertKimiToolName — so subagent spawns succeed with zero MCP servers
+ * configured; connected servers' tools remain reachable (auto-discovered by the
+ * host, not granted by frontmatter).
+ *
+ * Line-surgical by design: ONLY `tools:` lines inside the frontmatter are
+ * touched, so every other byte (description, color, commented-out blocks, the
+ * body) survives identically. Handles both shapes GSD emits — the inline comma
+ * list (`tools: A, B, C`) and the YAML block list (`tools:` + `- A` items).
+ * An agent whose filtered grant list becomes empty (every grant was `mcp__*`)
+ * drops the `tools:` key entirely: an absent key inherits the full toolkit,
+ * which is the degrade-gracefully outcome, never a toolless subagent.
+ *
+ * Byte-identical for an agent with no `mcp__*` grants (the common case) and
+ * for an agent with no frontmatter at all.
+ */
+function convertClaudeAgentToZcodeAgent(content) {
+  // Fast path: no MCP grant token anywhere means nothing to strip. (A body
+  // mention alone is not a grant — the line scan below finds no tools-line
+  // change and returns `content` unchanged anyway; this just skips the scan.)
+  if (!content.includes('mcp__')) return content;
+
+  const lines = content.split('\n');
+  if (lines[0] !== '---') return content;
+  let fmEnd = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') {
+      fmEnd = i;
+      break;
+    }
+  }
+  if (fmEnd === -1) return content; // unterminated frontmatter — leave verbatim
+
+  const out = [];
+  let changed = false;
+  let i = 1;
+  while (i < fmEnd) {
+    const line = lines[i];
+    const inlineTools = /^tools:[ \t]*(.+)$/.exec(line);
+    if (inlineTools) {
+      const grants = inlineTools[1].split(',').map((tool) => tool.trim()).filter((tool) => tool !== '');
+      const kept = grants.filter((tool) => !tool.startsWith('mcp__'));
+      if (kept.length === grants.length) {
+        out.push(line); // no mcp__* grants — keep the line byte-identical
+      } else if (kept.length > 0) {
+        out.push(`tools: ${kept.join(', ')}`);
+        changed = true;
+      } else {
+        changed = true; // every grant was mcp__*: drop the tools key entirely
+      }
+      i++;
+      continue;
+    }
+    if (/^tools:[ \t]*$/.test(line)) {
+      // Block-list form: collect the following `- item` lines.
+      const items = [];
+      let j = i + 1;
+      while (j < fmEnd && /^([ \t]*)-[ \t]*(\S.*)$/.test(lines[j])) {
+        items.push(lines[j]);
+        j++;
+      }
+      const kept = items.filter((item) => {
+        const name = /^([ \t]*)-[ \t]*(\S.*)$/.exec(item)[2].trim();
+        return !name.startsWith('mcp__');
+      });
+      if (kept.length !== items.length) {
+        changed = true;
+        if (kept.length > 0) {
+          out.push(line);
+          out.push(...kept);
+        } // else: drop the tools key and all its items
+      } else {
+        out.push(line, ...items);
+      }
+      i = j;
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  if (!changed) return content;
+  // Opening delimiter + transformed frontmatter + closing delimiter + body.
+  out.unshift(lines[0]);
+  out.push(...lines.slice(fmEnd));
+  return out.join('\n');
+}
+
 function convertClaudeAgentToCodebuddyAgent(content) {
   const converted = convertClaudeToCodebuddyMarkdown(content);
 
@@ -3145,6 +3235,11 @@ export = {
   // conversionExports[converterName] dispatch (runtime-artifact-layout.cts)
   // can resolve it from capabilities/qwen/capability.json's agents kind.
   convertClaudeAgentToQwenAgent,
+  // #3384: ZCode agents are Claude-shaped but its dispatcher treats mcp__*
+  // tools grants as required MCP servers — registered by name for the same
+  // conversionExports[converterName] dispatch, resolved from
+  // capabilities/zcode/capability.json's agents kind.
+  convertClaudeAgentToZcodeAgent,
   // #1511 ADR-1508 Phase 2: rewrite engine deep seam
   // Low-level walkers (pathPrefix + attribution pre-resolved by caller):
   applyRuntimeContentRewritesInPlace,

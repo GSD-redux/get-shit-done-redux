@@ -552,6 +552,7 @@ describe('plan-review-convergence workflow: config gate (#2306-v2)', () => {
 
   test('workflow defaults config key to false (opt-in, not opt-out)', () => {
     // The config-get call must default to false, not true
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
     const configGetMatch = workflow.match(/config-get\s+workflow\.plan_review_convergence[^\r\n]*/);
     assert.ok(
       configGetMatch,
@@ -921,6 +922,7 @@ describe('plan-review-convergence CONFIGURATION.md documentation (#2306-v2)', ()
   });
 
   test('CONFIGURATION.md entry documents disabled-by-default behavior', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/CONFIGURATION.md, bounded prose, not adversarial input
     const row = configDoc.match(/workflow\.plan_review_convergence[^\r\n]*/);
     assert.ok(row, 'workflow.plan_review_convergence row must exist in CONFIGURATION.md');
     assert.ok(

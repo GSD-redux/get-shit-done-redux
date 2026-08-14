@@ -40,6 +40,7 @@ describe('execute-phase command: --wave flag', () => {
 
   test('objective describes wave-filter execution', () => {
     const content = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const objectiveMatch = content.match(/<objective>([\s\S]*?)<\/objective>/);
     assert.ok(objectiveMatch, 'should have <objective> section');
     assert.ok(objectiveMatch[1].includes('--wave N'), 'objective should mention --wave N');
@@ -486,6 +487,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
 
   test('workflow emits a wave-start heartbeat (A: wave-boundary checkpoint)', () => {
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*wave \{N\}\/\{M\} starting/.test(workflow),
       'workflow should emit a wave-start [checkpoint] marker before spawning agents'
     );
@@ -493,6 +495,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
 
   test('workflow emits a wave-complete heartbeat (A: wave-boundary checkpoint)', () => {
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*wave \{N\}\/\{M\} complete/.test(workflow),
       'workflow should emit a wave-complete [checkpoint] marker after spot-checks'
     );
@@ -500,6 +503,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
 
   test('workflow emits a plan-start heartbeat (B: plan-boundary checkpoint)', () => {
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} starting/.test(workflow),
       'workflow should emit a plan-start [checkpoint] marker before each Task() dispatch'
     );
@@ -507,6 +511,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
 
   test('workflow emits a plan-complete heartbeat (B: plan-boundary checkpoint)', () => {
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} complete/.test(workflow),
       'workflow should emit a plan-complete [checkpoint] marker after executor returns'
     );
@@ -514,10 +519,12 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
 
   test('workflow handles plan failure and checkpoint-gate heartbeats too', () => {
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} failed/.test(workflow),
       'workflow should emit a plan-failed [checkpoint] marker on executor error'
     );
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} checkpoint/.test(workflow),
       'workflow should emit a heartbeat when a plan returns a human-gate checkpoint'
     );
@@ -565,6 +572,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
     assert.ok(spawnIdx !== -1 && waitIdx !== -1, 'spawn and wait steps must exist');
     const step3 = workflow.slice(spawnIdx, waitIdx);
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a slice of maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} starting/.test(step3),
       'plan-start heartbeat should be emitted inside step 3 (spawn executor agents)'
     );
@@ -576,6 +584,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
     assert.ok(waitIdx !== -1 && hookIdx !== -1, 'wait + hook steps must exist');
     const step4 = workflow.slice(waitIdx, hookIdx);
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a slice of maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*plan \{plan_id\} complete/.test(step4),
       'plan-complete heartbeat should be emitted in step 4 (wait for agents)'
     );
@@ -585,6 +594,7 @@ describe('bug #2410: execute-phase emits checkpoint heartbeats', () => {
     assert.ok(reportIdx !== -1 && failureIdx !== -1, 'report + failure steps must exist');
     const step6 = workflow.slice(reportIdx, failureIdx);
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a slice of maintainer-authored execute-phase.md workflow, bounded prose, not adversarial input
       /\[checkpoint\][^\r\n]*wave \{N\}\/\{M\} complete/.test(step6),
       'wave-complete heartbeat should be emitted in step 6 (report completion)'
     );

@@ -545,6 +545,16 @@ When multiple executors run within the same wave, two mechanisms prevent conflic
 1. `--no-verify` commits — Parallel agents skip pre-commit hooks (which can cause build lock contention, e.g., cargo lock fights in Rust projects). The orchestrator runs `git hook run pre-commit` once after each wave completes.
 2. **STATE.md file locking** — All `writeStateMd()` calls use lockfile-based mutual exclusion (`STATE.md.lock` with `O_EXCL` atomic creation). This prevents the read-modify-write race condition where two agents read STATE.md, modify different fields, and the last writer overwrites the other's changes. Includes stale lock detection (10s timeout) and spin-wait with jitter.
 
+#### The STATE.md Write Path
+
+Locking decides *who* writes. A separate contract decides *what survives the write*.
+
+STATE.md carries the same fact in two places — YAML frontmatter and the document body — and the body is authoritative. Every write therefore re-derives frontmatter from the body, which raises the question the write path exists to answer: when a re-derived value disagrees with the one already in frontmatter, which wins?
+
+`FIELD_CLASSIFICATION` (`src/state-transition.cts`) answers it per field, declaring a `preservation` policy — `preserve-when-unchanged`, `preserve-always`, `preserve-if-placeholder`, `derive`, `clear` — that `applyStatePreservation` executes after `syncStateFrontmatter` re-derives.
+
+**[ADR-3408](adr/3408-state-write-path-preservation.md) is the normative contract** for that path: one executor per declared policy, one write seam, and reports computed from what was actually persisted rather than from what the caller intended to write. Where the contract and the code disagree, the code is the defect. It is the write-side counterpart of [ADR-3180](adr/3180-planning-semantic-model-single-owner.md), which gave each read-side derivation a single owner.
+
 ---
 
 ## Data Flow

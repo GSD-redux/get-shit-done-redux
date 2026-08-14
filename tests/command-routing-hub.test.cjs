@@ -1631,6 +1631,7 @@ describe('bug-853 — manager/autonomous gate background dispatch by runtime', (
   test('manager.md compound action preamble uses FLATTEN language (not hardcoded runtime names)', () => {
     // allow-test-rule: source-text-is-the-product (see #1708)
     const compoundActionSection = MANAGER.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own manager.md content, fixed-size author-controlled content
       /### Compound Action \(background \+ inline\)[\s\S]*?Inline verification:/,
     );
     assert.ok(compoundActionSection, 'manager.md must document compound action runtime dispatch');

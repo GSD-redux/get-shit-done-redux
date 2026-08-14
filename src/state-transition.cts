@@ -16,7 +16,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback } from './state-document.cjs';
+import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession } from './state-document.cjs';
 import { KNOWN_TEMPLATE_DEFAULTS } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
@@ -158,6 +158,19 @@ export type StatePreservationInput = {
    * leave this false — the #3242 wholesale protection stays in force.
    */
   deriveProgressKeys?: boolean;
+  /**
+   * #3258: pre/post body-source values for the preserve-when-unchanged (#1230
+   * delta heuristic) family, keyed by frontmatter field. The caller snapshots
+   * each field's body source before/after the transform (mirroring how
+   * buildStateFrontmatter derives it); applyStatePreservation consults
+   * FIELD_CLASSIFICATION and, for every row whose policy is preserve-when-
+   * unchanged that is NOT already on a dedicated channel (status, stopped_at),
+   * restores the pre-write frontmatter value when that body source was left
+   * unchanged by this write. Adding a preserve-when-unchanged row is a one-row
+   * table edit PLUS a bodyDeltas entry from the caller; the invariant test in
+   * tests/state-transition.test.cjs fails if either is missing.
+   */
+  bodyDeltas?: Record<string, { pre: string | null; post: string | null }>;
 };
 
 export type StatePreservationResult = {
@@ -271,6 +284,81 @@ export function applyStatePreservation(input: StatePreservationInput): StatePres
     mutated = true;
   }
 
+  // ─── #3258: the remaining preserve-when-unchanged rows ────────────────────
+  //
+  // status and stopped_at (above) carry field-specific guards (the 'unknown'
+  // sentinel; ## Session scoping done by the caller) and stay on their
+  // dedicated blocks. The other preserve-when-unchanged rows —
+  // last_activity_desc, paused_at, current_phase, current_plan — share a
+  // uniform #1230 delta heuristic with no extra sentinel, so they are driven
+  // from the table in one loop. This is the reconciliation the maintainer
+  // rescope to #3258 asked for: the row is honored by the table-consuming pass
+  // itself, not only by a weaker absent-value fallback elsewhere.
+  //
+  // For last_activity_desc this replaces preferNewerLastActivity's date-based
+  // desc writes (removed from syncStateFrontmatter + cmdStateJson): the field
+  // is now governed by exactly one rule, this one. For paused_at / current_phase
+  // / current_plan the declared delta heuristic is strictly stronger than the
+  // #905 absent-fallback that syncStateFrontmatter still applies on the
+  // writeStateMd / cmdStateJson paths this pass does not reach — same policy,
+  // two enforcement points, they agree by construction (both restore the
+  // pre-write snapshot value when they fire).
+  const bodyDeltas = input.bodyDeltas;
+  if (bodyDeltas) {
+    for (const field of Object.keys(FIELD_CLASSIFICATION)) {
+      const cls = getFieldClassification(field);
+      if (!cls || cls.preservation !== 'preserve-when-unchanged') continue;
+      // status / stopped_at stay on their dedicated blocks above.
+      if (field === 'status' || field === 'stopped_at') continue;
+      const delta = bodyDeltas[field];
+      if (!delta) continue; // caller did not wire this field's body source → cannot decide
+      const snapshot = preFmSnapshot[field];
+      if (typeof snapshot !== 'string' || snapshot.length === 0) continue;
+      if (delta.pre !== delta.post) continue; // body source changed this write → derived wins
+      if (postFm[field] === snapshot) continue; // already correct, no-op
+      postFm[field] = snapshot;
+      mutated = true;
+    }
+  }
+
+  // ─── #3258: preserve-if-placeholder — milestone / milestone_name ──────────
+  //
+  // The derived milestone_name (from ROADMAP.md via buildStateFrontmatter) must
+  // not clobber a curated name when it resolves to the template placeholder
+  // 'milestone' or a punctuation-led fragment. Mirrors the #948/#2135 guard in
+  // syncStateFrontmatter so the table pass enforces the same policy on the RMW
+  // path; syncStateFrontmatter remains the enforcement point on the writeStateMd
+  // / cmdStateJson paths this pass does not reach (same policy, two points).
+  // The milestone VERSION is restored alongside the name, exactly as the sync
+  // guard does, so the two stay consistent.
+  const milestoneNameCls = getFieldClassification('milestone_name');
+  if (milestoneNameCls !== null && milestoneNameCls.preservation === 'preserve-if-placeholder') {
+    const MILESTONE_PLACEHOLDER = 'milestone';
+    const derivedName = postFm['milestone_name'];
+    const derivedLooksLikeName = typeof derivedName === 'string'
+      && derivedName.length > 0
+      && derivedName !== MILESTONE_PLACEHOLDER
+      && !/^[\s—–:-]/.test(derivedName);
+    const snapshotName = preFmSnapshot['milestone_name'];
+    const snapshotNameIsReal = typeof snapshotName === 'string'
+      && snapshotName.length > 0
+      && snapshotName !== MILESTONE_PLACEHOLDER;
+    if (!derivedLooksLikeName && snapshotNameIsReal) {
+      if (postFm['milestone_name'] !== snapshotName) {
+        postFm['milestone_name'] = snapshotName;
+        mutated = true;
+      }
+      const snapshotVersion = preFmSnapshot['milestone'];
+      if (
+        typeof snapshotVersion === 'string' && snapshotVersion.length > 0 &&
+        postFm['milestone'] !== snapshotVersion
+      ) {
+        postFm['milestone'] = snapshotVersion;
+        mutated = true;
+      }
+    }
+  }
+
   return { postFm, mutated };
 }
 
@@ -374,7 +462,7 @@ export type StateTransitionIntent =
       planCount: number;
       summaryCount: number;
     }
-  | { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null }
+  | { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null }
   | { kind: 'milestoneSwitch'; version: string; name: string }
   | {
       kind: 'milestoneComplete';
@@ -757,7 +845,7 @@ function mutateCurrentPositionResume(
  */
 function mutateCurrentPositionForAdvance(
   content: string,
-  fields: { status?: string; lastActivity?: string; plan?: string },
+  fields: { phase?: string; status?: string; lastActivity?: string; plan?: string },
   statusDefaults: string[] | null | undefined,
   lastActivityDefaults: string[] | null | undefined,
 ): string {
@@ -765,6 +853,22 @@ function mutateCurrentPositionForAdvance(
   if (span === null) return content;
   let sectionBody = content.slice(span.start, span.end);
   let mutated = false;
+
+  // #3395: Phase is always replaced when a caller passes it — system-derived,
+  // not executor-authored (same rule as Plan below). plannedPhaseCore uses
+  // this so the transition that declares phase N planned also owns the `Phase:`
+  // line the frontmatter resync and `state json` re-derive current_phase from;
+  // before, the line survived stale from a previous phase and every
+  // body-derived consumer kept reading it (#948 class).
+  if (fields.phase) {
+    if (/^Phase:/m.test(sectionBody)) {
+      sectionBody = sectionBody.replace(/^Phase:.*$/m, `Phase: ${fields.phase}`);
+      mutated = true;
+    } else {
+      const replaced = stateReplaceField(sectionBody, 'Phase', fields.phase);
+      if (replaced !== null) { sectionBody = replaced; mutated = true; }
+    }
+  }
 
   if (fields.status) {
     const replaced = stateReplaceFieldIfTemplate(sectionBody, 'Status', statusDefaults, fields.status);
@@ -953,6 +1057,7 @@ function completePhaseCore(
     'current_plan',
     'last_activity',
     'last_activity_desc',
+    'stopped_at',
     'progress',
   ]) {
     const cls = getFieldClassification(fmKey);
@@ -1053,6 +1158,29 @@ function completePhaseCore(
     updated.push('Last Activity Description');
   }
 
+  // Stopped At — #3374: write the continuity line this transition implies.
+  // The frontmatter `stopped_at` is a projection of this body line
+  // (source: 'body' in FIELD_CLASSIFICATION), and phase completion is exactly
+  // the event the line describes — leaving it stale made the post-sync harvest
+  // overwrite a fresher frontmatter value with pre-completion prose on every
+  // completion (#3374), and left the workflow's later prose refresh as a
+  // divergence source. Session-SCOPED replace (stateReplaceFieldInSession):
+  // the harvest reads only the session section, so the write must target the
+  // same scope — a whole-body replace let a decoy `**Stopped at:**` line in an
+  // unrelated section absorb the refresh. Replace-only (no insertion): a
+  // STATE.md with no session continuity line keeps its shape, and the
+  // unchanged body source then lets the preservation delta keep an existing
+  // frontmatter value. Last-phase wording reuses the ADR-2207 status phrase;
+  // milestone termination wording stays owned by milestoneCompleteCore.
+  const stoppedAtLine = intent.isLastPhase
+    ? `Phase ${intent.phaseNum} complete — all phases complete`
+    : `Phase ${intent.phaseNum} complete${intent.nextPhaseNum ? `, ready to plan Phase ${intent.nextPhaseNum}` : ''}`;
+  const stoppedAfter = stateReplaceFieldInSession(body, 'Stopped At', 'Stopped at', stoppedAtLine);
+  if (stoppedAfter !== body) {
+    body = stoppedAfter;
+    updated.push('Stopped At');
+  }
+
   // Progress block — re-derive completed/total phases from the roadmap when
   // available (milestone-wide source of truth), then recompute the percent.
   // Only runs when a Completed Phases field exists (the existing guard).
@@ -1110,7 +1238,10 @@ function completePhaseCore(
  * per-phase body fields after plan-phase runs: Status (template-aware — only
  * replaces handler-generated values, preserving executor-authored ones),
  * Total Plans in Phase, Last Activity (template-aware), Last Activity
- * Description, and the ## Current Position section. The adapter wraps this in
+ * Description, and the ## Current Position section — including its `Phase:`
+ * line, which this transition owns (#3395: the line is the body source
+ * `current_phase` re-derives from, so it must not survive stale from a
+ * previous phase). The adapter wraps this in
  * `readModifyWriteStateMd({ resync: false })` so the milestone-wide progress.*
  * frontmatter is NOT re-derived from a half-planned disk snapshot (#500 RC1).
  *
@@ -1120,7 +1251,7 @@ function completePhaseCore(
  */
 function plannedPhaseCore(
   content: string,
-  intent: { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null },
+  intent: { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null },
   deps: StateTransitionDeps,
 ): StateTransitionResult {
   const updated: string[] = [];
@@ -1182,11 +1313,22 @@ function plannedPhaseCore(
     updated.push('Last Activity Description');
   }
 
-  // ## Current Position section — Status + Last activity (template-aware).
+  // ## Current Position section — Phase + Status + Last activity.
+  // #3395: plannedPhaseCore owns the `Phase:` line for the same reason
+  // beginPhaseCore/completePhaseCore do — it is the body source the frontmatter
+  // resync and `state json` re-derive `current_phase` from. Before, a stale
+  // line from a previous phase survived this transition and every
+  // body-derived consumer kept reading it (the write path was already
+  // protected by the #3258 preserve-when-unchanged row; the source itself was
+  // never refreshed). The label mirrors beginPhaseCore's `N (Name) — EXECUTING`
+  // convention with this transition's status vocabulary ("Ready to execute").
+  // Phase is system-derived, always replaced (Knuth invariant does not apply);
+  // Status / Last activity stay template-aware.
   const beforePos = body;
   body = mutateCurrentPositionForAdvance(
     body,
     {
+      phase: `${intent.phaseNumber}${intent.phaseName ? ` (${intent.phaseName})` : ''} — READY TO EXECUTE`,
       status: 'Ready to execute',
       lastActivity: `${today} — Phase ${intent.phaseNumber} planning complete`,
     },

@@ -300,6 +300,23 @@ const RULES = [
       'tests/require-fs-op-fallback.rule.test.cjs',
     ],
   },
+  {
+    // ADR-3212 Phase 4 (#3415): no-unbounded-quantifier and the shared
+    // readfilesync-trace helper it uses (also now imported by
+    // no-crlf-fragile-split). NOT part of the ADR-1703 portability family above
+    // — kept as its own bucket so this rule's tests re-run without pulling in
+    // the ADR-1703 disable-ban / vocab-drift suites it is not governed by.
+    name: 'no-unbounded-quantifier + readfilesync-trace (ADR-3212 Phase 4)',
+    match: path => [
+      'eslint-rules/no-unbounded-quantifier.cjs',
+      'eslint-rules/lib/readfilesync-trace.cjs',
+      'eslint-rules/no-crlf-fragile-split.cjs',
+    ].includes(path),
+    tests: [
+      'tests/no-unbounded-quantifier.rule.test.cjs',
+      'tests/readfilesync-trace-parity.test.cjs',
+    ],
+  },
  ];
 
 /**

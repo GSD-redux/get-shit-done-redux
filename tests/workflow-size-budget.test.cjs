@@ -282,6 +282,7 @@ describe('SIZE: discuss-phase progressive disclosure (#717 byte budget)', () => 
     const parent = fs.readFileSync(path.join(WORKFLOWS_DIR, 'discuss-phase.md'), 'utf-8');
     // The template reference must appear inside or near the write_context step,
     // not in the top-level <required_reading> block (which would defeat lazy load).
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const requiredReadingMatch = parent.match(/<required_reading>([\s\S]*?)<\/required_reading>/);
     if (requiredReadingMatch) {
       assert.ok(
@@ -471,6 +472,7 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
 
   test('plan-phase.md does not list MVP bodies in <required_reading>', () => {
     const planPhaseContent = fs.readFileSync(path.join(WORKFLOWS_DIR, 'plan-phase.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const requiredReadingMatch = planPhaseContent.match(/<required_reading>([\s\S]*?)<\/required_reading>/);
     if (requiredReadingMatch) {
       const block = requiredReadingMatch[1];
@@ -597,6 +599,193 @@ describe('SIZE: byteCount is line-ending independent (#683 regression)', () => {
       assert.strictEqual(byteCount(lfPath), Buffer.byteLength(body, 'utf-8'));
     } finally {
       cleanup(dir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3324 — @-include lines inside Agent() prompt strings never expand
+// ---------------------------------------------------------------------------
+// Claude Code expands @path only in natively-loaded markdown bodies (CLAUDE.md,
+// slash-command/skill bodies, agent definitions) — never inside the prompt
+// parameter of a dynamically constructed Agent() call, which is delivered as
+// literal turn text. A bare @-include line in a prompt string means the
+// subagent never sees the referenced file (#3324).
+describe('#3324: no @-include lines inside Agent() prompt strings', () => {
+  const BARE_INCLUDE_LINE = /^\s*@(\$HOME|~)\//;
+
+  function listWorkflowFilesRecursive(dir, out = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) listWorkflowFilesRecursive(p, out);
+      else if (entry.name.endsWith('.md')) out.push(p);
+    }
+    return out;
+  }
+
+  // A prompt region opens at a line ending in `prompt="` and closes at the
+  // first subsequent line that is only whitespace + a double quote.
+  function bareIncludeLinesInPromptRegions(content) {
+    const hits = [];
+    let inPrompt = false;
+    content.split('\n').forEach((line, i) => {
+      if (!inPrompt && /prompt="\s*$/.test(line)) { inPrompt = true; return; }
+      if (inPrompt && /^\s*"\s*$/.test(line)) { inPrompt = false; return; }
+      if (inPrompt && BARE_INCLUDE_LINE.test(line)) {
+        hits.push({ line: i + 1, text: line.trim() });
+      }
+    });
+    return hits;
+  }
+
+  test('no workflow prompt string contains a bare @-include line (repo-wide guard)', () => {
+    const offenders = [];
+    for (const file of listWorkflowFilesRecursive(WORKFLOWS_DIR)) {
+      const rel = path.relative(path.join(__dirname, '..'), file);
+      for (const hit of bareIncludeLinesInPromptRegions(fs.readFileSync(file, 'utf-8'))) {
+        offenders.push(`${rel}:${hit.line} ${hit.text}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'Claude Code never expands @path inside a dynamically built Agent() ' +
+      'prompt="..." string — the include arrives as literal text and the ' +
+      'subagent never sees the referenced file. Use the ORCHESTRATOR ' +
+      'build-time embed pattern (see execute-phase.md <worktree_branch_check> ' +
+      'and <execution_context>) or inline the content. See #3324.'
+    );
+  });
+
+  test('execute-phase.md <execution_context> build-time embeds execute-plan.md instead of @-including it', () => {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-phase.md'), 'utf-8');
+    const block = content.match(/<execution_context>([\s\S]{0,4000}?)<\/execution_context>/);
+    assert.ok(
+      block,
+      'execute-phase.md must keep an <execution_context> block in the executor dispatch prompt'
+    );
+    assert.ok(
+      /ORCHESTRATOR build-time embed/.test(block[1]),
+      '<execution_context> must carry the ORCHESTRATOR build-time embed instruction (#3324)'
+    );
+    assert.ok(
+      /`~\/\.claude\/gsd-core\/workflows\/execute-plan\.md`/.test(block[1]),
+      '<execution_context> must list execute-plan.md (backticked, no @ sigil) for build-time embed (#3324)'
+    );
+  });
+
+  // #3370 — the executor dispatch prompts must carry checkpoint gate semantics so the
+  // orchestrator cannot compose anti-auto-approval prompt text that conflates
+  // gate="blocking" (the default, auto-approvable) with gate="blocking-human"
+  // (always surfaces). The dispatch prompt text IS the product here — the templates
+  // below are what gets composed into the Agent() call — so region asserts on the
+  // template text are the behavioral seam, same precedent as the #3324 guards above.
+  const ANTI_AUTO_APPROVAL = /never auto-approve|do not auto-approve|must not auto-approve|under any circumstance, including/;
+
+  function dispatchRegion(file, fromAnchor, toAnchor) {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, file), 'utf-8');
+    const from = content.indexOf(fromAnchor);
+    assert.ok(from !== -1, `${file}: anchor "${fromAnchor}" not found`);
+    const to = content.indexOf(toAnchor, from);
+    assert.ok(to !== -1, `${file}: anchor "${toAnchor}" not found after "${fromAnchor}"`);
+    return content.slice(from, to);
+  }
+
+  test('execute-phase step-3 routes checkpoint gate semantics through the per-plan routing fragment (#3370)', () => {
+    // The host file sits under the frozen ADR-857 Phase 6 ceiling (≤93400 bytes), so the
+    // gate rule lives in the per-plan-executor-routing fragment — the same
+    // keep-the-host-lean pattern #1689/#3417 used — which step 3 loads for EVERY plan
+    // in every isolation mode (harness-worktree, orchestrator-worktree, sequential)
+    // immediately before the dispatch prompt is composed.
+    const step = dispatchRegion(
+      'execute-phase.md',
+      '**Spawn executor agents:**',
+      '**Wait for all agents in wave to complete.**',
+    );
+    assert.match(
+      step,
+      /Executor routing \([^)]*#3370/,
+      'step 3\'s executor-routing line must cite #3370 so the gate rule is loaded with it',
+    );
+
+    const fragment = fs.readFileSync(
+      path.join(WORKFLOWS_DIR, 'execute-phase', 'steps', 'per-plan-executor-routing.md'),
+      'utf-8',
+    );
+    // AC 1 + AC 3, phase-level: blocking is the auto-approvable default, blocking-human
+    // is the only always-surface gate, and the orchestrator is forbidden from injecting
+    // dispatch text that refuses auto-approval.
+    assert.match(fragment, /#3370/, 'the routing fragment must carry the gate rule');
+    assert.match(fragment, /gate="blocking"/, 'the gate rule must name gate="blocking"');
+    assert.match(fragment, /auto-approv/i, 'the gate rule must state blocking is auto-approvable in auto-mode');
+    assert.match(fragment, /blocking-human/, 'the gate rule must name gate="blocking-human" as the always-surface carve-out');
+    assert.match(
+      fragment,
+      /do NOT add text refusing or overriding\s+auto-approval/,
+      'the gate rule must forbid composing dispatch text that refuses or overrides auto-approval',
+    );
+    // Negative guard: the fix must not itself introduce the anti-auto-approval phrasing.
+    assert.doesNotMatch(
+      fragment,
+      ANTI_AUTO_APPROVAL,
+      'the gate rule must not contain anti-auto-approval instructions (#3370)',
+    );
+  });
+
+  test('execute-phase.md executor Agent() prompt contains no anti-auto-approval instruction in any block (#3370)', () => {
+    const step = dispatchRegion(
+      'execute-phase.md',
+      '**Spawn executor agents:**',
+      '**Wait for all agents in wave to complete.**',
+    );
+    // The gate rule lives in the step-3 instructions (previous test), which every
+    // isolation mode executes; the prompt template itself never carried gate text and
+    // must stay free of anti-auto-approval phrasing — the executor's semantics come
+    // from its own <checkpoint_protocol> plus the build-time-embedded checkpoints.md
+    // (#3324), which this guards against the template contradicting.
+    assert.doesNotMatch(
+      step,
+      ANTI_AUTO_APPROVAL,
+      'the step-3 dispatch region (instructions + Agent() prompt template) must not '
+      + 'contain anti-auto-approval instructions (#3370)',
+    );
+  });
+
+  test('execute-plan.md Pattern A dispatch carries the same gate semantics (#3370)', () => {
+    const patternA = dispatchRegion(
+      'execute-plan.md',
+      '**Pattern A:** init_agent_tracking',
+      '**Pattern B:** Execute segment-by-segment',
+    );
+    // AC 4: the single-plan-level dispatch path is covered, not just execute-phase.
+    assert.match(patternA, /#3370/, 'Pattern A must cite the gate-semantics rule');
+    assert.match(patternA, /gate="blocking"/, 'Pattern A must name gate="blocking"');
+    assert.match(patternA, /blocking-human/, 'Pattern A must name gate="blocking-human"');
+    assert.match(patternA, /auto-approv/i, 'Pattern A must state blocking is auto-approvable in auto-mode');
+    assert.match(
+      patternA,
+      /no instruction (?:that )?overrid/i,
+      'Pattern A must forbid adding instructions that override the executor checkpoint protocol',
+    );
+    assert.doesNotMatch(
+      patternA,
+      ANTI_AUTO_APPROVAL,
+      'Pattern A must not contain anti-auto-approval instructions (#3370)',
+    );
+  });
+
+  test('execute-plan.md still defines the steps only it carries into the dispatch', () => {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-plan.md'), 'utf-8');
+    for (const marker of [
+      'segment_execution',
+      'previous_phase_check',
+      'verification_failure_gate',
+      'update_codebase_map',
+    ]) {
+      assert.ok(
+        content.includes(marker),
+        `execute-plan.md must still define ${marker} — it reaches executors only via the build-time embed (#3324)`
+      );
     }
   });
 });

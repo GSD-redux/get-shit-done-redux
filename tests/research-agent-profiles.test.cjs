@@ -413,6 +413,7 @@ describe('gsd-project-researcher agent registration (#2419)', () => {
 
   test('new-project.md lists gsd-project-researcher in available_agent_types', () => {
     const content = fs.readFileSync(NEW_PROJECT_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const agentTypesMatch = content.match(/<available_agent_types>([\s\S]*?)<\/available_agent_types>/);
     assert.ok(agentTypesMatch, 'new-project.md must have <available_agent_types> section');
     assert.ok(
@@ -423,6 +424,7 @@ describe('gsd-project-researcher agent registration (#2419)', () => {
 
   test('new-milestone.md lists gsd-project-researcher in available_agent_types', () => {
     const content = fs.readFileSync(NEW_MILESTONE_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const agentTypesMatch = content.match(/<available_agent_types>([\s\S]*?)<\/available_agent_types>/);
     assert.ok(agentTypesMatch, 'new-milestone.md must have <available_agent_types> section');
     assert.ok(

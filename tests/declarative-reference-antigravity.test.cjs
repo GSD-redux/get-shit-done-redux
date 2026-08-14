@@ -432,12 +432,14 @@ describe('/gsd:update detects local Antigravity (.agent / .agents) installs (#50
 
   test('execution_context classifier maps /.agents/ and /.agent/ paths to antigravity (update.md)', () => {
     const hasAgentsClassifierRule =
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored update.md workflow, bounded prose, not adversarial input
       /\/\.agents\/[^\r\n]*->[^\r\n]*antigravity/.test(UPDATE_MD);
     assert.ok(
       hasAgentsClassifierRule,
       'update.md classifier must map a `/.agents/` path to the `antigravity` runtime',
     );
     const hasAgentClassifierRule =
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored update.md workflow, bounded prose, not adversarial input
       /\/\.agent\/[^\r\n]*->[^\r\n]*antigravity/.test(UPDATE_MD);
     assert.ok(
       hasAgentClassifierRule,

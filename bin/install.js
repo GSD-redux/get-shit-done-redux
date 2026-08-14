@@ -1106,6 +1106,15 @@ function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
 }
 
+// #3329: rewrite already-registered managed `.sh` hook commands to the shape
+// the current installer would generate (the #580/#3393 bash-runner-omission
+// migration the register-only-if-absent path never applied to existing
+// entries). Invoked inside applySettingsJsonHooks in the compiled surface
+// module; re-bound here for tests/consumers, mirroring the #2979 rewriter.
+function reconcileManagedShellHookCommands(settings, expected, opts) {
+  return hooksSurface.reconcileManagedShellHookCommands(settings, expected, opts);
+}
+
 /**
  * Build the GSD-managed Codex SessionStart hook block for config.toml.
  *
@@ -2091,12 +2100,6 @@ function skillFrontmatterName(skillDirName) {
   return skillDirName;
 }
 
-function normalizeClaudeSkillEffort(effort) {
-  // #3039: `max` is rejected by Anthropic models when extended thinking is disabled.
-  if (effort === 'xhigh' || effort === 'max') return 'high';
-  return effort;
-}
-
 /**
  * Qwen Code skills accept an optional numeric `priority` frontmatter field.
  * Per the Qwen skills spec (qwen-code/docs/users/features/skills.md, verified
@@ -2153,10 +2156,11 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   const description = extractFrontmatterField(frontmatter, 'description') || '';
   const argumentHint = extractFrontmatterField(frontmatter, 'argument-hint');
   const agent = extractFrontmatterField(frontmatter, 'agent');
-  // #769: preserve context: and effort: from source command files so they
-  // are emitted into the installed SKILL.md frontmatter unchanged.
+  // #769: preserve context: from source command files so it is emitted into
+  // the installed SKILL.md frontmatter unchanged. (#3151: effort: is no longer
+  // emitted into skill frontmatter — a static effort value invalidates the
+  // caller's prompt cache at both scope boundaries.)
   const context = extractFrontmatterField(frontmatter, 'context');
-  const effort = extractFrontmatterField(frontmatter, 'effort');
 
   // Preserve allowed-tools as YAML multiline list (Claude native format)
   const toolsMatch = frontmatter.match(/^allowed-tools:\s*\n((?:\s+-\s+.+\n?)*)/m);
@@ -2190,12 +2194,13 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   }
   if (argumentHint) fm += `argument-hint: ${yamlQuote(argumentHint)}\n`;
   if (agent) fm += `agent: ${agent}\n`;
-  // #769: emit context: and effort: when present so the runtime can honour
-  // them natively (context: fork = isolated subagent window; effort: =
-  // token-budget tier). Fields are Claude-specific; unknown frontmatter
-  // fields are silently ignored by other runtimes (backward-compatible).
+  // #769: emit context: when present so the runtime can honour it natively
+  // (context: fork = isolated subagent window). Claude-specific; unknown
+  // frontmatter fields are silently ignored by other runtimes (backward-compatible).
+  // (#3151: effort: is intentionally NOT emitted into skill frontmatter — a
+  // static effort value changes output_config.effort on invocation and
+  // invalidates the caller's prompt cache at both scope boundaries.)
   if (context) fm += `context: ${context}\n`;
-  if (effort) fm += `effort: ${normalizeClaudeSkillEffort(effort)}\n`;
   if (toolsBlock) fm += toolsBlock;
   fm += '---';
 
@@ -11084,7 +11089,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // brandingRewrites-only branch).
   // cline remains excluded: rules-only local branch + local/global complication
   // that the descriptor-driven path does not handle correctly.
-  const _DESCRIPTOR_AGENTS_RUNTIMES = new Set(['cursor', 'windsurf', 'augment', 'trae', 'codebuddy', 'copilot', 'antigravity', 'qwen', 'kimi']);
+  // #3384: zcode cut over — its agents kind now declares
+  // convertClaudeAgentToZcodeAgent (strips mcp__* grants ZCode's dispatcher
+  // treats as required MCP servers). Without this exclusion the legacy inline
+  // loop below deletes+re-copies zcode's agents RAW, bypassing the converter
+  // (the same hazard the qwen comment above documents).
+  const _DESCRIPTOR_AGENTS_RUNTIMES = new Set(['cursor', 'windsurf', 'augment', 'trae', 'codebuddy', 'copilot', 'antigravity', 'qwen', 'kimi', 'zcode']);
 
   // Always remove stale gsd-* agents first so re-installing with
   // `--minimal` actually shrinks a previously-full install.
@@ -13788,6 +13798,7 @@ module.exports = {
     referencesHook,
     applySettingsJsonHooks,
     rewriteLegacyManagedNodeHookCommands,
+    reconcileManagedShellHookCommands,
     buildCodexHookBlock,
     rewriteLegacyCodexHookBlock,
     buildCodexHookWindowsShimIR,

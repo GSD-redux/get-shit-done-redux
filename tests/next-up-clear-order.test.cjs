@@ -204,3 +204,94 @@ describe('bug #3083: resume-project next-step routing should not include /clear 
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #3297: plan-phase --gaps Next Up must project --gaps-only onto execute-phase
+// ────────────────────────────────────────────────────────────────────────
+
+describe('bug #3297: --gaps planning mode projects --gaps-only onto the Next Up execute command', () => {
+  const WORKFLOW = path.join(WORKFLOWS_DIR, 'plan-phase.md');
+
+  function offerNextBlock(content) {
+    // Anchor on the line-start tag: the prose reference `` `<offer_next>` ``
+    // ("Route to <offer_next>") earlier in the file would otherwise match a
+    // bare indexOf('<offer_next>') first.
+    const start = content.indexOf('\n<offer_next>');
+    const end = content.indexOf('\n</offer_next>', start);
+    assert.notStrictEqual(start, -1, 'plan-phase.md must have an <offer_next> block at line start');
+    assert.notStrictEqual(end, -1, 'plan-phase.md <offer_next> must close at line start');
+    return content.slice(start, end);
+  }
+
+  const content = fs.readFileSync(WORKFLOW, 'utf-8');
+  const offerNext = offerNextBlock(content);
+
+  test('preamble captures --gaps planning mode into a persistent variable', () => {
+    // Precondition for any conditional render: the gap mode must survive from
+    // argument parsing to the completion screen. The file already captures
+    // --reviews / --chunked / --research-phase this way; --gaps must too.
+    assert.match(
+      content,
+      /GAPS_MODE=false[\s\S]*\$ARGUMENTS[\s\S]{0,80}?--gaps[\s\S]{0,40}?GAPS_MODE=true/,
+      'plan-phase.md preamble must set GAPS_MODE from $ARGUMENTS --gaps (so the mode reaches <offer_next>)'
+    );
+  });
+
+  test('preamble derives the execute-side --gaps-only flag (not the plan-side --gaps)', () => {
+    // The handoff must point at execute-phase's scope flag, which is --gaps-only
+    // (execute-phase.md:72/339/1426), NOT the plan-side --gaps. Asserting the
+    // literal guards against a copy-the-wrong-flag regression.
+    assert.match(
+      content,
+      /GAPS_EXEC_FLAG=""[\s\S]*GAPS_MODE[\s\S]{0,60}?GAPS_EXEC_FLAG="--gaps-only"/,
+      'plan-phase.md preamble must derive GAPS_EXEC_FLAG="--gaps-only" from GAPS_MODE'
+    );
+  });
+
+  test('the --gaps-only derivation is gated on GAPS_MODE alone (reviews mode unaffected)', () => {
+    // Acceptance: a --reviews planning run's Next Up is unchanged. The execute
+    // flag must be derived ONLY from --gaps, never from --reviews. Assert the
+    // derivation statement references GAPS_MODE and does NOT reference reviews.
+    const derivMatch = content.match(/GAPS_EXEC_FLAG=""[\s\S]{0,200}?GAPS_EXEC_FLAG="--gaps-only"/);
+    assert.ok(derivMatch, 'expected a GAPS_EXEC_FLAG derivation block');
+    const deriv = derivMatch[0];
+    assert.match(deriv, /GAPS_MODE/, 'derivation must be gated on GAPS_MODE');
+    assert.doesNotMatch(
+      deriv,
+      /reviews/i,
+      'derivation must not reference --reviews — reviews-mode Next Up stays unchanged'
+    );
+  });
+
+  test('Next Up execute command substitutes the projected flag (${GAPS_EXEC_FLAG})', () => {
+    // The headline fix: the command line carries the flag placeholder so it
+    // renders --gaps-only in gap mode and the bare command otherwise.
+    assert.ok(
+      /\/gsd:execute-phase\s+\{X\}\s+\$\{GAPS_EXEC_FLAG\}/.test(offerNext),
+      '<offer_next> execute-phase command must substitute ${GAPS_EXEC_FLAG} after {X}. Got:\n' +
+      offerNext.split('\n').filter((l) => /execute-phase/.test(l)).join('\n')
+    );
+  });
+
+  test('Next Up still renders the bare command for standard runs (plain path unchanged)', () => {
+    // Acceptance: a standard (non-gap) run's Next Up is unchanged. The var is
+    // empty in the standard path, so the rendered command is byte-identical to
+    // today. Asserting the command still begins /gsd:execute-phase {X} (the bare
+    // form) and still carries ${GSD_WS} — the standard shape is preserved.
+    assert.match(
+      offerNext,
+      /\/gsd:execute-phase\s+\{X\}\s+\$\{GAPS_EXEC_FLAG\}\s+\$\{GSD_WS\}/,
+      '<offer_next> command must keep the bare /gsd:execute-phase {X} form with ${GSD_WS}'
+    );
+  });
+
+  test('Next Up block documents the --gaps-only projection (literal reaches the handoff)', () => {
+    // The gap-scoped flag literal must appear inside <offer_next> (via the
+    // rendering note that explains what ${GAPS_EXEC_FLAG} expands to), so a
+    // reader of the handoff sees the intended gap-closure scope.
+    assert.ok(
+      offerNext.includes('--gaps-only'),
+      '<offer_next> must reference the --gaps-only execute-phase scope (the literal must reach the handoff)'
+    );
+  });
+});
