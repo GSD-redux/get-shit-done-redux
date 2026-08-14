@@ -207,9 +207,9 @@ Use Agent() to spawn agent:
 
 ```text
 Agent(subagent_type="gsd-code-fixer", model="{FIXER_MODEL}", prompt="
-<files_to_read>
+<required_reading>
 ${REVIEW_PATH}
-</files_to_read>
+</required_reading>
 
 <config>
 phase_dir: ${PHASE_DIR}
@@ -324,9 +324,9 @@ ${AGENT_SKILLS_REVIEWER}")
     echo "Issues remain. Applying fixes for iteration ${ITERATION}..."
     
     Agent(subagent_type="gsd-code-fixer", model="{FIXER_MODEL}", prompt="
-<files_to_read>
+<required_reading>
 ${REVIEW_PATH}
-</files_to_read>
+</required_reading>
 
 <config>
 phase_dir: ${PHASE_DIR}

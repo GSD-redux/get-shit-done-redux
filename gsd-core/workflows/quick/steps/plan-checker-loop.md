@@ -18,9 +18,9 @@ Checker prompt:
 **Mode:** quick-full
 **Task Description:** ${DESCRIPTION}
 
-<files_to_read>
+<required_reading>
 - ${QUICK_DIR}/${quick_id}-PLAN.md (Plan to verify)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_CHECKER}
 
@@ -74,9 +74,9 @@ Revision prompt:
 <revision_context>
 **Mode:** quick-full (revision)
 
-<files_to_read>
+<required_reading>
 - ${QUICK_DIR}/${quick_id}-PLAN.md (Existing plan)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 

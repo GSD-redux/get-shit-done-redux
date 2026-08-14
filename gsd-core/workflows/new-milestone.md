@@ -351,9 +351,9 @@ Focus ONLY on what's needed for the NEW features.
 
 <question>{QUESTION}</question>
 
-<files_to_read>
+<required_reading>
 - {project_path} (Project context)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_RESEARCHER}
 
@@ -390,12 +390,12 @@ After all 4 complete, spawn synthesizer:
 Agent(prompt="
 Synthesize research outputs into SUMMARY.md.
 
-<files_to_read>
+<required_reading>
 - {research_dir}/STACK.md
 - {research_dir}/FEATURES.md
 - {research_dir}/ARCHITECTURE.md
 - {research_dir}/PITFALLS.md
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_SYNTHESIZER}
 
@@ -518,13 +518,13 @@ gsd_run query commit "docs: define milestone v[X.Y] requirements" --files .plann
 ```text
 Agent(prompt="
 <planning_context>
-<files_to_read>
+<required_reading>
 - {project_path}
 - {requirements_path}
 - {research_dir}/SUMMARY.md (if exists)
 - {config_path}
 - {milestones_path}
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_ROADMAPPER}
 

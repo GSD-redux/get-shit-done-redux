@@ -704,11 +704,11 @@ Agent(
 **Phase:** {phase_number}
 **Mode:** gap_closure
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/{phase_num}-UAT.md (UAT with diagnoses)
 - {state_path} (Project State)
 - {roadmap_path} (Roadmap)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 
@@ -769,9 +769,9 @@ Agent(
 **Phase:** {phase_number}
 **Phase Goal:** Close diagnosed gaps from UAT
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/*-PLAN.md (Plans to verify)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_CHECKER}
 
@@ -813,9 +813,9 @@ Agent(
 **Phase:** {phase_number}
 **Mode:** revision
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/*-PLAN.md (Existing plans)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 

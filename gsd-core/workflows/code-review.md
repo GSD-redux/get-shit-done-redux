@@ -433,7 +433,7 @@ else
 fi
 ```
 
-Build files_to_read block for agent:
+Build required_reading block for agent:
 ```bash
 FILES_TO_READ=""
 for file in "${REVIEW_FILES[@]}"; do
@@ -488,9 +488,9 @@ Print: `◆ Spawning code reviewer... (runs in a subagent — no output until it
 
 ```
 Agent(subagent_type="gsd-code-reviewer", model="{REVIEWER_MODEL}", prompt="
-<files_to_read>
+<required_reading>
 ${FILES_TO_READ}
-</files_to_read>
+</required_reading>
 
 ${STRUCTURAL_FINDINGS_BLOCK}
 

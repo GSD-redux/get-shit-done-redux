@@ -17,9 +17,9 @@ Agent(
 Task directory: ${QUICK_DIR}
 Task goal: ${DESCRIPTION}
 
-<files_to_read>
+<required_reading>
 - ${QUICK_DIR}/${quick_id}-PLAN.md (Plan)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_VERIFIER}
 

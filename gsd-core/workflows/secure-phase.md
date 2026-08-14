@@ -115,7 +115,7 @@ Print: `◆ Spawning security auditor... (runs in a subagent — no output until
 ```
 Agent(
   prompt="Read ~/.claude/agents/gsd-security-auditor.md for instructions.\n\n" +
-    "<files_to_read>{PLAN, SUMMARY, impl files, SECURITY.md}</files_to_read>" +
+    "<required_reading>{PLAN, SUMMARY, impl files, SECURITY.md}</required_reading>" +
     "<threat_register>{threat register}</threat_register>" +
     "<config>asvs_level: {SECURITY_ASVS}, block_on: {SECURITY_BLOCK_ON}</config>" +
     "<constraints>Never modify implementation files. Verify mitigations exist — do not scan for new threats. Escalate implementation gaps. Return a structured verdict only — do NOT write SECURITY.md (the orchestrator owns the file write).</constraints>" +
