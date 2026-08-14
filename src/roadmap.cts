@@ -318,21 +318,37 @@ function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
 
 // ─── cmdRoadmapAnalyze ────────────────────────────────────────────────────────
 
-function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
-  const roadmapPath = planningPaths(cwd).roadmap;
+/**
+ * #3165: a single phase-detail heading enriched with its on-disk status, as
+ * `cmdRoadmapAnalyze` reports it. Extracted so the SAME enrichment runs on both
+ * the scoped milestone window and, when that window is suspect (non-COMPLETE
+ * scope, zero phases, phase dirs on disk), the shipped-milestone-stripped
+ * fallback document.
+ */
+type AnalyzePhase = {
+  number: string;
+  name: string;
+  goal: string | null;
+  mode: string | null;
+  depends_on: string | null;
+  plan_count: number;
+  summary_count: number;
+  has_context: boolean;
+  has_research: boolean;
+  disk_status: string;
+  roadmap_complete: boolean;
+};
 
-  if (!fs.existsSync(roadmapPath)) {
-    output({ error: 'ROADMAP.md not found', milestones: [], phases: [], current_phase: null }, raw, undefined);
-    return;
-  }
-
-  const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
-  // #3184/#3165: use the scoped variant so a truncated window is a
-  // distinguishable signal in the output instead of a silent `phase_count: 0`
-  // indistinguishable from a genuinely empty milestone.
-  const { value: content, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
-  const phasesDir = planningPaths(cwd).phases;
-
+/**
+ * #3165: scan `content` for phase-detail headings (`##/###/#### Phase N: Name`)
+ * and enrich each with its on-disk plan/summary/completion status and ROADMAP
+ * checkbox. Pure extraction over `content` + the pre-built `phaseDirNames`
+ * lookup index — no milestone windowing of its own; the caller chooses the
+ * content (scoped window or fallback). Extracted verbatim from
+ * `cmdRoadmapAnalyze`'s former inline loop so the fallback re-runs the EXACT
+ * same enrichment, not a second derivation.
+ */
+function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames: string[]): AnalyzePhase[] {
   // Extract all phase headings: ## Phase N: Name or ### Phase N: Name
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
@@ -341,44 +357,8 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // ([A-Za-z]?) covers letter-prefixed ids without breaking numeric-leading ones.
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   const phasePattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
-  const phases: Array<{
-    number: string;
-    name: string;
-    goal: string | null;
-    mode: string | null;
-    depends_on: string | null;
-    plan_count: number;
-    summary_count: number;
-    has_context: boolean;
-    has_research: boolean;
-    disk_status: string;
-    roadmap_complete: boolean;
-  }> = [];
+  const phases: AnalyzePhase[] = [];
   let match: RegExpExecArray | null;
-
-  // #3185 (ADR-3180 Decision 1): the local `isSentinelPhase` closure was a
-  // fourth independent copy of the sentinel rule (`parseInt(num,10) === 0 ||
-  // === 999`). Deleted in favour of the canonical `isSentinelPhaseId`
-  // (src/phase-id.cts, SENTINEL_RANGES) so the engine-wide convention #1580
-  // describes has exactly one implementation. Phase 0 (pre-milestone) and
-  // Phase 999 (backlog) are sentinels, not real phases: they legitimately
-  // have no directory and must never be surfaced as current/next phase or
-  // counted in phase_count.
-
-  // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
-  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
-  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
-  // enumeration. It must see the PHYSICAL set so a heading already scoped by
-  // extractCurrentMilestoneScoped above can find its directory; filtering it
-  // through listMilestonePhaseDirs would scope the same set twice.
-  const _phaseDirNames = (() => {
-    try {
-      return fs.readdirSync(phasesDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch { return []; }
-  })();
-
   while ((match = phasePattern.exec(content)) !== null) {
     const phaseNum = match[1];
     if (isSentinelPhaseId(phaseNum)) continue;
@@ -417,7 +397,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     // readdirSync is self-guarded, and it delegates to scanPhasePlans, which
     // never throws) — nothing in this block can throw, so the try/catch could
     // never be triggered.
-    const dirMatch = matchPhaseDirs(_phaseDirNames, normalized).matches[0];
+    const dirMatch = matchPhaseDirs(phaseDirNames, normalized).matches[0];
 
     if (dirMatch) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch));
@@ -473,6 +453,70 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
       roadmap_complete: roadmapComplete,
     });
   }
+  return phases;
+}
+
+function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
+  const roadmapPath = planningPaths(cwd).roadmap;
+
+  if (!fs.existsSync(roadmapPath)) {
+    output({ error: 'ROADMAP.md not found', milestones: [], phases: [], current_phase: null }, raw, undefined);
+    return;
+  }
+
+  const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
+  // #3184/#3165: use the scoped variant so a truncated window is a
+  // distinguishable signal in the output instead of a silent `phase_count: 0`
+  // indistinguishable from a genuinely empty milestone.
+  const { value: content, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
+  const phasesDir = planningPaths(cwd).phases;
+
+  // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
+  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
+  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
+  // enumeration. It must see the PHYSICAL set so a heading already scoped by
+  // extractCurrentMilestoneScoped above can find its directory; filtering it
+  // through listMilestonePhaseDirs would scope the same set twice.
+  const _phaseDirNames = (() => {
+    try {
+      return fs.readdirSync(phasesDir, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+    } catch { return []; }
+  })();
+
+  // Scan the scoped milestone window for phase-detail headings and enrich each
+  // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so
+  // the SAME enrichment re-runs on the fallback below — not a second copy.
+  let phases = collectAnalyzePhases(content, phasesDir, _phaseDirNames);
+  // `effectiveContent` is what the downstream checklist scan (missing_details)
+  // iterates. Defaults to the scoped window; switched to the fallback document
+  // when the recovery path below fires, so a phase found via fallback is not
+  // falsely reported as "in checklist but missing a detail section."
+  let effectiveContent = content;
+
+  // #3165: recover phase_count when the scoped window came back empty. A
+  // CLOSED milestone heading sitting between the active milestone heading and
+  // its own phase-detail sections closes `extractCurrentMilestoneScoped`'s
+  // window over prose only — `phases` is empty, and the consuming resume gate
+  // (`workflows/next.md` Route 0) iterates `.phases[]` so a safety invariant
+  // silently never runs. When the window is suspect (non-COMPLETE scope), the
+  // scoped scan found nothing, AND phase directories exist on disk (real
+  // evidence phases exist), re-scan the shipped-milestone-stripped document so
+  // the phase list reflects the real phases instead of a silent zero. The
+  // `scope` field retains its non-COMPLETE value downstream so consumers can
+  // still tell this is a best-effort count, not a cleanly scoped one. Position
+  // alone cannot attribute phases to the active vs the intervening closed
+  // milestone, so this never claims COMPLETE — it converts silence into a
+  // populated, flagged result.
+  if (phases.length === 0 && scope !== SCOPE.COMPLETE && _phaseDirNames.length > 0) {
+    const fallbackContent = stripShippedMilestones(rawContent);
+    const fallbackPhases = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames);
+    if (fallbackPhases.length > 0) {
+      phases = fallbackPhases;
+      effectiveContent = fallbackContent;
+    }
+  }
 
   // Extract milestone info. #3216: routed through the canonical
   // `listMilestoneHeadings` owner (deleted the inline `##…` regex, which
@@ -502,7 +546,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const checklistPattern = /-\s*\[[ x]\]\s*\*\*Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)/gi;
   const checklistPhases = new Set<string>();
   let checklistMatch: RegExpExecArray | null;
-  while ((checklistMatch = checklistPattern.exec(content)) !== null) {
+  while ((checklistMatch = checklistPattern.exec(effectiveContent)) !== null) {
     checklistPhases.add(checklistMatch[1]);
   }
   const detailPhases = new Set(phases.map(p => p.number));
