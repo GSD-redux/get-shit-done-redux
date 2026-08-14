@@ -4,9 +4,6 @@
     "ai-integration-phase.md": {
       "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
     },
-    "code-review-fix.md": {
-      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
-    },
     "eval-review.md": {
       "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
     },
