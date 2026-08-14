@@ -102,6 +102,16 @@ interface ReadModifyWriteOptions {
    * destroy information the transition just resolved.
    */
   authoritativeFm?: Record<string, unknown>;
+  /**
+   * ADR-3408 §8.5 (D4): out-param, forwarded straight through to
+   * `syncAndPreserveStateMd` — every frontmatter field name whose value
+   * preservation restored over a disagreeing freshly-derived one during THIS
+   * write. Callers that supply an array here can fold it into their own
+   * report (see `reconcileReportedFields`) so a preserved field the caller's
+   * transform never named is still visible (#3345's direction). Omit for
+   * callers that do not report per-field arrays; costs nothing extra.
+   */
+  divergedFields?: string[];
 }
 
 interface StateRecordMetricOptions {
@@ -506,40 +516,34 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
     // #1230/#1264 post-sync preservation, AND the #1695 curated-current_phase_name
     // delta (table-driven) that this phase adds. Field-name validation (security)
     // and the resync-progress decision stay in this adapter.
-    let results: { updated: string[]; failed: string[] } = { updated: [], failed: [] };
+    let precomputed: { updated: string[]; failed: string[] } = { updated: [], failed: [] };
+    let preSyncContent = '';
+    const divergedFields: string[] = [];
     readModifyWriteStateMd(statePath, (content) => {
       const result = transitionCore(content, { kind: 'patch', patches }, { clock: realClock });
-      results = (result.data as { updated: string[]; failed: string[] }) ?? results;
+      precomputed = (result.data as { updated: string[]; failed: string[] }) ?? precomputed;
+      preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync });
+    }, cwd, { resync: shouldResync, divergedFields });
 
-    // #3351: reconcile the report against the bytes actually persisted.
+    // ADR-3408 §8.4 (D4, fix(#3351) generalized — see `reconcileReportedFields`):
     // patchCore's bookkeeping says whether the stateReplaceField text-replace
     // MATCHED — but its plain-line pattern (`m` flag over the full document)
     // can match the YAML frontmatter line for a lower-cased key, and the write
     // pipeline (syncStateFrontmatter re-derivation + the FIELD_CLASSIFICATION
     // preservation rows) then discards or restores that text before the file is
     // saved. A field is only reported `updated` when its post-write on-disk
-    // value equals the requested value: the frontmatter key when present,
-    // else the body field (the legitimate working case for state.patch is
-    // display-cased BODY fields — Status, Current Plan, Phase — which are
-    // never frontmatter keys).
-    const persisted = platformReadSync(statePath) || '';
-    const postFm = extractFrontmatter(persisted, statePath) as Record<string, unknown>;
-    const postBody = stripFrontmatter(persisted);
-    const updated: string[] = [];
-    const failed: string[] = [];
-    for (const [field, value] of Object.entries(patches)) {
-      const persistedValue = Object.prototype.hasOwnProperty.call(postFm, field)
-        ? String(postFm[field])
-        : stateExtractField(postBody, field);
-      if (persistedValue !== null && persistedValue.trim() === String(value).trim()) {
-        updated.push(field);
-      } else {
-        failed.push(field);
-      }
-    }
-    results = { updated, failed };
+    // value equals what THIS transform actually wrote (the frontmatter key
+    // when present, else the body field — the legitimate working case for
+    // state.patch is display-cased BODY fields — Status, Current Plan, Phase —
+    // which are never frontmatter keys). Also folds in any field
+    // `applyStatePreservation` restored that this patch never named at all
+    // (#3345's direction), a case the pre-#3471 version of this command never
+    // covered.
+    const updated = reconcileReportedFields(statePath, preSyncContent, precomputed.updated, divergedFields);
+    const updatedSet = new Set(updated);
+    const failed = Object.keys(patches).filter((field) => !updatedSet.has(field));
+    const results = { updated, failed };
 
     output(results, raw, results.updated.length > 0 ? 'true' : 'false');
   } catch {
@@ -563,6 +567,8 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
   const statePath = planningPaths(cwd).state;
   try {
     let updated = false;
+    let preSyncContent = '';
+    const divergedFields: string[] = [];
     const shouldResync = shouldResyncStateProgress([field as string]);
     // ADR-1769 Phase 7: dispatches to the STATE.md Transition Module. The
     // body-strip/reassemble single-field update is the pure `updateCore` in
@@ -577,12 +583,25 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
         { clock: realClock },
       );
       updated = (result.data as { updated: boolean } | undefined)?.updated === true;
+      preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync });
+    }, cwd, { resync: shouldResync, divergedFields });
+
+    // ADR-3408 §8.4 (D4): reconcile against the bytes actually persisted —
+    // `updateCore`'s own match does not know whether sync/preservation later
+    // discarded the value it wrote (#3351's direction, generalized from
+    // `cmdStatePatch`). `preserved` folds in any OTHER field preservation
+    // restored during this write that this command never touched at all
+    // (#3345's direction) — reported separately from `updated` because this
+    // command's contract is a single-field boolean, not a per-field array.
+    const reconciled = reconcileReportedFields(statePath, preSyncContent, updated ? [field as string] : [], divergedFields);
+    updated = reconciled.includes(field as string);
+    const preserved = reconciled.filter((f) => f !== field);
+
     if (updated) {
-      output({ updated: true }, false, undefined);
+      output({ updated: true, preserved }, false, undefined);
     } else {
-      output({ updated: false, reason: `Field "${field as string}" not found in STATE.md` }, false, undefined);
+      output({ updated: false, reason: `Field "${field as string}" not found in STATE.md`, preserved }, false, undefined);
     }
   } catch {
     output({ updated: false, reason: 'STATE.md not found' }, false, undefined);
@@ -629,6 +648,9 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   };
 
   let resultData: Record<string, unknown> | undefined;
+  let precomputedUpdated: string[] = [];
+  let preSyncContent = '';
+  const divergedFields: string[] = [];
   // #3311: the milestone (phase + session) claim is consulted INSIDE the
   // STATE.md lock, so the position read and the claim read cannot interleave
   // with another session's Current Position write.
@@ -650,18 +672,28 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     }
     const result = transitionCore(content, intent, deps);
     resultData = result.data;
+    precomputedUpdated = result.updated;
+    preSyncContent = result.content;
     return result.content;
-  }, cwd);
+  }, cwd, { divergedFields });
 
   if (!resultData || resultData['error']) {
     output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
     return;
   }
 
+  // ADR-3408 §8.4 (D4): reconcile `advancePlanCore`'s own success list against
+  // the bytes actually persisted — this command previously reported none of
+  // its per-field writes at all (`updated` never left `advancePlanCore`).
+  // Generalizes fix(#3351) (closes #3351's direction) and folds in any field
+  // preservation restored that this transform never touched (#3345's
+  // direction).
+  const updated = reconcileReportedFields(statePath, preSyncContent, precomputedUpdated, divergedFields);
+
   if (resultData['advanced'] === false) {
-    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'false');
+    output({ ...resultData, updated, milestone_conflict: milestoneConflict }, raw, 'false');
   } else {
-    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'true');
+    output({ ...resultData, updated, milestone_conflict: milestoneConflict }, raw, 'true');
   }
 }
 
@@ -1245,6 +1277,8 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
   const now = realClock.nowIso();
   const updated: string[] = [];
   let sessionCreated = false;
+  let preSyncContent = '';
+  const divergedFields: string[] = [];
 
   readModifyWriteStateMd(statePath, (content) => {
     // Update Last session / Last Date
@@ -1450,11 +1484,18 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
       }
     }
 
+    preSyncContent = content;
     return content;
-  }, cwd);
+  }, cwd, { divergedFields });
 
-  if (updated.length > 0) {
-    const result: Record<string, unknown> = { recorded: true, updated };
+  // ADR-3408 §8.4 (D4): reconcile this command's own success list against the
+  // bytes actually persisted (fix(#3351) generalized) and fold in any field
+  // preservation restored that this transform never touched (#3345's
+  // direction).
+  const reconciledUpdated = reconcileReportedFields(statePath, preSyncContent, updated, divergedFields);
+
+  if (reconciledUpdated.length > 0) {
+    const result: Record<string, unknown> = { recorded: true, updated: reconciledUpdated };
     if (sessionCreated) result['created'] = true;
     output(result, raw, 'true');
   } else {
@@ -2357,7 +2398,12 @@ function readStoredTotalPhases(existingFm: Record<string, unknown> | null | unde
   return Number.isFinite(n) ? n : null;
 }
 
-function syncStateFrontmatter(content: string, cwd: string | undefined, authoritativeFm?: Record<string, unknown>): string {
+function syncStateFrontmatter(
+  content: string,
+  cwd: string | undefined,
+  authoritativeFm?: Record<string, unknown>,
+  sanctionedPermanentEmptyFallback?: boolean,
+): string {
   // Read existing frontmatter BEFORE stripping — it may contain values
   // that the body no longer has (e.g., Status field removed by an agent).
   // `cwd` already identifies the workspace this content came from, so the STATE.md path is
@@ -2415,56 +2461,75 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
     }
   }
 
-  // Bug #905: preserve scalar fields that buildStateFrontmatter can only derive
-  // from body annotations (Current Phase:, Current Plan:, etc.). When those
-  // annotations are absent — e.g. after an agent or tool rewrites the body —
-  // buildStateFrontmatter returns no value for those keys. Mirror the same
-  // fallback pattern used in cmdStateJson so the existing frontmatter values
-  // survive every writeStateMd call.
+  // ADR-3408 §8.5 (D1): the six empty-only "#905" guards that used to live
+  // here UNCONDITIONALLY are deleted for the write-seam pipeline
+  // (`syncAndPreserveStateMd`, consumed by `readModifyWriteStateMd` and by
+  // `cmdPhaseComplete`'s atomic-commit adapter). An empty derived value now
+  // reaches `applyStatePreservation` unmolested, so the table-driven executor
+  // — not a private copy inside this function — decides whether a curated
+  // frontmatter value survives, and reports the decision via
+  // `divergedFields` when it does. That was the actual D1 bug: these guards
+  // ran BEFORE the executor ever saw the value, so a transform that
+  // deliberately emptied a body line (delta CHANGED) lost silently — the
+  // guard restored the stale frontmatter, the executor's own #1230 delta
+  // check then found "already restored, nothing to do", and
+  // `divergedFields` stayed empty even though a curated value had just won
+  // over a genuine derived-empty.
   //
-  // For stopped_at / paused_at: the original #905 "fall back when derived is
-  // absent" rule is preserved here — this block handles the EMPTY case only.
+  // `writeStateMd`'s two callers — `cmdStateSync` and `/gsd-health --repair`'s
+  // `REGENERATE_STATE` — are §8.3's closed, sanctioned-permanent exception
+  // list: NEITHER ever runs `applyStatePreservation` afterward, because their
+  // whole contract is "re-derive frontmatter FROM the body, body wins" (the
+  // opposite of preservation). For them, these six conditions are the ONLY
+  // mechanism that has ever kept a curated frontmatter value alive when the
+  // body simply carries no annotation for a field at all (most STATE.md
+  // files do not restate every field in body prose on every write) — losing
+  // that would blank `current_phase_name` / `stopped_at` / etc. on every
+  // `state sync`, which is a regression, not this phase's fix: `state sync`'s
+  // output must stay byte-identical (ADR-3408 §8.3 Amendment 2). So the same
+  // six conditions are kept, verbatim, but now gated behind the explicit
+  // `sanctionedPermanentEmptyFallback` parameter — threaded ONLY from
+  // `writeStateMd` — instead of running unconditionally or being duplicated
+  // as a second private copy. This is still ONE enforcement point: the six
+  // conditions exist in exactly one place in the source, selected by caller
+  // identity per the closed §8.3 exception list, never re-derived elsewhere.
+  //
   // The disagreeing case (a present-but-stale body value vs a fresher
-  // frontmatter value, #948/#3374) is NOT handled here: it is governed by
-  // applyStatePreservation's preserve-when-unchanged delta, applied post-sync
-  // by the shared applyPostSyncPreservation pass — run by
-  // readModifyWriteStateMd and by cmdPhaseComplete's adapter (the one caller
-  // that deliberately bypasses the RMW wrapper for the atomic
-  // ROADMAP/REQUIREMENTS/STATE commit; #3374). The writeStateMd path
-  // (state sync) intentionally derives from the body instead — its #905
-  // contract is body-beats-frontmatter. "Always prefer frontmatter" here
-  // would still be wrong: it would break transforms that legitimately write a
-  // new body value and expect this sync to project it — the #1230 delta
-  // ("did THIS write change the body source?") is what distinguishes those
-  // from a stale harvest.
-  if (!derivedFm['stopped_at'] && existingFm['stopped_at']) {
-    derivedFm['stopped_at'] = existingFm['stopped_at'];
-  }
-  if (!derivedFm['paused_at'] && existingFm['paused_at']) {
-    derivedFm['paused_at'] = existingFm['paused_at'];
-  }
-  if (!derivedFm['current_phase'] && existingFm['current_phase']) {
-    derivedFm['current_phase'] = existingFm['current_phase'];
-  }
-  if (!derivedFm['current_phase_name'] && existingFm['current_phase_name']) {
-    derivedFm['current_phase_name'] = existingFm['current_phase_name'];
-  }
-  if (!derivedFm['current_plan'] && existingFm['current_plan']) {
-    derivedFm['current_plan'] = existingFm['current_plan'];
-  }
-  // progress is a sub-object: fall back to existing only when the body+disk
-  // scan produced NO progress block at all. When buildStateFrontmatter did
-  // derive a progress block (even a lower one), that derived value wins — the
-  // shouldPreserveExistingProgress cross-milestone logic is applied later in
-  // cmdStateJson on the read path where it is appropriate.
-  if (!derivedFm['progress'] && existingFm['progress']) {
-    derivedFm['progress'] = normalizeProgressNumbers(existingFm['progress']);
+  // frontmatter value, #948/#3374/§8.5) was never handled here even before
+  // this change: it is governed by applyStatePreservation's
+  // preserve-when-unchanged delta, applied post-sync by the shared
+  // applyPostSyncPreservation pass.
+  if (sanctionedPermanentEmptyFallback) {
+    if (!derivedFm['stopped_at'] && existingFm['stopped_at']) {
+      derivedFm['stopped_at'] = existingFm['stopped_at'];
+    }
+    if (!derivedFm['paused_at'] && existingFm['paused_at']) {
+      derivedFm['paused_at'] = existingFm['paused_at'];
+    }
+    if (!derivedFm['current_phase'] && existingFm['current_phase']) {
+      derivedFm['current_phase'] = existingFm['current_phase'];
+    }
+    if (!derivedFm['current_phase_name'] && existingFm['current_phase_name']) {
+      derivedFm['current_phase_name'] = existingFm['current_phase_name'];
+    }
+    if (!derivedFm['current_plan'] && existingFm['current_plan']) {
+      derivedFm['current_plan'] = existingFm['current_plan'];
+    }
+    // progress is a sub-object: fall back to existing only when the
+    // body+disk scan produced NO progress block at all. When
+    // buildStateFrontmatter did derive a progress block (even a lower one),
+    // that derived value wins — the shouldPreserveExistingProgress
+    // cross-milestone logic is applied later in cmdStateJson on the read
+    // path where it is appropriate.
+    if (!derivedFm['progress'] && existingFm['progress']) {
+      derivedFm['progress'] = normalizeProgressNumbers(existingFm['progress']);
+    }
   }
 
   // #2202: carry forward any existing frontmatter key that the schema does not
   // own, so custom/unknown keys are not silently dropped on every mutating verb.
   // Schema-owned keys (already in derivedFm from buildStateFrontmatter + the
-  // preserve guards above) still win.
+  // sanctioned-permanent guards above, when they ran) still win.
   for (const key of Object.keys(existingFm)) {
     if (key in derivedFm || existingFm[key] === undefined) continue;
 
@@ -2486,6 +2551,39 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
     // table rather than naming fields, so the policy stays single-sourced.
     const classification = stateTransitionMod.getFieldClassification(key);
     if (classification && classification.source === 'free') continue;
+
+    // ADR-3408 §8.1/§8.5 (D1 follow-on — found by probe, not predicted by the
+    // design): a `preserve-when-unchanged` / `preserve-always` field must be
+    // decided ONLY by `applyStatePreservation` — the single enforcement point
+    // — never by this generic carry-forward, on the write-seam path. Before
+    // the six sanctioned-permanent guards above were gated behind
+    // `sanctionedPermanentEmptyFallback` (D1), this loop's `key in derivedFm`
+    // check was effectively always true for a field the guards had already
+    // restored, so this branch was unreachable for it and the distinction
+    // never mattered. With the guards now OFF on the write-seam path,
+    // `derivedFm` genuinely lacks the key when the body carries no
+    // annotation — and without this skip, this loop silently resurrects the
+    // exact stale value the executor's delta rule (§8.5 Row 2) just decided
+    // to discard, re-introducing the D1 bug through a second, unrelated code
+    // path (confirmed live: an A5-shaped probe restored `current_phase_name`
+    // via THIS loop even with the six guards deleted).
+    //
+    // Gated to the write-seam path ONLY (`!sanctionedPermanentEmptyFallback`)
+    // — `writeStateMd`'s two sanctioned-permanent callers never run
+    // `applyStatePreservation` at all, so unconditionally skipping here would
+    // blank fields this loop has always carried forward for them (e.g.
+    // `last_activity_desc`, which was never one of the six explicit guards
+    // above but relied on THIS loop for its empty-case fallback), breaking
+    // `state sync`'s required byte-identical output for a field D1 never
+    // named. On the write-seam path this executor-only rule genuinely widens
+    // beyond the original six fields (e.g. also covers `last_activity_desc`)
+    // — a deliberate, in-scope consequence of "one enforcement point", not a
+    // separate defect.
+    if (
+      !sanctionedPermanentEmptyFallback &&
+      classification &&
+      (classification.preservation === 'preserve-when-unchanged' || classification.preservation === 'preserve-always')
+    ) continue;
 
     derivedFm[key] = existingFm[key];
   }
@@ -2763,7 +2861,12 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
     // Invalidate the disk scan cache first — the write may create new PLAN/SUMMARY
     // files that buildStateFrontmatter must see (#1967).
     if (cwd) _diskScanCache.delete(cwd);
-    const synced = syncStateFrontmatter(content, cwd);
+    // ADR-3408 §8.3: `writeStateMd` is the sole write path for the two
+    // sanctioned-permanent exceptions (`cmdStateSync`, `REGENERATE_STATE`) —
+    // pass `sanctionedPermanentEmptyFallback: true` so their long-standing
+    // empty-field fallback behavior stays byte-identical (see
+    // `syncStateFrontmatter`'s docstring above the guard block).
+    const synced = syncStateFrontmatter(content, cwd, undefined, true);
     platformWriteSync(statePath, synced);
   } finally {
     releaseStateLock(lockPath);
@@ -2943,6 +3046,30 @@ function applyPostSyncPreservation(
         : before !== after;
       if (changed) divergedFields.push(key);
     }
+    // ADR-3408 §8.5 Row 2 (D1's actual bug, the reason the guards had to be
+    // deleted rather than merely relocated): the loop above can only see a
+    // field that `applyStatePreservation` itself RESTORED — it diffs
+    // `postFm` before vs after the executor ran, and `preserve-when-unchanged`
+    // never adds an absent key back when the body source changed this write
+    // (the delta rule correctly lets the empty derived value win, so `postFm`
+    // never gains the key at all). That means a curated value can vanish —
+    // deliberately, per policy — with NOTHING in the loop above to report it.
+    // "Liberal but visible" requires the discard itself to be named, not just
+    // a restore. Scoped to exactly the fields `bodyDeltas` tracks
+    // (preserve-when-unchanged rows only — `preserve-always`/`progress` and
+    // `preserve-if-placeholder`/`milestone*` are unaffected by the delta rule
+    // and already fully covered by the restore-diff loop above).
+    for (const [field, delta] of Object.entries(bodyDeltas)) {
+      if (divergedFields.includes(field)) continue; // already reported as a restore above
+      const before = preFmSnapshot[field];
+      const beforeIsReal = typeof before === 'string' && before.trim().length > 0;
+      if (!beforeIsReal) continue; // nothing curated existed to discard
+      if (delta.pre === delta.post) continue; // body source unchanged — governed by the restore branch, not the discard rule
+      const after = preservation.postFm[field];
+      const afterIsEmpty = after === undefined || after === null
+        || (typeof after === 'string' && after.trim().length === 0);
+      if (afterIsEmpty) divergedFields.push(field);
+    }
   }
   // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
   // layouts with no body `Phase:` line, both phase-source snapshots are null
@@ -3069,6 +3196,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
       resync,
       options?.authoritativeFm,
       options?.deriveProgressKeys === true,
+      options?.divergedFields,
     );
 
     platformWriteSync(statePath, synced);
@@ -3076,6 +3204,87 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
   } finally {
     releaseStateLock(lockPath);
   }
+}
+
+/**
+ * ADR-3408 §8.4/§8.5 (D4): frontmatter field name → the body Title-Case
+ * label the `updated` arrays below use. Every field in this table is
+ * `preserve-when-unchanged` / `preserve-always` in `FIELD_CLASSIFICATION` —
+ * the only fields `applyStatePreservation` can restore, and therefore the
+ * only fields `divergedFields` can ever name. `reconcileReportedFields`
+ * consults this so a preservation event on `current_phase_name` folds into
+ * a report that otherwise only ever speaks in body labels like `Current
+ * Phase Name` (#3345's direction).
+ */
+const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.freeze({
+  current_phase: 'Current Phase',
+  current_phase_name: 'Current Phase Name',
+  current_plan: 'Current Plan',
+  stopped_at: 'Stopped At',
+  paused_at: 'Paused At',
+  status: 'Status',
+  last_activity_desc: 'Last Activity Description',
+});
+
+/**
+ * ADR-3408 §8.4 (D4): shared persisted-bytes reconciliation, generalized
+ * from fix(#3351)'s `cmdStatePatch`-only version so every RMW-based command
+ * that reports a per-field `updated` array shares ONE comparison instead of
+ * re-deriving it per call site — duplicated policy is exactly what this
+ * epic exists to remove.
+ *
+ * Closes BOTH directions:
+ *  - **#3351's** (reported-but-discarded): a field the transform's own
+ *    return value held a value for, that sync/preservation then discarded
+ *    or overwrote before the file was saved, must NOT be reported.
+ *  - **#3345's** (persisted-but-unreported): a field `applyStatePreservation`
+ *    restored that the transform never touched at all must still be
+ *    reported — preservation can mutate a field the pre-sync intent never
+ *    knew about.
+ *
+ * @param preSyncContent The transformFn's OWN return value — the content
+ *   BEFORE `syncAndPreserveStateMd` ran this write — captured by the caller
+ *   inside its own `readModifyWriteStateMd` callback. Comparing that against
+ *   the actual bytes on disk after the full write pipeline settled is what
+ *   makes the report reflect what POST-sync bytes hold (ADR-3408 §8.4),
+ *   not what the pre-sync intent merely hoped for.
+ * @param reported The candidate field names — the transform's OWN
+ *   success list (e.g. `beginPhaseCore`'s `updated`), never a raw intent
+ *   list the transform might not have actually matched. Body Title-Case
+ *   labels (`Status`, `Current Plan`) and frontmatter keys are both valid;
+ *   each is looked up as a frontmatter key first, else as a body field —
+ *   the same fallback chain `cmdStatePatch` used before this generalization.
+ * @param divergedFields Frontmatter field names `applyStatePreservation`
+ *   actually restored during this write (ADR-3408 §8.5's out-param).
+ */
+function reconcileReportedFields(
+  statePath: string,
+  preSyncContent: string,
+  reported: string[],
+  divergedFields: string[],
+): string[] {
+  const persisted = platformReadSync(statePath) || '';
+  const persistedFm = extractFrontmatter(persisted, statePath) as Record<string, unknown>;
+  const persistedBody = stripFrontmatter(persisted);
+  const preFm = extractFrontmatter(preSyncContent, statePath) as Record<string, unknown>;
+  const preBody = stripFrontmatter(preSyncContent);
+
+  const valueOf = (fm: Record<string, unknown>, body: string, field: string): string | null =>
+    Object.prototype.hasOwnProperty.call(fm, field) ? String(fm[field]) : stateExtractField(body, field);
+
+  const reconciled: string[] = [];
+  for (const field of reported) {
+    const intended = valueOf(preFm, preBody, field);
+    const persistedValue = valueOf(persistedFm, persistedBody, field);
+    if (intended !== null && intended.trim() === (persistedValue ?? '').trim()) {
+      reconciled.push(field);
+    }
+  }
+  for (const field of divergedFields) {
+    const label = FRONTMATTER_KEY_TO_BODY_LABEL[field] ?? field;
+    if (!reconciled.includes(label)) reconciled.push(label);
+  }
+  return reconciled;
 }
 
 function cmdStateJson(cwd: string, raw: boolean): void {
@@ -3096,27 +3305,59 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   // report the preserved value instead of omitting the key.
   const built = buildStateFrontmatter(body, cwd, undefined, readStoredTotalPhases(existingFm));
 
-  // Preserve frontmatter-only fields that cannot be recovered from the body.
-  if (existingFm && existingFm['stopped_at'] && !built['stopped_at']) {
-    built['stopped_at'] = existingFm['stopped_at'];
-  }
-  if (existingFm && existingFm['paused_at'] && !built['paused_at']) {
-    built['paused_at'] = existingFm['paused_at'];
-  }
-  // Preserve existing status when body-derived status is 'unknown' (same logic as syncStateFrontmatter).
-  if (built['status'] === 'unknown' && existingFm && existingFm['status'] && existingFm['status'] !== 'unknown') {
-    built['status'] = existingFm['status'];
-  }
-  // Bug #905: preserve scalar fields when body annotations are absent.
-  // Mirrors the same fallback pattern applied in syncStateFrontmatter.
-  if (existingFm && !built['current_phase'] && existingFm['current_phase']) {
-    built['current_phase'] = existingFm['current_phase'];
-  }
-  if (existingFm && !built['current_phase_name'] && existingFm['current_phase_name']) {
-    built['current_phase_name'] = existingFm['current_phase_name'];
-  }
-  if (existingFm && !built['current_plan'] && existingFm['current_plan']) {
-    built['current_plan'] = existingFm['current_plan'];
+  // ADR-3408 §8.5 / D3: route stopped_at / paused_at / status / current_phase /
+  // current_phase_name / current_plan through the SAME `preserve-when-unchanged`
+  // executor the write path uses (`applyPreserveWhenUnchanged`), instead of a
+  // third private copy of the empty-only guards with no delta/staleness check
+  // at all — the shape that let a stale-but-present body annotation always
+  // beat a fresher curated frontmatter value in `state json` output (#3395's
+  // shape outside the write seam).
+  //
+  // `cmdStateJson` never writes — it is one snapshot read, not a
+  // before/after transform — so "did THIS write change the body source"
+  // (the #1230 delta the executor consults) is definitionally "no": every
+  // field's body source is passed as its own delta pre/post pair (the same
+  // value twice). That is what makes the executor's rule resolve to
+  // "restore the curated value whenever a real one exists" here — exactly
+  // §8.5's "same terms as an empty derived value" extended to a present
+  // one, i.e. the exact D3 fix. Deliberately scoped to only these six
+  // fields (not the full `applyStatePreservation` dispatch loop): `progress`
+  // (preserve-always) keeps its own `shouldPreserveExistingProgress`
+  // cross-milestone rule below — a DIFFERENT policy that must survive this
+  // change untouched — and `milestone`/`milestone_name`
+  // (preserve-if-placeholder) are out of D3's scope entirely.
+  if (existingFm) {
+    const sessionScope = matchSessionSection(body) ?? body;
+    const positionScope = matchCurrentPositionSection(body) ?? body;
+    const bodyStoppedAt = stateExtractField(sessionScope, 'Stopped At') || stateExtractField(sessionScope, 'Stopped at');
+    const bodyPausedAt = stateExtractField(sessionScope, 'Paused At');
+    const bodyPhaseSource = stateExtractField(body, 'Phase');
+    const bodyCurrentPhase = stateExtractField(body, 'Current Phase')
+      ?? parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    const bodyCurrentPlan = stateExtractField(body, 'Current Plan');
+    const bodyStatus = stateExtractField(body, 'Status');
+
+    const unchanged = (v: string | null): { pre: string | null; post: string | null } => ({ pre: v, post: v });
+    const ctx = {
+      preFm: null,
+      postFm: built,
+      preFmSnapshot: existingFm,
+      resync: true,
+      deriveProgressKeys: false,
+      bodyDeltas: {
+        status: unchanged(bodyStatus),
+        stopped_at: unchanged(bodyStoppedAt),
+        paused_at: unchanged(bodyPausedAt),
+        current_phase: unchanged(bodyCurrentPhase),
+        current_plan: unchanged(bodyCurrentPlan),
+        current_phase_name: unchanged(bodyPhaseSource),
+      },
+      mutated: false,
+    };
+    for (const field of ['status', 'stopped_at', 'paused_at', 'current_phase', 'current_plan', 'current_phase_name']) {
+      const cls = stateTransitionMod.getFieldClassification(field);
+      if (cls) stateTransitionMod.applyPreserveWhenUnchanged(field, cls, ctx);
+    }
   }
   // Preserve curated cross-milestone aggregates when local disk scanning sees
   // only a narrower realized subset (#3242 Bug A). Stale lower counters still
@@ -3169,10 +3410,13 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   // that itself contains a parenthetical. The #1695 delta-gate preservation
   // still runs after the sync; the override is re-asserted after it inside
   // readModifyWriteStateMd for layouts with no body `Phase:` line.
+  const divergedFields: string[] = [];
   const rmwOptions: ReadModifyWriteOptions = {
     authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
+    divergedFields,
   };
-  let updated: string[] = [];
+  let precomputedUpdated: string[] = [];
+  let preSyncContent = '';
   // #3311: begin-phase is the claim point — it is the one Current Position
   // transition that explicitly names its phase, so it both records this
   // session's claim and detects a conflicting live claim for a different
@@ -3185,7 +3429,8 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
       milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
     }
     const result = transitionCore(content, intent, deps);
-    updated = result.updated;
+    precomputedUpdated = result.updated;
+    preSyncContent = result.content;
     // #3127 resume: the core preserved the mid-flight Current Phase Name, so
     // the intent-first override must not fire — it would drift frontmatter
     // away from the preserved body value. Dropping it here is safe because
@@ -3195,6 +3440,12 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     }
     return result.content;
   }, cwd, rmwOptions);
+
+  // ADR-3408 §8.4 (D4): reconcile `beginPhaseCore`'s own success list against
+  // the bytes actually persisted (fix(#3351) generalized) and fold in any
+  // field preservation restored that this transform never touched (#3345's
+  // direction).
+  const updated = reconcileReportedFields(statePath, preSyncContent, precomputedUpdated, divergedFields);
 
   output(
     { updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null, milestone_conflict: milestoneConflict },
@@ -3460,18 +3711,30 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseNa
   // line, and the prose re-derivation of current_phase_name truncates names
   // that themselves contain a parenthetical — the authoritative override keeps
   // the exact value, exactly as cmdStateBeginPhase does for its EXECUTING line.
+  const divergedFields: string[] = [];
   const rmwOptions: ReadModifyWriteOptions = {
     resync: false,
     deriveProgressKeys: true,
     authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
+    divergedFields,
   };
 
-  let updated: string[] = [];
+  let precomputedUpdated: string[] = [];
+  let preSyncContent = '';
   readModifyWriteStateMd(statePath, (content) => {
     const result = transitionCore(content, intent, deps);
-    updated = result.updated;
+    precomputedUpdated = result.updated;
+    preSyncContent = result.content;
     return result.content;
   }, cwd, rmwOptions);
+
+  // ADR-3408 §8.4 (D4): reconcile `plannedPhaseCore`'s own success list
+  // against the bytes actually persisted (fix(#3351) generalized) and fold
+  // in any field preservation restored that this transform never touched
+  // (#3345's direction) — traced for this phase (design doc: "not traced in
+  // the analysis pass") and found to need exactly the same treatment as
+  // `cmdStateBeginPhase`.
+  const updated = reconcileReportedFields(statePath, preSyncContent, precomputedUpdated, divergedFields);
 
   const result = updated.length === 0
     ? { updated, phase: phaseNumber, plan_count: planCount, warning: 'STATE.md Current Position has no recognized labels — transition was a no-op. Verify STATE.md uses the canonical labeled format (Status:, Total Plans in Phase:, etc.).' }
@@ -4326,6 +4589,8 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
 
   const today = realClock.localToday();
   const updated: string[] = [];
+  let preSyncContent = '';
+  const divergedFields: string[] = [];
 
   readModifyWriteStateMd(statePath, (content) => {
     const currentPhase = resolvedPhase;
@@ -4409,13 +4674,31 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
       }
     }
 
-    return reassemble(body);
-  }, cwd);
+    const out = reassemble(body);
+    preSyncContent = out;
+    return out;
+  }, cwd, { divergedFields });
+
+  // ADR-3408 §8.4 (D4): traced for this phase (design doc: "not traced in
+  // the analysis pass"). Unlike the transitionCore-based commands, this
+  // adapter's `updated` mixes FIELD names (Status, Last Activity, Last
+  // Activity Description — each reconcilable against the persisted bytes,
+  // same as every other command in this phase) with the SECTION name
+  // `Current Position` (the whole Current-Position block, not a single
+  // field `stateExtractField` can look up — reconciling it the same way as
+  // a field would always drop it as a false negative). Reconcile only the
+  // field-shaped entries (#3351's direction), pass the section entry
+  // through unconditionally, and fold in any field preservation restored
+  // that this transform never touched (#3345's direction).
+  const SECTION_ENTRIES = new Set(['Current Position']);
+  const sectionEntries = updated.filter((f) => SECTION_ENTRIES.has(f));
+  const fieldEntries = updated.filter((f) => !SECTION_ENTRIES.has(f));
+  const reconciled = [...sectionEntries, ...reconcileReportedFields(statePath, preSyncContent, fieldEntries, divergedFields)];
 
   output(
-    { updated, phase: resolvedPhase },
+    { updated: reconciled, phase: resolvedPhase },
     raw,
-    updated.length > 0 ? 'true' : 'false',
+    reconciled.length > 0 ? 'true' : 'false',
   );
 }
 

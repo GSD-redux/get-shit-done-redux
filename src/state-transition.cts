@@ -209,7 +209,7 @@ export type StatePreservationResult = {
  * executor below. `mutated` accumulates across the whole field loop (ADR-3408
  * §8.1 — one executor per policy, sharing one result).
  */
-type PreservationCtx = {
+export type PreservationCtx = {
   preFm: Record<string, unknown> | null;
   postFm: Record<string, unknown>;
   preFmSnapshot: Record<string, unknown>;
@@ -254,8 +254,17 @@ function throwUnwiredRow(field: string): never {
  * current_phase, current_plan, paused_at, last_activity_desc — is honored by
  * this ONE executor; `cls.guard` is the only field-specific variation (the
  * closed vocabulary of ADR-3408 Decision 1).
+ *
+ * Exported (ADR-3408 §8.5 / D3) so `cmdStateJson` (state.cts) — a read-only
+ * path with no transform of its own — can route its stale-vs-fresh decision
+ * through the SAME executor the write path uses, rather than maintaining a
+ * third private copy of this policy. `cmdStateJson` calls this directly
+ * (not the full `applyStatePreservation` dispatch loop) so its read stays
+ * scoped to exactly the fields it has always governed and never touches
+ * `progress` or `milestone*`, which are different policies with their own
+ * read-path rules (`shouldPreserveExistingProgress`, `preserve-if-placeholder`).
  */
-function applyPreserveWhenUnchanged(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
+export function applyPreserveWhenUnchanged(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
   // 1. A declared row with no wired delta is an internal invariant violation
   // — throw (ADR-3408 §8.2). Never reached for a user-document defect: the
   // production caller (readModifyWriteStateMd) wires every preserve-when-

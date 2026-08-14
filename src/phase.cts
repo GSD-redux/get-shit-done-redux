@@ -2097,6 +2097,18 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let requirementsUpdated = false;
 
   const warnings: string[] = [];
+  // ADR-3408 §8.5 / D2 (#3374): "liberal but visible" — when the write-seam
+  // composition's preservation stage restores a curated frontmatter value
+  // over a disagreeing derived one, that divergence is surfaced here rather
+  // than silently absorbed. Structured (field + reason), not prose, so a
+  // caller can assert on the value rather than regex a rendered message.
+  // Named `preservation_warnings`, NOT `warnings`: `warnings` above is
+  // already a prose `string[]` on this exact command — reusing it for a
+  // structured `{field, reason}[]` shape would be the "Generative Fix
+  // Divergence" anti-pattern (two sibling fields, same name, different
+  // element types). Mirrors `cmdMilestoneComplete`'s identical field
+  // (milestone.cts).
+  const preservationWarnings: Array<{ field: string; reason: string }> = [];
   // #3057 B3: mirrors `verification_stale_check_indeterminate` on init.cts /
   // roadmap.cts / uat-predicate.cts's outputs — set on the non-blocking path
   // below (inside withPlanningLock) alongside the warnings[] entry, so a
@@ -3037,6 +3049,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // apply). Fields the transition legitimately rewrote (Status, Phase,
         // Stopped At via completePhaseCore's #3374 continuity line) have
         // changed body sources, so their deltas do not fire.
+        // ADR-3408 §8.5 / D2 (#3374): thread `divergedFields` through so this
+        // command reports what it preserved, following `cmdMilestoneComplete`'s
+        // shape (milestone.cts) — the same composition, the same out-param,
+        // the same visibility contract.
+        const divergedFields: string[] = [];
         stateContent = syncAndPreserveStateMd(
           originalStateContent,
           stateContent,
@@ -3044,7 +3061,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           cwd,
           true,
           authoritativeFm,
+          undefined,
+          divergedFields,
         );
+        for (const field of divergedFields) {
+          preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
+        }
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
       }
@@ -3121,6 +3143,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     has_warnings: warnings.length > 0,
     verification_stale_check_indeterminate: staleCheckIndeterminate,
     milestone_conflict: milestoneConflict,
+    preservation_warnings: preservationWarnings,
   };
 
   output(result, raw);
