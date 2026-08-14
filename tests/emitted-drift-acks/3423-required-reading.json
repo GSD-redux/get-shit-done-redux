@@ -2,19 +2,19 @@
   "version": 1,
   "paths": {
     ".agents/skills/gsd-code-review-fix/SKILL.md": {
-      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+      "reason": "#3423 (epic #1891 F8): codex skill body moved with the <files_to_read> -> <required_reading> rename in its embedded workflow/command/capability sources; the skills-from-commands rule expects a commands/gsd change this diff does not carry — deliberate, tag-token-only."
     },
     ".agents/skills/gsd-diagnose-issues/SKILL.md": {
-      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+      "reason": "#3423 (epic #1891 F8): codex skill body moved with the <files_to_read> -> <required_reading> rename in its embedded workflow/command/capability sources; the skills-from-commands rule expects a commands/gsd change this diff does not carry — deliberate, tag-token-only."
     },
     ".agents/skills/gsd-plan-checker-loop/SKILL.md": {
-      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+      "reason": "#3423 (epic #1891 F8): codex skill body moved with the <files_to_read> -> <required_reading> rename in its embedded workflow/command/capability sources; the skills-from-commands rule expects a commands/gsd change this diff does not carry — deliberate, tag-token-only."
     },
     ".agents/skills/gsd-quick-verification/SKILL.md": {
-      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+      "reason": "#3423 (epic #1891 F8): codex skill body moved with the <files_to_read> -> <required_reading> rename in its embedded workflow/command/capability sources; the skills-from-commands rule expects a commands/gsd change this diff does not carry — deliberate, tag-token-only."
     },
     ".agents/skills/gsd-research-phase/SKILL.md": {
-      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+      "reason": "#3423 (epic #1891 F8): codex skill body moved with the <files_to_read> -> <required_reading> rename in its embedded workflow/command/capability sources; the skills-from-commands rule expects a commands/gsd change this diff does not carry — deliberate, tag-token-only."
     },
     "ai-integration-phase.md": {
       "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
