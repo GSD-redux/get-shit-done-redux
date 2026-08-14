@@ -92,6 +92,7 @@
         "state-prune.test.cjs",
         "state-rebuild-cli.test.cjs",
         "state-rebuild.test.cjs",
+        "state-write-path-drift-guard.test.cjs",
         "state.test.cjs"
       ],
       "issue": "180"

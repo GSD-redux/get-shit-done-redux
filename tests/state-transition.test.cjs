@@ -50,10 +50,10 @@ describe('ADR-1769 substrate: field-classification table', () => {
     }
   });
 
-  test('current_phase_name is curated / preserve-always (ADR-1769 §4 — kills #1743/#1695 by construction)', () => {
+  test('current_phase_name is curated / preserve-when-unchanged (ADR-1769 §4 — kills #1743/#1695 by construction; ADR-3408 #3468 reclassified from preserve-always to match its long-standing delta-gated behavior)', () => {
     const cls = getFieldClassification('current_phase_name');
     assert.strictEqual(cls && cls.source, 'curated');
-    assert.strictEqual(cls && cls.preservation, 'preserve-always');
+    assert.strictEqual(cls && cls.preservation, 'preserve-when-unchanged');
   });
 
   test('progress is curated / preserve-always (ADR-1769 §4 — curated-progress ratchet)', () => {
@@ -1295,12 +1295,13 @@ describe('ADR-1769 Phase 7: sync transition — body writes + #1761', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync consolidation', () => {
-  // Shared no-op deltas for tests that only exercise one field.
-  const untouched = {
-    preBodyStatus: null, postBodyStatus: null,
-    preBodyStoppedAt: null, postBodyStoppedAt: null,
-    preBodyPhaseSource: null, postBodyPhaseSource: null,
-  };
+  // Shared no-op deltas for tests that only exercise one field. #3468 folded
+  // the three dedicated status/stopped_at/current_phase_name parameter pairs
+  // into the single bodyDeltas channel every preserve-when-unchanged row now
+  // uses — `neutralBodyDeltas()` (defined below, hoisted) wires every such
+  // row to an "unchanged this write" delta so a test exercising ONE field
+  // (e.g. progress) never trips the §8.2 unwired-row throw for another.
+  const untouched = { bodyDeltas: neutralBodyDeltas() };
 
   test('progress: restores curated block when table=preserve-always and transition is not re-deriving (!resync)', () => {
     // Default behavior: wholesale curated restore. #3242 Bug A protection.
@@ -1426,9 +1427,7 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
       preFmSnapshot: { status: 'completed' },
       postFm: { status: 'verifying' },
       resync: true,
-      preBodyStatus: 'Executing Phase 3', postBodyStatus: 'Executing Phase 3',
-      preBodyStoppedAt: null, postBodyStoppedAt: null,
-      preBodyPhaseSource: null, postBodyPhaseSource: null,
+      bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Executing Phase 3' } },
     });
     assert.equal(r.postFm.status, 'completed');
     assert.equal(r.mutated, true);
@@ -1440,23 +1439,19 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
       preFmSnapshot: { status: 'completed' },
       postFm: { status: 'verifying' },
       resync: true,
-      preBodyStatus: 'Executing Phase 3', postBodyStatus: 'Completed Phase 3', // changed
-      preBodyStoppedAt: null, postBodyStoppedAt: null,
-      preBodyPhaseSource: null, postBodyPhaseSource: null,
+      bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Completed Phase 3' } }, // changed
     });
     assert.equal(r.postFm.status, 'verifying');
     assert.equal(r.mutated, false);
   });
 
-  test('current_phase_name: preserves curated value when body Phase source unchanged (preserve-always)', () => {
+  test('current_phase_name: preserves curated value when body Phase source unchanged (preserve-when-unchanged, #3468 reclassified)', () => {
     const r = applyStatePreservation({
       preFm: null,
       preFmSnapshot: { current_phase_name: 'curated-name' },
       postFm: { current_phase_name: 'wrong-parenthetical-harvest' },
       resync: true,
-      preBodyStatus: null, postBodyStatus: null,
-      preBodyStoppedAt: null, postBodyStoppedAt: null,
-      preBodyPhaseSource: '3', postBodyPhaseSource: '3',
+      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } },
     });
     assert.equal(r.postFm.current_phase_name, 'curated-name');
     assert.equal(r.mutated, true);
@@ -1492,23 +1487,23 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#3258: applyStatePreservation honors every declared preservation row', () => {
-  const GOOD_PLACEHOLDER = 'preserved-by-table';
   // Universal "body source unchanged this write" deltas. Every
   // preserve-when-unchanged probe reuses these so the delta condition (pre ===
   // post) is satisfied and the only variable is whether the branch exists.
+  // #3468: current_phase_name folded into this same bodyDeltas channel
+  // (reclassified from preserve-always to preserve-when-unchanged) — every
+  // preserve-when-unchanged row must be present here or the §8.2 throw fires
+  // for whichever row a probe does not itself supply.
   const SAME = { pre: 'unchanged-source', post: 'unchanged-source' };
   const unchangedBodyDeltas = {
     status: SAME,
     stopped_at: SAME,
+    current_phase_name: SAME,
     paused_at: SAME,
     current_phase: SAME,
     current_plan: SAME,
     last_activity_desc: SAME,
   };
-  // Dedicated-channel deltas (the four pre-#3258 rows use these, unchanged).
-  const sameStatus = { preBodyStatus: 'x', postBodyStatus: 'x' };
-  const sameStoppedAt = { preBodyStoppedAt: 'x', postBodyStoppedAt: 'x' };
-  const samePhaseSource = { preBodyPhaseSource: 'x', postBodyPhaseSource: 'x' };
 
   // Per-policy probe. Returns whether applyStatePreservation restored the
   // field's snapshot value under an input crafted so the declared policy fires.
@@ -1516,36 +1511,27 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
     const cls = getFieldClassification(field);
     if (!cls) return false;
     const policy = cls.preservation;
-    if (policy === 'derive' || policy === 'clear') return true; // not a preservation policy
+    if (policy === 'derive') return true; // not a preservation policy
 
     const GOOD = 'preserved-by-table';
     const BAD = 'clobbered-by-derive';
 
     if (policy === 'preserve-always') {
-      if (field === 'progress') {
-        const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
-        const r = applyStatePreservation({
-          preFm: curated, preFmSnapshot: curated,
-          postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } },
-          resync: false, bodyDeltas: unchangedBodyDeltas,
-          ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
-        });
-        return JSON.stringify(r.postFm.progress) === JSON.stringify(curated.progress);
-      }
-      // current_phase_name: preserve-always, restored when body Phase source unchanged.
+      // Only `progress` carries this policy today (current_phase_name was
+      // reclassified to preserve-when-unchanged in #3468 — ADR-3408 §8.1).
+      const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
       const r = applyStatePreservation({
-        preFm: null, preFmSnapshot: { [field]: GOOD },
-        postFm: { [field]: BAD }, resync: false, bodyDeltas: unchangedBodyDeltas,
-        ...sameStatus, ...sameStoppedAt, preBodyPhaseSource: '3', postBodyPhaseSource: '3',
+        preFm: curated, preFmSnapshot: curated,
+        postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } },
+        resync: false, bodyDeltas: unchangedBodyDeltas,
       });
-      return r.postFm[field] === GOOD;
+      return JSON.stringify(r.postFm.progress) === JSON.stringify(curated.progress);
     }
 
     if (policy === 'preserve-when-unchanged') {
       const r = applyStatePreservation({
         preFm: null, preFmSnapshot: { [field]: GOOD },
         postFm: { [field]: BAD }, resync: true, bodyDeltas: unchangedBodyDeltas,
-        ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
       });
       return r.postFm[field] === GOOD;
     }
@@ -1559,7 +1545,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
         preFmSnapshot: { milestone: GOOD, milestone_name: GOOD },
         postFm: { milestone: 'derived-version', milestone_name: 'milestone' },
         resync: true, bodyDeltas: unchangedBodyDeltas,
-        ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
       });
       return r.postFm[field] === GOOD;
     }
@@ -1567,10 +1552,10 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
     return false;
   }
 
-  test('every non-derive/non-clear preservation row is honored (the one-row-table-edit contract)', () => {
+  test('every non-derive preservation row is honored (the one-row-table-edit contract)', () => {
     const expected = [];
     for (const [field, cls] of Object.entries(FIELD_CLASSIFICATION)) {
-      if (cls.preservation !== 'derive' && cls.preservation !== 'clear') {
+      if (cls.preservation !== 'derive') {
         expected.push(field);
       }
     }
@@ -1579,7 +1564,7 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       missing,
       [],
       `applyStatePreservation does not honor these declared preservation rows (expected every ` +
-        `non-derive/non-clear row to restore its snapshot value): ${JSON.stringify(missing)}. ` +
+        `non-derive row to restore its snapshot value): ${JSON.stringify(missing)}. ` +
         `Add a branch per ADR-1769 §4 so the table is the single policy source (#3258).`,
     );
   });
@@ -1587,28 +1572,35 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
   const unchchangedChanged = {
     status: { pre: 'x', post: 'x' },
     stopped_at: { pre: 'x', post: 'x' },
+    current_phase_name: { pre: 'x', post: 'x' },
     paused_at: { pre: 'x', post: 'x' },
     current_phase: { pre: 'x', post: 'x' },
     current_plan: { pre: 'x', post: 'x' },
     last_activity_desc: { pre: 'old description', post: 'new description from transition' }, // changed
   };
 
-  test('a row declaring a preservation policy with no implementation would be caught (sentinel)', () => {
-    // Proves the invariant above actually catches a missing implementation: a
-    // field with a preservation policy but no body-delta wiring / branch does
-    // not get restored. We simulate this by probing a field whose body-source
-    // delta the caller forgot to supply (the realistic regression shape).
-    const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: GOOD_PLACEHOLDER },
-      postFm: { current_plan: 'derived' },
-      resync: true,
-      bodyDeltas: {}, // caller forgot to wire current_plan's body-source delta
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
-    });
-    assert.notEqual(r.postFm.current_plan, GOOD_PLACEHOLDER,
-      'a preserve-when-unchanged row with no body-source delta wiring must NOT be restored ' +
-      '(proves the invariant would catch a new unimplemented row)');
+  test('a preserve-when-unchanged row with no wired bodyDeltas entry THROWS (ADR-3408 §8.2 — #3468 tightened from the pre-#3468 silent skip)', () => {
+    // Pre-#3468 this row was a "sentinel" proving a missing implementation was
+    // merely NOT restored (a silent `continue`). ADR-3408 §8.2 requires the
+    // stronger invariant: an internal invariant violation — a declared row
+    // the caller forgot to wire via bodyDeltas — THROWS with a structured
+    // error, never a silent no-op indistinguishable from a correct skip.
+    assert.throws(
+      () => applyStatePreservation({
+        preFm: null,
+        preFmSnapshot: { current_plan: 'preserved-by-table' },
+        postFm: { current_plan: 'derived' },
+        resync: true,
+        bodyDeltas: {}, // caller forgot to wire current_plan's body-source delta
+      }),
+      (err) => {
+        assert.strictEqual(err.code, 'STATE_PRESERVATION_UNWIRED_ROW');
+        assert.strictEqual(err.field, 'current_phase',
+          'current_phase is the first preserve-when-unchanged field in FIELD_CLASSIFICATION\'s ' +
+          'iteration order, so it is the field named by the throw when bodyDeltas is empty');
+        return true;
+      },
+    );
   });
 
   // Per-field restore tests (clearer failure messages than the set-equality
@@ -1621,7 +1613,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { last_activity_desc: 'stale derived description' },
       resync: true,
       bodyDeltas: { ...unchangedBodyDeltas },
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.last_activity_desc, 'authoritative description');
     assert.equal(r.mutated, true);
@@ -1634,7 +1625,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { last_activity_desc: 'new description from transition' },
       resync: true,
       bodyDeltas: { ...unchchangedChanged }, // body 'Last Activity Description' moved
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.last_activity_desc, 'new description from transition');
     assert.equal(r.mutated, false);
@@ -1650,7 +1640,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { paused_at: '2026-01-01' },
       resync: true,
       bodyDeltas: { ...unchangedBodyDeltas },
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.paused_at, '2026-02-02');
     assert.equal(r.mutated, true);
@@ -1663,7 +1652,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { current_phase: '2' },
       resync: true,
       bodyDeltas: { ...unchangedBodyDeltas },
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.current_phase, '4');
     assert.equal(r.mutated, true);
@@ -1676,7 +1664,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { current_plan: '3' },
       resync: true,
       bodyDeltas: { ...unchangedBodyDeltas },
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.current_plan, '5');
     assert.equal(r.mutated, true);
@@ -1689,7 +1676,6 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       postFm: { milestone: '0.x', milestone_name: 'milestone' }, // placeholder derive
       resync: true,
       bodyDeltas: { ...unchangedBodyDeltas },
-      ...sameStatus, ...sameStoppedAt, ...samePhaseSource,
     });
     assert.equal(r.postFm.milestone_name, 'Real Curated Name',
       'placeholder-derived milestone_name must yield to the curated snapshot (#948/#2135 contract)');
@@ -1722,10 +1708,16 @@ function neutralBodyDeltas() {
   return deltas;
 }
 
-// Neutral no-op values for the three dedicated-channel params (status,
-// stopped_at, current_phase_name). Equal pre/post so their own delta
-// heuristic never fires unless the test deliberately puts a value in
-// preFmSnapshot for that specific field.
+// #3468 folded status/stopped_at/current_phase_name's three dedicated
+// pre/post parameter pairs into the single bodyDeltas channel and deleted
+// them from StatePreservationInput — applyStatePreservation no longer reads
+// these properties at all. Kept (rather than stripped from every call site
+// below) as an inert, harmless spread: StatePreservationInput is a TypeScript
+// type these plain-JS tests are not checked against, so an extra own
+// property is silently ignored at runtime, and removing it from ~20 call
+// sites would be pure churn with no behavior change. neutralBodyDeltas()
+// already supplies the real (bodyDeltas-based) no-op deltas these fields
+// need post-refactor.
 const dedicatedNoop = {
   preBodyStatus: 'x', postBodyStatus: 'x',
   preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
@@ -2039,8 +2031,10 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
       (err) => {
         assert.strictEqual(err.code, 'STATE_PRESERVATION_UNWIRED_ROW');
         // current_phase is the first preserve-when-unchanged field in
-        // FIELD_CLASSIFICATION's iteration order (after status/stopped_at,
-        // which stay on their own dedicated channels and never hit this loop).
+        // FIELD_CLASSIFICATION's insertion order — before current_phase_name,
+        // current_plan, status, stopped_at, paused_at, last_activity_desc,
+        // all of which share the same loop post-#3468 (no field stays on a
+        // dedicated channel any more).
         assert.strictEqual(err.field, 'current_phase');
         return true;
       },
@@ -2131,9 +2125,11 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   const GOOD = 'preserved-by-table';
   const BAD = 'clobbered-by-derive';
 
-  // The four preserve-when-unchanged rows honored by the shared loop today
-  // (status/stopped_at stay on dedicated channels; current_phase_name is
-  // preserve-always today — see the dedicated C2 test below for that one).
+  // Four of the seven preserve-when-unchanged rows, pinned generically here;
+  // status/stopped_at get their own pinned test above (their 'unknown'
+  // sentinel guard has no analogue in these four), and current_phase_name
+  // gets its own dedicated C2 test below (it needs BOTH an unchanged AND a
+  // changed delta for the same field, which this generic loop cannot express).
   const LOOP_PWU_FIELDS = ['current_phase', 'current_plan', 'paused_at', 'last_activity_desc'];
 
   test('C1: shared preserve-when-unchanged loop — delta unchanged restores the snapshot (pinned)', () => {
@@ -2164,21 +2160,15 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
     }
   });
 
-  test('C1: status / stopped_at dedicated channels (pinned)', () => {
+  test('C1: status / stopped_at (pinned)', () => {
     const rStatus = applyStatePreservation({
       preFm: null, preFmSnapshot: { status: GOOD }, postFm: { status: BAD }, resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: 'x', postBodyPhaseSource: 'x',
       bodyDeltas: neutralBodyDeltas(),
     });
     assert.equal(rStatus.postFm.status, GOOD);
 
     const rStopped = applyStatePreservation({
       preFm: null, preFmSnapshot: { stopped_at: GOOD }, postFm: { stopped_at: BAD }, resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: 'x', postBodyPhaseSource: 'x',
       bodyDeltas: neutralBodyDeltas(),
     });
     assert.equal(rStopped.postFm.stopped_at, GOOD);
@@ -2216,20 +2206,23 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
     }
   });
 
-  // C2: current_phase_name's row is being reclassified preserve-always →
-  // preserve-when-unchanged as a BEHAVIOR-PRESERVING change (40-design.md).
-  // Both outcomes are pinned literally so a post-refactor drift is caught
-  // even though the existing suite staying green would prove nothing.
-  test('C2: current_phase_name (about to be reclassified) — pinned pre-refactor outputs', () => {
+  // C2: current_phase_name's row is reclassified preserve-always →
+  // preserve-when-unchanged (#3468, ADR-3408 §8.1 amendment) as a
+  // BEHAVIOR-PRESERVING change (40-design.md). Both outcomes are pinned
+  // literally so a post-refactor drift is caught even though the existing
+  // suite staying green would prove nothing. The delta now travels through
+  // bodyDeltas.current_phase_name (folded from the pre-#3468 dedicated
+  // preBodyPhaseSource/postBodyPhaseSource parameter pair, which #3468
+  // deleted from StatePreservationInput) rather than through
+  // neutralBodyDeltas()'s generic "unchanged" default, since this test needs
+  // to drive both an unchanged AND a changed delta for the SAME field.
+  test('C2: current_phase_name (reclassified preserve-always → preserve-when-unchanged) — pinned outputs', () => {
     const rEqual = applyStatePreservation({
       preFm: null,
       preFmSnapshot: { current_phase_name: GOOD },
       postFm: { current_phase_name: BAD },
       resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: '3', postBodyPhaseSource: '3', // body Phase: source unchanged this write
-      bodyDeltas: neutralBodyDeltas(),
+      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } }, // body Phase: source unchanged this write
     });
     assert.equal(rEqual.postFm.current_phase_name, GOOD,
       'reclassification must not change this: unchanged body Phase source still restores the curated name');
@@ -2240,10 +2233,7 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
       preFmSnapshot: { current_phase_name: GOOD },
       postFm: { current_phase_name: BAD },
       resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: '3', postBodyPhaseSource: '4', // body Phase: source changed this write
-      bodyDeltas: neutralBodyDeltas(),
+      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '4' } }, // body Phase: source changed this write
     });
     assert.equal(rDiffer.postFm.current_phase_name, BAD,
       'reclassification must not change this: changed body Phase source still lets derived win');
@@ -2252,9 +2242,11 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
 });
 
 describe('#3468 matrix C3: executor dispatch is a pure function of the row policy (property)', () => {
-  // The four fields the shared preserve-when-unchanged loop honors today
-  // (status/stopped_at stay on dedicated channels — excluded so the property
-  // stays scoped to the one loop it characterizes).
+  // Every preserve-when-unchanged field EXCEPT status/stopped_at — excluded
+  // because status carries the 'unknown' sentinel guard (a field-specific
+  // exception this generic property does not model) and stopped_at is its
+  // paired dedicated-channel sibling in the pre-#3468 design this comment
+  // originally described; both get their own pinned coverage in C1 above.
   const LOOP_PWU_FIELDS = Object.keys(FIELD_CLASSIFICATION).filter((f) => {
     const cls = getFieldClassification(f);
     return cls !== null && cls.preservation === 'preserve-when-unchanged' && f !== 'status' && f !== 'stopped_at';

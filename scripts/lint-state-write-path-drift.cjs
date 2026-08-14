@@ -19,7 +19,13 @@
  *   branch — the shape that let four declared rows go unimplemented until
  *   #3258, and that leaves `derive` and `clear` with no executor today. A
  *   VARIABLE argument (`getFieldClassification(field)`) is the CORRECT
- *   table-driven shape and is deliberately NOT matched.
+ *   table-driven shape and is deliberately NOT matched. Also matched: a
+ *   direct `field === '<literal>'` / `field !== '<literal>'` / `'<literal>'
+ *   === field` comparison of the dispatch loop's own `field` variable — the
+ *   same prohibited shape routed AROUND `getFieldClassification` instead of
+ *   through it (#3468 found this exact form live in `applyPreserveIfPlaceholder`,
+ *   undetected by the call-shape check alone). Scoped to the identifier
+ *   `field` only; see `FIELD_VAR_EQ_LITERAL_RE`'s own comment for why.
  *
  *   AXIS 2 — WRITE SEAM (§8.3), RATCHETED. `readModifyWriteStateMd` is the
  *   only path meant to write STATE.md. Every direct `writeStateMd(` or
@@ -255,12 +261,46 @@ function readPolicyUnion(text) {
 // inside the parens) — the correct, table-driven shape is silent here.
 const FIELD_NAME_DISPATCH_RE = /getFieldClassification\s*\(\s*(['"`])([^'"`]+)\1\s*\)/g;
 
+// `field === '<literal>'` / `field !== '<literal>'`, and the reversed
+// `'<literal>' === field` — the field-name-keyed BRANCH shape (as opposed to
+// `FIELD_NAME_DISPATCH_RE`'s field-name-keyed CALL shape above; both report
+// the same `REASON.FIELD_NAME_DISPATCH`, since both are "a branch selected
+// by field name", ADR-3408 §8.1's exact prohibition). This is the shape a
+// bypass takes when it routes AROUND `getFieldClassification` entirely
+// rather than through it — ADR-3408 Decision 5's "route the bypass through
+// a wrapper or a differently-named local" gaming route.
+//
+// Deliberately scoped to ONLY an identifier literally named `field` — the
+// dispatch loop's own loop variable declared at
+// `for (const field of Object.keys(FIELD_CLASSIFICATION))` a few dozen lines
+// below in this same file. This is a DECLARED, narrow limitation, not a
+// silent one: a rename of the loop variable would evade this detector
+// entirely, and an unrelated local elsewhere in this file that happens to
+// also be named `field` would false-positive. Both risks are accepted
+// in trade for avoiding a name-agnostic match, which would flag every
+// unrelated `===`/`!==` string comparison in the file (there are many —
+// e.g. `derivedName !== MILESTONE_PLACEHOLDER`-shaped guards) and bury the
+// real signal in noise; per this guard's own header, over-reporting a
+// comment is an accepted risk but over-reporting live code this broadly is
+// not.
+//
+// The reversed `!==` form (`'<literal>' !== field`) is deliberately NOT
+// matched — not observed anywhere in this codebase, and left out rather
+// than speculatively widened past what was found in practice.
+const FIELD_VAR_EQ_LITERAL_RE = /\bfield\s*(?:===|!==)\s*(['"`])([^'"`]+)\1/g;
+const LITERAL_EQ_FIELD_VAR_RE = /(['"`])([^'"`]+)\1\s*===\s*\bfield\b/g;
+
 /**
- * AXIS 1a: every `getFieldClassification('<literal>')` call inside the
- * executor is a field-name-keyed branch (§8.1). Only ever called against
- * `EXECUTOR_FILE` — `collect()` gates the call site, mirroring
- * `findPolicyDispatchDrift`'s own "only when rel === EXECUTOR_FILE" rule
- * from the spec this guard was authored against.
+ * AXIS 1a: every `getFieldClassification('<literal>')` CALL, and every
+ * `field === '<literal>'` / `field !== '<literal>'` / `'<literal>' ===
+ * field` BRANCH, inside the executor is a field-name-keyed branch (§8.1).
+ * Only ever called against `EXECUTOR_FILE` — `collect()` gates the call
+ * site, mirroring `findPolicyDispatchDrift`'s own "only when rel ===
+ * EXECUTOR_FILE" rule from the spec this guard was authored against.
+ * `preservation === '<member>'` comparisons — the CORRECT policy-dispatch
+ * shape `findUnimplementedPolicies` requires to exist — are unaffected: the
+ * identifier compared there is `preservation`, never `field`, so
+ * `FIELD_VAR_EQ_LITERAL_RE`'s `\bfield\b` anchor does not reach them.
  */
 function findPolicyDispatchDrift(rel, text) {
   const out = [];
@@ -271,6 +311,28 @@ function findPolicyDispatchDrift(rel, text) {
     FIELD_NAME_DISPATCH_RE.lastIndex = 0;
     let m;
     while ((m = FIELD_NAME_DISPATCH_RE.exec(line)) !== null) {
+      out.push({
+        reason: REASON.FIELD_NAME_DISPATCH,
+        axis: 'policy-dispatch',
+        file: rel,
+        line: i + 1,
+        field: m[2],
+        source: sanitizeForReport(line.trim()),
+      });
+    }
+    FIELD_VAR_EQ_LITERAL_RE.lastIndex = 0;
+    while ((m = FIELD_VAR_EQ_LITERAL_RE.exec(line)) !== null) {
+      out.push({
+        reason: REASON.FIELD_NAME_DISPATCH,
+        axis: 'policy-dispatch',
+        file: rel,
+        line: i + 1,
+        field: m[2],
+        source: sanitizeForReport(line.trim()),
+      });
+    }
+    LITERAL_EQ_FIELD_VAR_RE.lastIndex = 0;
+    while ((m = LITERAL_EQ_FIELD_VAR_RE.exec(line)) !== null) {
       out.push({
         reason: REASON.FIELD_NAME_DISPATCH,
         axis: 'policy-dispatch',
@@ -441,27 +503,40 @@ function ratchetKey(v) {
 }
 
 /**
- * Read `BASELINE_PATH`. Returns `{ entries: [] }` when the file is absent
- * (first run, or a fully-shrunk Phase 4 baseline that deleted the file —
- * ADR-3408 §8.3's roster foresees exactly this end state), `null` when the
- * file is present but unparseable (JSON error, or missing/malformed
- * `entries` array) so the caller can fail closed rather than silently
- * ratcheting against nothing, else the parsed object.
+ * Read `BASELINE_PATH`. Returns `{ entries: [] }` when the file is ABSENT
+ * (`ENOENT` — first run, or a fully-shrunk Phase 4 baseline that deleted the
+ * file — ADR-3408 §8.3's roster foresees exactly this end state); returns
+ * `{ entries: null, code }` when the file is present but could not be read
+ * OR could not be parsed/shaped (missing/malformed `entries` array) — `code`
+ * carries the underlying `fs` error code (e.g. `'EACCES'`) when the failure
+ * happened at the read step, `null` when it happened at the parse/shape
+ * step, so the caller can fail closed rather than silently ratcheting
+ * against nothing. Returns the parsed object when the read+parse succeed.
+ *
+ * Absent-vs-unreadable is deliberately NOT collapsed into one arm. This
+ * guard exists to catch write paths whose failure and success are
+ * output-identical (ADR-3180 / ADR-3408, "The failure mode that hides all
+ * of it") — a `catch { return { entries: [] } }` around the read would
+ * reproduce exactly that shape in the tool built to detect it: an
+ * unreadable baseline (EACCES, EISDIR, EIO, ...) would be silently
+ * indistinguishable from a legitimate absent one. Do not simplify this back
+ * into a single catch arm.
  */
 function loadBaseline() {
   let raw;
   try {
     raw = fs.readFileSync(BASELINE_PATH, 'utf8');
-  } catch {
-    return { entries: [] };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { entries: [] };
+    return { entries: null, code: err && err.code ? err.code : 'UNKNOWN' };
   }
   let doc;
   try {
     doc = JSON.parse(raw);
   } catch {
-    return null;
+    return { entries: null, code: null };
   }
-  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.entries)) return null;
+  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.entries)) return { entries: null, code: null };
   return doc;
 }
 
@@ -687,15 +762,18 @@ function main(argv) {
   const wantJson = args.includes('--json');
   const baseline = loadBaseline();
 
-  if (baseline === null) {
+  if (baseline.entries === null) {
     const finding = {
       reason: REASON.BASELINE_UNREADABLE,
       axis: 'write-seam',
       file: path.relative(REPO_ROOT, BASELINE_PATH),
       line: 0,
       symbol: null,
+      code: baseline.code,
       source: sanitizeForReport(
-        `${BASELINE_PATH} is present but unparseable — run \`node ${__filename} --baseline\` to regenerate it`,
+        baseline.code
+          ? `${BASELINE_PATH} is present but could not be read (${baseline.code}) — run \`node ${__filename} --baseline\` to regenerate it`
+          : `${BASELINE_PATH} is present but unparseable — run \`node ${__filename} --baseline\` to regenerate it`,
       ),
     };
     if (wantJson) {
