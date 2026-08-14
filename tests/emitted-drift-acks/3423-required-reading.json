@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "paths": {
+    ".agents/skills/gsd-code-review-fix/SKILL.md": {
+      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+    },
+    ".agents/skills/gsd-diagnose-issues/SKILL.md": {
+      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+    },
+    ".agents/skills/gsd-plan-checker-loop/SKILL.md": {
+      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+    },
+    ".agents/skills/gsd-quick-verification/SKILL.md": {
+      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+    },
+    ".agents/skills/gsd-research-phase/SKILL.md": {
+      "reason": "#3423 (epic #1891 F8): the <files_to_read> -> <required_reading> rename in the workflow/capability sources feeds the codex skill-body generator; the skills-from-commands rule attributes these only to commands/gsd changes, which this diff does not carry — same deliberate rename, tag-token-only delta."
+    },
+    "ai-integration-phase.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "code-review-fix.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "eval-review.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "execute-phase.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "new-milestone.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "secure-phase.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "ui-review.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "validate-phase.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    },
+    "verify-work.md": {
+      "reason": "#3423 (epic #1891 F8): +bytes are the <files_to_read> -> <required_reading> tag rename (15 chars per block); no prose added or rewritten. No tier crossed."
+    }
+  }
+}
