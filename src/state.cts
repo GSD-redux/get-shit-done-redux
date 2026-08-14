@@ -513,6 +513,34 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
       return result.content;
     }, cwd, { resync: shouldResync });
 
+    // #3351: reconcile the report against the bytes actually persisted.
+    // patchCore's bookkeeping says whether the stateReplaceField text-replace
+    // MATCHED — but its plain-line pattern (`m` flag over the full document)
+    // can match the YAML frontmatter line for a lower-cased key, and the write
+    // pipeline (syncStateFrontmatter re-derivation + the FIELD_CLASSIFICATION
+    // preservation rows) then discards or restores that text before the file is
+    // saved. A field is only reported `updated` when its post-write on-disk
+    // value equals the requested value: the frontmatter key when present,
+    // else the body field (the legitimate working case for state.patch is
+    // display-cased BODY fields — Status, Current Plan, Phase — which are
+    // never frontmatter keys).
+    const persisted = platformReadSync(statePath) || '';
+    const postFm = extractFrontmatter(persisted, statePath) as Record<string, unknown>;
+    const postBody = stripFrontmatter(persisted);
+    const updated: string[] = [];
+    const failed: string[] = [];
+    for (const [field, value] of Object.entries(patches)) {
+      const persistedValue = Object.prototype.hasOwnProperty.call(postFm, field)
+        ? String(postFm[field])
+        : stateExtractField(postBody, field);
+      if (persistedValue !== null && persistedValue.trim() === String(value).trim()) {
+        updated.push(field);
+      } else {
+        failed.push(field);
+      }
+    }
+    results = { updated, failed };
+
     output(results, raw, results.updated.length > 0 ? 'true' : 'false');
   } catch {
     error('STATE.md not found');
