@@ -482,18 +482,26 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
         // exact inversion review round 8 found. Preserve the original indent so
         // an indented candidate stays an indented code line and is not counted.
         const indent = (line.match(/^[ \t]*/) || [''])[0];
-        if (/^(?: {4,}|\t)/.test(indent)) return line;
+        // CommonMark: only 0-3 LITERAL SPACES is ordinary block indentation.
+        // Anything else — a tab, 4+ spaces, or a mix like " \t" — opens an
+        // indented code block. Testing for `{4,}|\t` missed the mixed forms
+        // (" \t", "  \t", "   \t"), which still let an indented decoy be
+        // promoted to operative. Allow-list the operative shape instead of
+        // trying to enumerate the code-block ones.
+        if (!/^ {0,3}$/.test(indent)) return line;
         injected.add(i);
         return indent + '- `GSDTEST.CANDIDATE=' + i + '`';
       })
       .join('\n');
     return parsePredicates(instrumented).predicates
       .filter((p) => p.id === 'GSDTEST.CANDIDATE')
-      .map((p) => Number(p.value))
-      // Set membership, not a range check: a pre-existing literal
-      // `GSDTEST.CANDIDATE=<valid index>` in the source would satisfy a range
-      // check and pollute the count.
-      .filter((n) => injected.has(n));
+      // Provenance, not just value: require the predicate to have been parsed
+      // FROM the line whose index it names, and that we injected there. A
+      // pre-existing literal `GSDTEST.CANDIDATE=<n>` elsewhere in the source
+      // otherwise satisfies a value-only check by naming an index some other
+      // (skipped) candidate contributed.
+      .filter((p) => injected.has(Number(p.value)) && p.line - 1 === Number(p.value))
+      .map((p) => Number(p.value));
   }
 
   // Operative-aware line predicate, for selections that cannot go through the
@@ -606,12 +614,12 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     }
     assert.notStrictEqual(openIdx, -1, 'the tracer task shape marker must be followed by content');
     assert.ok(
-      operativeLineSet(PLANNER, /^\s*```xml\s*$/).has(openIdx),
+      operativeLineSet(PLANNER, /^\s*```xml(?:\s.*)?$/).has(openIdx),
       'the first non-blank line after the tracer task shape marker must be a LIVE ```xml fence opener — '
       + 'a commented-out or non-adjacent decoy template must not be selectable',
     );
     const after = lines.slice(openIdx).join('\n');
-    const fence = after.match(/```xml\r?\n([\s\S]*?)```/);
+    const fence = after.match(/```xml[^\r\n]*\r?\n([\s\S]*?)```/);
     assert.ok(fence, 'the tracer task shape must be followed by a fenced xml block');
     const verifies = fence[1].match(/<verify>[\s\S]*?<\/verify>/g) || [];
     assert.strictEqual(verifies.length, 1, `the tracer template must contain exactly ONE <verify>, found ${verifies.length}`);
