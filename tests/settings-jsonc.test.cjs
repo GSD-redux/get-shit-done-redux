@@ -369,4 +369,69 @@ describe('writeSettings durability (#1874 F5)', () => {
       assert.deepStrictEqual(fs.readdirSync(dir), ['settings.json'], 'no temp residue on success');
     });
   });
+
+  test('hardened permissions survive the rewrite', () => {
+    withTmpDir((dir) => {
+      const settingsPath = path.join(dir, 'settings.json');
+      fs.writeFileSync(settingsPath, PRIOR);
+      // 0o600 is the hardened-secrets posture: settings.json can carry env
+      // tokens, and rename() would otherwise swap in a umask-default inode.
+      fs.chmodSync(settingsPath, 0o600);
+
+      writeSettings(settingsPath, { hooks: {}, env: { MY_TOKEN: 'keep-me' } });
+
+      assert.deepStrictEqual(
+        readSettings(settingsPath),
+        { hooks: {}, env: { MY_TOKEN: 'keep-me' } },
+        'the write must land through a chmod-hardened target on every OS'
+      );
+      if (process.platform !== 'win32') {
+        assert.strictEqual(
+          fs.statSync(settingsPath).mode & 0o7777,
+          0o600,
+          'a pre-existing non-default mode must survive the temp+rename write'
+        );
+      }
+    });
+  });
+
+  test('the temp file is created exclusively — a pre-planted symlink is not followed', { skip: process.platform === 'win32' }, () => {
+    withTmpDir((dir) => {
+      const settingsPath = path.join(dir, 'settings.json');
+      fs.writeFileSync(settingsPath, PRIOR);
+      const victimPath = path.join(dir, 'victim');
+      fs.writeFileSync(victimPath, 'victim-bytes');
+
+      // Squat every plausible near-future temp path with a symlink to the
+      // victim; an O_EXCL writer must skip them all instead of writing
+      // through one.
+      const planted = [];
+      const origWriteFileSync = fs.writeFileSync;
+      fs.writeFileSync = (target, data, options) => {
+        const resolved = String(target);
+        if (/\.tmp-\d+-\d+$/.test(resolved) && !fs.existsSync(resolved)) {
+          try {
+            fs.symlinkSync(victimPath, resolved);
+            planted.push(resolved);
+          } catch { /* already there */ }
+        }
+        return origWriteFileSync(target, data, options);
+      };
+      try {
+        assert.throws(
+          () => writeSettings(settingsPath, { hooks: {} }),
+          (e) => e.code === 'EEXIST',
+          'an exclusive create must refuse every squatted temp path'
+        );
+      } finally {
+        fs.writeFileSync = origWriteFileSync;
+      }
+
+      assert.strictEqual(fs.readFileSync(victimPath, 'utf8'), 'victim-bytes',
+        'the symlink target must never receive the settings payload');
+      assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), PRIOR,
+        'the settings file must be untouched when every temp path is squatted');
+      for (const link of planted) fs.unlinkSync(link);
+    });
+  });
 });

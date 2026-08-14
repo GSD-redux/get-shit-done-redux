@@ -191,18 +191,52 @@ let __atomicWriteCounter = 0;
 const __atomicWrittenTmps: Set<string> = new Set();
 
 function atomicWriteFileSync(target: string, data: string, options: fs.WriteFileOptions): void {
-  __atomicWriteCounter += 1;
-  const tmp = `${target}.tmp-${process.pid}-${__atomicWriteCounter}`;
-  __atomicWrittenTmps.add(tmp);
+  // A pre-existing target's permission bits must survive the rewrite:
+  // rename() swaps the temp file's inode into place, so without an explicit
+  // carry a user-hardened chmod (e.g. 600 on a secrets-bearing settings.json)
+  // would silently reset to the umask default.
+  let priorMode: number | undefined;
   try {
-    fs.writeFileSync(tmp, data, options);
-    shellCmdProjection.retryRenameSync(tmp, target);
-    // Successful rename: the tmp path no longer exists, but leave it in the
-    // Set so _cleanTmpFiles can recognise it as installer-owned if it somehow
-    // lingers (e.g. a rename succeeded but left a stale entry on some FS).
-  } catch (e) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
-    throw e;
+    const st = fs.statSync(target);
+    if (st.isFile()) priorMode = st.mode & 0o7777;
+  } catch { /* no pre-existing target: default creation mode applies */ }
+
+  // 'wx' (O_EXCL) refuses to follow a symlink pre-planted at the predictable
+  // temp path and refuses to reuse a foreign file already sitting there; on
+  // EEXIST the write retries under a fresh counter value.
+  const exclusiveOptions: fs.WriteFileOptions =
+    typeof options === 'string' || options == null
+      ? { encoding: options ?? null, flag: 'wx' }
+      : { ...options, flag: 'wx' };
+
+  for (let attempt = 0; ; attempt++) {
+    __atomicWriteCounter += 1;
+    const tmp = `${target}.tmp-${process.pid}-${__atomicWriteCounter}`;
+    __atomicWrittenTmps.add(tmp);
+    try {
+      fs.writeFileSync(tmp, data, exclusiveOptions);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+        // The file at tmp is not ours — never rmSync it.
+        if (attempt < 4) continue;
+        throw e;
+      }
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      throw e;
+    }
+    try {
+      // chmod rather than options.mode: open(2) masks mode with the process
+      // umask, chmod applies the preserved bits exactly.
+      if (priorMode !== undefined) fs.chmodSync(tmp, priorMode);
+      shellCmdProjection.retryRenameSync(tmp, target);
+      // Successful rename: the tmp path no longer exists, but leave it in the
+      // Set so _cleanTmpFiles can recognise it as installer-owned if it somehow
+      // lingers (e.g. a rename succeeded but left a stale entry on some FS).
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      throw e;
+    }
+    return;
   }
 }
 
