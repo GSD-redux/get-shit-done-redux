@@ -733,7 +733,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </parallel_execution>
 
        <execution_context>
-       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Do NOT leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string, so an include line arrives as literal text and the executor never sees the file (#3324).
+       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`
