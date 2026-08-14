@@ -203,7 +203,54 @@ describe('migration equivalence (row-9 sweep)', () => {
   });
 });
 
-// ─── Section 4: compileUserPattern — RE2 linear-time engine (#3477) ────────
+// ─── Section 4: #3498 — Node-22 fallback (no RegExp.escape) ─────────────────
+
+describe('escapeRegex without RegExp.escape (#3498 Node-22 fallback)', () => {
+  // `RegExp.escape` is ES2026 (first shipped in Node 24). The gsd-test matrix
+  // runs a linux-node22 lane and the BUILD consumes this module
+  // (scripts/gen-loop-host-contract.cjs), so the seam must work when the
+  // builtin is absent. Simulated in a child process: neuter RegExp.escape
+  // BEFORE require (module-load capture must select the fallback), then assert
+  // match-behavior correctness — this file's doctrine (pattern TEXT differs
+  // between builtin and fallback; match behavior must not).
+  const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+  const path = require('node:path');
+  const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'pattern.cjs');
+
+  const PROBE = [
+    "RegExp.escape = undefined;",
+    "const { escapeRegex, literalPattern } = require(" + JSON.stringify(LIB) + ");",
+    "const corpus = ['a.b*c', '^dollar$', '(group|alt)', '[b]{1,2}', 'back\\\\slash', 'plain', 'q+x?y', 'a-b-c', ''];",
+    "for (const v of corpus) {",
+    "  if (!new RegExp(escapeRegex(v)).test(v)) { console.error('self-match fail: ' + JSON.stringify(v)); process.exit(1); }",
+    "  if (!literalPattern(v).test(v)) { console.error('literalPattern fail: ' + JSON.stringify(v)); process.exit(1); }",
+    "}",
+    "if (new RegExp(escapeRegex('a.b*c')).test('aXbZc')) { console.error('metachar reinterpreted'); process.exit(1); }",
+    "if (new RegExp(escapeRegex('(a|b)')).test('a')) { console.error('alternation reinterpreted'); process.exit(1); }",
+    "console.log('fallback-ok');",
+  ].join('\n');
+
+  test('builds and escapes correctly when RegExp.escape is absent (Node 22 semantics)', () => {
+    const r = runNode(['-e', PROBE], { timeoutMs: 30_000 });
+    assert.strictEqual(r.outcome, OUTCOME.EXITED, `probe must run: ${r.stderr}`);
+    assert.strictEqual(r.exitCode, 0, `fallback path failed: ${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /fallback-ok/);
+  });
+
+  test('neutering AFTER require must not flip the path mid-process (capture at load)', () => {
+    const PROBE2 = [
+      "const { escapeRegex } = require(" + JSON.stringify(LIB) + ");",
+      "RegExp.escape = undefined;",
+      "if (!new RegExp(escapeRegex('a.b')).test('a.b')) { console.error('post-load neuter broke escaping'); process.exit(1); }",
+      "console.log('capture-ok');",
+    ].join('\n');
+    const r = runNode(['-e', PROBE2], { timeoutMs: 30_000 });
+    assert.strictEqual(r.outcome, OUTCOME.EXITED, `probe must run: ${r.stderr}`);
+    assert.strictEqual(r.exitCode, 0, `post-load capture failed: ${r.stdout}\n${r.stderr}`);
+  });
+});
+
+// ─── Section 5: compileUserPattern — RE2 linear-time engine (#3477) ────────
 //
 // re2js guarantees match time linear in input length — there is no
 // backtracking engine to exploit, so the vulnerability class is closed by
@@ -300,7 +347,7 @@ describe('compileUserPattern', () => {
   });
 });
 
-// ─── Section 5: RE2 engine acceptance table (#3477 follow-up) ─────────────
+// ─── Section 6: RE2 engine acceptance table (#3477 follow-up) ─────────────
 //
 // The prior hand-rolled screen either hung (patterns it missed, run live
 // through the JS backtracking engine) or wrongly refused (patterns it

@@ -6,10 +6,10 @@
  * (gitignored), per the repo's ADR-457 build-at-publish convention.
  *
  * Sole owner of building a `RegExp` from a runtime value. `escapeRegex`
- * delegates to the built-in `RegExp.escape` (ES2026 / Node 24+) rather than
- * hand-rolling yet another copy of the metacharacter-escape helper this
- * module replaces — see ADR §1 ("No module outside the seam escapes a value
- * for regex use").
+ * delegates to the built-in `RegExp.escape` (ES2026 / Node 24+) when present,
+ * falling back to an in-file metacharacter escape below Node 24 (#3498) —
+ * still the one owner: no module outside this seam escapes a value for regex
+ * use (ADR §1).
  *
  * Counts, corrected during implementation (design doc "Ground truth" #1;
  * .gsd/phase/chore-3412-pattern-seam/40-design.md): the ADR's census counted
@@ -47,8 +47,24 @@
 // enforces it). See gsd-core/bin/lib/vendor/README.md.
 import { RE2JS } from './vendor/re2js.cjs';
 
+// #3498: RegExp.escape is ES2026 (first shipped in Node 24). The gsd-test
+// matrix still runs a linux-node22 lane, and the build itself consumes this
+// module (scripts/gen-loop-host-contract.cjs), so a hard dependency breaks
+// `npm run build` on Node 22. Prefer the built-in when present; otherwise use
+// the local metachar escape — still inside this file, so the #3212 sole-owner
+// invariant (and lint-no-adhoc-regex-escape's scope) is preserved. Captured at
+// module load so a runtime mutation of RegExp.escape cannot flip the path
+// mid-process.
+const escapeBuiltin: ((value: string) => string) | undefined =
+  typeof RegExp.escape === 'function'
+    ? RegExp.escape.bind(RegExp)
+    : undefined;
+
+const escapeMetachars = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export function escapeRegex(value: string): string {
-  return RegExp.escape(value);
+  return (escapeBuiltin ?? escapeMetachars)(value);
 }
 
 export function literalPattern(value: string, flags?: string): RegExp {
