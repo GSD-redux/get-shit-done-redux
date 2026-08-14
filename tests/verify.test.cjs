@@ -1760,6 +1760,60 @@ describe('verify key-links command', () => {
     );
   });
 
+  test('a formerly-ReDoS-shaped pattern (nested quantifiers) is evaluated normally via RE2 (#3477)', () => {
+    // Pre-RE2 this pattern was neutralized (hand-rolled screen) to avoid
+    // catastrophic backtracking in the JS regex engine. RE2 (re2js) matches
+    // in linear time by construction, so this is no longer a neutralization
+    // case at all — the pattern is compiled and evaluated for real.
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "(a+)+$"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'a'.repeat(25) + 'b\n');
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false, 'link should not be verified — subject does not end in "a"');
+    assert.strictEqual(output.all_verified, false, `Expected all_verified false: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.links[0].pattern_neutralized,
+      undefined,
+      `RE2 evaluates this pattern normally — pattern_neutralized must be absent: ${JSON.stringify(output.links[0])}`
+    );
+  });
+
+  test('a refused pattern (unsupported RE2 syntax) never reports verified: true (#3477 regression)', () => {
+    // pattern: "(?!x)a" is a negative lookahead — RE2 has no backtracking
+    // engine and does not support look-around, so this is refused outright
+    // (neutralized: 'unsupported') rather than guessed at via a literal
+    // fallback. Pre-#3477-fix, a similarly unparseable pattern neutralized to
+    // a literal-escaped match that happened to match nearly any source file,
+    // producing a false verified: true / all_verified: true.
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "(?!x)a"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'function f(x) { return x; }\n');
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false, 'a neutralized pattern must never report verified: true');
+    assert.strictEqual(output.all_verified, false, `Expected all_verified false: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.links[0].pattern_neutralized,
+      'unsupported',
+      `Expected pattern_neutralized: 'unsupported': ${JSON.stringify(output.links[0])}`
+    );
+  });
+
   test('returns error when no key_links in frontmatter', () => {
     const content = [
       '---',

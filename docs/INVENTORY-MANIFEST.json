@@ -510,6 +510,7 @@
       "update-context.cjs",
       "validate-command-router.cjs",
       "validate.cjs",
+      "vendor/re2js.cjs",
       "verification-command-router.cjs",
       "verification.cjs",
       "verify-command-router.cjs",
