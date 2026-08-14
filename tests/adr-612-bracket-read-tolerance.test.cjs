@@ -1433,3 +1433,193 @@ describe('#612 PR-2: the re-homed W006/W007 reads still select by convention', (
     assert.match(w[0], /^Phase 77 exists on disk/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The #3165 TRUNCATED-WINDOW FALLBACK — `roadmap analyze`'s second reading pass.
+//
+// #3428 (merged in at next @ 483083ae) gave `cmdRoadmapAnalyze` a recovery path:
+// when the scoped milestone window is suspect (non-COMPLETE scope), found zero
+// phases, and phase directories exist on disk, it re-scans the
+// shipped-milestone-stripped document through the SAME extracted enrichment
+// (`collectAnalyzePhases`). That extraction turned every seam this PR threads
+// into a TWO-call-site seam, and the second site was invisible to the suite:
+// passing a null convention there — while the scoped site stayed threaded —
+// was green across all 518 tests of the bracket, roadmap and milestone-window
+// files. Every pre-existing bracket assertion reaches the enrichment through
+// the SCOPED window, so none of them can see the fallback's reading at all.
+//
+// The shape below is the one that reaches it on a bracket repo: a MID-MIGRATION
+// ROADMAP whose ACTIVE milestone is bracketed, whose phase-detail sections sit
+// after an intervening CLOSED legacy milestone (so the window closes over prose
+// only), and which still carries one legacy `### Phase N:` section of its own
+// (so `hasPhaseEntries` — a convention-BLIND reader, see the disclosure below —
+// sees the document as containing phases and the window as not, which is what
+// classifies the window TRUNCATED).
+//
+// DISCLOSURE, measured and deliberately NOT fixed here: `hasPhaseEntries`
+// (src/roadmap-parser.cts) is one of the convention-less readers this PR does
+// not widen. On a PURE-bracket ROADMAP it finds no phase entries anywhere, so
+// `classifyMilestoneWindow`'s row 8 cannot fire and the window classifies
+// COMPLETE. The consequence is larger than a scope label: on the same layout
+// as below but with no legacy section — bracket milestone, bracket phase
+// headings after a closed milestone, canonical bracket directories on disk —
+// `roadmap analyze` returns
+// `{"scope":"complete","phase_count":0,"next_phase":null,"phases":[]}` where
+// the flat-legacy twin of that document returns
+// `{"scope":"truncated","phase_count":2,...}`. `scope: "complete"` with
+// `phase_count: 0` is the "genuinely empty milestone" answer — precisely the
+// indistinguishability #3184 introduced `scope` to remove — and
+// `workflows/next.md` Route 0 iterates `.phases[]`, so the safety invariant
+// #3165 exists to protect silently does not run, on the convention this epic
+// is for.
+//
+// Not fixed in a merge round: widening `hasPhaseEntries` changes the value of
+// the upstream-owned `scope` FIELD on bracket repos, which is a behaviour
+// slice (the PR-2.5/PR-4 convention-less-readers question), not a conflict
+// resolution. The mid-migration shape below is the reachable half — and it is
+// the half a repo actually mid-migration has.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#612 PR-2: the #3165 truncated-window fallback reads bracket phases too', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-analyze-fallback-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const writeWithMilestone = (roadmap, convention) => {
+    write(roadmap, convention);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'), '---\nmilestone: v2.0\n---\n', 'utf-8');
+  };
+
+  // The checklist bullets sit BESIDE the detail headings, past the closed
+  // milestone heading, deliberately: inside the window they would give the
+  // window phase entries of its own, `classifyMilestoneWindow` would call it
+  // COMPLETE, and the recovery path this block is about would never fire.
+  const BRK = `# Roadmap
+
+## [GSD.02] v2.0 Current 🚧
+
+Active milestone prose.
+
+## v1.0 Old ✅ SHIPPED
+
+### Phase 99: Legacy leftover
+**Goal:** z
+
+- [ ] **[GSD.02] 01: One**
+- [ ] **[GSD.02] 02: Two**
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`;
+  const LEG = `# Roadmap
+
+## v2.0 Current 🚧
+
+Active milestone prose.
+
+## v1.0 Old ✅ SHIPPED
+
+### Phase 99: Legacy leftover
+**Goal:** z
+
+- [ ] **Phase 01: One**
+- [ ] **Phase 02: Two**
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`;
+
+  const mkDirs = (specs) => {
+    for (const [dir, stem, complete] of specs) {
+      const q = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(q, { recursive: true });
+      fs.writeFileSync(path.join(q, `${stem}-01-PLAN.md`), '# plan\n', 'utf-8');
+      if (complete) {
+        fs.writeFileSync(path.join(q, `${stem}-01-SUMMARY.md`), '# summary\n', 'utf-8');
+        fs.writeFileSync(
+          path.join(q, `${stem}-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+      }
+    }
+  };
+  const BRK_DIRS = [['GSD.02-01-one', 'GSD.02-01', true], ['GSD.02-02-two', 'GSD.02-02', false]];
+  const LEG_DIRS = [['01-one', '01', true], ['02-two', '02', false]];
+  const diskShape = (a) => a.phases.map(p => [p.number, p.disk_status, p.plan_count, p.summary_count]);
+
+  const EXPECTED = [
+    ['99', 'no_directory', 0, 0],
+    ['01', 'complete', 1, 1],
+    ['02', 'planned', 1, 0],
+  ];
+
+  test('the fallback is what supplies the phases here — without dirs on disk it stays gated off', () => {
+    // Non-vacuity: the SCOPED window contributes nothing on this document. With
+    // the on-disk evidence removed, #3428's own precondition fails and the
+    // result is the empty one the recovery path exists to replace. Any later
+    // assertion about `disk_status` below is therefore an assertion about the
+    // FALLBACK's reading, not the scoped scan's.
+    writeWithMilestone(BRK, 'bracket');
+    const a = analyze();
+    assert.equal(a.scope, 'truncated', 'the window must be suspect or nothing recovers');
+    assert.equal(a.phase_count, 0, 'the scoped window genuinely finds no phases');
+  });
+
+  test('bracket phases recovered by the fallback resolve their DIRECTORIES', () => {
+    writeWithMilestone(BRK, 'bracket');
+    mkDirs(BRK_DIRS);
+    const a = analyze();
+    assert.equal(a.scope, 'truncated', 'still flagged best-effort, per #3165');
+    assert.deepEqual(diskShape(a), EXPECTED,
+      'un-threaded, the fallback does not match the bracket headings at all: phase_count 1');
+  });
+
+  test('and the recovered phases are not then reported as missing detail sections', () => {
+    // #2761 M1 x #3165: `detailKeys` — the occurrence index the checklist scan
+    // is filtered against — must be swapped for the FALLBACK scan's, in the
+    // same breath as `phases` and `effectiveContent`. Left holding the scoped
+    // scan's (empty) index while the checklist scan reads the fallback
+    // document, every phase the recovery just found is reported as a checklist
+    // entry with no detail section: `missing_phase_details: ["01","02"]`,
+    // wrong-and-confident on exactly the output #3165 exists to populate.
+    writeWithMilestone(BRK, 'bracket');
+    mkDirs(BRK_DIRS);
+    const a = analyze();
+    assert.equal(a.phase_count, 3, 'guard: the recovery fired, so this is the fallback index');
+    assert.equal(a.missing_phase_details, null,
+      'every checklist bullet has a detail heading in the same document');
+  });
+
+  test('CONTROL: a checklist entry with NO detail heading is still reported', () => {
+    // The companion direction: a fix that simply suppressed the report would
+    // pass the test above. A bullet with no heading anywhere must still surface.
+    writeWithMilestone(BRK.replace(
+      '- [ ] **[GSD.02] 02: Two**',
+      '- [ ] **[GSD.02] 02: Two**\n- [ ] **[GSD.02] 07: Never written**'), 'bracket');
+    mkDirs(BRK_DIRS);
+    assert.deepEqual(analyze().missing_phase_details, ['07']);
+  });
+
+  test('CONTROL: and that shape equals its flat-legacy twin exactly', () => {
+    writeWithMilestone(BRK, 'bracket');
+    mkDirs(BRK_DIRS);
+    const bracket = diskShape(analyze());
+    cleanup(tmpDir);
+    tmpDir = createTempProject('adr-612-analyze-fallback-leg-');
+    writeWithMilestone(LEG, undefined);
+    mkDirs(LEG_DIRS);
+    const legacy = diskShape(analyze());
+    assert.deepEqual(bracket, legacy,
+      'the fallback must read a bracket document exactly as it reads the legacy twin');
+    assert.deepEqual(legacy, EXPECTED, 'and the twin is the right answer, not a shared wrong one');
+  });
+
+  test('CONTROL: a NON-bracket repo takes the same path and is unaffected', () => {
+    writeWithMilestone(LEG, undefined);
+    mkDirs(LEG_DIRS);
+    assert.deepEqual(diskShape(analyze()), EXPECTED);
+  });
+});
