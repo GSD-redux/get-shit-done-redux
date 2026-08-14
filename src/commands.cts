@@ -60,6 +60,9 @@ import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
+import verificationMod = require('./verification.cjs');
+const { resolveVerificationFile } = verificationMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -159,7 +162,15 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
   // summaries >= plans — check verification
   try {
     const files = fs.readdirSync(phaseDir);
-    const verificationFile = files.find(f => f === 'VERIFICATION.md' || f.endsWith('-VERIFICATION.md'));
+    // #3473 F2: routed through the shared resolver (readdir order is
+    // filesystem-dependent, so the prior hand-rolled `.find()` could pick
+    // either file when a phase held both a canonical report and an ad-hoc
+    // `-CORRECTION-VERIFICATION.md` worksheet — see #3357).
+    // #3492: pin selection to THIS phase's own token so a stray cross-phase
+    // or sentinel-numbered canonically-shaped file cannot outrank this
+    // phase's own (possibly non-canonical) report.
+    const phaseToken = extractPhaseToken(path.basename(phaseDir));
+    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken });
     if (verificationFile) {
       const verificationFilePath = path.join(phaseDir, verificationFile);
       const content = platformReadSync(verificationFilePath) || '';

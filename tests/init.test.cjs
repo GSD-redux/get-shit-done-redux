@@ -120,6 +120,29 @@ describe('init commands', () => {
     assert.strictEqual(output.uat_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'));
   });
 
+  // #3473 F2 (companion to #3357): init plan-phase's verification_path
+  // projector now resolves via the shared resolveVerificationFile resolver
+  // instead of a hand-rolled `.find()` over unsorted readdir() order. The
+  // canonical report must win over an ad-hoc -CORRECTION- worksheet
+  // deterministically, regardless of directory-listing order.
+  test('#3473 F2: init plan-phase resolves the canonical report over a -CORRECTION- worksheet', () => {
+    seedPhase(tmpDir, '03-api', {
+      '03-CORRECTION-VERIFICATION.md': '# Ad-hoc correction worksheet',
+      '03-VERIFICATION.md': '# Verification',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init plan-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.verification_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'),
+      'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet',
+    );
+  });
+
   // #2056: normalizePhaseName() strips ANY [A-Z][A-Z0-9_]*- prefix as a project
   // code, so a foreign-prefixed workstream/task id like "MEM-01" collapsed to
   // "01" and resolved to the unrelated numeric Phase 01. init plan-phase must
@@ -360,6 +383,27 @@ describe('init commands', () => {
     assert.strictEqual(output.research_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-RESEARCH.md'));
     assert.strictEqual(output.verification_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'));
     assert.strictEqual(output.uat_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'));
+  });
+
+  // #3473 F2 (companion to #3357): init phase-op's verification_path projector
+  // — the second of the two now-fixed init.cts sites — same regression as
+  // the plan-phase test above.
+  test('#3473 F2: init phase-op resolves the canonical report over a -CORRECTION- worksheet', () => {
+    seedPhase(tmpDir, '03-api', {
+      '03-CORRECTION-VERIFICATION.md': '# Ad-hoc correction worksheet',
+      '03-VERIFICATION.md': '# Verification',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init phase-op 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.verification_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'),
+      'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet',
+    );
   });
 
   test('init plan-phase detects has_reviews and reviews_path when REVIEWS.md exists', () => {

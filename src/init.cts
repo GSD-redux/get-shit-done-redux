@@ -89,7 +89,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
+const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -103,7 +103,7 @@ const {
 
 const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
-const { isPhaseComplete } = verificationMod;
+const { isPhaseComplete, resolveVerificationFile } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
@@ -1144,9 +1144,17 @@ function cmdInitPlanPhase(
       if (researchFile) {
         result['research_path'] = toPosixPath(path.join(phaseDirFull, researchFile));
       }
-      const verificationFile = files.find(
-        (f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md',
-      );
+      // #3473 F2: routed through the shared resolver — readdir order is
+      // filesystem-dependent, so the prior hand-rolled `.find()` could pick
+      // either file when a phase held both a canonical report and an ad-hoc
+      // `-CORRECTION-VERIFICATION.md` worksheet (#3357).
+      // #3492: pin selection to THIS phase's own token so a stray cross-phase
+      // or sentinel-numbered canonically-shaped file cannot outrank this
+      // phase's own (possibly non-canonical) report.
+      const verificationFile = resolveVerificationFile(files, {
+        allowBare: true,
+        phaseToken: extractPhaseToken(path.basename(phaseDirFull)),
+      });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
       }
@@ -1969,9 +1977,17 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       if (researchFile) {
         result['research_path'] = toPosixPath(path.join(phaseDirFull, researchFile));
       }
-      const verificationFile = files.find(
-        (f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md',
-      );
+      // #3473 F2: routed through the shared resolver — readdir order is
+      // filesystem-dependent, so the prior hand-rolled `.find()` could pick
+      // either file when a phase held both a canonical report and an ad-hoc
+      // `-CORRECTION-VERIFICATION.md` worksheet (#3357).
+      // #3492: pin selection to THIS phase's own token so a stray cross-phase
+      // or sentinel-numbered canonically-shaped file cannot outrank this
+      // phase's own (possibly non-canonical) report.
+      const verificationFile = resolveVerificationFile(files, {
+        allowBare: true,
+        phaseToken: extractPhaseToken(path.basename(phaseDirFull)),
+      });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
       }

@@ -282,6 +282,88 @@ function missingResult(runtime: string, phaseArg: string): VerificationStatusRes
   };
 }
 
+interface ResolveVerificationFileOptions {
+  /**
+   * #3473 F2: three OTHER hand-rolled selection sites (`src/commands.cts`
+   * determinePhaseStatus and two `verification_path` projectors in
+   * `src/init.cts`) additionally accept a BARE `VERIFICATION.md` — a form
+   * this module's own two callers (`findStaleVerificationSummary`,
+   * `readVerificationStatus`) have never accepted, because a bare filename
+   * carries no phase token and `.endsWith('-VERIFICATION.md')` structurally
+   * excludes it. Defaults to `false`, which is byte-for-behavior identical to
+   * the pre-existing (non-optioned) resolver — no call-site edit required for
+   * the two callers in THIS module. Set `true` only from a call site whose
+   * pre-fix behavior already accepted a bare match.
+   */
+  allowBare?: boolean;
+  /**
+   * #3492 regression fix: the phase token (`extractPhaseToken` on the phase
+   * directory's own basename — same grammar `src/phase-id.cts` owns via
+   * `PHASE_NUMBER_TOKEN_SOURCE`) THIS call is resolving for. Every call site
+   * knows its own phaseDir, so every call site can derive and pass this.
+   *
+   * Pinning selection to the caller's own phase is load-bearing: preferring
+   * ANY canonically-shaped `<token>-VERIFICATION.md` (regardless of whose
+   * token it carries) let a stray cross-phase or sentinel-numbered file
+   * (`999-VERIFICATION.md`) outrank the phase's own non-canonical report
+   * (`12-review-VERIFICATION.md`) — a regression this option closes.
+   *
+   * Omitted / empty when the token cannot be derived: falls back to plain
+   * alphabetically-first among all dashed candidates (the original pre-#3357
+   * behavior), never to null.
+   */
+  phaseToken?: string;
+}
+
+/**
+ * Resolve which `*-VERIFICATION.md` entry in a phase directory's listing IS
+ * the phase's verification report, when more than one such file exists.
+ *
+ * #3357: a phase dir can legitimately hold more than one `*-VERIFICATION.md`
+ * — the real per-phase report (`03-VERIFICATION.md`) alongside an ad-hoc plan
+ * worksheet (`03-CORRECTION-VERIFICATION.md`). Picking "alphabetically first"
+ * (`'C' < 'V'`) silently chose the worksheet, which usually has no
+ * frontmatter `status:`, so a phase with a PASSING report read as `missing`.
+ * This was two independent hand-rolled `.sort()[0]` picks
+ * (findStaleVerificationSummary and readVerificationStatus) — this is the
+ * single resolver both now call (#3473 F2).
+ *
+ * Selection order:
+ *   1. `options.phaseToken` given and `<phaseToken>-VERIFICATION.md` is among
+ *      the candidates — that exact file always wins. This is THIS phase's own
+ *      report; no other candidate (canonically-shaped or not, whichever
+ *      phase's token it carries) can outrank it (#3492).
+ *   2. Fallback — no exact phase-token match (or no token given): alphabetically
+ *      first of ALL `*-VERIFICATION.md` entries, unchanged from the original
+ *      pre-#3357 behavior. Load-bearing: a phase whose only report is
+ *      non-canonically named must keep resolving to it, not to null — this
+ *      fix must not turn "found a report" into "found nothing" for anyone.
+ *   3. `options.allowBare` only — a bare `VERIFICATION.md`, ranked BELOW both
+ *      of the above. Rationale: a dashed file names its phase, a bare one
+ *      does not, so a dashed file (canonical or not) is always the better
+ *      answer when both exist. Reached only when neither (1) nor (2) found
+ *      any dashed candidate at all.
+ *
+ * Pure — takes an already-read directory listing and does no I/O of its own,
+ * so every call site keeps its existing `fsImpl` seam and no-throw contract
+ * untouched.
+ */
+function resolveVerificationFile(
+  entries: string[],
+  options: ResolveVerificationFileOptions = {},
+): string | null {
+  const candidates = entries.filter((f) => f.endsWith('-VERIFICATION.md')).sort();
+  if (candidates.length > 0) {
+    if (options.phaseToken) {
+      const thisPhaseFile = `${options.phaseToken}-VERIFICATION.md`;
+      if (candidates.includes(thisPhaseFile)) return thisPhaseFile;
+    }
+    return candidates[0];
+  }
+  if (options.allowBare && entries.includes('VERIFICATION.md')) return 'VERIFICATION.md';
+  return null;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 interface ReadVerificationStatusOptions {
@@ -337,7 +419,11 @@ function findStaleVerificationSummary(
   // this function only reports what it actually knows.
   try {
     const phaseFiles = fsImpl.readdirSync(phaseDir);
-    const verificationFile = phaseFiles.filter((f) => f.endsWith('-VERIFICATION.md')).sort()[0];
+    // #3492: pin selection to THIS phase's own token so a stray cross-phase
+    // or sentinel-numbered canonically-shaped file cannot outrank this
+    // phase's own (possibly non-canonical) report.
+    const phaseToken = extractPhaseToken(path.basename(phaseDir));
+    const verificationFile = resolveVerificationFile(phaseFiles, { phaseToken });
     if (!verificationFile) return { determined: true, stale: false };
 
     const summaryFiles = (scanPhasePlans(phaseDir) as { summaryFiles: string[] }).summaryFiles
@@ -378,7 +464,9 @@ function findStaleVerificationSummary(
  * phaseDir and return the routing result.
  *
  * Behavior:
- * 1. Find the first file matching `*-VERIFICATION.md` (sorted, take first).
+ * 1. Find the phase's verification report via `resolveVerificationFile`
+ *    (canonical `<phase-token>-VERIFICATION.md` preferred; falls back to the
+ *    alphabetically-first `*-VERIFICATION.md` when none is canonical — #3357).
  *    If none → status 'missing'.
  * 2. Extract `status` from FRONTMATTER ONLY via the shared extractFrontmatter
  *    parser (DEFECT.FRONTMATTER-SCALAR-BROAD-GREP fix — parser anchors at byte 0).
@@ -422,8 +510,11 @@ function readVerificationStatus(
   let verificationFile: string | null = null;
   try {
     const entries = fsImpl.readdirSync(phaseDir);
-    const candidates = entries.filter((f) => f.endsWith('-VERIFICATION.md')).sort();
-    verificationFile = candidates.length > 0 ? candidates[0] : null;
+    // #3492: pin selection to THIS phase's own token (already derived above
+    // for the routed command argument) so a stray cross-phase or
+    // sentinel-numbered canonically-shaped file cannot outrank this phase's
+    // own (possibly non-canonical) report.
+    verificationFile = resolveVerificationFile(entries, { phaseToken });
   } catch {
     // Directory unreadable → treat as missing
     verificationFile = null;
@@ -600,12 +691,53 @@ function cmdVerificationStatus(cwd: string, phaseDirArg: string | undefined, raw
   output(result, raw);
 }
 
+/**
+ * CLI command handler: resolve which `*-VERIFICATION.md` in `phaseDirArg` is
+ * the phase's own report, via the shared `resolveVerificationFile` seam, and
+ * emit its absolute path.
+ *
+ * #3492 F3: the ONE seam shell callers (verify-work.md's writer, transition.md's
+ * awk reader) route through instead of hand-rolling `ls *-VERIFICATION.md |
+ * head -1` / an awk glob scan — both of which pick alphabetically-first and so
+ * diverge from every JS reader now pinned to the phase's own token.
+ *
+ * Emits `{ verification_file: "<absolute path>" | "" }` (empty when no
+ * candidate resolves, including an unreadable directory). `raw` emits the
+ * bare path string (possibly empty) so `VAR=$(gsd_run query
+ * verification.resolve-file "$PHASE_DIR" --raw)` is directly assignable.
+ *
+ * @param cwd         - Current working directory (used to resolve phaseDirArg).
+ * @param phaseDirArg - Phase directory path (absolute or relative to cwd).
+ * @param raw         - Whether to emit raw (non-JSON) output.
+ */
+function cmdVerificationResolveFile(cwd: string, phaseDirArg: string | undefined, raw: boolean): void {
+  if (!phaseDirArg) {
+    error('phase directory required for verification.resolve-file');
+    return;
+  }
+  const phaseDir = path.resolve(cwd, phaseDirArg);
+  let verificationPath = '';
+  try {
+    const entries = fs.readdirSync(phaseDir);
+    const phaseToken = extractPhaseToken(path.basename(phaseDir));
+    const verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken });
+    if (verificationFile) {
+      verificationPath = path.join(phaseDir, verificationFile);
+    }
+  } catch {
+    verificationPath = '';
+  }
+  output({ verification_file: verificationPath }, raw, verificationPath);
+}
+
 export = {
   VERIFIER_STATUSES,
   VERIFICATION_ROUTING_TABLE,
   defaultPhaseCleanCommitTimesMs,
+  resolveVerificationFile,
   findStaleVerificationSummary,
   readVerificationStatus,
   isPhaseComplete,
   cmdVerificationStatus,
+  cmdVerificationResolveFile,
 };

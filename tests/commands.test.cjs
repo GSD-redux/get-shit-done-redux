@@ -2215,6 +2215,31 @@ describe('stats command', () => {
     assert.strictEqual(stats.plan_percent, 67);
   });
 
+  // #3473 F2 (companion to #3357): determinePhaseStatus now resolves its
+  // *-VERIFICATION.md via the shared resolveVerificationFile resolver instead
+  // of a hand-rolled `.find()` over unsorted readdir() order. Before this fix,
+  // which of a canonical report and an ad-hoc `-CORRECTION-VERIFICATION.md`
+  // worksheet "won" was filesystem-dependent; the canonical report must now
+  // win deterministically regardless of directory-listing order.
+  test('#3473 F2: phase status resolves the canonical report over a -CORRECTION- worksheet, not readdir order', () => {
+    const p1 = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '03-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '03-01-SUMMARY.md'), '# Summary');
+    // The ad-hoc worksheet reports gaps_found; if it won the pick, the phase
+    // would read 'Executed', not 'Complete'.
+    fs.writeFileSync(path.join(p1, '03-CORRECTION-VERIFICATION.md'), '---\nstatus: gaps_found\n---\n# Correction worksheet');
+    fs.writeFileSync(path.join(p1, '03-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stats = JSON.parse(result.output);
+    const phase = stats.phases.find(p => p.number === '03');
+    assert.ok(phase, 'phase 03 must be present in stats output');
+    assert.strictEqual(phase.status, 'Complete', 'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet');
+  });
+
   test('counts requirements from REQUIREMENTS.md', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
