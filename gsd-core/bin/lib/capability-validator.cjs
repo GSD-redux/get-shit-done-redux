@@ -727,6 +727,9 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeAgentToCodexAgent',
   // ADR-1239 / #2092 Phase B Upgrade 1 — native .qwen/agents/*.md subagent projection.
   'convertClaudeAgentToQwenAgent',
+  // #3384 — ZCode agents are Claude-shaped but its dispatcher treats mcp__* tools
+  // grants as required MCP servers; this converter strips them at install time.
+  'convertClaudeAgentToZcodeAgent',
 ]);
 
 // C3: Validate role:runtime body
