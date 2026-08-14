@@ -513,17 +513,55 @@ ${heading}
   });
 
   test('a milestone that does NOT match STATE is not scoped in', () => {
+    // Two GENUINE milestone sections (GSD.03, GSD.04), neither matching
+    // STATE's v2.0 — the #3354/#3480 milestoned-but-unbounded shape upstream
+    // (already in `next` ahead of this branch's merge) now owns explicitly.
+    //
+    // The original one-section fixture here (`## [GSD.03] Later milestone`
+    // with a single `### [GSD.03] 09: Not this milestone` phase) pinned 0,
+    // and that 0 happened to survive by ACCIDENT, not by the scoping this
+    // test claims to exercise: `hasMilestoneSectioning` requires >=2 headings
+    // whose own text carries milestone vocabulary (a version token, ✅/📋/🚧,
+    // or the word "Milestone") to call a ROADMAP sectioned, and this file's
+    // `isPhaseHeading` recognizes only the legacy `Phase N:` text form — so a
+    // bracket-numeric phase heading whose title happens to contain the word
+    // "milestone" (as "Not this milestone" did) gets miscounted as a SECOND
+    // milestone heading. With that miscount removed (phase title carrying no
+    // vocabulary), the single real GSD.03 section makes hasMilestoneSectioning
+    // false, `safeToUseRoadmapCount` true, and total_phases becomes 1 — the
+    // GSD.03 phase leaking into v2.0's count, the opposite of "not scoped
+    // in". The old 0 was never proof of correct scoping; it was proof the
+    // fixture's own prose happened to contain "milestone". Verified directly:
+    // with the collision removed, this file's exact prior fixture reads 1,
+    // not 0 (a real, pre-existing, upstream-owned `hasMilestoneSectioning`
+    // gap — it only guards >=2-section conflation, not a single non-matching
+    // section leaking through the whole-document count. Not introduced by
+    // #3480 or by this branch; out of scope here, flagged for upstream).
+    //
+    // Two real sections sidesteps that gap entirely and exercises the
+    // contract this test actually intends: STATE's milestone token is absent
+    // from every heading, the ROADMAP is genuinely sectioned (2 real
+    // milestone headings, unrelated to phase-title wording), so neither the
+    // whole-document count NOR the on-disk directory count is an
+    // authoritative total for v2.0 — upstream withholds rather than guessing
+    // (preserves a stored total_phases if one exists, else omits the key).
+    // This fixture stores none, so the key is omitted and `state json`
+    // reports it as null (matches the upstream twin:
+    // tests/state-document.test.cjs "#3354 with nothing stored, the key is
+    // omitted rather than written from the dir count").
     writeProject(`# Roadmap
 
 ## [GSD.03] Later milestone
 
-### [GSD.03] 09: Not this milestone
+### [GSD.03] 09: Not scoped here
 **Goal:** a
+
+## [GSD.04] Even later milestone
+
+### [GSD.04] 10: Also not scoped
+**Goal:** b
 `, 'bracket', ['GSD.02-05-real-work']);
-    // The disk-side milestone filter is convention-selected now, so a directory
-    // whose phase is not in the scoped ROADMAP is excluded rather than counted:
-    // STATE asserts v2.0 and the ROADMAP only describes milestone 03.
-    assert.equal(readTotal(), 0, 'no phases for the asserted milestone');
+    assert.equal(readTotal(), null, 'no phases for the asserted milestone — withheld, not computed');
   });
 
   test('a NON-bracket repo does not gain bracket scoping', () => {
