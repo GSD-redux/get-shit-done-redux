@@ -1826,3 +1826,150 @@ describe('#1463 pickHighestNpmVersion (robust multi-line range parse)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3514 (epic #1900 F21) — fetch-transport hardening in realHttpsGet:
+// a loopback/link-local/metadata host denylist (unconditional) and a distinct
+// named reason for non-https URLs (no parse-time hard reject — internal-mirror
+// classification flows stay intact; the https-only transport fails clearly).
+// ---------------------------------------------------------------------------
+
+describe('#3514 F21a — loopback/metadata denylist in realHttpsGet', () => {
+  let gsdHome = '';
+
+  beforeEach(() => { gsdHome = createTempDir('gsd-3514-home-'); });
+  afterEach(() => {
+    _setHttpsGetImpl(null); // restore the real https.get
+    cleanup(gsdHome);
+  });
+
+  /** Wrap makeFakeHttpsGet with a call counter so a test can prove the gate
+   *  rejects BEFORE the transport is invoked. */
+  function makeCountingFake(chunks, headers) {
+    const inner = makeFakeHttpsGet(chunks, headers);
+    const fn = (url, opts, cb) => {
+      fn.calls += 1;
+      return inner(url, opts, cb);
+    };
+    fn.calls = 0;
+    fn.state = inner.state;
+    return fn;
+  }
+
+  // Every entry: no legitimate install fetches these — loopback, link-local
+  // (which contains the cloud metadata IPs), unspecified, or a localhost-form
+  // name. REVERT-FAILS: pre-#3514 these reached the transport.
+  for (const [label, url] of [
+    ['loopback v4', 'https://127.0.0.1/cap.tgz'],
+    ['loopback v4 high octet', 'https://127.255.0.1/cap.tgz'],
+    ['cloud metadata v4', 'https://169.254.169.254/cap.tgz'],
+    ['link-local v4', 'https://169.254.0.9/cap.tgz'],
+    ['unspecified v4', 'https://0.0.0.0/cap.tgz'],
+    ['loopback v6', 'https://[::1]/cap.tgz'],
+    ['link-local v6', 'https://[fe80::1]/cap.tgz'],
+    ['link-local v6 high', 'https://[febf::1]/cap.tgz'],
+    ['unspecified v6', 'https://[::]/cap.tgz'],
+    ['v4-mapped loopback', 'https://[::ffff:127.0.0.1]/cap.tgz'],
+    ['localhost', 'https://localhost/cap.tgz'],
+    ['subdomain of localhost', 'https://svc.localhost/cap.tgz'],
+  ]) {
+    test(`denied host (${label}) rejects before the transport is called`, async () => {
+      const fake = makeCountingFake([Buffer.from('x')]);
+      _setHttpsGetImpl(fake);
+      await assert.rejects(
+        () => resolveCapabilitySource(url, { gsdHome, hostVersion: '1.5.0' }),
+        /internal host|loopback|link-local|metadata|denylist/i,
+        `${label} must be refused with the named denylist reason`
+      );
+      assert.strictEqual(fake.calls, 0, `the transport must NEVER be called for ${label}`);
+    });
+  }
+
+  // Spec-review follow-up (#3514): alternate IPv4-literal spellings — decimal integer
+  // (2130706433 = 127.0.0.1), hex (0x7f000001), octal (0177.0.0.1), and short forms (127.1) —
+  // are host LITERALS, not DNS names, so they are inside the denylist's stated scope. The
+  // WHATWG URL parser normalizes every form it accepts to dotted-quad BEFORE `.hostname`
+  // (verified: new URL('https://2130706433/').hostname === '127.0.0.1'), so the gate's
+  // dotted-quad range check already denies them — these tests LOCK that invariant, because
+  // a future refactor to raw-string host matching would silently reopen the bypass.
+  for (const [label, url] of [
+    ['decimal integer form', 'https://2130706433/cap.tgz'],
+    ['hex form', 'https://0x7f000001/cap.tgz'],
+    ['hex per-octet form', 'https://0x7f.0.0.1/cap.tgz'],
+    ['octal form', 'https://0177.0.0.1/cap.tgz'],
+    ['short form', 'https://127.1/cap.tgz'],
+  ]) {
+    test(`alternate IP spelling (${label}) normalizes to a denied dotted-quad`, async () => {
+      const fake = makeCountingFake([Buffer.from('x')]);
+      _setHttpsGetImpl(fake);
+      await assert.rejects(
+        () => resolveCapabilitySource(url, { gsdHome, hostVersion: '1.5.0' }),
+        /internal host|loopback|denylist/i,
+        `${label} must be refused — it is the loopback literal in another spelling`
+      );
+      assert.strictEqual(fake.calls, 0);
+    });
+  }
+
+  test('CONTROL: a public host still fetches through the gate', async () => {
+    const cap = featureCap('gate-control-cap');
+    const tgzBuf = _fakeTarball(cap);
+    const fake = makeCountingFake([tgzBuf], { 'content-length': String(tgzBuf.length) });
+    _setHttpsGetImpl(fake);
+    const result = await resolveCapabilitySource('https://example.com/gate-control-cap.tgz', {
+      gsdHome,
+      hostVersion: '1.5.0',
+      execOverrides: {
+        tar: (_prog, args) => {
+          if (args[0] === '-tzf') return { exitCode: 0, stdout: 'capability.json\n', stderr: '', signal: null, error: null };
+          if (args[0] === '-tvzf') return { exitCode: 0, stdout: '-rw-r--r-- 0 user group 10 Jan  1 2020 capability.json\n', stderr: '', signal: null, error: null };
+          const extractDir = args[args.indexOf('-C') + 1];
+          fs.writeFileSync(path.join(extractDir, 'capability.json'), JSON.stringify(cap), 'utf8');
+          return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null };
+        },
+      },
+    });
+    assert.strictEqual(result.id, 'gate-control-cap');
+    assert.strictEqual(fake.calls, 1, 'the denylist is not an allowlist — public hosts fetch');
+  });
+
+  test('CONTROL: a private-range mirror host is NOT denied (internal mirrors are legitimate)', async () => {
+    const fake = makeCountingFake([Buffer.from('x')]);
+    _setHttpsGetImpl(fake);
+    // The flow proceeds PAST the gate into the transport (the body then fails
+    // downstream as a non-tarball — irrelevant here; the assertion is that the
+    // gate itself does not reject a private-range host).
+    await assert.rejects(
+      () => resolveCapabilitySource('https://192.168.1.10/cap.tgz', { gsdHome, hostVersion: '1.5.0' }),
+      (err) => !/internal host|denylist|loopback/i.test(String(err && err.message))
+    );
+    assert.strictEqual(fake.calls, 1, 'a private-range host must reach the transport');
+  });
+});
+
+describe('#3514 F21b — non-https tarball spec fails with a named reason', () => {
+  let gsdHome = '';
+
+  beforeEach(() => { gsdHome = createTempDir('gsd-3514-http-home-'); });
+  afterEach(() => {
+    _setHttpsGetImpl(null);
+    cleanup(gsdHome);
+  });
+
+  test('parseSpec STILL classifies an http:// tarball URL as tarball (no parse-time hard reject)', () => {
+    const p = parseSpec('http://mirror.internal/cap.tgz');
+    assert.strictEqual(p.kind, 'tarball', 'classification is unchanged — the gate lives in the fetcher');
+  });
+
+  test('an http:// tarball spec rejects with the https-only reason, not a raw protocol error', async () => {
+    let calls = 0;
+    const fake = (url, opts, cb) => { calls += 1; return makeFakeHttpsGet([])(url, opts, cb); };
+    _setHttpsGetImpl(fake);
+    await assert.rejects(
+      () => resolveCapabilitySource('http://mirror.internal/cap.tgz', { gsdHome, hostVersion: '1.5.0' }),
+      /requires https|plaintext|internal mirror/i,
+      'the failure must name the https-only transport and the mirror alternative'
+    );
+    assert.strictEqual(calls, 0, 'the transport is never called for a plaintext URL');
+  });
+});

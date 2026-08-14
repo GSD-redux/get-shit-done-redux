@@ -615,3 +615,72 @@ test('TV-09: signatureForManifest does NOT vary with missingArtifacts (MISSING a
     cleanup(missing);
   }
 });
+
+// ---------------------------------------------------------------------------
+// #3514 (epic #1900 F21c) — unverified-integrity disclosure. The verdict gains
+// integrityPinned; the Disclosure carries integrityStatus ('pinned' |
+// 'unverified'); summarizeDisclosure renders it. Deliberately NOT part of the
+// consent-binding signature — consent's content binding is bundleContentHash
+// (#1459), and a prompt line must never force a spurious re-consent.
+// ---------------------------------------------------------------------------
+
+const EXEC_MANIFEST_3514 = {
+  id: 'integrity-status-cap',
+  hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+};
+
+test('#3514: integrityPinned:true verdict carries integrityStatus "pinned" and renders the pinned line', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPinned: true,
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'pinned');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /pin supplied and verified/i);
+  assert.doesNotMatch(joined, /NO PINNED HASH/i);
+});
+
+test('#3514: integrityPinned:false verdict carries integrityStatus "unverified" and renders the unverified line', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPinned: false,
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'unverified');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /NO PINNED HASH/i);
+  assert.match(joined, /staged unverified/i);
+});
+
+test('#3514: legacy callers (no integrityPinned) see no integrity line — byte-identical rendering', () => {
+  const base = {
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+  };
+  const v = trust.evaluateInstallTrust(base);
+  assert.strictEqual(v.disclosure.integrityStatus, undefined, 'absent arg ⇒ absent field');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.doesNotMatch(joined, /PINNED|unverified/i, 'no integrity line for legacy callers');
+});
+
+test('#3514: unverified line also renders on the declarative-only disclosure path', () => {
+  const d = trust.discloseExecutableSurfaces({ id: 'x', skills: ['s'] });
+  d.integrityStatus = 'unverified';
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /NO PINNED HASH/i);
+});
+
+test('#3514: integrityStatus NEVER enters the consent signature (executableSetChanged stable)', () => {
+  const d1 = trust.discloseExecutableSurfaces(EXEC_MANIFEST_3514);
+  const d2 = trust.discloseExecutableSurfaces(EXEC_MANIFEST_3514);
+  d2.integrityStatus = 'unverified';
+  assert.strictEqual(
+    trust.executableSetChanged(d1, d2),
+    false,
+    'a prompt-only integrity line must not read as a changed executable set'
+  );
+});
