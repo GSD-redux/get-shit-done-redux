@@ -8,6 +8,13 @@
  * catastrophic-backtracking shape #2128 fixed (eight commits total; CodeQL
  * has flagged the class, #663). ADR-3212 §5/§7 (epic #3212 Phase 4, #3415).
  *
+ * This rule is NOT part of the ADR-1703 portability-rule family (see
+ * `docs/contributing/cross-platform-portability-rules.md`) and is not listed
+ * in `tests/portability-rule-disable-ban.test.cjs`'s `PROTECTED_RULES` — its
+ * `eslint-disable-next-line` suppressions, added after empirical
+ * benign-verification of a specific site, are an intentional and permitted
+ * part of this rule's design, unlike the ADR-1703 rules' zero-escape-hatch ban.
+ *
  * ## What this enforces
  *
  * A RegExpLiteral (or `new RegExp('literal string')`, no interpolation —
@@ -106,7 +113,7 @@ const rule = {
     docs: {
       description:
         'Disallow an unbounded quantifier over a broad character class in a regex applied to file content (ReDoS risk, CWE-1333)',
-      category: 'Portability',
+      category: 'Best Practices',
     },
     schema: [],
     messages: {
