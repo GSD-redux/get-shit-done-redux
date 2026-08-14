@@ -12,6 +12,21 @@ const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
 
+/**
+ * #3188: write the canonical flat planning docs so an init-query "present" test
+ * actually has the file it asserts. The emitter now returns null for
+ * state_path / roadmap_path / requirements_path when the file is absent; tests
+ * that exercise the present-case must therefore create the file. Phase
+ * resolution is directory-based (findPhaseInternal) and unaffected by these.
+ */
+function writePlanningDocs(tmpDir, { state = true, roadmap = true, requirements = true } = {}) {
+  const planning = path.join(tmpDir, '.planning');
+  fs.mkdirSync(planning, { recursive: true });
+  if (state) fs.writeFileSync(path.join(planning, 'STATE.md'), '# State\n');
+  if (roadmap) fs.writeFileSync(path.join(planning, 'ROADMAP.md'), '# Roadmap\n');
+  if (requirements) fs.writeFileSync(path.join(planning, 'REQUIREMENTS.md'), '# Requirements\n');
+}
+
 describe('init commands', () => {
   let tmpDir;
 
@@ -32,6 +47,9 @@ describe('init commands', () => {
     seedPhase(tmpDir, '03-api', {
       '03-01-PLAN.md': '# Plan',
     });
+    // #3188: these are present-case assertions — the docs must exist on disk
+    // or the emitter now (correctly) returns null for the *_path fields.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init execute-phase 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -86,6 +104,8 @@ describe('init commands', () => {
       '03-VERIFICATION.md': '# Verification',
       '03-UAT.md': '# UAT',
     });
+    // #3188: present-case assertions — create the planning docs the emitter keys on.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init plan-phase 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -326,6 +346,8 @@ describe('init commands', () => {
       '03-VERIFICATION.md': '# Verification',
       '03-UAT.md': '# UAT',
     });
+    // #3188: present-case assertions — create the planning docs the emitter keys on.
+    writePlanningDocs(tmpDir);
 
     const result = runGsdTools('init phase-op 03', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -719,6 +741,65 @@ describe('init commands', () => {
     assert.strictEqual(output.phase_found, true);
     assert.strictEqual(output.phase_name, 'Details Block Regression');
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3188: init execute-phase / plan-phase / phase-op must return null for
+// state_path / roadmap_path / requirements_path when the planning doc is
+// absent — matching the contract the conditional sibling fields (patterns_path,
+// context_path, …) already honour, and that ultraplan-phase.md:104 gates on.
+// The WRITING emitters (new-project / new-milestone / ingest-docs) are
+// intentionally NOT changed and keep returning a non-null write-target path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3188 — init query path fields are null when the planning file is absent', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    // #2376 macOS fix: realpath so absPlanningPath matches process.cwd()-anchored output.
+    tmpDir = fs.realpathSync(createFixture());
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // All three READING (projection) sites share the identical field group; the
+  // absent/present boundary must hold uniformly across them.
+  const COMMANDS = [
+    ['init execute-phase', 'init execute-phase 03'],
+    ['init plan-phase', 'init plan-phase 03'],
+    ['init phase-op', 'init phase-op 03'],
+  ];
+
+  for (const [label, argv] of COMMANDS) {
+    test(`${label}: state_path / roadmap_path / requirements_path are null when the docs are absent`, () => {
+      // No STATE.md / ROADMAP.md / REQUIREMENTS.md written.
+      const result = runGsdTools(argv, tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.state_path, null,
+        'state_path must be null when STATE.md is absent');
+      assert.strictEqual(output.roadmap_path, null,
+        'roadmap_path must be null when ROADMAP.md is absent');
+      assert.strictEqual(output.requirements_path, null,
+        'requirements_path must be null when REQUIREMENTS.md is absent');
+    });
+
+    test(`${label}: state_path / roadmap_path / requirements_path are absolute when the docs exist`, () => {
+      writePlanningDocs(tmpDir);
+
+      const result = runGsdTools(argv, tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.state_path, absPlanningPath(tmpDir, 'STATE.md'));
+      assert.strictEqual(output.roadmap_path, absPlanningPath(tmpDir, 'ROADMAP.md'));
+      assert.strictEqual(output.requirements_path, absPlanningPath(tmpDir, 'REQUIREMENTS.md'));
+    });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2322,6 +2403,9 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
       path.join(wsDir, 'ROADMAP.md'),
       '# Roadmap\n\n### Phase 1: Setup\n**Goal:** Bootstrap\n**Requirements**: R-01\n**Plans:** 1 plans\n'
     );
+    // #3188: REQUIREMENTS.md present so the workstream-scoped requirements_path
+    // present-case assertion holds (STATE/ROADMAP already written above).
+    fs.writeFileSync(path.join(wsDir, 'REQUIREMENTS.md'), '# Requirements\n');
     fs.writeFileSync(
       path.join(wsDir, 'config.json'),
       JSON.stringify({})
@@ -2371,6 +2455,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
       // Flat fixture: the workstream fixture exists but we do NOT pass GSD_WORKSTREAM.
       // Handler should resolve flat .planning/ → state/roadmap/config are flat,
       // and the workstream phase is NOT found (flat phases/ is empty).
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init execute-phase 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2464,6 +2550,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
     });
 
     test('plan-phase WITHOUT GSD_WORKSTREAM resolves flat paths (boundary control)', () => {
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init plan-phase 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -2510,6 +2598,8 @@ describe('init handlers honor GSD_WORKSTREAM (ADR-0006 planningPaths consumption
     });
 
     test('phase-op WITHOUT GSD_WORKSTREAM does not find workstream-only phase (negative discrimination)', () => {
+      // #3188: create the flat docs so the flat *_path present-case assertions hold.
+      writePlanningDocs(tmpDir);
       const result = runGsdTools('init phase-op 1', tmpDir, { GSD_WORKSTREAM: '', GSD_PROJECT: '' });
       assert.ok(result.success, `Command failed: ${result.error}`);
 

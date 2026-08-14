@@ -889,6 +889,14 @@ function cmdInitExecutePhase(
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
+  // #3188: these paths are null when the file is absent, matching the contract
+  // the conditional sibling fields (context_path, patterns_path, ...) already
+  // honour and that ultraplan-phase.md / execute-phase.md gate on. Hoisted so
+  // the existence check and the emitted path share one source of truth.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
@@ -963,12 +971,13 @@ function cmdInitExecutePhase(
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     config_exists: fs.existsSync(path.join(planningDir(cwd), 'config.json')),
     // #2376: emit absolute paths — see comment above on phase_dir.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
+    // #3188: null when the file is absent (parity with patterns_path/context_path).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
     config_path: toPosixPath(path.join(planningDir(cwd), 'config.json')),
     // #2376: execute-phase.md's verify_phase_goal step reads this instead of
     // hardcoding '.planning/REQUIREMENTS.md' into the gsd-verifier spawn prompt.
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
   };
 
   if (options['validate']) {
@@ -1060,6 +1069,12 @@ function cmdInitPlanPhase(
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
+  // #3188: see cmdInitExecutePhase — null when absent, parity with the
+  // conditional sibling fields in this same result object.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -1107,9 +1122,10 @@ function cmdInitPlanPhase(
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
 
     // #2376: absolute — see comment on phase_dir above.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    // #3188: null when the file is absent (parity with patterns_path below).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
 
     patterns_path: null,
   };
@@ -1892,6 +1908,12 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
     }
   }
 
+  // #3188: see cmdInitExecutePhase — null when absent, parity with the
+  // conditional sibling fields in this same result object.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
     brave_search:
@@ -1927,9 +1949,10 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
     planning_exists: fs.existsSync(planningDir(cwd)),
 
     // #2376: absolute — see comment on phase_dir above.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    // #3188: null when the file is absent (parity with context_path/research_path).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
   };
 
   if (phaseInfo?.['directory']) {
