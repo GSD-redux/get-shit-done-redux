@@ -90,7 +90,7 @@ Getting this backwards would turn every desynced project's `phase.complete` into
 
 `readModifyWriteStateMd`'s sync + preservation stage is extracted into a **pure `content → content` function**. `readModifyWriteStateMd` becomes that function plus its read / lock / no-op-guard / write envelope.
 
-This is what makes "one write seam" achievable without breaking anything. `cmdPhaseComplete` bypasses the seam today for a **legitimate** reason its own comment gives (`src/phase.cts:2940-2944`):
+This is what makes "one write seam" achievable without breaking anything. `cmdPhaseComplete` bypasses the seam today for a **legitimate** reason its own comment gives (`src/phase.cts:2953-2957`):
 
 > it does NOT go through readModifyWriteStateMd because STATE.md is committed atomically with ROADMAP/REQUIREMENTS
 
@@ -119,7 +119,7 @@ This matters more than a cosmetic report: #3351 records that the file *is* still
 | Scan only `src/` | 4(d) — the scan surface is **declared** and includes the prompt layer (`gsd-core/workflows`, `commands`, `agents`, `skills`), which can shell out to `state.patch` and post-process |
 | Route the bypass through a wrapper or a differently-named local | 4(b) — the paired behavioral test |
 | Call the pipeline, then mutate `postFm` locally | 4(c) — assert at the **consumer's** output, never the owner's return value |
-| Exempt the owner file | 4(d) — owner **functions** are exempt; the owner **file** is not. `state.cts` is both the owner and the largest bypass surface, and ADR-3180 Amendment 4 records this exact exemption failing |
+| Exempt the owner file | 4(d) — owner **functions** are exempt; the owner **file** is not. ADR-3180 Amendment 4 records a whole-file owner exemption failing in `roadmap-parser.cts`; the risk transfers here because `state.cts` is likewise both the owner and the largest bypass surface, which is this ADR's extrapolation rather than a fact ADR-3180 states |
 | Bank every site in the ratchet and never shrink | `qa-smell-ratchet.cjs` invariants: a recorded site that no longer fires **also** fails; each phase shrinks the baseline by exactly its removals; each entry names the issue owning its removal |
 | Write the guard last, against an already-clean tree | **The guard ships in Phase 1, ratcheted.** ADR-3180 Amendment 5 is titled *"the guard nearly reported a zero it had not earned"* |
 
@@ -145,7 +145,7 @@ Phase 3 follows Phase 2 because it reports on the pipeline Phase 2 makes canonic
 
 Recording it explicitly because both silences are failures: a phase that demonstrably removes a defect's symptom while claiming to change nothing is a shipped lie, and a phase that closes an issue the epic disclaimed is scope it never had.
 
-## 8. The behavior contract — THIS SECTION IS THE SOURCE OF TRUTH
+### 8. The behavior contract — THIS SECTION IS THE SOURCE OF TRUTH
 
 Decisions 1–7 answer *how* the write path is organized. This section says *what the right answer is*, and it is what the guards and identity tests of Decision 5 test **against**.
 
@@ -154,7 +154,7 @@ Decisions 1–7 answer *how* the write path is organized. This section says *wha
 - Amending a rule here is an amendment to this ADR, not a code change with a comment.
 - Each rule carries a **status**: *Enforced* or *Required — Phase N*. A *Required* rule is as binding as an *Enforced* one; the only difference is whether the tree satisfies it yet.
 
-### 8.1 Policy dispatch — *Required — Phase 1*
+#### 8.1 Policy dispatch — *Required — Phase 1*
 
 **Question.** Given a STATE.md field and its `FIELD_CLASSIFICATION` row, what decides its value after a write?
 
@@ -164,13 +164,13 @@ Decisions 1–7 answer *how* the write path is organized. This section says *wha
 
 **Failure signal.** §8.2.
 
-### 8.2 An unenforced row — *Required — Phase 1*
+#### 8.2 An unenforced row — *Required — Phase 1*
 
 **Rule.** A declared `preserve-when-unchanged` row reaching the executor with no wired body-source delta **throws**. This applies to internal invariant violations only. A user document that is drifted, malformed, or unparseable **never** throws — §8.5 governs it.
 
 **Rule.** Where both conditions hold at once, the invariant violation is reported first: it is a defect in our source, and reasoning about the user's document under a broken policy table is meaningless.
 
-### 8.3 The write seam — *Required — Phase 2*
+#### 8.3 The write seam — *Required — Phase 2*
 
 **Question.** What is allowed to write STATE.md?
 
@@ -180,17 +180,26 @@ Decisions 1–7 answer *how* the write path is organized. This section says *wha
 
 **Rule.** `current_phase` and `current_phase_name` are written as a **pair**. A transaction that computes one from a phase number writes both from that same number, so the two cannot describe different phases (#3350).
 
-**Consumers that must route through the owner.** `readModifyWriteStateMd`'s 16 callers, `cmdPhaseComplete` (`src/phase.cts`), `patchCore` and `updateCore` (`src/state-transition.cts`), plus any direct `writeStateMd` caller — `milestone.cts`, and `verify.cts`'s `regenerateState` factory-reset primitive, which `CONTEXT.md` records as a deliberate direct writer and which is therefore a **named ratchet entry**, never an unrecorded pass.
+**Consumers that must route through the owner.** `readModifyWriteStateMd`'s 16 callers, `cmdPhaseComplete` (`src/phase.cts`), `patchCore` and `updateCore` (`src/state-transition.cts`), plus the three direct `writeStateMd` callers a whole-repo scan finds: `cmdStateSync` (`src/state.cts:3682`), `cmdMilestoneComplete` (`src/milestone.cts:865`), and the `REGENERATE_STATE` remedy (`src/health-diagnostic.cts:337`). Each is a **named ratchet entry** carrying the issue that owns its removal, never an unrecorded pass.
+
+**`REGENERATE_STATE` is a sanctioned permanent exception, not debt.** It is `/gsd-health --repair`'s factory reset: it backs up STATE.md, then rebuilds the document from scratch (`src/health-diagnostic.cts:313-339`). Preservation would defeat its entire purpose — restoring the curated values it was invoked to discard. It is recorded here so a future reader does not "consolidate" it, and so the guard's baseline can never silently absorb it.
+
+> **How this list was gotten wrong once already, recorded because it is the exact trap this ADR exists to close.** `CONTEXT.md`'s STATE.md Transition Module entry placed the factory-reset primitive at `verify.cts:1925`. It is not there — it moved to `health-diagnostic.cts` when `cmdValidateHealth` migrated onto the rule table (`d1760e3c3 refactor(#3309)`), and `src/verify.cts` now contains no `writeStateMd` call at all, only two stale comment references at `:1332` and `:1364`. **The design intent that entry recorded was correct; only its address was stale** — and a first pass at this ADR, trusting the entry, over-corrected in the opposite direction and reported the primitive as retired. The entry is fixed in this PR.
+>
+> Two rules follow, and they are why this box is normative rather than a footnote:
+>
+> 1. **Phase 1's guard derives its baseline from a whole-repo scan, never from this list or from `CONTEXT.md`.** The list exists to be checked *against* the scan; a discrepancy is the scan's finding, not the list's.
+> 2. **A stale address does not retire a decision.** Read the code before concluding a recorded exception is gone — ADR-3180 Amendment 3's lesson, which this PR proceeded to demonstrate on itself: *"Read the code, not the write-up."*
 
 **Guard.** `scripts/lint-state-write-path-drift.cjs`.
 
-### 8.4 The report — *Required — Phase 3*
+#### 8.4 The report — *Required — Phase 3*
 
 **Question.** What does a command's `updated` / `failed` array mean?
 
 **Rule.** It names the fields whose **persisted** value changed, computed from `postFm` after preservation. A field the caller asked for that did not change is not `updated`. Whether "not found" and "found, written, then restored by policy" are distinguishable buckets is **decided in Phase 3 and recorded as an amendment here** — it is a behavior this section does not yet state, so per §8's own rule it is not decided.
 
-### 8.5 Stale-but-present — *Required — Phase 4*
+#### 8.5 Stale-but-present — *Required — Phase 4*
 
 **Question.** The body source disagrees with frontmatter and the derived value is non-empty. Who wins?
 
@@ -200,7 +209,7 @@ Decisions 1–7 answer *how* the write path is organized. This section says *wha
 
 **Rule.** A drifted body is an ordinary, expected user-document state. It is what this contract preserves against — never an error, never a throw (§8.2).
 
-### 8.6 `clear` — *OPEN QUESTION, forcing function: Phase 1*
+#### 8.6 `clear` — *OPEN QUESTION, forcing function: Phase 1*
 
 `clear` is a declared `FieldPreservation` member. **No row uses it and no executor exists.** That is §8.1's defect one level up: a declared policy nothing implements.
 
