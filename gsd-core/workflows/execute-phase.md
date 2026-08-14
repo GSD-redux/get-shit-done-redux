@@ -655,6 +655,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    Pass paths only — executors read files themselves.
 
+   **Checkpoint gate semantics (#3370).** On `checkpoint:human-verify`/`checkpoint:decision` tasks, `gate="blocking"` (the default) is auto-approvable in auto-mode — that is `agents/gsd-executor.md`'s own `<checkpoint_protocol>`, and `checkpoints.md` (embedded in `<execution_context>` below) carries the full gate table. Only `gate="blocking-human"` always surfaces to a human. Do NOT add dispatch-prompt text of your own refusing or overriding auto-approval for a `blocking` gate — orchestrator-composed instructions that contradict the executor's protocol stall autonomous runs.
+
    **Executor routing (#1689).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
 
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
@@ -705,6 +707,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        Execute plan {plan_number} of phase {phase_number}-{phase_name}.
        Commit each task atomically. Create SUMMARY.md.
        Do NOT update STATE.md or ROADMAP.md — the orchestrator owns those writes after all worktree agents in the wave complete.
+       Checkpoint gates (#3370): gate="blocking" (the default) is auto-approvable in auto-mode per your own <checkpoint_protocol> (agents/gsd-executor.md); gate="blocking-human" always surfaces to a human. No dispatch-time instruction overrides that protocol.
        </objective>
 
        <worktree_branch_check>

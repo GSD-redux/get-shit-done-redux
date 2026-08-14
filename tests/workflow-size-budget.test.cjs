@@ -674,6 +674,93 @@ describe('#3324: no @-include lines inside Agent() prompt strings', () => {
     );
   });
 
+  // #3370 — the executor dispatch prompts must carry checkpoint gate semantics so the
+  // orchestrator cannot compose anti-auto-approval prompt text that conflates
+  // gate="blocking" (the default, auto-approvable) with gate="blocking-human"
+  // (always surfaces). The dispatch prompt text IS the product here — the templates
+  // below are what gets composed into the Agent() call — so region asserts on the
+  // template text are the behavioral seam, same precedent as the #3324 guards above.
+  const ANTI_AUTO_APPROVAL = /never auto-approve|do not auto-approve|must not auto-approve|under any circumstance, including/;
+
+  function dispatchRegion(file, fromAnchor, toAnchor) {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, file), 'utf-8');
+    const from = content.indexOf(fromAnchor);
+    assert.ok(from !== -1, `${file}: anchor "${fromAnchor}" not found`);
+    const to = content.indexOf(toAnchor, from);
+    assert.ok(to !== -1, `${file}: anchor "${toAnchor}" not found after "${fromAnchor}"`);
+    return content.slice(from, to);
+  }
+
+  test('execute-phase.md step-3 dispatch carries checkpoint gate semantics and forbids overriding auto-approval (#3370)', () => {
+    const step = dispatchRegion(
+      'execute-phase.md',
+      '**Spawn executor agents:**',
+      '**Wait for all agents in wave to complete.**',
+    );
+    // AC 1 + AC 3, phase-level: the orchestrator is told blocking is the
+    // auto-approvable default and blocking-human is the only always-surface gate,
+    // and is forbidden from injecting dispatch text that refuses auto-approval.
+    assert.match(step, /#3370/, 'step 3 must cite the gate-semantics rule');
+    assert.match(step, /gate="blocking"/, 'step 3 must name gate="blocking"');
+    assert.match(step, /auto-approv/i, 'step 3 must state blocking is auto-approvable in auto-mode');
+    assert.match(step, /blocking-human/, 'step 3 must name gate="blocking-human" as the always-surface carve-out');
+    assert.match(
+      step,
+      /do not add[^.]*dispatch|inject[^.]*(?:contradict|override|refuse)/i,
+      'step 3 must forbid composing dispatch text that overrides or refuses auto-approval',
+    );
+    // Negative guard: the fix must not itself introduce the anti-auto-approval phrasing.
+    assert.doesNotMatch(
+      step,
+      ANTI_AUTO_APPROVAL,
+      'the step-3 dispatch region must not contain anti-auto-approval instructions (#3370)',
+    );
+  });
+
+  test('execute-phase.md executor Agent() prompt states gate semantics inside <objective> so every isolation mode carries them (#3370)', () => {
+    const step = dispatchRegion(
+      'execute-phase.md',
+      '**Spawn executor agents:**',
+      '**Wait for all agents in wave to complete.**',
+    );
+    const objective = step.match(/<objective>([\s\S]*?)<\/objective>/);
+    assert.ok(objective, 'step 3 must keep an <objective> block in the Agent() prompt template');
+    // The prompt itself must be self-defending: harness-worktree, orchestrator-worktree
+    // (which keeps <objective> verbatim per executor-isolation-dispatch.md), and
+    // sequential (same structure) all carry <objective>.
+    assert.match(objective[1], /gate="blocking"/, 'the dispatched prompt must name gate="blocking"');
+    assert.match(objective[1], /blocking-human/, 'the dispatched prompt must name gate="blocking-human"');
+    assert.match(objective[1], /auto-mode/, 'the dispatched prompt must tie blocking to auto-mode');
+    assert.doesNotMatch(
+      objective[1],
+      ANTI_AUTO_APPROVAL,
+      'the dispatched prompt must not instruct the executor to refuse auto-approval (#3370)',
+    );
+  });
+
+  test('execute-plan.md Pattern A dispatch carries the same gate semantics (#3370)', () => {
+    const patternA = dispatchRegion(
+      'execute-plan.md',
+      '**Pattern A:** init_agent_tracking',
+      '**Pattern B:** Execute segment-by-segment',
+    );
+    // AC 4: the single-plan-level dispatch path is covered, not just execute-phase.
+    assert.match(patternA, /#3370/, 'Pattern A must cite the gate-semantics rule');
+    assert.match(patternA, /gate="blocking"/, 'Pattern A must name gate="blocking"');
+    assert.match(patternA, /blocking-human/, 'Pattern A must name gate="blocking-human"');
+    assert.match(patternA, /auto-approv/i, 'Pattern A must state blocking is auto-approvable in auto-mode');
+    assert.match(
+      patternA,
+      /no instruction (?:that )?overrid/i,
+      'Pattern A must forbid adding instructions that override the executor checkpoint protocol',
+    );
+    assert.doesNotMatch(
+      patternA,
+      ANTI_AUTO_APPROVAL,
+      'Pattern A must not contain anti-auto-approval instructions (#3370)',
+    );
+  });
+
   test('execute-plan.md still defines the steps only it carries into the dispatch', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-plan.md'), 'utf-8');
     for (const marker of [
