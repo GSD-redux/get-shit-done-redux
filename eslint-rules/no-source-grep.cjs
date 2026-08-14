@@ -13,7 +13,14 @@
  * string, so a same-named binding in an unrelated or shadowing scope is
  * never conflated with a tracked one.
  *
- * Honor file-level escape comment: // allow-test-rule: <reason>
+ * Honor a SITE-SCOPED escape comment: // allow-test-rule: <reason> (#NNN)
+ * A marker suppresses only the violation(s) it sits next to (same line, or
+ * above with nothing but blank/comment lines between), not the whole file
+ * (#3508 / epic #3464 phase 4). "Next to" is checked against EITHER half of
+ * the read+search pair -- the text-search call site, or the readFileSync()
+ * call that originated the tracked value -- so annotating the read directly
+ * (the intuitive placement) suppresses the violation just as well as
+ * annotating the search call (adversarial-review fix, epic #3464 phase 4).
  */
 
 // How many derivation hops from the original readFileSync() binding to
@@ -23,6 +30,20 @@
 // 9-11): a chain longer than this is a documented, accepted blind spot, not
 // a bug — see 40-design.md "Known limits".
 const MAX_TRANSITIVE_HOPS = 3;
+
+// How many source lines a `// allow-test-rule: <reason>` marker is allowed
+// to sit above the violation it suppresses (0 = same line as the marker's
+// own line, i.e. the line directly below it). The repo's real placement
+// style is a marker followed by a short run of CONTINUATION PROSE (more
+// `//` comment lines expanding on the reason) immediately before the flagged
+// call -- observed spans across the 8 real #3508 violation sites run 0-4
+// comment lines (e.g. the #3502 marker in tests/adr-index-gate.test.cjs, the
+// #770 markers in tests/install-minimal-hooks.test.cjs). 8 gives that a
+// comfortable margin without being effectively unbounded -- large enough to
+// never force churn on a legitimately-placed marker, small enough that a
+// marker meant for one call site cannot drift into covering an unrelated
+// site 40+ lines later (test-matrix.md row 4, the defect this closes).
+const MAX_MARKER_LOOKAHEAD_LINES = 8;
 
 const TEXT_METHODS = new Set([
   'includes',
@@ -102,7 +123,7 @@ const rule = {
     schema: [],
     messages: {
       noSourceGrep:
-        'Source-grep test: do not read source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and call .includes/.match/.matchAll/.startsWith/.indexOf/.split/.replace/.search (or regex.test()) on the result. Use require() to run the module instead. Add // allow-test-rule: <reason> at the top of the file to suppress.',
+        'Source-grep test: do not read source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and call .includes/.match/.matchAll/.startsWith/.indexOf/.split/.replace/.search (or regex.test()) on the result. Use require() to run the module instead. Add // allow-test-rule: <reason> (#NNN) directly above (or trailing) the flagged line to suppress just that site.',
     },
   },
   create(context) {
@@ -110,12 +131,64 @@ const rule = {
       ? context.getSourceCode()
       : context.sourceCode;
 
-    // Check for file-level escape comment
-    const comments = sourceCode.getAllComments();
-    const hasAllowAnnotation = comments.some(
-      (c) => /allow-test-rule:\s*\S/.test(c.value)
-    );
-    if (hasAllowAnnotation) return {};
+    // All comments in the file (used both to find markers and to know which
+    // lines are "just a comment" for the lookahead purity check below).
+    const allComments = sourceCode.getAllComments();
+
+    // Line numbers of every `// allow-test-rule: <reason>` marker comment in
+    // the file. A marker may span one line (the normal `//` form) or several
+    // (a block comment) -- record every line it occupies so a violation on
+    // any of those lines counts as "same line" (trailing-marker form, row 2
+    // of the test matrix).
+    const markerLines = [];
+    for (const c of allComments) {
+      if (/allow-test-rule:\s*\S/.test(c.value)) {
+        for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
+          markerLines.push(l);
+        }
+      }
+    }
+
+    // Line numbers fully occupied by ANY comment (marker or not) -- a marker
+    // followed by ordinary prose lines before the flagged call is the repo's
+    // real style (test-matrix.md row 3), so those in-between lines must not
+    // disqualify the marker.
+    const commentLineSet = new Set();
+    for (const c of allComments) {
+      for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
+        commentLineSet.add(l);
+      }
+    }
+
+    function isBlankLine(line) {
+      const text = sourceCode.lines[line - 1];
+      return text !== undefined && text.trim() === '';
+    }
+
+    // A violation at `violationLine` is suppressed if some marker sits on
+    // that exact line (trailing form) or on an earlier line within
+    // MAX_MARKER_LOOKAHEAD_LINES, with every line strictly between the
+    // marker and the violation being blank and/or itself a comment line --
+    // i.e. no live code (not even the readFileSync() call the marker is
+    // ostensibly about) sits between the marker and the call it suppresses.
+    // This is what makes suppression SITE-scoped rather than file-wide: a
+    // marker parked far above an unrelated later violation (test-matrix.md
+    // row 4) no longer reaches it.
+    function isSuppressed(violationLine) {
+      for (const markerLine of markerLines) {
+        if (markerLine > violationLine) continue;
+        if (violationLine - markerLine > MAX_MARKER_LOOKAHEAD_LINES) continue;
+        let pure = true;
+        for (let l = markerLine + 1; l < violationLine; l++) {
+          if (!isBlankLine(l) && !commentLineSet.has(l)) {
+            pure = false;
+            break;
+          }
+        }
+        if (pure) return true;
+      }
+      return false;
+    }
 
     // Map from Identifier AST node -> resolved ESLint `Variable`, built once
     // per file (see buildIdentifierVariableMap) so that resolveVariable() is
@@ -205,27 +278,40 @@ const rule = {
     // increments by 1, capped at MAX_TRANSITIVE_HOPS.
     const hopOf = new Map();
 
+    // Variable -> line number of the readFileSync() call that originated the
+    // value tracked at that variable (same line as the hop=1 seed for a
+    // direct binding; propagated unchanged through every derivation hop,
+    // since a transitive chain is still fundamentally about the SAME
+    // original read+search pair). Populated in lockstep with hopOf below so
+    // a report can consult "where was this text actually read from" and
+    // honor a marker placed at either half of the pair (adversarial-review
+    // fix: marker adjacent to the read alone must suppress too, not just a
+    // marker adjacent to the search call).
+    const readLineOf = new Map();
+
     // Generic conservative fallback: walk every Identifier under `node` and
-    // return the smallest hop number among identifiers that resolve to an
-    // already-tracked variable, or null if none do. This is the DEFAULT for
-    // any expression shape not explicitly recognized below (arguments to an
-    // unknown function call, logical expressions, etc.) -- for an
-    // unrecognized shape we choose to PROPAGATE (risking a rarer false
-    // positive) rather than silently drop a true positive, because the
-    // callee/operator may still be returning text derived from the tracked
-    // value. Clearly-scalar shapes (member access, comparisons, numeric/
-    // boolean methods, Number()/parseInt()/etc.) are special-cased below to
-    // explicitly NOT propagate instead, since for those we know for certain
-    // the result cannot carry text.
-    function walkForTrackedHop(node) {
-      let min = null;
+    // return the {hop, line} of the identifier with the smallest hop number
+    // among identifiers that resolve to an already-tracked variable, or null
+    // if none do. This is the DEFAULT for any expression shape not
+    // explicitly recognized below (arguments to an unknown function call,
+    // logical expressions, etc.) -- for an unrecognized shape we choose to
+    // PROPAGATE (risking a rarer false positive) rather than silently drop a
+    // true positive, because the callee/operator may still be returning text
+    // derived from the tracked value. Clearly-scalar shapes (member access,
+    // comparisons, numeric/boolean methods, Number()/parseInt()/etc.) are
+    // special-cased below to explicitly NOT propagate instead, since for
+    // those we know for certain the result cannot carry text.
+    function walkForTrackedInfo(node) {
+      let best = null;
       (function walk(n) {
         if (!n || typeof n.type !== 'string') return;
         if (n.type === 'Identifier') {
           const v = resolveVariable(n);
           if (v && hopOf.has(v)) {
             const h = hopOf.get(v);
-            if (min === null || h < min) min = h;
+            if (best === null || h < best.hop) {
+              best = { hop: h, line: readLineOf.get(v) };
+            }
           }
         }
         for (const key of Object.keys(n)) {
@@ -240,45 +326,50 @@ const rule = {
           }
         }
       })(node);
-      return min;
+      return best;
     }
 
     // Determine whether tracking should propagate through `node`'s value
     // into whatever it is assigned/bound to, and if so, at what (minimum)
-    // hop it draws from. Returns null when the value shape is one we know
-    // for certain cannot still carry the tracked file's text.
-    function minTrackedHop(node) {
+    // hop -- and from which original read line -- it draws from. Returns
+    // null when the value shape is one we know for certain cannot still
+    // carry the tracked file's text.
+    function trackedInfo(node) {
       if (!node || typeof node.type !== 'string') return null;
 
       switch (node.type) {
         case 'Identifier': {
           // Identity: `const b = a;`
           const v = resolveVariable(node);
-          return v && hopOf.has(v) ? hopOf.get(v) : null;
+          return v && hopOf.has(v)
+            ? { hop: hopOf.get(v), line: readLineOf.get(v) }
+            : null;
         }
 
         case 'AwaitExpression':
-          return minTrackedHop(node.argument);
+          return trackedInfo(node.argument);
 
         case 'ConditionalExpression': {
           // `cond ? a : other` -- only the branches can carry the tracked
           // value; the test itself is a boolean and does not propagate.
-          const c = minTrackedHop(node.consequent);
-          const a = minTrackedHop(node.alternate);
+          const c = trackedInfo(node.consequent);
+          const a = trackedInfo(node.alternate);
           if (c === null) return a;
           if (a === null) return c;
-          return Math.min(c, a);
+          return c.hop <= a.hop ? c : a;
         }
 
         case 'TemplateLiteral': {
           // `` `${a}` `` -- a template embedding a tracked value still
           // carries its text.
-          let min = null;
+          let best = null;
           for (const expr of node.expressions) {
-            const h = minTrackedHop(expr);
-            if (h !== null && (min === null || h < min)) min = h;
+            const info = trackedInfo(expr);
+            if (info !== null && (best === null || info.hop < best.hop)) {
+              best = info;
+            }
           }
-          return min;
+          return best;
         }
 
         case 'BinaryExpression': {
@@ -287,11 +378,11 @@ const rule = {
           // >=, arithmetic, etc.) produces a boolean/number and must not
           // propagate.
           if (node.operator !== '+') return null;
-          const l = minTrackedHop(node.left);
-          const r = minTrackedHop(node.right);
+          const l = trackedInfo(node.left);
+          const r = trackedInfo(node.right);
           if (l === null) return r;
           if (r === null) return l;
-          return Math.min(l, r);
+          return l.hop <= r.hop ? l : r;
         }
 
         case 'UnaryExpression':
@@ -344,30 +435,30 @@ const rule = {
             callee.type === 'MemberExpression' &&
             callee.property.type === 'Identifier'
           ) {
-            const objHop = minTrackedHop(callee.object);
-            if (objHop !== null) {
+            const objInfo = trackedInfo(callee.object);
+            if (objInfo !== null) {
               const propName = callee.property.name;
               if (NON_PROPAGATING_METHODS.has(propName)) return null;
-              if (PROPAGATING_STRING_METHODS.has(propName)) return objHop;
+              if (PROPAGATING_STRING_METHODS.has(propName)) return objInfo;
               // Unrecognized method name on a known-tracked receiver:
               // conservative default for an unrecognized call result (see
               // fallback rationale above) -- propagate rather than risk
               // silently dropping a true positive.
-              return objHop;
+              return objInfo;
             }
           }
 
           // Not a recognized narrowing/receiver call shape: fall through
           // to the generic conservative walk (covers "tracked value passed
           // as an argument to any call", e.g. `const b = strip(a);`).
-          return walkForTrackedHop(node);
+          return walkForTrackedInfo(node);
         }
 
         default:
           // Any other expression shape (LogicalExpression, parenthesized
           // expressions -- which are not a distinct AST node -- etc.):
-          // conservative default, see walkForTrackedHop doc comment.
-          return walkForTrackedHop(node);
+          // conservative default, see walkForTrackedInfo doc comment.
+          return walkForTrackedInfo(node);
       }
     }
 
@@ -396,43 +487,72 @@ const rule = {
         }
       },
       'Program:exit'() {
-        // Seed hop=1 for variables bound directly to a source readFileSync().
+        // Seed hop=1 for variables bound directly to a source readFileSync(),
+        // recording the readFileSync() call's own line as the "origin read
+        // line" for that variable.
         for (const { id, init } of pendingDeclarators) {
           if (isSourceReadFileSync(init)) {
             const v = resolveVariable(id);
-            if (v && !hopOf.has(v)) hopOf.set(v, 1);
+            if (v && !hopOf.has(v)) {
+              hopOf.set(v, 1);
+              readLineOf.set(v, init.loc.start.line);
+            }
           }
         }
         for (const { left, right } of pendingAssignments) {
           if (isSourceReadFileSync(right)) {
             const v = resolveVariable(left);
-            if (v && !hopOf.has(v)) hopOf.set(v, 1);
+            if (v && !hopOf.has(v)) {
+              hopOf.set(v, 1);
+              readLineOf.set(v, right.loc.start.line);
+            }
           }
         }
 
         // Fixpoint over derived bindings, bounded by MAX_TRANSITIVE_HOPS.
         // Each variable is added at most once, so this always terminates.
+        // The origin read line is carried through unchanged from whichever
+        // parent variable the hop was derived from -- a transitive chain is
+        // still fundamentally about the same original read+search pair.
         let changed = true;
         while (changed) {
           changed = false;
           for (const { id, init } of pendingDeclarators) {
             const v = resolveVariable(id);
             if (!v || hopOf.has(v)) continue;
-            const parentHop = minTrackedHop(init);
-            if (parentHop !== null && parentHop + 1 <= MAX_TRANSITIVE_HOPS) {
-              hopOf.set(v, parentHop + 1);
+            const parentInfo = trackedInfo(init);
+            if (parentInfo !== null && parentInfo.hop + 1 <= MAX_TRANSITIVE_HOPS) {
+              hopOf.set(v, parentInfo.hop + 1);
+              readLineOf.set(v, parentInfo.line);
               changed = true;
             }
           }
           for (const { left, right } of pendingAssignments) {
             const v = resolveVariable(left);
             if (!v || hopOf.has(v)) continue;
-            const parentHop = minTrackedHop(right);
-            if (parentHop !== null && parentHop + 1 <= MAX_TRANSITIVE_HOPS) {
-              hopOf.set(v, parentHop + 1);
+            const parentInfo = trackedInfo(right);
+            if (parentInfo !== null && parentInfo.hop + 1 <= MAX_TRANSITIVE_HOPS) {
+              hopOf.set(v, parentInfo.hop + 1);
+              readLineOf.set(v, parentInfo.line);
               changed = true;
             }
           }
+        }
+
+        // Report a violation at `node` unless a marker's site-scoped
+        // suppression (see isSuppressed above) covers either the search
+        // call's own line OR the line of the readFileSync() call that
+        // originated the tracked value (adversarial-review fix: the
+        // violation is fundamentally about the read+search PAIR, so a
+        // marker adjacent to either half is a legitimate, still strictly
+        // site-scoped, way to annotate it). `readLine` is optional -- pass
+        // it whenever the call site can determine one.
+        function reportUnlessSuppressed(node, readLine) {
+          if (isSuppressed(node.loc.start.line)) return;
+          if (readLine !== undefined && readLine !== null && isSuppressed(readLine)) {
+            return;
+          }
+          context.report({ node, messageId: 'noSourceGrep' });
         }
 
         // Now that hopOf is stable, evaluate every candidate call site.
@@ -444,13 +564,14 @@ const rule = {
             if (obj.type === 'Identifier') {
               const v = resolveVariable(obj);
               if (v && hopOf.has(v)) {
-                context.report({ node, messageId: 'noSourceGrep' });
+                reportUnlessSuppressed(node, readLineOf.get(v));
                 continue;
               }
             }
-            // Inline: readFileSync(...).includes(...)
+            // Inline: readFileSync(...).includes(...) -- read and search are
+            // the same line, so no separate read line to pass.
             if (isSourceReadFileSync(obj)) {
-              context.report({ node, messageId: 'noSourceGrep' });
+              reportUnlessSuppressed(node);
             }
             continue;
           }
@@ -464,8 +585,9 @@ const rule = {
           const args = node.arguments;
           if (!args || args.length === 0) continue;
 
-          if (minTrackedHop(args[0]) !== null) {
-            context.report({ node, messageId: 'noSourceGrep' });
+          const argInfo = trackedInfo(args[0]);
+          if (argInfo !== null) {
+            reportUnlessSuppressed(node, argInfo.line);
           }
         }
       },

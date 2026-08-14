@@ -489,15 +489,14 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     }
   });
 
-  // allow-test-rule: structural-regression-guard (#3336)
   // structural guard over bin/install.js source. Behavioral assertions
   // cannot observe inline `runtime === '...'` config branching, so this enforces that
   // every inline per-runtime branch references a runtime the adapter registry knows
-  // about — a NEW branch against an unregistered runtime name fails here. ESLint cannot
-  // currently see this grep because no-source-grep's TEXT_METHODS omits matchAll (#3464).
+  // about — a NEW branch against an unregistered runtime name fails here.
   test('every inline `runtime === "..."` branch references a registry-known runtime', () => {
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
     const literals = new Set(
+      // allow-test-rule: structural-regression-guard — structural guard over bin/install.js source; behavioral assertions cannot observe inline `runtime === '...'` config branching, so this enforces every inline per-runtime branch references a runtime the adapter registry knows about (#3336)
       [...src.matchAll(/runtime === (?:'([a-z][a-z0-9-]*)'|"([a-z][a-z0-9-]*)")/g)]
         .map((m) => m[1] ?? m[2]),
     );
@@ -513,13 +512,12 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     );
   });
 
-  // allow-test-rule: structural-regression-guard (#2103)
   // VS Code is a registry runtime but is NEVER CLI-installed (Marketplace/VSIX
   // extension); it must stay fully descriptor-driven — bin/install.js must
-  // never special-case it by name. ESLint cannot currently see this grep because
-  // no-source-grep's TEXT_METHODS omits matchAll (#3464).
+  // never special-case it by name.
   test('#2103: bin/install.js has ZERO runtime === "vscode" / isVscode branches (vscode stays fully descriptor-driven)', () => {
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'install.js'), 'utf8');
+    // allow-test-rule: structural-regression-guard — vscode is a registry runtime but is NEVER CLI-installed (Marketplace/VSIX); it must stay fully descriptor-driven, so bin/install.js must never special-case it by name (#2103)
     const runtimeComparisons = [...src.matchAll(/runtime === (?:'vscode'|"vscode")/g)];
     assert.deepStrictEqual(
       runtimeComparisons.map((m) => m[0]),
@@ -528,6 +526,7 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
         + 'install surface at all (installSurface: "none") and is never CLI-installed; any '
         + 'vscode-specific behavior belongs in capabilities/vscode/capability.json, not an inline branch.',
     );
+    // allow-test-rule: structural-regression-guard — same #2103 vscode-descriptor-driven guard as above, this time for the isVscode flag name (#2103)
     const isVscodeRefs = [...src.matchAll(/\bisVscode\b/g)];
     assert.deepStrictEqual(
       isVscodeRefs.map((m) => m[0]),

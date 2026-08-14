@@ -103,17 +103,16 @@ describe('no-source-grep rule', () => {
     });
   });
 
-  test('valid: file with allow-test-rule annotation is exempt', () => {
+  test('valid: allow-test-rule annotation adjacent to the read exempts that site (#3508: site-scoped, not file-wide)', () => {
     ruleTester.run('no-source-grep', noSourceGrep, {
       valid: [
         {
-          // The allow annotation exempts the whole file
+          // The marker sits directly above the read+search it suppresses.
           code: `
-            // allow-test-rule: pending migration
             const fs = require('fs');
             const path = require('path');
-            const src = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'io.cjs'), 'utf-8');
-            src.includes('someFunction');
+            // allow-test-rule: pending migration
+            const src = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'io.cjs'), 'utf-8'); src.includes('someFunction');
           `,
           filename: 'tests/foo.test.cjs',
         },
@@ -485,19 +484,21 @@ describe('no-source-grep rule — widening (#3502)', () => {
     });
   });
 
-  test('row 19: file carrying the file-level suppression annotation suppresses an otherwise-invalid fixture', () => {
+  test('row 19: a marker adjacent to the read+search suppresses it (#3508: site-scoped, not file-wide)', () => {
     // The raw marker text is assembled via string concatenation so this
     // FILE's own bytes never contain a contiguous "allow" + "-test-rule:"
     // token (scripts/lint-allow-test-rule-refs.cjs does a raw whole-file
     // substring scan). At RuleTester-run time the concatenation resolves to
     // a real single-line comment, which the rule under test honors normally.
+    // The marker sits directly above the read+search (site-scoped, #3508),
+    // not merely somewhere earlier in the file (the pre-#3508 file-wide form
+    // this row originally exercised).
     const marker = '// ' + 'allow' + '-test-rule: split marker for row 19, see #3502';
     const code = [
       "const fs = require('fs');",
       "const path = require('path');",
       marker,
-      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8');",
-      "src.includes('x');",
+      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); src.includes('x');",
     ].join('\n');
     ruleTester.run('no-source-grep', noSourceGrep, {
       valid: [
@@ -529,6 +530,367 @@ describe('no-source-grep rule — widening (#3502)', () => {
           code,
           filename: 'tests/foo.test.cjs',
           errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+});
+
+// ─── no-source-grep site-scoped suppression (#3508 / Phase 4 of #3464) ──────
+//
+// One RuleTester case per row of
+// .gsd/phase/chore-3464-site-scoped-suppression/50-test-matrix.md, rows 1-12.
+// Row 4 is the one that actually proves the defect is closed: file-wide
+// amnesty is gone, so a marker adjacent to one violation must NOT reach an
+// unrelated violation later in the same file. Rows 3 and 6 are the
+// compatibility guards (prose between marker and read; marker + zero
+// violations) that must keep working or this would break the 277
+// marker-bearing files that rely on file-level markers being a documented
+// no-op when there's nothing to suppress.
+//
+// Marker text is always assembled via string concatenation (`AT` below) so
+// THIS file's raw bytes never contain a contiguous "allow" + "-test-rule:"
+// token — same fixture-host discipline as the row 19/20 cases above
+// (scripts/lint-allow-test-rule-refs.cjs does a raw whole-file substring
+// scan and must not newly count this file).
+//
+// NOTE: row 9's fixture length is tied to MAX_MARKER_LOOKAHEAD_LINES (8) in
+// eslint-rules/no-source-grep.cjs — if that constant changes, this fixture's
+// filler-line count must change with it.
+// Row 12 ("marker with no #NNN") is explicitly a script-level check, not a
+// RuleTester case (test-matrix.md marks it "(script, not RuleTester)") —
+// it's covered by `node scripts/lint-allow-test-rule-refs.cjs` instead.
+
+describe('no-source-grep rule — site-scoped suppression (#3508)', () => {
+  const AT = 'allow' + '-test-rule:';
+
+  test('row 1: marker directly above the read+search is suppressed (site-scoped)', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('row 2: marker trailing on the same line as the search is suppressed', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x'); // ${AT} reason (#1)`,
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('row 3: marker with prose lines between it and the read is still suppressed (repo real-style guard)', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      '// continuation prose line one explaining the reason',
+      '// continuation prose line two continuing the explanation',
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('row 4: marker adjacent to V1 does NOT reach an unrelated V2 later in the file (the defect this phase closes)', () => {
+    const filler = Array.from({ length: 40 }, (_, i) => `// unrelated filler line ${i + 1}, pushing V2 well past the lookahead bound`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason for V1 (#1)`,
+      "const s1 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s1.includes('x');",
+      ...filler,
+      "const s2 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'b.cjs'), 'utf-8'); s2.includes('y');",
+    ];
+    const code = lines.join('\n');
+    const v2Line = lines.length; // s2's line is the last line of the fixture
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          // Exactly ONE error, reported at V2 -- V1 stays suppressed, and the
+          // marker's reach does NOT extend to the unrelated V2 40 lines later.
+          errors: [{ messageId: 'noSourceGrep', line: v2Line }],
+        },
+      ],
+    });
+  });
+
+  test('row 5: marker far above a violation with no marker text of its own is not suppressed', () => {
+    const filler = Array.from({ length: 100 }, (_, i) => `// unrelated filler line ${i + 1}`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      ...filler,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ];
+    const code = lines.join('\n');
+    const violationLine = lines.length;
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep', line: violationLine }],
+        },
+      ],
+    });
+  });
+
+  test('row 6: file with a marker and zero violations stays green (the 277 inert-marker files compatibility guard)', () => {
+    const code = [
+      `// ${AT} reason (#1)`,
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "const content = fs.readFileSync(path.join(__dirname, '..', 'docs', 'readme.md'), 'utf-8');",
+      "content.includes('hello');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('row 7: no marker, one violation is flagged (baseline unchanged)', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 8: two violations, two adjacent markers -- per-site marking works', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason for V1 (#1)`,
+      "const s1 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s1.includes('x');",
+      `// ${AT} reason for V2 (#1)`,
+      "const s2 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'b.cjs'), 'utf-8'); s2.includes('y');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('row 9: marker beyond the lookahead bound does not suppress (the bound is where it claims)', () => {
+    // MAX_MARKER_LOOKAHEAD_LINES is 8 in eslint-rules/no-source-grep.cjs.
+    // 9 filler comment lines between the marker and the read pushes the gap
+    // to 10 lines (> 8), just past the bound.
+    const filler = Array.from({ length: 9 }, (_, i) => `// filler comment line ${i + 1}`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      ...filler,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ];
+    const code = lines.join('\n');
+    const violationLine = lines.length;
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep', line: violationLine }],
+        },
+      ],
+    });
+  });
+
+  test('row 10: marker text inside a fixture string (not a real comment) is not a directive', () => {
+    // The marker-looking text lives inside a STRING LITERAL in the linted
+    // fixture, never as a `//` comment -- ESLint's comment AST (what the
+    // rule inspects) never sees string-literal contents, so this must not
+    // suppress the real, unmarked violation below it (the #3465 lesson).
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `const note = 'not a directive: ${AT} fake reason';`,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes(note);",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('row 11: marker citing #NNN on the same line still suppresses (citation contract unaffected)', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason for this read (#3508)`,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf-8'); s.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  // ─── read-site suppression (adversarial-review fix, ITEM 1) ────────────
+  //
+  // A violation is fundamentally about a read+search PAIR. Before this fix,
+  // a marker adjacent to the readFileSync() call (the intuitive annotation
+  // spot) failed to suppress once the search happened on a later line,
+  // because the readFileSync assignment line itself is "real code" and
+  // broke comment-purity on the marker->search lookahead path. The rule now
+  // also checks a marker's site-scoping against the ORIGINATING read call's
+  // own line, independent of the marker->search path.
+
+  test('valid: marker directly above the read, search on the very next (non-comment) line', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      "src.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('valid: marker directly above the read, search several comment-pure lines later (read-line real code no longer breaks the marker->search path)', () => {
+    const code = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      "const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      '// comment-pure line one',
+      '// comment-pure line two',
+      '// comment-pure line three',
+      "src.includes('x');",
+    ].join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('invalid: marker above the read suppresses that pair, but an unrelated tracked variable searched further down is still flagged', () => {
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason for V1 (#1)`,
+      "const s1 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      "s1.includes('x');",
+      "const s2 = fs.readFileSync(path.join(__dirname, '..', 'lib', 'b.cjs'), 'utf8');",
+      "s2.includes('y');",
+    ];
+    const code = lines.join('\n');
+    const v2Line = lines.length; // s2.includes(...) is the last line
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep', line: v2Line }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: marker far from both the read and the search is still flagged', () => {
+    const filler = Array.from({ length: 20 }, (_, i) => `// unrelated filler line ${i + 1}`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      ...filler,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      "s.includes('x');",
+    ];
+    const code = lines.join('\n');
+    const violationLine = lines.length; // s.includes(...) is the last line
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep', line: violationLine }],
+        },
+      ],
+    });
+  });
+
+  test('boundary: marker exactly MAX_MARKER_LOOKAHEAD_LINES (8) above the read is suppressed via the read-site path', () => {
+    // 7 comment-pure filler lines between the marker and the read puts the
+    // read exactly 8 lines below the marker -- the inclusive boundary.
+    const filler = Array.from({ length: 7 }, (_, i) => `// filler comment line ${i + 1}`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      ...filler,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      "s.includes('x');",
+    ];
+    const code = lines.join('\n');
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [{ code, filename: 'tests/foo.test.cjs' }],
+      invalid: [],
+    });
+  });
+
+  test('boundary: marker one line beyond MAX_MARKER_LOOKAHEAD_LINES (9) above the read is not suppressed', () => {
+    // 8 comment-pure filler lines between the marker and the read puts the
+    // read 9 lines below the marker -- one past the inclusive boundary.
+    const filler = Array.from({ length: 8 }, (_, i) => `// filler comment line ${i + 1}`);
+    const lines = [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      `// ${AT} reason (#1)`,
+      ...filler,
+      "const s = fs.readFileSync(path.join(__dirname, '..', 'lib', 'a.cjs'), 'utf8');",
+      "s.includes('x');",
+    ];
+    const code = lines.join('\n');
+    const violationLine = lines.length; // s.includes(...) is the last line
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep', line: violationLine }],
         },
       ],
     });

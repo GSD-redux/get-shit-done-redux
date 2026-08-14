@@ -1,4 +1,3 @@
-// allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'claude'` string-equality branch remains in bin/install.js — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2086)
 'use strict';
 
 /**
@@ -137,6 +136,7 @@ test('bin/install.js contains no `runtime === "claude"` / `runtime !== "claude"`
   // Strip comments + backtick/inline-code spans so PROSE mentions of the old
   // pattern (a comment explaining "not a string-equality branch") do not
   // false-positive — only LIVE code counts.
+  // allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'claude'` string-equality branch remains in bin/install.js — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2086)
   const codeOnly = src
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
     .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
@@ -144,6 +144,7 @@ test('bin/install.js contains no `runtime === "claude"` / `runtime !== "claude"`
     .replace(/\/\/[^\r\n]*/g, '')        // line comments (CRLF-safe)
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
     .replace(/`[^`]*`/g, '');            // backtick / inline-code spans
+  // allow-test-rule: structural-regression-guard — same #2086 source-grep as above; `.match()` is how the stripped source is scanned for the retired string-equality branch (#2086)
   const offenders = codeOnly.match(/runtime\s*[!=]==\s*'claude'/g) || [];
   assert.deepEqual(
     offenders,

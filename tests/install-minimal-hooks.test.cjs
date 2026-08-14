@@ -34,6 +34,7 @@ const {
   writeManifest,
   GSD_UNINSTALL_HOOKS,
   resolveSharedHooksDirName,
+  stripStaleGsdHookBlocks,
 } = require('../bin/install.js');
 
 const {
@@ -969,10 +970,20 @@ describe('uninstall settings cleanup preserves user hooks', () => {
 });
 
 describe('Codex legacy gsd-update-check migration', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'bin', 'install.js'), 'utf8');
-
+  // #3508: behavioral replacement for a source-grep that used to check
+  // install.js's own text for the literal strings 'gsd-update-check' and
+  // 'replace(' -- i.e. it asserted characteristics of the SOURCE CODE, not
+  // an observable effect. `stripStaleGsdHookBlocks` (bin/install.js) is the
+  // REAL exported function that performs this migration; drive it directly
+  // with a legacy Shape-1 config.toml block (same shape the two tests below
+  // already exercise) and assert the stale hook block is actually removed.
   test('install.js strips legacy gsd-update-check hook blocks', () => {
-    assert.ok(src.includes('gsd-update-check') && src.includes('replace('));
+    const legacyToml = ['[features]', 'codex_hooks = true', '',
+      '# GSD Hooks', '[[hooks]]', 'event = "SessionStart"',
+      'command = "node /old/path/gsd-update-check.js"', ''].join('\n');
+    const stripped = stripStaleGsdHookBlocks(legacyToml);
+    assert.ok(!stripped.includes('gsd-update-check'), 'legacy gsd-update-check hook block must be stripped');
+    assert.ok(stripped.includes('[features]'), 'unrelated config content must survive stripping');
   });
 
   test('migration regex removes LF legacy hook block', () => {
