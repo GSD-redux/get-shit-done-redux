@@ -56,12 +56,50 @@ export function validatePath(filePath: unknown, baseDir: unknown, opts: { allowA
   try {
     resolvedPath = fs.realpathSync(resolvedPath);
   } catch {
-    const parentDir = path.dirname(resolvedPath);
+    // realpathSync failed — either resolvedPath doesn't exist at all, or it's
+    // a dangling symlink (the link itself exists but its target doesn't).
+    // lstat (unlike stat/realpath) stats the link itself and does NOT follow
+    // it, so it succeeds for a dangling symlink and throws ENOENT for a
+    // genuinely absent path. That's the discriminator: without it, a dangling
+    // symlink to a non-existent OUTSIDE path would fall through to the
+    // parent-resolution fallback below and be re-accepted as an in-project
+    // path, while a symlink to an EXISTING outside path is correctly
+    // rejected via the realpathSync success branch above — a state
+    // difference an attacker can use as an existence oracle for arbitrary
+    // absolute paths.
     try {
-      const realParent = fs.realpathSync(parentDir);
-      resolvedPath = path.join(realParent, path.basename(resolvedPath));
+      if (fs.lstatSync(resolvedPath).isSymbolicLink()) {
+        return { safe: false, resolved: '', error: 'Path is an unresolvable symbolic link' };
+      }
     } catch {
-      // Parent doesn't exist either — keep the resolved path as-is
+      // lstat also threw — resolvedPath (and its would-be link) genuinely
+      // doesn't exist. Fall through to ancestor resolution below.
+    }
+    // Walk up to the nearest ancestor that exists and realpath THAT, then
+    // re-append the remaining (not-yet-created) segments. This canonicalizes
+    // resolvedPath the same way resolvedBase was canonicalized above,
+    // regardless of how many leading directories are missing — a single
+    // parent-only check would leave resolvedPath un-canonicalized whenever
+    // the parent is also missing, which breaks the startsWith comparison
+    // below on any non-canonical cwd (e.g. macOS /var/... vs
+    // /private/var/...).
+    let ancestor = path.dirname(resolvedPath);
+    const remainder: string[] = [path.basename(resolvedPath)];
+    for (;;) {
+      try {
+        const realAncestor = fs.realpathSync(ancestor);
+        resolvedPath = path.join(realAncestor, ...remainder);
+        break;
+      } catch {
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) {
+          // Reached filesystem root without finding an existing ancestor —
+          // keep resolvedPath as-is.
+          break;
+        }
+        remainder.unshift(path.basename(ancestor));
+        ancestor = parent;
+      }
     }
   }
   const normalizedBase = resolvedBase + path.sep;
