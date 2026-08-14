@@ -36,6 +36,7 @@ const { SCOPE } = planningScopeMod;
 interface RoadmapModule {
   cmdRoadmapGetPhase(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdRoadmapAnalyze(cwd: string, raw: boolean): void;
+  cmdRoadmapMilestoneScope(cwd: string, raw: boolean): void;
   cmdRoadmapUpdatePlanProgress(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdRoadmapAnnotateDependencies(cwd: string, phase: string | undefined, raw: boolean): void;
 }
@@ -148,6 +149,9 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
     handlers: {
       'get-phase': () => roadmap.cmdRoadmapGetPhase(cwd, args[2], raw),
       analyze: () => roadmap.cmdRoadmapAnalyze(cwd, raw),
+      // #3262: read-only milestone-window identity probe — the capture/compare
+      // signal for the edit-phase workflow's write-time milestone-scope guard.
+      'milestone-scope': () => roadmap.cmdRoadmapMilestoneScope(cwd, raw),
       'update-plan-progress': () => roadmap.cmdRoadmapUpdatePlanProgress(cwd, args[2], raw),
       'annotate-dependencies': () => roadmap.cmdRoadmapAnnotateDependencies(cwd, args[2], raw),
       'validate': () => {
