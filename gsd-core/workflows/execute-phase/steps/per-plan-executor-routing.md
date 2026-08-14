@@ -52,3 +52,22 @@ Routing applies to the `Agent()`-based dispatch (harness-worktree and sequential
 modes). The `orchestrator-worktree` isolation backend spawns executors via a
 separate process path that has no `subagent_type` and is not routed in this
 release.
+
+## Checkpoint gate rule (#3370)
+
+Loaded with the routing resolution so the orchestrator reads it immediately
+before composing each dispatch prompt, in every isolation mode.
+
+On `checkpoint:human-verify` / `checkpoint:decision` tasks, `gate="blocking"`
+(the default) is auto-approvable in auto-mode — that is the executor's own
+`<checkpoint_protocol>` (`agents/gsd-executor.md`), and `checkpoints.md` (the
+full gate table) is embedded in the dispatch `<execution_context>` verbatim.
+Only `gate="blocking-human"` always surfaces to a human, regardless of
+auto-mode.
+
+When composing the `Agent()` prompt, do NOT add text refusing or overriding
+auto-approval for a `blocking` gate. Orchestrator-composed instructions that contradict the
+executor's protocol win the executor's attention, stall autonomous runs at the
+checkpoint, and defeat `_auto_chain_active`/auto-advance for the common case.
+Executor-side gate semantics are already complete; compose nothing about gates
+beyond what the template already embeds.
