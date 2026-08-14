@@ -91,12 +91,15 @@ describe('resolveSpawnBinary (#3275)', () => {
     const early = createTempDir('gsd-3275-p4a-');
     const late = createTempDir('gsd-3275-p4b-');
     try {
-      stageBin(late, { 'tool.exe': 'exe' });
+      // Staged in PATHEXT casing: the resolver probes `name + ext` verbatim, and a
+      // case-SENSITIVE CI filesystem (Linux ext4) must find it exactly as a
+      // case-insensitive Windows one would.
+      stageBin(late, { 'tool.EXE': 'exe' });
       const resolved = resolveSpawnBinary('tool', 'win32', {
         PATH: [early, late].join(path.delimiter),
         PATHEXT: '.EXE;.CMD',
       });
-      assert.equal(resolved, path.join(late, 'tool.exe'));
+      assert.equal(resolved, path.join(late, 'tool.EXE'));
     } finally {
       cleanup(early);
       cleanup(late);
