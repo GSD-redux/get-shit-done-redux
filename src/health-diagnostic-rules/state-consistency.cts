@@ -57,6 +57,9 @@ type PlanningSnapshot = ReturnType<typeof planningSnapshotMod.buildPlanningSnaps
 import phaseIdMod = require('../phase-id.cjs');
 const { getMilestoneFromPhaseId, matchPhaseDirs, normalizePhaseName, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } =
   phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- the single owner of the persisted status vocabulary
+import stateDocumentMod = require('../state-document.cjs');
+const { normalizeStateStatus } = stateDocumentMod;
 
 // ─── W024 — STATE.md commit-age freshness (DELIBERATELY INERT) ─────────────
 
@@ -197,7 +200,12 @@ const RULE_W002: Rule = {
  * (which uses `Phase: [X] of [Y] ([Phase name])` under `## Current
  * Position`) — `currentPhaseLabel` is the parsed owner of that exact field,
  * so extracting its leading number is the equivalent-intent read against
- * the template STATE.md actually ships.
+ * the template STATE.md actually ships. #3280: the label's ladder
+ * (`buildStateFields`, `src/planning-snapshot.cts`) now leads with the
+ * frontmatter `current_phase` scalar — the key `gsd-tools state update` /
+ * `state begin-phase` persist — so a bare `"2"` is the expected value on
+ * the machine-readable format, and this leading-number extraction handles
+ * it identically.
  */
 function currentPhaseIdFromLabel(label: string | null): string | null {
   if (!label) return null;
@@ -215,13 +223,21 @@ const RULE_W011: Rule = {
     if (phaseId === null) return [];
     const checked = snapshot.roadmapPhaseCheckboxes.value[phaseId];
     if (checked !== true) return [];
-    const statusVal = (snapshot.stateStatus.value ?? '').trim().toLowerCase();
-    if (statusVal === 'complete' || statusVal === 'done') return [];
+    // #3280: the state writer persists `status` through `normalizeStateStatus`
+    // (`state.cts`'s syncStateFrontmatter), whose completion token is
+    // `completed` — an exact `'complete' || 'done'` comparison rejects the
+    // exact vocabulary the product writes and turns every legitimately
+    // completed frontmatter STATE.md into a false positive. Route the
+    // comparison through the same seam that owns the vocabulary
+    // (`state-document.cjs`'s `normalizeStateStatus`) rather than growing a
+    // second bespoke token list here.
+    const statusVal = (snapshot.stateStatus.value ?? '').trim();
+    if (normalizeStateStatus(statusVal, null) === 'completed') return [];
     return [
       {
         code: 'W011',
         severity: SEVERITY.WARNING,
-        message: `STATE.md says current phase is ${phaseId} (status: ${statusVal || 'unknown'}) but ROADMAP.md shows it as [x] complete — state files may be out of sync`,
+        message: `STATE.md says current phase is ${phaseId} (status: ${statusVal.toLowerCase() || 'unknown'}) but ROADMAP.md shows it as [x] complete — state files may be out of sync`,
         remedy: adviseRemedy('Run /gsd-progress to re-derive current position, or manually update STATE.md'),
       },
     ];

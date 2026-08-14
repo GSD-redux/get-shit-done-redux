@@ -91,6 +91,9 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   'planner.stall_detect_interval_minutes': 5,
   'planner.stall_threshold_minutes': 10,
   'git.create_tag': true,
+  // #1689: per-plan agent_hint executor routing — default-on. A no-op for plans
+  // without an agent_hint field, so existing dispatch is byte-identical.
+  'workflow.agent_hint_routing': true,
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
@@ -805,6 +808,13 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
   if (kp === 'workflow.post_planning_gaps') {
     if (typeof parsedValue !== 'boolean') {
       error(`Invalid workflow.post_planning_gaps '${val}'. Must be a boolean (true or false).`);
+    }
+  }
+
+  // Per-plan executor routing via agent_hint frontmatter (#1689)
+  if (kp === 'workflow.agent_hint_routing') {
+    if (typeof parsedValue !== 'boolean') {
+      error(`Invalid workflow.agent_hint_routing '${val}'. Must be a boolean (true or false).`);
     }
   }
 

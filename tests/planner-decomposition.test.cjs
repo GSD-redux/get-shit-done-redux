@@ -120,6 +120,32 @@ describe('reference files contain key content from original mode sections', () =
     assert.ok(hasGapContent, 'planner-gap-closure.md must contain gap closure mode content');
   });
 
+  // #3440: the planner's gap-closure return has NO completion marker — nothing
+  // consumed `## GAP CLOSURE PLANS CREATED` (no dispatch branch anywhere), so
+  // emitting it was a lie about the return contract. Completion is detected via
+  // the `gap_closure: true` fix-plan artifacts. This guard goes red if the
+  // marker (or an equivalent unconsumed sentinel) reappears in either producer.
+  test('gap-closure return is artifact-based — no unconsumed completion marker (#3440)', () => {
+    const guidance = fs.readFileSync(
+      path.join(PROJECT_ROOT, 'gsd-core', 'references', 'planner-guidance.md'), 'utf-8');
+    const planner = fs.readFileSync(
+      path.join(PROJECT_ROOT, 'agents', 'gsd-planner.md'), 'utf-8');
+    for (const [label, content] of [['planner-guidance.md', guidance], ['gsd-planner.md', planner]]) {
+      assert.ok(
+        !content.includes('## GAP CLOSURE PLANS CREATED'),
+        `${label} must not emit the retired marker — no workflow dispatches on it (#3440)`,
+      );
+    }
+    assert.ok(
+      guidance.includes('gap_closure: true'),
+      'planner-guidance.md must document the artifact return contract (gap_closure: true plans)',
+    );
+    assert.ok(
+      guidance.includes('--gaps-only'),
+      'planner-guidance.md must name the consumer route (execute-phase --gaps-only)',
+    );
+  });
+
   test('planner-revision.md contains revision content', () => {
     const content = fs.readFileSync(REVISION_REF, 'utf-8');
     const hasRevisionContent = content.includes('revision') ||

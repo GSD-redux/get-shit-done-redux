@@ -47,6 +47,11 @@ import stateTransitionMod = require('./state-transition.cjs');
 // #2573 D5: used to pin `git rev-parse` to the project's own repo. Imports only
 // node builtins, so it introduces no cycle on this path.
 import { findProjectRoot } from './project-root.cjs';
+// #3311: advisory (phase, session) claim over the single Current Position slot.
+// Imports only node builtins + planning-workspace + active-workstream-store, so
+// it introduces no cycle on this path.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
@@ -592,7 +597,25 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   };
 
   let resultData: Record<string, unknown> | undefined;
+  // #3311: the milestone (phase + session) claim is consulted INSIDE the
+  // STATE.md lock, so the position read and the claim read cannot interleave
+  // with another session's Current Position write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    // advance-plan has no phase argument of its own — the phase it advances is
+    // whatever ## Current Position names. Compare that against the milestone
+    // claim: a mismatch means another session moved the single-slot position
+    // away from the claimed phase (the #3311 flip) and must be surfaced, not
+    // silently absorbed.
+    const body = stripFrontmatter(content);
+    const positionScope = matchCurrentPositionSection(body) ?? body;
+    const positionPhase = parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    if (positionPhase !== null) {
+      milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
+      if (milestoneConflict) {
+        milestoneLockMod.warnMilestoneConflict(milestoneConflict, 'state.advance-plan');
+      }
+    }
     const result = transitionCore(content, intent, deps);
     resultData = result.data;
     return result.content;
@@ -604,9 +627,9 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }
 
   if (resultData['advanced'] === false) {
-    output(resultData, raw, 'false');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'false');
   } else {
-    output(resultData, raw, 'true');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'true');
   }
 }
 
@@ -1466,18 +1489,18 @@ function preferNewerLastActivity(
   const exDate = exRaw.slice(0, 10);
   const derDate = derRaw.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
+  // #3258: this guard now protects only `last_activity` (a `derive` row) against
+  // the stale-archive regression (#2567). `last_activity_desc` used to be
+  // restored here too (both the older-date and the #3052 same-date branches),
+  // but that was a date-comparison rule — a DIFFERENT policy from the
+  // `preserve-when-unchanged` row its FIELD_CLASSIFICATION entry declares.
+  // Keeping both was two rules that could disagree. last_activity_desc is now
+  // governed by exactly one rule: its table row, enforced by
+  // applyStatePreservation's #1230 delta heuristic on the RMW path (where every
+  // desc-preserving transition — planned-phase / advance / complete / milestone
+  // — runs). The #3052 same-date contract still holds via that delta rule.
   if (derDate < exDate) {
     derivedFm['last_activity'] = exRaw;
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
-  } else if (derDate === exDate) {
-    // #3052: same-date — frontmatter is authoritative for this date, so
-    // preserve its last_activity_desc rather than letting the derived body
-    // prose (which may be stale) overwrite it.
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
   }
 }
 
@@ -2687,6 +2710,24 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // table's preserve-always row so the rule lives in one place.
     const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
 
+    // #3258: snapshot the body sources for the additional preserve-when-unchanged
+    // rows applyStatePreservation now honors (last_activity_desc, paused_at,
+    // current_phase, current_plan). Each mirrors buildStateFrontmatter's
+    // derivation so the #1230 delta ("did THIS write change the source?") is
+    // accurate: current_phase combines `Current Phase` with the prose `Phase:`
+    // fallback (parseProsePhaseField, scoped to ## Current Position); paused_at
+    // is session-scoped (mirrors stopped_at); last_activity_desc combines the
+    // `Last Activity Description` field with the prose desc fallback.
+    const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
+    const preBodyCurrentPlan = stateExtractField(preBody, 'Current Plan');
+    const preBodyCurrentPhase = stateExtractField(preBody, 'Current Phase')
+      ?? parseProsePhaseField(stateExtractField(preCurrentPositionScope, 'Phase')).phase;
+    const preBodyPausedAt = stateExtractField(preSessionScope, 'Paused At');
+    const preBodyLastActivityRaw = stateExtractField(preBody, 'Last Activity')
+      ?? stateExtractField(preBody, 'Last activity');
+    const preBodyLastActivityDesc = stateExtractField(preBody, 'Last Activity Description')
+      ?? parseProseLastActivityField(preBodyLastActivityRaw).description;
+
     const modified = transformFn(content);
 
     // Bug #948: no-op guard — if the transform produced no change, do NOT write
@@ -2715,18 +2756,39 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
     // current_phase_name delta comparison.
     const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
+    // #3258: post-transform body sources for the preserve-when-unchanged rows
+    // added in #3258 (mirrors the pre-transform block above).
+    const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
+    const postBodyCurrentPlan = stateExtractField(postBody, 'Current Plan');
+    const postBodyCurrentPhase = stateExtractField(postBody, 'Current Phase')
+      ?? parseProsePhaseField(stateExtractField(postCurrentPositionScope, 'Phase')).phase;
+    const postBodyPausedAt = stateExtractField(postSessionScope, 'Paused At');
+    const postBodyLastActivityRaw = stateExtractField(postBody, 'Last Activity')
+      ?? stateExtractField(postBody, 'Last activity');
+    const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
+      ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
+    const bodyDeltas = {
+      last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
+      paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
+      current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
+      current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
+    };
 
     // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
     // preservation block is now the pure, table-driven `applyStatePreservation`
     // in the STATE.md Transition Module. progress / status / stopped_at /
     // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
-    // one policy source, not three drifting encodings. Behavior-identical to
-    // the pre-#1796 inline block; this is the absorption ADR-1769 / CONTEXT.md
+    // one policy source, not three drifting encodings. #3258 extends the same
+    // pass to last_activity_desc / paused_at / current_phase / current_plan
+    // (preserve-when-unchanged) and milestone / milestone_name (preserve-if-
+    // placeholder). Behavior-identical to the pre-#1796 inline block for the
+    // original four fields; this is the absorption ADR-1769 / CONTEXT.md
     // already claimed shipped.
     const postFm = extractFrontmatter(synced, statePath) as Record<string, unknown>;
     const preservation = applyStatePreservation({
       preFm, postFm, preFmSnapshot, resync,
       deriveProgressKeys: options?.deriveProgressKeys === true,
+      bodyDeltas,
       preBodyStatus, postBodyStatus,
       preBodyStoppedAt, postBodyStoppedAt,
       preBodyPhaseSource, postBodyPhaseSource,
@@ -2852,7 +2914,17 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
   };
   let updated: string[] = [];
+  // #3311: begin-phase is the claim point — it is the one Current Position
+  // transition that explicitly names its phase, so it both records this
+  // session's claim and detects a conflicting live claim for a different
+  // phase. The check runs INSIDE the STATE.md lock so concurrent begin-phase
+  // calls cannot both read "no claim" and both write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    milestoneConflict = milestoneLockMod.claimMilestonePhase(cwd, String(phaseNumber));
+    if (milestoneConflict) {
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
+    }
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
     // #3127 resume: the core preserved the mid-flight Current Phase Name, so
@@ -2865,7 +2937,11 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     return result.content;
   }, cwd, rmwOptions);
 
-  output({ updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null }, raw, updated.length > 0 ? 'true' : 'false');
+  output(
+    { updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null, milestone_conflict: milestoneConflict },
+    raw,
+    updated.length > 0 ? 'true' : 'false',
+  );
 }
 
 /**

@@ -104,6 +104,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/command-arg-projection.cjs',
       'gsd-core/bin/lib/clock.cjs',
       'gsd-core/bin/lib/ui-safety-gate.cjs',
+      // #3312: tsc-generated runtime artifact — lint the src/ui-frontend-evidence.cts source.
+      'gsd-core/bin/lib/ui-frontend-evidence.cjs',
       'gsd-core/bin/lib/review-reviewer-selection.cjs',
       'gsd-core/bin/lib/review-lane-descriptor.cjs',
       'gsd-core/bin/lib/review-lane-invocation.cjs',
@@ -139,6 +141,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/planning-snapshot.cjs',
       'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/text-lines.cjs',
+      'gsd-core/bin/lib/token-scanner.cjs',
+      // #3311: tsc-generated runtime artifact — lint src/milestone-lock.cts, not this.
+      'gsd-core/bin/lib/milestone-lock.cjs',
       'gsd-core/bin/lib/health-diagnostic-types.cjs',
       'gsd-core/bin/lib/health-diagnostic.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/root-existence.cjs',

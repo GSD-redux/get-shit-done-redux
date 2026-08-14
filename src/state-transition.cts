@@ -158,6 +158,19 @@ export type StatePreservationInput = {
    * leave this false — the #3242 wholesale protection stays in force.
    */
   deriveProgressKeys?: boolean;
+  /**
+   * #3258: pre/post body-source values for the preserve-when-unchanged (#1230
+   * delta heuristic) family, keyed by frontmatter field. The caller snapshots
+   * each field's body source before/after the transform (mirroring how
+   * buildStateFrontmatter derives it); applyStatePreservation consults
+   * FIELD_CLASSIFICATION and, for every row whose policy is preserve-when-
+   * unchanged that is NOT already on a dedicated channel (status, stopped_at),
+   * restores the pre-write frontmatter value when that body source was left
+   * unchanged by this write. Adding a preserve-when-unchanged row is a one-row
+   * table edit PLUS a bodyDeltas entry from the caller; the invariant test in
+   * tests/state-transition.test.cjs fails if either is missing.
+   */
+  bodyDeltas?: Record<string, { pre: string | null; post: string | null }>;
 };
 
 export type StatePreservationResult = {
@@ -269,6 +282,81 @@ export function applyStatePreservation(input: StatePreservationInput): StatePres
   ) {
     postFm['current_phase_name'] = preFmSnapshot['current_phase_name'];
     mutated = true;
+  }
+
+  // ─── #3258: the remaining preserve-when-unchanged rows ────────────────────
+  //
+  // status and stopped_at (above) carry field-specific guards (the 'unknown'
+  // sentinel; ## Session scoping done by the caller) and stay on their
+  // dedicated blocks. The other preserve-when-unchanged rows —
+  // last_activity_desc, paused_at, current_phase, current_plan — share a
+  // uniform #1230 delta heuristic with no extra sentinel, so they are driven
+  // from the table in one loop. This is the reconciliation the maintainer
+  // rescope to #3258 asked for: the row is honored by the table-consuming pass
+  // itself, not only by a weaker absent-value fallback elsewhere.
+  //
+  // For last_activity_desc this replaces preferNewerLastActivity's date-based
+  // desc writes (removed from syncStateFrontmatter + cmdStateJson): the field
+  // is now governed by exactly one rule, this one. For paused_at / current_phase
+  // / current_plan the declared delta heuristic is strictly stronger than the
+  // #905 absent-fallback that syncStateFrontmatter still applies on the
+  // writeStateMd / cmdStateJson paths this pass does not reach — same policy,
+  // two enforcement points, they agree by construction (both restore the
+  // pre-write snapshot value when they fire).
+  const bodyDeltas = input.bodyDeltas;
+  if (bodyDeltas) {
+    for (const field of Object.keys(FIELD_CLASSIFICATION)) {
+      const cls = getFieldClassification(field);
+      if (!cls || cls.preservation !== 'preserve-when-unchanged') continue;
+      // status / stopped_at stay on their dedicated blocks above.
+      if (field === 'status' || field === 'stopped_at') continue;
+      const delta = bodyDeltas[field];
+      if (!delta) continue; // caller did not wire this field's body source → cannot decide
+      const snapshot = preFmSnapshot[field];
+      if (typeof snapshot !== 'string' || snapshot.length === 0) continue;
+      if (delta.pre !== delta.post) continue; // body source changed this write → derived wins
+      if (postFm[field] === snapshot) continue; // already correct, no-op
+      postFm[field] = snapshot;
+      mutated = true;
+    }
+  }
+
+  // ─── #3258: preserve-if-placeholder — milestone / milestone_name ──────────
+  //
+  // The derived milestone_name (from ROADMAP.md via buildStateFrontmatter) must
+  // not clobber a curated name when it resolves to the template placeholder
+  // 'milestone' or a punctuation-led fragment. Mirrors the #948/#2135 guard in
+  // syncStateFrontmatter so the table pass enforces the same policy on the RMW
+  // path; syncStateFrontmatter remains the enforcement point on the writeStateMd
+  // / cmdStateJson paths this pass does not reach (same policy, two points).
+  // The milestone VERSION is restored alongside the name, exactly as the sync
+  // guard does, so the two stay consistent.
+  const milestoneNameCls = getFieldClassification('milestone_name');
+  if (milestoneNameCls !== null && milestoneNameCls.preservation === 'preserve-if-placeholder') {
+    const MILESTONE_PLACEHOLDER = 'milestone';
+    const derivedName = postFm['milestone_name'];
+    const derivedLooksLikeName = typeof derivedName === 'string'
+      && derivedName.length > 0
+      && derivedName !== MILESTONE_PLACEHOLDER
+      && !/^[\s—–:-]/.test(derivedName);
+    const snapshotName = preFmSnapshot['milestone_name'];
+    const snapshotNameIsReal = typeof snapshotName === 'string'
+      && snapshotName.length > 0
+      && snapshotName !== MILESTONE_PLACEHOLDER;
+    if (!derivedLooksLikeName && snapshotNameIsReal) {
+      if (postFm['milestone_name'] !== snapshotName) {
+        postFm['milestone_name'] = snapshotName;
+        mutated = true;
+      }
+      const snapshotVersion = preFmSnapshot['milestone'];
+      if (
+        typeof snapshotVersion === 'string' && snapshotVersion.length > 0 &&
+        postFm['milestone'] !== snapshotVersion
+      ) {
+        postFm['milestone'] = snapshotVersion;
+        mutated = true;
+      }
+    }
   }
 
   return { postFm, mutated };

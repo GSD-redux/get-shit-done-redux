@@ -4819,6 +4819,120 @@ describe('last_activity / paused_at frontmatter not overwritten by historical pr
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3258: the FIELD_CLASSIFICATION preserve-when-unchanged rows for the Group 2
+// fields (paused_at, current_phase, current_plan) are now honored by
+// applyStatePreservation. Before the fix the only protection was the weaker
+// #905 absent-fallback in syncStateFrontmatter, which restores a field ONLY when
+// the derived value is falsy/absent — so a stale-but-present body value won
+// over a curated frontmatter value on every body-only write. These pin the
+// declared semantics end-to-end through the CLI: an unrelated `state update`
+// (which does NOT touch the Group 2 body source) must leave the curated
+// frontmatter values intact.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3258: Group 2 preserve-when-unchanged beats the weaker absent-fallback (paused_at / current_phase / current_plan)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function frontmatterBlock(stateContent) {
+    const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return m ? m[1] : '';
+  }
+
+  // STATE.md with curated frontmatter values and stale-but-present body values
+  // for all three Group 2 fields. A body-only write that does not touch any of
+  // them must NOT let the stale derived value win.
+  function writeGroup2Fixture() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        "current_phase: '4'",
+        "current_plan: '5'",
+        "paused_at: '2026-02-02'",
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 2',
+        '**Current Plan:** 3',
+        '**Status:** In progress',
+        '',
+        '## Current Position',
+        'Phase: 2',
+        'Plan: 3',
+        'Status: In progress',
+        '',
+        '## Session',
+        '',
+        'Last Date: 2026-02-01',
+        'Paused At: 2026-01-01',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  test('paused_at: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    // `state update` on Status is a body-only RMW write (resync=false) that does
+    // NOT touch the Paused At body source. The stale body value (2026-01-01)
+    // must not overwrite the curated frontmatter value (2026-02-02).
+    const result = runGsdTools('state update Status "Executing"', tmpDir);
+    assert.ok(result.success, `state update failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/paused_at:[^\n]*2026-02-02/.test(fm),
+      `paused_at must keep the curated value (2026-02-02); frontmatter was:\n${fm}`);
+    assert.ok(!/paused_at:[^\n]*2026-01-01/.test(fm),
+      `stale body-derived paused_at (2026-01-01) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('current_plan: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    runGsdTools('state update Status "Executing"', tmpDir);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_plan:[^\n]*5/.test(fm),
+      `current_plan must keep the curated value (5); frontmatter was:\n${fm}`);
+    assert.ok(!/current_plan:[^\n]*3\b/.test(fm),
+      `stale body-derived current_plan (3) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('current_phase: curated frontmatter value survives a body-only write that leaves the body source unchanged', () => {
+    writeGroup2Fixture();
+    runGsdTools('state update Status "Executing"', tmpDir);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_phase:[^\n]*4/.test(fm),
+      `current_phase must keep the curated value (4); frontmatter was:\n${fm}`);
+    assert.ok(!/current_phase:[^\n]*2\b/.test(fm),
+      `stale body-derived current_phase (2) must not win; frontmatter was:\n${fm}`);
+  });
+
+  test('Group 2 fields still re-derive when the body source actually changes (no over-preservation)', () => {
+    // When the transform DOES change the body source, the derived value must
+    // win — preserve-when-unchanged must not freeze a field that a transition
+    // intentionally moved. Drive it via `state update "Current Plan"`.
+    writeGroup2Fixture();
+    const result = runGsdTools('state update "Current Plan" "7"', tmpDir);
+    assert.ok(result.success, `state update failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    assert.ok(/current_plan:[^\n]*7/.test(fm),
+      `current_plan must take the new body value (7) when the body source changed; frontmatter was:\n${fm}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Bug #2445: stale phase dirs from closed milestone inflate phase counts
 // ─────────────────────────────────────────────────────────────────────────────
 
