@@ -3799,7 +3799,7 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": null
+            "converter": "convertClaudeAgentToZcodeAgent"
           }
         ],
         "local": [
@@ -3825,7 +3825,7 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": null
+            "converter": "convertClaudeAgentToZcodeAgent"
           }
         ]
       },
@@ -7041,7 +7041,7 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": null
+            "converter": "convertClaudeAgentToZcodeAgent"
           }
         ],
         "local": [
@@ -7067,7 +7067,7 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": null
+            "converter": "convertClaudeAgentToZcodeAgent"
           }
         ]
       },

@@ -1,4 +1,3 @@
-// allow-test-rule: pending-migration-to-typed-ir [#3090]
 // Phase 5 kimi-variant disambiguation is verified via install.js subprocess
 // output capture (regex on printed notices), since disambiguateKimiVariant
 // is inline in bin/install.js (not exported) and emits no structured/JSON

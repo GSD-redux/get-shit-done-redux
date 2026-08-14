@@ -1,7 +1,6 @@
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
-// allow-test-rule: source-text-is-the-product, see #3186
 // F2 below reads gsd-core/workflows/mvp-phase.md and regex-tests its shell
 // content for the disk-strict OR removal (Decision 4(d)). A workflow .md
 // file's text IS the deployed prompt-layer artifact the runtime executes —

@@ -91,6 +91,7 @@ const {
   stateExtractField,
   stateReplaceField,
   syncStateFrontmatter,
+  applyPostSyncPreservation,
   withStateLock,
   updatePerformanceMetricsSection,
 } = stateMod;
@@ -2899,7 +2900,17 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       // pattern mirrors the sibling phasePattern's anchoring (only whitespace/bold
       // between the box and "Phase", a required `:`) so unrelated checklist lines
       // that merely mention "Phase N" don't match.
-      if (isLastPhase && roadmapContent !== null) {
+      // #3350: this stage answers a DIFFERENT question than stages 1-2 ("what is
+      // the next actionable phase?" vs "is this the last phase?"), so it must not
+      // be gated on their answer. Gating on isLastPhase let a merely-positionally
+      // next higher heading (stage 2) permanently mask a genuinely-outstanding
+      // lower phase — stage 2 cleared isLastPhase and this scan never ran. The
+      // scan already refuses anything not strictly lower than the completed phase
+      // (plus sentinels, #2949), so running it unconditionally cannot manufacture
+      // a wrong answer: when no lower phase is outstanding it finds nothing and
+      // stages 1-2's pick stands unchanged; in the masking case isLastPhase is
+      // already false, so the last-phase signal has no reachable regression.
+      if (roadmapContent !== null) {
         try {
           const milestoneScope = extractCurrentMilestone(roadmapContent, cwd);
           const cbPattern = new RegExp(
@@ -2954,7 +2965,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // this adapter: they are section-table / disk-scan concerns, not
         // classified fields, and `syncStateFrontmatter` is the post-sync this
         // transaction needs (it does NOT go through readModifyWriteStateMd
-        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS).
+        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS —
+        // the post-sync preservation pass runs via applyPostSyncPreservation
+        // instead, #3374).
         const nextPhaseDisplayName =
           phaseDisplayNameFromRoadmap(roadmapContent, nextPhaseNum) ??
           phaseDisplayNameFromSlug(nextPhaseName);
@@ -2988,10 +3001,49 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // the intent; pass it as authoritative so the sync's prose
         // re-derivation cannot rewrite current_phase_name to the name's own
         // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`).
-        stateContent = syncStateFrontmatter(
+        // #3350: PAIR the override. When STATE.md's body carries no Current
+        // Phase / Phase field to re-derive from (narrative prose), the #905
+        // preserve guard in syncStateFrontmatter keeps the OLD frontmatter
+        // current_phase while the authoritative current_phase_name advances —
+        // leaving the two fields describing different phases. Pin BOTH to the
+        // resolved next phase in that case. When the body DOES carry the field
+        // (completePhaseCore just rewrote it), stay name-only so the body's
+        // richer `N of T (name)` derived shape survives the sync.
+        const fmBody = frontmatterMod.stripFrontmatter(stateContent);
+        const bodyHasPhaseField =
+          stateExtractField(fmBody, 'Current Phase') != null ||
+          stateExtractField(fmBody, 'Phase') != null;
+        const authoritativeFm: Record<string, string> | undefined = nextPhaseDisplayName
+          ? bodyHasPhaseField || !nextPhaseNum
+            ? { current_phase_name: nextPhaseDisplayName }
+            : {
+                current_phase: String(nextPhaseNum),
+                current_phase_name: nextPhaseDisplayName,
+              }
+          : undefined;
+        const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
+        // #3374: the direct sync above deliberately bypasses
+        // readModifyWriteStateMd (STATE.md is committed atomically with
+        // ROADMAP/REQUIREMENTS), which also bypassed the #948/#1230
+        // preservation pass every RMW write gets — so a stale body
+        // `Stopped at:` line silently clobbered a fresher frontmatter
+        // stopped_at on every completion. Run the shared post-sync pass:
+        // snapshots from the on-disk pre-image (originalStateContent) and the
+        // transformed content, table-driven applyStatePreservation, then the
+        // #2736 authoritative re-assert (which restores the #3350 pairing
+        // override the preserve-always restore may have reverted). resync=true
+        // is the lifecycle-transition posture (progress recomputed from disk;
+        // only the preserve-when-unchanged deltas apply). Fields the
+        // transition legitimately rewrote (Status, Phase, Stopped At via
+        // completePhaseCore's #3374 continuity line) have changed body
+        // sources, so their deltas do not fire.
+        stateContent = applyPostSyncPreservation(
+          originalStateContent,
           stateContent,
-          cwd,
-          nextPhaseDisplayName ? { current_phase_name: nextPhaseDisplayName } : undefined,
+          synced,
+          statePath,
+          true,
+          authoritativeFm,
         );
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });

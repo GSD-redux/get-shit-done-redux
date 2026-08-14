@@ -97,7 +97,6 @@ describe('isCanonicalPlanningFile', () => {
   __foldDescribe("folded:enh-2448-artifact-registry (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
 
-// allow-test-rule: source-text-is-the-product (see #2448)
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
 
