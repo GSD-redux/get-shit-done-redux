@@ -337,6 +337,89 @@ describe('check gap-analysis.plan-post — gate content E2E', () => {
     // REQ-01 must still be covered
     assert.ok(out.table.includes('✓ Covered'), 'REQ-01 must show as covered');
   });
+
+  // ── #3189: prose trailing a real ID list must not be reported as missing ──
+  //
+  // ROADMAP `**Requirements:**` lines carry prose after the ID list (locked-
+  // decision annotations, ambiguity scores, prohibitions, dates). The workflow
+  // passes that value verbatim into --phase-req-ids. Pre-fix, every prose word
+  // was reported as an individually-missing requirement (8 real IDs became 21
+  // reported uncovered in the issue). Post-fix, only ID-shaped tokens reach the
+  // comparison — see the P1-P3 note in the test body below for the one
+  // ID-shaped prose token that survives the syntactic filter.
+
+  test('[#3189] check gap-analysis.plan-post with prose-annotated phase-req-ids drops every prose fragment, keeps only ID-shaped tokens', () => {
+    // REQUIREMENTS.md defines exactly R1..R8 — the real requirement set.
+    writeRequirements(path.join(tmpDir, '.planning'),
+      ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8']);
+    // The plan addresses all eight real IDs.
+    writePlan(phaseDir, '01',
+      '# Plan\n\nImplements R1, R2, R3, R4, R5, R6, R7, and R8.\n');
+
+    // The exact prose-annotated value from the issue, passed verbatim.
+    const rawReqIds = 'R1, R2, R3, R4, R5, R6, R7, R8 (locked <date> — canonical source `NN-SPEC.md ## Requirements`; ambiguity 0.12; + prohibitions P1-P3)';
+
+    const r = runGapCheck([phaseDir, rawReqIds], tmpDir);
+    assert.ok(r.success, `check failed: ${r.error}`);
+
+    const out = JSON.parse(r.output);
+    // After the #3189 shape filter, the ID-shaped tokens that survive are
+    // R1..R8 PLUS `P1-P3` (from "prohibitions P1-P3"). `P1-P3` is syntactically
+    // ID-shaped — it matches `PHASE_REQ_ID_SHAPE_RE` exactly as `SEL-01` does,
+    // and the issue's own note 1 lists `P1-P3` alongside `R1`/`SEL-01` as a
+    // real-ID-shape example. The codebase's `ID_PATTERN` accepts it too, so
+    // dropping it would create a false mismatch for projects using `P1-P3`-shape
+    // IDs. It is NOT in REQUIREMENTS.md, so it correctly surfaces as a single
+    // "Missing from REQUIREMENTS.md" ghost row.
+    //
+    // Pre-fix, this same input produced `total: 24, uncovered: 21` (every prose
+    // word reported as a separate missing requirement). Post-fix the noise is
+    // gone: 8 covered R-IDs + 1 ID-shaped ghost (P1-P3).
+    assert.strictEqual(out.counts.total, 9,
+      `total must be 9 (R1..R8 + the ID-shaped P1-P3); got ${out.counts.total}. Full table:\n${out.table}`);
+    assert.strictEqual(out.counts.covered, 8, 'all 8 R-IDs are covered by the plan');
+    assert.strictEqual(out.counts.uncovered, 1, 'the one uncovered item is P1-P3 (ID-shaped ghost, not prose)');
+
+    // The reported item set must be exactly R1..R8 + P1-P3.
+    const reqItems = out.rows.filter(row => row.source === 'REQUIREMENTS.md').map(row => row.item);
+    assert.deepStrictEqual(reqItems.sort(),
+      ['P1-P3', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8'],
+      `the reported requirement items must be exactly R1..R8 + P1-P3; got ${JSON.stringify(reqItems)}`);
+
+    // No prose fragment may appear anywhere in the table — these are the exact
+    // fragments the issue reported as fake missing requirements.
+    const proseFragments = ['—', '##', '`NN-SPEC.md', '+', '0.12;', '<date>',
+      'ambiguity', 'locked', 'prohibitions', 'Requirements', 'canonical', 'source'];
+    for (const frag of proseFragments) {
+      assert.ok(!out.table.includes(frag),
+        `prose fragment ${JSON.stringify(frag)} must NOT appear in the table. Full table:\n${out.table}`);
+    }
+  });
+
+  test('[#3189] a genuinely-missing real requirement ID is still reported (no narrowing) — prose-annotated mixed list', () => {
+    // REQUIREMENTS.md defines R1..R3 only; R4 is cited in phase-req-ids but
+    // absent (a real missing-requirement signal). The trailing prose must be
+    // dropped, but R4 (a real ID shape) must still be reported as Missing.
+    writeRequirements(path.join(tmpDir, '.planning'), ['R1', 'R2', 'R3']);
+    writePlan(phaseDir, '01', '# Plan\n\nImplements R1, R2, R3.\n');
+
+    const rawReqIds = 'R1, R2, R3, R4 (locked 2026-08-07 — ambiguity 0.12)';
+    const r = runGapCheck([phaseDir, rawReqIds], tmpDir);
+    assert.ok(r.success, `check failed: ${r.error}`);
+
+    const out = JSON.parse(r.output);
+    // GENUINE: total must be 4 — R1..R4. The prose is dropped, but the real
+    // missing ID R4 is preserved (the fix must not narrow real coverage detection).
+    assert.strictEqual(out.counts.total, 4,
+      `total must be 4 (R1..R4; prose dropped, R4 preserved as a real missing ID); got ${out.counts.total}`);
+    assert.strictEqual(out.counts.uncovered, 1, 'R4 is the one uncovered item');
+    assert.ok(out.table.includes('R4'), 'R4 (real missing ID) must appear in the table');
+    assert.ok(out.table.includes('Missing from REQUIREMENTS.md'),
+      'R4 must be flagged Missing from REQUIREMENTS.md');
+    // Prose fragments still dropped.
+    assert.ok(!out.table.includes('locked'), 'prose "locked" must NOT appear');
+    assert.ok(!out.table.includes('ambiguity'), 'prose "ambiguity" must NOT appear');
+  });
 });
 
 // ─── Section 3: Full pipeline — render-hooks → check dispatch ─────────────────
