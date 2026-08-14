@@ -17,7 +17,14 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
+const {
+  parsePhaseFromProse,
+  PHASE_NUMBER_TOKEN_SOURCE,
+  phaseKeyFromToken,
+  phaseKeyFromDir,
+  isSentinelPhaseId,
+  scopeToPhase,
+} = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
@@ -3724,9 +3731,15 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
           ));
         }
 
-        // Check for VERIFICATION.md
+        // Check for VERIFICATION.md — scoped to THIS phase's own token (#3511)
+        // so a stray, cross-phase, or ad-hoc VERIFICATION file cannot claim
+        // this phase's status has drifted.
         const files = fs.readdirSync(phaseDirPath);
-        const verificationFiles = files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md'));
+        const phaseDirBaseName = path.basename(phaseDirPath);
+        const verificationFiles = scopeToPhase(
+          files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md')),
+          phaseDirBaseName,
+        );
         for (const vf of verificationFiles) {
           try {
             const vContent = fs.readFileSync(path.join(phaseDirPath, vf), 'utf-8');

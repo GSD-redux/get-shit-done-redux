@@ -4134,6 +4134,97 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assertNoDriftKey(output);
   });
 
+  test('#3511: S006 does not fire from a cross-phase stray VERIFICATION file; this phase\'s own file still fires it', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    // No summary — isolates this test from the S007 "all plans summarized" path.
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+    // Cross-phase stray sitting in phase 01's directory — token "02", not "01".
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s006Warnings = (output.warnings || []).filter((w) => w.code === 'S006');
+    assert.strictEqual(s006Warnings.length, 1,
+      `exactly one S006 must fire (this phase's own file only); got: ${JSON.stringify(s006Warnings)}`);
+    assert.ok(s006Warnings[0].message.includes('01-VERIFICATION.md'),
+      `S006 must name this phase's own file; got: ${s006Warnings[0].message}`);
+    assert.ok(!s006Warnings[0].message.includes('02-VERIFICATION.md'),
+      `S006 must not name the cross-phase stray; got: ${s006Warnings[0].message}`);
+    assertNoDriftKey(output);
+  });
+
+  test('#3511: S007 fires when the only VERIFICATION.md present is a cross-phase stray (unscoped counting would have wrongly suppressed it)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 2\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-SUMMARY.md'), '# Summary\n');
+    // No own VERIFICATION.md — only a cross-phase stray (token "02"). Scoped
+    // counting must treat this phase as having NO verification file, so S007
+    // ("all plans summarized but still executing") must still fire.
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s007 = findWarning(output, 'S007');
+    assert.ok(s007,
+      'S007 must fire: the only VERIFICATION.md present belongs to a different phase, so this phase has none of its own');
+    assert.ok(!findWarning(output, 'S006'), 'the cross-phase stray must not fire S006 either');
+    assertNoDriftKey(output);
+  });
+
+  test('#3511 follow-up: S006 still fires from a NON-canonical dir shape "1-unpadded" (over-exclusion check)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\n**Current Plan:** 1\n`,
+    );
+    // "1-unpadded" tokenizes to literal "1"; scaffold writes the PADDED
+    // "01-VERIFICATION.md" form. A literal token compare excluded it.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '1-unpadded');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, `S006 must still fire for the phase's own file in a non-canonical dir; got: ${JSON.stringify(output.warnings)}`);
+    assert.ok(s006.message.includes('01-VERIFICATION.md'));
+    assertNoDriftKey(output);
+  });
+
+  test('#3511 Fix 2: S006 fires from a bare "VERIFICATION.md" (no dash, no token of its own)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\n**Current Plan:** 1\n`,
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    // Bare form (no dash) — core-utils.cts, init.cts and verification.cts all
+    // treat this as a valid report; a literal `<token>-` prefix check can
+    // never match it, silently losing S006 drift detection.
+    fs.writeFileSync(path.join(phaseDir, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    assert.strictEqual(output.valid, false);
+    const s006 = findWarning(output, 'S006');
+    assert.ok(s006, `S006 must fire for a bare VERIFICATION.md; got: ${JSON.stringify(output.warnings)}`);
+    assert.ok(s006.message.includes('VERIFICATION.md'));
+    assertNoDriftKey(output);
+  });
+
   test('output never carries a drift key, across clean/warning/error shapes (breaking-change proof, test matrix row 18)', () => {
     // Clean shape.
     fs.writeFileSync(

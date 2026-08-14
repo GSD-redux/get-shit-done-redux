@@ -985,6 +985,87 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
     );
   });
 
+  // #3511 reconciliation: resolveVerificationFile's fallback now scopes to
+  // isPhaseArtifact(fileName, phaseDirName), so a stray cross-phase file can
+  // no longer win the alphabetical-first fallback tier either — closing the
+  // gap isPhaseArtifact's own docblock (src/phase-id.cts) used to flag as
+  // open. The two pure cases below are the reliable anchors; the behavioral
+  // test after them pins the same contract through the real CLI-facing
+  // readVerificationStatus call path.
+  test('#3511: a cross-phase stray is excluded from the fallback → null, not the stray', () => {
+    assert.equal(
+      resolveVerificationFile(['04-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      null,
+      '04-VERIFICATION.md belongs to phase 04, not the "03-foo" directory\'s phase 03 — must not be returned',
+    );
+  });
+
+  test('#3511: a non-canonically-named report OF THIS phase still wins the fallback (the #3357 guarantee survives)', () => {
+    // The more important of the two #3511 cases: isPhaseArtifact scopes by
+    // phase-number membership, not by canonical shape, so this file still
+    // passes and the #3357 "non-canonical report still resolves" guarantee
+    // is not disturbed by the #3511 scoping.
+    assert.equal(
+      resolveVerificationFile(['03-CORRECTION-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      '03-CORRECTION-VERIFICATION.md',
+      '03-CORRECTION-VERIFICATION.md names phase 03, same as directory "03-foo" — must still resolve',
+    );
+  });
+
+  test('#3511: cross-phase stray alongside this phase\'s own non-canonical report → own report wins, stray excluded (not merely outsorted)', () => {
+    // Distinguishes "excluded from the fallback" from "just happens to sort
+    // after" — 03-CORRECTION- sorts AFTER 04- alphabetically, so this would
+    // pass under the OLD (unscoped) fallback too; the real regression case is
+    // the null-returning test above, where no phase-owned candidate exists at
+    // all. This test just confirms scoping does not disturb the ordinary case.
+    assert.equal(
+      resolveVerificationFile(
+        ['04-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md'],
+        { phaseDirName: '03-foo' },
+      ),
+      '03-CORRECTION-VERIFICATION.md',
+    );
+  });
+
+  test('behavioral (readVerificationStatus): a phase dir holding only a cross-phase stray reports missing, not the stray\'s status (#3511)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-stray-only-'));
+    const dir = path.join(baseDir, '03-foo');
+    fs.mkdirSync(dir);
+    try {
+      // Only a stray belonging to phase 04 sits in phase 03's directory. Give
+      // it a status that would NOT read as missing if it were (wrongly) picked,
+      // so a regression here is loud rather than accidentally matching.
+      writeVerificationMd(dir, '04-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'missing',
+        'a phase dir holding only another phase\'s report must report missing, not passed',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+  test('behavioral (readVerificationStatus): a phase dir holding only its own non-canonically-named report still resolves it (#3357 guarantee survives #3511 scoping)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-own-noncanon-'));
+    const dir = path.join(baseDir, '03-foo');
+    fs.mkdirSync(dir);
+    try {
+      writeVerificationMd(dir, '03-CORRECTION-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'passed',
+        'the phase\'s own non-canonically-named report must still resolve, not read as missing',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
   test('behavioral (readVerificationStatus): a phase with both its own report and a cross-phase stray reports the OWN report\'s status, not the stray\'s', () => {
     // The directory basename is "03-canonical-test" so extractPhaseToken
     // derives token "03" — the exact same derivation readVerificationStatus
@@ -1119,6 +1200,21 @@ describe('#3473 F2: resolveVerificationFile allowBare option', () => {
         { allowBare: true },
       ),
       '03-VERIFICATION.md',
+    );
+  });
+
+  // #3511: allowBare must still fall through to the bare match when the ONLY
+  // dashed candidate is excluded by phaseDirName scoping (a cross-phase
+  // stray) — the fallback tier finding nothing phase-owned is the same
+  // "no dashed candidate at all" case allowBare was always reached from.
+  test('#3511: allowBare:true, bare + a cross-phase dashed stray scoped out by phaseDirName → the bare file wins', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['VERIFICATION.md', '04-VERIFICATION.md'],
+        { allowBare: true, phaseDirName: '03-foo' },
+      ),
+      'VERIFICATION.md',
+      '04-VERIFICATION.md belongs to a different phase and is excluded, so bare VERIFICATION.md is the only remaining candidate',
     );
   });
 

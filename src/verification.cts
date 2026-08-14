@@ -43,7 +43,7 @@ import { execGit } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 
 const { output, error } = io;
-const { extractPhaseToken } = phaseId;
+const { extractPhaseToken, scopeToPhase } = phaseId;
 const { extractFrontmatter } = frontmatterMod;
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
@@ -309,10 +309,20 @@ interface ResolveVerificationFileOptions {
    * (`12-review-VERIFICATION.md`) — a regression this option closes.
    *
    * Omitted / empty when the token cannot be derived: falls back to plain
-   * alphabetically-first among all dashed candidates (the original pre-#3357
-   * behavior), never to null.
+   * alphabetically-first among the SCOPED dashed candidates (see
+   * `phaseDirName` below), never to null.
    */
   phaseToken?: string;
+  /**
+   * #3511 reconciliation: the phase directory's own basename (the same value
+   * every call site already passes through `extractPhaseToken` to derive
+   * `phaseToken` above) — needed separately because the fallback below scopes
+   * by `isPhaseArtifact(fileName, phaseDirName)`, not by `phaseToken`.
+   *
+   * Omitted: the fallback degrades to the plain (unscoped) alphabetically-first
+   * pick — the original pre-#3357 behavior — never to null.
+   */
+  phaseDirName?: string;
 }
 
 /**
@@ -334,15 +344,48 @@ interface ResolveVerificationFileOptions {
  *      report; no other candidate (canonically-shaped or not, whichever
  *      phase's token it carries) can outrank it (#3492).
  *   2. Fallback — no exact phase-token match (or no token given): alphabetically
- *      first of ALL `*-VERIFICATION.md` entries, unchanged from the original
- *      pre-#3357 behavior. Load-bearing: a phase whose only report is
- *      non-canonically named must keep resolving to it, not to null — this
- *      fix must not turn "found a report" into "found nothing" for anyone.
+ *      first of the dashed candidates that are THIS phase's own, per
+ *      `scopeToPhase(candidates, options.phaseDirName)` (#3511 reconciliation,
+ *      below). Load-bearing: a phase whose only report is non-canonically
+ *      named must keep resolving to it, not to null — this fix must not turn
+ *      "found a report" into "found nothing" for anyone. `03-CORRECTION-
+ *      VERIFICATION.md` in `03-foo` still passes `isPhaseArtifact` (it names
+ *      phase 03, same as the directory), so it is still returned here.
  *   3. `options.allowBare` only — a bare `VERIFICATION.md`, ranked BELOW both
  *      of the above. Rationale: a dashed file names its phase, a bare one
  *      does not, so a dashed file (canonical or not) is always the better
- *      answer when both exist. Reached only when neither (1) nor (2) found
- *      any dashed candidate at all.
+ *      answer when both exist. Reached when neither (1) nor (2) found any
+ *      candidate — including when (2)'s scoping filtered every dashed
+ *      candidate out as belonging to some OTHER phase.
+ *
+ * #3511 RECONCILIATION with `isPhaseArtifact` (`src/phase-id.cts`): that
+ * predicate's own docblock used to flag this fallback as an open gap — its
+ * aggregate scans exclude a cross-phase stray, but this single-pick resolver
+ * did not, so it could return a stray as THE report while the aggregate scans
+ * correctly ignored it. Closed by scoping step (2) above through `scopeToPhase`
+ * (`src/phase-id.cts`, itself built on `isPhaseArtifact`): `options.phaseDirName`
+ * threads the phase directory's basename in, and the fallback now filters
+ * candidates through `scopeToPhase(candidates, phaseDirName)` before picking
+ * alphabetically-first. This does NOT reopen the #3357 guarantee — that
+ * guarantee is "a phase whose only report is non-canonically named must keep
+ * working", and a non-canonically-named report of THIS phase still passes
+ * `isPhaseArtifact` (it is membership by phase number, not by canonical
+ * shape), so it is still returned. Only a file belonging to a DIFFERENT phase
+ * is now excluded — and excluding it is correct: returning another phase's
+ * verification report as this phase's own is worse than reporting none
+ * (confidently wrong beats honestly empty).
+ * Preserves the fail-safe direction, TWO layers deep: (a) when phase-number
+ * membership cannot be determined for `phaseDirName` at all (no reliable
+ * token — `isPhaseArtifact`'s own zero-token fail-safe), it returns `true` for
+ * every candidate; (b) even when a token IS derived but matches none of
+ * `candidates` (the #3511 WARNING-4 gap — a directory basename that merely
+ * happens to parse phase-shaped, e.g. an `mkdtemp`-style `gsd-651-…` fixture
+ * dir), `scopeToPhase` itself falls back to the unfiltered `candidates` rather
+ * than returning empty. Either way the fallback degrades to exactly the
+ * pre-#3511 (and pre-#3357), unscoped "alphabetically first of ALL dashed
+ * candidates" behavior — never a regression toward null. `options.phaseDirName`
+ * omitted entirely: same degrade, by construction (the ternary below skips
+ * the filter outright).
  *
  * Pure — takes an already-read directory listing and does no I/O of its own,
  * so every call site keeps its existing `fsImpl` seam and no-throw contract
@@ -358,7 +401,16 @@ function resolveVerificationFile(
       const thisPhaseFile = `${options.phaseToken}-VERIFICATION.md`;
       if (candidates.includes(thisPhaseFile)) return thisPhaseFile;
     }
-    return candidates[0];
+    // #3511 reconciliation: scope the fallback to files that belong to THIS
+    // phase, so a stray cross-phase file can no longer outrank a return of
+    // null. `phaseDirName` omitted, or membership undeterminable for it, or
+    // scoping would empty out a non-empty candidate set (WARNING 4 fix) →
+    // `scopeToPhase` degrades to exactly `candidates` — the pre-#3511
+    // behavior.
+    const scoped = options.phaseDirName
+      ? scopeToPhase(candidates, options.phaseDirName)
+      : candidates;
+    if (scoped.length > 0) return scoped[0];
   }
   if (options.allowBare && entries.includes('VERIFICATION.md')) return 'VERIFICATION.md';
   return null;
@@ -421,9 +473,11 @@ function findStaleVerificationSummary(
     const phaseFiles = fsImpl.readdirSync(phaseDir);
     // #3492: pin selection to THIS phase's own token so a stray cross-phase
     // or sentinel-numbered canonically-shaped file cannot outrank this
-    // phase's own (possibly non-canonical) report.
-    const phaseToken = extractPhaseToken(path.basename(phaseDir));
-    const verificationFile = resolveVerificationFile(phaseFiles, { phaseToken });
+    // phase's own (possibly non-canonical) report. #3511: phaseDirName scopes
+    // the fallback path to this same phase (see resolveVerificationFile docs).
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(phaseFiles, { phaseToken, phaseDirName });
     if (!verificationFile) return { determined: true, stale: false };
 
     const summaryFiles = (scanPhasePlans(phaseDir) as { summaryFiles: string[] }).summaryFiles
@@ -466,8 +520,8 @@ function findStaleVerificationSummary(
  * Behavior:
  * 1. Find the phase's verification report via `resolveVerificationFile`
  *    (canonical `<phase-token>-VERIFICATION.md` preferred; falls back to the
- *    alphabetically-first `*-VERIFICATION.md` when none is canonical — #3357).
- *    If none → status 'missing'.
+ *    alphabetically-first `*-VERIFICATION.md` that belongs to THIS phase when
+ *    none is canonical — #3357/#3511). If none → status 'missing'.
  * 2. Extract `status` from FRONTMATTER ONLY via the shared extractFrontmatter
  *    parser (DEFECT.FRONTMATTER-SCALAR-BROAD-GREP fix — parser anchors at byte 0).
  *    If no frontmatter block or no `status` key → status 'missing'.
@@ -513,8 +567,9 @@ function readVerificationStatus(
     // #3492: pin selection to THIS phase's own token (already derived above
     // for the routed command argument) so a stray cross-phase or
     // sentinel-numbered canonically-shaped file cannot outrank this phase's
-    // own (possibly non-canonical) report.
-    verificationFile = resolveVerificationFile(entries, { phaseToken });
+    // own (possibly non-canonical) report. #3511: baseName also scopes the
+    // fallback path to this same phase (see resolveVerificationFile docs).
+    verificationFile = resolveVerificationFile(entries, { phaseToken, phaseDirName: baseName });
   } catch {
     // Directory unreadable → treat as missing
     verificationFile = null;
@@ -719,8 +774,9 @@ function cmdVerificationResolveFile(cwd: string, phaseDirArg: string | undefined
   let verificationPath = '';
   try {
     const entries = fs.readdirSync(phaseDir);
-    const phaseToken = extractPhaseToken(path.basename(phaseDir));
-    const verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken });
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken, phaseDirName });
     if (verificationFile) {
       verificationPath = path.join(phaseDir, verificationFile);
     }

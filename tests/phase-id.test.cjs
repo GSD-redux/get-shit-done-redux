@@ -263,6 +263,227 @@ describe('extractPhaseToken', () => {
   });
 });
 
+// ─── isPhaseArtifact (#3511) ───────────────────────────────────────────────────
+//
+// Predicate for AGGREGATE phase-directory scans (uat-predicate.cts, phase.cts,
+// state.cts, uat.cts, audit.cts) — answers "does fileName belong to THIS
+// phase" so a stray, cross-phase, or ad-hoc file cannot contribute its status
+// to a phase it does not belong to. See src/phase-id.cts's isPhaseArtifact
+// docblock for the full contract and fail-safe rationale.
+
+describe('isPhaseArtifact (#3511)', () => {
+  test('plain: file matches its own phase dir, not a cross-phase dir', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('03-VERIFICATION.md', '03-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('04-VERIFICATION.md', '03-foo'), false);
+  });
+
+  test('ad-hoc worksheet: 03-CORRECTION-VERIFICATION.md belongs to 03-foo (it is the phase\'s own file)', () => {
+    // Over-exclusion here would be a worse bug than #3511 itself — a phase's
+    // own ad-hoc worksheet must never be treated as a stray.
+    assert.strictEqual(phaseId.isPhaseArtifact('03-CORRECTION-VERIFICATION.md', '03-foo'), true);
+  });
+
+  test('letter suffix: token must match exactly, in both directions', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('03A-VERIFICATION.md', '03A-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('03-VERIFICATION.md', '03A-foo'), false,
+      'a bare "03-" file must not belong to letter-suffixed phase dir "03A-foo"');
+    assert.strictEqual(phaseId.isPhaseArtifact('03A-VERIFICATION.md', '03-foo'), false,
+      'a letter-suffixed "03A-" file must not belong to bare phase dir "03-foo"');
+  });
+
+  test('decimal sub-phase: token must match exactly, not as a numeric prefix', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('35.1-VERIFICATION.md', '35.1-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('35.10-VERIFICATION.md', '35.1-foo'), false,
+      '35.10-… must not match phase dir 35.1-foo despite the shared numeric prefix');
+  });
+
+  test('plan/summary shapes belong to their phase the same way VERIFICATION/UAT do', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('03-01-SUMMARY.md', '03-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('03-01-PLAN.md', '03-foo'), true);
+  });
+
+  test('project-code-prefixed dirs: both the prefixed and the project-code-STRIPPED reading belong (#3511 blocker 1)', () => {
+    // Files are named by normalizePhaseName, which STRIPS the project code
+    // (cmdScaffold, src/commands.cts) — files never carry the code, only the
+    // directory does. `01-VERIFICATION.md` IS the real report cmdScaffold
+    // writes into `CK-01-foundation`; excluding it locked in the #3511
+    // follow-up defect (this assertion's polarity was inverted pre-fix).
+    assert.strictEqual(phaseId.isPhaseArtifact('CK-01-VERIFICATION.md', 'CK-01-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('01-VERIFICATION.md', 'CK-01-foo'), true,
+      'the project-code-STRIPPED file is the real scaffold output and must belong to its own project-code-prefixed dir');
+    assert.strictEqual(phaseId.isPhaseArtifact('02-VERIFICATION.md', 'CK-01-foo'), false,
+      'a different phase number must still be excluded, project code aside');
+  });
+
+  test('#3511 blocker 2: unpadded dir "1-unpadded" — its own padded file belongs', () => {
+    // #3511 blocker: dir "1-unpadded" has literal token "1"; cmdScaffold
+    // writes the PADDED "01-VERIFICATION.md" into it via normalizePhaseName.
+    assert.strictEqual(phaseId.isPhaseArtifact('01-VERIFICATION.md', '1-unpadded'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('02-VERIFICATION.md', '1-unpadded'), false);
+  });
+
+  test('#3511 blocker 3: digit-leading-slug family — own file uses the LEADING digit run, not the mis-absorbed token', () => {
+    // "05-80-20-cleanup" tokenizes to "05-80-20" (#2528 mis-absorption), but
+    // cmdScaffold writes "05-UAT.md"/"05-VERIFICATION.md" (leading digit run
+    // only) — the same reading matchPhaseDirs' bare-integer fallback uses.
+    assert.strictEqual(phaseId.isPhaseArtifact('05-UAT.md', '05-80-20-cleanup'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('05-VERIFICATION.md', '05-80-20-cleanup'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('80-VERIFICATION.md', '05-80-20-cleanup'), false,
+      'the slug word "80" must not be mistaken for a real phase number');
+    assert.strictEqual(phaseId.isPhaseArtifact('10-UAT.md', '10-24-7-autonomy'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('24-UAT.md', '10-24-7-autonomy'), false);
+  });
+
+  test('case-insensitive letter suffix (review item 8): "03A-VERIFICATION.md" belongs to lowercase-suffixed "03a-foo"', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('03A-VERIFICATION.md', '03a-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('03a-VERIFICATION.md', '03A-foo'), true);
+  });
+
+  test('fail-safe: a dir name with no derivable token includes EVERY file (never exclude)', () => {
+    // derivePhaseTokenSegments finds zero segments for these dir names (same
+    // condition extractPhaseToken treats as "return dirName unchanged" —
+    // see the 'returns the full dirName when no numeric token found' test
+    // above). Excluding on an unreliable token would make an aggregate gate
+    // silently permissive in the wrong direction (dropping the phase's own
+    // real blockers) — worse than the cross-phase-contamination bug #3511
+    // fixes. Every file must be treated as belonging to the phase instead.
+    assert.strictEqual(phaseId.isPhaseArtifact('04-VERIFICATION.md', 'no-numeric'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('anything-at-all.md', 'alpha'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('99-UAT.md', 'phase-name-01'), true);
+  });
+
+  test('#3511 Fix 2: a bare "VERIFICATION.md"/"UAT.md" (no dash, no token of its own) belongs by containment', () => {
+    // src/state.cts:3740's S006 filter matches `f.includes('VERIFICATION')`
+    // with no dash requirement, so a bare `VERIFICATION.md` (a form
+    // core-utils.cts, init.cts and verification.cts all treat as valid) was
+    // silently excluded pre-fix — S006 drift detection lost, S007 wrongly
+    // flipped on. Directory containment is the only signal for a token-less
+    // file, and it is sufficient.
+    assert.strictEqual(phaseId.isPhaseArtifact('VERIFICATION.md', '03-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('UAT.md', '03-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('VERIFICATION.md', 'CK-01-foo'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('VERIFICATION.md', '1-unpadded'), true);
+  });
+
+  // ── Property: over-exclusion (#3511 follow-up) ───────────────────────────────
+  //
+  // Every "own file still contributes" assertion above uses a HAND-PICKED
+  // fixture. This property generates across the real dirName shapes (padded /
+  // unpadded, project-code-prefixed, digit-leading slugs, decimals, letter
+  // suffixes) and asserts, for EACH, that the artifact name `cmdScaffold`
+  // (src/commands.cts, via `normalizePhaseName`) would actually write into
+  // that directory is a member — the exact invariant all three #3511
+  // follow-up blockers violated, and the one no hand-picked fixture pins on
+  // its own.
+  test('property: the file cmdScaffold would write into a phase dir is always isPhaseArtifact-true for that dir', () => {
+    const artifactType = fc.constantFrom('UAT', 'VERIFICATION', 'CONTEXT');
+
+    // dirName shape generators mirroring the real on-disk families this
+    // module's own docblocks (extractPhaseToken, matchPhaseDirs) enumerate.
+    const letterSuffix = fc.constantFrom('', 'A', 'B', 'C');
+    const projectCode = fc.constantFrom(null, 'CK', 'PROJ', 'APP1');
+    const slugWord = fc.constantFrom('foo', 'cleanup', 'autonomy', 'follow-up');
+    // Digit-leading-slug family (#2528): a second all-digit slug SEGMENT that
+    // is NOT a genuine sub-phase — 2-3 digit words like "80", "100".
+    const digitSlugSegment = fc.constantFrom(null, '80', '20', '100');
+
+    const dirNameGen = fc.record({
+      code: projectCode,
+      padded: fc.boolean(),
+      num: fc.integer({ min: 1, max: 99 }),
+      letter: letterSuffix,
+      digitSlug: digitSlugSegment,
+      slug: slugWord,
+    }).map(({ code, padded, num, letter, digitSlug, slug }) => {
+      const numStr = padded ? String(num).padStart(2, '0') : String(num);
+      const token = `${numStr}${letter}`;
+      const codePrefix = code ? `${code}-` : '';
+      const digitTail = digitSlug ? `-${digitSlug}` : '';
+      return { dirName: `${codePrefix}${token}${digitTail}-${slug}`, phase: token };
+    });
+
+    fc.assert(
+      fc.property(dirNameGen, artifactType, ({ dirName, phase }, type) => {
+        const padded = phaseId.normalizePhaseName(phase);
+        const writtenFile = `${padded}-${type}.md`;
+        return phaseId.isPhaseArtifact(writtenFile, dirName);
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+// ─── scopeToPhase (#3511 follow-up — WARNING 4) ────────────────────────────────
+//
+// isPhaseArtifact's own fail-safe only fires when NO phase token can be
+// derived from the directory name at all (zero tokenSegments). It does NOT
+// cover the case where a token IS derived but matches none of the files
+// actually present — e.g. an `mkdtemp`-style directory basename that merely
+// happens to parse as phase-shaped (`gsd-651-broad-grep-a1b2` reads as token
+// `gsd-651`) holding a real, differently-numbered artifact
+// (`01-bg-VERIFICATION.md`). A bare `.filter(isPhaseArtifact)` there silently
+// produces an EMPTY result, indistinguishable from "no artifact exists".
+// scopeToPhase is the one rule that closes this: scoping must never turn a
+// non-empty candidate set into an empty one.
+describe('scopeToPhase (#3511 follow-up — WARNING 4)', () => {
+  test('mixed set: own file kept, stray dropped', () => {
+    assert.deepStrictEqual(
+      phaseId.scopeToPhase(['03-VERIFICATION.md', '04-VERIFICATION.md'], '03-foo'),
+      ['03-VERIFICATION.md'],
+    );
+  });
+
+  test('all-strays: scoping would empty the set, so the input is returned UNCHANGED', () => {
+    assert.deepStrictEqual(
+      phaseId.scopeToPhase(['04-VERIFICATION.md'], '03-foo'),
+      ['04-VERIFICATION.md'],
+    );
+  });
+
+  test('empty input: returns empty (nothing to fall back to)', () => {
+    assert.deepStrictEqual(phaseId.scopeToPhase([], '03-foo'), []);
+  });
+
+  test('underivable dir token: every file passes through unchanged (isPhaseArtifact fail-safe)', () => {
+    assert.deepStrictEqual(
+      phaseId.scopeToPhase(['04-VERIFICATION.md', 'anything-at-all.md'], 'no-numeric'),
+      ['04-VERIFICATION.md', 'anything-at-all.md'],
+    );
+  });
+
+  test('#3511 regression: a directory basename that coincidentally parses phase-shaped ' +
+    '(mkdtemp-style "gsd-651-broad-grep-a1b2") still keeps its own real file', () => {
+    // extractPhaseToken('gsd-651-broad-grep-a1b2') === 'gsd-651', which does not
+    // match the real file's own token ('01'/'bg') — isPhaseArtifact alone would
+    // wrongly exclude it. scopeToPhase must not let that empty the result.
+    assert.strictEqual(
+      phaseId.isPhaseArtifact('01-bg-VERIFICATION.md', 'gsd-651-broad-grep-a1b2'),
+      false,
+      'precondition: isPhaseArtifact alone excludes this file (the gap scopeToPhase closes)',
+    );
+    assert.deepStrictEqual(
+      phaseId.scopeToPhase(['01-bg-VERIFICATION.md'], 'gsd-651-broad-grep-a1b2'),
+      ['01-bg-VERIFICATION.md'],
+    );
+  });
+
+  test('property: scopeToPhase never returns empty for non-empty input', () => {
+    const fileNameGen = fc.stringMatching(/^[0-9A-Za-z.-]{1,20}\.md$/);
+    const dirNameGen = fc.stringMatching(/^[0-9A-Za-z.-]{1,20}$/);
+    fc.assert(
+      fc.property(
+        fc.array(fileNameGen, { minLength: 1, maxLength: 10 }),
+        dirNameGen,
+        (fileNames, dirName) => {
+          const result = phaseId.scopeToPhase(fileNames, dirName);
+          return result.length > 0;
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+});
+
 // ─── phaseTokenMatches ────────────────────────────────────────────────────────
 
 describe('phaseTokenMatches', () => {

@@ -8722,7 +8722,7 @@ function writePassedVerificationFile(phaseDir, phase = '01') {
  *   - Phase 01 directory with one plan+summary (to satisfy phase complete guard)
  *   - Phase 02 directory (next phase)
  */
-function createFixture(prefix = 'gsd-4-regression-') {
+function createFixture(prefix = 'gsd-4-regression-', phase01DirName = '01-foundation') {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const planningDir = path.join(tmpDir, '.planning');
   const phasesDir = path.join(planningDir, 'phases');
@@ -8790,7 +8790,7 @@ function createFixture(prefix = 'gsd-4-regression-') {
   fs.writeFileSync(path.join(planningDir, 'STATE.md'), state);
 
   // Phase 01 directory with a PLAN and SUMMARY so phase complete guard passes
-  const phase01Dir = path.join(phasesDir, '01-foundation');
+  const phase01Dir = path.join(phasesDir, phase01DirName);
   fs.mkdirSync(phase01Dir, { recursive: true });
   fs.writeFileSync(path.join(phase01Dir, '01-01-PLAN.md'), '# Plan 1\nDo the work.\n');
   fs.writeFileSync(path.join(phase01Dir, '01-01-SUMMARY.md'), '# Summary 1\nDone.\n');
@@ -9174,6 +9174,87 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     assert.equal(errorPayload.verification_stale_check_indeterminate, true);
     },
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3511: cmdPhaseComplete — UAT/VERIFICATION advisory pre-scan is phase-scoped
+//
+// A cross-phase, stray, or ad-hoc file sitting in this phase's directory must
+// not name an advisory warning against this phase — and this phase's own
+// UAT/VERIFICATION files must keep warning exactly as before (non-stray case
+// unchanged). Covers BOTH loops scoped by #3511 (the UAT loop and the
+// VERIFICATION loop).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3511: cmdPhaseComplete — advisory pre-scan warnings are phase-scoped', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a cross-phase stray UAT/VERIFICATION file does not contribute a warning; this phase\'s own files still do', (t) => {
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+
+    // This phase's own UAT file — must still produce its usual warning.
+    fs.writeFileSync(path.join(phase01Dir, '01-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '### 1. Test A', 'expected: A', 'result: pending', '',
+    ].join('\n'));
+
+    // Cross-phase strays sitting in phase 01's directory — token "02", not
+    // "01" — must NOT contribute a warning to phase 01's completion.
+    fs.writeFileSync(path.join(phase01Dir, '02-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '### 1. Test B', 'expected: B', 'result: blocked', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phase01Dir, '02-VERIFICATION.md'), [
+      '---', 'status: human_needed', '---', '',
+      '# Verification', '',
+    ].join('\n'));
+
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.ok(
+      output.warnings.some((w) => w.includes('01-UAT.md') && w.includes('has pending tests')),
+      `own UAT file must still warn; got: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.ok(
+      !output.warnings.some((w) => w.includes('02-UAT.md')),
+      `stray UAT file must not contribute a warning; got: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.ok(
+      !output.warnings.some((w) => w.includes('02-VERIFICATION.md') || /needs human verification/.test(w)),
+      `stray VERIFICATION file must not contribute a warning; got: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('#3511 follow-up: own UAT file still warns from a NON-canonical dir shape "1-unpadded" (over-exclusion check)', (t) => {
+    const unpaddedTmpDir = createFixture('gsd-4-regression-unpadded-', '1-unpadded');
+    try {
+      const phaseDir = path.join(unpaddedTmpDir, '.planning', 'phases', '1-unpadded');
+      // "1-unpadded" tokenizes to literal "1"; scaffold writes the PADDED
+      // "01-…" form. A literal token compare excluded the phase's own file.
+      fs.writeFileSync(path.join(phaseDir, '01-UAT.md'), [
+        '---', 'status: partial', '---', '',
+        '### 1. Test A', 'expected: A', 'result: pending', '',
+      ].join('\n'));
+
+      const output = JSON.parse(capturePhaseComplete(t, unpaddedTmpDir, '1'));
+
+      assert.ok(
+        output.warnings.some((w) => w.includes('01-UAT.md') && w.includes('has pending tests')),
+        `own UAT file in an unpadded-dir phase must still warn; got: ${JSON.stringify(output.warnings)}`,
+      );
+    } finally {
+      cleanup(unpaddedTmpDir);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

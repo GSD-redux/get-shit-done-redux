@@ -43,6 +43,7 @@ const {
   comparePhaseNum,
   matchPhaseDirs,
   isSentinelPhaseId,
+  scopeToPhase,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
@@ -2182,8 +2183,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
 
   try {
     const phaseFiles = fs.readdirSync(phaseFullDir);
+    // #3511: scope this advisory pre-scan to THIS phase's own token so a
+    // stray, cross-phase, or ad-hoc file cannot name a warning against a
+    // phase it does not belong to.
+    const phaseFullDirBaseName = path.basename(phaseFullDir);
 
-    for (const file of phaseFiles.filter((f) => f.includes('-UAT') && f.endsWith('.md'))) {
+    for (const file of scopeToPhase(
+      phaseFiles.filter((f) => f.includes('-UAT') && f.endsWith('.md')),
+      phaseFullDirBaseName,
+    )) {
       const content = fs.readFileSync(path.join(phaseFullDir, file), 'utf-8');
       if (/result: pending/.test(content)) warnings.push(`${file}: has pending tests`);
       if (/result: blocked/.test(content)) warnings.push(`${file}: has blocked tests`);
@@ -2191,8 +2199,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       if (/status: diagnosed/.test(content)) warnings.push(`${file}: has diagnosed gaps`);
     }
 
-    for (const file of phaseFiles.filter(
-      (f) => f.includes('-VERIFICATION') && f.endsWith('.md'),
+    for (const file of scopeToPhase(
+      phaseFiles.filter((f) => f.includes('-VERIFICATION') && f.endsWith('.md')),
+      phaseFullDirBaseName,
     )) {
       const verificationFilePath = path.join(phaseFullDir, file);
       const content = fs.readFileSync(verificationFilePath, 'utf-8');
