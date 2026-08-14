@@ -203,6 +203,23 @@ interface LifecycleOptions {
 const CAP_MARKER = '_gsdCapability';
 
 /** Keys that must never be used as object indices (prototype-pollution guard). */
+/**
+ * #3514 (epic #1900 F21c): whether the source content was PINNED before staging — shared by the
+ * install and upgrade verdicts so the two cannot drift. Reaching the verdict with a supplied
+ * `--integrity` pin means the pin VERIFIED (the resolver throws on mismatch); a git
+ * `#sha:<commit>` ref is the git analog of a hash pin. Everything else stages with no pin and
+ * must say so in the consent prompt.
+ */
+function isIntegrityPinned(
+  integrity: unknown,
+  parsed: { kind?: string; ref?: unknown },
+): boolean {
+  return (
+    (typeof integrity === 'string' && integrity.length > 0) ||
+    (parsed.kind === 'git' && typeof parsed.ref === 'string' && parsed.ref.startsWith('sha:'))
+  );
+}
+
 function isUnsafeKey(k: string): boolean {
   return k === '__proto__' || k === 'constructor' || k === 'prototype';
 }
@@ -1015,6 +1032,7 @@ async function installCapability(spec: string, opts: LifecycleOptions): Promise<
       stagedDir,
       strictKnownRegistries,
       hostVersion,
+      integrityPinned: isIntegrityPinned(opts.integrity, parsedPre),
     });
 
     if (!verdict.allowed) {
@@ -1217,6 +1235,7 @@ async function upgradeCapability(spec: string, opts: LifecycleOptions): Promise<
       stagedDir,
       strictKnownRegistries,
       hostVersion,
+      integrityPinned: isIntegrityPinned(opts.integrity, parsedPre),
     });
     if (!verdict.allowed) {
       return { status: 'blocked', disclosure: verdict.disclosure, blockReasons: verdict.blockReasons };

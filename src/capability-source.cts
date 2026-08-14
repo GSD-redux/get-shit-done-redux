@@ -212,8 +212,94 @@ function _setHttpsGetImpl(fn: HttpsGetImpl | null): void {
 // Injectable HTTP transport (test seam)
 // ---------------------------------------------------------------------------
 
+/**
+ * #3514 (epic #1900 F21): pre-transport fetch gate. Runs BEFORE any bytes leave and before the
+ * (possibly injected) transport is invoked:
+ *
+ *  - Non-`https` URLs are refused with a NAMED, actionable reason. parseSpec still CLASSIFIES an
+ *    `http://` tarball URL as tarball (no parse-time hard reject — internal-mirror classification
+ *    flows stay intact, the adopted split decision on the epic); the https-only transport then
+ *    fails clearly instead of with a raw ERR_INVALID_PROTOCOL.
+ *  - Loopback / link-local / metadata / unspecified hosts and `localhost`-form names are denied
+ *    unconditionally — no legitimate capability install fetches them. RFC1918 private ranges are
+ *    deliberately ALLOWED (internal mirrors are the legitimate use this leaves room for); the
+ *    denylist is not an allowlist.
+ *
+ * Known limit (disclosed): the check is on the URL's HOST LITERAL. A public hostname that
+ * RESOLVES via DNS to a denied range (rebinding) is out of scope — `https.get` resolves
+ * internally and this gate does not double-resolve.
+ */
+function assertFetchableUrl(rawUrl: string): void {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    throw new Error(`invalid capability source URL: "${rawUrl}"`);
+  }
+  if (u.protocol !== 'https:') {
+    throw new Error(
+      `capability source fetch requires https — refusing "${u.protocol}" URL (host "${u.hostname}"). ` +
+        'The transport never fetches plaintext http; for an internal mirror use an https URL or a local path source.'
+    );
+  }
+  // Node's URL.hostname KEEPS the brackets on IPv6 literals ('[::1]') — strip them so the
+  // v6 checks below see the bare address.
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const deniedHost = () =>
+    new Error(
+      `refusing to fetch capability source from internal host "${host}" (loopback/link-local/metadata denylist)`
+    );
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    throw deniedHost();
+  }
+  // IPv4 literal: 127/8 loopback, 0/8 unspecified, 169.254/16 link-local (contains the cloud
+  // metadata IPs). Malformed literals that match no range simply fall through to a failed
+  // resolution downstream — denying is not needed for safety there.
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 127 || a === 0 || (a === 169 && b === 254)) throw deniedHost();
+    return;
+  }
+  // IPv6 literal. An IPv4-mapped address re-checks as IPv4 — in EITHER spelling, because the URL
+  // parser may preserve the dotted form ('::ffff:127.0.0.1') or normalize to hex hextets
+  // ('::ffff:7f00:1'). Otherwise deny ::1 (loopback), :: (unspecified), and fe80::/10 (link-local,
+  // hex prefix range fe80–febf).
+  if (host.startsWith('::ffff:')) {
+    const suffix = host.slice('::ffff:'.length);
+    let v4str: string | null = null;
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(suffix)) {
+      v4str = suffix;
+    } else {
+      const hextets = suffix.split(':');
+      if (hextets.length === 2 && /^[\da-f]{1,4}$/.test(hextets[0]) && /^[\da-f]{1,4}$/.test(hextets[1])) {
+        const hi = parseInt(hextets[0], 16);
+        const lo = parseInt(hextets[1], 16);
+        v4str = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      }
+    }
+    if (v4str) {
+      assertFetchableUrl(`https://${v4str}/`);
+      return;
+    }
+  }
+  // fe80::/10 = hex prefix fe80..febf, i.e. /^fe[89ab]/ (third nibble 8-b has top two bits set).
+  if (host === '::1' || host === '::' || /^fe[89ab]/.test(host)) {
+    throw deniedHost();
+  }
+}
+
 function realHttpsGet(url: string): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
+    // #3514: gate BEFORE the transport — scheme + host denylist refuse with named errors and
+    // never invoke the (possibly injected) transport. A throw inside the executor rejects.
+    try {
+      assertFetchableUrl(url);
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
     const req = _httpsGetImpl(
       url,
       { headers: { 'User-Agent': 'gsd-core-capability-source/1.0' } },

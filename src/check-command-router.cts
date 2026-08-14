@@ -378,11 +378,6 @@ function isInsideRoot(candidatePath: string, rootDir: string): boolean {
   return target === root || target.startsWith(`${root}${path.sep}`);
 }
 
-// #3484: restored from the retired SDK lineage (dropped as a bare 256 * 1024 literal
-// in the ADR-0174 collapse). Counts String#length (UTF-16 code units), not bytes —
-// semantics preserved from the deleted source.
-const MAX_MODIFIED_FILE_BYTES = 256 * 1024;
-
 function readModifiedFilesContent(projectDir: string, summaries: string[]): string {
   const out: string[] = [];
   let total = 0;
@@ -395,7 +390,7 @@ function readModifiedFilesContent(projectDir: string, summaries: string[]): stri
         if (total >= 50) break;
         if (!file || !isInsideRoot(file, projectDir)) continue;
         const raw = readIfExists(resolvePath(file, projectDir));
-        out.push(raw.length > MAX_MODIFIED_FILE_BYTES ? raw.slice(0, MAX_MODIFIED_FILE_BYTES) : raw);
+        out.push(raw.length > 256 * 1024 ? raw.slice(0, 256 * 1024) : raw);
         total++;
       }
       if (total >= 50) break;

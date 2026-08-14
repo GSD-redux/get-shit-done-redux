@@ -338,6 +338,16 @@ interface Disclosure {
    * Empty when no stagedDir was supplied.
    */
   missingArtifacts: string[];
+  /**
+   * #3514 (epic #1900 F21c): whether the source's content was PINNED and verified before staging
+   * ('pinned') or staged with no pin ('unverified'). PROMPT-ONLY: set by evaluateInstallTrust when
+   * the caller supplies `integrityPinned`, rendered by summarizeDisclosure, and deliberately
+   * EXCLUDED from `disclosureSignature` — consent's content binding is `bundleContentHash`
+   * (#1459), and a rendered line must never read as a changed executable set (which would fire a
+   * spurious re-consent on every upgrade). Mirrors the instructionSurfaces exclusion precedent
+   * (ADR-2363 D4) one field over.
+   */
+  integrityStatus?: 'pinned' | 'unverified';
 }
 
 type StrictKnownRegistries = string[] | null | undefined;
@@ -377,6 +387,14 @@ interface InstallTrustArgs {
    * constraint 2; see `ReviewerHostResolver`).
    */
   resolveHost?: ReviewerHostResolver;
+  /**
+   * #3514 (epic #1900 F21c): true when the source content was hash-pinned and verified before
+   * staging (a supplied `--integrity`, or a git source pinned by `#sha:<commit>` — the commit is
+   * the git analog of a hash pin), false when staged with no pin. Optional: absent ⇒ the
+   * disclosure carries no `integrityStatus` and the prompt renders no integrity line (legacy
+   * callers see byte-identical output).
+   */
+  integrityPinned?: boolean;
 }
 
 interface InstallTrustVerdict {
@@ -1159,6 +1177,12 @@ function evaluateInstallTrust(args: InstallTrustArgs): InstallTrustVerdict {
   // openai-http reviewer lane to the human at install/upgrade time — it never affects the
   // consent-binding signature (disclosureSignature never reads resolvedHost; design constraint 2).
   const disclosure = discloseExecutableSurfaces(manifest, stagedDir, resolveHost);
+  // #3514 (F21c): prompt-only integrity status. Set AFTER discloseExecutableSurfaces so the
+  // surface builder (and every signature computed from it) is untouched — see the field's
+  // disclosure-interface comment for why this must never reach disclosureSignature.
+  if (typeof args.integrityPinned === 'boolean') {
+    disclosure.integrityStatus = args.integrityPinned ? 'pinned' : 'unverified';
+  }
 
   // A manifest that declares a hook script or command module NOT present in the staged bundle
   // (missing, or escaping the bundle via an absolute/`..` path) is rejected: such an artifact
@@ -1478,16 +1502,20 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
 function summarizeDisclosure(disclosure: Disclosure): string[] {
   const lines: string[] = [];
   const instructionLines = summarizeInstructionSurfaces(disclosure);
+  // #3514 (F21c): computed once, appended before every return path so a future path cannot miss it.
+  const integrity = integrityStatusLine(disclosure);
   if (!disclosure.hasExecutable) {
     // ADR-2363 D3: "declarative only" is true ONLY when there is no instruction surface either.
     // Claiming it unconditionally told a user their capability contributes nothing to weigh while
     // it was contributing agent instructions — the exact category error ADR-2363 was written to end.
     if (instructionLines.length === 0) {
       lines.push('This capability ships no executable surfaces (declarative only).');
+      if (integrity) lines.push(integrity);
       return lines;
     }
     lines.push('This capability ships no executable surfaces, but contributes agent instructions:');
     for (const line of instructionLines) lines.push(line);
+    if (integrity) lines.push(integrity);
     return lines;
   }
   lines.push('This capability ships executable surfaces that will run in your agent runtime:');
@@ -1635,7 +1663,23 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       lines.push(`    - ${renderValueForPrompt(a)}`);
     }
   }
+  if (integrity) lines.push(integrity);
   return lines;
+}
+
+/**
+ * #3514 (F21c): the one-line integrity status for the consent prompt, or null when the caller
+ * supplied no `integrityPinned` (legacy — no line, byte-identical output). GSD-authored literals,
+ * never manifest data — no escaping needed.
+ */
+function integrityStatusLine(disclosure: Disclosure): string | null {
+  if (disclosure.integrityStatus === 'pinned') {
+    return '  content: sha512 pin supplied and verified before staging';
+  }
+  if (disclosure.integrityStatus === 'unverified') {
+    return '  content: NO PINNED HASH — staged unverified (a computed sha512 is recorded in the ledger at install)';
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
