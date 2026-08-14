@@ -987,7 +987,7 @@
     {
       "id": "RULESET.CONTRIB.GATE.DELETED-MODULE-DISPOSITION",
       "klass": "RULESET",
-      "value": "a PR deleting a module/package/lineage with a surviving counterpart carries a symbol-level disposition table for the deleted side — every declared name (exported or local) marked migrated (location named) | renamed → X (conventions normalized: verifyX → cmdVerifyX) | dropped because Y; SCREAMING_CASE constants ranked first (policy lives there; both confirmed ADR-0174 losses were bounds); 'the surviving tests pass' is NOT evidence — the surviving tests belong to the surviving side (#3484, ADR-0174 §8; losses: #3427 shortFormToId tier + unresolved-deps warning, #3477 regexForKeyLinkPattern 512-char cap + nested-quantifier screen, epic #3473 B5 MAX_JSON_SEARCH_DEPTH=48). Method with mandatory positive control: docs/how-to/audit-a-retiring-lineage.md"
+      "value": "a PR deleting a module/package/lineage with a surviving counterpart carries a symbol-level disposition table for the deleted side — every declared name (exported or local) marked migrated (location named) | renamed → X (conventions normalized: verifyX → cmdVerifyX) | dropped because Y; SCREAMING_CASE constants ranked first (policy lives there; both confirmed ADR-0174 losses were bounds); the surviving tests passing is NOT evidence — the surviving tests belong to the surviving side (#3484, ADR-0174 behavior-carry-forward amendment; losses: #3427 shortFormToId tier + unresolved-deps warning, #3477 regexForKeyLinkPattern 512-char cap + nested-quantifier screen, epic #3473 B5 MAX_JSON_SEARCH_DEPTH=48). Method with mandatory positive control: docs/how-to/audit-a-retiring-lineage.md"
     },
     {
       "id": "RULESET.CONTRIB.GATE.ORDER",

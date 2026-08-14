@@ -219,7 +219,7 @@ noise and may be summarized.
 surviving side and cannot observe behavior only the deleted side had. ADR-0174 retired
 the SDK package and deleted ADR-3524's parity apparatus in the same migration; three
 invariants went into the bin with the package and nobody noticed for months (#3427,
-#3477, epic #3473 B5) — see ADR-0174 §8 for the record.
+#3477, epic #3473 B5) — see ADR-0174's behavior-carry-forward amendment (#3484) for the record.
 
 **The audit is a method, not a guess.** The calibrated procedure — pairing by basename,
 comment-stripped declared-name diffing, rename normalization, SCREAMING_CASE-first

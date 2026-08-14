@@ -27,10 +27,9 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const { parseDecisions, extractDecisions } = require('../gsd-core/bin/lib/decisions.cjs');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, createTempDir, cleanup } = require('./helpers.cjs');
 
 // ─── Regression #1364: markdown-header fallback ───────────────────────────────
 
@@ -1330,6 +1329,12 @@ describe('check.decision-coverage-verify — modified-file truncation bound (#34
   afterEach(() => cleanup(tmpDir));
 
   function writeVerifyFixture(modifiedFileContent) {
+    writeGateFiles(['# Summary', '', 'files_modified:', '- big-modified.txt', '', 'Wrapped up the widget work.']);
+    fs.writeFileSync(path.join(tmpDir, 'big-modified.txt'), modifiedFileContent);
+    return path.join(phaseDir, 'CONTEXT.md');
+  }
+
+  function writeGateFiles(summaryLines) {
     writeContextFile(phaseDir, [
       '# Phase Context',
       '',
@@ -1338,16 +1343,7 @@ describe('check.decision-coverage-verify — modified-file truncation bound (#34
       '</decisions>',
     ].join('\n'));
     writePlanFile(phaseDir, '01', '# Plan\n\n## Must Haves\n\n- deliver the widget\n');
-    fs.writeFileSync(path.join(tmpDir, 'big-modified.txt'), modifiedFileContent);
-    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), [
-      '# Summary',
-      '',
-      'files_modified:',
-      '- big-modified.txt',
-      '',
-      'Wrapped up the widget work.',
-    ].join('\n'));
-    return path.join(phaseDir, 'CONTEXT.md');
+    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), summaryLines.join('\n') + '\n');
   }
 
   function runVerify(contextPath) {
@@ -1389,23 +1385,11 @@ describe('check.decision-coverage-verify — modified-file truncation bound (#34
   test('files_modified entry outside the root is skipped', (t) => {
     // A sibling dir (outside the project root) holding a file that WOULD satisfy the
     // decision — proving isInsideRoot skipped it, as distinct from a missing file.
-    const sibling = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3484-escape-'));
+    const sibling = createTempDir('gsd-3484-escape-');
     t.after(() => cleanup(sibling));
     fs.writeFileSync(path.join(sibling, 'escape.txt'), 'D-99 '.repeat(10));
 
-    writeContextFile(phaseDir, [
-      '<decisions>',
-      '- **D-99:** keep the marker token unique to this fixture',
-      '</decisions>',
-    ].join('\n'));
-    writePlanFile(phaseDir, '01', '# Plan\n');
-    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), [
-      '# Summary',
-      '',
-      'files_modified:',
-      `- ../${path.basename(sibling)}/escape.txt`,
-      '',
-    ].join('\n'));
+    writeGateFiles(['# Summary', '', 'files_modified:', `- ../${path.basename(sibling)}/escape.txt`, '']);
 
     const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
     assert.strictEqual(parsed.honored, 0,
@@ -1417,19 +1401,7 @@ describe('check.decision-coverage-verify — modified-file truncation bound (#34
   });
 
   test('unreadable files_modified entry does not crash the gate', () => {
-    writeContextFile(phaseDir, [
-      '<decisions>',
-      '- **D-99:** keep the marker token unique to this fixture',
-      '</decisions>',
-    ].join('\n'));
-    writePlanFile(phaseDir, '01', '# Plan\n');
-    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), [
-      '# Summary',
-      '',
-      'files_modified:',
-      '- does-not-exist.txt',
-      '',
-    ].join('\n'));
+    writeGateFiles(['# Summary', '', 'files_modified:', '- does-not-exist.txt', '']);
 
     const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
     assert.strictEqual(parsed.honored, 0,
@@ -1437,13 +1409,7 @@ describe('check.decision-coverage-verify — modified-file truncation bound (#34
   });
 
   test('summary without files_modified yields no haystack content', () => {
-    writeContextFile(phaseDir, [
-      '<decisions>',
-      '- **D-99:** keep the marker token unique to this fixture',
-      '</decisions>',
-    ].join('\n'));
-    writePlanFile(phaseDir, '01', '# Plan\n');
-    fs.writeFileSync(path.join(phaseDir, '01-SUMMARY.md'), '# Summary\n\nNo file list here.\n');
+    writeGateFiles(['# Summary', '', 'No file list here.']);
 
     const parsed = runVerify(path.join(phaseDir, 'CONTEXT.md'));
     assert.strictEqual(parsed.honored, 0,
