@@ -91,6 +91,7 @@ const {
   stateExtractField,
   stateReplaceField,
   syncStateFrontmatter,
+  applyPostSyncPreservation,
   withStateLock,
   updatePerformanceMetricsSection,
 } = stateMod;
@@ -2964,7 +2965,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // this adapter: they are section-table / disk-scan concerns, not
         // classified fields, and `syncStateFrontmatter` is the post-sync this
         // transaction needs (it does NOT go through readModifyWriteStateMd
-        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS).
+        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS —
+        // the post-sync preservation pass runs via applyPostSyncPreservation
+        // instead, #3374).
         const nextPhaseDisplayName =
           phaseDisplayNameFromRoadmap(roadmapContent, nextPhaseNum) ??
           phaseDisplayNameFromSlug(nextPhaseName);
@@ -3018,7 +3021,30 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
                 current_phase_name: nextPhaseDisplayName,
               }
           : undefined;
-        stateContent = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
+        const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
+        // #3374: the direct sync above deliberately bypasses
+        // readModifyWriteStateMd (STATE.md is committed atomically with
+        // ROADMAP/REQUIREMENTS), which also bypassed the #948/#1230
+        // preservation pass every RMW write gets — so a stale body
+        // `Stopped at:` line silently clobbered a fresher frontmatter
+        // stopped_at on every completion. Run the shared post-sync pass:
+        // snapshots from the on-disk pre-image (originalStateContent) and the
+        // transformed content, table-driven applyStatePreservation, then the
+        // #2736 authoritative re-assert (which restores the #3350 pairing
+        // override the preserve-always restore may have reverted). resync=true
+        // is the lifecycle-transition posture (progress recomputed from disk;
+        // only the preserve-when-unchanged deltas apply). Fields the
+        // transition legitimately rewrote (Status, Phase, Stopped At via
+        // completePhaseCore's #3374 continuity line) have changed body
+        // sources, so their deltas do not fire.
+        stateContent = applyPostSyncPreservation(
+          originalStateContent,
+          stateContent,
+          synced,
+          statePath,
+          true,
+          authoritativeFm,
+        );
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
       }

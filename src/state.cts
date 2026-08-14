@@ -1254,10 +1254,22 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
     if (result) { content = result; updated.push('Last Date'); }
 
     // Update Stopped at
+    // #3374 Variant B: stateReplaceField returns the replaced string on any
+    // label MATCH, including when the value is already the target. Pushing
+    // 'Stopped At' on match alone reported a write that never changed a byte
+    // (and that the #948 no-op guard may then discard entirely), leaving a
+    // stale frontmatter stopped_at undetectable to the caller. Report only on
+    // real change — and track the match separately so an identical value does
+    // not read as "label missing" to the #944 DWIM insertion below (whose
+    // section rewrite would reset an executor-authored resume file to None).
+    let stoppedAtMatched = false;
     if (options.stopped_at) {
       result = stateReplaceField(content, 'Stopped At', options.stopped_at);
       if (!result) result = stateReplaceField(content, 'Stopped at', options.stopped_at);
-      if (result) { content = result; updated.push('Stopped At'); }
+      if (result) {
+        stoppedAtMatched = true;
+        if (result !== content) { content = result; updated.push('Stopped At'); }
+      }
     }
 
     // Update Resume File — only when the caller explicitly passed a value OR the
@@ -1308,7 +1320,10 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
     // missing canonical fields are inserted while the heading and any prose are
     // preserved (#1101). Only append a brand-new section when NEITHER heading exists.
     const callerSuppliedValues = !!(options.stopped_at || (options.resume_file !== undefined && options.resume_file !== null));
-    const needsStoppedAt = options.stopped_at && !updated.includes('Stopped At');
+    // #3374: keyed on the label MATCH, not on updated[] — a matched-but-
+    // identical value is already persisted on disk and must not trigger the
+    // insertion rewrite below.
+    const needsStoppedAt = options.stopped_at && !stoppedAtMatched;
     const needsResumeFile = options.resume_file !== undefined && options.resume_file !== null && !updated.includes('Resume File');
     const needsLastSession = !updated.includes('Last session') && !updated.includes('Last Date');
 
@@ -2408,13 +2423,18 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
   // survive every writeStateMd call.
   //
   // For stopped_at / paused_at: the original #905 "fall back when derived is
-  // absent" rule is preserved here. The stale-body-overwrites-frontmatter
-  // scenario from #948 is prevented by the no-op guard in
-  // readModifyWriteStateMd: when the transform produces no change the file is
-  // never written, so syncStateFrontmatter never even runs. Attempting to
-  // "always prefer frontmatter" here breaks legitimate callers like phase.complete
-  // that intentionally write a new stopped_at value to the body and expect
-  // syncStateFrontmatter to pick it up.
+  // absent" rule is preserved here — this block handles the EMPTY case only.
+  // The disagreeing case (a present-but-stale body value vs a fresher
+  // frontmatter value, #948/#3374) is NOT handled here: it is governed by
+  // applyStatePreservation's preserve-when-unchanged delta, applied post-sync
+  // by the shared applyPostSyncPreservation pass — run by
+  // readModifyWriteStateMd, by cmdPhaseComplete's adapter (the one caller that
+  // deliberately bypasses the RMW wrapper for the atomic
+  // ROADMAP/REQUIREMENTS/STATE commit), and by writeStateMd (#3374). "Always
+  // prefer frontmatter" here would still be wrong: it would break transforms
+  // that legitimately write a new body value and expect this sync to project
+  // it — the #1230 delta ("did THIS write change the body source?") is what
+  // distinguishes those from a stale harvest.
   if (!derivedFm['stopped_at'] && existingFm['stopped_at']) {
     derivedFm['stopped_at'] = existingFm['stopped_at'];
   }
@@ -2742,10 +2762,177 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
     // files that buildStateFrontmatter must see (#1967).
     if (cwd) _diskScanCache.delete(cwd);
     const synced = syncStateFrontmatter(content, cwd);
-    platformWriteSync(statePath, synced);
+    // #3374: run the same post-sync preservation pass readModifyWriteStateMd
+    // runs (the gap the PR #3442 review flagged): without it, a caller whose
+    // transform does not refresh the body `Stopped at:` line
+    // (cmdMilestoneComplete, cmdStateSync) let the harvest silently revert a
+    // fresher frontmatter stopped_at to the stale body value — the #3374
+    // Variant A defect class. The pre-image is the on-disk file read inside
+    // the lock; resync=true is the writeStateMd posture (its callers are full
+    // disk re-derivation transitions). A missing file yields an empty
+    // pre-image, every snapshot is empty, and the pass is a no-op.
+    const originalContent = platformReadSync(statePath) || '';
+    const preserved = applyPostSyncPreservation(originalContent, content, synced, statePath, true);
+    platformWriteSync(statePath, preserved);
   } finally {
     releaseStateLock(lockPath);
   }
+}
+
+/**
+ * #3374: the shared post-sync preservation pass — the pre/post body-source
+ * snapshot + table-driven `applyStatePreservation` + #2736 authoritative
+ * re-assert sequence that every STATE.md write path must run between
+ * `syncStateFrontmatter` and the write. Extracted from readModifyWriteStateMd
+ * so the two write paths that deliberately do NOT go through the RMW wrapper
+ * still get the identical policy instead of a second, weaker encoding:
+ *
+ * - `cmdPhaseComplete`'s atomic-commit adapter (phase.cts): STATE.md is
+ *   committed atomically with ROADMAP/REQUIREMENTS, so it syncs directly —
+ *   previously with no preservation at all, letting a stale body
+ *   `Stopped at:` line silently clobber a fresher frontmatter `stopped_at`
+ *   (#3374 Variant A).
+ * - `writeStateMd` (callers: cmdMilestoneComplete, cmdStateSync): same direct
+ *   sync, same exposure (found by the PR #3442 review).
+ *
+ * `originalContent` is the pre-write on-disk content (drives the #1230
+ * pre-snapshots), `transformedContent` is the post-transform content (the
+ * sync only rewrites the frontmatter block, so its body IS the post-write
+ * body), and `syncedContent` is what `syncStateFrontmatter` produced.
+ */
+function applyPostSyncPreservation(
+  originalContent: string,
+  transformedContent: string,
+  syncedContent: string,
+  statePath: string,
+  resync: boolean,
+  authoritativeFm?: Record<string, unknown>,
+  deriveProgressKeys?: boolean,
+): string {
+  // Snapshot the existing progress block BEFORE the transform so we can
+  // restore it when resync is false.
+  const preFm = resync ? null : extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
+
+  // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
+  // we can detect whether THIS write changed them. syncStateFrontmatter
+  // re-derives frontmatter status/stopped_at from the body on every write;
+  // when the body's source field was NOT changed by the transform, the
+  // existing frontmatter value (e.g. a hand-set 'completed') must win over
+  // the body-derived value (e.g. 'verifying' from a stale "Status: Verifying
+  // Phase 3" line that an earlier tool wrote). We do NOT disturb `preFm`
+  // above (null when resync:true) — these are independent snapshots.
+  // Strip frontmatter before calling stateExtractField so the YAML `status:`
+  // key in the frontmatter block cannot shadow the body field we are tracking.
+  const preBody = stripFrontmatter(originalContent);
+  const preFmSnapshot = extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
+  const preBodyStatus = stateExtractField(preBody, 'Status');
+  // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
+  // mirroring buildStateFrontmatter's sessionBodyScope logic.
+  // A stale "Stopped at:" in a non-Session section (e.g. Session Continuity
+  // Archive prose) must not interfere with the delta comparison.
+  const preSessionMatch = matchSessionSection(preBody);
+  const preSessionScope = preSessionMatch ?? preBody;
+  const preBodyStoppedAt = stateExtractField(preSessionScope, 'Stopped At') || stateExtractField(preSessionScope, 'Stopped at');
+
+  // ADR-1769 Phase 6 / #1743 / #1695: snapshot the body source for the curated
+  // current_phase_name (the `Phase:` line parseProsePhaseField harvests). When
+  // this write does NOT change that line, the curated frontmatter value must
+  // win over syncStateFrontmatter's body re-derivation (which can harvest a
+  // wrong parenthetical aside — #1695). Gated by the field-classification
+  // table's preserve-always row so the rule lives in one place.
+  const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
+
+  // #3258: snapshot the body sources for the additional preserve-when-unchanged
+  // rows applyStatePreservation now honors (last_activity_desc, paused_at,
+  // current_phase, current_plan). Each mirrors buildStateFrontmatter's
+  // derivation so the #1230 delta ("did THIS write change the source?") is
+  // accurate: current_phase combines `Current Phase` with the prose `Phase:`
+  // fallback (parseProsePhaseField, scoped to ## Current Position); paused_at
+  // is session-scoped (mirrors stopped_at); last_activity_desc combines the
+  // `Last Activity Description` field with the prose desc fallback.
+  const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
+  const preBodyCurrentPlan = stateExtractField(preBody, 'Current Plan');
+  const preBodyCurrentPhase = stateExtractField(preBody, 'Current Phase')
+    ?? parseProsePhaseField(stateExtractField(preCurrentPositionScope, 'Phase')).phase;
+  const preBodyPausedAt = stateExtractField(preSessionScope, 'Paused At');
+  const preBodyLastActivityRaw = stateExtractField(preBody, 'Last Activity')
+    ?? stateExtractField(preBody, 'Last activity');
+  const preBodyLastActivityDesc = stateExtractField(preBody, 'Last Activity Description')
+    ?? parseProseLastActivityField(preBodyLastActivityRaw).description;
+
+  // Post-transform body source fields used for the delta comparison (#1230).
+  // Use `transformedContent` (not `syncedContent`): syncStateFrontmatter only
+  // rewrites the frontmatter block, so the body is identical in both — and we
+  // need the body the transform produced. Strip frontmatter so the YAML
+  // status key cannot shadow the body field we are tracking.
+  const postBody = stripFrontmatter(transformedContent);
+  const postBodyStatus = stateExtractField(postBody, 'Status');
+  // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
+  // consistent with the pre-transform snapshot above and buildStateFrontmatter.
+  const postSessionMatch = matchSessionSection(postBody);
+  const postSessionScope = postSessionMatch ?? postBody;
+  const postBodyStoppedAt = stateExtractField(postSessionScope, 'Stopped At') || stateExtractField(postSessionScope, 'Stopped at');
+  // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
+  // current_phase_name delta comparison.
+  const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
+  // #3258: post-transform body sources for the preserve-when-unchanged rows
+  // added in #3258 (mirrors the pre-transform block above).
+  const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
+  const postBodyCurrentPlan = stateExtractField(postBody, 'Current Plan');
+  const postBodyCurrentPhase = stateExtractField(postBody, 'Current Phase')
+    ?? parseProsePhaseField(stateExtractField(postCurrentPositionScope, 'Phase')).phase;
+  const postBodyPausedAt = stateExtractField(postSessionScope, 'Paused At');
+  const postBodyLastActivityRaw = stateExtractField(postBody, 'Last Activity')
+    ?? stateExtractField(postBody, 'Last activity');
+  const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
+    ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
+  const bodyDeltas = {
+    last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
+    paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
+    current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
+    current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
+  };
+
+  // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
+  // preservation block is now the pure, table-driven `applyStatePreservation`
+  // in the STATE.md Transition Module. progress / status / stopped_at /
+  // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
+  // one policy source, not three drifting encodings. #3258 extends the same
+  // pass to last_activity_desc / paused_at / current_phase / current_plan
+  // (preserve-when-unchanged) and milestone / milestone_name (preserve-if-
+  // placeholder). Behavior-identical to the pre-#1796 inline block for the
+  // original four fields; this is the absorption ADR-1769 / CONTEXT.md
+  // already claimed shipped.
+  const postFm = extractFrontmatter(syncedContent, statePath) as Record<string, unknown>;
+  const preservation = applyStatePreservation({
+    preFm, postFm, preFmSnapshot, resync,
+    deriveProgressKeys: deriveProgressKeys === true,
+    bodyDeltas,
+    preBodyStatus, postBodyStatus,
+    preBodyStoppedAt, postBodyStoppedAt,
+    preBodyPhaseSource, postBodyPhaseSource,
+  });
+  // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
+  // layouts with no body `Phase:` line, both phase-source snapshots are null
+  // (equal), so the #1695 restore fires and would put the stale pre-transition
+  // name back over the authoritative one. Intent beats both the prose
+  // re-derivation and the curated restore — the transition just resolved it.
+  let authoritativeReasserted = false;
+  if (authoritativeFm) {
+    for (const [key, value] of Object.entries(authoritativeFm)) {
+      if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
+        preservation.postFm[key] = value;
+        authoritativeReasserted = true;
+      }
+    }
+  }
+
+  if (preservation.mutated || authoritativeReasserted) {
+    const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
+    const body = stripFrontmatter(syncedContent);
+    return `---\n${yamlStr}\n---\n\n${body}`;
+  }
+  return syncedContent;
 }
 
 /**
@@ -2773,56 +2960,6 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
   const lockPath = acquireStateLock(statePath, clock);
   try {
     const content = platformReadSync(statePath) || '';
-    // Snapshot the existing progress block BEFORE the transform so we can
-    // restore it when resync is false.
-    const preFm = resync ? null : extractFrontmatter(content, statePath) as Record<string, unknown>;
-
-    // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
-    // we can detect whether THIS write changed them. syncStateFrontmatter
-    // re-derives frontmatter status/stopped_at from the body on every write;
-    // when the body's source field was NOT changed by the transform, the
-    // existing frontmatter value (e.g. a hand-set 'completed') must win over
-    // the body-derived value (e.g. 'verifying' from a stale "Status: Verifying
-    // Phase 3" line that an earlier tool wrote). We do NOT disturb `preFm`
-    // above (null when resync:true) — these are independent snapshots.
-    // Strip frontmatter before calling stateExtractField so the YAML `status:`
-    // key in the frontmatter block cannot shadow the body field we are tracking.
-    const preBody = stripFrontmatter(content);
-    const preFmSnapshot = extractFrontmatter(content, statePath) as Record<string, unknown>;
-    const preBodyStatus = stateExtractField(preBody, 'Status');
-    // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
-    // mirroring buildStateFrontmatter's sessionBodyScope logic (line ~1172).
-    // A stale "Stopped at:" in a non-Session section (e.g. Session Continuity
-    // Archive prose) must not interfere with the delta comparison.
-    const preSessionMatch = matchSessionSection(preBody);
-    const preSessionScope = preSessionMatch ?? preBody;
-    const preBodyStoppedAt = stateExtractField(preSessionScope, 'Stopped At') || stateExtractField(preSessionScope, 'Stopped at');
-
-    // ADR-1769 Phase 6 / #1743 / #1695: snapshot the body source for the curated
-    // current_phase_name (the `Phase:` line parseProsePhaseField harvests). When
-    // this write does NOT change that line, the curated frontmatter value must
-    // win over syncStateFrontmatter's body re-derivation (which can harvest a
-    // wrong parenthetical aside — #1695). Gated by the field-classification
-    // table's preserve-always row so the rule lives in one place.
-    const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
-
-    // #3258: snapshot the body sources for the additional preserve-when-unchanged
-    // rows applyStatePreservation now honors (last_activity_desc, paused_at,
-    // current_phase, current_plan). Each mirrors buildStateFrontmatter's
-    // derivation so the #1230 delta ("did THIS write change the source?") is
-    // accurate: current_phase combines `Current Phase` with the prose `Phase:`
-    // fallback (parseProsePhaseField, scoped to ## Current Position); paused_at
-    // is session-scoped (mirrors stopped_at); last_activity_desc combines the
-    // `Last Activity Description` field with the prose desc fallback.
-    const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
-    const preBodyCurrentPlan = stateExtractField(preBody, 'Current Plan');
-    const preBodyCurrentPhase = stateExtractField(preBody, 'Current Phase')
-      ?? parseProsePhaseField(stateExtractField(preCurrentPositionScope, 'Phase')).phase;
-    const preBodyPausedAt = stateExtractField(preSessionScope, 'Paused At');
-    const preBodyLastActivityRaw = stateExtractField(preBody, 'Last Activity')
-      ?? stateExtractField(preBody, 'Last activity');
-    const preBodyLastActivityDesc = stateExtractField(preBody, 'Last Activity Description')
-      ?? parseProseLastActivityField(preBodyLastActivityRaw).description;
 
     const modified = transformFn(content);
 
@@ -2838,77 +2975,17 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     }
 
     let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
-
-    // Post-transform body source fields used for the delta comparison (#1230).
-    // Use `modified` (not `synced`): syncStateFrontmatter only rewrites the frontmatter block, so the body is identical in both — and we need the body the transform produced.
-    // Strip frontmatter so the YAML status key cannot shadow the body field we are tracking.
-    const postBody = stripFrontmatter(modified);
-    const postBodyStatus = stateExtractField(postBody, 'Status');
-    // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
-    // consistent with the pre-transform snapshot above and buildStateFrontmatter.
-    const postSessionMatch = matchSessionSection(postBody);
-    const postSessionScope = postSessionMatch ?? postBody;
-    const postBodyStoppedAt = stateExtractField(postSessionScope, 'Stopped At') || stateExtractField(postSessionScope, 'Stopped at');
-    // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
-    // current_phase_name delta comparison.
-    const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
-    // #3258: post-transform body sources for the preserve-when-unchanged rows
-    // added in #3258 (mirrors the pre-transform block above).
-    const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
-    const postBodyCurrentPlan = stateExtractField(postBody, 'Current Plan');
-    const postBodyCurrentPhase = stateExtractField(postBody, 'Current Phase')
-      ?? parseProsePhaseField(stateExtractField(postCurrentPositionScope, 'Phase')).phase;
-    const postBodyPausedAt = stateExtractField(postSessionScope, 'Paused At');
-    const postBodyLastActivityRaw = stateExtractField(postBody, 'Last Activity')
-      ?? stateExtractField(postBody, 'Last activity');
-    const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
-      ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
-    const bodyDeltas = {
-      last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
-      paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
-      current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
-      current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
-    };
-
-    // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
-    // preservation block is now the pure, table-driven `applyStatePreservation`
-    // in the STATE.md Transition Module. progress / status / stopped_at /
-    // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
-    // one policy source, not three drifting encodings. #3258 extends the same
-    // pass to last_activity_desc / paused_at / current_phase / current_plan
-    // (preserve-when-unchanged) and milestone / milestone_name (preserve-if-
-    // placeholder). Behavior-identical to the pre-#1796 inline block for the
-    // original four fields; this is the absorption ADR-1769 / CONTEXT.md
-    // already claimed shipped.
-    const postFm = extractFrontmatter(synced, statePath) as Record<string, unknown>;
-    const preservation = applyStatePreservation({
-      preFm, postFm, preFmSnapshot, resync,
-      deriveProgressKeys: options?.deriveProgressKeys === true,
-      bodyDeltas,
-      preBodyStatus, postBodyStatus,
-      preBodyStoppedAt, postBodyStoppedAt,
-      preBodyPhaseSource, postBodyPhaseSource,
-    });
-    // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
-    // layouts with no body `Phase:` line, both phase-source snapshots are null
-    // (equal), so the #1695 restore fires and would put the stale pre-transition
-    // name back over the authoritative one. Intent beats both the prose
-    // re-derivation and the curated restore — the transition just resolved it.
-    let authoritativeReasserted = false;
-    if (options?.authoritativeFm) {
-      for (const [key, value] of Object.entries(options.authoritativeFm)) {
-        if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
-          preservation.postFm[key] = value;
-          authoritativeReasserted = true;
-        }
-      }
-    }
-
-    if (preservation.mutated || authoritativeReasserted) {
-      const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
-      const body = stripFrontmatter(synced);
-      synced = `---\n${yamlStr}\n---\n\n${body}`;
-    }
+    // #3374: the post-sync preservation pass (snapshots, table-driven
+    // applyStatePreservation, #2736 re-assert) — see applyPostSyncPreservation.
+    synced = applyPostSyncPreservation(
+      content,
+      modified,
+      synced,
+      statePath,
+      resync,
+      options?.authoritativeFm,
+      options?.deriveProgressKeys === true,
+    );
 
     platformWriteSync(statePath, synced);
     return true;
@@ -4267,6 +4344,12 @@ export = {
   writeStateMd,
   readModifyWriteStateMd,
   syncStateFrontmatter,
+  // #3374: the shared post-sync preservation pass (snapshots + table-driven
+  // applyStatePreservation + #2736 re-assert). Exported for cmdPhaseComplete's
+  // atomic-commit adapter in phase.cts, which syncs STATE.md directly (it is
+  // committed atomically with ROADMAP/REQUIREMENTS) and must apply the same
+  // preservation policy the RMW and writeStateMd paths apply.
+  applyPostSyncPreservation,
   readStateHeadFreshness,
   withStateLock,
   updatePerformanceMetricsSection,

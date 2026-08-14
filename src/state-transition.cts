@@ -16,7 +16,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback } from './state-document.cjs';
+import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession } from './state-document.cjs';
 import { KNOWN_TEMPLATE_DEFAULTS } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
@@ -1057,6 +1057,7 @@ function completePhaseCore(
     'current_plan',
     'last_activity',
     'last_activity_desc',
+    'stopped_at',
     'progress',
   ]) {
     const cls = getFieldClassification(fmKey);
@@ -1155,6 +1156,29 @@ function completePhaseCore(
   if (ladAfter) {
     body = ladAfter;
     updated.push('Last Activity Description');
+  }
+
+  // Stopped At — #3374: write the continuity line this transition implies.
+  // The frontmatter `stopped_at` is a projection of this body line
+  // (source: 'body' in FIELD_CLASSIFICATION), and phase completion is exactly
+  // the event the line describes — leaving it stale made the post-sync harvest
+  // overwrite a fresher frontmatter value with pre-completion prose on every
+  // completion (#3374), and left the workflow's later prose refresh as a
+  // divergence source. Session-SCOPED replace (stateReplaceFieldInSession):
+  // the harvest reads only the session section, so the write must target the
+  // same scope — a whole-body replace let a decoy `**Stopped at:**` line in an
+  // unrelated section absorb the refresh. Replace-only (no insertion): a
+  // STATE.md with no session continuity line keeps its shape, and the
+  // unchanged body source then lets the preservation delta keep an existing
+  // frontmatter value. Last-phase wording reuses the ADR-2207 status phrase;
+  // milestone termination wording stays owned by milestoneCompleteCore.
+  const stoppedAtLine = intent.isLastPhase
+    ? `Phase ${intent.phaseNum} complete — all phases complete`
+    : `Phase ${intent.phaseNum} complete${intent.nextPhaseNum ? `, ready to plan Phase ${intent.nextPhaseNum}` : ''}`;
+  const stoppedAfter = stateReplaceFieldInSession(body, 'Stopped At', 'Stopped at', stoppedAtLine);
+  if (stoppedAfter !== body) {
+    body = stoppedAfter;
+    updated.push('Stopped At');
   }
 
   // Progress block — re-derive completed/total phases from the roadmap when
