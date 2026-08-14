@@ -34,6 +34,7 @@
  */
 
 import { stripFencedCode } from './markdown-sectionizer.cjs';
+import { escapeRegex } from './pattern.cjs';
 
 export type AssumptionDeltaKind = 'pluralization' | 'optional' | 'chosen';
 
@@ -208,10 +209,6 @@ export function detectAssumptionDelta(
   }
 
   return { detected: signals.length > 0, signals, terms: effective };
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────────────

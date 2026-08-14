@@ -16,6 +16,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_REL = path.join('scripts', 'gen-adr-index.cjs');
@@ -25,22 +26,18 @@ const END = '<!-- ADR-INDEX:END -->';
 
 /**
  * Build a throwaway repo whose docs/adr/ contains exactly `files`, and whose
- * scripts/ holds a copy of the generator + its cli-exit dependency. A unique
- * mkdtemp per call keeps parallel tests from colliding, and the dir is removed
- * via `t.after()` so a failing assertion cannot leak it.
+ * scripts/ holds a copy of the generator together with its transitive
+ * relative-require graph. A unique mkdtemp per call keeps parallel tests from
+ * colliding, and the dir is removed via `t.after()` so a failing assertion
+ * cannot leak it.
  */
 function makeRepo(t, files) {
   // helpers.cleanup (not raw fs.rmSync) carries the Windows-EBUSY retry budget.
   const root = createTempDir('gsd-adr-index-');
   t.after(() => cleanup(root));
   fs.mkdirSync(path.join(root, 'docs', 'adr'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
 
-  fs.copyFileSync(path.join(REPO_ROOT, SCRIPT_REL), path.join(root, SCRIPT_REL));
-  fs.copyFileSync(
-    path.join(REPO_ROOT, 'scripts', 'lib', 'cli-exit.cjs'),
-    path.join(root, 'scripts', 'lib', 'cli-exit.cjs'),
-  );
+  copyScriptWithDeps(REPO_ROOT, root, SCRIPT_REL);
 
   for (const [name, body] of Object.entries(files)) {
     fs.writeFileSync(path.join(root, 'docs', 'adr', name), body);

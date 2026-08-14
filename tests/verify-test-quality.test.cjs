@@ -1,8 +1,11 @@
 // allow-test-rule: source-text-is-the-product
-// Structural guard: reads gsd-core/workflows/verify-phase.md and asserts that
-// the audit_test_quality step contains the skip-pattern marker, circular-detection
-// marker, provenance-classification contract, and assertion-strength table markers.
-// Goes red if that workflow guidance is removed or the step is renamed/deleted.
+// Structural guard: reads gsd-core/references/verifier-phase-gates.md (the
+// gsd-verifier agent's eagerly-imported gate reference; its content was
+// migrated from the retired workflows/verify-phase.md orphan in #1892) and
+// asserts that the audit_test_quality step contains the skip-pattern marker,
+// circular-detection marker, provenance-classification contract, and
+// assertion-strength table markers.
+// Goes red if that guidance is removed or the step is renamed/deleted.
 
 'use strict';
 
@@ -15,8 +18,8 @@ const WORKFLOW_PATH = path.join(
   __dirname,
   '..',
   'gsd-core',
-  'workflows',
-  'verify-phase.md'
+  'references',
+  'verifier-phase-gates.md'
 );
 
 // Locate the audit_test_quality step boundaries so sub-assertions are scoped
@@ -33,7 +36,7 @@ function extractAuditStep(src) {
 }
 
 // workflowSrc and auditStepSrc are populated in the before() hook so that a
-// missing or renamed verify-phase.md produces a descriptive test FAILURE rather
+// missing or renamed verifier-phase-gates.md produces a descriptive test FAILURE rather
 // than a module-load crash that prevents any test from registering.
 let workflowSrc = null;
 let auditStepSrc = null;
@@ -41,22 +44,22 @@ let auditStepSrc = null;
 before(() => {
   assert.ok(
     fs.existsSync(WORKFLOW_PATH),
-    `verify-phase.md not found at expected path: ${WORKFLOW_PATH} — ` +
+    `verifier-phase-gates.md not found at expected path: ${WORKFLOW_PATH} — ` +
       'the file may have been renamed or moved'
   );
   workflowSrc = fs.readFileSync(WORKFLOW_PATH, 'utf8');
   auditStepSrc = extractAuditStep(workflowSrc);
 });
 
-describe('verify-phase.md audit_test_quality structural guard', () => {
-  test('verify-phase.md exists at gsd-core/workflows/verify-phase.md', () => {
+describe('verifier-phase-gates.md audit_test_quality structural guard', () => {
+  test('verifier-phase-gates.md exists at gsd-core/references/verifier-phase-gates.md', () => {
     assert.ok(
       fs.existsSync(WORKFLOW_PATH),
       `missing workflow file: ${WORKFLOW_PATH}`
     );
   });
 
-  test('audit_test_quality step is present in verify-phase.md', () => {
+  test('audit_test_quality step is present in verifier-phase-gates.md', () => {
     assert.ok(
       auditStepSrc !== null,
       `<step name="audit_test_quality"> not found in ${WORKFLOW_PATH} — the step ` +

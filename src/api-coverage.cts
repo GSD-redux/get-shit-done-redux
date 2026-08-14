@@ -57,6 +57,7 @@
  */
 
 import { stripFencedCode, scanInlineCodeSpans, extractFencedBlock } from './markdown-sectionizer.cjs';
+import { escapeRegex } from './pattern.cjs';
 
 // ─── Integration-signal vocabulary ────────────────────────────────────────────
 
@@ -168,10 +169,6 @@ function resolveTerms(terms?: Partial<ApiCoverageTermSet>): ApiCoverageTermSet {
     return Array.isArray(t) ? normalizeTerms(t) : [...DEFAULT_API_COVERAGE_TERMS[key]];
   };
   return { verbs: merge('verbs'), nouns: merge('nouns') };
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function makeSnippet(line: string, anchor: string): string {

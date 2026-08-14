@@ -1589,7 +1589,7 @@ describe('enh-2430 — INVENTORY sync', () => {
 /**
  * Bug #2492: Add gates to ensure discuss-phase decisions are translated to
  * plans (plan-phase, BLOCKING) and verified against shipped artifacts
- * (verify-phase, NON-BLOCKING).
+ * (verifier-phase-gates reference, NON-BLOCKING).
  *
  * These workflow files are loaded as prompts by the corresponding subagents.
  * The tests below verify that the prompt text contains the gate steps and
@@ -1603,7 +1603,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PLAN_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
-const VERIFY_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-phase.md');
+const VERIFY_GATES = path.join(__dirname, '..', 'gsd-core', 'references', 'verifier-phase-gates.md');
 const SCHEMA_MANIFEST_JSON = path.join(__dirname, '..', 'gsd-core', 'bin', 'shared', 'config-schema.manifest.json');
 
 describe('plan-phase decision-coverage gate (#2492)', () => {
@@ -1700,20 +1700,20 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
   });
 });
 
-describe('verify-phase decision-coverage gate (#2492)', () => {
-  const md = fs.readFileSync(VERIFY_PHASE, 'utf-8');
+describe('verifier-phase-gates decision-coverage gate (#2492)', () => {
+  const md = fs.readFileSync(VERIFY_GATES, 'utf-8');
 
   test('contains a verify_decisions step', () => {
     assert.ok(
       /verify_decisions/.test(md),
-      'verify-phase.md must define a verify_decisions step',
+      'verifier-phase-gates.md must define a verify_decisions step',
     );
   });
 
   test('invokes the check.decision-coverage-verify handler', () => {
     assert.ok(
       md.includes('check.decision-coverage-verify'),
-      'verify-phase.md must call gsd-sdk query check.decision-coverage-verify',
+      'verifier-phase-gates.md must call gsd-sdk query check.decision-coverage-verify',
     );
   });
 
@@ -1721,14 +1721,14 @@ describe('verify-phase decision-coverage gate (#2492)', () => {
     const lower = md.toLowerCase();
     assert.ok(
       lower.includes('non-blocking') || lower.includes('warning only') || lower.includes('not block'),
-      'verify-phase.md must declare the decision gate is non-blocking',
+      'verifier-phase-gates.md must declare the decision gate is non-blocking',
     );
   });
 
   test('mentions workflow.context_coverage_gate skip clause', () => {
     assert.ok(
       md.includes('workflow.context_coverage_gate'),
-      'verify-phase.md must reference workflow.context_coverage_gate to allow skipping',
+      'verifier-phase-gates.md must reference workflow.context_coverage_gate to allow skipping',
     );
   });
 });
@@ -1739,6 +1739,21 @@ describe('runtime wiring for #2492 gates', () => {
     assert.ok(
       manifest.validKeys.includes('workflow.context_coverage_gate'),
       'workflow.context_coverage_gate must be present in config-schema manifest',
+    );
+  });
+
+  test('gsd-verifier eagerly imports verifier-phase-gates.md (#1892)', () => {
+    // The decision-coverage gate (and the other migrated verify-time gates) only
+    // reach the runtime if the verifier agent actually loads the reference that
+    // now carries them — a reference nothing imports is the exact orphan class
+    // epic #1891 exists to remove.
+    const agent = fs.readFileSync(
+      path.join(__dirname, '..', 'agents', 'gsd-verifier.md'),
+      'utf-8',
+    );
+    assert.ok(
+      agent.includes('@~/.claude/gsd-core/references/verifier-phase-gates.md'),
+      'agents/gsd-verifier.md must @-import references/verifier-phase-gates.md in required_reading',
     );
   });
 });

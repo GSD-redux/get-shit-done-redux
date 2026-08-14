@@ -259,10 +259,9 @@
 | `thread.md` | 为跨会话工作创建、列出、关闭或恢复持久上下文线程。 | `/gsd-thread` |
 | `update.md` | 将 GSD 更新到最新版本并显示变更日志。 | `/gsd-update` |
 | `validate-phase.md` | 回溯审计并填补已完成阶段的奈奎斯特验证空缺。 | `/gsd-validate-phase` |
-| `verify-phase.md` | 通过目标反向分析验证阶段目标的达成情况。 | `execute-phase.md`（执行后） |
 | `verify-work.md` | 带自动诊断的对话式 UAT — 生成 UAT.md 和修复计划。 | `/gsd-verify-work` |
 
-> **注意：** 某些工作流没有直接面向用户的命令（例如 `execute-plan.md`、`verify-phase.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— 它们由编排器工作流在内部调用。`discovery-phase.md` 是 `/gsd-new-project` 的备用入口。
+> **注意：** 某些工作流没有直接面向用户的命令（例如 `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— 它们由编排器工作流在内部调用。`discovery-phase.md` 是 `/gsd-new-project` 的备用入口。
 
 ---
 
@@ -280,6 +279,7 @@
 | `model-profile-resolution.md` | 模型解析算法文档。 |
 | `verification-patterns.md` | 如何验证不同的产物类型。 |
 | `verification-overrides.md` | 每种产物的验证覆盖规则。 |
+| `verifier-phase-gates.md` | 由 gsd-verifier 急切加载的验证期门禁（自已退役的 verify-phase 工作流迁移，#1892）：决策覆盖校验（#2492）、测试质量审计、基础设施阶段的 human-verification 划定（#2504）。 | |
 | `planning-config.md` | 完整的配置模式和行为。 |
 | `git-integration.md` | Git 提交、分支和历史模式。 |
 | `git-planning-commit.md` | 规划目录提交约定。 |

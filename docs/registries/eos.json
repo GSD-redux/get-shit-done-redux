@@ -64,5 +64,36 @@
       }
     },
     "discussion": "https://github.com/open-gsd/gsd-core/discussions/2342"
+  },
+  {
+    "id": "gsd-reasonix",
+    "name": "GSD for Reasonix",
+    "type": "eos",
+    "repo": "onionviolet/gsd-reasonix",
+    "description": "Renders the GSD workflow set as native Reasonix slash-command launchers, mapping GSD's host-neutral instructions onto Reasonix's own tools (task/fleet for subagents, ask for questions, todo_write for plans, complete_step for evidence-backed sign-off), and excludes the shared ~/.agents/skills convention root so the Codex launcher tree stops shadowing them.",
+    "author": "onionviolet",
+    "license": "MIT",
+    "enginesGsd": ">=1.10.0",
+    "protocolVersion": 1,
+    "install": "npm install --global github:onionviolet/gsd-reasonix#v1.0.0 && gsd-reasonix install",
+    "uninstall": "gsd-reasonix uninstall && npm uninstall --global gsd-reasonix",
+    "interactions": {
+      "interfacePoints": [
+        "command",
+        "artifact"
+      ],
+      "profile": "declarative-cli",
+      "axes": {
+        "embeddingMode": "declarative",
+        "commandSurface": "slash-file",
+        "dispatch": "Named and nested Reasonix subagent dispatch to a documented depth of 2 with background execution, and a subagent toolkit and isolation model that Reasonix's own documentation does not state",
+        "modelMode": "passive",
+        "hookBus": "host",
+        "stateIO": "filesystem",
+        "transport": "mcp",
+        "runtime": "go"
+      }
+    },
+    "discussion": "https://github.com/open-gsd/gsd-core/discussions/3379"
   }
 ]

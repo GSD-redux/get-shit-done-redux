@@ -20,6 +20,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
+const { normalizeEol } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'gsd-core', 'workflows');
@@ -191,13 +193,6 @@ function parseLoopHostBlock(content, fileName) {
  * @param {string}   fileName    For error messages
  * @returns {string[]}           Array of error strings; empty = OK
  */
-/**
- * Escape a string for literal use in a RegExp.
- */
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function crossCheckRoles(content, agentRoles, fileName) {
   const errors = [];
   for (const role of agentRoles) {
@@ -375,21 +370,6 @@ function serializeContract(contract) {
   return lines.join('\n');
 }
 
-// ─── --check diff helper ──────────────────────────────────────────────────────
-
-/**
- * Normalize line endings to LF for CRLF-agnostic comparison.
- * FIX 4: The serializer has no nondeterministic content (no timestamp), so
- * the generated-by-line stripping that was here has been removed — full content
- * comparison is now used so header drift is caught by --check.
- *
- * @param {string} content
- * @returns {string}
- */
-function normalizeLineEndings(content) {
-  return content.replace(/\r/g, '');
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -415,7 +395,7 @@ function main() {
 
     const committed = fs.readFileSync(CONTRACT_PATH, 'utf8');
     // FIX 4: Compare full content (no generated-by stripping) so header drift is caught.
-    if (normalizeLineEndings(committed) !== normalizeLineEndings(live)) {
+    if (normalizeEol(committed) !== normalizeEol(live)) {
       process.stderr.write(
         'gsd-core/bin/lib/loop-host-contract.cjs is stale. Run:\n' +
         '  node scripts/gen-loop-host-contract.cjs --write\n',
@@ -509,7 +489,7 @@ module.exports = {
   assertPointsCoverage,
   buildContract,
   serializeContract,
-  normalizeLineEndings,
+  normalizeLineEndings: normalizeEol,
   STEP_WORKFLOWS,
   HOST_LOOP_FILES,
   CANONICAL_POINTS,

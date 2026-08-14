@@ -23,6 +23,7 @@ const fc = require('fast-check');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { createFixture } = require('./fixtures/index.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // 30000ms: this file's single named bound for every migrated subprocess call
 // below (git plumbing on small mkdtemp fixtures, gsd-tools.cjs/hook CLI runs,
@@ -974,7 +975,7 @@ describe('planWorktreeRecordAgent', () => {
     });
     assert.equal(plan.reason, 'missing_field');
     for (const flag of ['--agent-id', '--path', '--branch', '--base']) {
-      assert.match(plan.hint, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(plan.hint, new RegExp(escapeRegex(flag)));
     }
   });
 

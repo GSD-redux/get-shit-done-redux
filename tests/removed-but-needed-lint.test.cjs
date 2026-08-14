@@ -23,6 +23,7 @@ const { referencesBasename, referencesNpmLockfileDependency, findSurvivingRefere
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 
 describe('removed-but-needed lint: referencesBasename (pure)', () => {
   test('a plain filename reference in prose is found', () => {
@@ -158,13 +159,7 @@ function buildTempRepo(tmpDir, baseFiles, prFiles) {
  * @returns {string} path to the copied script inside tmpDir/scripts/
  */
 function copyScriptInto(tmpDir) {
-  const scriptsDir = path.join(tmpDir, 'scripts');
-  const libDir = path.join(scriptsDir, 'lib');
-  fs.mkdirSync(libDir, { recursive: true });
-  const scriptCopy = path.join(scriptsDir, 'lint-removed-but-needed.cjs');
-  fs.copyFileSync(LINT_SCRIPT, scriptCopy);
-  fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(libDir, 'cli-exit.cjs'));
-  return scriptCopy;
+  return copyScriptWithDeps(ROOT, tmpDir, path.relative(ROOT, LINT_SCRIPT));
 }
 
 describe('removed-but-needed lint: main() end-to-end wiring', () => {

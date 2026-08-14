@@ -59,6 +59,7 @@ const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs'
 // MCP catalog, src/mcp-catalog.cts) — see the comment at its call site below.
 const { shouldCompose } = require('../gsd-core/bin/lib/mcp-catalog.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
 // #2544: the CommonJS marker's single source of truth. classifyMarker() backs
 // BOTH ensureCommonJsMarker() (install) and removeCommonJsMarker() (uninstall),
 // so the write side can no longer clobber a package.json the remove side would
@@ -1968,10 +1969,6 @@ function buildKiloAgentPermissionBlock(claudeTools) {
   }
 
   return lines;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function replaceRelativePathReference(content, fromPath, toPath) {

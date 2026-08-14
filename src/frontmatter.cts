@@ -13,6 +13,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 import { platformReadSync as safeReadFile, platformWriteSync } from './shell-command-projection.cjs';
 import { textEncodingError } from './validate.cjs';
+import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
@@ -84,7 +85,7 @@ const UNTERMINATED_KEY_THRESHOLD = 2;
  * has a false-positive class the other closes.
  */
 function isFrontmatterShaped(region: string): boolean {
-  const lines = region.split(/\r?\n/).filter((line) => line.trim() !== '');
+  const lines = splitLines(region).filter((line) => line.trim() !== '');
   if (lines.length === 0) return false;
   return lines.every((line) => (
     /^\s*[a-zA-Z0-9_-]+:/.test(line)   // key: value
@@ -116,7 +117,7 @@ type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: str
  */
 function parseYamlRegion(yaml: string): Frontmatter {
   const frontmatter: Frontmatter = {};
-  const lines = yaml.split(/\r?\n/);
+  const lines = splitLines(yaml);
 
   // #3257: pending column-0 full-line comments, attached to the next top-level key.
   let pendingComments: string[] = [];
@@ -425,7 +426,7 @@ function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void
  * not modify (e.g. must_haves.artifacts / .prohibitions).
  */
 function sliceTopLevelFrontmatterSegments(yaml: string): Array<{ key: string; raw: string }> {
-  const lines = yaml.split(/\r?\n/);
+  const lines = splitLines(yaml);
   const segments: Array<{ key: string; raw: string }> = [];
   let current: { key: string; raw: string[] } | null = null;
   for (const line of lines) {
@@ -491,7 +492,7 @@ function spliceFrontmatter(content: string, newObj: Frontmatter): string {
     // unrelated `must_haves` block. Keys absent from the original (genuinely new) are
     // regenerated and appended; keys absent from `newObj` are preserved (never silently
     // deleted by a set/merge).
-    const fmLines = fmBlock.split(/\r?\n/);
+    const fmLines = splitLines(fmBlock);
     const inner = fmLines.slice(1, -1).join('\n'); // drop the opening `---` and closing `---`
     let originalParsed: Frontmatter;
     try { originalParsed = extractFrontmatter(fmBlock); } catch { originalParsed = {}; }
@@ -571,28 +572,28 @@ function parseMustHavesBlock(content: string, blockName: string): unknown[] {
   if (!fmMatch) return [];
 
   const yaml = fmMatch[1];
+  const yamlLines = splitLines(yaml);
 
-  // Find must_haves: first to detect its indentation level
-  const mustHavesMatch = yaml.match(/^(\s*)must_haves:\s*$/m);
-  if (!mustHavesMatch) return [];
-  const mustHavesIndent = mustHavesMatch[1].length;
+  // Find must_haves: first to detect its indentation level. Split-then-scan
+  // (rather than a whole-string /m match) so a CRLF or blank-line boundary
+  // can never be absorbed into the indent capture (#3360) — see
+  // .gsd/phase/chore-3413-text-lines-seam/40-design.md.
+  const mustHavesLinePattern = /^(\s*)must_haves:\s*$/;
+  const mustHavesLineIndex = yamlLines.findIndex((line) => mustHavesLinePattern.test(line));
+  if (mustHavesLineIndex === -1) return [];
+  const mustHavesIndent = (yamlLines[mustHavesLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
 
   // Find the block (e.g., "truths:", "artifacts:", "key_links:") under must_haves
   // It must be indented more than must_haves but we detect the actual indent dynamically
-  const blockPattern = new RegExp(`^(\\s+)${blockName}:\\s*$`, 'm');
-  const blockMatch = yaml.match(blockPattern);
-  if (!blockMatch) return [];
+  const blockLinePattern = new RegExp(`^(\\s+)${blockName}:\\s*$`);
+  const blockLineIndex = yamlLines.findIndex((line) => blockLinePattern.test(line));
+  if (blockLineIndex === -1) return [];
 
-  const blockIndent = blockMatch[1].length;
+  const blockIndent = (yamlLines[blockLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
   // The block must be nested under must_haves (more indented)
   if (blockIndent <= mustHavesIndent) return [];
 
-  // Find where the block starts in the yaml string
-  const blockStart = yaml.indexOf(blockMatch[0]);
-  if (blockStart === -1) return [];
-
-  const afterBlock = yaml.slice(blockStart);
-  const blockLines = afterBlock.split(/\r?\n/).slice(1); // skip the header line
+  const blockLines = yamlLines.slice(blockLineIndex + 1); // skip the header line
 
   // List items are indented one level deeper than blockIndent
   // Continuation KVs are indented one level deeper than list items

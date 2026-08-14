@@ -21,11 +21,9 @@ import { KNOWN_TEMPLATE_DEFAULTS } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import phaseIdMod = require('./phase-id.cjs');
+import { escapeRegex } from './pattern.cjs';
 
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
-const { escapeRegex } = phaseIdMod;
 
 // Stop predicate for section-body slicing: a level-2+ heading ends the section.
 const STOP_H2_PLUS = (lv: number): boolean => lv >= 2;
