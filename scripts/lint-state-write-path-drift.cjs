@@ -668,17 +668,34 @@ function collect() {
  * Group `seamFindings` by `ratchetKey` into the baseline entry shape
  * (`{file, source, symbol, count, owner}`), sorted by `file+source`.
  *
- * `owner` is deliberately written as `null` by this mechanical regeneration
- * — the guard can observe WHERE a bypass is and HOW MANY there are, but not
- * which issue owns removing it; inventing one would violate the same
- * "never guess" discipline `qa-smell-ratchet.cjs` applies to its own
- * `issue` field (its `--update` never invents an issue number either).
- * ADR-3408 §8.3 records the two known assignments in this file's
- * `_comment` as human-authored text (Phase 2 / #3469 owns `cmdPhaseComplete`
- * and `patchCore`; Phase 4 / #3471 owns everything else down to zero) — a
- * maintainer transcribes those into the actual `owner` values by hand.
+ * `owner` is NEVER invented by this mechanical regeneration — the guard can
+ * observe WHERE a bypass is and HOW MANY there are, but not which issue owns
+ * removing it; inventing one would violate the same "never guess" discipline
+ * `qa-smell-ratchet.cjs` applies to its own `issue` field (its `--update`
+ * never invents an issue number either). ADR-3408 §8.3 requires every
+ * shipped entry to carry "a named ratchet entry carrying the issue that owns
+ * its removal, never an unrecorded pass" — that owner is HUMAN-CURATED and
+ * must be recorded before the entry ships.
+ *
+ * Because `--baseline` overwrites `BASELINE_PATH` wholesale, a naive
+ * mechanical regeneration would silently re-null every curated `owner` on
+ * each run. To avoid that, `existingEntries` (the baseline as it stood
+ * BEFORE this regeneration, i.e. `loadBaseline().entries`) is optional and,
+ * when supplied, its `owner` values are merged forward onto matching new
+ * entries keyed on `(file, source)` — the same key `ratchetKey` /
+ * `applyRatchet` use to identify a bypass. A key with no prior entry (a
+ * brand-new bypass) still gets `owner: null`, exactly as before; only
+ * already-curated owners survive the regeneration. Re-running `--baseline`
+ * twice in a row is therefore idempotent with respect to `owner`.
  */
-function buildBaselineEntries(seamFindings) {
+function buildBaselineEntries(seamFindings, existingEntries) {
+  const priorOwnerByKey = new Map();
+  if (Array.isArray(existingEntries)) {
+    for (const entry of existingEntries) {
+      priorOwnerByKey.set(ratchetKey(entry), entry.owner);
+    }
+  }
+
   const groups = new Map();
   for (const finding of seamFindings) {
     const key = ratchetKey(finding);
@@ -689,7 +706,7 @@ function buildBaselineEntries(seamFindings) {
         source: finding.source,
         symbol: finding.symbol,
         count: 0,
-        owner: null,
+        owner: priorOwnerByKey.has(key) ? priorOwnerByKey.get(key) : null,
       };
       groups.set(key, group);
     }
@@ -713,7 +730,11 @@ const BASELINE_COMMENT =
   'its entry away.';
 
 function writeBaseline(seamFindings) {
-  const entries = buildBaselineEntries(seamFindings);
+  const priorBaseline = loadBaseline();
+  const entries = buildBaselineEntries(
+    seamFindings,
+    Array.isArray(priorBaseline.entries) ? priorBaseline.entries : null,
+  );
   const doc = { _comment: BASELINE_COMMENT, entries };
   fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
   return entries;

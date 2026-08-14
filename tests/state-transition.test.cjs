@@ -34,7 +34,6 @@ describe('ADR-1769 substrate: field-classification table', () => {
     'preserve-when-unchanged',
     'preserve-always',
     'preserve-if-placeholder',
-    'clear',
   ]);
 
   test('every classified field has a { source, preservation } row with known enum values', () => {
@@ -417,7 +416,6 @@ describe('ADR-1769 Phase 1: property tests (RULESET.TESTS.property-based-testing
       'preserve-when-unchanged',
       'preserve-always',
       'preserve-if-placeholder',
-      'clear',
     ]);
     fc.assert(
       fc.property(fc.string(), (s) => {
@@ -1475,7 +1473,7 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
 // #3258: every FIELD_CLASSIFICATION row declaring a preservation policy must be
 // honored by applyStatePreservation (the table-consuming pass). The table's own
 // docstring promises "a policy change is a one-row table edit" — this invariant
-// proves it: for every non-`derive`/non-`clear` row, a minimal input where the
+// proves it: for every non-`derive` row, a minimal input where the
 // declared policy would restore the snapshot value DOES restore it. Adding a
 // new preservation row without an implementation branch makes this fail.
 //

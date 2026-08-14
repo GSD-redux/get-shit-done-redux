@@ -379,21 +379,19 @@ describe('D13 — an unreadable file is reported, not fatal', () => {
     // monkeypatched fs.readFileSync is actually in effect for the call.
     const originalArgv = process.argv;
     const originalWrite = process.stdout.write;
+    t.after(() => {
+      process.stdout.write = originalWrite;
+      process.argv = originalArgv;
+      process.exitCode = 0;
+    });
     let captured = '';
     process.stdout.write = function patchedWrite(chunk) {
       captured += chunk;
       return true;
     };
-    let exitCode;
-    try {
-      process.argv = [originalArgv[0], GUARD_PATH, '--json'];
-      guard.main(['--json']);
-      exitCode = process.exitCode;
-    } finally {
-      process.stdout.write = originalWrite;
-      process.argv = originalArgv;
-      process.exitCode = 0;
-    }
+    process.argv = [originalArgv[0], GUARD_PATH, '--json'];
+    guard.main(['--json']);
+    const exitCode = process.exitCode;
 
     assert.strictEqual(exitCode, 1);
     const parsed = JSON.parse(captured);

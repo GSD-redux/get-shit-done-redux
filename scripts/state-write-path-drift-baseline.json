@@ -6,28 +6,28 @@
       "source": "writeStateMd(statePath, stateContent, cwd);",
       "symbol": "writeStateMd",
       "count": 1,
-      "owner": null
+      "owner": "sanctioned-permanent"
     },
     {
       "file": "src/milestone.cts",
       "source": "writeStateMd(statePath, result.content, cwd);",
       "symbol": "writeStateMd",
       "count": 1,
-      "owner": null
+      "owner": "#3471"
     },
     {
       "file": "src/phase.cts",
       "source": "stateContent = syncStateFrontmatter(",
       "symbol": "syncStateFrontmatter",
       "count": 1,
-      "owner": null
+      "owner": "#3469"
     },
     {
       "file": "src/state.cts",
       "source": "writeStateMd(statePath, modified, cwd);",
       "symbol": "writeStateMd",
       "count": 1,
-      "owner": null
+      "owner": "#3471"
     }
   ]
 }
