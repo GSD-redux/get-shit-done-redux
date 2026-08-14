@@ -139,9 +139,13 @@ export function resolveExplicitRuntime(
  * Deliberately NOT inside `resolveExplicitRuntime`: that function's null return
  * is the signal #3245's host-detection rung keys on, and the marker is an
  * install-time identity, not one of the two explicit per-session sources.
- * Placing it here leaves `resolveReportedRuntime`'s ladder byte-for-byte
- * unchanged. The marker read is a bare file read — no config normalization, no
- * writes.
+ * Placing it here leaves `resolveReportedRuntime`'s EXPLICIT rungs unchanged —
+ * but that ladder is not left alone: this PR adds the marker to it separately,
+ * in `host-runtime-detection.cts`, at a DIFFERENT position (BELOW detection
+ * rather than above the default), because a live session signal outranks what a
+ * tree was merely installed for. Both ladders gain the rung; they order it
+ * differently on purpose. See that file's own comment for the reasoning. The
+ * marker read is a bare file read — no config normalization, no writes.
  *
  * @param projectDir - path to the project directory, or null/undefined
  * @returns the resolved runtime name

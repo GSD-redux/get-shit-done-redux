@@ -178,6 +178,61 @@ describe('per-install .gsd-runtime marker is consulted by the canonical resolver
     );
   });
 
+  // Review Minor (#3382): the two degenerate marker states were relied on but
+  // never pinned. Both must fall through to the pre-marker behavior rather than
+  // throw or resolve to garbage — a marker rung that can crash the resolver is
+  // worse than the bug it fixes, since ~71 consumers sit on this call.
+  test('an unrecognized runtime string in the marker behaves exactly like the other rungs', (t) => {
+    const installDir = realInstall(t, 'qwen');
+    const proj = neutralProject(t);
+    fs.writeFileSync(path.join(installDir, 'gsd-core', '.gsd-runtime'), 'notarealruntime-v9\n');
+
+    const probe = (extraEnv, cwd) => {
+      const env = { ...process.env, HOME: installDir, USERPROFILE: installDir, ...extraEnv };
+      if (!('GSD_RUNTIME' in extraEnv)) delete env.GSD_RUNTIME;
+      const res = runNode(
+        ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],
+        { cwd, env, timeoutMs: PROBE_TIMEOUT_MS },
+      );
+      assert.equal(res.outcome, 'exited', `resolver probe did not complete: ${res.outcome}`);
+      return res.stdout.trim();
+    };
+
+    // The repo deliberately tolerates unknown/future runtime names — see
+    // runtime-name-policy.cts ("unknown / future runtimes -> AGENTS.md, safe
+    // cross-agent default"), and `resolveRuntimeNameFromCandidates` returns
+    // `canonicalizeRuntimeName(x) || x`. So the contract worth pinning is NOT
+    // "reject unknown names" — it is that the marker rung applies the SAME
+    // policy as the two explicit rungs above it. A marker rung that invented
+    // stricter validation than GSD_RUNTIME/config would be its own defect.
+    const viaMarker = probe({}, proj);
+    const viaEnv = probe({ GSD_RUNTIME: 'notarealruntime-v9' }, neutralProject(t));
+    assert.equal(viaMarker, 'notarealruntime-v9', 'the marker rung must pass an unknown name through, as its siblings do');
+    assert.equal(
+      viaMarker,
+      viaEnv,
+      'the marker rung must treat an unrecognized runtime name exactly as GSD_RUNTIME does — one name policy, not two',
+    );
+  });
+
+  test('a marker path that is a DIRECTORY (EISDIR) falls through instead of throwing', (t) => {
+    const installDir = realInstall(t, 'qwen');
+    const proj = neutralProject(t);
+    // Replace the marker file with a directory — readFileSync then throws EISDIR.
+    const markerPath = path.join(installDir, 'gsd-core', '.gsd-runtime');
+    fs.unlinkSync(markerPath);
+    fs.mkdirSync(markerPath, { recursive: true });
+
+    const env = { ...process.env, HOME: installDir, USERPROFILE: installDir };
+    delete env.GSD_RUNTIME;
+    const res = runNode(
+      ['-e', `const rs=require(${JSON.stringify(path.join(installDir, 'gsd-core', 'bin', 'lib', 'runtime-slash.cjs'))});process.stdout.write(rs.resolveRuntime(process.cwd()))`],
+      { cwd: proj, env, timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    assert.equal(res.outcome, 'exited', `an EISDIR marker crashed the resolver instead of falling through: ${res.outcome}`);
+    assert.equal(res.stdout.trim(), 'claude', 'an unreadable marker must fall through to the default');
+  });
+
   test('model-resolver and runtime-slash share ONE marker read', () => {
     // The read moved to runtime-slash; model-resolver imports it. Two
     // implementations with two caches is the divergence shape this avoids.
