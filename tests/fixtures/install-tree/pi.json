@@ -368,6 +368,7 @@
   "gsd-hooks/lib/cursor-workspace.js",
   "gsd-hooks/lib/git-cmd.js",
   "gsd-hooks/lib/gsd-graphify-rebuild.sh",
+  "gsd-hooks/lib/injection-patterns.js",
   "gsd-hooks/lib/isolation-sentinel.js",
   "gsd-hooks/managed-hooks-registry.cjs",
   "gsd-hooks/package.json",
