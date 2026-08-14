@@ -24,6 +24,12 @@ const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cliExitMod = require('./cli-exit.cjs');
 const { ExitError } = cliExitMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import roadmapParserMod = require('./roadmap-parser.cjs');
+const { extractCurrentMilestoneScoped } = roadmapParserMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -183,6 +189,32 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
         const hasPhaseEntry = /^#{2,4}\s*Phase\s+\S/im.test(roadmapContent);
         if (!hasPhaseEntry && !warnings.some((w) => w.code === 'V002')) {
           warnings.push({ code: 'V004', message: 'ROADMAP.md contains no recognizable phase entries (no "### Phase N:" headings)' });
+        }
+
+        // #3263: a whole-document phase check (V004 above) is satisfied by a
+        // document whose phase entries live OUTSIDE the active milestone's
+        // resolved window — e.g. an intervening version-bearing heading closes
+        // the window before its own `### Phase N:` sections. That truncation
+        // is exactly what the #3184 scope discriminator classifies, so ask
+        // the single owner (never re-derive the window shape here —
+        // lint-milestone-window-drift bans local copies) and surface a
+        // non-COMPLETE-but-not-empty verdict. TRUNCATED only: a genuinely
+        // phase-less milestone classifies COMPLETE (V004 owns that case) and
+        // an unscoped/unreadable window is a different failure mode with a
+        // different remediation, deliberately not warned here.
+        try {
+          const scoped = extractCurrentMilestoneScoped(contentAfterBom, cwd);
+          if (scoped.scope === SCOPE.TRUNCATED) {
+            warnings.push({
+              code: 'V005',
+              message:
+                'Active milestone window is truncated: phase entries exist in ROADMAP.md but are excluded from the ' +
+                'active milestone\'s resolved window (check for a heading between the milestone heading and its "### Phase N:" sections)',
+            });
+          }
+        } catch {
+          // The classifier is best-effort here — a throw must not mask the
+          // structural warnings already collected above.
         }
 
         // W021 only fires when phase_id_convention is explicitly 'milestone-prefixed'.
