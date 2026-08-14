@@ -733,12 +733,13 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </parallel_execution>
 
        <execution_context>
-       @~/.claude/gsd-core/workflows/execute-plan.md
-       @~/.claude/gsd-core/templates/summary.md
-       @~/.claude/gsd-core/references/checkpoints.md
-       @~/.claude/gsd-core/references/tdd.md
-       @~/.claude/gsd-core/references/worktree-path-safety.md
-       ${CONTEXT_WINDOW < 200000 ? '' : '@~/.claude/gsd-core/references/executor-examples.md'}
+       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Do NOT leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string, so an include line arrives as literal text and the executor never sees the file (#3324).
+       - `~/.claude/gsd-core/workflows/execute-plan.md`
+       - `~/.claude/gsd-core/templates/summary.md`
+       - `~/.claude/gsd-core/references/checkpoints.md`
+       - `~/.claude/gsd-core/references/tdd.md`
+       - `~/.claude/gsd-core/references/worktree-path-safety.md`
+       ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>
 
        <files_to_read>
