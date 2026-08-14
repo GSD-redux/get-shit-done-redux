@@ -192,17 +192,21 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
     );
   });
 
-  test('execute-phase prompt anchors subagent file paths to project_root before files_to_read (#280)', () => {
-    const filesIdx = executePhaseSrc.indexOf('<required_reading>');
-    assert.ok(filesIdx !== -1, 'files_to_read block not found in execute-phase.md');
+  test('execute-phase prompt anchors subagent file paths to project_root before required_reading (#280)', () => {
+    // Anchor on the dispatch's PROJECT_ROOT computation, then require the
+    // nearest <required_reading> block to open just before it — the executor
+    // must be told to compute the root BEFORE reading the listed files
+    // (#3423 note: execute-phase carries several such blocks, so a bare
+    // indexOf on the tag can anchor to the wrong one).
+    const prIdx = executePhaseSrc.indexOf('PROJECT_ROOT=$(git rev-parse --show-toplevel');
+    assert.ok(prIdx !== -1, 'executor dispatch must compute PROJECT_ROOT in the prompt');
+    const filesIdx = executePhaseSrc.lastIndexOf('<required_reading>', prIdx);
+    assert.ok(filesIdx !== -1, 'required_reading block not found before the PROJECT_ROOT computation');
+    assert.ok(prIdx - filesIdx < 1800, 'required_reading block must sit adjacent to the PROJECT_ROOT computation');
     const dispatchSnippet = executePhaseSrc.slice(filesIdx, filesIdx + 1800);
     assert.ok(
-      dispatchSnippet.includes('PROJECT_ROOT=$(git rev-parse --show-toplevel'),
-      'executor dispatch must compute PROJECT_ROOT in the prompt before file reads',
-    );
-    assert.ok(
       dispatchSnippet.includes('${PROJECT_ROOT}/'),
-      'executor files_to_read paths must be anchored to ${PROJECT_ROOT}/',
+      'executor required_reading paths must be anchored to ${PROJECT_ROOT}/',
     );
   });
 

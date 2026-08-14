@@ -110,7 +110,7 @@ them at this step, from data it already has in-context from `discover_and_group_
 
    - **`id`** — the plan id from `PLAN_INDEX`, e.g. `"01-01"`.
    - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`
-     prompt (the `<objective>`/`<execution_context>`/`<files_to_read>`/
+     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/
      `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/
      `{phase_name}` substituted) — a short summary here would NOT reproduce
      step 3's behavior and would violate the "identical artifacts" contract.

@@ -230,6 +230,7 @@ describe('READING: no legacy <files_to_read> blocks in spawner surfaces', () => 
     path.join(__dirname, '..', 'commands'),
     path.join(__dirname, '..', 'gsd-core', 'references'),
     path.join(__dirname, '..', 'gsd-core', 'templates'),
+    path.join(__dirname, '..', 'capabilities'), // fragments emit spawn blocks too (#3423 blocker)
   ];
   const files = SPAWNER_DIRS.flatMap((d) => listMarkdownRecursive(d)).sort();
 
