@@ -1780,6 +1780,7 @@ describe('#767 Parity: docs/AGENTS.md "Disallowed Tools" rows match READONLY_AGE
       const sectionEnd = nextSectionIdx === -1 ? agentsDoc.length : nextSectionIdx;
       const section = agentsDoc.slice(agentHeaderIdx, sectionEnd);
 
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/AGENTS.md table row, bounded, not adversarial input
       const disallowedMatch = section.match(/\|\s*\*\*Disallowed Tools\*\*\s*\|\s*([^|]+)\|/);
       assert.ok(disallowedMatch,
         `docs/AGENTS.md section for ${agent} must have a "Disallowed Tools" table row`);

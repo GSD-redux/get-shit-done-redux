@@ -79,13 +79,15 @@ import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
-const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphMod;
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
 
 // #612: `resolvePhaseIdConvention` is the federated resolver every bracket read
 // on this branch selects from — here it selects the write-time milestone-scope
 // guard's terminator vocabulary (see assertDescriptionPreservesMilestoneScope).
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream, resolvePhaseIdConvention } =
   planningWorkspace;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { extractFrontmatter } = frontmatterMod;
 const {
   readModifyWriteStateMd,
@@ -770,7 +772,20 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   // `plans/SUMMARY-01.md` correctly) instead of a bespoke ID-Set built from
   // extractCanonicalPlanId, which only ever handled the root-canonical
   // `-PLAN.md`/`-SUMMARY.md` naming form.
-  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, summaryFiles));
+  //
+  // #3345: the summary list is filtered through the SAME shared predicate
+  // scanPhasePlans filters its countable set with
+  // (plan-dependency-graph.cjs's isSummaryFileBlocked), so a SUMMARY declaring
+  // `status: blocked` reads as NO completion record here — has_summary false,
+  // the plan lands in `incomplete` — exactly matching the count side. Fail-open
+  // on a SUMMARY with no status key / unreadable file (filename fallback);
+  // `status: halted` stays summarized (#2830 designed stop). summaryFileByPlanId
+  // below still indexes EVERY summary on disk because the halted lookup is a
+  // file resolution for reading status, not a completion pairing.
+  const countableSummaryFiles = summaryFiles.filter(
+    (f) => !isSummaryFileBlocked(path.join(phaseDir, f)),
+  );
+  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, countableSummaryFiles));
   // #2830: reverse lookup from a completed plan's id (exact or canonical) to
   // the actual summary filename, so a plan's own SUMMARY frontmatter can be
   // read for its `status`. Shared builder (also used by phase-locator.cts's
@@ -2270,7 +2285,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let nextPhaseName: string | null = null;
   let isLastPhase = true;
 
+  // #3311: typed conflict descriptor surfaced on the result JSON alongside the
+  // warnings[] entry below (same parity pattern as
+  // verification_stale_check_indeterminate).
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+
   const verificationBlocked = withPlanningLock(cwd, () => {
+    // #3311: completing a phase while a live milestone claim (phase + session)
+    // holds a DIFFERENT phase means two sessions are working two phases against
+    // the single Current Position slot. Warn via the established warnings[]
+    // channel (rendered by execute-phase.md's "If has_warnings is true" step)
+    // rather than blocking — the claim may simply be stale-but-live.
+    milestoneConflict = milestoneLockMod.checkMilestoneConflictForPhase(cwd, phaseNum);
+    if (milestoneConflict) {
+      const holder = milestoneConflict.locked_session ?? 'an unknown (headless) session';
+      const actor = milestoneConflict.session ?? 'an unknown (headless) session';
+      warnings.push(
+        `milestone lock conflict (#3311): ${holder} holds the milestone claim for phase ` +
+          `${milestoneConflict.locked_phase}, but ${actor} is completing phase ${phaseNum} — ` +
+          `STATE.md's Current Position is a single slot; verify it before trusting it`,
+      );
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `phase.complete ${phaseNum}`);
+    }
     // #2617: pass the project's runtime so the blocked-completion error below
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
@@ -2885,7 +2921,17 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       // pattern mirrors the sibling phasePattern's anchoring (only whitespace/bold
       // between the box and "Phase", a required `:`) so unrelated checklist lines
       // that merely mention "Phase N" don't match.
-      if (isLastPhase && roadmapContent !== null) {
+      // #3350: this stage answers a DIFFERENT question than stages 1-2 ("what is
+      // the next actionable phase?" vs "is this the last phase?"), so it must not
+      // be gated on their answer. Gating on isLastPhase let a merely-positionally
+      // next higher heading (stage 2) permanently mask a genuinely-outstanding
+      // lower phase — stage 2 cleared isLastPhase and this scan never ran. The
+      // scan already refuses anything not strictly lower than the completed phase
+      // (plus sentinels, #2949), so running it unconditionally cannot manufacture
+      // a wrong answer: when no lower phase is outstanding it finds nothing and
+      // stages 1-2's pick stands unchanged; in the masking case isLastPhase is
+      // already false, so the last-phase signal has no reachable regression.
+      if (roadmapContent !== null) {
         try {
           const milestoneScope = extractCurrentMilestone(roadmapContent, cwd);
           const cbPattern = new RegExp(
@@ -2974,11 +3020,27 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // the intent; pass it as authoritative so the sync's prose
         // re-derivation cannot rewrite current_phase_name to the name's own
         // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`).
-        stateContent = syncStateFrontmatter(
-          stateContent,
-          cwd,
-          nextPhaseDisplayName ? { current_phase_name: nextPhaseDisplayName } : undefined,
-        );
+        // #3350: PAIR the override. When STATE.md's body carries no Current
+        // Phase / Phase field to re-derive from (narrative prose), the #905
+        // preserve guard in syncStateFrontmatter keeps the OLD frontmatter
+        // current_phase while the authoritative current_phase_name advances —
+        // leaving the two fields describing different phases. Pin BOTH to the
+        // resolved next phase in that case. When the body DOES carry the field
+        // (completePhaseCore just rewrote it), stay name-only so the body's
+        // richer `N of T (name)` derived shape survives the sync.
+        const fmBody = frontmatterMod.stripFrontmatter(stateContent);
+        const bodyHasPhaseField =
+          stateExtractField(fmBody, 'Current Phase') != null ||
+          stateExtractField(fmBody, 'Phase') != null;
+        const authoritativeFm: Record<string, string> | undefined = nextPhaseDisplayName
+          ? bodyHasPhaseField || !nextPhaseNum
+            ? { current_phase_name: nextPhaseDisplayName }
+            : {
+                current_phase: String(nextPhaseNum),
+                current_phase_name: nextPhaseDisplayName,
+              }
+          : undefined;
+        stateContent = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
       }
@@ -2991,6 +3053,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     } else {
       runPhaseCompleteTransaction();
     }
+    // #3311: a successful completion of the CLAIMED phase releases the
+    // milestone claim — regardless of which session completes it (an
+    // orchestrator cleaning up after a dead session must not be blocked by the
+    // dead session's own claim). No-ops when the claim names another phase.
+    milestoneLockMod.releaseMilestonePhase(cwd, phaseNum);
     return null;
   });
 
@@ -3049,6 +3116,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     warnings,
     has_warnings: warnings.length > 0,
     verification_stale_check_indeterminate: staleCheckIndeterminate,
+    milestone_conflict: milestoneConflict,
   };
 
   output(result, raw);

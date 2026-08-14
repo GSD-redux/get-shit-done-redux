@@ -531,6 +531,7 @@ describe('guard <-> complete-milestone workflow binding (the escape hatch is WIR
     // binding fails if any reorganize step other than the sentinel-armed one
     // is (re)introduced without hatch wiring of its own.
     const src = fs.readFileSync(workflowPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored complete-milestone.md workflow, bounded prose, not adversarial input
     const names = [...src.matchAll(/<step name="([^"]*reorganize[^"]*)">/g)].map((m) => m[1]);
     assert.deepEqual(names, ['reorganize_roadmap_and_delete_originals'],
       'complete-milestone.md must contain exactly one ROADMAP-reorganize step — the ' +

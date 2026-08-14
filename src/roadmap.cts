@@ -1309,6 +1309,14 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
     // Review fix (F2): `(?:^|\n)` anchors the match to start-of-line so mid-line
     // occurrences like `***Plans:***` embedded in a sentence or `OpenPlans: foo`
     // do not trigger a false match. Groups 1 and 2 retain the same semantics.
+    // #3415: empirically verified linear-time to 10.9MB / 320,000 lines of adversarial
+    // checklist input (0.31ms@1000 lines -> 8.4ms@320,000 lines). The outer `+` group has
+    // no trailing constraint after it in the pattern, so a successful greedy pass never
+    // needs to explore alternate `\r?\n?` boundary partitions to satisfy something later —
+    // it accepts the first complete parse and stops, which rules out the #2128-class
+    // ambiguous-boundary blowup despite the nested-quantifier shape. Non-global match on
+    // already phase-sliced content, not the whole file.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- outer `+` has no trailing constraint to force re-partitioning; measured linear to 10.9MB
     const plansBlockMatch = phaseSection.match(/(?:^|\r?\n)(\*{0,2}Plans\*{0,2}:[^\r\n]*\r?\n)((?:\s*-\s*\[[ x]\][^\r\n]*\r?\n?)+)/i);
     if (!plansBlockMatch) return;
 

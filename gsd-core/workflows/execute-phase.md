@@ -655,7 +655,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    Pass paths only — executors read files themselves.
 
-   **Executor routing (#1689).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
+   **Executor routing (#1689/#3370).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
 
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
 
@@ -733,12 +733,13 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </parallel_execution>
 
        <execution_context>
-       @~/.claude/gsd-core/workflows/execute-plan.md
-       @~/.claude/gsd-core/templates/summary.md
-       @~/.claude/gsd-core/references/checkpoints.md
-       @~/.claude/gsd-core/references/tdd.md
-       @~/.claude/gsd-core/references/worktree-path-safety.md
-       ${CONTEXT_WINDOW < 200000 ? '' : '@~/.claude/gsd-core/references/executor-examples.md'}
+       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
+       - `~/.claude/gsd-core/workflows/execute-plan.md`
+       - `~/.claude/gsd-core/templates/summary.md`
+       - `~/.claude/gsd-core/references/checkpoints.md`
+       - `~/.claude/gsd-core/references/tdd.md`
+       - `~/.claude/gsd-core/references/worktree-path-safety.md`
+       ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>
 
        <files_to_read>

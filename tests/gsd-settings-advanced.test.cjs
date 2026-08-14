@@ -135,6 +135,7 @@ describe('gsd-settings-advanced — file scaffolding', () => {
 
   test('command frontmatter has name, description, allowed-tools', () => {
     const text = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md frontmatter, fixed-size author-controlled content
     const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'command file missing frontmatter block');
     const fm = fmMatch[1];

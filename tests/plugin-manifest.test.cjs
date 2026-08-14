@@ -978,6 +978,7 @@ describe('H: skills surface projection (#1596)', () => {
     assert.ok(skillDirs.length > 0, 'must have at least one skill dir');
     for (const dir of skillDirs) {
       const raw = fs.readFileSync(path.join(SKILLS_DIR, dir.name, 'SKILL.md'), 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own generated SKILL.md frontmatter, fixed-size author-controlled content
       const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       assert.ok(fmMatch, `${dir.name}/SKILL.md must have frontmatter`);
       const fm = fmMatch[1];

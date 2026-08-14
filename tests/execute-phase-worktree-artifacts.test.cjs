@@ -41,6 +41,7 @@ describe('execute-phase worktree: shared artifact ownership (#1571)', () => {
 
     // Extract the worktree Task() block (between "Worktree mode" and "Sequential mode")
     const worktreeMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       /\*\*Worktree mode\*\*[\s\S]*?<success_criteria>([\s\S]*?)<\/success_criteria>/
     );
     assert.ok(worktreeMatch, 'should find success_criteria inside the worktree mode Task block');
@@ -57,6 +58,7 @@ describe('execute-phase worktree: shared artifact ownership (#1571)', () => {
 
     // Extract the worktree Task() block
     const worktreeMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       /\*\*Worktree mode\*\*[\s\S]*?<success_criteria>([\s\S]*?)<\/success_criteria>/
     );
     assert.ok(worktreeMatch, 'should find success_criteria inside the worktree mode Task block');
@@ -73,6 +75,7 @@ describe('execute-phase worktree: shared artifact ownership (#1571)', () => {
 
     // SUMMARY.md is plan-local and safe for worktree agents to create
     const worktreeMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       /\*\*Worktree mode\*\*[\s\S]*?<success_criteria>([\s\S]*?)<\/success_criteria>/
     );
     assert.ok(worktreeMatch, 'should find success_criteria inside the worktree mode Task block');
@@ -113,6 +116,7 @@ describe('execute-phase worktree: shared artifact ownership (#1571)', () => {
 
     // Extract the sequential mode Task() block
     const seqMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       /\*\*Sequential mode\*\*[\s\S]*?<success_criteria>([\s\S]*?)<\/success_criteria>/
     );
     assert.ok(seqMatch, 'should find success_criteria inside the sequential mode Task block');
@@ -129,6 +133,7 @@ describe('execute-phase worktree: shared artifact ownership (#1571)', () => {
 
     // Extract the sequential mode Task() block
     const seqMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       /\*\*Sequential mode\*\*[\s\S]*?<success_criteria>([\s\S]*?)<\/success_criteria>/
     );
     assert.ok(seqMatch, 'should find success_criteria inside the sequential mode Task block');

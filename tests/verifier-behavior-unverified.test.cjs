@@ -82,6 +82,7 @@ test('PARITY: per-truth state never leaks into the overall-status vocabulary', (
 
 test('overall-status enum in verification.cts is unchanged (no per-truth leak)', () => {
   const cts = fs.readFileSync(path.join(ROOT, 'src', 'verification.cts'), 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded src/verification.cts source, not adversarial input
   const m = cts.match(/VERIFIER_STATUSES[^=]*=\s*\[([^\]]*)\]/);
   assert.ok(m, 'VERIFIER_STATUSES array must be present');
   assert.doesNotMatch(m[1], /present_behavior_unverified/i);

@@ -86,6 +86,7 @@ describe('atomic write coverage (#1972)', () => {
       //   hand-written: const { platformWriteSync } = require('./shell-command-projection.cjs')
       //   tsc-compiled:  const x = require("./shell-command-projection.cjs"); x.platformWriteSync(...)
       const hasImport =
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded lib/*.cjs source file, not adversarial input
         /platformWriteSync[^)]*\}\s*=\s*require\(['"]\.\/shell-command-projection\.cjs['"]\)/s.test(content) ||
         /require\(['"]\.\/shell-command-projection\.cjs['"]\)/.test(content);
       assert.ok(

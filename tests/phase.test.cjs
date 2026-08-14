@@ -4370,6 +4370,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4441,6 +4442,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4481,6 +4483,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -5229,8 +5232,14 @@ describe('phase complete excludes 999.x backlog from next-phase (#2129)', () => 
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    // Should find phase 3 from roadmap, NOT 999.1 from filesystem
-    assert.strictEqual(output.next_phase, '3', 'next_phase should be 3, not 999.1');
+    // #3350: with stage 3 (#2028 lowest-outstanding) no longer gated behind
+    // stages 1-2 missing, the unchecked Phase 1 row outranks the positionally-
+    // next Phase 3 heading — a phase is complete iff its roadmap checkbox is
+    // `[x]` (#2028), and Phase 1's row is unchecked despite its dir on disk
+    // (same drift shape #2949's realLowerOutstandingPhaseStillSelected pins).
+    // The #2129 contract itself is unchanged: 999.x is NEVER selected.
+    assert.notEqual(output.next_phase, '999.1', '999.x backlog must never be next_phase');
+    assert.strictEqual(output.next_phase, '1', 'lowest unchecked phase (1) wins over positional 3 (#3350); never 999.1');
     assert.strictEqual(output.is_last_phase, false, 'should not be last phase');
   });
 });
@@ -9823,6 +9832,7 @@ describe('bug-2502: insert-phase must update STATE.md next-phase recommendation'
   test('insert-phase.md update_project_state step covers next-phase pointer', () => {
     const content = fs.readFileSync(INSERT_PHASE_PATH, 'utf-8');
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = content.match(/<step name="update_project_state">([\s\S]*?)<\/step>/i);
     assert.ok(stepMatch, 'insert-phase.md must contain update_project_state step');
     const stepContent = stepMatch[1];
@@ -10375,6 +10385,7 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
         assert.ok(
+          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
           /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );
@@ -10962,3 +10973,289 @@ describe('phase complete stage-3 sentinel filter (#2949)', () => {
   });
 }
 })();
+
+// #3350 — phase complete: a merely-positionally-next higher phase heading
+// (stage 2) must not mask a genuinely-outstanding lower phase (stage 3), and
+// STATE.md frontmatter's current_phase/current_phase_name must stay paired.
+// Matrix: .gsd/bug/fix-3350-phase-complete-name-desync/50-test-matrix.md
+describe('phase complete lowest-outstanding vs positional-next (#3350)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3350-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** Scaffold a phase dir with one executed plan (PLAN + SUMMARY). */
+  function scaffoldPhase(slug, planNum) {
+    const dir = path.join(tmpDir, '.planning', 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const padded = String(planNum).padStart(2, '0');
+    fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan');
+    fs.writeFileSync(path.join(dir, `${padded}-01-SUMMARY.md`), '# Summary');
+  }
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+
+  /**
+   * Row-4 roadmap: phase 5 is completed (dir on disk); phases 3 and 4 are
+   * outstanding (unchecked, never executed, no dirs — optional); higher
+   * headings 6 and 7 are pre-declared with no dirs (stage-1 miss, stage-2 hit).
+   */
+  function writeRow4Roadmap({ withLowerDirs = false, withHigherDir = false } = {}) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 3: Attestation Freeze**
+- [ ] **Phase 4: Corpus Maturation**
+- [ ] **Phase 5: Harness Mechanization**
+- [ ] **Phase 6: Oracle Re-Hardening**
+- [ ] **Phase 7: Recall Monitoring**
+
+### Phase 3: Attestation Freeze
+**Goal:** three
+**Plans:** 1 plans
+
+### Phase 4: Corpus Maturation
+**Goal:** four
+**Plans:** 1 plans
+
+### Phase 5: Harness Mechanization
+**Goal:** five
+**Plans:** 1 plans
+
+### Phase 6: Oracle Re-Hardening
+**Goal:** six
+**Plans:** 1 plans
+
+### Phase 7: Recall Monitoring
+**Goal:** seven
+**Plans:** 1 plans
+`,
+    );
+    scaffoldPhase('05-harness-mechanization', 5);
+    if (withLowerDirs) {
+      scaffoldPhase('03-attestation-freeze', 3);
+      scaffoldPhase('04-corpus-maturation', 4);
+    }
+    if (withHigherDir) {
+      scaffoldPhase('06-oracle-re-hardening', 6);
+    }
+  }
+
+  /** Explicit-field STATE.md (body fields present — the 0xdhx fixture shape). */
+  function writeExplicitState() {
+    fs.writeFileSync(
+      statePath(),
+      `# State
+
+**Current Phase:** 5
+**Current Phase Name:** Harness Mechanization
+**Status:** In progress
+**Current Plan:** 05-01
+**Last Activity:** 2025-01-01
+**Last Activity Description:** Working on phase 5
+`,
+    );
+  }
+
+  /**
+   * Narrative-prose STATE.md (NO body fields) with frontmatter parked on the
+   * just-completed phase — the filed #3350 shape: without the pairing override
+   * current_phase stays at 5 while current_phase_name advances.
+   */
+  function writeNarrativeState() {
+    fs.writeFileSync(
+      statePath(),
+      `---
+current_phase: 5
+current_phase_name: Harness Mechanization
+---
+
+# State
+
+We are wrapping up phase 5 of the milestone; the next actionable phase is
+still to be determined by the roadmap.
+`,
+    );
+  }
+
+  function parseFrontmatterField(content, key) {
+    const m = content.match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  test('lowerOutstandingBeatsHigherHeading', () => {
+    // Row 4 (failing-first): completing 5 with outstanding 3/4 AND pre-declared
+    // higher headings 6/7 must pick the lowest outstanding phase (3), not the
+    // positionally-next heading (6).
+    writeRow4Roadmap();
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.completed_phase, '5');
+    assert.strictEqual(output.is_last_phase, false, 'a higher phase exists — not last');
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `lowest outstanding phase 3 must be next_phase (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.next_phase_name, 'attestation-freeze');
+  });
+
+  test('narrativeStateFrontmatterPairing', () => {
+    // Row 4 + acceptance #2/#5 (failing-first): with a narrative STATE.md and
+    // frontmatter parked on the completed phase, BOTH frontmatter fields must
+    // describe the resolved next phase (3) after the write — never a split.
+    writeRow4Roadmap();
+    writeNarrativeState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.ok(fmPhase !== null, 'frontmatter current_phase must exist');
+    assert.ok(fmName !== null, 'frontmatter current_phase_name must exist');
+    assert.strictEqual(
+      parseInt(fmPhase, 10),
+      3,
+      `current_phase must advance to the resolved next phase 3 (got ${fmPhase})`,
+    );
+    assert.match(fmName, /attestation freeze/i, `current_phase_name must name phase 3 (got ${fmName})`);
+  });
+
+  test('higherStillWinsWhenNoLowerOutstanding', () => {
+    // Row 2 non-regression (acceptance #4): N+k really is the correct next phase
+    // when no lower phase is genuinely outstanding.
+    writeRow4Roadmap();
+    writeExplicitState();
+    // Check phases 3 and 4 off — the higher heading is then the right answer.
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      fs.readFileSync(roadmapPath, 'utf-8')
+        .replace('- [ ] **Phase 3: Attestation Freeze**', '- [x] **Phase 3: Attestation Freeze**')
+        .replace('- [ ] **Phase 4: Corpus Maturation**', '- [x] **Phase 4: Corpus Maturation**'),
+    );
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 6, 'positionally-next 6 wins when no lower phase is outstanding');
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('lowerOnlyStillSelected', () => {
+    // Row 3 non-regression (#2028 original shape): lower outstanding, no higher.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    let roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 6: Oracle Re-Hardening**\n', '')
+      .replace('- [ ] **Phase 7: Recall Monitoring**\n', '')
+      .replace('### Phase 6: Oracle Re-Hardening\n**Goal:** six\n**Plans:** 1 plans\n\n', '')
+      .replace('### Phase 7: Recall Monitoring\n**Goal:** seven\n**Plans:** 1 plans\n', '');
+
+    fs.writeFileSync(roadmapPath, roadmap);
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3, '#2028 behavior preserved');
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('nothingOutstandingStillCompletesMilestone', () => {
+    // Row 1 non-regression: no higher phase (heading or dir) and no unchecked
+    // lower phase → is_last_phase stays true. Higher HEADINGS alone keep
+    // is_last_phase false (stage 2 matches headings regardless of checkbox
+    // state), so this fixture drops them entirely.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    let roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 3: Attestation Freeze**', '- [x] **Phase 3: Attestation Freeze**')
+      .replace('- [ ] **Phase 4: Corpus Maturation**', '- [x] **Phase 4: Corpus Maturation**')
+      .replace('- [ ] **Phase 6: Oracle Re-Hardening**\n', '')
+      .replace('- [ ] **Phase 7: Recall Monitoring**\n', '')
+      .replace('### Phase 6: Oracle Re-Hardening\n**Goal:** six\n**Plans:** 1 plans\n\n', '')
+      .replace('### Phase 7: Recall Monitoring\n**Goal:** seven\n**Plans:** 1 plans\n', '');
+    fs.writeFileSync(roadmapPath, roadmap);
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'nothing outstanding — milestone completes');
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  test('sentinelStillExcludedWithHigherPresent', () => {
+    // Acceptance #3: the #2949 sentinel filter keeps working alongside the
+    // ungate — an unchecked 0.x backlog row never becomes next_phase.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      '- [ ] **Phase 0.1: Backlog sentinel item**\n' + fs.readFileSync(roadmapPath, 'utf-8'),
+    );
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `real phase 3 (not the 0.1 sentinel) is next_phase (got ${output.next_phase})`,
+    );
+  });
+
+  test('explicitBodyFieldsMoveTogether', () => {
+    // Row 4 explicit-field variant (0xdhx fixture A): the body fields AND the
+    // frontmatter must move to phase 3 together — never both-wrong on 6.
+    writeRow4Roadmap();
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\*\s*3\b/.test(state), `body Current Phase must be 3, got: ${state.match(/\*\*Current Phase:\*\*.*/)?.[0]}`);
+    assert.match(state, /\*\*Current Phase Name:\*\*\s*Attestation Freeze/);
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.strictEqual(parseInt(fmPhase, 10), 3, `frontmatter current_phase must derive to 3 (got ${fmPhase})`);
+    assert.match(fmName, /attestation freeze/i, `frontmatter current_phase_name must name phase 3 (got ${fmName})`);
+  });
+
+  test('diskPresentHigherStillLosesToLowerOutstanding', () => {
+    // Row 4 stage-1 variant (failing-first): a higher phase directory ON DISK
+    // (stage-1 hit) also must not mask an outstanding lower phase.
+    writeRow4Roadmap({ withHigherDir: true });
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `lowest outstanding phase 3 beats the on-disk higher phase 6 (got ${output.next_phase})`,
+    );
+  });
+});

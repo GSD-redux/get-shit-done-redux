@@ -94,6 +94,7 @@ describe('gates taxonomy (#1715)', () => {
   test('gsd-plan-checker.md references gates.md in required_reading block', () => {
     const planChecker = path.join(ROOT, 'agents', 'gsd-plan-checker.md');
     const content = fs.readFileSync(planChecker, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
     const match = content.match(/<required_reading>\r?\n([\s\S]*?)\r?\n<\/required_reading>/);
     assert.ok(
       match,
@@ -108,6 +109,7 @@ describe('gates taxonomy (#1715)', () => {
   test('gsd-verifier.md references gates.md in required_reading block', () => {
     const verifier = path.join(ROOT, 'agents', 'gsd-verifier.md');
     const content = fs.readFileSync(verifier, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
     const match = content.match(/<required_reading>\r?\n([\s\S]*?)\r?\n<\/required_reading>/);
     assert.ok(
       match,

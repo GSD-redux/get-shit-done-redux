@@ -64,6 +64,7 @@ describe('config-field-docs', () => {
     // Extract CONFIG_DEFAULTS keys from config-loader.cjs source (moved from core.cjs by ADR-857 phase 2e)
     const coreSource = fs.readFileSync(CORE_PATH, 'utf-8');
     const defaultsMatch = coreSource.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own config-loader.cjs source, fixed-size author-controlled content
       /const CONFIG_DEFAULTS\s*=\s*\{([\s\S]*?)\r?\n\};/
     );
     assert.ok(defaultsMatch, 'Could not find CONFIG_DEFAULTS in config-loader.cjs');
@@ -234,6 +235,82 @@ describe('config-field-docs', () => {
     assert.ok(
       completeRefSection.includes('`workflow.build_command`'),
       'planning-config.md Complete Field Reference must include workflow.build_command'
+    );
+  });
+});
+
+// ─── Capability-enum doc parity (#3303) ─────────────────────────────────────
+
+describe('capability-enum doc parity (#3303)', () => {
+  const CAPABILITY_PATH = path.join(
+    __dirname, '..', 'capabilities', 'code-review', 'capability.json'
+  );
+
+  let docContent;
+  let capability;
+
+  before(() => {
+    docContent = fs.readFileSync(REFERENCE_PATH, 'utf-8');
+    capability = JSON.parse(fs.readFileSync(CAPABILITY_PATH, 'utf-8'));
+  });
+
+  /**
+   * Extract a single Complete-Field-Reference table row by key and split it into
+   * trimmed cells: ['', '`key`', type, default, allowedValues, description, ''].
+   * Row-scoping keeps unrelated wording elsewhere in the doc from satisfying
+   * (or breaking) the parity assertions.
+   */
+  function docRow(key) {
+    const line = docContent
+      .split(/\r?\n/)
+      .find(l => l.startsWith(`| \`${key}\` |`));
+    assert.ok(line, `planning-config.md must have a table row for \`${key}\``);
+    return line.split('|').map(c => c.trim());
+  }
+
+  test('workflow.code_review_depth allowed values match the capability registry (#3303)', () => {
+    const spec = capability.config && capability.config['workflow.code_review_depth'];
+    assert.ok(
+      spec && Array.isArray(spec.values),
+      'capabilities/code-review/capability.json must declare workflow.code_review_depth values'
+    );
+
+    const allowedCell = docRow('workflow.code_review_depth')[4];
+    const docValues = [...allowedCell.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    assert.ok(
+      docValues.length > 0,
+      `workflow.code_review_depth Allowed-Values cell must list quoted values, got: ${allowedCell}`
+    );
+    assert.deepStrictEqual(
+      [...docValues].sort(),
+      [...spec.values].sort(),
+      `planning-config.md workflow.code_review_depth allowed values (${docValues.join(', ')}) ` +
+        `must exactly match what config-set accepts per capability.json (${spec.values.join(', ')})`
+    );
+  });
+
+  test('workflow.code_review_depth default matches the capability registry (#3303)', () => {
+    const spec = capability.config && capability.config['workflow.code_review_depth'];
+    assert.ok(spec, 'capability.json must declare workflow.code_review_depth');
+    const defaultCell = docRow('workflow.code_review_depth')[3];
+    const [docDefault] = [...defaultCell.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    assert.strictEqual(
+      docDefault,
+      spec.default,
+      `planning-config.md workflow.code_review_depth default must match capability.json default (${spec.default})`
+    );
+  });
+
+  test('agent_skills row documents the array-of-strings form (#3303)', () => {
+    const cells = docRow('agent_skills');
+    const allowedCell = cells[4];
+    assert.ok(
+      /\[\s*"<skill-set>"\s*,/.test(allowedCell),
+      `agent_skills Allowed-Values cell must show the array-of-strings form, got: ${allowedCell}`
+    );
+    assert.ok(
+      /array/i.test(cells[5]),
+      'agent_skills description must explain the array form assigns multiple skill sets to one agent type'
     );
   });
 });

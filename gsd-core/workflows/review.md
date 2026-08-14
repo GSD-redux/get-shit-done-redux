@@ -266,11 +266,13 @@ done
 if [ -f ".planning/PROJECT.md" ]; then
   cp .planning/PROJECT.md "${RUN_DIR}/gsd-review-project.md"
 fi
-if ls "${PHASE_DIR}/"*"-CONTEXT.md" >/dev/null 2>&1; then
-  cat "${PHASE_DIR}/"*"-CONTEXT.md" > "${RUN_DIR}/gsd-review-context.md"
+_CTX=( "${PHASE_DIR}"/*-CONTEXT.md )
+if [ ${#_CTX[@]} -gt 0 ]; then
+  cat "${_CTX[@]}" > "${RUN_DIR}/gsd-review-context.md"
 fi
-if ls "${PHASE_DIR}/"*"-RESEARCH.md" >/dev/null 2>&1; then
-  cat "${PHASE_DIR}/"*"-RESEARCH.md" > "${RUN_DIR}/gsd-review-research.md"
+_RESEARCH=( "${PHASE_DIR}"/*-RESEARCH.md )
+if [ ${#_RESEARCH[@]} -gt 0 ]; then
+  cat "${_RESEARCH[@]}" > "${RUN_DIR}/gsd-review-research.md"
 fi
 if [ -f ".planning/REQUIREMENTS.md" ]; then
   cp .planning/REQUIREMENTS.md "${RUN_DIR}/gsd-review-requirements.md"

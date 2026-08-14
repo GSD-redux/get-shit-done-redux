@@ -44,6 +44,7 @@ const { RULES } = worktreeHealth;
 
 const { buildPlanningSnapshot } = require('../../gsd-core/bin/lib/planning-snapshot.cjs');
 const { SEVERITY, REMEDY_ACTION, REMEDY_RISK } = require('../../gsd-core/bin/lib/health-diagnostic.cjs');
+const { inspectWorktreeHealth } = require('../../gsd-core/bin/lib/worktree-safety.cjs');
 
 function planningDirOf(cwd) {
   return path.join(cwd, '.planning');
@@ -271,7 +272,7 @@ describe('W017 — orphan git worktree', () => {
 // ─── W027 — stale git worktree (NEW, split off pre-migration 'W017') ──────
 
 describe('W027 — stale git worktree', () => {
-  test('fires once per stale finding, message carries the interpolated command, args.command is a static <path> template', (t) => {
+  test('fires once per stale finding; message/remedy check for uncommitted work BEFORE any removal and present --force only as an explicit opt-in (#3280)', (t) => {
     const cwd = createTempDir('gsd-3309-w027-1-');
     t.after(() => cleanup(cwd));
     fs.mkdirSync(planningDirOf(cwd), { recursive: true });
@@ -293,15 +294,68 @@ describe('W027 — stale git worktree', () => {
       d.message.startsWith(`Stale git worktree: ${stalePath} (last modified `),
       `message must start with the stale-worktree prefix and path: ${d.message}`,
     );
+    // #3280: staleness is a pure mtime heuristic and carries no information
+    // about whether the tree is clean, so the remediation must establish a
+    // cleanliness check FIRST and keep --force an explicit opt-in — never an
+    // unconditional `Run: git worktree remove <path> --force` instruction an
+    // agent can execute verbatim over uncommitted work.
+    const cleanlinessIdx = d.message.indexOf(`git -C ${stalePath} status --porcelain`);
+    const removeIdx = d.message.indexOf('git worktree remove');
+    const forceIdx = d.message.indexOf('--force');
+    assert.ok(cleanlinessIdx !== -1, `message must include the cleanliness check: ${d.message}`);
+    assert.ok(removeIdx !== -1, `message must include the removal command: ${d.message}`);
     assert.ok(
-      d.message.endsWith(`minutes ago). Run: git worktree remove ${stalePath} --force`),
-      `message must end with the interpolated remove command: ${d.message}`,
+      cleanlinessIdx < removeIdx,
+      `cleanliness check must come BEFORE the removal command: ${d.message}`,
+    );
+    assert.ok(
+      forceIdx > removeIdx,
+      `--force must not be part of the base removal instruction: ${d.message}`,
+    );
+    assert.ok(
+      d.message.includes('if clean run:') && d.message.includes('only add --force to discard changes'),
+      `removal must be conditional and --force an explicit discard opt-in: ${d.message}`,
+    );
+    assert.ok(
+      !d.message.endsWith(`Run: git worktree remove ${stalePath} --force`),
+      `message must not end with the old unconditional forced-removal instruction: ${d.message}`,
     );
     assert.deepEqual(d.remedy, {
       action: REMEDY_ACTION.ADVISE,
       risk: REMEDY_RISK.NONE,
-      args: { command: 'git worktree remove <path> --force' },
+      args: {
+        command:
+          'git -C <path> status --porcelain; if clean: git worktree remove <path>; add --force only to discard changes',
+      },
     });
+  });
+
+  test('#3280: neither message nor remedy reads as an unconditional forced removal', (t) => {
+    const cwd = createTempDir('gsd-3280-w027-unconditional-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const stalePath = path.join(cwd, 'wt-stale');
+    fs.mkdirSync(stalePath, { recursive: true });
+    fs.utimesSync(stalePath, new Date(), new Date(Date.now() - 2 * 60 * 60 * 1000));
+
+    mockGitWorktreeListOk(t, buildPorcelain(['/fake/main-repo', stalePath]));
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W027').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+
+    const unconditionalRe = /(?:^|[.;:]\s*)Run:\s*git worktree remove\s+\S+\s+--force\s*$/;
+    assert.match(diagnostics[0].message, /git -C \S+ status --porcelain/);
+    assert.ok(!unconditionalRe.test(diagnostics[0].message), `message must not be an unconditional forced removal: ${diagnostics[0].message}`);
+    assert.ok(
+      !/^git worktree remove <path> --force$/.test(diagnostics[0].remedy.args.command),
+      `remedy must not be the bare forced-removal command: ${diagnostics[0].remedy.args.command}`,
+    );
+    assert.ok(
+      diagnostics[0].remedy.args.command.startsWith('git -C <path> status --porcelain'),
+      `remedy must lead with the cleanliness check: ${diagnostics[0].remedy.args.command}`,
+    );
   });
 
   test('does not fire for orphan or unverified findings — isolates from W017/W020', (t) => {
@@ -380,5 +434,71 @@ describe('W027 — stale git worktree', () => {
 
     assert.equal(diagnostics.length, 1, 'a stale worktree distinct from the active cwd must still be flagged');
     assert.equal(diagnostics[0].code, 'W027');
+  });
+
+  // ─── #3280 AC7 — staleness-threshold boundary, through the clock seam ────
+  //
+  // The classification W027 consumes is `ageMs > staleAfterMs` (STRICTLY
+  // greater) in `snapshotWorktreeInventory` (`src/worktree-safety.cts`). These
+  // drive the REAL `inspectWorktreeHealth` (the owner of that comparison and
+  // of the `nowMs` clock-injection seam, #1191) with BOTH clocks fixed — a
+  // pinned `nowMs` and an mtime set via `fs.utimesSync` — so no wall-clock is
+  // ever read, and assert the classification at the boundary and just either
+  // side of it. The git seam is exercised through `deps.execGit` (a real
+  // parameter of `inspectWorktreeHealth`, unlike `buildPlanningSnapshot`'s
+  // hardcoded `execGit`).
+  describe('#3280 AC7 — staleness threshold boundary (fixed clock seam)', () => {
+    const STALE_AFTER_MS = 60 * 60 * 1000;
+    const FIXED_NOW_MS = 2 * 60 * 60 * 1000; // arbitrary pinned "now" (epoch + 2h)
+
+    function probeAtAge(t, ageMs) {
+      const cwd = createTempDir('gsd-3280-w027-boundary-');
+      t.after(() => cleanup(cwd));
+      const wtPath = path.join(cwd, 'wt-boundary');
+      fs.mkdirSync(wtPath, { recursive: true });
+      const fixedMtime = new Date(FIXED_NOW_MS - ageMs);
+      fs.utimesSync(wtPath, fixedMtime, fixedMtime);
+
+      const result = inspectWorktreeHealth(
+        cwd,
+        { staleAfterMs: STALE_AFTER_MS, nowMs: FIXED_NOW_MS },
+        {
+          execGit: () => ({
+            exitCode: 0,
+            stdout: buildPorcelain(['/fake/main-repo', wtPath]),
+            stderr: '',
+            signal: null,
+            error: null,
+            timedOut: false,
+          }),
+        },
+      );
+      return { result, wtPath };
+    }
+
+    test('age exactly at the threshold is NOT stale (comparison is strictly greater)', (t) => {
+      const { result } = probeAtAge(t, STALE_AFTER_MS);
+      assert.equal(result.ok, true);
+      assert.deepEqual(
+        result.findings,
+        [],
+        'a worktree exactly at the staleness threshold must not be classified stale',
+      );
+    });
+
+    test('age 1ms past the threshold IS stale (the finding kind that drives W027)', (t) => {
+      const { result, wtPath } = probeAtAge(t, STALE_AFTER_MS + 1);
+      assert.equal(result.ok, true);
+      assert.equal(result.findings.length, 1);
+      assert.equal(result.findings[0].kind, 'stale');
+      assert.equal(result.findings[0].path, wtPath);
+      assert.equal(result.findings[0].ageMinutes, 60);
+    });
+
+    test('age 1ms inside the threshold is NOT stale', (t) => {
+      const { result } = probeAtAge(t, STALE_AFTER_MS - 1);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.findings, [], 'a worktree just inside the staleness threshold must not be classified stale');
+    });
   });
 });

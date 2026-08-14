@@ -228,6 +228,7 @@ describe('gsd-doc-synthesizer agent', () => {
     assert.match(content, /^tools:\s*.*Read.*Write.*Bash.*/m);
   });
   test('documents default precedence ADR > SPEC > PRD > DOC', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored gsd-doc-synthesizer agent markdown, bounded prose, not adversarial input
     const precedenceBlock = content.match(/ADR[^.]*SPEC[^.]*PRD[^.]*DOC/);
     assert.ok(precedenceBlock, 'default precedence ordering must be documented');
   });

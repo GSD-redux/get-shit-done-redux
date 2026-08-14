@@ -563,6 +563,7 @@ describe('security-scan.yml workflow', () => {
   test('workflow does not use direct github context in run commands', () => {
     const content = fs.readFileSync(workflowPath, 'utf-8');
     // Extract only run: blocks and check they don't contain ${{ }}
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own GitHub Actions workflow yml, fixed-size author-controlled content
     const runBlocks = content.match(/run:\s*\|?\s*\r?\n([\s\S]*?)(?=\r?\n\s*-|\r?\n\s*\w+:|Z)/g) || [];
     for (const block of runBlocks) {
       assert.ok(

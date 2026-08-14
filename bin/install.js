@@ -1106,6 +1106,15 @@ function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
 }
 
+// #3329: rewrite already-registered managed `.sh` hook commands to the shape
+// the current installer would generate (the #580/#3393 bash-runner-omission
+// migration the register-only-if-absent path never applied to existing
+// entries). Invoked inside applySettingsJsonHooks in the compiled surface
+// module; re-bound here for tests/consumers, mirroring the #2979 rewriter.
+function reconcileManagedShellHookCommands(settings, expected, opts) {
+  return hooksSurface.reconcileManagedShellHookCommands(settings, expected, opts);
+}
+
 /**
  * Build the GSD-managed Codex SessionStart hook block for config.toml.
  *
@@ -11080,7 +11089,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // brandingRewrites-only branch).
   // cline remains excluded: rules-only local branch + local/global complication
   // that the descriptor-driven path does not handle correctly.
-  const _DESCRIPTOR_AGENTS_RUNTIMES = new Set(['cursor', 'windsurf', 'augment', 'trae', 'codebuddy', 'copilot', 'antigravity', 'qwen', 'kimi']);
+  // #3384: zcode cut over — its agents kind now declares
+  // convertClaudeAgentToZcodeAgent (strips mcp__* grants ZCode's dispatcher
+  // treats as required MCP servers). Without this exclusion the legacy inline
+  // loop below deletes+re-copies zcode's agents RAW, bypassing the converter
+  // (the same hazard the qwen comment above documents).
+  const _DESCRIPTOR_AGENTS_RUNTIMES = new Set(['cursor', 'windsurf', 'augment', 'trae', 'codebuddy', 'copilot', 'antigravity', 'qwen', 'kimi', 'zcode']);
 
   // Always remove stale gsd-* agents first so re-installing with
   // `--minimal` actually shrinks a previously-full install.
@@ -13784,6 +13798,7 @@ module.exports = {
     referencesHook,
     applySettingsJsonHooks,
     rewriteLegacyManagedNodeHookCommands,
+    reconcileManagedShellHookCommands,
     buildCodexHookBlock,
     rewriteLegacyCodexHookBlock,
     buildCodexHookWindowsShimIR,

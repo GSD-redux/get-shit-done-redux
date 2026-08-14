@@ -320,21 +320,35 @@ module.exports = function gsdPiExtension(pi) {
     getArgumentCompletions,
     handler: async (args, ctx) => {
       const cwd = (ctx && ctx.cwd) || process.cwd();
+      // #3456: Pi's command dispatcher awaits the handler and DISCARDS its
+      // return value (agent-session.ts: `await command.handler(args, ctx);
+      // return true;`) — #3097's `{ content: [...] }` return was silently
+      // dropped exactly like the pre-#3097 bare string. The ONLY command-
+      // output mechanism Pi consumes is `ctx.ui.notify(message, type)`
+      // (pi docs: extensions.md#piregistercommandname-options), so the output
+      // is pushed as a side effect on both the success and error paths.
+      // Guarded so a host ctx without `ui` degrades silently instead of
+      // crashing the command.
+      const notify = (ctx && ctx.ui && typeof ctx.ui.notify === 'function')
+        ? (message, type) => ctx.ui.notify(message, type)
+        : null;
       const { family, subcommand, args: rest } = parseGsdCommandArgs(args);
       let dispatchGsdCommand;
       try {
         ({ dispatchGsdCommand } = require(path.join(GSD_CORE, 'bin', 'lib', 'shell-command-projection.cjs')));
       } catch (e) {
-        // #2991: return the structured { content } shape Pi's ExtensionAPI
-        // displays, not a bare string (which Pi silently drops).
-        return { content: [{ type: 'text', text: `GSD engine unavailable: ${e && e.message ? e.message : String(e)}` }] };
+        if (notify) {
+          notify(`GSD engine unavailable: ${e && e.message ? e.message : String(e)}`, 'error');
+        }
+        return;
       }
       const result = dispatchGsdCommand({ family, subcommand, args: rest, cwd });
-      // #2991: match gsd_invoke's proven output shape so Pi actually displays it.
       const text = result.ok
         ? result.stdout
         : `GSD error: ${result.stderr || result.stdout || `dispatch failed (exit ${result.code})`}`;
-      return { content: [{ type: 'text', text }] };
+      if (notify) {
+        notify(text, result.ok ? 'info' : 'error');
+      }
     },
   });
 

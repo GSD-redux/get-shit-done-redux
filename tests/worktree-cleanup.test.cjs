@@ -801,6 +801,7 @@ describe('bug #48: orchestrator cwd-drift guard at execute_waves entry', () => {
 
 describe('bug #48: orchestrator fail-closed handling of verify-only halts', () => {
   const content = fs.readFileSync(EXECUTE_PHASE_PATH, 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
   const withoutDispatchNote = content.replace(/<worktree_branch_check>[\s\S]*?<\/worktree_branch_check>/g, '');
   test('orchestrator documents a fail-closed rule for executor exit 42 / FATAL (#48)', () => {
     assert.ok(/exit 42|FATAL/.test(withoutDispatchNote), 'execute-phase.md must reference executor exit 42 / FATAL outside the dispatch note (#48)');

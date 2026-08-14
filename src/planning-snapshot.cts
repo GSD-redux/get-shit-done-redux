@@ -366,13 +366,22 @@ function buildStateFields(statePath: string): StateFields {
   const section = stateCurrentPositionSlice(body);
   const currentPositionScope = section === null ? SCOPE.TRUNCATED : SCOPE.COMPLETE;
 
-  // #1760 fallback ladder (mirrors `state.cts:1499-1500`'s `resolveStatePhase`
-  // exactly, same `section ?? body` scope for both reads): the legacy bold
-  // `**Current Phase:**` field (what `verify.cts:2109-2111` originally
-  // matched, and what pre-template-migration STATE.md fixtures still use)
-  // takes priority over the current template's bare `Phase: [X] of [Y]`
-  // field — a document carrying both is read the same way `resolveStatePhase`
-  // reads it elsewhere.
+  // #1760 fallback ladder — now a full mirror of `state.cts`'s
+  // `resolveStatePhase` (its three-source ladder at `state.cts:1494-1516`),
+  // including the frontmatter step that ladder leads with:
+  //   1. frontmatter `current_phase` scalar — the machine-readable key
+  //      `gsd-tools state update` / `state begin-phase` persist via
+  //      `syncStateFrontmatter` (`state.cts:2023`), so it takes PRIORITY over
+  //      any body field (#3280: a body-only ladder left W011 structurally
+  //      blind to the one format the product itself writes — a stale body
+  //      `Phase:` remnant even SHADOWED the current frontmatter value).
+  //   2. the legacy bold `**Current Phase:**` field (what `verify.cts:2109-
+  //      2111` originally matched, and what pre-template-migration STATE.md
+  //      fixtures still use).
+  //   3. the current template's bare `Phase: [X] of [Y]` field.
+  // A document carrying several is read the same way `resolveStatePhase`
+  // reads it elsewhere — frontmatter first, then body, in that order.
+  const frontmatterCurrentPhase = stateFieldValue(frontmatter, body, 'current_phase', null);
   const legacyCurrentPhaseLabel = stateFieldValue(frontmatter, section ?? body, null, 'Current Phase', {
     scope: currentPositionScope,
   });
@@ -380,8 +389,14 @@ function buildStateFields(statePath: string): StateFields {
     scope: currentPositionScope,
   });
   const currentPhaseLabel = {
-    value: legacyCurrentPhaseLabel.value ?? templateCurrentPhaseLabel.value,
-    scope: legacyCurrentPhaseLabel.value !== null ? legacyCurrentPhaseLabel.scope : templateCurrentPhaseLabel.scope,
+    value:
+      frontmatterCurrentPhase.value ?? legacyCurrentPhaseLabel.value ?? templateCurrentPhaseLabel.value,
+    scope:
+      frontmatterCurrentPhase.value !== null
+        ? frontmatterCurrentPhase.scope
+        : legacyCurrentPhaseLabel.value !== null
+          ? legacyCurrentPhaseLabel.scope
+          : templateCurrentPhaseLabel.scope,
   };
   const stateStatus = stateFieldValue(frontmatter, section ?? body, 'status', 'Status', {
     scope: currentPositionScope,

@@ -53,6 +53,7 @@ const MINIMAL_STATE_MD = [
 /** Parse progress.total_plans out of the STATE.md frontmatter block. */
 function readTotalPlans(statePath) {
   const written = fs.readFileSync(statePath, 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
   const fmMatch = written.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   assert.ok(fmMatch, 'STATE.md must have a frontmatter block after writeStateMd');
   const m = fmMatch[1].match(/total_plans:\s*(\d+)/);

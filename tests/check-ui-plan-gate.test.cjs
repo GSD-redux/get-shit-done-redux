@@ -33,8 +33,11 @@ const { computeUiPlanGate } = require('../gsd-core/bin/lib/check-command-router.
  *   .planning/ROADMAP.md   — one phase section with `phaseSection` body
  *   .planning/phases/01-test-phase/  — phase directory
  *   (optionally) a *-UI-SPEC.md inside the phase dir
+ *   (optionally) static frontend evidence (#3312): 'component-file' writes
+ *   src/App.tsx; 'package-json' writes a package.json with a react dependency;
+ *   false (default) writes no frontend evidence at all (markdown/bash repo).
  */
-function makeProject({ phaseSection = '', hasUiSpec = false } = {}) {
+function makeProject({ phaseSection = '', hasUiSpec = false, frontendEvidence = 'component-file' } = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-plan-gate-test-'));
   const planningDir = path.join(tmpDir, '.planning');
   const phasesDir = path.join(planningDir, 'phases');
@@ -42,6 +45,16 @@ function makeProject({ phaseSection = '', hasUiSpec = false } = {}) {
 
   fs.mkdirSync(phaseDir, { recursive: true });
   fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({}), 'utf8');
+  if (frontendEvidence === 'component-file') {
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'src', 'App.tsx'), 'export function App() { return null; }\n', 'utf8');
+  } else if (frontendEvidence === 'package-json') {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ name: 'fixture', dependencies: { react: '^18.3.1' } }),
+      'utf8',
+    );
+  }
 
   // Minimal ROADMAP.md with one phase section
   const roadmapContent = [
@@ -100,7 +113,10 @@ describe('computeUiPlanGate — ui.plan-gate check logic (#1026)', () => {
       assert.ok('uiSpecPath' in result, 'uiSpecPath key must be present');
     });
 
-    test('block invariant: block === frontend && !hasUiSpec for all scenarios', () => {
+    test('block invariant: block === frontend && hasFrontendEvidence && !hasUiSpec for all scenarios', () => {
+      // #3312: block additionally requires static frontend evidence — token match
+      // alone no longer blocks (hyphenated proper nouns like `dashboard-financeiro`
+      // satisfy the sniffer's word boundary).
       for (const [label, { tmpDir }] of [
         ['frontendNoSpec', frontendNoSpec],
         ['frontendWithSpec', frontendWithSpec],
@@ -109,8 +125,8 @@ describe('computeUiPlanGate — ui.plan-gate check logic (#1026)', () => {
         const r = computeUiPlanGate(tmpDir, '1');
         assert.strictEqual(
           r.block,
-          r.frontend && !r.hasUiSpec,
-          `${label}: block invariant violated — frontend=${r.frontend} hasUiSpec=${r.hasUiSpec} block=${r.block}`,
+          r.frontend && r.hasFrontendEvidence && !r.hasUiSpec,
+          `${label}: block invariant violated — frontend=${r.frontend} hasFrontendEvidence=${r.hasFrontendEvidence} hasUiSpec=${r.hasUiSpec} block=${r.block}`,
         );
       }
     });
@@ -312,6 +328,134 @@ describe('computeUiPlanGate — ui.plan-gate check logic (#1026)', () => {
         );
       } finally {
         try { cleanup(tmpDir); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  // ── #3312: token match alone must NOT block — static structural corroboration ──
+
+  describe('#3312 structural corroboration — hyphenated proper nouns in non-frontend repos', () => {
+    test('dashboard-financeiro mention, repo with NO frontend evidence → frontend:true but block:false', () => {
+      // The reporter's exact shape: a markdown+bash+config repo (no src/, no
+      // package.json, no component files) whose phase names the repo
+      // `dashboard-financeiro`. The sniffer legitimately matches `dashboard`
+      // (hyphen is a word boundary — same rule that catches `micro-frontend`),
+      // but the gate must not BLOCK without structural frontend evidence.
+      const proj = makeProject({
+        phaseSection: 'Fix broken references in dashboard-financeiro, update .env.tpl and CI workflows.',
+        hasUiSpec: false,
+        frontendEvidence: false,
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.frontend, true,
+          'the token match itself still registers (sniffer semantics unchanged)');
+        assert.strictEqual(r.hasFrontendEvidence, false,
+          'a repo with no component files and no UI-framework dep has no frontend evidence');
+        assert.strictEqual(r.block, false,
+          '#3312: token match without structural evidence must NOT block planning');
+        assert.strictEqual(r.uiSpecPath, null);
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('same proper-noun mention WITH component file in tree → block:true (corroboration restores block)', () => {
+      const proj = makeProject({
+        phaseSection: 'Fix broken references in dashboard-financeiro and adjust the nav layout.',
+        hasUiSpec: false,
+        frontendEvidence: 'component-file',
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.frontend, true);
+        assert.strictEqual(r.hasFrontendEvidence, true, 'src/App.tsx is frontend evidence');
+        assert.strictEqual(r.block, true, 'token match + evidence + no spec → block');
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('package.json with a UI-framework dependency counts as frontend evidence', () => {
+      const proj = makeProject({
+        phaseSection: 'Rebuild the dashboard for the finance team.',
+        hasUiSpec: false,
+        frontendEvidence: 'package-json',
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.hasFrontendEvidence, true,
+          'package.json with a react dependency is frontend evidence even with no component files yet');
+        assert.strictEqual(r.block, true);
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('plain prose UI phase in a repo with NO frontend evidence → block:false (general rule, not a token denylist)', () => {
+      const proj = makeProject({
+        phaseSection: 'Build the user interface and dashboard components for the frontend.',
+        hasUiSpec: false,
+        frontendEvidence: false,
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.frontend, true);
+        assert.strictEqual(r.hasFrontendEvidence, false);
+        assert.strictEqual(r.block, false,
+          'corroboration is required for EVERY token match, not just proper-noun shapes');
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('matchedToken/matchedLine surface what tripped the sniffer (issue: judge in one second)', () => {
+      const proj = makeProject({
+        phaseSection: 'Deliverables: .env.tpl, CI workflows.\n\nReferences: dashboard-financeiro repo.',
+        hasUiSpec: false,
+        frontendEvidence: false,
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.matchedToken, 'dashboard', 'first matched token is surfaced');
+        assert.ok(
+          typeof r.matchedLine === 'string' && r.matchedLine.includes('dashboard-financeiro'),
+          'first matching line is surfaced so the operator can see the proper-noun context',
+        );
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('matchedToken/matchedLine are null for non-frontend phases', () => {
+      const proj = makeProject({
+        phaseSection: 'Add a REST API endpoint and database migration for the user table.',
+        hasUiSpec: false,
+        frontendEvidence: 'component-file',
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.frontend, false);
+        assert.strictEqual(r.matchedToken, null);
+        assert.strictEqual(r.matchedLine, null);
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
+      }
+    });
+
+    test('UI-SPEC present + token match + evidence → block:false (spec still satisfies the gate)', () => {
+      const proj = makeProject({
+        phaseSection: 'Build the frontend dashboard with React components.',
+        hasUiSpec: true,
+        frontendEvidence: 'component-file',
+      });
+      try {
+        const r = computeUiPlanGate(proj.tmpDir, '1');
+        assert.strictEqual(r.frontend, true);
+        assert.strictEqual(r.hasUiSpec, true);
+        assert.strictEqual(r.block, false);
+      } finally {
+        try { cleanup(proj.tmpDir); } catch { /* ignore */ }
       }
     });
   });

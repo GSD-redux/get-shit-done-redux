@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "execute-phase.md": "#1689: per-plan agent_hint routing adds a one-line per-plan fragment reference and swaps the gsd-executor literal for a {EXECUTOR_TYPE} placeholder. Net +6 bytes, still under the ADR-857 Phase 6 byte ceiling (93600); all resolution detail lives in the execute-phase/steps/per-plan-executor-routing.md fragment to keep the host lean."
-  }
-}

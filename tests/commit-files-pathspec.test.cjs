@@ -2876,6 +2876,7 @@ describe('workflow call sites declare --files (#2269)', () => {
         commitLine,
         'secure-phase.md step 7 commit invocation not found — did the workflow drop or rename its SECURITY.md commit?',
       );
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a single line from maintainer-authored secure-phase.md, bounded, not adversarial input
       const filesArg = /--files\s+"([^"]+)"/.exec(commitLine);
       // Two different failures, two different messages. This test derives the
       // scope from the workflow's own quoted --files value, so an UNQUOTED
