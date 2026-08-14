@@ -7128,10 +7128,10 @@ function writeNonClaudeDefaults(runtime) {
     if (releaseLock) {
       try {
         releaseLock();
-      } catch (e) {
+      } catch (releaseError) {
         // A leaked lock blocks the next install, so surface it rather than
         // swallowing; the stale-lock reaper clears it once this pid exits.
-        console.log(`  ${yellow}⚠${reset} Could not release the ~/.gsd install lock: ${e.message}`);
+        console.log(`  ${yellow}⚠${reset} Could not release the ~/.gsd install lock: ${releaseError.message}`);
       }
     }
   }
