@@ -471,15 +471,37 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   // after-unclosed-comment candidates are all correctly excluded.
   function operativeLineIndexes(md, candidateRe) {
     const lines = md.split(/\r?\n/);
+    const injected = new Set();
     const instrumented = lines
-      .map((line, i) => (candidateRe.test(line) ? '- `GSDTEST.CANDIDATE=' + i + '`' : line))
+      .map((line, i) => {
+        if (!candidateRe.test(line)) return line;
+        // CommonMark treats a 4-space-indented line as an indented CODE BLOCK,
+        // which `parsePredicates` does not skip (it accepts indented predicate
+        // declarations by design). Emitting an UNINDENTED marker would strip
+        // that indentation and PROMOTE an indented example to operative — the
+        // exact inversion review round 8 found. Preserve the original indent so
+        // an indented candidate stays an indented code line and is not counted.
+        const indent = (line.match(/^[ \t]*/) || [''])[0];
+        if (/^(?: {4,}|\t)/.test(indent)) return line;
+        injected.add(i);
+        return indent + '- `GSDTEST.CANDIDATE=' + i + '`';
+      })
       .join('\n');
     return parsePredicates(instrumented).predicates
       .filter((p) => p.id === 'GSDTEST.CANDIDATE')
       .map((p) => Number(p.value))
-      // Ignore anything that is not one of our own injected indexes, so a
-      // pre-existing GSDTEST.CANDIDATE line in the source cannot pollute the count.
-      .filter((n) => Number.isInteger(n) && n >= 0 && n < lines.length);
+      // Set membership, not a range check: a pre-existing literal
+      // `GSDTEST.CANDIDATE=<valid index>` in the source would satisfy a range
+      // check and pollute the count.
+      .filter((n) => injected.has(n));
+  }
+
+  // Operative-aware line predicate, for selections that cannot go through the
+  // instrumentation path (an END anchor, or a fence opener). Reuses the same
+  // scanner so fenced / commented / after-unclosed-comment lines are excluded
+  // consistently with `operativeLineIndexes`, rather than testing raw text.
+  function operativeLineSet(md, lineRe) {
+    return new Set(operativeLineIndexes(md, lineRe));
   }
 
   function soleOperativeIndex(name, md, candidateRe, what) {
@@ -494,9 +516,13 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   // commented copies cannot be selected even when byte-identical.
   function regionFrom(md, startIdx, endRe) {
     const lines = md.split(/\r?\n/);
+    // The END anchor must be operative too. Testing raw lines let a fenced
+    // example containing a `###` / `<type ` line truncate the pinned region
+    // early — a false FAILURE on a legitimate doc edit (review round 8).
+    const operativeEnds = operativeLineSet(md, endRe);
     let end = lines.length;
     for (let i = startIdx + 1; i < lines.length; i++) {
-      if (endRe.test(lines[i])) { end = i; break; }
+      if (operativeEnds.has(i)) { end = i; break; }
     }
     return lines.slice(startIdx, end).join('\n').replace(/\s+/g, ' ').trim();
   }
@@ -567,7 +593,24 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   // wording improvement to the placeholder must not false-fail (round-5 Minor).
   test('planner tracer template emits exactly one <automated>-wrapped verify', () => {
     const i = soleOperativeIndex('agents/gsd-planner.md', PLANNER, PLANNER_ANCHOR, 'tracer task shape marker');
-    const after = PLANNER.split(/\r?\n/).slice(i).join('\n');
+    const lines = PLANNER.split(/\r?\n/);
+    // The fence OPENER must be operative AND the first non-blank line after the
+    // marker. Matching the first raw ```xml in the remainder let a commented-out
+    // decoy template be selected while the live one regressed (review round 8) —
+    // this was the one selection in the suite that was not fence/comment aware.
+    let openIdx = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === '') continue;
+      openIdx = j;
+      break;
+    }
+    assert.notStrictEqual(openIdx, -1, 'the tracer task shape marker must be followed by content');
+    assert.ok(
+      operativeLineSet(PLANNER, /^\s*```xml\s*$/).has(openIdx),
+      'the first non-blank line after the tracer task shape marker must be a LIVE ```xml fence opener — '
+      + 'a commented-out or non-adjacent decoy template must not be selectable',
+    );
+    const after = lines.slice(openIdx).join('\n');
     const fence = after.match(/```xml\r?\n([\s\S]*?)```/);
     assert.ok(fence, 'the tracer task shape must be followed by a fenced xml block');
     const verifies = fence[1].match(/<verify>[\s\S]*?<\/verify>/g) || [];
