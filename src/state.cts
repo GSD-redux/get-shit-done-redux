@@ -2428,13 +2428,15 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
   // frontmatter value, #948/#3374) is NOT handled here: it is governed by
   // applyStatePreservation's preserve-when-unchanged delta, applied post-sync
   // by the shared applyPostSyncPreservation pass — run by
-  // readModifyWriteStateMd, by cmdPhaseComplete's adapter (the one caller that
-  // deliberately bypasses the RMW wrapper for the atomic
-  // ROADMAP/REQUIREMENTS/STATE commit), and by writeStateMd (#3374). "Always
-  // prefer frontmatter" here would still be wrong: it would break transforms
-  // that legitimately write a new body value and expect this sync to project
-  // it — the #1230 delta ("did THIS write change the body source?") is what
-  // distinguishes those from a stale harvest.
+  // readModifyWriteStateMd and by cmdPhaseComplete's adapter (the one caller
+  // that deliberately bypasses the RMW wrapper for the atomic
+  // ROADMAP/REQUIREMENTS/STATE commit; #3374). The writeStateMd path
+  // (state sync) intentionally derives from the body instead — its #905
+  // contract is body-beats-frontmatter. "Always prefer frontmatter" here
+  // would still be wrong: it would break transforms that legitimately write a
+  // new body value and expect this sync to project it — the #1230 delta
+  // ("did THIS write change the body source?") is what distinguishes those
+  // from a stale harvest.
   if (!derivedFm['stopped_at'] && existingFm['stopped_at']) {
     derivedFm['stopped_at'] = existingFm['stopped_at'];
   }
@@ -2762,18 +2764,7 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
     // files that buildStateFrontmatter must see (#1967).
     if (cwd) _diskScanCache.delete(cwd);
     const synced = syncStateFrontmatter(content, cwd);
-    // #3374: run the same post-sync preservation pass readModifyWriteStateMd
-    // runs (the gap the PR #3442 review flagged): without it, a caller whose
-    // transform does not refresh the body `Stopped at:` line
-    // (cmdMilestoneComplete, cmdStateSync) let the harvest silently revert a
-    // fresher frontmatter stopped_at to the stale body value — the #3374
-    // Variant A defect class. The pre-image is the on-disk file read inside
-    // the lock; resync=true is the writeStateMd posture (its callers are full
-    // disk re-derivation transitions). A missing file yields an empty
-    // pre-image, every snapshot is empty, and the pass is a no-op.
-    const originalContent = platformReadSync(statePath) || '';
-    const preserved = applyPostSyncPreservation(originalContent, content, synced, statePath, true);
-    platformWriteSync(statePath, preserved);
+    platformWriteSync(statePath, synced);
   } finally {
     releaseStateLock(lockPath);
   }
@@ -2782,18 +2773,21 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
 /**
  * #3374: the shared post-sync preservation pass — the pre/post body-source
  * snapshot + table-driven `applyStatePreservation` + #2736 authoritative
- * re-assert sequence that every STATE.md write path must run between
- * `syncStateFrontmatter` and the write. Extracted from readModifyWriteStateMd
- * so the two write paths that deliberately do NOT go through the RMW wrapper
- * still get the identical policy instead of a second, weaker encoding:
+ * re-assert sequence. Extracted from readModifyWriteStateMd so
+ * `cmdPhaseComplete`'s atomic-commit adapter (phase.cts) — which syncs
+ * STATE.md directly because it is committed atomically with
+ * ROADMAP/REQUIREMENTS and so cannot go through the RMW wrapper — applies the
+ * identical policy instead of a second, weaker encoding. Previously the
+ * adapter had no preservation at all, letting a stale body `Stopped at:` line
+ * silently clobber a fresher frontmatter `stopped_at` on every phase
+ * completion (#3374 Variant A).
  *
- * - `cmdPhaseComplete`'s atomic-commit adapter (phase.cts): STATE.md is
- *   committed atomically with ROADMAP/REQUIREMENTS, so it syncs directly —
- *   previously with no preservation at all, letting a stale body
- *   `Stopped at:` line silently clobber a fresher frontmatter `stopped_at`
- *   (#3374 Variant A).
- * - `writeStateMd` (callers: cmdMilestoneComplete, cmdStateSync): same direct
- *   sync, same exposure (found by the PR #3442 review).
+ * NOT applied on the writeStateMd path: `state sync`'s contract is the
+ * opposite by design (#905 — "body annotation beats existing frontmatter when
+ * both are present": sync exists to re-derive frontmatter from the body), so a
+ * blanket preservation pass there re-locks stale frontmatter. The
+ * milestone-complete equivalent of the #3374 exposure is tracked as a
+ * follow-up (see PR #3491 / the closed PR #3442 review's MAJOR finding).
  *
  * `originalContent` is the pre-write on-disk content (drives the #1230
  * pre-snapshots), `transformedContent` is the post-transform content (the
@@ -4348,7 +4342,7 @@ export = {
   // applyStatePreservation + #2736 re-assert). Exported for cmdPhaseComplete's
   // atomic-commit adapter in phase.cts, which syncs STATE.md directly (it is
   // committed atomically with ROADMAP/REQUIREMENTS) and must apply the same
-  // preservation policy the RMW and writeStateMd paths apply.
+  // preservation policy the RMW path applies.
   applyPostSyncPreservation,
   readStateHeadFreshness,
   withStateLock,
