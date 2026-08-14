@@ -466,7 +466,7 @@ All plans have summaries, but canonical verification has not passed. The phase i
 
 `/clear` then:
 
-`/gsd:execute-phase {phase} ${GSD_WS}` — resumes at the verification gates (does not re-run already-summarized plans)
+`/gsd:execute-phase {phase} ${GSD_WS}` — resumes at the verification gates
 
 ---
 ```
@@ -486,7 +486,7 @@ VERIFICATION.md has an unexpected status. The phase is implementation-complete, 
 
 `/clear` then:
 
-`/gsd:execute-phase {phase} ${GSD_WS}` — regenerate verification (skip if this is an intentional closure marker)
+`/gsd:execute-phase {phase} ${GSD_WS}` — regenerate verification
 
 ---
 ```
