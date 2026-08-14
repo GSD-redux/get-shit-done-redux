@@ -742,6 +742,280 @@ describe('verify plan-structure — checkpoint task types (#2444)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// verify plan-structure — attributed child tags (#3193)
+// A task's child elements (files/action/verify/done + every checkpoint-specific
+// field) must be recognized as present even when the opening tag carries an
+// attribute (e.g. <verify mode="auto">…</verify>), consistent with how the
+// parent <task type="…"> is already read. The presence regexes were literal
+// (/<verify>/.test(body)) and were defeated by any attribute.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('verify plan-structure — attributed child tags (#3193)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Helper: wrap a task body in a complete valid PLAN.md scaffold. Mirrors the
+  // #2444 suite's planWithTask so each test reads as a one-task plan.
+  function planWithTask(taskBody, { autonomous = 'false' } = {}) {
+    return [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [some/file.ts]',
+      `autonomous: ${autonomous}`,
+      'must_haves:',
+      '  truths:',
+      '    - "something"',
+      '---',
+      '',
+      '<tasks>',
+      taskBody,
+      '</tasks>',
+    ].join('\n');
+  }
+
+  function runVerify(planContent) {
+    const planPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-PLAN.md');
+    fs.writeFileSync(planPath, planContent);
+    const result = runGsdTools('verify plan-structure .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // ── AC1: attributed child tags pass with zero findings ──────────────────────
+
+  test('auto task with every required field attributed passes (AC1)', () => {
+    // Every required auto-task child carries a `mode="auto"` attribute on its
+    // opening tag — the exact shape the issue reports as false-flagged.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: attributed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Thing is done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('checkpoint:human-verify with attributed triple passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard, check layout</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:decision with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:decision" gate="blocking">',
+      '  <name>Checkpoint: pick auth provider</name>',
+      '  <decision mode="human">Select authentication provider</decision>',
+      '  <options mode="human">',
+      '    <option id="supabase"><name>Supabase Auth</name><pros>Built-in</pros><cons>Lock-in</cons></option>',
+      '  </options>',
+      '  <resume-signal mode="blocking">Select: supabase</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:human-action with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: complete email verification</name>',
+      '  <action mode="human">Click the verification link in your inbox</action>',
+      '  <instructions mode="human">I created the account; check your email.</instructions>',
+      '  <verification mode="auto">API key works via curl</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('mixed plan: attributed auto task + attributed checkpoint task passes (AC1 realistic)', () => {
+    // Mirrors the issue's "two plans in one project" shape: every required
+    // field across BOTH task types carries an attribute.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: build dashboard</name>',
+      '  <files mode="auto">src/dashboard.ts</files>',
+      '  <action mode="auto">Scaffold the dashboard</action>',
+      '  <verify mode="auto"><automated>npm test</automated></verify>',
+      '  <done mode="auto">Dashboard renders</done>',
+      '</task>',
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: visual review</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.strictEqual(output.task_count, 2, 'should count both tasks');
+  });
+
+  // ── AC2: genuinely absent child tag is still flagged (no false negatives) ───
+
+  test('auto task with attributed siblings but verify omitted still warns (AC2)', () => {
+    // files/action/done are attributed; verify is entirely absent (not bare,
+    // not attributed). The fix must not invent presence from nothing.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: no verify</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do it</action>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('checkpoint:human-verify with attributed siblings but how-to-verify omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI at localhost:3000</what-built>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <how-to-verify>')),
+      `Expected "missing <how-to-verify>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint:human-action with attributed siblings but instructions omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action mode="human">Do the thing</action>',
+      '  <verification mode="auto">curl returns 200</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <instructions>')),
+      `Expected "missing <instructions>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint task with attributed siblings but resume-signal omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI</what-built>',
+      '  <how-to-verify mode="human">Visit</how-to-verify>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <resume-signal>')),
+      `Expected "missing <resume-signal>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  // ── AC3: bare + attributed tags mix cleanly (no regression on bare form) ────
+
+  test('mixed bare and attributed tags within one task pass (AC3)', () => {
+    // <action> is bare; <verify>/<done>/<files> are attributed. Proves the
+    // attribute-tolerant regex did not stop matching the bare opener.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: mixed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action>Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  // ── AC4: boundary — a hyphenated sibling tag must not satisfy a shorter tag ─
+
+  test('<verify-mode> present, <verify> absent does not satisfy <verify> (AC4 boundary)', () => {
+    // The fix uses /<tag[\s>]/ so that `<verify` followed by `-` (as in
+    // `<verify-mode>`) does NOT count as `<verify>` presence. A bare
+    // hyphenated opener must not mask a genuinely-missing shorter tag.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: hyphen sibling</name>',
+      '  <files>some/file.ts</files>',
+      '  <action>Do it</action>',
+      '  <verify-mode>not a real verify tag</verify-mode>',
+      '  <done>Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning despite <verify-mode>: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('<verify> does not satisfy the checkpoint:human-action <verification> requirement (AC4 boundary)', () => {
+    // The [\s>] terminator after the tag name must keep <verify> and
+    // <verification> distinct: a <verify> opener is NOT a <verification>
+    // opener, so a human-action task with only <verify> must still be flagged
+    // for the missing <verification>.
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action>Do it</action>',
+      '  <instructions>Do it.</instructions>',
+      '  <verify><automated>echo ok</automated></verify>',
+      '  <resume-signal>Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <verification>')),
+      `Expected "missing <verification>" error (not satisfied by <verify>): ${JSON.stringify(output.errors)}`
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // verify phase-completeness command
 // ─────────────────────────────────────────────────────────────────────────────
 
