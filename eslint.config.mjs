@@ -139,6 +139,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/planning-snapshot.cjs',
       'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/text-lines.cjs',
+      'gsd-core/bin/lib/token-scanner.cjs',
       'gsd-core/bin/lib/health-diagnostic-types.cjs',
       'gsd-core/bin/lib/health-diagnostic.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/root-existence.cjs',

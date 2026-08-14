@@ -4357,7 +4357,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.join(__dirname, '..');
-const { isGitSubcommand, tokenize } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
+const { isGitSubcommand, tokenize, extractBranchArgument } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
 
 // ── tokenize ─────────────────────────────────────────────────────────────────
 
@@ -4452,6 +4452,36 @@ describe('gsd-validate-commit.sh delegates to git-cmd.js', () => {
       fs.existsSync(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js')),
       'hooks/lib/git-cmd.js does not exist — library file missing',
     );
+  });
+});
+
+// ── extractBranchArgument (#3212 Phase 3, #3414) ─────────────────────────────
+// New capability on the shared scanner (design doc §1.2) — not a migration of
+// existing duplicated logic; no existing consumer wired to it this phase.
+
+describe('git-cmd.js extractBranchArgument', () => {
+  test('row 11: git checkout -b', () => {
+    assert.strictEqual(extractBranchArgument('git checkout -b feat/123-slug'), 'feat/123-slug');
+  });
+
+  test('row 12: quoted branch name', () => {
+    assert.strictEqual(extractBranchArgument('git checkout -b "feat/with spaces"'), 'feat/with spaces');
+  });
+
+  test('row 13: git branch <name> form', () => {
+    assert.strictEqual(extractBranchArgument('git branch feat/123'), 'feat/123');
+  });
+
+  test('row 14: -C path prefix does not confuse the branch-name extraction', () => {
+    assert.strictEqual(extractBranchArgument('git -C /repo checkout -b feat/123'), 'feat/123');
+  });
+
+  test('row 15: unrelated command with checkout-shaped text inside a quoted message returns null', () => {
+    assert.strictEqual(extractBranchArgument('git commit -m "checkout -b fake"'), null);
+  });
+
+  test('row 16: plain checkout (no -b) is not a branch-creation command', () => {
+    assert.strictEqual(extractBranchArgument('git checkout main'), null);
   });
 });
   });

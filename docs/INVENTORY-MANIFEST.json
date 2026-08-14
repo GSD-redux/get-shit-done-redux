@@ -499,6 +499,7 @@
       "teams-status.cjs",
       "template.cjs",
       "text-lines.cjs",
+      "token-scanner.cjs",
       "uat-predicate.cjs",
       "uat.cjs",
       "ui-consideration-probe.cjs",

@@ -598,8 +598,8 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `surface.cjs` | Runtime surface module — manages the runtime enable/disable surface state independently of the install-time profile marker (ADR-0011 Phase 2) |
 | `task-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools task` |
 | `template.cjs` | Template selection and filling with variable substitution |
-| `text-lines.cjs` | Line-terminator handling seam — `splitLines`/`normalizeEol`/`detectEol`/`joinLines`, the sole owner of `?
-` splitting and CRLF normalization; closes #3360's split-then-match fix in `frontmatter.cjs` (ADR-3212 §3, epic #3212 Phase 2, #3413) |
+| `text-lines.cjs` | Line-terminator handling seam — `splitLines`/`normalizeEol`/`detectEol`/`joinLines`, the sole owner of `\r?\n` splitting and CRLF normalization; closes #3360's split-then-match fix in `frontmatter.cjs` (ADR-3212 §3, epic #3212 Phase 2, #3413) |
+| `token-scanner.cjs` | Tokenizer-first seam for stateful grammars — `tokenizeShellLike` (quote-aware shell tokenizer, the primitive `hooks/lib/git-cmd.js` migrated onto) and `indentWidth` (bullet-nesting depth, closes #3169's cross-reference-vs-declaration false positive in `decisions.cts`) (ADR-3212 §4, epic #3212 Phase 3, #3414) |
 | `normalize-test-command.cjs` | Normalizes a resolved test command to a one-shot form so a watch-mode runner (vitest/jest) cannot hang a verification gate (#1857); shared by all three live test-command gates (regression, post-merge, audit-fix) |
 | `uat.cjs` | UAT file parsing, verification debt tracking, audit-uat support |
 | `uat-predicate.cjs` | UAT-passed predicate — markdown-aware evaluation of HUMAN-UAT results; returns pass only when all required checks pass; ignores false-positive contexts (frontmatter, fenced code, blockquotes, HTML comments) |
