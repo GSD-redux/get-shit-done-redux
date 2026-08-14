@@ -2846,6 +2846,7 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
   test('gsd-core/workflows/verify-work.md plan_gap_closure step references {state_path}/{roadmap_path}, not bare .planning literals', () => {
     const wfPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md');
     const content = fs.readFileSync(wfPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = content.match(/<step name="plan_gap_closure">[\s\S]*?<\/step>/);
     assert.ok(stepMatch, 'plan_gap_closure step should exist in verify-work.md');
     const step = stepMatch[0];
@@ -2867,6 +2868,7 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
   test('gsd-core/workflows/execute-phase.md verify_phase_goal step references {requirements_path}, not a bare .planning literal', () => {
     const wfPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
     const content = fs.readFileSync(wfPath, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = content.match(/<step name="verify_phase_goal">[\s\S]*?<\/step>/);
     assert.ok(stepMatch, 'verify_phase_goal step should exist in execute-phase.md');
     const step = stepMatch[0];

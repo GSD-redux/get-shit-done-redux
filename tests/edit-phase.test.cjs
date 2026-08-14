@@ -289,6 +289,7 @@ describe('edit-phase workflow: phase number and position preservation', () => {
 
   test('anti_patterns block renumbering', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const antiPatterns = content.match(/<anti_patterns>([\s\S]*?)<\/anti_patterns>/i);
     assert.ok(antiPatterns, 'workflow should have anti_patterns section');
     assert.ok(
@@ -380,6 +381,7 @@ describe('edit-phase: documentation registration', () => {
     );
     // Locate the edit-phase.md row in the Workflows table and assert the
     // "Invoked by" column documents /gsd-phase --edit (not the deleted form).
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/INVENTORY.md, bounded table rows, not adversarial input
     const rowMatch = inventory.match(/^\|\s*`edit-phase\.md`\s*\|[^|]*\|\s*([^|]+?)\s*\|$/m);
     assert.ok(rowMatch, 'docs/INVENTORY.md must contain an edit-phase.md workflow row');
     const invokedBy = rowMatch[1];

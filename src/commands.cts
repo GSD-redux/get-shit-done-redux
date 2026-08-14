@@ -762,6 +762,7 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     const rendered = renderEffortForRuntime(runtime, universalEffort);
     const newEffortValue = rendered.value;
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, measured linear to 5MB (no-closing-marker adversarial input)
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 

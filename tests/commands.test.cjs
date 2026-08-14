@@ -4406,6 +4406,7 @@ describe('#2279: map-codebase date stamp instructions overwrite existing dates',
     const content = fs.readFileSync(
       path.join(REPO_ROOT, 'gsd-core', 'workflows', 'map-codebase.md'), 'utf-8'
     );
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
     const stampLines = content.match(/Set all date stamps[^\r\n]*/g) || [];
     assert.ok(stampLines.length >= 4,
       `must have ≥4 "Set all date stamps" instructions (4 spawn prompts + 1 sequential); got ${stampLines.length}`);

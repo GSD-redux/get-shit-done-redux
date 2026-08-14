@@ -338,6 +338,7 @@ test('#2684: ship.md validates capability-supplied ref.agent before it reaches a
   // substitutes the raw value textually, so a shell-side test would run only
   // AFTER a payload like `x"; id; echo "` had already closed the assignment and
   // executed. Assert the workflow states the in-context ordering explicitly.
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored ship.md workflow, bounded prose, not adversarial input
   const gate = /`(\^\[A-Za-z0-9\]\[[^`]*\]\*\$)`/.exec(content);
   assert.ok(
     gate,

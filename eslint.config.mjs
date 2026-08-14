@@ -20,6 +20,7 @@ import noPathLiteralInAssert from './eslint-rules/no-path-literal-in-assert.cjs'
 import noPosixModeBitAssert from './eslint-rules/no-posix-mode-bit-assert.cjs';
 import noUnguardedNonportableExec from './eslint-rules/no-unguarded-nonportable-exec.cjs';
 import noCrlfFragileSplit from './eslint-rules/no-crlf-fragile-split.cjs';
+import noUnboundedQuantifier from './eslint-rules/no-unbounded-quantifier.cjs';
 import noHardcodedTmp from './eslint-rules/no-hardcoded-tmp.cjs';
 import noBareNpmExec from './eslint-rules/no-bare-npm-exec.cjs';
 import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-home.cjs';
@@ -42,6 +43,7 @@ const localPlugin = {
     'no-posix-mode-bit-assert': noPosixModeBitAssert,
     'no-unguarded-nonportable-exec': noUnguardedNonportableExec,
     'no-crlf-fragile-split': noCrlfFragileSplit,
+    'no-unbounded-quantifier': noUnboundedQuantifier,
     'no-hardcoded-tmp': noHardcodedTmp,
     'no-bare-npm-exec': noBareNpmExec,
     'require-userprofile-with-home': requireUserprofileWithHome,
@@ -320,6 +322,8 @@ export default tseslint.config(
       'local/no-adhoc-regex-escape': 'error',
       // ADR-3212 Phase 2 (#3413): widen the CRLF-fragile-split prohibition from tests/ to src/.
       'local/no-crlf-fragile-split': 'error',
+      // ADR-3212 Phase 4 (#3415): bound quantifiers over document content (CWE-1333, #2128 class).
+      'local/no-unbounded-quantifier': 'error',
       // ADR-1703 Phase 5: flag path-returning calls interpolated into content
       // (markdown @-references, workflow files, generated docs) without POSIX
       // normalization. Promoted to 'error' after precision review (path.basename
@@ -502,6 +506,8 @@ export default tseslint.config(
       'local/no-unguarded-nonportable-exec': 'error',
       // Ban CRLF-fragile file-content splits and regex patterns (ADR-1703 Phase 4)
       'local/no-crlf-fragile-split': 'error',
+      // ADR-3212 Phase 4 (#3415): bound quantifiers over document content (CWE-1333, #2128 class).
+      'local/no-unbounded-quantifier': 'error',
       // Ban hardcoded /tmp/ paths in fs.* calls (ADR-1703 Phase 4)
       'local/no-hardcoded-tmp': 'error',
       // Ban bare npm exec without shell:true (ADR-1703 Phase 4)

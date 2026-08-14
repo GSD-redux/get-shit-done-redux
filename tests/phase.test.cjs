@@ -4370,6 +4370,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4441,6 +4442,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4481,6 +4483,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -9823,6 +9826,7 @@ describe('bug-2502: insert-phase must update STATE.md next-phase recommendation'
   test('insert-phase.md update_project_state step covers next-phase pointer', () => {
     const content = fs.readFileSync(INSERT_PHASE_PATH, 'utf-8');
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = content.match(/<step name="update_project_state">([\s\S]*?)<\/step>/i);
     assert.ok(stepMatch, 'insert-phase.md must contain update_project_state step');
     const stepContent = stepMatch[1];
@@ -10375,6 +10379,7 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
         assert.ok(
+          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
           /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );

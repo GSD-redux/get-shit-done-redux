@@ -214,6 +214,7 @@ const src3130 = fs3130.readFileSync(UPDATE_WF_3130, 'utf8');
 __t3130('bug #3130: update.md contains no bare npx invocations (cache-stale form)', () => {
   // Any occurrence of `npx -y @opengsd/gsd-core@<something>` without `--package=`
   // is the stale form that triggers the two failure modes.
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored update.md workflow, bounded prose, not adversarial input
   const stale = (src3130.match(/npx -y @opengsd\/gsd-core@\S+[^\r\n]*/g) || []);
   assert3130.deepEqual(
     stale,

@@ -6406,6 +6406,7 @@ test('bug-3542: gsd-executor.md prohibits `git stash` family inside worktrees', 
     content,
   );
   const hasGitShow = /`git show /i.test(content);
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored gsd-executor.md agent markdown, bounded prose, not adversarial input
   const hasGitDiffRef = /`git diff [^`]*\$?\{?ref\}?|`git diff [A-Z]+:/i.test(content);
   assert.ok(
     hasThrowawayBranch || hasGitShow || hasGitDiffRef,

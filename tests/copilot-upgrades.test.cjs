@@ -142,6 +142,7 @@ test('copilot .agent.md frontmatter has no background-dispatch field (negotiated
   assert.ok(agentFiles.length > 0, 'at least one .agent.md must be installed');
 
   const sample = fs.readFileSync(path.join(agentsDir, agentFiles[0]), 'utf8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own installed agent .md frontmatter, fixed-size author-controlled content
   const frontmatterMatch = sample.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   assert.ok(frontmatterMatch, 'agent file must have a frontmatter block');
   assert.ok(!/^background:/m.test(frontmatterMatch[1]),

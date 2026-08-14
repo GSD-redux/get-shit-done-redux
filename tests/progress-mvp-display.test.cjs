@@ -103,6 +103,7 @@ describe('#14: /gsd:progress --next --auto flag must be documented and propagate
 
     // Extract only the <process>…</process> block so this assertion is
     // scoped to the handoff wiring, not just any occurrence in the file.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const processMatch = command.match(/<process>([\s\S]*?)<\/process>/);
     assert.ok(
       processMatch,

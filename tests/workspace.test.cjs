@@ -375,6 +375,7 @@ describe('workspace command files', () => {
     // Strip UTF-8 BOM if present (some editors inject on save under Windows);
     // a BOM byte at offset 0 defeats the ^--- anchor, making fmMatch null.
     const raw = fs.readFileSync(filePath, 'utf8').replace(/^\ufeff/, '');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md frontmatter, fixed-size author-controlled content
     const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
     assert.ok(fmMatch, `${path.basename(filePath)} must start with a YAML frontmatter block`);
     const fm = {};

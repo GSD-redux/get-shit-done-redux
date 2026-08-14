@@ -25,6 +25,7 @@ describe('execute-phase command: active flags are explicit', () => {
 
   test('objective says documented flags are not implied active', () => {
     const content = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const objectiveMatch = content.match(/<objective>([\s\S]*?)<\/objective>/);
     assert.ok(objectiveMatch, 'should have <objective> section');
     assert.ok(
@@ -107,6 +108,7 @@ function assertMakefileCheckBeforeNpmTest(filePath, label) {
   const content = fs.readFileSync(filePath, 'utf-8');
 
   // Must check for Makefile with test target
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
   const hasMakefileCheck = /Makefile.*grep.*test:|grep.*test:.*Makefile/s.test(content) ||
     (content.includes('Makefile') && content.includes('"^test:"'));
   assert.ok(
