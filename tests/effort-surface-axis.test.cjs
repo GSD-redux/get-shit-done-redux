@@ -402,6 +402,7 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
       for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
         const full = path.join(abs, e.name);
         if (e.isDirectory()) walk(path.relative(REPO_ROOT, full));
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow/reference/agent markdown, bounded prose, not adversarial input
         else if (e.name.endsWith('.md') && /resolve-execution[^\r\n]*--effort\s/.test(fs.readFileSync(full, 'utf8'))) {
           hits.push(path.relative(REPO_ROOT, full));
         }

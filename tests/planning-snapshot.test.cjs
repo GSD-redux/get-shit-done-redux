@@ -26,6 +26,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const fc = require('fast-check');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -42,6 +43,12 @@ const { worstScope } = planningSnapshotLib;
 
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const { _unusableInputEmissionCountForTests } = require('../gsd-core/bin/lib/unusable-input.cjs');
+
+// Phase 11 (#3309) additions — agent-install fixture helper mirrors
+// tests/agent-install-check.test.cjs's own EXPECTED_AGENTS/createCompleteAgents
+// (design doc's "subject-surface gap" §, reused per its provenance rule).
+const { MODEL_PROFILES } = require('../gsd-core/bin/lib/model-profiles.cjs');
+const EXPECTED_AGENTS = Object.keys(MODEL_PROFILES);
 
 // ─── Fixture helpers (mirrors tests/completion-ratio-scope-withholding.test.cjs) ─
 
@@ -95,8 +102,12 @@ function makeDirUnreadableAsFile(fullPath) {
 // A matched plan/summary pair plus a passing `*-VERIFICATION.md` —
 // `isPhaseComplete` requires `verification.status === 'passed'` for
 // `complete: true`, which plan/summary pairing alone does not establish.
+// The plan carries `wave: 1` frontmatter so this fixture is also
+// wave-complete — callers that assert `perPhaseWaveMissingPlans` is empty
+// on a "healthy" phase (Phase 12, #3310) get a genuinely clean baseline
+// rather than a false positive from a plan that predates the `wave:` field.
 function makeCompletePhaseDir(cwd, relPhaseDir) {
-  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '# Plan\n');
+  writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '---\nwave: 1\n---\n\n# Plan\n');
   writeFile(cwd, `${relPhaseDir}/01-01-SUMMARY.md`, '# Summary\n');
   writeFile(cwd, `${relPhaseDir}/01-VERIFICATION.md`, '---\nstatus: passed\n---\n');
 }
@@ -493,5 +504,770 @@ describe('worstScope — pure unit coverage', () => {
       }),
       { seed: 20261012 },
     );
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 11 (#3309) additions — config / agentInstall / worktreeHealth
+//
+// Design:      .gsd/phase/refactor-3309-health-diagnostic-rule-table/40-design.md
+//              ("The subject-surface gap: config.json, agent-install, git-worktree-list")
+// Test matrix: .gsd/phase/refactor-3309-health-diagnostic-rule-table/50-test-matrix.md
+//              section 1, rows 1-8
+//
+// These three new fields wrap the SAME owner calls `cmdValidateHealth`
+// (src/verify.cts) already makes (`checkAgentsInstalled`, `inspectWorktreeHealth`,
+// a raw config.json read), so a later phase step can migrate the caller onto
+// this snapshot without a shape mismatch.
+// ═════════════════════════════════════════════════════════════════════════
+
+function writeConfig(cwd, obj) {
+  fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+  fs.writeFileSync(path.join(planningDirOf(cwd), 'config.json'), JSON.stringify(obj));
+}
+
+function writeRawConfig(cwd, rawText) {
+  fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+  fs.writeFileSync(path.join(planningDirOf(cwd), 'config.json'), rawText);
+}
+
+// Env isolation for GSD_AGENTS_DIR — mirrors tests/agent-install-check.test.cjs's
+// beforeEach/afterEach save-restore idiom, inlined per-test via t.after since this
+// describe block does not otherwise need beforeEach/afterEach hooks.
+function withAgentsDirOverride(t, agentsDir) {
+  const saved = process.env['GSD_AGENTS_DIR'];
+  process.env['GSD_AGENTS_DIR'] = agentsDir;
+  t.after(() => {
+    if (saved === undefined) delete process.env['GSD_AGENTS_DIR'];
+    else process.env['GSD_AGENTS_DIR'] = saved;
+  });
+}
+
+function createCompleteAgentsDir(agentsDir) {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const agent of EXPECTED_AGENTS) {
+    fs.writeFileSync(path.join(agentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+  }
+}
+
+// Simulates a successful `git worktree list --porcelain` at the spawnSync seam —
+// mirrors tests/worktree-safety.test.cjs's "execGitDefault (real spawn seam)"
+// section, the repo's convention for driving the real execGit rather than a
+// hand-set deps.execGit stub (this module accepts no deps parameter to inject).
+function mockGitWorktreeListOk(t, porcelain) {
+  t.mock.method(childProcess, 'spawnSync', () => ({
+    status: 0,
+    stdout: porcelain,
+    stderr: '',
+    signal: null,
+    error: null,
+  }));
+}
+
+// Simulates a timed-out `git worktree list --porcelain` (ETIMEDOUT), the same
+// shape shell-command-projection.cjs's execGit / isSpawnTimeout recognize.
+function mockGitWorktreeListTimeout(t) {
+  t.mock.method(childProcess, 'spawnSync', () => ({
+    status: null,
+    stdout: '',
+    stderr: '',
+    signal: null,
+    error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+  }));
+}
+
+describe('config field (Phase 11, #3309, matrix rows 1-3)', () => {
+  test('row 1: well-formed config.json parses to {value, scope: COMPLETE}', (t) => {
+    const cwd = createTempDir('gsd-3309-cfg1-');
+    t.after(() => cleanup(cwd));
+    writeConfig(cwd, { model_profile: 'balanced' });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.config, { value: { model_profile: 'balanced' }, scope: SCOPE.COMPLETE, exists: true });
+  });
+
+  test('row 2: absent config.json is a real non-answer — {value: null, scope: UNREADABLE, exists: false}', (t) => {
+    const cwd = createTempDir('gsd-3309-cfg2-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+    // No config.json written at all.
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.config, { value: null, scope: SCOPE.UNREADABLE, exists: false });
+    assert.strictEqual(emitted, 0, 'absence is not corruption — no diagnostic');
+  });
+
+  test('row 3: present-but-unparseable config.json degrades without throwing — {value: null, scope: UNREADABLE, exists: true}, emits CONFIG_UNREADABLE exactly once', (t) => {
+    const cwd = createTempDir('gsd-3309-cfg3-');
+    t.after(() => cleanup(cwd));
+    writeRawConfig(cwd, '{ not valid json');
+
+    let snap;
+    let emitted;
+    assert.doesNotThrow(() => {
+      [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    });
+    assert.deepStrictEqual(snap.config, { value: null, scope: SCOPE.UNREADABLE, exists: true });
+    assert.strictEqual(emitted, 1, 'present-but-unparseable config.json is corruption — exactly one CONFIG_UNREADABLE diagnostic');
+  });
+});
+
+describe('agentInstall field (Phase 11, #3309, matrix rows 4-5)', () => {
+  test('row 4: all agents present reports zero missing/incomplete, scope COMPLETE', (t) => {
+    const cwd = createTempDir('gsd-3309-agt4-');
+    t.after(() => cleanup(cwd));
+    const agentsDir = path.join(cwd, 'agents-complete');
+    createCompleteAgentsDir(agentsDir);
+    withAgentsDirOverride(t, agentsDir);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.agentInstall.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.agentInstall.value.agents_installed, true);
+    assert.deepStrictEqual(snap.agentInstall.value.missing_agents, []);
+    assert.deepStrictEqual(snap.agentInstall.value.incomplete_agents, []);
+  });
+
+  test('row 5: missing agents dir reports the full missing set, scope COMPLETE (the scan itself succeeded)', (t) => {
+    const cwd = createTempDir('gsd-3309-agt5-');
+    t.after(() => cleanup(cwd));
+    const agentsDir = path.join(cwd, 'agents-absent');
+    withAgentsDirOverride(t, agentsDir);
+    // agentsDir deliberately never created.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.agentInstall.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.agentInstall.value.agents_installed, false);
+    assert.deepStrictEqual(snap.agentInstall.value.missing_agents.slice().sort(), EXPECTED_AGENTS.slice().sort());
+  });
+});
+
+describe('worktreeHealth field (Phase 11, #3309, matrix rows 6-7)', () => {
+  test('row 6: git worktree list succeeds — value is the parsed findings array, scope COMPLETE', (t) => {
+    const cwd = createTempDir('gsd-3309-wt6-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+    mockGitWorktreeListOk(t, 'worktree /repo\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/main\n\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.worktreeHealth.scope, SCOPE.COMPLETE);
+    assert.ok(Array.isArray(snap.worktreeHealth.value));
+  });
+
+  test('row 7: git worktree list times out — scope reflects degradation (mirrors W020)', (t) => {
+    const cwd = createTempDir('gsd-3309-wt7-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+    mockGitWorktreeListTimeout(t);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.notStrictEqual(snap.worktreeHealth.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.worktreeHealth.scope, SCOPE.UNREADABLE);
+    assert.deepStrictEqual(snap.worktreeHealth.value, []);
+  });
+});
+
+describe('Phase-10 fields unchanged by the Phase-11 extension (matrix row 8)', () => {
+  test('the four original fields keep their exact pre-extension values on the same fixture', (t) => {
+    const cwd = createTempDir('gsd-3309-reg8-');
+    t.after(() => cleanup(cwd));
+    buildHealthyTwoPhaseFixture(cwd);
+
+    const snap = buildPlanningSnapshot(cwd);
+
+    assert.strictEqual(snap.milestone.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.phaseDirs.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.phases.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.phases.value.length, 2);
+    for (const p of snap.phases.value) {
+      assert.strictEqual(p.complete, true);
+      assert.strictEqual(p.scope, SCOPE.COMPLETE);
+      assert.strictEqual(p.verificationStatus, 'passed');
+      assert.strictEqual(p.planCount, 1);
+      assert.strictEqual(p.summaryCount, 1);
+    }
+    // The extension is additive — the new fields must be present alongside
+    // the untouched originals, not in place of them.
+    assert.ok('config' in snap);
+    assert.ok('agentInstall' in snap);
+    assert.ok('worktreeHealth' in snap);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 11 (#3309) — "Rule table organization" batch, 7 more fields
+//
+// Design: .gsd/phase/refactor-3309-health-diagnostic-rule-table/40-design.md
+//         ("Rule table organization" table)
+//
+// Each field relocates (not reinvents) an existing verify.cts derivation —
+// see the JSDoc above each builder in src/planning-snapshot.cts for the
+// exact source lines. Fixture helpers below mirror the existing
+// writeRoadmap/writeState/writeFile idiom.
+// ═════════════════════════════════════════════════════════════════════════
+
+function writeProject(cwd, content) {
+  fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+  fs.writeFileSync(path.join(planningDirOf(cwd), 'PROJECT.md'), content);
+}
+
+function writeMilestoneArchiveRoadmap(cwd, version, content) {
+  const archiveDir = path.join(planningDirOf(cwd), 'milestones');
+  fs.mkdirSync(archiveDir, { recursive: true });
+  fs.writeFileSync(path.join(archiveDir, `${version}-ROADMAP.md`), content);
+}
+
+function writeMilestonesRegistry(cwd, content) {
+  fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+  fs.writeFileSync(path.join(planningDirOf(cwd), 'MILESTONES.md'), content);
+}
+
+describe('projectSections field (Phase 11, #3309)', () => {
+  test('happy: returns every ## heading actually present, unfiltered against any required list', (t) => {
+    const cwd = createTempDir('gsd-3309-ps1-');
+    t.after(() => cleanup(cwd));
+    writeProject(cwd, [
+      '# My Project',
+      '',
+      '## What This Is',
+      '',
+      'text',
+      '',
+      '## Custom Section',
+      '',
+      '### Not a top-level heading',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.projectSections, {
+      value: ['What This Is', 'Custom Section'],
+      scope: SCOPE.COMPLETE,
+      exists: true,
+    });
+  });
+
+  test('absence: no PROJECT.md is a real non-answer, not corruption', (t) => {
+    const cwd = createTempDir('gsd-3309-ps2-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.projectSections, { value: null, scope: SCOPE.UNREADABLE, exists: false });
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('hostile: present-but-unreadable PROJECT.md degrades without throwing, emits PROJECT_UNREADABLE exactly once', (t) => {
+    const cwd = createTempDir('gsd-3309-ps3-');
+    t.after(() => cleanup(cwd));
+    makeFileUnreadableAsDir(path.join(planningDirOf(cwd), 'PROJECT.md'));
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.projectSections, { value: null, scope: SCOPE.UNREADABLE, exists: true });
+    assert.strictEqual(emitted, 1, 'present-but-unreadable PROJECT.md is corruption — exactly one PROJECT_UNREADABLE diagnostic');
+  });
+});
+
+describe('statePhaseTokens field (Phase 11, #3309)', () => {
+  test('happy: every phase-number-shaped token anywhere in STATE.md text, in appearance order', (t) => {
+    const cwd = createTempDir('gsd-3309-spt1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    // The `Phase:`-field syntax ("Phase: 3 of 8") does NOT match this regex —
+    // it requires `[Pp]hase\s+<digits>` (whitespace, not a colon, right
+    // after "Phase"), exactly like verify.cts's own W002 relocation target.
+    // Only prose-style "Phase N" references match, e.g. bracketed decision
+    // annotations and free-text mentions.
+    appendToState(cwd, [
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 of 8 (User Auth)',
+      '',
+      '### Decisions',
+      '- [Phase 5]: revisit after Phase 2 wraps',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: ['5', '2'], scope: SCOPE.COMPLETE });
+  });
+
+  test('absence: no STATE.md yields an empty token list, non-answer scope, no diagnostic', (t) => {
+    const cwd = createTempDir('gsd-3309-spt2-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.UNREADABLE });
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('hostile: unreadable-but-present STATE.md degrades statePhaseTokens together with currentPhaseLabel from ONE diagnostic', (t) => {
+    const cwd = createTempDir('gsd-3309-spt3-');
+    t.after(() => cleanup(cwd));
+    makeFileUnreadableAsDir(path.join(planningDirOf(cwd), 'STATE.md'));
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.UNREADABLE });
+    assert.deepStrictEqual(snap.currentPhaseLabel, { value: null, scope: SCOPE.UNREADABLE });
+    assert.strictEqual(emitted, 1, 'the shared STATE.md read must not double-emit across fields');
+  });
+});
+
+describe('stateStatus field (Phase 11, #3309)', () => {
+  test('happy: Status field under Current Position is extracted verbatim, mirroring currentPhaseLabel', (t) => {
+    const cwd = createTempDir('gsd-3309-ss1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 of 8 (User Auth)',
+      'Status: In progress',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.stateStatus, { value: 'In progress', scope: SCOPE.COMPLETE });
+  });
+
+  test('boundary: missing Current Position section still resolves status from frontmatter, scope TRUNCATED', (t) => {
+    const cwd = createTempDir('gsd-3309-ss2-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { status: 'planning' });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.stateStatus.value, 'planning');
+    assert.strictEqual(snap.stateStatus.scope, SCOPE.TRUNCATED);
+  });
+
+  test('absence: no STATE.md yields a non-answer, no diagnostic', (t) => {
+    const cwd = createTempDir('gsd-3309-ss3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const [snap, emitted] = emissionsDuring(() => buildPlanningSnapshot(cwd));
+    assert.deepStrictEqual(snap.stateStatus, { value: null, scope: SCOPE.UNREADABLE });
+    assert.strictEqual(emitted, 0);
+  });
+});
+
+describe('roadmapDeclaredPhases field (Phase 11, #3309)', () => {
+  test('happy: every declared phase id paired with the milestone section it was found under', (t) => {
+    const cwd = createTempDir('gsd-3309-rdp1-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo', '', '### Phase 2: Bar'].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapDeclaredPhases, {
+      value: [
+        { phaseId: '1', milestone: 'v1.0' },
+        { phaseId: '2', milestone: 'v1.0' },
+      ],
+      scope: SCOPE.COMPLETE,
+    });
+  });
+
+  test('boundary: a phase declared before any version heading gets milestone: null', (t) => {
+    const cwd = createTempDir('gsd-3309-rdp2-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['### Phase 9: Prelude', '', '## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    const prelude = snap.roadmapDeclaredPhases.value.find((p) => p.phaseId === '9');
+    const foo = snap.roadmapDeclaredPhases.value.find((p) => p.phaseId === '1');
+    assert.deepStrictEqual(prelude, { phaseId: '9', milestone: null });
+    assert.deepStrictEqual(foo, { phaseId: '1', milestone: 'v1.0' });
+  });
+
+  test('absence: no ROADMAP.md is a non-answer', (t) => {
+    const cwd = createTempDir('gsd-3309-rdp3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapDeclaredPhases, { value: [], scope: SCOPE.UNREADABLE });
+  });
+
+  test('hostile: unreadable ROADMAP.md degrades to an empty list, scope UNREADABLE', (t) => {
+    const cwd = createTempDir('gsd-3309-rdp4-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    makeFileUnreadableAsDir(path.join(planningDirOf(cwd), 'ROADMAP.md'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapDeclaredPhases, { value: [], scope: SCOPE.UNREADABLE });
+  });
+});
+
+describe('roadmapPhaseCheckboxes field (Phase 11, #3309)', () => {
+  test('happy: [x]/[ ] checkbox state parsed per phase id', (t) => {
+    const cwd = createTempDir('gsd-3309-rpc1-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## Progress', '', '- [x] Phase 1: Foo', '- [ ] Phase 2: Bar'].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapPhaseCheckboxes, { value: { '1': true, '2': false }, scope: SCOPE.COMPLETE });
+  });
+
+  test('boundary: no checklist lines present is a real empty answer, not a non-answer', (t) => {
+    const cwd = createTempDir('gsd-3309-rpc2-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapPhaseCheckboxes, { value: {}, scope: SCOPE.COMPLETE });
+  });
+
+  test('hostile: unreadable ROADMAP.md degrades to an empty map, scope UNREADABLE', (t) => {
+    const cwd = createTempDir('gsd-3309-rpc3-');
+    t.after(() => cleanup(cwd));
+    makeFileUnreadableAsDir(path.join(planningDirOf(cwd), 'ROADMAP.md'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.roadmapPhaseCheckboxes, { value: {}, scope: SCOPE.UNREADABLE });
+  });
+});
+
+describe('researchValidationStatus field (Phase 11, #3309)', () => {
+  test('happy: RESEARCH.md carries the Validation Architecture heading and a VALIDATION.md exists', (t) => {
+    const cwd = createTempDir('gsd-3309-rvs1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    writeFile(cwd, '.planning/phases/01-foo/01-RESEARCH.md', '# Research\n\n## Validation Architecture\n\ntext\n');
+    writeFile(cwd, '.planning/phases/01-foo/01-VALIDATION.md', '# Validation\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.researchValidationStatus.value.find((r) => r.dir === '01-foo');
+    assert.deepStrictEqual(entry, { dir: '01-foo', hasValidationArchitecture: true, hasValidationMd: true });
+    assert.strictEqual(snap.researchValidationStatus.scope, SCOPE.COMPLETE);
+  });
+
+  test('negative: RESEARCH.md without the heading and no VALIDATION.md reports both false', (t) => {
+    const cwd = createTempDir('gsd-3309-rvs2-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    writeFile(cwd, '.planning/phases/01-foo/01-RESEARCH.md', '# Research\n\nno special section\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.researchValidationStatus.value.find((r) => r.dir === '01-foo');
+    assert.deepStrictEqual(entry, { dir: '01-foo', hasValidationArchitecture: false, hasValidationMd: false });
+  });
+
+  test('hostile: an unreadable phase directory degrades that entry to false/false without throwing', (t) => {
+    const cwd = createTempDir('gsd-3309-rvs3-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    const phaseDir = path.join(planningDirOf(cwd), 'phases', '01-foo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    injectPhaseDirFault(t, phaseDir);
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.researchValidationStatus.value.find((r) => r.dir === '01-foo');
+    assert.deepStrictEqual(entry, { dir: '01-foo', hasValidationArchitecture: false, hasValidationMd: false });
+  });
+});
+
+describe('milestoneArchiveStatus field (Phase 11, #3309)', () => {
+  test('happy: archived ROADMAP snapshot present and its version documented in MILESTONES.md', (t) => {
+    const cwd = createTempDir('gsd-3309-mas1-');
+    t.after(() => cleanup(cwd));
+    writeMilestoneArchiveRoadmap(cwd, 'v1.0', '# v1.0 archive\n');
+    writeMilestonesRegistry(cwd, '## v1.0\n\nShipped.\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.milestoneArchiveStatus, {
+      value: { archivedVersions: ['v1.0'], documentedVersions: ['v1.0'] },
+      scope: SCOPE.COMPLETE,
+    });
+  });
+
+  test('negative: no milestones/ dir and no MILESTONES.md is a real empty answer, not a non-answer', (t) => {
+    const cwd = createTempDir('gsd-3309-mas2-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.milestoneArchiveStatus, {
+      value: { archivedVersions: [], documentedVersions: [] },
+      scope: SCOPE.COMPLETE,
+    });
+  });
+
+  test('boundary: an archived version missing from the registry is reported, not silently dropped', (t) => {
+    const cwd = createTempDir('gsd-3309-mas3-');
+    t.after(() => cleanup(cwd));
+    writeMilestoneArchiveRoadmap(cwd, 'v1.0', '# v1.0 archive\n');
+    // No MILESTONES.md at all.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.milestoneArchiveStatus.value.archivedVersions, ['v1.0']);
+    assert.deepStrictEqual(snap.milestoneArchiveStatus.value.documentedVersions, []);
+  });
+
+  test('hostile: an unreadable milestones/ dir degrades to scope UNREADABLE without throwing', (t) => {
+    const cwd = createTempDir('gsd-3309-mas4-');
+    t.after(() => cleanup(cwd));
+    // Directory-vs-file swap: milestones/ is a regular FILE, so
+    // fs.existsSync is true but readdirSync throws ENOTDIR.
+    makeDirUnreadableAsFile(path.join(planningDirOf(cwd), 'milestones'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.milestoneArchiveStatus.scope, SCOPE.UNREADABLE);
+  });
+});
+
+describe('planningRootFiles field (Phase 11, #3309)', () => {
+  test('happy: lists files (not directories) directly under .planning/ root', (t) => {
+    const cwd = createTempDir('gsd-3309-prf1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', ''].join('\n'));
+    writeFile(cwd, '.planning/NOTES.md', 'stray file\n');
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases'), { recursive: true }); // a directory — must be excluded
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningRootFiles.value.slice().sort(), ['NOTES.md', 'ROADMAP.md', 'STATE.md']);
+    assert.strictEqual(snap.planningRootFiles.scope, SCOPE.COMPLETE);
+  });
+
+  test('absence: no .planning/ directory at all degrades to an empty list, scope UNREADABLE', (t) => {
+    const cwd = createTempDir('gsd-3309-prf2-');
+    t.after(() => cleanup(cwd));
+    // .planning/ deliberately never created.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningRootFiles, { value: [], scope: SCOPE.UNREADABLE });
+  });
+
+  test('hostile: an unreadable .planning/ root degrades without throwing', (t) => {
+    const cwd = createTempDir('gsd-3309-prf3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+    injectPhaseDirFault(t, planningDirOf(cwd));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningRootFiles, { value: [], scope: SCOPE.UNREADABLE });
+  });
+});
+
+describe('allPhaseDirNames field (Phase 11, #3309 — health-diagnostic-rules/roadmap-disk-consistency batch)', () => {
+  // Found while implementing W007 (`src/health-diagnostic-rules/
+  // roadmap-disk-consistency.cts`): `phaseDirs` is windowed to directories
+  // the ROADMAP already declares, so it can never expose a genuine orphan
+  // directory. `allPhaseDirNames` is the unwindowed twin.
+
+  test('happy: lists every directory under phases/, including one NOT declared anywhere in ROADMAP.md', (t) => {
+    const cwd = createTempDir('gsd-3309-apdn1-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', '01-foo'), { recursive: true });
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', '04-extra'), { recursive: true }); // undeclared
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.allPhaseDirNames.value.slice().sort(), ['01-foo', '04-extra']);
+    assert.strictEqual(snap.allPhaseDirNames.scope, SCOPE.COMPLETE);
+    // Sanity: `phaseDirs` (windowed) must NOT include the undeclared dir —
+    // this is the exact gap `allPhaseDirNames` exists to close.
+    assert.ok(!snap.phaseDirs.value.includes('04-extra'));
+  });
+
+  test('absence: no phases/ directory at all is a real empty, not a failure', (t) => {
+    const cwd = createTempDir('gsd-3309-apdn2-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', ''].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.allPhaseDirNames, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('hostile: an unreadable phases/ directory degrades to an empty list, scope UNREADABLE, without throwing', (t) => {
+    const cwd = createTempDir('gsd-3309-apdn3-');
+    t.after(() => cleanup(cwd));
+    const phasesDir = path.join(planningDirOf(cwd), 'phases');
+    fs.mkdirSync(phasesDir, { recursive: true });
+    injectPhaseDirFault(t, phasesDir);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.allPhaseDirNames, { value: [], scope: SCOPE.UNREADABLE });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 12 (#3310, ADR-3180 §8.4) additions — perPhasePlanNumbering /
+// perPhaseOrphanSummaries / perPhaseWaveMissingPlans
+//
+// Design:      .gsd/phase/feat-3310-enhance-3180-the-sibling-validators-shar/40-design.md
+//              ("New PlanningSnapshot fields")
+// Test matrix: .gsd/phase/feat-3310-enhance-3180-the-sibling-validators-shar/50-test-matrix.md
+//              section 1, rows 1-8
+//
+// Each relocates (not reinvents) `verify.cts:1556-1603`'s per-phase-directory
+// plan scan — see `buildPerPhasePlanScanFields`'s doc comment in
+// src/planning-snapshot.cts for the exact source lines. Fixture helpers
+// mirror the existing writeRoadmap/writeState/writeFile idiom.
+// ═════════════════════════════════════════════════════════════════════════
+
+function writePlan(cwd, relPhasePath, planName, frontmatterLines) {
+  const lines = frontmatterLines ? ['---', ...frontmatterLines, '---', '', '# Plan', ''] : ['# Plan', ''];
+  writeFile(cwd, `${relPhasePath}/${planName}`, lines.join('\n'));
+}
+
+describe('perPhasePlanNumbering field (Phase 12, #3310, matrix rows 1-2)', () => {
+  test('row 1: sequential plans (01, 02, 03) report the full sorted sequence, no gap', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-03-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [1, 2, 3] });
+    assert.strictEqual(snap.perPhasePlanNumbering.scope, SCOPE.COMPLETE);
+  });
+
+  test('row 2: a real gap (01, 03) is surfaced in the raw per-phase number list', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn2-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-03-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [1, 3] });
+  });
+
+  test('boundary: zero phase directories yields an empty array, not a non-answer', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases'), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.perPhasePlanNumbering, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('boundary: a phase with zero plans reports an empty planNums list for that phase, not an absent entry', (t) => {
+    const cwd = createTempDir('gsd-3310-ppn4-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', '01-foo'), { recursive: true });
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.perPhasePlanNumbering.value.find((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entry, { phaseDir: '01-foo', planNums: [] });
+  });
+});
+
+describe('perPhaseOrphanSummaries field (Phase 12, #3310, matrix rows 3-5)', () => {
+  test('row 3: a paired plan+summary produces no orphan entries', (t) => {
+    const cwd = createTempDir('gsd-3310-pos1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(
+      snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo'),
+      [],
+    );
+  });
+
+  test('row 4: a summary with no live plan at all is named as an orphan', (t) => {
+    const cwd = createTempDir('gsd-3310-pos2-');
+    t.after(() => cleanup(cwd));
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', orphanSummary: '01-01-SUMMARY.md' }]);
+  });
+
+  test('row 5: a summary paired only to a superseded plan is still orphan — superseded plans are not live', (t) => {
+    const cwd = createTempDir('gsd-3310-pos3-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['status: superseded']);
+    writeFile(cwd, '.planning/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseOrphanSummaries.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', orphanSummary: '01-01-SUMMARY.md' }]);
+  });
+});
+
+describe('perPhaseWaveMissingPlans field (Phase 12, #3310, matrix rows 6-7)', () => {
+  test('row 6: a plan with wave: in frontmatter is not flagged', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm1-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['wave: 1']);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(
+      snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo'),
+      [],
+    );
+  });
+
+  test('row 7: a plan without wave: in frontmatter is flagged', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm2-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, [{ phaseDir: '01-foo', plan: '01-01-PLAN.md' }]);
+  });
+
+  test('boundary: a phase where every plan lacks wave: reports every one, none silently dropped', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm3-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md');
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(
+      entries.map((e) => e.plan).sort(),
+      ['01-01-PLAN.md', '01-02-PLAN.md'],
+    );
+  });
+
+  test('boundary: a phase where every plan carries wave: reports none', (t) => {
+    const cwd = createTempDir('gsd-3310-pwm4-');
+    t.after(() => cleanup(cwd));
+    writePlan(cwd, '.planning/phases/01-foo', '01-01-PLAN.md', ['wave: 1']);
+    writePlan(cwd, '.planning/phases/01-foo', '01-02-PLAN.md', ['wave: 2']);
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entries = snap.perPhaseWaveMissingPlans.value.filter((e) => e.phaseDir === '01-foo');
+    assert.deepStrictEqual(entries, []);
+  });
+});
+
+describe('Phase-10/11 fields unchanged by the Phase-12 extension (matrix row 8)', () => {
+  test('the new fields are additive alongside every prior field on the same fixture', (t) => {
+    const cwd = createTempDir('gsd-3310-reg8-');
+    t.after(() => cleanup(cwd));
+    buildHealthyTwoPhaseFixture(cwd);
+
+    const snap = buildPlanningSnapshot(cwd);
+
+    assert.strictEqual(snap.milestone.scope, SCOPE.COMPLETE);
+    assert.strictEqual(snap.phases.value.length, 2);
+    assert.ok('config' in snap);
+    assert.ok('agentInstall' in snap);
+    assert.ok('worktreeHealth' in snap);
+    // The extension is additive — the three new Phase 12 fields sit
+    // alongside every prior field, not in place of them.
+    assert.ok('perPhasePlanNumbering' in snap);
+    assert.ok('perPhaseOrphanSummaries' in snap);
+    assert.ok('perPhaseWaveMissingPlans' in snap);
+    assert.strictEqual(snap.perPhasePlanNumbering.value.length, 2);
+    for (const entry of snap.perPhasePlanNumbering.value) {
+      assert.deepStrictEqual(entry.planNums, [1]);
+    }
+    assert.deepStrictEqual(snap.perPhaseOrphanSummaries.value, []);
+    assert.deepStrictEqual(snap.perPhaseWaveMissingPlans.value, []);
   });
 });

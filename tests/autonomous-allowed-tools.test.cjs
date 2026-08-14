@@ -21,6 +21,7 @@ describe('commands/gsd/autonomous.md allowed-tools', () => {
     const content = fs.readFileSync(filePath, 'utf-8');
 
     // Extract the YAML frontmatter block between the first pair of --- delimiters
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md frontmatter, fixed-size author-controlled content
     const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(frontmatterMatch, 'autonomous.md must have YAML frontmatter');
 

@@ -21,13 +21,10 @@ const CORE_SUBSTRATE_TERMS = [
 
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { isCentralConfigKey } = require('../gsd-core/bin/lib/config-schema.cjs');
+const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
 
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function activeWhenKeys() {

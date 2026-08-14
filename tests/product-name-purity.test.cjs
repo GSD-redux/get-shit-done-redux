@@ -15,6 +15,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -48,7 +49,7 @@ function findProductParentheticals(content) {
   for (const product of PRODUCTS) {
     // Match "ProductName (something)" but not "ProductName (v1.2.3)" (version refs are ok)
     const pattern = new RegExp(
-      product.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+      escapeRegex(product) +
       '\\s*\\([^)]*(?!v?\\d+\\.\\d)[^)]*\\)',
       'g'
     );

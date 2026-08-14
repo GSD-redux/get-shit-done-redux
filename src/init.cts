@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execGit, platformWriteSync, platformReadSync, toNativePath, posixNormalize } from './shell-command-projection.cjs';
 import { realClock } from './clock.cjs';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import io = require('./io.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
@@ -88,7 +89,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
+const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -888,6 +889,14 @@ function cmdInitExecutePhase(
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
+  // #3188: these paths are null when the file is absent, matching the contract
+  // the conditional sibling fields (context_path, patterns_path, ...) already
+  // honour and that ultraplan-phase.md / execute-phase.md gate on. Hoisted so
+  // the existence check and the emitted path share one source of truth.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
@@ -909,7 +918,17 @@ function cmdInitExecutePhase(
       ? toPosixPath(path.join(cwd, phaseInfo['directory'] as string))
       : null,
     phase_number: phaseInfo?.['phase_number'] || null,
-    phase_name: phaseInfo?.['phase_name'] || null,
+    // #3171: prefer the ROADMAP's curated display name for `phase_name`. When
+    // the phase directory already exists on disk, the disk-lookup path
+    // (searchPhaseInDir) derives phase_name from the directory-name remainder
+    // — itself an already-slugified value (`phase.add` writes `${num}-${slug}`
+    // dirs), so phase_name and phase_slug come out byte-identical. An
+    // orchestrator wiring this field into `state begin-phase --name` then
+    // lands a raw slug in STATE.md's current_phase_name. The ROADMAP carries
+    // the human-curated display name (`### Phase N: <Name>`); prefer it,
+    // matching the no-disk fallback above. phase_slug stays disk-derived — it
+    // correctly feeds branch-name construction below and is unchanged here.
+    phase_name: (roadmapPhase?.['phase_name']) || (phaseInfo?.['phase_name']) || null,
     phase_slug: phaseInfo?.['phase_slug'] || null,
     phase_req_ids,
 
@@ -952,12 +971,13 @@ function cmdInitExecutePhase(
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     config_exists: fs.existsSync(path.join(planningDir(cwd), 'config.json')),
     // #2376: emit absolute paths — see comment above on phase_dir.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
+    // #3188: null when the file is absent (parity with patterns_path/context_path).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
     config_path: toPosixPath(path.join(planningDir(cwd), 'config.json')),
     // #2376: execute-phase.md's verify_phase_goal step reads this instead of
     // hardcoding '.planning/REQUIREMENTS.md' into the gsd-verifier spawn prompt.
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
   };
 
   if (options['validate']) {
@@ -1049,6 +1069,12 @@ function cmdInitPlanPhase(
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
+  // #3188: see cmdInitExecutePhase — null when absent, parity with the
+  // conditional sibling fields in this same result object.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -1096,9 +1122,10 @@ function cmdInitPlanPhase(
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
 
     // #2376: absolute — see comment on phase_dir above.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    // #3188: null when the file is absent (parity with patterns_path below).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
 
     patterns_path: null,
   };
@@ -1881,6 +1908,12 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
     }
   }
 
+  // #3188: see cmdInitExecutePhase — null when absent, parity with the
+  // conditional sibling fields in this same result object.
+  const statePath = path.join(planningDir(cwd), 'STATE.md');
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  const requirementsPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
+
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
     brave_search:
@@ -1916,9 +1949,10 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
     planning_exists: fs.existsSync(planningDir(cwd)),
 
     // #2376: absolute — see comment on phase_dir above.
-    state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
-    roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
-    requirements_path: toPosixPath(path.join(planningDir(cwd), 'REQUIREMENTS.md')),
+    // #3188: null when the file is absent (parity with context_path/research_path).
+    state_path: fs.existsSync(statePath) ? toPosixPath(statePath) : null,
+    roadmap_path: fs.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
+    requirements_path: fs.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
   };
 
   if (phaseInfo?.['directory']) {
@@ -3682,7 +3716,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
 
       const description = (frontmatter['description'] as string) || '';
       const triggers: string[] = [];
-      const bodyMatch = content.match(/^---[\s\S]*?---\s*\n([\s\S]*)$/);
+      const bodyMatch = content.match(/^---[\s\S]*?---\s*\r?\n([\s\S]*)$/);
       if (bodyMatch) {
         const body = bodyMatch[1];
         const triggerLines = body.match(/^TRIGGER\s+when:\s*(.+)$/gmi);

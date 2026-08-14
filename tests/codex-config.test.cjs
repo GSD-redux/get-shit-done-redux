@@ -23,6 +23,7 @@ const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 const fc = require('fast-check');
 const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 // #3241 — the intended new home for CLAUDE_AGENT_ALIASES + isAnthropicFlavoredModel
 // (see .gsd/phase/feat-3241-codex-omit-model-by-default/40-design.md "The seam
 // decision"). Neither export exists on model-catalog.cjs yet; requiring the
@@ -1721,7 +1722,7 @@ describe('mergeCodexConfig', () => {
     assert.ok(!content.includes('Updated description'), 'no per-agent description in config.toml');
     assert.ok(!content.includes('[agents.gsd-planner]'), 'no agent role table (canonical source is the standalone TOML)');
     // Verify no duplicate markers
-    const markerCount = (content.match(new RegExp(GSD_CODEX_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    const markerCount = (content.match(new RegExp(escapeRegex(GSD_CODEX_MARKER), 'g')) || []).length;
     assert.strictEqual(markerCount, 1, 'exactly one marker');
   });
 
@@ -1775,7 +1776,7 @@ describe('mergeCodexConfig', () => {
     // GSD section (stripLeakedGsdCodexSections) and the fresh block never
     // re-adds one (#2406) — zero role tables should remain anywhere.
     const gsdStructCount = (content.match(/^\[agents\.gsd-executor\]\s*$/gm) || []).length;
-    const markerCount = (content.match(new RegExp(GSD_CODEX_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    const markerCount = (content.match(new RegExp(escapeRegex(GSD_CODEX_MARKER), 'g')) || []).length;
 
     assert.ok(content.includes('[model]'), 'preserves user content');
     assert.ok(content.includes('[agents.custom-agent]'), 'preserves non-GSD agent section');
@@ -1808,7 +1809,7 @@ describe('mergeCodexConfig', () => {
     assert.ok(content.includes('other_feature = true'), 'preserves user feature keys');
     assert.ok(!content.includes('[agents.gsd-executor]'), 'no agent role table (canonical source is the standalone TOML)');
     // Verify no duplicate markers
-    const markerCount = (content.match(new RegExp(GSD_CODEX_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    const markerCount = (content.match(new RegExp(escapeRegex(GSD_CODEX_MARKER), 'g')) || []).length;
     assert.strictEqual(markerCount, 1, 'exactly one marker');
   });
 
@@ -2128,7 +2129,7 @@ describe('mergeCodexConfig trailing-content preservation (#2940)', () => {
     assert.ok(content.includes('[model]'), 'user [model] section preserved after re-merge');
     assert.ok(content.includes('name = "gpt-5.4"'), 'user model value preserved verbatim');
     assert.ok(content.includes(GSD_CODEX_MARKER), 'GSD marker still present');
-    const markerCount = (content.match(new RegExp(GSD_CODEX_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    const markerCount = (content.match(new RegExp(escapeRegex(GSD_CODEX_MARKER), 'g')) || []).length;
     assert.strictEqual(markerCount, 1, 'exactly one marker (no duplication)');
     assert.ok(content.includes('max_depth ='), 'GSD-managed [agents] block regenerated');
   });
@@ -2237,7 +2238,7 @@ describe('mergeCodexConfig trailing-content preservation (#2940)', () => {
     const content = fs.readFileSync(configPath, 'utf8');
     assert.ok(content.includes('[profiles.work]'), 'content before marker preserved');
     assert.ok(content.includes('[mcp_servers.github]'), 'content after marker preserved');
-    const markerCount = (content.match(new RegExp(GSD_CODEX_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    const markerCount = (content.match(new RegExp(escapeRegex(GSD_CODEX_MARKER), 'g')) || []).length;
     assert.strictEqual(markerCount, 1, 'exactly one marker');
   });
 
@@ -4716,7 +4717,7 @@ describe('#2760 fix 4 — Write-failure rollback (atomic write + snapshot restor
     const preInstallBytes = fs.readFileSync(path.join(codexHome, 'config.toml'));
 
     const configPath = path.join(codexHome, 'config.toml');
-    const tempPattern = new RegExp('^' + configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.tmp-');
+    const tempPattern = new RegExp('^' + escapeRegex(configPath) + '\\.tmp-');
 
     // Stub: allow writes to atomic temp files (which renameSync overwrites
     // the target, never truncating it directly) but throw on any direct
@@ -4782,7 +4783,7 @@ describe('#2760 fix 4 — Write-failure rollback (atomic write + snapshot restor
 
     const preInstallBytes = fs.readFileSync(path.join(codexHome, 'config.toml'));
     const configPath = path.join(codexHome, 'config.toml');
-    const tempPattern = new RegExp('^' + configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.tmp-');
+    const tempPattern = new RegExp('^' + escapeRegex(configPath) + '\\.tmp-');
 
     // Stub: fault writes targeting the atomic temp file (the pre-rename branch
     // of atomicWriteFileSync). Other writes (agent .toml files in CODEX_HOME)

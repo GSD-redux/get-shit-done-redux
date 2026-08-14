@@ -206,8 +206,15 @@ function withPlanningLock<T>(cwd: string, fn: () => T, clock?: Clock): T {
   const deadmanCeilingMs = 60000;
   const start = clock.now();
 
-  // Ensure .planning/ exists
-  try { platformEnsureDir(planningDir(cwd)); } catch { /* ok */ }
+  // Ensure .planning/ exists. A genuine failure here (EACCES/ENOSPC/EROFS/EMFILE)
+  // MUST surface immediately: the prior `catch { /* ok */ }` swallowed it, the lock
+  // write below then failed with ENOENT (parent dir missing), and ENOENT is retryable
+  // (PLANNING_LOCK_RETRY_ERRNOS — added for a Docker overlay-fs race), so the loop
+  // spun the full 10s budget and reported a PHANTOM "held by a live process"
+  // contention pointing at a nonexistent holder (epic #1879 / F16, #1884).
+  // `mkdirSync(recursive:true)` does not throw on an existing dir, so the normal
+  // path (dir already present) is unaffected; only real creation failures propagate.
+  platformEnsureDir(planningDir(cwd));
 
   function acquireLock(): void {
     // Atomic create — fails if file exists

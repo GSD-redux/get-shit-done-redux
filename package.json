@@ -27,6 +27,7 @@
     "!scripts/run-tests.cjs",
     "!scripts/affected-tests-lib.cjs",
     "!scripts/run-affected-tests.cjs",
+    "!scripts/lint-no-adhoc-regex-escape.cjs",
     "pi",
     "vscode"
   ],
@@ -54,7 +55,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=22.0.0",
+    "node": ">=24.0.0",
     "npm": ">=10.0.0"
   },
   "dependencies": {
@@ -69,6 +70,7 @@
     "eslint": "^9.39.4",
     "eslint-plugin-n": "^17.24.0",
     "eslint-plugin-no-only-tests": "^3.4.0",
+    "espree": "^10.4.0",
     "fast-check": "^4.8.0",
     "globals": "^16.5.0",
     "js-yaml": "^4.3.1",
@@ -114,7 +116,7 @@
     "lint:table-schema-drift": "node scripts/lint-table-schema-drift.cjs",
     "lint:frontmatter-scalar-broad-grep": "node scripts/lint-frontmatter-scalar-broad-grep.cjs",
     "lint:removed-but-needed": "node scripts/lint-removed-but-needed.cjs",
-    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-emitted-drift-ack.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs && node scripts/lint-example-parser-parity.cjs && node scripts/lint-docs-command-form.cjs && node scripts/lint-plan-count-drift.cjs && node scripts/lint-milestone-window-drift.cjs && node scripts/lint-phase-enumeration-drift.cjs && node scripts/lint-planning-prompt-drift.cjs && node scripts/lint-completion-ratio-drift.cjs && node scripts/lint-state-field-drift.cjs && node scripts/lint-completion-predicate-drift.cjs && node scripts/lint-planning-snapshot-bypass-drift.cjs && node scripts/lint-frontmatter-scalar-broad-grep.cjs && node scripts/lint-removed-but-needed.cjs",
+    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-emitted-drift-ack.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs && node scripts/lint-example-parser-parity.cjs && node scripts/lint-docs-command-form.cjs && node scripts/lint-plan-count-drift.cjs && node scripts/lint-milestone-window-drift.cjs && node scripts/lint-phase-enumeration-drift.cjs && node scripts/lint-planning-prompt-drift.cjs && node scripts/lint-completion-ratio-drift.cjs && node scripts/lint-state-field-drift.cjs && node scripts/lint-completion-predicate-drift.cjs && node scripts/lint-planning-snapshot-bypass-drift.cjs && node scripts/lint-health-diagnostic-rule-table.cjs && node scripts/lint-planning-artifact-writer-drift.cjs && node scripts/lint-frontmatter-scalar-broad-grep.cjs && node scripts/lint-removed-but-needed.cjs && node scripts/lint-no-adhoc-regex-escape.cjs",
     "lint:allow-test-rule-refs": "node scripts/lint-allow-test-rule-refs.cjs",
     "lint:regression-names": "node scripts/lint-regression-test-names.cjs",
     "lint:descriptions": "node scripts/lint-descriptions.cjs",
@@ -122,7 +124,7 @@
     "lint:test-file-count": "node scripts/lint-test-file-count.cjs",
     "lint:pr-checks": "node scripts/lint-pr-check-project-dir.cjs",
     "lint:changeset": "node scripts/changeset/lint.cjs",
-    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/check-glossary-refs.cjs --check && node scripts/lint-compiled-artifact-sync.cjs --check && node scripts/gen-context-index.cjs --check && node scripts/gen-section-manifest.cjs --check",
+    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/check-glossary-refs.cjs --check && node scripts/lint-compiled-artifact-sync.cjs --check && node scripts/gen-context-index.cjs --check && node scripts/gen-section-manifest.cjs --check && node scripts/gen-health-docs.cjs --check",
     "lint:docs": "node scripts/lint-docs-required.cjs",
     "lint:qa-smells": "node scripts/qa-smell-ratchet.cjs",
     "lint:legacy-name": "node scripts/lint-legacy-dir-name.cjs",

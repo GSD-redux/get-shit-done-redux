@@ -1954,11 +1954,19 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     test('W025 is documented consistently across health.md and both config references', () => {
       // The rename W020 -> W025 landed in health.md only; the two docs kept
       // saying W020, which collides with a code src/verify.cts already emits.
+      // #3309: health.md's generated `<error_codes>` table now carries a real,
+      // UNRELATED W020 row of its own (`Worktree health scan degraded` —
+      // git-worktree-list-inventory failure, #3384/#3652 territory), whose
+      // description legitimately contains the bare word "worktree" right next
+      // to "W020". A bare `worktree` probe can no longer tell that apart from
+      // the stale isolation-check naming this guard exists for, so it narrows
+      // to the literal config key (`use_worktrees`) the isolation warning is
+      // actually about — the real W020 row's text never mentions that key.
       for (const rel of ['gsd-core/workflows/health.md', 'docs/CONFIGURATION.md', 'gsd-core/references/planning-config.md']) {
         const text = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
         assert.ok(text.includes('W025'), `${rel}: must document the worktrees warning as W025`);
         assert.ok(
-          !/\bW020\b[^)]{0,80}worktree/i.test(text),
+          !/\bW020\b[^)]{0,120}use_worktrees/i.test(text),
           `${rel}: stale W020 reference for the worktrees warning`,
         );
       }
@@ -1974,16 +1982,25 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
 
     test('the health.md error-codes table is not broken by the namespace note', () => {
       // The note was inserted BETWEEN two rows, which terminates the GFM table
-      // and orphans the I001 row into literal pipe-delimited text.
+      // and orphans the trailing row(s) into literal pipe-delimited text.
+      // #3309: the hand-written "Note: the `W0NN` warning-code namespace..."
+      // paragraph (and the `W025` row it sat under) is gone — `gen-health-docs.cjs`
+      // now GENERATES this table from `RULES`, and deliberately excludes W025
+      // (a workflow-layer diagnostic emitted by this file's own bash step, never
+      // by `cmdValidateHealth`/`RULES` — see the generator's module header and its
+      // `FOOTNOTE_PARAGRAPH`, which still names W025 for cross-reference). The
+      // table's actual last row is now I010, not I001, and the footnote's own
+      // opening sentence replaces the old namespace note. The hazard this test
+      // guards — a footnote landing mid-table — still applies to the new content.
       const src = readWorkflow('health.md');
-      const w025 = src.indexOf('| W025 |');
       const i001 = src.indexOf('| I001 |');
-      const note = src.indexOf('Note: the `W0NN` warning-code namespace');
-      assert.ok(w025 > -1 && i001 > -1 && note > -1, 'health.md: expected W025, I001 and the namespace note');
-      assert.ok(i001 > w025, 'health.md: I001 row must follow the W025 row');
+      const i010 = src.indexOf('| I010 |');
+      const note = src.indexOf('Note: this table is **generated**');
+      assert.ok(i001 > -1 && i010 > -1 && note > -1, 'health.md: expected I001, I010 and the generated-table note');
+      assert.ok(i010 > i001, 'health.md: I010 row must follow the I001 row');
       assert.ok(
-        note > i001,
-        'health.md: the namespace note must come AFTER the final table row — placing it between rows ends the table and orphans I001',
+        note > i010,
+        'health.md: the generated-table note must come AFTER the final table row — placing it between rows ends the table and orphans trailing rows',
       );
     });
   });

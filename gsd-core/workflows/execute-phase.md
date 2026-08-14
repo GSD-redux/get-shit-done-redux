@@ -653,9 +653,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    `[checkpoint] phase {PHASE_NUMBER} wave {N}/{M} plan {plan_id} starting ({P}/{Q} plans done)`
 
-   Pass paths only — executors read files themselves with their fresh context window.
-   For 200k models, this keeps orchestrator context lean (~10-15%).
-   For 1M+ models (Opus 4.6, Sonnet 4.6), richer context can be passed directly.
+   Pass paths only — executors read files themselves.
+
+   **Executor routing (#1689/#3370).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
 
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
 
@@ -690,8 +690,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    ```text
    Agent(
-     subagent_type="gsd-executor",
-     description="Execute plan {plan_number} of phase {phase_number}",
+    subagent_type="{EXECUTOR_TYPE}",
+    description="Execute plan {plan_number} of phase {phase_number}",
      # Only include model= when executor_model is an explicit model name.
      # When executor_model is "inherit", omit this parameter entirely so
      # Claude Code inherits the orchestrator model automatically.
@@ -733,12 +733,13 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </parallel_execution>
 
        <execution_context>
-       @~/.claude/gsd-core/workflows/execute-plan.md
-       @~/.claude/gsd-core/templates/summary.md
-       @~/.claude/gsd-core/references/checkpoints.md
-       @~/.claude/gsd-core/references/tdd.md
-       @~/.claude/gsd-core/references/worktree-path-safety.md
-       ${CONTEXT_WINDOW < 200000 ? '' : '@~/.claude/gsd-core/references/executor-examples.md'}
+       ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
+       - `~/.claude/gsd-core/workflows/execute-plan.md`
+       - `~/.claude/gsd-core/templates/summary.md`
+       - `~/.claude/gsd-core/references/checkpoints.md`
+       - `~/.claude/gsd-core/references/tdd.md`
+       - `~/.claude/gsd-core/references/worktree-path-safety.md`
+       ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>
 
        <files_to_read>
@@ -1519,30 +1520,15 @@ fi
 **No matches:** skip silently (always additive, non-blocking).
 </step>
 
-<step name="update_project_md">
-**Evolve PROJECT.md to reflect phase completion (prevents planning document drift — #956):**
+<step name="delegate_post_completion_to_transition">
+**#1526 — Delegate post-completion to the transition workflow** (parity: the auto-chain
+path must run the SAME post-processing as a normal transition). `phase.complete`
+(`update_roadmap` above) and verification (`verify_phase_goal`) already ran, so invoke
+transition in **post-completion mode**: SKIP its `verify_completion` and
+`update_roadmap_and_state` (re-running `phase.complete` would double-write state) and
+BEGIN at `evolve_project`, running the full set through `offer_next_phase`.
 
-PROJECT.md tracks validated requirements, decisions, and current state. Without this step,
-PROJECT.md falls behind silently over multiple phases.
-
-1. Read `.planning/PROJECT.md`
-2. If the file exists and has a `## Validated Requirements` or `## Requirements` section:
-   - Move any requirements validated by this phase from Active → Validated
-   - Add a brief note: `Validated in Phase {X}: {Name}`
-3. If the file has a `## Current State` or similar section:
-   - Update it to reflect this phase's completion (e.g., "Phase {X} complete — {one-liner}")
-4. Update the `Last updated:` footer to today's date
-5. Commit the change:
-
-```bash
-gsd_run query commit "docs(phase-{X}): evolve PROJECT.md after phase completion" --files .planning/PROJECT.md
-```
-
-**Skip this step if** `.planning/PROJECT.md` does not exist.
-</step>
-
-<step name="offer_next">
-@~/.claude/gsd-core/references/offer-next.md
+@~/.claude/gsd-core/workflows/transition.md
 </step>
 
 </process>

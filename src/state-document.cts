@@ -9,17 +9,13 @@
 
 import { splitTableRow } from './markdown-table.cjs';
 import { clampPercentFromFraction } from './phase-lifecycle.cjs';
-import { collectSection } from './markdown-sectionizer.cjs';
+import { collectSection, withSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
-
-// Internal helpers
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function toFiniteNumber(value: unknown): number | null {
   const number = Number(value);
@@ -375,6 +371,34 @@ export function stateReplaceFieldWithFallback(content: string, primary: string, 
       return result;
   }
   return content;
+}
+
+/**
+ * #3374: session-scoped variant of stateReplaceFieldWithFallback for the
+ * `## Session` continuity fields. The post-sync harvest (state.cts's
+ * matchSessionSection → buildStateFrontmatter) reads these fields ONLY from
+ * the session section, so a writer that refreshes one must target the same
+ * scope — a whole-body replace lets a decoy `**Stopped at:**` line in an
+ * unrelated (e.g. archive) section absorb the refresh while the harvested
+ * session value stays stale.
+ *
+ * Section preference mirrors the reader exactly: the normalized `## Session`
+ * block wins over the bootstrap `## Session Continuity` heading when both
+ * exist (legacy duplicate files); the continuity heading is only consulted
+ * when no canonical `## Session` section exists. `levelBounded` heading
+ * matching also excludes `## Session Continuity Archive` (the #2444 scoping).
+ *
+ * Replace-only (no insertion): returns `content` unchanged when no session
+ * section exists or the field is absent from it, so a STATE.md layout without
+ * the line keeps its shape and the post-sync preservation pass decides the
+ * frontmatter value (see #3374).
+ */
+export function stateReplaceFieldInSession(content: string, primary: string, fallback: string | null | undefined, value: string): string {
+  const isSession = (h: HeadingToken): boolean => h.level === 2 && h.text.trim().toLowerCase() === 'session';
+  const isSessionContinuity = (h: HeadingToken): boolean => h.level === 2 && h.text.trim().toLowerCase() === 'session continuity';
+  const hasCanonicalSession = collectSection(content, isSession, { levelBounded: true }) !== null;
+  const target = hasCanonicalSession ? isSession : isSessionContinuity;
+  return withSection(content, target, (sectionBody) => stateReplaceFieldWithFallback(sectionBody, primary, fallback, value));
 }
 
 export function normalizeStateStatus(status: string | null | undefined, pausedAt: unknown): string {

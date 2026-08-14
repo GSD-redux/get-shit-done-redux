@@ -2,7 +2,6 @@
  * Tests for src/phase-id.cts (compiled to gsd-core/bin/lib/phase-id.cjs).
  *
  * Verifies behavioural contracts of the extracted pure phase-id helpers:
- *   - escapeRegex
  *   - normalizePhaseName
  *   - comparePhaseNum
  *   - extractPhaseToken
@@ -22,53 +21,27 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+const { buildPhaseHeadingRegex: headingRegex } = require('../gsd-core/bin/lib/roadmap.cjs');
 const fc = require('fast-check');
 
-// ─── escapeRegex ─────────────────────────────────────────────────────────────
+// escapeRegex moved off phase-id.cjs entirely in #3212 Phase 1 (#3412): it is
+// now owned by the pattern-construction seam (src/pattern.cts, tests in
+// tests/pattern.test.cjs) and phase-id.cjs no longer exports it — see
+// tests/phase-id-drift-guard.test.cjs's CANONICAL list, which drops it for
+// the same reason.
 
-describe('escapeRegex', () => {
-  test('escapes all regex special characters', () => {
-    assert.strictEqual(phaseId.escapeRegex('.'), '\\.');
-    assert.strictEqual(phaseId.escapeRegex('*'), '\\*');
-    assert.strictEqual(phaseId.escapeRegex('+'), '\\+');
-    assert.strictEqual(phaseId.escapeRegex('?'), '\\?');
-    assert.strictEqual(phaseId.escapeRegex('^'), '\\^');
-    assert.strictEqual(phaseId.escapeRegex('$'), '\\$');
-    assert.strictEqual(phaseId.escapeRegex('{'), '\\{');
-    assert.strictEqual(phaseId.escapeRegex('}'), '\\}');
-    assert.strictEqual(phaseId.escapeRegex('('), '\\(');
-    assert.strictEqual(phaseId.escapeRegex(')'), '\\)');
-    assert.strictEqual(phaseId.escapeRegex('|'), '\\|');
-    assert.strictEqual(phaseId.escapeRegex('['), '\\[');
-    assert.strictEqual(phaseId.escapeRegex(']'), '\\]');
-    assert.strictEqual(phaseId.escapeRegex('\\'), '\\\\');
-  });
-
-  test('leaves alphanumeric and hyphen characters unescaped', () => {
-    assert.strictEqual(phaseId.escapeRegex('abc'), 'abc');
-    assert.strictEqual(phaseId.escapeRegex('01-02'), '01-02');
-    assert.strictEqual(phaseId.escapeRegex('v1.0'), 'v1\\.0');
-  });
-
-  test('coerces non-string values via String()', () => {
-    assert.strictEqual(phaseId.escapeRegex(42), '42');
-    assert.strictEqual(phaseId.escapeRegex(null), 'null');
-    assert.strictEqual(phaseId.escapeRegex(undefined), 'undefined');
-  });
-
-  test('adversarial: path-traversal-like inputs are treated as literals', () => {
-    const result = phaseId.escapeRegex('../../../etc/passwd');
-    // The dots get escaped; slashes and alphanumeric pass through unchanged
-    assert.strictEqual(result, '\\.\\./\\.\\./\\.\\./etc/passwd');
-    // The result forms a valid regex (no throws)
-    assert.doesNotThrow(() => new RegExp(result));
-  });
-
-  test('unicode passthrough', () => {
-    assert.strictEqual(phaseId.escapeRegex('Phase Name'), 'Phase Name');
-    assert.strictEqual(phaseId.escapeRegex('中文'), '中文');
-  });
-});
+// ─── #3412 shared test helper ─────────────────────────────────────────────────
+//
+// phase-id.cts now delegates regex escaping to RegExp.escape via src/pattern.cts.
+// RegExp.escape is MATCH-equivalent to the retired hand-rolled escaper but not
+// TEXT-equivalent (it hex-escapes the first character and all hyphens), so any
+// test that pinned the literal source text (e.g. `'0*29'`, `'PROJ-42'`) is
+// brittle to that internal encoding, not to actual behavior. `headingRegex`
+// (imported above as `buildPhaseHeadingRegex` from gsd-core/bin/lib/roadmap.cjs)
+// is the SAME production function src/roadmap.cts's searchPhaseInContent uses to
+// build its heading regex — not a hand-duplicated copy — so tests assert what
+// matches and what doesn't — the real contract — rather than the escaper's
+// spelling, with no parity gap against the production pattern.
 
 // ─── normalizePhaseName ───────────────────────────────────────────────────────
 
@@ -387,20 +360,50 @@ describe('phaseMarkdownRegexSource', () => {
     const re = new RegExp(src);
     assert.ok(!re.test('3X1'), 'unescaped dot would match any char — must be escaped');
   });
+
+  test('regex metacharacters in a phase id are neutralized, not interpreted (#3412)', () => {
+    // The property RegExp.escape exists for: a literal metacharacter in the
+    // phase id (the dot in "1.2") must not behave as a regex wildcard once the
+    // source is compiled into the same heading regex production uses.
+    const src = phaseId.phaseMarkdownRegexSource('1.2');
+    const re = headingRegex(src);
+    assert.ok(re.test('Phase 1.2: Title'));
+    assert.ok(!re.test('Phase 1X2: Title'));
+  });
 });
 
 // ─── phaseMarkdownRegexSourceExact ────────────────────────────────────────────
 
 describe('phaseMarkdownRegexSourceExact', () => {
   test('returns escaped form for project-code-prefixed IDs', () => {
-    const result = phaseId.phaseMarkdownRegexSourceExact('PROJ-42');
-    // hyphen is not a regex special char so it passes through unescaped
-    assert.strictEqual(result, 'PROJ-42');
-    // The result is a valid regex source
-    assert.doesNotThrow(() => new RegExp(result));
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('MANIFOLD-117'), 'MANIFOLD-117');
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('APP1-117'), 'APP1-117');
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('APP_1-117'), 'APP_1-117');
+    // Source text is RegExp.escape's business (#3412) — the actual contract
+    // is a non-null, compilable source that matches its own prefixed heading
+    // and rejects the bare-numeric heading.
+    for (const [id, bareHeadingNum, foreignPrefix] of [
+      ['PROJ-42', '42', 'OTHER'],
+      ['AB-29', '29', 'CK'],
+      ['MANIFOLD-117', '117', 'OTHER'],
+      ['APP1-117', '117', 'OTHER'],
+      ['APP_1-117', '117', 'OTHER'],
+    ]) {
+      const result = phaseId.phaseMarkdownRegexSourceExact(id);
+      assert.ok(result !== null, id);
+      assert.doesNotThrow(() => new RegExp(result));
+      const re = headingRegex(result);
+      assert.ok(re.test(`Phase ${id}: Title`), `${id} must match its own heading`);
+      assert.ok(!re.test(`Phase ${bareHeadingNum}: Title`), `${id} must not match the bare-numeric heading`);
+      // #3599 regression: the exact source must be tied to the FULL prefixed
+      // id, not just its trailing number — a different prefix with the same
+      // number must not match (an impl returning `[A-Z]+-42` would pass every
+      // assertion above but fail this one).
+      assert.ok(
+        !re.test(`Phase ${foreignPrefix}-${bareHeadingNum}: Title`),
+        `${id} must not match a foreign-prefixed heading with the same number`,
+      );
+      // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
+      // literal would, despite the hex escape (#3412).
+      assert.ok(re.test(`phase ${id.toLowerCase()}: title`));
+    }
   });
 
   test('returns null for non-prefixed IDs', () => {
@@ -657,24 +660,53 @@ describe('isForeignPrefixedPhaseQuery', () => {
 // ─── roadmapPhaseLookupSources (#2121, owned here after the move) ─────────────
 
 describe('roadmapPhaseLookupSources', () => {
-  const PREFIX_TOLERANT = `${phaseId.OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}0*29`;
-
   test('a bare numeric query yields the numeric then prefix-tolerant sources', () => {
     const sources = phaseId.roadmapPhaseLookupSources('29');
-    assert.deepEqual(sources, ['0*29', PREFIX_TOLERANT]);
+    assert.equal(sources.length, 2);
+    // Source text is RegExp.escape's business (#3412) — pin matching
+    // behavior instead: source[0] matches the bare and zero-padded heading
+    // but not a project-code-prefixed one; source[1] additionally tolerates
+    // the prefix.
+    const re0 = headingRegex(sources[0]);
+    const re1 = headingRegex(sources[1]);
+    assert.ok(re0.test('Phase 29: Title'));
+    assert.ok(re0.test('Phase 029: Title'));
+    assert.ok(!re0.test('Phase CK-29: Title'));
+    assert.ok(re1.test('Phase CK-29: Title'));
+    assert.ok(re1.test('Phase 29: Title'));
   });
 
   test('the bare numeric source precedes the prefix-tolerant fallback', () => {
     const sources = phaseId.roadmapPhaseLookupSources('29');
-    assert.ok(sources.indexOf('0*29') < sources.indexOf(PREFIX_TOLERANT));
+    // Behavioral ordering (#3412): the source that rejects a project-code
+    // prefix must appear before the source that accepts one.
+    const bareIdx = sources.findIndex((s) => !headingRegex(s).test('Phase CK-29: Title'));
+    const prefixTolerantIdx = sources.findIndex((s) => headingRegex(s).test('Phase CK-29: Title'));
+    assert.notEqual(bareIdx, -1);
+    assert.notEqual(prefixTolerantIdx, -1);
+    assert.ok(bareIdx < prefixTolerantIdx);
   });
 
   test('a project-code-prefixed query adds the exact source first (3 sources)', () => {
     const sources = phaseId.roadmapPhaseLookupSources('AB-29');
     assert.equal(sources.length, 3);
-    assert.equal(sources[0], 'AB-29');
-    assert.ok(sources.includes('0*29'));
-    assert.ok(sources.includes(PREFIX_TOLERANT));
+    // source[0] is the EXACT source (#3599): matches its own prefixed
+    // heading and must NOT match the bare numeric heading — that ordering
+    // is the whole point of #3599. Source text itself is RegExp.escape's
+    // business (#3412).
+    const reExact = headingRegex(sources[0]);
+    assert.ok(reExact.test('Phase AB-29: Title'));
+    assert.ok(!reExact.test('Phase 29: Title'));
+    // #3599 regression: the exact source is tied to the FULL prefix, not just
+    // the trailing number — a foreign prefix with the same number must not match.
+    assert.ok(!reExact.test('Phase CK-29: Title'));
+    // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
+    // literal would, despite the hex escape (#3412).
+    assert.ok(reExact.test('phase ab-29: title'));
+    // The remaining two sources behave as the numeric/prefix-tolerant pair.
+    const rest = sources.slice(1).map(headingRegex);
+    assert.ok(rest.some((re) => re.test('Phase 29: Title') && !re.test('Phase CK-29: Title')));
+    assert.ok(rest.some((re) => re.test('Phase CK-29: Title')));
   });
 
   test('zero-padding is tolerated: 029 resolves the same sources as 29', () => {

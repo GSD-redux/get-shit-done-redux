@@ -97,8 +97,14 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
     assert.ok(output.warning_count > 0, 'should have warnings');
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP')),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP')),
       'should warn about orphan directory'
+    );
+    // W007 is REUSED verbatim from `validate.health`'s rule table (design doc,
+    // "Which rules run where") — the code is proof of reuse, not a mistake.
+    assert.ok(
+      output.warnings.some(w => w.code === 'W007'),
+      `expected code W007 for the orphan-on-disk warning; got: ${JSON.stringify(output.warnings)}`
     );
   });
 
@@ -119,7 +125,7 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
 
     const sentinelWarnings = output.warnings.filter(
-      w => w.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w)
+      w => w.message.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelWarnings.length, 0,
@@ -127,14 +133,14 @@ describe('validate consistency command', () => {
     );
     // Negative space: the real orphan must still warn.
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP') && /02\b/.test(w)),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP') && /02\b/.test(w.message)),
       `expected a warning for the real orphan 02; got: ${JSON.stringify(output.warnings)}`
     );
     // #3225 (review finding): a sentinel dir must NOT produce a spurious
     // "Gap in phase numbering: N → 999" either (the gap check builds its integer
     // sequence from diskPhases and would otherwise include 999).
     const sentinelGaps = output.warnings.filter(
-      w => w.includes('Gap in phase numbering') && /999\b/.test(w)
+      w => w.message.includes('Gap in phase numbering') && /999\b/.test(w.message)
     );
     assert.strictEqual(
       sentinelGaps.length, 0,
@@ -155,8 +161,14 @@ describe('validate consistency command', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(
-      output.warnings.some(w => w.includes('Gap in phase numbering')),
+      output.warnings.some(w => w.message.includes('Gap in phase numbering')),
       'should warn about gap'
+    );
+    // C001 — new code namespace (design doc, "Code namespace"): not a W0NN,
+    // since this subject has no `validate.health` equivalent.
+    assert.ok(
+      output.warnings.some(w => w.code === 'C001'),
+      `expected code C001 for the phase-numbering gap; got: ${JSON.stringify(output.warnings)}`
     );
   });
 });
@@ -726,6 +738,280 @@ describe('verify plan-structure — checkpoint task types (#2444)', () => {
       `Expected type to contain no markup chars; got: ${JSON.stringify(hostile.type)}`
     );
     assert.strictEqual(hostile.type, 'evil', `Expected capture to stop at '<'; got: ${JSON.stringify(hostile.type)}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// verify plan-structure — attributed child tags (#3193)
+// A task's child elements (files/action/verify/done + every checkpoint-specific
+// field) must be recognized as present even when the opening tag carries an
+// attribute (e.g. <verify mode="auto">…</verify>), consistent with how the
+// parent <task type="…"> is already read. The presence regexes were literal
+// (/<verify>/.test(body)) and were defeated by any attribute.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('verify plan-structure — attributed child tags (#3193)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Helper: wrap a task body in a complete valid PLAN.md scaffold. Mirrors the
+  // #2444 suite's planWithTask so each test reads as a one-task plan.
+  function planWithTask(taskBody, { autonomous = 'false' } = {}) {
+    return [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [some/file.ts]',
+      `autonomous: ${autonomous}`,
+      'must_haves:',
+      '  truths:',
+      '    - "something"',
+      '---',
+      '',
+      '<tasks>',
+      taskBody,
+      '</tasks>',
+    ].join('\n');
+  }
+
+  function runVerify(planContent) {
+    const planPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-PLAN.md');
+    fs.writeFileSync(planPath, planContent);
+    const result = runGsdTools('verify plan-structure .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // ── AC1: attributed child tags pass with zero findings ──────────────────────
+
+  test('auto task with every required field attributed passes (AC1)', () => {
+    // Every required auto-task child carries a `mode="auto"` attribute on its
+    // opening tag — the exact shape the issue reports as false-flagged.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: attributed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Thing is done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('checkpoint:human-verify with attributed triple passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard, check layout</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:decision with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:decision" gate="blocking">',
+      '  <name>Checkpoint: pick auth provider</name>',
+      '  <decision mode="human">Select authentication provider</decision>',
+      '  <options mode="human">',
+      '    <option id="supabase"><name>Supabase Auth</name><pros>Built-in</pros><cons>Lock-in</cons></option>',
+      '  </options>',
+      '  <resume-signal mode="blocking">Select: supabase</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:human-action with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: complete email verification</name>',
+      '  <action mode="human">Click the verification link in your inbox</action>',
+      '  <instructions mode="human">I created the account; check your email.</instructions>',
+      '  <verification mode="auto">API key works via curl</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('mixed plan: attributed auto task + attributed checkpoint task passes (AC1 realistic)', () => {
+    // Mirrors the issue's "two plans in one project" shape: every required
+    // field across BOTH task types carries an attribute.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: build dashboard</name>',
+      '  <files mode="auto">src/dashboard.ts</files>',
+      '  <action mode="auto">Scaffold the dashboard</action>',
+      '  <verify mode="auto"><automated>npm test</automated></verify>',
+      '  <done mode="auto">Dashboard renders</done>',
+      '</task>',
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: visual review</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.strictEqual(output.task_count, 2, 'should count both tasks');
+  });
+
+  // ── AC2: genuinely absent child tag is still flagged (no false negatives) ───
+
+  test('auto task with attributed siblings but verify omitted still warns (AC2)', () => {
+    // files/action/done are attributed; verify is entirely absent (not bare,
+    // not attributed). The fix must not invent presence from nothing.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: no verify</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do it</action>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('checkpoint:human-verify with attributed siblings but how-to-verify omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI at localhost:3000</what-built>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <how-to-verify>')),
+      `Expected "missing <how-to-verify>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint:human-action with attributed siblings but instructions omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action mode="human">Do the thing</action>',
+      '  <verification mode="auto">curl returns 200</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <instructions>')),
+      `Expected "missing <instructions>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint task with attributed siblings but resume-signal omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI</what-built>',
+      '  <how-to-verify mode="human">Visit</how-to-verify>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <resume-signal>')),
+      `Expected "missing <resume-signal>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  // ── AC3: bare + attributed tags mix cleanly (no regression on bare form) ────
+
+  test('mixed bare and attributed tags within one task pass (AC3)', () => {
+    // <action> is bare; <verify>/<done>/<files> are attributed. Proves the
+    // attribute-tolerant regex did not stop matching the bare opener.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: mixed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action>Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  // ── AC4: boundary — a hyphenated sibling tag must not satisfy a shorter tag ─
+
+  test('<verify-mode> present, <verify> absent does not satisfy <verify> (AC4 boundary)', () => {
+    // The fix uses /<tag[\s>]/ so that `<verify` followed by `-` (as in
+    // `<verify-mode>`) does NOT count as `<verify>` presence. A bare
+    // hyphenated opener must not mask a genuinely-missing shorter tag.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: hyphen sibling</name>',
+      '  <files>some/file.ts</files>',
+      '  <action>Do it</action>',
+      '  <verify-mode>not a real verify tag</verify-mode>',
+      '  <done>Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning despite <verify-mode>: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('<verify> does not satisfy the checkpoint:human-action <verification> requirement (AC4 boundary)', () => {
+    // The [\s>] terminator after the tag name must keep <verify> and
+    // <verification> distinct: a <verify> opener is NOT a <verification>
+    // opener, so a human-action task with only <verify> must still be flagged
+    // for the missing <verification>.
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action>Do it</action>',
+      '  <instructions>Do it.</instructions>',
+      '  <verify><automated>echo ok</automated></verify>',
+      '  <resume-signal>Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <verification>')),
+      `Expected "missing <verification>" error (not satisfied by <verify>): ${JSON.stringify(output.errors)}`
+    );
   });
 });
 
@@ -1815,6 +2101,7 @@ describe('bug-967 verify key-links strict file-path contract', () => {
 
     // Also assert the corrected example actually uses a path-like value
     // (must contain at least one '/' and not start with 'http')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/reference/plan-md.md, bounded prose, not adversarial input
     const toMatch = content.match(/key_links:[\s\S]*?to:\s*"([^"]+)"/);
     assert.ok(
       toMatch,
@@ -1936,6 +2223,76 @@ test('--backfill synthesizes missing MILESTONES.md entry from snapshot', () => {
   const content = fs.readFileSync(milestonesPath, 'utf-8');
   assert.ok(content.includes('## v1.0'), 'backfilled entry should contain v1.0');
   assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
+});
+
+// Phase 11 (#3309): pre-migration, `--backfill` ALONE (without `--repair`)
+// was dead code — `verify.cts:2504`'s inner backfill gate was unreachable
+// because the outer `if (options['repair'] && repairs.length > 0)` gate
+// already required `repair`. The migrated `applyRepairs` threads `backfill`
+// as its own boolean (`repair || backfill` for `backfillMilestones`
+// specifically), so `--backfill` alone now actually works — a disclosed
+// latent-bug fix (design doc, "Known limits"), not a preservation
+// requirement.
+test('--backfill alone (without --repair) now synthesizes the missing MILESTONES.md entry', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    '.planning/config.json': '{}',
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should create MILESTONES.md');
+  const content = fs.readFileSync(milestonesPath, 'utf-8');
+  assert.ok(content.includes('## v1.0'), 'backfilled entry should contain v1.0');
+  assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
+});
+
+test('--backfill alone does NOT apply an unrelated NONE-risk repair (createConfig) — only backfillMilestones is gated by backfill', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    // No config.json — W003 (createConfig) would fire and be repairable, but
+    // must NOT be applied by --backfill alone (only --repair applies it).
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const configPath = path.join(dir, '.planning', 'config.json');
+  assert.strictEqual(fs.existsSync(configPath), false, 'config.json must not be created by --backfill alone');
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should still create MILESTONES.md');
+});
+
+// Phase 11 (#3309): W021 (phase_id_convention integer-prefix/milestone
+// mismatch) and W026 (STATE milestone-complete vs. unstarted ROADMAP
+// phases) are the split-off halves of the pre-migration 'W021' code — two
+// genuinely unrelated subjects (design doc, "New codes for the two split
+// subjects" section). This fixture triggers ONLY the phase_id_convention
+// mismatch (W021's remaining subject) and must not also produce W026.
+test('W021 (phase_id_convention mismatch) fires independently of W026 — same fixture never also emits W026', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n\n## [GSD] v2.0 — Expansion\n\n### Phase 1-01: Setup\n**Goal:** g\n',
+    // STATE.md status is plainly "In progress" — never "milestone complete"
+    // or "archived", so W026's precondition never holds for this fixture.
+    '.planning/STATE.md': '# State\n\n## Current Position\n\nPhase: 1-01\n\n**Status:** In progress\n',
+    '.planning/config.json': JSON.stringify({ phase_id_convention: 'milestone-prefixed' }),
+  });
+
+  const result = cmdValidateHealth(dir, { repair: false }, false);
+
+  const w021 = result.warnings.find(w => w.code === 'W021');
+  assert.ok(w021, `expected W021 for phase 1-01 (implies v1.0) listed under v2.0: ${JSON.stringify(result.warnings)}`);
+  assert.ok(
+    result.warnings.every(w => w.code !== 'W026'),
+    `W021 fixture must not also fire W026: ${JSON.stringify(result.warnings.map(w => w.code))}`
+  );
 });
 
 test('health.md mentions --backfill flag', () => {
@@ -3228,7 +3585,18 @@ describe('#2701: state validate rejects NUL-corrupted STATE.md', () => {
 
     const out = parseResult(t, ['state', 'validate'], tmpDir);
     assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
-    assert.ok(out.warnings.some((w) => /NUL/i.test(w)), `warning must name NUL: ${JSON.stringify(out.warnings)}`);
+    // `state validate` (Phase 12 migration) emits coded warning objects
+    // ({code, severity, message, remedy}), not bare strings — assert on the
+    // code as the primary check, with a message substring as a secondary,
+    // human-readable confirmation.
+    assert.ok(
+      out.warnings.some((w) => w.code === 'S001'),
+      `warning must carry code S001: ${JSON.stringify(out.warnings)}`,
+    );
+    assert.ok(
+      out.warnings.some((w) => /NUL/i.test(w.message)),
+      `warning must name NUL: ${JSON.stringify(out.warnings)}`,
+    );
   });
 });
 

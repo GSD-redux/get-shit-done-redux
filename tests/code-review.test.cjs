@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // --- Test Environment Setup ---
 
@@ -242,6 +243,7 @@ describe('CR-AGENT: code review agent frontmatter', () => {
 
   test('gsd-code-fixer.md success_criteria consistent with rollback strategy (git checkout)', () => {
     const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-code-fixer.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
     const successCriteria = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/)?.[1] || '';
     assert.ok(successCriteria.includes('git checkout'),
       'gsd-code-fixer success_criteria must reference git checkout rollback');
@@ -289,6 +291,7 @@ describe('CR-AGENT: code review agent frontmatter', () => {
   test('#2825 gsd-code-fixer.md records where verification ran (main checkout vs worktree)', () => {
     const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-code-fixer.md'), 'utf-8');
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
       /verification[\s\S]*(main checkout|worktree)|(main checkout|worktree)[\s\S]*verification/i.test(content),
       'gsd-code-fixer REVIEW-FIX.md must record where verification ran (main checkout vs worktree) so a reader knows if the numbers are reproducible (#2825)',
     );
@@ -416,6 +419,7 @@ describe('CR-WORKFLOW: code review workflow structure', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
     // mapfile is bash 4+ only; macOS ships bash 3.2. Dedup must use portable while-read.
     // Note: 'mapfile' may appear in platform_notes documentation — check bash code blocks only
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const codeBlocks = content.match(/```bash[\s\S]*?```/g) || [];
     const hasMapfileInCode = codeBlocks.some(block => block.includes('mapfile -t'));
     assert.ok(!hasMapfileInCode,
@@ -426,6 +430,7 @@ describe('CR-WORKFLOW: code review workflow structure', () => {
 
   test('code-review-fix.md uses portable while-read loop for array construction (not mapfile)', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review-fix.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const codeBlocks = content.match(/```bash[\s\S]*?```/g) || [];
     const hasMapfileInCode = codeBlocks.some(block => block.includes('mapfile -t'));
     assert.ok(!hasMapfileInCode,
@@ -497,6 +502,7 @@ describe('CR-INTEGRATION: workflow integration points', () => {
 
   test('execute-phase.md resolves code-review capability hook', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-phase.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
     const gateMatch = content.match(/<step name="code_review_gate"[^>]*>([\s\S]*?)<\/step>/);
     assert.ok(gateMatch, 'execute-phase.md missing code_review_gate step');
     const gateContent = gateMatch[1];
@@ -513,6 +519,7 @@ describe('CR-INTEGRATION: workflow integration points', () => {
     const content = fs.readFileSync(path.join(PLUGIN_WORKFLOWS_DIR, 'execute-phase.md'), 'utf-8');
 
     // Extract code_review_gate section to check
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const gateMatch = content.match(/<step name="code_review_gate">([\s\S]*?)<\/step>/);
     if (gateMatch) {
       const gateContent = gateMatch[1];
@@ -747,7 +754,7 @@ describe('bug-2839: /gsd-code-review-fix cleanup is transactional', () => {
     // (`rm -f .../.review-fix-recovery-pending.json`) or a shell-variable form
     // referring to the previously-declared `sentinel` variable
     // (`rm -f "$sentinel"` / `rm -f "${sentinel}"`).
-    const escapedName = SENTINEL_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedName = escapeRegex(SENTINEL_NAME);
     const sentinelRemovalRe = new RegExp(
       `(rm\\s+(?:-f\\s+)?[^\\n]*(?:${escapedName}|\\$\\{?sentinel\\}?)|unlink[^\\n]*(?:${escapedName}|\\$\\{?sentinel\\}?))`
     );

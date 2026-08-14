@@ -148,6 +148,7 @@ describe('gen-context-index.cjs --check (F)', () => {
   test('checkExitsOneWhenPredicateValueChanged', () => {
     const real = fs.readFileSync(REAL_CONTEXT_PATH, 'utf8');
     const modified = real.replace(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own maintainer-authored CONTEXT.md, bounded, not adversarial input
       /`RULESET\.PR-SCOPE\.one-concern-per-pr=[^`]*`/,
       '`RULESET.PR-SCOPE.one-concern-per-pr=CHANGED VALUE FOR TEST`',
     );
@@ -171,6 +172,7 @@ describe('gen-context-index.cjs --check (F)', () => {
 
   test('checkExitsOneWhenPredicateRemoved', () => {
     const real = fs.readFileSync(REAL_CONTEXT_PATH, 'utf8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own maintainer-authored CONTEXT.md, bounded, not adversarial input
     const removed = real.replace(/`RULESET\.PR-SCOPE\.one-concern-per-pr=[^`]*`\r?\n/, '');
     assert.notEqual(removed, real, 'fixture setup sanity: the removal must actually apply');
     const removedPath = path.join(tmpDir, 'CONTEXT-removed.md');

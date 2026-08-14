@@ -22,6 +22,7 @@ import {
   extractTaggedBlocks,
   collectSection,
 } from './markdown-sectionizer.cjs';
+import { indentWidth } from './token-scanner.cjs';
 
 export interface Decision {
   id: string;
@@ -125,6 +126,7 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
   let category = '';
   let inDiscretion = false;
   let current: Decision | null = null;
+  let openIndent: number | null = null;
   let parseMisses = 0;
 
   const flush = (): void => {
@@ -132,6 +134,7 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
       current.text = current.text.trim();
       out.push(current);
       current = null;
+      openIndent = null;
     }
   };
 
@@ -155,6 +158,26 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
       continue;
     }
 
+    // Nested bullet under an open decision (#3212 Phase 3, #3169): a bullet
+    // indented deeper than the currently-open decision's own bullet is that
+    // decision's elaboration (e.g. a cross-reference to a sibling decision),
+    // not a fresh declaration attempt — fold it into current.text exactly
+    // like a continuation line, before it ever reaches the declaration/
+    // parse-miss regexes below. A bullet at the SAME or a SHALLOWER indent
+    // is unaffected — tested exactly as before this fix. See design doc
+    // .gsd/phase/chore-3414-tokenizer-first-seam/40-design.md §1.3 for why
+    // nesting depth, not bullet content, is the signal that distinguishes
+    // this from a genuinely malformed top-level declaration.
+    if (
+      current &&
+      openIndent !== null &&
+      trimmed.startsWith('-') &&
+      indentWidth(line) > openIndent
+    ) {
+      current.text += ' ' + trimmed;
+      continue;
+    }
+
     // Colon form: `- **D-NN[ [tags]]:** text`
     const colonMatch = line.match(bulletColonRe);
     if (colonMatch) {
@@ -165,6 +188,7 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
         : [];
       const trackable = !inDiscretion && !tags.some((t) => NON_TRACKABLE_TAGS.has(t));
       current = { id, text: colonMatch[3], category, tags, trackable };
+      openIndent = indentWidth(line);
       continue;
     }
 
@@ -181,6 +205,7 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
       // title itself is embedded in the bold run but we report the body as text
       // (consistent with how the gate cares only about coverage, not title/body split).
       current = { id, text: emDashMatch[3] || '', category, tags, trackable };
+      openIndent = indentWidth(line);
       continue;
     }
 
@@ -197,6 +222,7 @@ function parseDecisionLines(block: string): ParseDecisionLinesResult {
         : [];
       const trackable = !inDiscretion && !tags.some((t) => NON_TRACKABLE_TAGS.has(t));
       current = { id, text: titledColonMatch[3] || '', category, tags, trackable };
+      openIndent = indentWidth(line);
       continue;
     }
 

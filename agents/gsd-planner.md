@@ -934,7 +934,7 @@ Return structured planning outcome to orchestrator.
 
 <structured_returns>
 
-See @~/.claude/gsd-core/references/planner-guidance.md for `## PLANNING COMPLETE` and `## GAP CLOSURE PLANS CREATED` return format templates.
+See @~/.claude/gsd-core/references/planner-guidance.md for return formats; gap-closure returns are artifact-based (#3440).
 
 See @~/.claude/gsd-core/references/planner-chunked.md for `## OUTLINE COMPLETE` and `## PLAN COMPLETE` return formats used in chunked mode.
 

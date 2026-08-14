@@ -569,6 +569,95 @@ function rewriteLegacyManagedNodeHookCommands(settings: Settings, absoluteRunner
 }
 
 // ---------------------------------------------------------------------------
+// Shared: reconcileManagedShellHookCommands (#3329)
+// ---------------------------------------------------------------------------
+
+/**
+ * Rewrite already-registered managed `.sh` hook `command` strings to the shape
+ * the current installer would generate (#3329).
+ *
+ * applySettingsJsonHooks registers the four `.sh` managed hooks only-if-absent,
+ * so an entry registered by an older installer keeps its old command forever —
+ * `/gsd-update` (which re-invokes the installer) never re-derived it. On
+ * Claude/win32 that left the pre-#580/#3393 bash-runner-prefixed commands
+ * (`bash "<script>.sh"`, `"<git>/bash.exe" "<script>.sh"`) in place, spawning a
+ * nested bash on every hook fire. The #2979 rewriter above cannot help: it is
+ * Node-only by design (its basename gate contains only `.js` filenames).
+ *
+ * Scoping / safety:
+ * - Inert unless `shellHookOmitsBashRunner({ platform, runtime, isShellHook:
+ *   true })` — the exact combination whose correct command shape changed. Where
+ *   the bash runner is still correct (non-Windows, non-claude), nothing is
+ *   rewritten, so the reconcile cannot churn unrelated installs.
+ * - Only entries whose parsed script token's basename exactly equals one of the
+ *   expected managed `.sh` filenames are touched. A user hook would have to
+ *   live at a path ending in exactly `gsd-session-state.sh` etc. — i.e. the
+ *   GSD-installed file — to match. Extra-token commands (env prefixes, extra
+ *   args) and args-form launcher entries (#976) never match the strict
+ *   `[runner ]<script>` two-token shape and are left alone.
+ * - A null/empty expected command disables rewriting for that hook (a
+ *   bash-runner-unavailable install must not have its entry nulled).
+ *
+ * @param settings settings.json-shaped object; mutated in place
+ * @param expected map of managed `.sh` filename → the command this install
+ *   would register today (from buildHookCommand / buildLocalShellHookCommand)
+ * @param opts platform/runtime override (default: current process)
+ * @returns true when any command was rewritten
+ */
+function reconcileManagedShellHookCommands(
+  settings: Settings,
+  expected: Record<string, string | null | undefined>,
+  opts?: RewriteOpts
+): boolean {
+  if (!settings || !settings.hooks || !expected) return false;
+  if (!opts) opts = {};
+  const platform = opts.platform || process.platform;
+  const runtime = opts.runtime || 'generic';
+  if (!shellHookOmitsBashRunner({ platform, runtime, isShellHook: true })) return false;
+
+  const expectedByBasename = new Map<string, string>();
+  for (const [hookFile, command] of Object.entries(expected)) {
+    if (typeof command === 'string' && command.length > 0) {
+      expectedByBasename.set(hookFile, command);
+    }
+  }
+  if (expectedByBasename.size === 0) return false;
+
+  let changed = false;
+  for (const entries of Object.values(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || !Array.isArray(entry.hooks)) continue;
+      for (const h of entry.hooks) {
+        if (!h || typeof h.command !== 'string') continue;
+        if (Array.isArray(h.args) && h.args.length > 0) continue;
+        let trimmed = h.command.trim();
+        const hadPowerShellCallOperator = platform === 'win32' && /^&\s+/.test(trimmed);
+        if (hadPowerShellCallOperator) {
+          trimmed = trimmed.replace(/^&\s+/, '').trim();
+        }
+        // Strict `[runner ]<script>` shape: an optional single runner token
+        // (bare, 'single-quoted', or "double-quoted") followed by the script
+        // token. Anything else (env prefixes, extra flags, pipelines) does not
+        // match and is left untouched.
+        const m = trimmed.match(/^(?:(?:"([^"]+)"|'([^']+)'|(\S+))\s+)?(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/);
+        if (!m) continue;
+        const scriptToken = m[4] || m[5] || m[6] || '';
+        if (!scriptToken) continue;
+        const basename = shellCmdProjection.posixNormalize(scriptToken).split('/').pop() || '';
+        const expectedCommand = expectedByBasename.get(basename);
+        if (!expectedCommand) continue;
+        if (h.command === expectedCommand) continue;
+
+        h.command = expectedCommand;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// ---------------------------------------------------------------------------
 // Codex TOML hook block builder
 // ---------------------------------------------------------------------------
 
@@ -2096,6 +2185,23 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       console.warn(`  ${yellow}⚠${reset}  Skipped phase boundary hook — Bash executable path unavailable (#3393)`);
     }
 
+    // #3329: the four `.sh` sites above register only-if-absent, so an entry
+    // registered by an older installer keeps its old command forever —
+    // /gsd-update (which re-invokes the installer) never re-derived it. On
+    // Claude/win32 that left the pre-#580/#3393 bash-runner-prefixed commands
+    // in settings.json indefinitely. Reconcile existing managed `.sh` entries
+    // to the command this install would generate today. Inert wherever the
+    // bash runner is still the correct shape; scoped to exact managed
+    // basenames so user-authored hooks are never touched.
+    if (reconcileManagedShellHookCommands(settings as Settings, {
+      'gsd-validate-commit.sh': validateCommitCommand,
+      'gsd-graphify-update.sh': graphifyUpdateCommand,
+      'gsd-session-state.sh': sessionStateCommand,
+      'gsd-phase-boundary.sh': phaseBoundaryCommand,
+    }, { platform: hookOpts.platform, runtime })) {
+      console.log(`  ${green}✓${reset} Reconciled managed .sh hook commands to current format (#3329)`);
+    }
+
     // ── Extended hook events: SubagentStop / Stop / PreCompact / SubagentStart
     //    (#788 + #770 + #2092) ────────────────────────────────────────────────
     // Claude Code (since #770) and Qwen Code (since #788) both support the
@@ -2559,6 +2665,7 @@ export = {
   applySettingsJsonHooks,
   referencesHook,
   rewriteLegacyManagedNodeHookCommands,
+  reconcileManagedShellHookCommands,
   normalizeNodePath,
   resolveNodeRunner,
   resolveBashRunner,

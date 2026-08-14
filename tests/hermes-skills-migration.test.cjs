@@ -1247,6 +1247,7 @@ describe('#2284(b) branding protected-region — <runtime_compatibility> compari
 
     test('sanity: the source file has a <runtime_compatibility> block containing "Claude Code:" as a compared-runtime label', () => {
       assert.ok(/<runtime_compatibility>/.test(CONTENT));
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
       const block = CONTENT.match(/<runtime_compatibility>[\s\S]*?<\/runtime_compatibility>/)[0];
       assert.ok(/\*\*Claude Code:\*\*/.test(block));
     });

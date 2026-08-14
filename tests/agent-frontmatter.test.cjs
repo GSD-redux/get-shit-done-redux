@@ -106,6 +106,14 @@ describe('HOOK: hooks frontmatter pattern', () => {
 // ─── Spawn Type Consistency ──────────────────────────────────────────────────
 
 describe('SPAWN: spawn type consistency', () => {
+  // #1689: `subagent_type="{TOKEN}"` is a workflow-bound placeholder for
+  // parameterized executor dispatch (resolved at runtime via `gsd-tools
+  // resolve-agent`, defaulting to gsd-executor), not a concrete agent name.
+  // The static spawn-type checks below skip these — the effective value is
+  // validated at dispatch time, and execute-phase.md still documents the
+  // built-in roster (incl. gsd-executor) in <available_agent_types>.
+  const PARAMETERIZED_SPAWN_TYPE = /^\{[^}]+\}$/;
+
   test('no "First, read agent .md" workaround pattern remains', () => {
     const dirs = [WORKFLOWS_DIR, COMMANDS_DIR];
     for (const dir of dirs) {
@@ -134,9 +142,11 @@ describe('SPAWN: spawn type consistency', () => {
       const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
       for (const file of files) {
         const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow/command markdown, bounded prose, not adversarial input
         const matches = content.matchAll(/subagent_type="([^"]+)"/g);
         for (const match of matches) {
           const agentType = match[1];
+          if (PARAMETERIZED_SPAWN_TYPE.test(agentType)) continue;
           assert.ok(
             validAgentTypes.has(agentType),
             `${file} references unknown agent type: ${agentType}`
@@ -168,11 +178,14 @@ describe('SPAWN: spawn type consistency', () => {
       const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
       for (const file of files) {
         const content = fs.readFileSync(path.join(dir, file), 'utf-8');
-        // Find all named subagent_type references (excluding general-purpose)
+        // Find all named subagent_type references (excluding general-purpose
+        // and #1689 runtime placeholders)
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow/command markdown, bounded prose, not adversarial input
         const matches = [...content.matchAll(/subagent_type="([^"]+)"/g)];
         const namedAgents = matches
           .map(m => m[1])
-          .filter(t => t !== 'general-purpose');
+          .filter(t => t !== 'general-purpose')
+          .filter(t => !PARAMETERIZED_SPAWN_TYPE.test(t));
 
         if (namedAgents.length === 0) continue;
 
@@ -187,6 +200,7 @@ describe('SPAWN: spawn type consistency', () => {
         // Every spawned agent type must appear in the listing
         for (const agent of new Set(namedAgents)) {
           const agentTypesMatch = content.match(
+            // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
             /<available_agent_types>([\s\S]*?)<\/available_agent_types>/
           );
           assert.ok(
@@ -240,6 +254,7 @@ describe('COLOR: color frontmatter must be a documented named color', () => {
   for (const agent of ALL_AGENTS) {
     test(`${agent} color: is a documented named color`, () => {
       const content = fs.readFileSync(path.join(AGENTS_DIR, agent + '.md'), 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md frontmatter block, fixed-size author-controlled content
       const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       const frontmatter = fmMatch ? fmMatch[1] : '';
       const colorMatch = frontmatter.match(/^color:\s*(.+)$/m);
@@ -1450,6 +1465,7 @@ describe('Bug #2990: cleanup tail fast-forwards $branch and deletes the temp bra
   test('recovery sentinel JSON shape records reviewfix_branch alongside worktree_path', () => {
     // Find the writeFileSync call that constructs the sentinel JSON.
     // Parse the JSON.stringify argument list to extract the field names.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
     const match = md.match(/fs\.writeFileSync\(sentinelPath,\s*JSON\.stringify\(\{([^}]+)\}/);
     assert.notEqual(match, null, 'expected JSON.stringify({...}) inside the sentinel write');
     const fields = match[1].split(',').map(s => s.trim().split(':')[0].trim()).filter(Boolean);

@@ -56,6 +56,7 @@ describe('gsd-planner agent: files_modified wave ordering', () => {
     const content = fs.readFileSync(PLANNER_AGENT_PATH, 'utf-8');
     // Look for the assign_waves step block
     const assignWavesMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
       /<step name="assign_waves">([\s\S]*?)<\/step>/
     );
     assert.ok(assignWavesMatch, 'assign_waves step should exist in gsd-planner.md');
@@ -72,6 +73,7 @@ describe('gsd-planner agent: files_modified wave ordering', () => {
   test('assign_waves step treats files_modified overlap same as depends_on dependency', () => {
     const content = fs.readFileSync(PLANNER_AGENT_PATH, 'utf-8');
     const assignWavesMatch = content.match(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own agent .md content, fixed-size author-controlled content
       /<step name="assign_waves">([\s\S]*?)<\/step>/
     );
     assert.ok(assignWavesMatch, 'assign_waves step should exist');

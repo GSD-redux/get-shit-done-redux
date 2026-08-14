@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "paths": {
+    "debug.md": "#3448: both auto-resume paragraphs (Section 1c continue-path return handling and Section 4's non-terminal branch — textual duplicates, both fixed for symmetry) grow to append the resume parameters to the re-spawn: `resume: true`, `resume_status`, `resume_next_action`, both sourced from `.planning/debug/{slug}.md`, plus the explicit not-parameter-identical-to-a-cold-start rationale. Before this, the respawn carried identical session_params, so the recorded next action and the prior-checkpoints-already-answered disposition never reached the respawned manager — the auto-resume stall behind the no-progress guard. Growth is +963 bytes (21,315 -> 22,278), far under the 40,960 DEFAULT tier cap. The anti-loop guard paragraphs (next_action-only heuristic + absolute 3-resume hard cap) are untouched.",
+    "gsd-debug-session-manager.md": "#3448: <session_parameters> documents the new `resume`/`resume_status`/`resume_next_action` trio, and the Step 2 gsd-debugger prompt template gains a conditional <resume_directive> block carrying the recorded next action and the prior-checkpoints-already-answered disposition, DATA_START/DATA_END-bounded per the existing Step 3d checkpoint-response shape — the seam that lets the manager consume what the orchestrator now forwards. Growth is +822 bytes (19,751 -> 20,573). Terminal paths, CHECKPOINT REACHED handling, and the commit step are untouched."
+  }
+}

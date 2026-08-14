@@ -173,7 +173,13 @@ describe('validate health command', () => {
 
   // ─── Check 4: STATE.md exists and references valid phases ─────────────────
 
-  test('errors when STATE.md is missing with repairable true', () => {
+  test('errors when STATE.md is missing with repairable false (DESTRUCTIVE remedy is never auto-applied)', () => {
+    // Phase 11 (#3309): E004's remedy (regenerateState) is DESTRUCTIVE, and
+    // `--repair` refuses to auto-apply a DESTRUCTIVE remedy (design doc,
+    // "--repair behavior change" section) — a disclosed breaking change from
+    // the pre-migration `repairable: true`. `repairable` now means "an
+    // automatic repair will actually run", not merely "a remedy exists to
+    // describe".
     writeMinimalProjectMd(tmpDir);
     writeMinimalRoadmap(tmpDir, ['1']);
     writeValidConfigJson(tmpDir);
@@ -186,7 +192,7 @@ describe('validate health command', () => {
     const output = JSON.parse(result.output);
     const e004 = output.errors.find(e => e.code === 'E004');
     assert.ok(e004, `Expected E004 in errors: ${JSON.stringify(output.errors)}`);
-    assert.strictEqual(e004.repairable, true, 'E004 should be repairable');
+    assert.strictEqual(e004.repairable, false, 'E004 (DESTRUCTIVE remedy) should not be marked repairable');
   });
 
   test('warns when STATE.md references nonexistent phase', () => {
@@ -1068,10 +1074,15 @@ describe('validate health --repair command', () => {
     assert.strictEqual(diskConfig.milestone_branch_template, 'gsd/{milestone}-{slug}');
   });
 
-  test('resets config.json when JSON is invalid', () => {
+  test('Phase 11 (#3309): refuses to reset config.json when JSON is invalid — resetConfig is DESTRUCTIVE, --repair leaves it untouched', () => {
+    // Pre-migration this repair action applied unconditionally; the design
+    // doc's "--repair behavior change" section makes this a disclosed
+    // breaking change: a DESTRUCTIVE remedy is reported (still visible in
+    // repairs_performed, as a refusal) but never executed by --repair.
     writeMinimalStateMd(tmpDir, '# Session State\n\nPhase 1 in progress.\n');
     const configPath = path.join(tmpDir, '.planning', 'config.json');
-    fs.writeFileSync(configPath, '{broken json');
+    const originalContent = '{broken json';
+    fs.writeFileSync(configPath, originalContent);
 
     const result = runGsdTools('validate health --repair', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -1082,16 +1093,15 @@ describe('validate health --repair command', () => {
       `Expected repairs_performed: ${JSON.stringify(output)}`
     );
     const resetAction = output.repairs_performed.find(r => r.action === 'resetConfig');
-    assert.ok(resetAction, `Expected resetConfig action: ${JSON.stringify(output.repairs_performed)}`);
+    assert.ok(resetAction, `Expected a resetConfig refusal entry: ${JSON.stringify(output.repairs_performed)}`);
+    assert.strictEqual(resetAction.success, false, 'resetConfig must be refused, not applied');
+    assert.match(resetAction.error || '', /destructive/i, 'refusal must explain WHY it was not applied');
 
-    // Verify config.json is now valid JSON with correct nested structure
-    const diskConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    assert.ok(typeof diskConfig === 'object', 'config.json should be valid JSON after repair');
-    assert.ok(diskConfig.workflow, 'reset config should have nested workflow object');
-    assert.strictEqual(diskConfig.workflow.research, true, 'workflow.research should be true after reset');
+    // config.json must remain exactly as it was — untouched.
+    assert.strictEqual(fs.readFileSync(configPath, 'utf-8'), originalContent, 'config.json must not be modified by a refused repair');
   });
 
-  test('regenerates STATE.md when missing', () => {
+  test('Phase 11 (#3309): refuses to regenerate STATE.md when missing — regenerateState is DESTRUCTIVE, --repair leaves it absent', () => {
     writeValidConfigJson(tmpDir);
     // No STATE.md
     const statePath = path.join(tmpDir, '.planning', 'STATE.md');
@@ -1106,13 +1116,18 @@ describe('validate health --repair command', () => {
       `Expected repairs_performed: ${JSON.stringify(output)}`
     );
     const regenerateAction = output.repairs_performed.find(r => r.action === 'regenerateState');
-    assert.ok(regenerateAction, `Expected regenerateState action: ${JSON.stringify(output.repairs_performed)}`);
-    assert.strictEqual(regenerateAction.success, true, 'regenerateState should succeed');
+    assert.ok(regenerateAction, `Expected a regenerateState refusal entry: ${JSON.stringify(output.repairs_performed)}`);
+    assert.strictEqual(regenerateAction.success, false, 'regenerateState must be refused, not applied');
+    assert.match(regenerateAction.error || '', /destructive/i, 'refusal must explain WHY it was not applied');
 
-    // Verify STATE.md now exists and contains "# Session State"
-    assert.ok(fs.existsSync(statePath), 'STATE.md should now exist on disk');
-    const stateContent = fs.readFileSync(statePath, 'utf-8');
-    assert.ok(stateContent.includes('# Session State'), 'regenerated STATE.md should contain "# Session State"');
+    // STATE.md must remain absent, and no backup file should have been created.
+    assert.strictEqual(fs.existsSync(statePath), false, 'STATE.md must remain absent — the DESTRUCTIVE remedy is refused');
+    const planningFiles = fs.readdirSync(path.join(tmpDir, '.planning'));
+    assert.strictEqual(
+      planningFiles.some(f => f.startsWith('STATE.md.bak-')),
+      false,
+      'no backup file should be created for a refused repair',
+    );
   });
 
   test('does not rewrite existing STATE.md for invalid phase references', () => {
@@ -1168,8 +1183,12 @@ describe('validate health --repair command', () => {
     assert.strictEqual(diskConfig.workflow.nyquist_validation, true, 'nyquist_validation should be true');
   });
 
-  test('reports repairable_count correctly', () => {
-    // No config.json (W003, repairable=true) and no STATE.md (E004, repairable=true)
+  test('reports repairable_count correctly — counts NONE-risk findings only, not the DESTRUCTIVE E004', () => {
+    // No config.json (W003, createConfig, NONE risk -> repairable=true) and no
+    // STATE.md (E004, regenerateState, DESTRUCTIVE risk -> repairable=false,
+    // Phase 11 #3309: --repair never auto-applies a DESTRUCTIVE remedy, so it
+    // is deliberately excluded from this count — see the `diagnosticToIssueEntry`
+    // comment in src/verify.cts for the full reasoning).
     const configPath = path.join(tmpDir, '.planning', 'config.json');
     if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
     const statePath = path.join(tmpDir, '.planning', 'STATE.md');
@@ -1180,9 +1199,15 @@ describe('validate health --repair command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.ok(
-      output.repairable_count >= 2,
-      `Expected repairable_count >= 2, got ${output.repairable_count}. Full output: ${JSON.stringify(output)}`
+    const w003 = output.warnings.find(w => w.code === 'W003');
+    const e004 = output.errors.find(e => e.code === 'E004');
+    assert.ok(w003, `Expected W003 in warnings: ${JSON.stringify(output.warnings)}`);
+    assert.ok(e004, `Expected E004 in errors: ${JSON.stringify(output.errors)}`);
+    assert.strictEqual(w003.repairable, true, 'W003 (createConfig, NONE risk) should be repairable');
+    assert.strictEqual(e004.repairable, false, 'E004 (regenerateState, DESTRUCTIVE risk) should not be repairable');
+    assert.strictEqual(
+      output.repairable_count, 1,
+      `Expected repairable_count 1 (W003 only), got ${output.repairable_count}. Full output: ${JSON.stringify(output)}`
     );
   });
 

@@ -158,10 +158,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Required default PR lanes: fast signal, minimum runtime, primary runtime,
-          # and one Windows shell/path lane. The non-primary OS/runtime lanes run
-          # scoped tests from scripts/ci-test-scope.cjs; Ubuntu/Node 24 runs the
-          # broader default suite.
+          # Required default PR lanes: fast signal (targeted scope), primary
+          # runtime (full scope, sharded), and one Windows shell/path lane. The
+          # Node floor is 24 (engines.node >=24.0.0), so the fast-signal lane
+          # runs the same Node version as the full-scope lanes; only the test
+          # selection (scope: targeted vs full) differs. The non-primary
+          # OS/runtime lanes run scoped tests from scripts/ci-test-scope.cjs;
+          # Ubuntu/Node 24 runs the broader default suite.
           #
           # #2952: the `scope: full` lane is SHARDED three ways. It was the only
           # unsharded lane in this file, and the whole unit suite under c8 on one
@@ -180,7 +183,7 @@ jobs:
           # install-heavy suites. Its shards use the same `--shard i/n`
           # flag on scripts/run-tests.cjs, applied AFTER scope selection.
           - os: ubuntu-latest
-            node-version: 22
+            node-version: 24
             scope: targeted
           - os: ubuntu-latest
             node-version: 24
@@ -364,10 +367,10 @@ jobs:
           # CI stays green. base.sha is fixed for the life of the run.
           CI_REBASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/ci-rebase-check.cjs
-      - name: Set up Node.js 22
+      - name: Set up Node.js 24
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
         with:
-          node-version: 22
+          node-version: 24
           cache: 'npm'
       - name: Environment check
         run: npm run check:env
@@ -401,8 +404,10 @@ jobs:
     # cliff. The cap stays at 20m as a generous backstop; a healthy shard now
     # finishes in roughly a third of the old single-lane wall-clock.
     #
-    # The matrix is the cross-product of 3 OS/node legs × 3 shards = 9 jobs,
-    # enumerated explicitly as `include:` rows. (A base `shard: [1,2,3]`
+    # The matrix is the cross-product of 2 OS/node legs × 3 shards = 6 jobs
+    # (windows-latest/24, macos-latest/24 — the Node floor is 24, so there is
+    # no separate node-22 leg to cross-product against), enumerated explicitly
+    # as `include:` rows. (A base `shard: [1,2,3]`
     # dimension would NOT cross-product against `include` legs — include rows
     # sharing no key with the base matrix are appended as standalone combos —
     # and a NESTED `leg.os` key is not resolvable by the H1 shell-policy linter
@@ -433,28 +438,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            node-version: 22
+            node-version: 24
             shell: pwsh
             shard: 1
           - os: windows-latest
-            node-version: 22
+            node-version: 24
             shell: pwsh
             shard: 2
           - os: windows-latest
-            node-version: 22
+            node-version: 24
             shell: pwsh
-            shard: 3
-          - os: macos-latest
-            node-version: 22
-            shell: 'zsh {0}'
-            shard: 1
-          - os: macos-latest
-            node-version: 22
-            shell: 'zsh {0}'
-            shard: 2
-          - os: macos-latest
-            node-version: 22
-            shell: 'zsh {0}'
             shard: 3
           - os: macos-latest
             node-version: 24

@@ -112,6 +112,87 @@ describe('W011: STATE/ROADMAP cross-validation', () => {
       `Should not have W011: ${JSON.stringify(output.warnings)}`
     );
   });
+
+  // ─── #3280 — the STATE.md format `gsd-tools state update` /
+  // `state begin-phase` actually persist: YAML frontmatter `current_phase` +
+  // `status` (syncStateFrontmatter), not the legacy bold-prose fields. New
+  // fixtures added alongside the legacy cases above (which stay, since real
+  // user repos still carry the prose format).
+
+  test('#3280: frontmatter current_phase + ROADMAP [x] -> W011 warning', () => {
+    writeMinimalProjectMd(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [x] Phase 3: Database Layer\n\n### Phase 3: Database Layer\n**Goal:** DB setup\n`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'current_phase: 3',
+        'current_phase_name: Database Layer',
+        'status: executing',
+        '---',
+        '',
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 3 of 4 (Database Layer)',
+        '',
+      ].join('\n')
+    );
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-database-layer'), { recursive: true });
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      output.warnings.some(w => w.code === 'W011'),
+      `Expected W011 in warnings: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('#3280: frontmatter current_phase + status completed (writer vocabulary) -> no W011 warning', () => {
+    writeMinimalProjectMd(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [x] Phase 3: Database Layer\n\n### Phase 3: Database Layer\n**Goal:** DB setup\n`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'current_phase: 3',
+        'current_phase_name: Database Layer',
+        'status: completed',
+        '---',
+        '',
+        '# Session State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 3 of 4 (Database Layer)',
+        '',
+      ].join('\n')
+    );
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-database-layer'), { recursive: true });
+
+    const result = runGsdTools('validate health', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.warnings.some(w => w.code === 'W011'),
+      `Should not have W011 for a completed phase in the writer's own status vocabulary: ${JSON.stringify(output.warnings)}`
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1075,7 +1156,12 @@ describe('W023 — colliding phase directories (issue #2408)', () => {
     fs.mkdirSync(realDir, { recursive: true });
     fs.writeFileSync(path.join(realDir, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(realDir, '01-01-SUMMARY.md'), '# Summary');
-    fs.writeFileSync(path.join(realDir, 'VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
+    // Real convention is `*-VERIFICATION.md` (gsd-core/workflows/verify-work.md:573's
+    // `ls "${PHASE_DIR}"/*-VERIFICATION.md` glob; verification.cts:425's
+    // `readVerificationStatus` matches the same `-VERIFICATION.md` suffix) — a bare
+    // `VERIFICATION.md` with no prefix is never produced by /gsd-verify-work and is
+    // invisible to the canonical reader `isPhaseComplete` now sources this rule from.
+    fs.writeFileSync(path.join(realDir, '05-real-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verified');
 
     // 05-real-stray/ — empty → Not Started
     fs.mkdirSync(path.join(phasesDir, '05-real-stray'), { recursive: true });

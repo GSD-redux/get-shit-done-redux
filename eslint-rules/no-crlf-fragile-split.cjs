@@ -14,7 +14,7 @@
  *      (transitively) a `readFileSync`/`fs.readFileSync` result — directly,
  *      via a chain, or via an Identifier that scope-resolves to a variable
  *      initialized from readFileSync.
- *      Message: use `.split(/\r?\n/)`.
+ *      Message: use `splitLines()` from `src/text-lines.cts`.
  *
  * G2/G3 — a RegExpLiteral whose pattern contains a bare `\n` (a `\n` not
  *      part of `\r?\n` / `\r\n` / `[\r\n]` etc.) used as the pattern of a
@@ -22,7 +22,8 @@
  *      call on a readFileSync-derived receiver. ALSO flags a RegExpLiteral
  *      with a bare `\n` whose source contains a markdown fence (```) or a
  *      frontmatter anchor (`^---`), since those shapes target file content.
- *      Message: use `\r?\n` (Windows git-autocrlf yields `\r\n`).
+ *      Message: use `splitLines()` from `src/text-lines.cts` (or the raw
+ *      `\r?\n` regex, for a file that cannot import the compiled seam).
  *
  * ## Known boundaries
  *
@@ -38,6 +39,7 @@
  */
 
 const { isWindowsExcludedNode } = require('./lib/platform-guard.cjs');
+const { isReadFileSyncDerived, isPatternUsedOnFileContent } = require('./lib/readfilesync-trace.cjs');
 
 /** @type {import('eslint').Rule.RuleModule} */
 const rule = {
@@ -53,11 +55,11 @@ const rule = {
       crlfFragileSplit:
         'Splitting on literal "\\n" on readFileSync content is CRLF-fragile ' +
         '(DEFECT.WINDOWS-CRLF-TEST-PORTABILITY): Windows git-autocrlf yields "\\r\\n" ' +
-        'line endings. Use .split(/\\r?\\n/) instead.',
+        'line endings. Use splitLines() from src/text-lines.cts instead.',
       crlfFragileRegex:
         'RegExp with a bare "\\n" on readFileSync content is CRLF-fragile ' +
         '(DEFECT.WINDOWS-CRLF-TEST-PORTABILITY): Windows git-autocrlf yields "\\r\\n" ' +
-        'line endings. Use \\r?\\n (or [\\r\\n]) instead.',
+        'line endings. Use splitLines() from src/text-lines.cts instead.',
     },
   },
 
@@ -76,103 +78,6 @@ const rule = {
         return node.value;
       }
       return null;
-    }
-
-    /**
-     * Returns true if the node is a call to `readFileSync` or `fs.readFileSync`.
-     * @param {import('eslint').Rule.Node} node
-     * @returns {boolean}
-     */
-    function isReadFileSyncCall(node) {
-      if (!node || node.type !== 'CallExpression') return false;
-      const callee = node.callee;
-      // readFileSync(...)
-      if (callee.type === 'Identifier' && callee.name === 'readFileSync') return true;
-      // fs.readFileSync(...)
-      if (
-        callee.type === 'MemberExpression' &&
-        !callee.computed &&
-        callee.property.type === 'Identifier' &&
-        callee.property.name === 'readFileSync'
-      ) {
-        return true;
-      }
-      return false;
-    }
-
-    /**
-     * Returns true if `node` is (transitively) derived from a readFileSync call.
-     *
-     * Handles:
-     *  - Direct: readFileSync(...) -- the node itself IS the readFileSync call
-     *  - Chain: readFileSync(...).toString() etc.
-     *  - Identifier resolved via scope to a variable initialized from readFileSync
-     *
-     * @param {import('eslint').Rule.Node} node
-     * @returns {boolean}
-     */
-    function isReadFileSyncDerived(node) {
-      if (!node) return false;
-
-      // Direct readFileSync call
-      if (isReadFileSyncCall(node)) return true;
-
-      // MemberExpression: x.something — check the object
-      if (node.type === 'MemberExpression') {
-        return isReadFileSyncDerived(node.object);
-      }
-
-      // CallExpression: x.something() — check object of the callee
-      if (node.type === 'CallExpression') {
-        if (isReadFileSyncCall(node)) return true;
-        if (node.callee.type === 'MemberExpression') {
-          return isReadFileSyncDerived(node.callee.object);
-        }
-      }
-
-      // Identifier: resolve to its variable initializer via scope
-      if (node.type === 'Identifier') {
-        return resolveIdentifierToReadFileSync(node);
-      }
-
-      return false;
-    }
-
-    /**
-     * Given an Identifier node, walk the scope chain to find its binding,
-     * then check if the initializer is derived from readFileSync.
-     * @param {import('eslint').Rule.Node} identNode
-     * @returns {boolean}
-     */
-    function resolveIdentifierToReadFileSync(identNode) {
-      if (typeof sourceCode.getScope !== 'function') return false;
-
-      let scope;
-      try {
-        scope = sourceCode.getScope(identNode);
-      } catch (_) {
-        // If scope resolution fails (e.g. due to unsupported node type or
-        // parser version mismatch), conservatively return false (not flagged).
-        // This is an intentional boundary: an unresolvable scope produces a
-        // false negative rather than a spurious error.
-        return false;
-      }
-      if (!scope) return false;
-
-      let s = scope;
-      while (s) {
-        const variable = s.variables.find(v => v.name === identNode.name);
-        if (variable) {
-          const defs = variable.defs;
-          if (!defs || defs.length === 0) return false;
-          const decl = defs[0].node; // VariableDeclarator
-          if (!decl || !decl.init) return false;
-          // Check the init is readFileSync-derived
-          return isReadFileSyncDerived(decl.init);
-        }
-        s = s.upper;
-      }
-      return false;
     }
 
     /**
@@ -282,48 +187,7 @@ const rule = {
      * @returns {boolean}
      */
     function isRegexUsedOnFileContent(regexNode) {
-      const FILE_METHODS = new Set(['match', 'test', 'exec', 'replace', 'replaceAll', 'split', 'matchAll']);
-      const parent = regexNode.parent;
-      if (!parent) return false;
-
-      // Shape A: str.match(regex) — regex is an argument; parent is CallExpression
-      if (parent.type === 'CallExpression') {
-        const callee = parent.callee;
-        if (
-          callee &&
-          callee.type === 'MemberExpression' &&
-          !callee.computed &&
-          callee.property.type === 'Identifier' &&
-          FILE_METHODS.has(callee.property.name)
-        ) {
-          // regex must actually be one of the arguments (not the callee)
-          if (parent.arguments.includes(regexNode)) {
-            return isReadFileSyncDerived(callee.object);
-          }
-        }
-        return false;
-      }
-
-      // Shape B: /regex/.test(str) — regex is the callee object.
-      // In this case, regexNode.parent is the MemberExpression (/regex/.test)
-      if (parent.type === 'MemberExpression' && !parent.computed) {
-        if (
-          parent.object === regexNode &&
-          parent.property.type === 'Identifier' &&
-          FILE_METHODS.has(parent.property.name)
-        ) {
-          // parent.parent should be the CallExpression
-          const callExpr = parent.parent;
-          if (callExpr && callExpr.type === 'CallExpression' && callExpr.callee === parent) {
-            const args = callExpr.arguments;
-            if (args && args.length > 0) {
-              return isReadFileSyncDerived(args[0]);
-            }
-          }
-        }
-      }
-
-      return false;
+      return isPatternUsedOnFileContent(regexNode, sourceCode);
     }
 
     /**
@@ -371,7 +235,7 @@ const rule = {
             const argVal = stringValue(args[0]);
             if (argVal === '\n') {
               // Is the receiver derived from readFileSync?
-              if (isReadFileSyncDerived(callee.object)) {
+              if (isReadFileSyncDerived(callee.object, sourceCode)) {
                 g1Violations.push(node);
               }
             }

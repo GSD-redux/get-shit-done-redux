@@ -32,6 +32,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const HOOKS = path.join(__dirname, '..', 'hooks');
 const SESSION_START = path.join(HOOKS, 'gsd-cursor-session-start.js');
@@ -85,7 +86,7 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
       });
       assert.match(
         out.additional_context || '',
-        new RegExp(MSG_PRESENT_FRAGMENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        new RegExp(escapeRegex(MSG_PRESENT_FRAGMENT)),
         'must report STATE.md present when workspace_roots points at the project',
       );
     } finally {

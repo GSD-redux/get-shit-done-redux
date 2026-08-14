@@ -10,7 +10,8 @@
  *
  * Dependencies (leaf modules only — no loadConfig):
  *   - node:fs / node:path (stdlib)
- *   - ./phase-id.cjs        (escapeRegex, phaseMarkdownRegexSource)
+ *   - ./phase-id.cjs        (phaseMarkdownRegexSource)
+ *   - ./pattern.cjs         (escapeRegex — #3212 Phase 1 seam)
  *   - ./planning-workspace.cjs (planningDir)
  *   - ./shell-command-projection.cjs (platformReadSync)
  *   - ./markdown-sectionizer.cjs (tokenizeHeadings, stripTaggedBlocks, withSection, collectSection)
@@ -19,10 +20,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
 const {
-  escapeRegex,
   phaseMarkdownRegexSource,
   stripProjectCodePrefix,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -424,6 +425,89 @@ function hasPhaseEntries(markdown: string): boolean {
   // through the canonical seam before testing, matching tokenizeHeadings'
   // fence-awareness above.
   return BULLET_PHASE_LINE_PATTERN.test(stripFencedCode(markdown).text);
+}
+
+/**
+ * #3262: the sole owner of "which phase ids does THIS milestone window
+ * declare". Extracted verbatim from `getMilestonePhaseFilter`'s former inline
+ * heading scan + bullet scan so the new `roadmap milestone-scope` probe (the
+ * write-time milestone-scope guard's capture/compare signal) reads the SAME
+ * derivation the phase filter builds its membership set from — never a second
+ * copy of either scan.
+ *
+ * Fence-aware on both scans (tokenizeHeadings + stripFencedCode), matching
+ * `hasPhaseEntries` above: a fenced markdown EXAMPLE of either syntax is not
+ * a declared phase.
+ *
+ * #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
+ * leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
+ * phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
+ * narrower question — "which phase ids does this window declare" — where only
+ * the 999 icebox range is excluded.
+ */
+function scanMilestonePhaseIds(window: string): Set<string> {
+  const ids = new Set<string>();
+  // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
+  // T4 seam migration: phase headings inside fences are excluded automatically.
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  for (const h of tokenizeHeadings(window)) {
+    if (h.level < 2 || h.level > 4) continue;
+    const pm = phaseHeadingPattern.exec(h.text);
+    if (pm && !/^999\b/.test(pm[1])) ids.add(pm[1]);
+  }
+  // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
+  // so a bullet-house-style ROADMAP populates the milestone phase set instead of
+  // collapsing to a zero-count pass-all filter.
+  let bm: RegExpExecArray | null;
+  const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
+  const unfenced = stripFencedCode(window).text;
+  while ((bm = scanner.exec(unfenced)) !== null) {
+    if (!/^999\b/.test(bm[1])) ids.add(bm[1]);
+  }
+  return ids;
+}
+
+/**
+ * #3262 (write-time milestone-scope guard): does this free-text value contain
+ * a heading line that would TERMINATE the current milestone window if spliced
+ * into ROADMAP.md? Returns the offending heading texts (empty array = safe).
+ *
+ * Mirrors the parser's own terminator vocabulary (`computeMilestoneSectionEnd`):
+ * a heading terminates the window when it is level 1-3, is NOT a Phase heading
+ * (`/^Phase\s+\S/i` — the phase's OWN numbered heading is existing, correct,
+ * load-bearing behavior and is never a violation), and carries a milestone
+ * signal. The signal test is the union of `MILESTONE_HEADING_SIGNAL_PATTERN`
+ * (this module's "is this heading a milestone heading" vocabulary) and `🔄`
+ * (which terminates in `extractCurrentMilestoneScoped`'s own preamble pattern)
+ * — deliberately the CONSERVATIVE union: a field value whose line is a level
+ * 1-3 heading naming a version, a status marker, or the word "Milestone" is
+ * exactly the shape that silently narrows the window, so the guard rejects on
+ * any of them rather than re-deriving which specific marker a given roadmap's
+ * terminator would fire on.
+ *
+ * Two deliberate conservatisms, both one-directional (reject more, never less):
+ *  - `computeMilestoneSectionEnd` also bounds by the milestone heading's own
+ *    level (a `###` marker only terminates a `###`-level milestone heading);
+ *    this predicate flags every level 1-3 marker regardless, because which
+ *    level the active milestone heading uses is a property of the document at
+ *    write time, not of the text being validated.
+ *  - level 4+ headings never terminate any window and are not flagged.
+ *
+ * Fence-aware via `tokenizeHeadings`: a FENCED example of a milestone heading
+ * inside a field value does not terminate the real window, so it must not be
+ * a violation either — the parser and this guard must agree on fences.
+ */
+function findMilestoneScopeHeadingLines(text: string): string[] {
+  const out: string[] = [];
+  for (const h of tokenizeHeadings(text)) {
+    if (h.level > 3) continue;
+    if (/^Phase\s+\S/i.test(h.text)) continue;
+    if (MILESTONE_HEADING_SIGNAL_PATTERN.test(h.text) || /🔄/.test(h.text)) {
+      out.push(h.text.trim());
+    }
+  }
+  return out;
 }
 
 /**
@@ -1293,39 +1377,11 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       });
     }
 
-    // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
-    // T4 seam migration: phase headings inside fences are excluded automatically.
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
-    for (const h of tokenizeHeadings(roadmap)) {
-      if (h.level < 2 || h.level > 4) continue;
-      const pm = phaseHeadingPattern.exec(h.text);
-      // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
-      // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
-      // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
-      // narrower question -- "which phase ids does this milestone's window
-      // declare" -- where only the 999 icebox range is excluded.
-      if (pm && !/^999\b/.test(pm[1])) milestonePhaseNums.add(pm[1]);
-    }
-    // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
-    // so a bullet-house-style ROADMAP populates the milestone phase set instead of
-    // collapsing to a zero-count pass-all filter.
-    // #3184 review finding: this scan must be fence-aware like `hasPhaseEntries`
-    // above — otherwise a fenced markdown EXAMPLE of the bullet syntax inflates
-    // milestonePhaseNums / phaseCount. Strip fences through the canonical seam
-    // first.
-    {
-      let bm: RegExpExecArray | null;
-      const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
-      const roadmapUnfenced = stripFencedCode(roadmap).text;
-      while ((bm = scanner.exec(roadmapUnfenced)) !== null) {
-        // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
-        // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
-        // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
-        // narrower question -- "which phase ids does this milestone's window
-        // declare" -- where only the 999 icebox range is excluded.
-        if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
-      }
+    // #3262: the set-building scan now lives in its own named owner
+    // (`scanMilestonePhaseIds`) so the new `roadmap milestone-scope` probe
+    // reads the SAME derivation this filter does — never a second copy.
+    for (const id of scanMilestonePhaseIds(roadmap)) {
+      milestonePhaseNums.add(id);
     }
   } catch {
     /* best-effort (#2245 audit): the real throw source is platformReadSync
@@ -1530,4 +1586,10 @@ export = {
   // #1956: sole owner of the #2012 decoy-avoidance scope for the
   // `drift-guard phase-status` CLI seam.
   findRoadmapProgressTable,
+  // #3262 (write-time milestone-scope guard): the window phase-id scan owner
+  // (consumed by getMilestonePhaseFilter above and the roadmap milestone-scope
+  // CLI probe) and the free-text predicate the phase add/add-batch/insert
+  // guards and the edit-phase workflow's pre/post capture are built on.
+  scanMilestonePhaseIds,
+  findMilestoneScopeHeadingLines,
 };

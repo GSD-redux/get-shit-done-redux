@@ -26,7 +26,8 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const {
@@ -823,7 +824,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
     } else {
       // Insert after the header line(s) for reverse chronological order (newest first)
-      const headerMatch = existing.match(/^(#{1,3}\s+[^\n]*\n\n?)/);
+      // #3415: empirically verified linear-time up to 5MB adversarial input (worst-case
+      // no-newline-at-all forcing full [^\r\n]* backtrack: 0.11ms@10KB -> 6.9ms@5MB).
+      // Non-global, `^`-anchored (no /m) so this is a single match attempt at position 0
+      // only — never rescanned at every offset — with no nested repeated group, so it
+      // cannot exhibit the #2128-class catastrophic backtracking.
+      // eslint-disable-next-line local/no-unbounded-quantifier -- single ^-anchored non-global attempt at pos 0, measured linear to 5MB, no nested quantifier
+      const headerMatch = existing.match(/^(#{1,3}\s+[^\r\n]*\r?\n(?:\r?\n)?)/);
       if (headerMatch) {
         const header = headerMatch[1];
         const rest = existing.slice(header.length);

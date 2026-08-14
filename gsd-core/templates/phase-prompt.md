@@ -187,7 +187,7 @@ autonomous: true
 
 # Plan 02 - Protected features (needs auth)
 wave: 2
-depends_on: ["01"]
+depends_on: ["01-01"]
 files_modified: [src/features/dashboard.ts]
 autonomous: true
 ```
@@ -199,7 +199,7 @@ Plan 02 in Wave 2 waits for Plan 01 in Wave 1 - genuine dependency on auth types
 ```yaml
 # Plan 03 - UI with verification
 wave: 3
-depends_on: ["01", "02"]
+depends_on: ["01-01", "01-02"]
 files_modified: [src/components/Dashboard.tsx]
 autonomous: false  # Has checkpoint:human-verify
 ```
@@ -606,5 +606,3 @@ Task completion ≠ Goal achievement. A task "create chat component" can complet
 4. Verification subagent checks must_haves against codebase
 5. Gaps found → fix plans created → execute → re-verify
 6. All must_haves pass → phase complete
-
-See `~/.claude/gsd-core/workflows/verify-phase.md` for verification logic.

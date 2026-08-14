@@ -23,6 +23,7 @@ const fc = require('fast-check');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { createFixture } = require('./fixtures/index.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // 30000ms: this file's single named bound for every migrated subprocess call
 // below (git plumbing on small mkdtemp fixtures, gsd-tools.cjs/hook CLI runs,
@@ -974,7 +975,7 @@ describe('planWorktreeRecordAgent', () => {
     });
     assert.equal(plan.reason, 'missing_field');
     for (const flag of ['--agent-id', '--path', '--branch', '--base']) {
-      assert.match(plan.hint, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(plan.hint, new RegExp(escapeRegex(flag)));
     }
   });
 
@@ -4356,7 +4357,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.join(__dirname, '..');
-const { isGitSubcommand, tokenize } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
+const { isGitSubcommand, tokenize, extractBranchArgument } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
 
 // ── tokenize ─────────────────────────────────────────────────────────────────
 
@@ -4453,6 +4454,36 @@ describe('gsd-validate-commit.sh delegates to git-cmd.js', () => {
     );
   });
 });
+
+// ── extractBranchArgument (#3212 Phase 3, #3414) ─────────────────────────────
+// New capability on the shared scanner (design doc §1.2) — not a migration of
+// existing duplicated logic; no existing consumer wired to it this phase.
+
+describe('git-cmd.js extractBranchArgument', () => {
+  test('row 11: git checkout -b', () => {
+    assert.strictEqual(extractBranchArgument('git checkout -b feat/123-slug'), 'feat/123-slug');
+  });
+
+  test('row 12: quoted branch name', () => {
+    assert.strictEqual(extractBranchArgument('git checkout -b "feat/with spaces"'), 'feat/with spaces');
+  });
+
+  test('row 13: git branch <name> form', () => {
+    assert.strictEqual(extractBranchArgument('git branch feat/123'), 'feat/123');
+  });
+
+  test('row 14: -C path prefix does not confuse the branch-name extraction', () => {
+    assert.strictEqual(extractBranchArgument('git -C /repo checkout -b feat/123'), 'feat/123');
+  });
+
+  test('row 15: unrelated command with checkout-shaped text inside a quoted message returns null', () => {
+    assert.strictEqual(extractBranchArgument('git commit -m "checkout -b fake"'), null);
+  });
+
+  test('row 16: plain checkout (no -b) is not a branch-creation command', () => {
+    assert.strictEqual(extractBranchArgument('git checkout main'), null);
+  });
+});
   });
 }
 
@@ -4526,13 +4557,15 @@ describe('bug #3384: adjacent worktree data-loss guards', () => {
   });
 
   test('validate health warns when worktree inventory cannot be listed', () => {
-    const source = read('gsd-core/bin/lib/verify.cjs');
-    // Accept both hand-written dot access and the tsc-compiled bracket form
-    // (ADR-457: verify.cjs is now emitted from src/verify.cts):
-    //   hand-written: worktreeHealth.reason === 'git_list_failed'
-    //   tsc-compiled:  worktreeHealth['reason'] === 'git_list_failed'
-    const failureBranch = source.search(/worktreeHealth(?:\.reason|\['reason'\]) === 'git_list_failed'/);
-    const warning = source.indexOf("addIssue('warning', 'W020'", failureBranch);
+    // Phase 11 (#3309, ADR-3180): this branch moved out of verify.cts into
+    // the W020 rule (src/health-diagnostic-rules/worktree-health.cts),
+    // compiled to gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs.
+    // Accept both hand-written dot access and the tsc-compiled bracket form:
+    //   hand-written: reason === 'git_list_failed'
+    //   tsc-compiled:  reason === 'git_list_failed' (unchanged shape either way)
+    const source = read('gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs');
+    const failureBranch = source.search(/reason === 'git_list_failed'/);
+    const warning = source.indexOf("code: 'W020'", failureBranch);
 
     assert.ok(failureBranch > 0, 'verify health should branch on git_list_failed');
     assert.ok(warning > failureBranch, 'git_list_failed should emit W020 degraded-health warning');
@@ -6373,6 +6406,7 @@ test('bug-3542: gsd-executor.md prohibits `git stash` family inside worktrees', 
     content,
   );
   const hasGitShow = /`git show /i.test(content);
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored gsd-executor.md agent markdown, bounded prose, not adversarial input
   const hasGitDiffRef = /`git diff [^`]*\$?\{?ref\}?|`git diff [A-Z]+:/i.test(content);
   assert.ok(
     hasThrowawayBranch || hasGitShow || hasGitDiffRef,

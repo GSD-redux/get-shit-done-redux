@@ -36,7 +36,7 @@ Configuration options for `.planning/` directory behavior.
 | `git.quick_branch_template` | `null` | Optional branch template for quick-task runs |
 | `workflow.use_worktrees` | `true` | Whether executor agents run in isolated git worktrees. Set to `false` to disable worktrees — agents execute sequentially on the main working tree instead. Recommended for solo developers or when worktree merges cause issues. Note: if your branch is ahead of `origin/HEAD` (a diverged milestone or feature branch), GSD auto-degrades to sequential and prints a warning; set `worktree.baseRef:"head"` in `.claude/settings.local.json` to restore parallel execution. See the branch-divergence note below. |
 | `workflow.subagent_timeout` | `300000` | Timeout in milliseconds for parallel subagent tasks (e.g. codebase mapping). Increase for large codebases or slower models. Default: 300000 (5 minutes). |
-| `workflow.test_command` | `null` | Custom shell command run as the regression/test gate by verify-phase, execute-phase, audit-fix, and post-merge-gate. When unset, GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). Example: `npm test`. |
+| `workflow.test_command` | `null` | Custom shell command run as the regression/test gate by execute-phase, audit-fix, and post-merge-gate. When unset, GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). Example: `npm test`. |
 | `workflow.build_command` | `null` | Custom shell command run as the build gate by the post-merge gate. When unset, the build step is skipped/auto-detected. Example: `npm run build`. |
 | `workflow.inline_plan_threshold` | `2` | Plans with this many tasks or fewer execute inline (Pattern C) instead of spawning a subagent. Avoids ~14K token spawn overhead for small plans. Set to `0` to always spawn subagents. |
 | `manager.flags.discuss` | `""` | Flags passed to `/gsd:discuss-phase` when dispatched from manager (e.g. `"--auto --analyze"`) |
@@ -266,7 +266,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.skip_discuss` | boolean | `false` | `true`, `false` | Skip discuss phase entirely |
 | `workflow.use_worktrees` | boolean | `true` | `true`, `false` | Run executor agents in isolated git worktrees |
 | `workflow.subagent_timeout` | number | `300000` | Any positive integer (ms) | Timeout for parallel subagent tasks (default: 5 minutes) |
-| `workflow.test_command` | string\|null | `null` | Any shell command | Regression/test gate command run by verify-phase, execute-phase, audit-fix, and post-merge-gate. Unset → GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). |
+| `workflow.test_command` | string\|null | `null` | Any shell command | Regression/test gate command run by execute-phase, audit-fix, and post-merge-gate. Unset → GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). |
 | `workflow.build_command` | string\|null | `null` | Any shell command | Build gate command run by the post-merge gate. Unset → build step auto-detected/skipped. |
 | `workflow.mvp_mode` | boolean | `false` | `true`, `false` | Persist the MVP-mode flag in config so every phase defaults to MVP framing without requiring `--mvp` on the CLI. Resolved via the chain: `--mvp` CLI flag → ROADMAP.md `**Mode:** mvp` field → this config value → `false`. When `true`, the planner, executor, verifier, and discovery surfaces (progress, stats, graphify) all treat the phase as an MVP vertical slice (UI → API → DB) of one user-visible capability. |
 | `workflow.context_guard_mode` | string | `"warn"` | `"auto"`, `"warn"`, `"off"` | Context exhaustion guard mode for `execute-phase`. Before each wave, the orchestrator self-assesses context pressure using degradation signals from `context-budget.md`. `"warn"` (default): emit a warning and recommend `/gsd:pause-work` when POOR tier is detected. `"auto"`: automatically invoke `/gsd:pause-work` before the next wave when POOR tier is detected. `"off"`: disable the guard. The guard is heuristic — no programmatic context-% API exists. |
@@ -275,7 +275,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.code_review_command` | string\|null | `null` | Any shell command | External code-review command integrated into `/gsd:ship`. The diff is piped to the command via stdin; the command must output JSON with a `verdict` field (`"APPROVED"` or `"REVISE"`). Non-zero exit or `"REVISE"` verdict blocks the ship workflow. When unset, the built-in review flow runs. Example: `my-review-tool --review`. |
 | `workflow.inline_plan_threshold` | number | `2` | `0`–`10` | Plans with ≤N tasks execute inline instead of spawning a subagent |
 | `workflow.code_review` | boolean | `true` | `true`, `false` | Enable built-in code review step in the ship workflow |
-| `workflow.code_review_depth` | string | `"standard"` | `"light"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
+| `workflow.code_review_depth` | string | `"standard"` | `"quick"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
 | `workflow._auto_chain_active` | boolean | `false` | `true`, `false` | Internal: tracks whether autonomous chaining is active |
 | `workflow.security_enforcement` | boolean | `true` | `true`, `false` | Enable threat-model-anchored security verification via `/gsd:secure-phase`. When `false`, security checks are skipped entirely |
 | `workflow.security_asvs_level` | number | `1` | `1`, `2`, `3` | OWASP ASVS verification level. Level 1 = opportunistic, Level 2 = standard, Level 3 = comprehensive. Scales both planner threat-disposition rigor (which threats must be mitigated vs. accepted) and auditor verification depth (grep-level → boundary-placement check → full data-flow trace). See `gsd-core/references/security-asvs-levels.md`. |
@@ -362,7 +362,7 @@ Set via `manager.*` namespace (e.g., `"manager": { "flags": { "discuss": "--auto
 |-----|------|---------|----------------|-------------|
 | `parallelization` | boolean\|object | `true` | `true`, `false`, `{ "enabled": true }` | Enable parallel wave execution; object form allows additional sub-keys |
 | `model_overrides` | object\|null | `null` | `{ "<agent-type>": "<model-id>" }` | Override model selection per agent type |
-| `agent_skills` | object | `{}` | `{ "<agent-type>": "<skill-set>" }` | Assign skill sets to specific agent types |
+| `agent_skills` | object | `{}` | `{ "<agent-type>": "<skill-set>" }` or `{ "<agent-type>": ["<skill-set>", "<skill-set>", ...] }` | Assign skill sets to specific agent types. Each value is a single skill-set path (string) or an array of skill-set paths — the array form assigns multiple skill sets to one agent type. Paths cannot be comma-joined into one string; each path must be its own array element |
 | `sub_repos` | array | `[]` | Array of relative path strings | Child directories with independent `.git` repos (auto-detected) |
 
 ### Planning Fields
