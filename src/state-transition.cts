@@ -1694,12 +1694,29 @@ function milestoneCompleteCore(
  * Apply a `patch` transition to STATE.md content.
  *
  * Migrates `cmdStatePatch` (state.cts) onto the substrate. Applies each
- * caller-supplied `{field: value}` pair via `stateReplaceField` over the full
- * content (body + frontmatter — patch can target either), tracking which fields
- * were updated vs. not found.
+ * caller-supplied `{field: value}` pair via `stateReplaceField` against the
+ * BODY only, tracking which fields were updated vs. not found.
+ *
+ * ADR-3408 §8.3(b): this used to run `stateReplaceField` over the FULL
+ * document (body + frontmatter), which — because `field` is an arbitrary,
+ * caller-supplied string, unlike every other `stateReplaceField` call site in
+ * this file, which passes a fixed Title-Case string literal that can never
+ * collide with a lowercase/snake_case YAML key — let a frontmatter-shaped
+ * patch key (e.g. `status`, `current_phase`) match and rewrite the YAML
+ * frontmatter block directly via `stateReplaceField`'s case-insensitive
+ * `^field:` line pattern, entirely outside `FIELD_CLASSIFICATION` and the
+ * write-seam preservation policy: a second, undeclared writer. `updateCore`
+ * already strips frontmatter first (the correct shape); `patchCore` now
+ * matches it. A frontmatter-shaped key therefore behaves like any other
+ * unmatched field — reported `failed`, exactly like a nonexistent body field
+ * name — which is the fix: a frontmatter write no longer happens outside the
+ * declared policy table, not that `patch` grows a new frontmatter-write
+ * feature. Body-shaped keys (`Status`, `Current Plan`, `Phase`, ...) are the
+ * LEGITIMATE case and are unaffected — they were always matched against the
+ * body text, and still are.
  *
  * The curated-field preservation that fixes #1743/#1695 is NOT in this core —
- * it lives in `readModifyWriteStateMd`'s post-sync delta (table-driven via
+ * it lives in the write seam's post-sync delta (table-driven via
  * `current_phase_name`'s `preserve-when-unchanged` row, ADR-3408 §8.1 —
  * reclassified from `preserve-always` in #3468 to match its long-standing,
  * delta-gated behavior).
@@ -1714,19 +1731,37 @@ function patchCore(
   content: string,
   intent: { kind: 'patch'; patches: Record<string, string> },
 ): StateTransitionResult {
+  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
+  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  let body = stripFrontmatter(content);
+
   const updated: string[] = [];
   const failed: string[] = [];
-  let result = content;
 
   for (const [field, value] of Object.entries(intent.patches)) {
-    const replaced = stateReplaceField(result, field, value);
+    const replaced = stateReplaceField(body, field, value);
     if (replaced !== null) {
-      result = replaced;
+      body = replaced;
       updated.push(field);
     } else {
       failed.push(field);
     }
   }
+
+  if (updated.length === 0) {
+    // No field matched the body — return `content` VERBATIM (mirrors
+    // `updateCore`'s null-result branch): reassembling via
+    // stripFrontmatter/reconstructFrontmatter even when nothing changed can
+    // round-trip the frontmatter block to different bytes than the original
+    // (key order, formatting), which would falsely defeat
+    // `readModifyWriteStateMd`'s #948 no-op write guard for every patch that
+    // updates nothing, not just a frontmatter-shaped one.
+    return { content, updated, data: { updated, failed } };
+  }
+
+  const result = hasFrontmatter
+    ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${body}`
+    : body;
 
   return { content: result, updated, data: { updated, failed } };
 }

@@ -62,35 +62,33 @@
  * to prevent. `stripComments` does not track quoted strings for exactly
  * this reason — see its own header.
  *
- * DECLARED KNOWN GAP — §8.3(b) `patchCore` frontmatter-write shape is NOT
- * detected by this guard. `patchCore` runs `stateReplaceField(` over the
- * WHOLE document (body + frontmatter) instead of stripping frontmatter
- * first, the way `updateCore` does — a real defect, but this guard does not
- * catch it.
+ * AXIS 3 — FRONTMATTER-SHAPED WRITE (§8.3(b)), CLOSED IN PHASE 2 (#3469).
+ * Phase 1 left this as a DECLARED KNOWN GAP: `patchCore` ran
+ * `stateReplaceField(` over the WHOLE document (body + frontmatter) instead
+ * of stripping frontmatter first, the way `updateCore` does, and a naive
+ * co-occurrence approximation ("does the enclosing function also call
+ * `stripFrontmatter(`?") measured at 33 occurrences of `stateReplaceField(`,
+ * of which only 4 were genuine write-seam bypasses and 29 were noise — the
+ * definition of `stateReplaceField` itself, ~20 calls on `sectionBody` (a
+ * body slice that is frontmatter-free by construction), and several calls
+ * inside `readModifyWriteStateMd` callbacks. 29 false positives to 1 true
+ * positive would have buried the signal.
  *
- * Why: catching it needs genuine DATAFLOW ("is this argument a variable
- * holding the full document, or a body slice?"), not function-scoped
- * co-occurrence. A co-occurrence approximation (does the enclosing function
- * also call `stripFrontmatter(`?) was implemented and measured directly
- * against this repo: 33 occurrences of `stateReplaceField(`, of which only
- * 4 are genuine write-seam bypasses and 29 are noise — the definition of
- * `stateReplaceField` itself (matched as a call), ~20 calls on `sectionBody`
- * (a body slice that is frontmatter-free by construction), and several
- * calls inside `readModifyWriteStateMd` callbacks (correct, because the RMW
- * envelope applies preservation after the callback returns). 29 false
- * positives to 1 true positive buries the signal and makes the ratchet's
- * shrink-rate meaningless as a Phase 2 progress indicator — recorded here,
- * with these numbers, so the next reader does not re-attempt the same
- * approximation.
- *
- * Who owns closing it: Phase 2 (#3469), which also FIXES the defect by
- * consolidating on the single write seam — after which detection becomes
- * tractable, because once the pure pipeline exists the invariant simplifies
- * to "no transition core calls `stateReplaceField` on unstripped content".
- *
- * This is a DECLARED gap with a named owner, not a silent omission — a
- * guard that quietly does not look somewhere is the failure ADR-3180
- * Decision 4(d) records.
+ * Phase 2 fixes `patchCore` (it now strips frontmatter first, matching
+ * `updateCore`) AND closes the gap, using a narrower, two-factor shape that
+ * does not reproduce that ratio: `findUnstrippedContentWrites` below flags a
+ * `stateReplaceField(` call only when BOTH (a) its field-name argument is a
+ * VARIABLE, not a fixed string literal — every OTHER call site in
+ * `EXECUTOR_FILE` passes a fixed Title-Case literal (`'Phase'`, `'Total
+ * Plans in Phase'`, ...) that can never collide with a lowercase/snake_case
+ * YAML frontmatter key, so a literal field name is never a candidate
+ * regardless of whether its content argument is stripped — and (b) its
+ * content argument has not been run through `stripFrontmatter` first,
+ * checked by a simple backward scan (within the same function) for the
+ * nearest preceding assignment to that argument's variable name. This is
+ * deliberately NOT full alias/dataflow tracking — see the function's own
+ * docstring for the narrow, documented limitation this trades for
+ * tractability.
  */
 
 const fs = require('node:fs');
@@ -108,6 +106,10 @@ const BASELINE_PATH = path.join(__dirname, 'state-write-path-drift-baseline.json
 const REASON = Object.freeze({
   FIELD_NAME_DISPATCH: 'field_name_dispatch',
   UNIMPLEMENTED_POLICY: 'unimplemented_policy',
+  // Axis 3 (§8.3(b), closed Phase 2 / #3469): a `stateReplaceField(` call
+  // with a variable field-name argument whose content argument was not run
+  // through `stripFrontmatter` first — see `findUnstrippedContentWrites`.
+  UNSTRIPPED_CONTENT_WRITE: 'unstripped_content_write',
   SEAM_BYPASS_UNRECORDED: 'seam_bypass_unrecorded',
   SEAM_BYPASS_COUNT_GREW: 'seam_bypass_count_grew',
   SEAM_BYPASS_COUNT_SHRANK: 'seam_bypass_count_shrank',
@@ -132,12 +134,22 @@ const EXECUTOR_FILE = 'src/state-transition.cts';
 const SEAM_OWNER_FILE = 'src/state.cts';
 
 // Per Decision 4(d)'s "owner FILE is not exempt, only its named canonical
-// FUNCTIONS are": a `writeStateMd(`/`syncStateFrontmatter(` call inside one
-// of these two functions, in `SEAM_OWNER_FILE` only, is the seam's own
-// internal plumbing (the I/O wrapper calling the pure sync stage), not a
-// bypass. Every OTHER function in `state.cts` — and every function in every
-// OTHER file — is still scanned and still flagged.
-const SEAM_OWNER_EXEMPT_FUNCTIONS = ['writeStateMd', 'readModifyWriteStateMd'];
+// FUNCTIONS are": a `writeStateMd(`/`syncStateFrontmatter(`/
+// `applyPostSyncPreservation(` call inside one of these two functions, in
+// `SEAM_OWNER_FILE` only, is the seam's own internal plumbing, not a bypass.
+// `writeStateMd` is the `cmdStateSync`/`REGENERATE_STATE` path's own I/O
+// wrapper calling `syncStateFrontmatter` directly (no preservation, by
+// design — §8.3's closed exception list). `syncAndPreserveStateMd` (#3469)
+// is the ONE write-seam composition — `syncStateFrontmatter` then
+// `applyPostSyncPreservation` — every OTHER caller needing a non-standard
+// I/O envelope routes through. Every OTHER function in `state.cts` — and
+// every function in every OTHER file — is still scanned and still flagged;
+// in particular, `readModifyWriteStateMd` is NOT exempt: after #3469 it no
+// longer contains a direct `syncStateFrontmatter(`/`applyPostSyncPreservation(`
+// call at all (it calls `syncAndPreserveStateMd` like everyone else), so if
+// one reappeared there it would be exactly the re-assembly shape this axis
+// exists to catch.
+const SEAM_OWNER_EXEMPT_FUNCTIONS = ['writeStateMd', 'syncAndPreserveStateMd'];
 
 // Unconditional path-separator normalization (never gated on
 // `process.platform` — a Windows-authored fork PR must be judged by the
@@ -395,20 +407,128 @@ function findUnimplementedPolicies(text, rel) {
   return out;
 }
 
-// The two write-seam functions, matched only as CALLS (`\(` immediately
-// after, modulo whitespace) — never as bare mentions of the name.
-const SEAM_CALL_RE = /\b(writeStateMd|syncStateFrontmatter)\s*\(/g;
-// A line that IS one of the two seam functions' own definitions — skipped
-// outright, never counted as a call to itself.
-const SEAM_DEF_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+(?:writeStateMd|syncStateFrontmatter)\b/;
+// AXIS 3 (§8.3(b), closed Phase 2 / #3469): `stateReplaceField(<contentArg>,
+// <fieldArg>, ...)` on a single line, capturing both argument expressions.
+// `contentArg` must be a bare identifier (a call expression or property
+// access as the first argument is not matched — silently out of scope, per
+// this axis's own narrow-limitation note below) so its assignments can be
+// tracked; `fieldArg` is everything up to the next comma, trimmed, so its
+// literal-vs-variable shape can be read off directly.
+const STATE_REPLACE_FIELD_CALL_RE = /\bstateReplaceField\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*([^,()]+),/g;
+
+// True when `arg` (already trimmed) is a fixed string/template literal —
+// the safe shape, since every literal field name this codebase actually
+// uses is a Title-Case body label that cannot collide with a lowercase/
+// snake_case YAML frontmatter key.
+function isQuotedLiteralArg(arg) {
+  const t = arg.trim();
+  return t.startsWith("'") || t.startsWith('"') || t.startsWith('`');
+}
 
 /**
- * AXIS 2a: every direct `writeStateMd(`/`syncStateFrontmatter(` call in
- * `text`, outside the two functions' own definitions and (only inside
- * `SEAM_OWNER_FILE`) outside `SEAM_OWNER_EXEMPT_FUNCTIONS`'s own bodies. No
- * `reason` on these findings — `applyRatchet` assigns one, since the same
- * observed call site is a different failure shape depending on whether the
- * baseline already knows about it.
+ * The nearest assignment to `varName` (`varName = <expr>` or
+ * `const|let|var varName = <expr>`), scanning `lines` BACKWARD from `index`
+ * (inclusive) and stopping at the nearest preceding named-function
+ * declaration (mirrors `enclosingFunction`'s own boundary, so the scan
+ * cannot walk into an unrelated function above the one containing the
+ * call). Returns the assigned expression's trimmed text, or `null` when no
+ * such assignment is found before the boundary — meaning `varName` is the
+ * enclosing function's own untouched parameter.
+ *
+ * Deliberately single-hop: this reports whatever the NEAREST assignment's
+ * right-hand side literally is, and does not itself follow a further alias
+ * (`let body = someOtherVar;` is reported as `"someOtherVar"`, not resolved
+ * further). Every real call site in this file assigns its body variable
+ * directly from `stripFrontmatter(content)` with no intermediate alias
+ * (`updateCore`, `patchCore`, `beginPhaseCore`'s `tryField` helper) — a
+ * future call site that introduces one extra hop of aliasing would evade
+ * this check. A declared, narrow limitation, not a silent one — mirrors
+ * this file's existing precedent (`FIELD_VAR_EQ_LITERAL_RE`'s own
+ * documented scope) of accepting a bounded risk in trade for not chasing
+ * full dataflow, which is exactly what made the Phase 1 approximation
+ * unusable (29 false positives to 1 true positive).
+ */
+function nearestPrecedingAssignment(lines, index, varName) {
+  const assignRe = new RegExp(`(?:^|[^.\\w$])(?:const|let|var)?\\s*${escapeRegex(varName)}\\s*=\\s*([^=].*)$`);
+  for (let i = index; i >= 0; i--) {
+    if (FUNCTION_DECL_LINE_RE.test(lines[i])) return null;
+    const m = assignRe.exec(lines[i]);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+/**
+ * AXIS 3: every `stateReplaceField(` call in `EXECUTOR_FILE` whose field-name
+ * argument is a VARIABLE (not a quoted literal) — the only shape that can
+ * ever rewrite YAML frontmatter, since `stateReplaceField`'s `^field:` line
+ * pattern is case-insensitive and matches any line starting with that name,
+ * literal or not — AND whose content argument was not assigned from
+ * `stripFrontmatter(` at the nearest preceding assignment. A literal
+ * field-name argument is never flagged regardless of stripping: every fixed
+ * string this file's `stateReplaceField` calls use is a Title-Case body
+ * label (`'Phase'`, `'Total Plans in Phase'`, ...) that cannot collide with
+ * a lowercase/snake_case frontmatter key by construction, so checking its
+ * content argument would only add false positives on the ~20 already-safe
+ * `sectionBody`-scoped calls this axis must NOT report (mirrors
+ * `updateCore`'s strip-then-replace shape, and `beginPhaseCore`'s
+ * `stateReplaceField(body, name, value)`, both legitimately unflagged).
+ */
+function findUnstrippedContentWrites(rel, text) {
+  const rawLines = text.split('\n');
+  const stripped = stripComments(text);
+  const out = [];
+  for (let i = 0; i < stripped.length; i++) {
+    const line = stripped[i];
+    if (!line.trim()) continue;
+    STATE_REPLACE_FIELD_CALL_RE.lastIndex = 0;
+    let m;
+    while ((m = STATE_REPLACE_FIELD_CALL_RE.exec(line)) !== null) {
+      const contentArg = m[1];
+      const fieldArg = m[2];
+      if (isQuotedLiteralArg(fieldArg)) continue;
+      const assignment = nearestPrecedingAssignment(stripped, i - 1, contentArg);
+      const isStripped = assignment !== null && /^stripFrontmatter\s*\(/.test(assignment);
+      if (isStripped) continue;
+      // `file`/`source` sanitized for the same fork-PR reason as every other
+      // finding in this guard; `contentArg` is captured out of repo source
+      // (an identifier name), attacker-controlled on the same basis.
+      out.push({
+        reason: REASON.UNSTRIPPED_CONTENT_WRITE,
+        axis: 'frontmatter-write',
+        file: sanitizeForReport(rel),
+        line: i + 1,
+        field: sanitizeForReport(contentArg),
+        source: sanitizeForReport(rawLines[i].trim()),
+      });
+    }
+  }
+  return out;
+}
+
+// The three write-seam functions, matched only as CALLS (`\(` immediately
+// after, modulo whitespace) — never as bare mentions of the name.
+// `applyPostSyncPreservation` (#3469) is included alongside
+// `writeStateMd`/`syncStateFrontmatter`: after Phase 2, it is ONLY ever
+// legitimately called from inside `syncAndPreserveStateMd` (the seam
+// composition), so any OTHER call to it is either a re-assembly of the pair
+// (Phase 2's Finding 3 shape — a call site invoking both
+// `syncStateFrontmatter` and `applyPostSyncPreservation` itself instead of
+// the composition) or a bypass calling it alone; either way it belongs on
+// this axis.
+const SEAM_CALL_RE = /\b(writeStateMd|syncStateFrontmatter|applyPostSyncPreservation)\s*\(/g;
+// A line that IS one of the three seam functions' own definitions — skipped
+// outright, never counted as a call to itself.
+const SEAM_DEF_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+(?:writeStateMd|syncStateFrontmatter|applyPostSyncPreservation)\b/;
+
+/**
+ * AXIS 2a: every direct `writeStateMd(`/`syncStateFrontmatter(`/
+ * `applyPostSyncPreservation(` call in `text`, outside the three functions'
+ * own definitions and (only inside `SEAM_OWNER_FILE`) outside
+ * `SEAM_OWNER_EXEMPT_FUNCTIONS`'s own bodies. No `reason` on these
+ * findings — `applyRatchet` assigns one, since the same observed call site
+ * is a different failure shape depending on whether the baseline already
+ * knows about it.
  */
 function findSeamBypasses(rel, text) {
   const rawLines = text.split('\n');
@@ -654,11 +774,13 @@ function applyRatchet(observed, baseline) {
 }
 
 /**
- * Run both scan passes (the `src/` tree for Axis 1 + Axis 2a, the prompt
- * layer for Axis 2b) and split the combined findings by `axis` into
+ * Run both scan passes (the `src/` tree for Axis 1 + Axis 2a + Axis 3, the
+ * prompt layer for Axis 2b) and split the combined findings by `axis` into
  * `{ policyFindings, seamFindings }`. `policyFindings` are already terminal
- * (each carries its own `reason`); `seamFindings` are raw observations —
- * `applyRatchet` is what turns them into (or clears them of) a finding.
+ * (each carries its own `reason`) — this bucket is every axis EXCEPT
+ * `write-seam` (Axis 2), which alone is ratcheted; `seamFindings` are raw
+ * write-seam observations — `applyRatchet` is what turns them into (or
+ * clears them of) a finding.
  */
 function collect() {
   const srcFindings = scanTree({
@@ -671,6 +793,7 @@ function collect() {
       if (relPosix === EXECUTOR_FILE) {
         found.push(...findPolicyDispatchDrift(relPosix, text));
         found.push(...findUnimplementedPolicies(text, relPosix));
+        found.push(...findUnstrippedContentWrites(relPosix, text));
       }
       found.push(...findSeamBypasses(relPosix, text));
       return found;
@@ -688,7 +811,7 @@ function collect() {
 
   const all = [...srcFindings, ...promptFindings];
   return {
-    policyFindings: all.filter((f) => f.axis === 'policy-dispatch'),
+    policyFindings: all.filter((f) => f.axis !== 'write-seam'),
     seamFindings: all.filter((f) => f.axis === 'write-seam'),
   };
 }
@@ -745,18 +868,23 @@ function buildBaselineEntries(seamFindings, existingEntries) {
 }
 
 const BASELINE_COMMENT =
-  'ADR-3408 Decision 5 write-seam ratchet baseline (issue #3468, Phase 1). Every entry here is a ' +
-  '`writeStateMd(`/`syncStateFrontmatter(` bypass this guard found by a whole-repo scan (Decision ' +
-  '4(a)) — it is ACKNOWLEDGED, not endorsed: acknowledgment is in writing (this file), with the ' +
-  'issue owning its removal recorded in the entry\'s "owner" field. This baseline is SHRINK-ONLY — ' +
-  'an entry that stops firing goes STALE and fails the plain run until `--baseline` is re-run to ' +
-  'drop it (ADR-3180 Decision 4(e)\'s "the baseline may only shrink", adopted verbatim by ADR-3408). ' +
-  'Phase 2 (#3469) removes the `cmdPhaseComplete` and `patchCore` entries when it lands the single ' +
-  'write seam. Phase 4 (#3471) drives this baseline to empty and deletes this file. ' +
-  '`REGENERATE_STATE` (`src/health-diagnostic.cts`) is a SANCTIONED PERMANENT exception, not debt — ' +
-  'it is `/gsd-health --repair`\'s factory reset, which rebuilds STATE.md from scratch, so ' +
-  'preservation would restore exactly the values it was invoked to discard; do not "consolidate" ' +
-  'its entry away.';
+  'ADR-3408 Decision 5 write-seam ratchet baseline (issue #3468, Phase 1; Phase 2 / #3469 lands the ' +
+  'single write seam and Amendment 2). Every entry here is a `writeStateMd(`/`syncStateFrontmatter(`/' +
+  '`applyPostSyncPreservation(` bypass this guard found by a whole-repo scan (Decision 4(a)) — it is ' +
+  'ACKNOWLEDGED, not endorsed: acknowledgment is in writing (this file), with the issue owning its ' +
+  'removal recorded in the entry\'s "owner" field. This baseline is SHRINK-ONLY — an entry that stops ' +
+  'firing goes STALE and fails the plain run until `--baseline` is re-run to drop it (ADR-3180 ' +
+  'Decision 4(e)\'s "the baseline may only shrink", adopted verbatim by ADR-3408). Phase 2 (#3469) ' +
+  'removed the `cmdPhaseComplete` (`src/phase.cts`) and `cmdMilestoneComplete` (`src/milestone.cts`) ' +
+  'entries by routing both through the single write-seam composition (`syncAndPreserveStateMd`, ' +
+  '`src/state.cts`). ADR-3408 Amendment 2: "0 bypasses" was never this baseline\'s target — TWO ' +
+  'entries are SANCTIONED PERMANENT, not debt, and Phase 4 (#3471) does NOT drive this file to empty: ' +
+  '`cmdStateSync` (`src/state.cts`) exists precisely to let the body win (#905 — `state sync` ' +
+  're-derives frontmatter FROM the body), so routing it through preservation would invert the command ' +
+  'rather than fix a bug; `REGENERATE_STATE` (`src/health-diagnostic.cts`) is `/gsd-health --repair`\'s ' +
+  'factory reset, which rebuilds STATE.md from scratch, so preservation would restore exactly the ' +
+  'values it was invoked to discard. Neither entry may be "consolidated" away — a guard reporting them ' +
+  'is reporting correctly, and a change that removes one is a regression, not progress.';
 
 function writeBaseline(seamFindings) {
   const priorBaseline = loadBaseline();
@@ -902,6 +1030,9 @@ module.exports = {
   readPolicyUnion,
   findPolicyDispatchDrift,
   findUnimplementedPolicies,
+  findUnstrippedContentWrites,
+  isQuotedLiteralArg,
+  nearestPrecedingAssignment,
   findSeamBypasses,
   findPromptSeamUses,
   isInsideCodeSpan,

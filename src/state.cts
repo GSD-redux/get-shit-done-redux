@@ -2802,6 +2802,7 @@ function applyPostSyncPreservation(
   resync: boolean,
   authoritativeFm?: Record<string, unknown>,
   deriveProgressKeys?: boolean,
+  divergedFields?: string[],
 ): string {
   // Snapshot the existing progress block BEFORE the transform so we can
   // restore it when resync is false.
@@ -2914,11 +2915,35 @@ function applyPostSyncPreservation(
   // original four fields; this is the absorption ADR-1769 / CONTEXT.md
   // already claimed shipped.
   const postFm = extractFrontmatter(syncedContent, statePath) as Record<string, unknown>;
+  // #3469 (ADR-3408 §8.5): snapshot the freshly-synced (pre-preservation)
+  // frontmatter so a caller that wants visibility into "did preservation
+  // restore a curated value over a disagreeing derived one" can diff against
+  // it via the optional `divergedFields` out-param below. Additive only:
+  // callers that omit it (readModifyWriteStateMd, cmdPhaseComplete) pay
+  // nothing extra and see no change to `synced`/the returned content.
+  const preservationInputSnapshot = divergedFields ? { ...postFm } : null;
   const preservation = applyStatePreservation({
     preFm, postFm, preFmSnapshot, resync,
     deriveProgressKeys: deriveProgressKeys === true,
     bodyDeltas,
   });
+  if (divergedFields && preservationInputSnapshot) {
+    // §8.5's "liberal but visible": every field whose value actually
+    // differs before vs after `applyStatePreservation` is a field where the
+    // curated (frontmatter) value won over a disagreeing freshly-derived
+    // one — regardless of which policy executor fired. Diffing the object
+    // (rather than special-casing which executor mutated it) is intentional:
+    // it stays correct if a future FIELD_CLASSIFICATION row adds a new
+    // preservation policy without this function needing to know about it.
+    for (const key of Object.keys(preservation.postFm)) {
+      const before = preservationInputSnapshot[key];
+      const after = preservation.postFm[key];
+      const changed = (typeof before === 'object' || typeof after === 'object')
+        ? JSON.stringify(before) !== JSON.stringify(after)
+        : before !== after;
+      if (changed) divergedFields.push(key);
+    }
+  }
   // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
   // layouts with no body `Phase:` line, both phase-source snapshots are null
   // (equal), so the #1695 restore fires and would put the stale pre-transition
@@ -2940,6 +2965,56 @@ function applyPostSyncPreservation(
     return `---\n${yamlStr}\n---\n\n${body}`;
   }
   return syncedContent;
+}
+
+/**
+ * ADR-3408 §8.3 — the ONE write-seam composition: `syncStateFrontmatter` then
+ * `applyPostSyncPreservation`, as a single named `content -> content`
+ * function. Every STATE.md write that (a) is not one of the two sanctioned-
+ * permanent exceptions (`cmdStateSync`, `REGENERATE_STATE` — §8.3's closed
+ * exception list, ADR Amendment 2) and (b) needs a non-standard I/O envelope
+ * calls THIS — never `syncStateFrontmatter` + `applyPostSyncPreservation`
+ * assembled locally. §8.3: "Assembling the stages at a call site is a
+ * re-derivation even when every step calls the owner." Phase 2 (#3469) found
+ * exactly that shape live in `cmdPhaseComplete`'s atomic-commit adapter
+ * (phase.cts) — every step called an owner, so the drift guard and an
+ * owner-level test both stayed green while the composition itself was free
+ * to diverge from `readModifyWriteStateMd`'s.
+ *
+ * Both current non-RMW callers of the pair — `readModifyWriteStateMd` and
+ * `cmdPhaseComplete`'s atomic 3-file commit adapter — now call this instead
+ * of assembling the two stages themselves. `cmdMilestoneComplete` (the
+ * #3374-shaped exposure `applyPostSyncPreservation`'s own docstring flagged
+ * as a follow-up) is the third.
+ *
+ * Returns CONTENT ONLY — a caller that needs its own I/O envelope (a lock,
+ * an atomic multi-file commit) supplies it around this call; this function
+ * never takes over the write.
+ *
+ * `divergedFields` is passed straight through to `applyPostSyncPreservation`
+ * — see its own docstring.
+ */
+function syncAndPreserveStateMd(
+  originalContent: string,
+  transformedContent: string,
+  statePath: string,
+  cwd: string | undefined,
+  resync: boolean,
+  authoritativeFm?: Record<string, unknown>,
+  deriveProgressKeys?: boolean,
+  divergedFields?: string[],
+): string {
+  const synced = syncStateFrontmatter(transformedContent, cwd, authoritativeFm);
+  return applyPostSyncPreservation(
+    originalContent,
+    transformedContent,
+    synced,
+    statePath,
+    resync,
+    authoritativeFm,
+    deriveProgressKeys,
+    divergedFields,
+  );
 }
 
 /**
@@ -2981,14 +3056,16 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
       return false;
     }
 
-    let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
-    // #3374: the post-sync preservation pass (snapshots, table-driven
-    // applyStatePreservation, #2736 re-assert) — see applyPostSyncPreservation.
-    synced = applyPostSyncPreservation(
+    // #3469 (ADR-3408 §8.3): sync + post-sync preservation is the single
+    // owned composition (`syncAndPreserveStateMd`), not assembled here — this
+    // call site and `cmdPhaseComplete`'s atomic-commit adapter both route
+    // through the same function so the composition cannot diverge between
+    // the two.
+    const synced = syncAndPreserveStateMd(
       content,
       modified,
-      synced,
       statePath,
+      cwd,
       resync,
       options?.authoritativeFm,
       options?.deriveProgressKeys === true,
@@ -4352,11 +4429,15 @@ export = {
   readModifyWriteStateMd,
   syncStateFrontmatter,
   // #3374: the shared post-sync preservation pass (snapshots + table-driven
-  // applyStatePreservation + #2736 re-assert). Exported for cmdPhaseComplete's
-  // atomic-commit adapter in phase.cts, which syncs STATE.md directly (it is
-  // committed atomically with ROADMAP/REQUIREMENTS) and must apply the same
-  // preservation policy the RMW path applies.
+  // applyStatePreservation + #2736 re-assert).
   applyPostSyncPreservation,
+  // #3469 (ADR-3408 §8.3): the ONE write-seam composition (sync +
+  // preservation) as content -> content. Exported for cmdPhaseComplete's
+  // atomic-commit adapter (phase.cts, syncs STATE.md directly because it is
+  // committed atomically with ROADMAP/REQUIREMENTS) and for
+  // cmdMilestoneComplete (milestone.cts) — both need the composition's
+  // output but supply their own I/O envelope around it.
+  syncAndPreserveStateMd,
   readStateHeadFreshness,
   withStateLock,
   updatePerformanceMetricsSection,

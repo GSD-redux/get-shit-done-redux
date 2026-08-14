@@ -90,8 +90,7 @@ const {
   readModifyWriteStateMd,
   stateExtractField,
   stateReplaceField,
-  syncStateFrontmatter,
-  applyPostSyncPreservation,
+  syncAndPreserveStateMd,
   withStateLock,
   updatePerformanceMetricsSection,
 } = stateMod;
@@ -2961,13 +2960,13 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // to the STATE.md Transition Module. The ~90-line inline RMW callback
         // that lived here is the pure `completePhaseCore` in
         // src/state-transition.cts, backed by the field-classification table.
-        // `updatePerformanceMetricsSection` + `syncStateFrontmatter` stay in
-        // this adapter: they are section-table / disk-scan concerns, not
-        // classified fields, and `syncStateFrontmatter` is the post-sync this
-        // transaction needs (it does NOT go through readModifyWriteStateMd
-        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS —
-        // the post-sync preservation pass runs via applyPostSyncPreservation
-        // instead, #3374).
+        // `updatePerformanceMetricsSection` stays in this adapter: it is a
+        // section-table / disk-scan concern, not a classified field. The
+        // sync + post-sync preservation this transaction needs runs via the
+        // single write-seam composition, `syncAndPreserveStateMd` (it does
+        // NOT go through readModifyWriteStateMd because STATE.md is
+        // committed atomically with ROADMAP/REQUIREMENTS, ADR-3408 §8.3 /
+        // #3374 / #3469).
         const nextPhaseDisplayName =
           phaseDisplayNameFromRoadmap(roadmapContent, nextPhaseNum) ??
           phaseDisplayNameFromSlug(nextPhaseName);
@@ -3021,27 +3020,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
                 current_phase_name: nextPhaseDisplayName,
               }
           : undefined;
-        const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
-        // #3374: the direct sync above deliberately bypasses
+        // ADR-3408 §8.3 / #3469: this deliberately bypasses
         // readModifyWriteStateMd (STATE.md is committed atomically with
-        // ROADMAP/REQUIREMENTS), which also bypassed the #948/#1230
-        // preservation pass every RMW write gets — so a stale body
-        // `Stopped at:` line silently clobbered a fresher frontmatter
-        // stopped_at on every completion. Run the shared post-sync pass:
-        // snapshots from the on-disk pre-image (originalStateContent) and the
-        // transformed content, table-driven applyStatePreservation, then the
-        // #2736 authoritative re-assert (which restores the #3350 pairing
-        // override the preserve-always restore may have reverted). resync=true
-        // is the lifecycle-transition posture (progress recomputed from disk;
-        // only the preserve-when-unchanged deltas apply). Fields the
-        // transition legitimately rewrote (Status, Phase, Stopped At via
-        // completePhaseCore's #3374 continuity line) have changed body
-        // sources, so their deltas do not fire.
-        stateContent = applyPostSyncPreservation(
+        // ROADMAP/REQUIREMENTS), so it calls the single write-seam
+        // composition (`syncAndPreserveStateMd`) directly instead of
+        // assembling `syncStateFrontmatter` + `applyPostSyncPreservation`
+        // itself — a call site re-assembling the pair, even with every step
+        // calling an owner, is the exact re-derivation §8.3 forbids by name
+        // (Phase 2 found this shape live here). The composition runs
+        // snapshots from the on-disk pre-image (originalStateContent) and
+        // the transformed content, table-driven applyStatePreservation, then
+        // the #2736 authoritative re-assert (which restores the #3350
+        // pairing override the preserve-always restore may have reverted).
+        // resync=true is the lifecycle-transition posture (progress
+        // recomputed from disk; only the preserve-when-unchanged deltas
+        // apply). Fields the transition legitimately rewrote (Status, Phase,
+        // Stopped At via completePhaseCore's #3374 continuity line) have
+        // changed body sources, so their deltas do not fire.
+        stateContent = syncAndPreserveStateMd(
           originalStateContent,
           stateContent,
-          synced,
           statePath,
+          cwd,
           true,
           authoritativeFm,
         );
