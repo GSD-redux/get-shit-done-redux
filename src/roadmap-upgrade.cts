@@ -465,6 +465,42 @@ function computeMigrationPlan(cwd: string, options: Record<string, unknown> = {}
   };
 }
 
+/**
+ * Apply roadmap line edits via character-offset splicing against the
+ * ORIGINAL content string — never a full split/rejoin (#3413). `lineIndex`
+ * boundaries are found by scanning for the next bare `\n`, exactly matching
+ * how computeMigrationPlan() itself indexes lines (`roadmapContent.split('\n')`)
+ * — both sides must agree on line indexing for `lineText === edit.from` to
+ * match, and this keeps a `\r` that precedes a `\n` as part of the LINE text
+ * rather than a separately-normalized terminator. Only a line whose text
+ * exactly equals an edit's `from` is replaced; every other character —
+ * including every line's own terminator, touched or not — is copied
+ * byte-for-byte from the original, so a mixed-EOL ROADMAP.md never has its
+ * untouched lines silently flattened to one dominant style.
+ */
+function applyRoadmapEdits(content: string, edits: RoadmapEdit[]): string {
+  const editByLine = new Map<number, RoadmapEdit>();
+  for (const edit of edits) editByLine.set(edit.lineIndex, edit);
+
+  let result = '';
+  let pos = 0;
+  let lineIndex = 0;
+
+  for (;;) {
+    const nlIdx = content.indexOf('\n', pos);
+    const lineEnd = nlIdx === -1 ? content.length : nlIdx;
+    const lineText = content.slice(pos, lineEnd);
+    const edit = editByLine.get(lineIndex);
+    result += edit && lineText === edit.from ? edit.to : lineText;
+    if (nlIdx === -1) break;
+    result += '\n';
+    pos = nlIdx + 1;
+    lineIndex++;
+  }
+
+  return result;
+}
+
 // ─── applyMigration ───────────────────────────────────────────────────────────
 
 /**
@@ -538,18 +574,10 @@ function applyMigration(cwd: string, plan: MigrationPlan, options: { dryRun?: bo
     // 2. Rewrite ROADMAP.md phase headings
     if (plan.roadmapEdits.length > 0) {
       const roadmapContent = fs.readFileSync(roadmapPath, 'utf8');
-      const lines = roadmapContent.split('\n');
-
-      // Sort edits by lineIndex to apply in order
-      const sortedEdits = [...plan.roadmapEdits].sort((a, b) => a.lineIndex - b.lineIndex);
-      for (const edit of sortedEdits) {
-        if (lines[edit.lineIndex] === edit.from) {
-          lines[edit.lineIndex] = edit.to;
-        }
-      }
+      const newRoadmapContent = applyRoadmapEdits(roadmapContent, plan.roadmapEdits);
 
       snapshotFile(roadmapPath);
-      fs.writeFileSync(roadmapPath, lines.join('\n'), 'utf8');
+      fs.writeFileSync(roadmapPath, newRoadmapContent, 'utf8');
       editedFiles.push('ROADMAP.md');
     }
 

@@ -47,8 +47,12 @@ export interface SpawnOutcome {
 }
 
 export interface RunnerDeps {
-  /** Bounded synchronous spawn. Production wires `child_process.spawnSync`. */
-  spawn: (binary: string, argv: string[], opts: { input?: string; timeoutMs: number }) => SpawnOutcome;
+  /**
+   * Bounded synchronous spawn. Production wires `child_process.spawnSync`.
+   * `env` pairs are merged OVER the inherited environment for this one child (#2483) — an absent
+   * `env` inherits unchanged, and the parent process environment is never mutated either way.
+   */
+  spawn: (binary: string, argv: string[], opts: { input?: string; timeoutMs: number; env?: Readonly<Record<string, string>> }) => SpawnOutcome;
   /** Bounded HTTP POST/GET returning the RAW body — never pre-parsed, so errors stay diagnosable. */
   httpJson: (url: string, opts: { method: 'GET' | 'POST'; body?: string; timeoutMs: number }) =>
     Promise<{ ok: boolean; status: number; body: string; error?: string }>;
@@ -556,6 +560,52 @@ export function stampBlindReview(review: string): string {
 }
 
 /**
+ * A `path/to/file:line`-shaped source citation (#3194).
+ *
+ * The Review Instructions (review.md) require every reviewer to "cite concrete
+ * `path/to/file:line` evidence"; this recognizes that shape in review output. Two anchors
+ * make the match a source citation rather than any `colon-digits`:
+ *   - the token before the colon must contain a path separator (`/` or `\`) or end in a
+ *     `.extension`, so a bare PLAN-line reference — "see line 42", "L12-L18", the invented
+ *     references measured in #3194 — does not match;
+ *   - the token may not itself contain `:` and may not start immediately after `/` or `:`,
+ *     so a URL (`http://localhost:8080`) and its host:port do not match either.
+ *
+ * KNOWN LIMIT (deliberate, #3194 scope): presence is checked, not resolution. A citation to
+ * a line that does not exist still counts — catching invented references that look impeccable
+ * requires repo access at stamp time and is follow-up material, not part of this fix.
+ */
+const SOURCE_CITATION_RE = /(?<![/:])(?:[^\s:]*[/\\][^\s:]*|[^\s:]*\.[A-Za-z0-9]{1,16}):[0-9]+/;
+
+/** The marker the Consensus Summary step recognizes and down-weights (#3194). */
+const UNGROUNDED_MARKER = '[reviewed-without-source-citations]';
+
+/**
+ * Stamp a machine-readable marker when a source-grounded lane's review cites no `file:line`
+ * evidence (#3194).
+ *
+ * The sibling of `stampBlindReview`, for a different failure mode: that one fires when a
+ * reviewer REPORTS it had no repo access; this one fires when a lane that DECLARES
+ * `source-grounded` evidence delivered none — the review restates the plan's own claims with
+ * at most invented plan-line references. Either way the Consensus Summary must not count the
+ * verdict at full weight, which is why both prepend a marker the consensus step recognizes.
+ *
+ * Idempotent and empty-safe: an already-stamped review passes through unchanged, and an empty
+ * review is left to the empty-output policy's diagnostic stub.
+ */
+export function stampUngroundedReview(review: string): string {
+  if (isEmptyReview(review)) return review;
+  if (review.startsWith(`> ${UNGROUNDED_MARKER}`)) return review;
+  if (SOURCE_CITATION_RE.test(review)) return review;
+  return (
+    `> ${UNGROUNDED_MARKER} This reviewer declared source-grounded evidence but cited no ` +
+    'file:line source evidence, so it reviewed the pasted plan text only — down-weight its ' +
+    'verdict in the Consensus Summary.\n\n' +
+    review
+  );
+}
+
+/**
  * `openai-compatible` — model discovery, the chat-completions round trip, and the served-model
  * mismatch warning.
  *
@@ -663,7 +713,11 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, deps)
       : plan.argv;
 
-  const out = deps.spawn(plan.binary, argv, { input, timeoutMs: plan.timeoutMs });
+  const out = deps.spawn(plan.binary, argv, {
+    input,
+    timeoutMs: plan.timeoutMs,
+    ...(plan.env ? { env: plan.env } : {}),
+  });
   // #3086: surface spawn errors (ENOENT, ETIMEDOUT, etc.) that would otherwise
   // be silently dropped — the review path read only stdout/stderr and treated
   // an empty-stderr spawn failure as "the model had nothing to say".
@@ -706,6 +760,13 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
     }
   }
 
+  // #3194: verify the declared evidence class against the review's actual output. A
+  // source-grounded lane whose review cites no file:line evidence reviewed the plan text
+  // only; stamp it so the Consensus Summary down-weights the verdict instead of silently
+  // trusting the lane's declaration. diff-only lanes are exempt — their verdict is already
+  // folded in as a diff observation, and the citation check must not change that surface.
+  if (plan.evidenceClass !== 'diff-only') review = stampUngroundedReview(review);
+
   const { stubbed } = writeReviewOrStub(plan, review, deps, extra);
   return { slug: plan.slug, ok: true, stubbed };
 }
@@ -713,7 +774,9 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
 async function runHttpLane(plan: HttpPlan, deps: RunnerDeps): Promise<LaneRunResult> {
   const promptText = deps.exists(plan.promptPath) ? deps.readFile(plan.promptPath) : '';
   const { review, rawBody } = await runOpenAiCompatible(plan, promptText, deps);
+  // #3194: same verification on the http path — see runSpawnLane.
+  const stamped = plan.evidenceClass !== 'diff-only' ? stampUngroundedReview(review) : review;
   deps.writeFile(plan.errPath, '');
-  const { stubbed } = writeReviewOrStub(plan, review, deps, rawBody);
+  const { stubbed } = writeReviewOrStub(plan, stamped, deps, rawBody);
   return { slug: plan.slug, ok: true, stubbed };
 }

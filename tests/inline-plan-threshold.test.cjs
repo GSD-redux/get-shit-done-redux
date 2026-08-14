@@ -95,6 +95,7 @@ describe('execute-plan.md routing instruction (#1979)', () => {
     // Simulate how the grep pattern would behave against sample PLAN.md content
     // Extract the pattern from execute-plan.md
     const content = fs.readFileSync(executePlanPath, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored execute-plan.md workflow, bounded prose, not adversarial input
     const patternMatch = content.match(/TASK_COUNT=\$\(grep -cE '([^']+)'/);
     assert.ok(patternMatch, 'must find TASK_COUNT grep pattern');
 

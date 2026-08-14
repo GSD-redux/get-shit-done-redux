@@ -35,24 +35,13 @@ const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 const { renderMarkdown } = require('./registry-schema.cjs');
+const { normalizeEol } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const SOURCES = [
   { type: 'capability', jsonFile: 'capabilities.json', mdFile: 'capability-registry.md' },
   { type: 'eos', jsonFile: 'eos.json', mdFile: 'eos-registry.md', optional: true },
   { type: 'reviewer', jsonFile: 'reviewers.json', mdFile: 'reviewer-registry.md', optional: true },
 ];
-
-/**
- * The generator always writes LF; a Windows checkout (autocrlf) may present
- * committed files with CRLF. Normalize before comparing so `--check` only
- * fails on real content drift, not checkout-introduced line-ending noise.
- *
- * @param {string} content
- * @returns {string}
- */
-function normalizeLineEndings(content) {
-  return content.replace(/\r/g, '');
-}
 
 function getRegistriesDir() {
   return path.join(process.cwd(), 'docs', 'registries');
@@ -126,7 +115,7 @@ function main() {
         continue;
       }
       const committed = fs.readFileSync(mdPath, 'utf8');
-      if (normalizeLineEndings(committed) !== normalizeLineEndings(rendered)) {
+      if (normalizeEol(committed) !== normalizeEol(rendered)) {
         process.stderr.write(`${mdFile} is stale. Run:\n  node scripts/gen-registry.cjs --write\n`);
         anyDrift = true;
       }
@@ -149,4 +138,4 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { main, renderFor, SOURCES, normalizeLineEndings };
+module.exports = { main, renderFor, SOURCES, normalizeLineEndings: normalizeEol };

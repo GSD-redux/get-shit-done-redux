@@ -26,26 +26,34 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
-const { toPosixPath, generateSlugInternal, readSubdirectories, findUnsummarizedPlans } = coreUtilsMod;
+// #2528: `extractCanonicalPlanId` used to exist here as a byte-identical second
+// copy, and this PR had to patch BOTH with the same rewind rule — the exact
+// generative-fix divergence CLAUDE.md warns about. Collapsed onto core-utils'
+// copy, which was already the leaf owner, so there is no second surface left to
+// drift and no parity test needed to police one.
+const {
+  toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId,
+  findUnsummarizedPlans,
+} = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const {
-  escapeRegex,
   normalizePhaseName,
   phaseMarkdownRegexSource,
   comparePhaseNum,
-  phaseTokenMatches,
+  matchPhaseDirs,
   isSentinelPhaseId,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
 } = phaseIdMod;
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -71,16 +79,19 @@ import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
-const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphMod;
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { extractFrontmatter } = frontmatterMod;
 const {
   readModifyWriteStateMd,
   stateExtractField,
   stateReplaceField,
   syncStateFrontmatter,
+  applyPostSyncPreservation,
   withStateLock,
   updatePerformanceMetricsSection,
 } = stateMod;
@@ -164,30 +175,6 @@ function describeNonCanonicalPlans(dirFiles: string[], matchedFiles: string[]): 
   );
 }
 
-function extractCanonicalPlanId(filename: string): string {
-  const base = filename
-    .replace(/-PLAN\.md$/i, '')
-    .replace(/-SUMMARY\.md$/i, '')
-    .replace(/\.md$/i, '');
-  const parts = base.split('-').filter(Boolean);
-  // #2043: a phase/plan token component is either a zero-padded number (≥2 digits)
-  // or a single-digit-plus-letter id ("3A"); a *bare* single digit is a slug word,
-  // so "46-6-rs-…" is not paired into a "46-6" id while "3A-01" stays intact.
-  const tokenRe = /^(?:\d{2,}[A-Z]?|\d[A-Z])(?:\.\d+)*$/i;
-  // #2232: the PAIRED plan component is a zero-padded continuation segment
-  // (exactly 2 digits), so a ≥3-digit slug word (a year) is not paired into a
-  // bogus "14-2026" id. The leading phase component keeps tokenRe's unbounded
-  // \d{2,} — phase numbers ≥100 are legitimate; only continuations are capped.
-  const planTokenRe = new RegExp(
-    `^(?:${phaseIdMod.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?|\\d[A-Z])(?:\\.\\d+)*$`,
-    'i',
-  );
-  const phaseIdx = parts.findIndex((p) => tokenRe.test(p));
-  if (phaseIdx >= 0 && phaseIdx + 1 < parts.length && planTokenRe.test(parts[phaseIdx + 1])) {
-    return `${parts[phaseIdx]}-${parts[phaseIdx + 1]}`;
-  }
-  return base;
-}
 
 interface PhaseListOptions {
   type?: string;
@@ -241,7 +228,11 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
       // LOOKUP (b): search the physical set, plus archived when asked.
       const lookupPool = [...readSubdirectories(phasesDir, true), ...archivedLabels];
       const normalized = normalizePhaseName(phase);
-      const match = lookupPool.find((d) => phaseTokenMatches(d, normalized));
+      // The pool is #3185's (physical set + archived); the matcher is this
+      // PR's. `dirs` is deliberately not read here: on this base it is not
+      // assigned until the branch below picks a match.
+      const { matches } = matchPhaseDirs(lookupPool, normalized);
+      const match = matches[0];
       if (!match) {
         output({ files: [], count: 0, phase_dir: null, error: 'Phase not found' }, raw, '');
         return;
@@ -328,7 +319,7 @@ function cmdPhaseNextDecimal(cwd: string, basePhase: string, raw: boolean): void
     if (fs.existsSync(phasesDir)) {
       const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      baseExists = dirs.some((d) => phaseTokenMatches(d, normalized));
+      baseExists = matchPhaseDirs(dirs, normalized).matches.length > 0;
 
       const dirPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(normalized)}\\.(\\d+)`);
       for (const dir of dirs) {
@@ -502,7 +493,10 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
       // #2237: fail loud when multiple directories match the same bare phase
       // number — prevents cross-project file writes when unrelated projects
       // share a .planning/phases/ tree.
-      const matches = dirs.filter((d) => phaseTokenMatches(d, normalized));
+      // #2528: selection delegates to the canonical two-pass matcher (exact
+      // token match, then the bare-integer leading-digit-run fallback) shared
+      // with the locator and the phase-plan-index scan.
+      const { matches } = matchPhaseDirs(dirs, normalized);
       if (matches.length === 0) continue;
       if (matches.length > 1) {
         output({
@@ -603,6 +597,8 @@ interface RawPlan {
   hasSummary: boolean;
   /** #2830: true iff this plan's own SUMMARY declares `status: halted` (a designed stop). */
   halted: boolean;
+  /** #1689: optional per-plan specialist executor hint (frontmatter `agent_hint:`). null when unset. */
+  agentHint: string | null;
 }
 
 /**
@@ -692,19 +688,39 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
   let phaseDir: string | null = null;
   let phaseDirName: string | null = null;
+  let ambiguousMatches: string[] | null = null;
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const dirs = entries
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort((a, b) => comparePhaseNum(a, b));
-    const match = dirs.find((d) => phaseTokenMatches(d, normalized));
-    if (match) {
-      phaseDir = path.join(phasesDir, match);
-      phaseDirName = match;
+    // #2528: selection delegates to the canonical two-pass matcher shared with
+    // the locator and the find-phase scan (this site previously first-matched
+    // with `.find()` and had no multi-match guard — the #2237 fail-loud rule
+    // now applies here too, so the three resolution paths cannot disagree).
+    const { matches } = matchPhaseDirs(dirs, normalized);
+    if (matches.length > 1) {
+      ambiguousMatches = matches;
+    } else if (matches.length === 1) {
+      phaseDir = path.join(phasesDir, matches[0]);
+      phaseDirName = matches[0];
     }
   } catch {
     // phases dir doesn't exist
+  }
+
+  if (ambiguousMatches) {
+    output(
+      {
+        phase: normalized,
+        error: `Phase ${normalized} is ambiguous: ${ambiguousMatches.length} directories match (${ambiguousMatches.map((m) => `"${m}"`).join(', ')}).`,
+        ambiguous_matches: ambiguousMatches,
+        plans: [], waves: {}, incomplete: [], has_checkpoints: false,
+      },
+      raw,
+    );
+    return;
   }
 
   if (!phaseDir) {
@@ -754,7 +770,20 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   // `plans/SUMMARY-01.md` correctly) instead of a bespoke ID-Set built from
   // extractCanonicalPlanId, which only ever handled the root-canonical
   // `-PLAN.md`/`-SUMMARY.md` naming form.
-  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, summaryFiles));
+  //
+  // #3345: the summary list is filtered through the SAME shared predicate
+  // scanPhasePlans filters its countable set with
+  // (plan-dependency-graph.cjs's isSummaryFileBlocked), so a SUMMARY declaring
+  // `status: blocked` reads as NO completion record here — has_summary false,
+  // the plan lands in `incomplete` — exactly matching the count side. Fail-open
+  // on a SUMMARY with no status key / unreadable file (filename fallback);
+  // `status: halted` stays summarized (#2830 designed stop). summaryFileByPlanId
+  // below still indexes EVERY summary on disk because the halted lookup is a
+  // file resolution for reading status, not a completion pairing.
+  const countableSummaryFiles = summaryFiles.filter(
+    (f) => !isSummaryFileBlocked(path.join(phaseDir, f)),
+  );
+  const unsummarizedPlanFiles = new Set(findUnsummarizedPlans(planFiles, countableSummaryFiles));
   // #2830: reverse lookup from a completed plan's id (exact or canonical) to
   // the actual summary filename, so a plan's own SUMMARY frontmatter can be
   // read for its `status`. Shared builder (also used by phase-locator.cts's
@@ -803,6 +832,18 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       filesModified = Array.isArray(fmFiles) ? fmFiles.map(String) : [String(fmFiles)];
     }
 
+    // #1689: optional per-plan specialist executor hint. Read verbatim here; the
+    // orchestrator resolves it against the active runtime's agent dir at dispatch
+    // time (execute-phase.md -> `gsd_run query resolve-agent`), falling back to
+    // gsd-executor when the field is unset or the named agent does not resolve.
+    let agentHint: string | null = null;
+    const fmAgentHint = fm['agent_hint'];
+    if (fmAgentHint !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+      const hintStr = String(fmAgentHint).trim();
+      agentHint = hintStr !== '' ? hintStr : null;
+    }
+
     const hasSummary = !unsummarizedPlanFiles.has(planFile);
 
     // #2830: a plan can have a SUMMARY (hasSummary=true) and still be halted —
@@ -822,6 +863,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous,
       objective: extractObjective(content) || (fm['objective'] as string | null) || null,
       filesModified,
+      agentHint,
       taskCount,
       hasSummary,
       halted,
@@ -924,6 +966,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
+      agent_hint: rawPlan.agentHint,
       task_count: rawPlan.taskCount,
       has_summary: rawPlan.hasSummary,
       // #2830: additive fields — halted is this plan's OWN status; blocked_by
@@ -982,10 +1025,57 @@ function describeGoalShapedTitle(description: string): string | null {
   );
 }
 
+/**
+ * #3163: compute the byte offset in `rawContent` where a new `### Phase N:`
+ * entry should be inserted — at the end of the active phase list, scoped to the
+ * CURRENT MILESTONE so the entry can never land before a trailing `---` in
+ * shipped/history/backlog material (the file's last `---` on a long roadmap
+ * sits deep in archive). When no current milestone can be resolved (no
+ * STATE.md `milestone:` and no in-progress `🚧`/`🔄` marker), fall back to the
+ * legacy whole-file lastIndexOf('\n---') so simple no-milestone roadmaps keep
+ * their existing behavior.
+ */
+function phaseEntryInsertOffset(rawContent: string, cwd: string): number {
+  const ranges = currentMilestoneRawRanges(rawContent, cwd);
+  if (!ranges) {
+    const legacy = rawContent.lastIndexOf('\n---');
+    return legacy > 0 ? legacy : rawContent.length;
+  }
+  const window = rawContent.slice(ranges.primary.start, ranges.primary.end);
+  const lastSeparator = window.lastIndexOf('\n---');
+  return lastSeparator > 0 ? ranges.primary.start + lastSeparator : ranges.primary.end;
+}
+
+/**
+ * #3262 (write-time milestone-scope guard): the phase-creation and
+ * phase-insertion entry templates interpolate the caller's `description`
+ * verbatim into `### Phase N: ${description}`. A description embedding a
+ * level 1-3 heading that carries a milestone marker (version token,
+ * ✅/📋/🚧/🔄, or the word "Milestone") would splice a heading that TERMINATES
+ * the current milestone window (`computeMilestoneSectionEnd`) and silently
+ * drops every later phase out of the derived milestone phase set. Reject
+ * before any write or phase-directory creation — the fail-loud sibling of
+ * the edit-phase workflow's depends_on gate. The predicate itself
+ * (`findMilestoneScopeHeadingLines`) is fence-aware and Phase-heading-exempt,
+ * so ordinary descriptions and the phase's own numbered heading never trip it.
+ */
+function assertDescriptionPreservesMilestoneScope(description: string, command: string): void {
+  const offending = findMilestoneScopeHeadingLines(description);
+  if (offending.length === 0) return;
+  error(
+    `${command}: description contains a milestone-scoping heading line — writing it to ROADMAP.md would terminate ` +
+      `the current milestone window and silently drop later phases out of the milestone scope. ` +
+      `Offending line(s): ${offending.map((line) => JSON.stringify(line)).join(', ')}. ` +
+      `Rewrite the line so it is not a level 1-3 "#" heading carrying a milestone marker ` +
+      `(a vN.N version token, a ✅/📋/🚧/🔄 marker, or the word "Milestone").`
+  );
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase add');
 
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1072,13 +1162,8 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
     const phaseEntry =
       `\n### Phase ${_newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${_newPhaseId} to break down)\n`;
 
-    let updatedContent: string;
-    const lastSeparator = rawContent.lastIndexOf('\n---');
-    if (lastSeparator > 0) {
-      updatedContent = rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator);
-    } else {
-      updatedContent = rawContent + phaseEntry;
-    }
+    const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+    const updatedContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
 
     platformWriteSync(roadmapPath, updatedContent);
     return { newPhaseId: _newPhaseId, dirName: _dirName };
@@ -1105,6 +1190,12 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
 function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): void {
   if (!Array.isArray(descriptions) || descriptions.length === 0) {
     error('descriptions array required for phase add-batch');
+  }
+  // #3262: validate every description BEFORE the lock — the batch is
+  // all-or-nothing, so one offending description must reject the whole batch
+  // with no ROADMAP write and no phase directories created.
+  for (const description of descriptions) {
+    assertDescriptionPreservesMilestoneScope(description, 'phase add-batch');
   }
   const config = loadConfig(cwd);
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
@@ -1163,11 +1254,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           : `\n**Depends on:** Phase ${typeof newPhaseId === 'number' ? newPhaseId - 1 : 'TBD'}`;
       const phaseEntry =
         `\n### Phase ${newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${formatGsdSlash('plan-phase', resolveRuntime(cwd)) as string} ${newPhaseId} to break down)\n`;
-      const lastSeparator = rawContent.lastIndexOf('\n---');
-      rawContent =
-        lastSeparator > 0
-          ? rawContent.slice(0, lastSeparator) + phaseEntry + rawContent.slice(lastSeparator)
-          : rawContent + phaseEntry;
+      const insertAt = phaseEntryInsertOffset(rawContent, cwd);
+      rawContent = rawContent.slice(0, insertAt) + phaseEntry + rawContent.slice(insertAt);
       added.push({
         phase_number: typeof newPhaseId === 'number' ? newPhaseId : String(newPhaseId),
         padded:
@@ -1190,6 +1278,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
   if (!afterPhase || !description) {
     error('after-phase and description required for phase insert');
   }
+  assertDescriptionPreservesMilestoneScope(description, 'phase insert');
 
   const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) {
@@ -1293,10 +1382,25 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
       const phaseLabel = useBold
         ? `**Phase ${_decimalPhase}: ${description}**`
         : `Phase ${_decimalPhase}: ${description}`;
+      // #3413 review fix: bulletEntry stays hardcoded '\n'. The on-disk EOL
+      // is decided at write time by platformWriteSync's normalizeContent /
+      // _normalizeMd (shell-command-projection.cts), which unconditionally
+      // converts \r\n -> \n for any .md target — so whatever terminator is
+      // used here in memory is erased before the file is ever written, and
+      // templating it via detectEol(rawContent) was inert dead code. '\n'
+      // matches what platformWriteSync enforces anyway.
       const bulletEntry = `\n- [ ] ${phaseLabel}`;
 
+      // #3413: was `[^\n]*`, which on CRLF content swallows the line's
+      // trailing \r into the match, shifting bulletLineEnd to land BETWEEN
+      // the \r and \n of the original CRLF pair — a pure splice-POSITION
+      // bug on the not-yet-write-normalized CRLF read (independent of the
+      // final on-disk EOL, which platformWriteSync always forces to LF for
+      // .md targets regardless). Widening to [^\r\n]* stops the match at the
+      // true line-content boundary so bulletLineEnd lands cleanly before the
+      // terminator.
       const targetBulletPattern = new RegExp(
-        `(-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*)`,
+        `(-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*)`,
         'i',
       );
       const bulletMatchResult = rawContent.match(targetBulletPattern);
@@ -1307,7 +1411,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
       const bulletLineEnd =
         rawContent.indexOf(bulletMatchResult![0]) + bulletMatchResult![0].length;
       const afterBullet = rawContent.slice(bulletLineEnd);
-      const nextBulletMatch = afterBullet.match(/\n-\s*\[[ x]\]\s*(?:\*\*)?Phase\s+\d/i);
+      const nextBulletMatch = afterBullet.match(/\r?\n-\s*\[[ x]\]\s*(?:\*\*)?Phase\s+\d/i);
 
       let insertIdx: number;
       if (nextBulletMatch) {
@@ -1333,7 +1437,7 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
 
       const headerIdx = rawContent.indexOf(headerMatch![0]);
       const afterHeader = rawContent.slice(headerIdx + headerMatch![0].length);
-      const nextPhaseMatch = afterHeader.match(/\n#{2,4}\s+Phase\s+\d[\d.]*/i);
+      const nextPhaseMatch = afterHeader.match(/\r?\n#{2,4}\s+Phase\s+\d[\d.]*/i);
 
       let insertIdx: number;
       if (nextPhaseMatch) {
@@ -1606,7 +1710,7 @@ function updateRoadmapAfterPhaseRemoval(
       // #1729: fold an optional pre-colon ( ) tag into the suffix capture so it
       // is re-emitted verbatim — a tagged later phase still gets renumbered.
       content = content.replace(
-        /(#{2,4}\s*Phase\s+)(\d+(?:\.\d+)?)((?:\s*\([^)\n]{0,200}\))?\s*:)/gi,
+        /(#{2,4}\s*Phase\s+)(\d+(?:\.\d+)?)((?:\s*\([^)\r\n]{0,200}\))?\s*:)/gi,
         (_match, prefix: string, num: string, suffix: string) =>
           `${prefix}${decrementRoadmapPhaseToken(num, removedInt)}${suffix}`,
       );
@@ -1750,7 +1854,32 @@ function cmdPhaseRemove(
   const force = options.force || false;
 
   const subdirs = readSubdirectories(phasesDir, true);
-  const targetDir = subdirs.find((d) => phaseTokenMatches(d, normalized)) || null;
+  // #2237/#2528: every other resolution path refuses to choose between multiple
+  // directories claiming one phase number. This one is the DESTRUCTIVE path, so
+  // taking `matches[0]` silently is strictly worse than anywhere else: it turns
+  // "resolve nothing" into "delete one of two candidates, unrecoverably, and
+  // renumber every phase after it". Refuse before any file is touched.
+  const { matches: phaseDirMatches } = matchPhaseDirs(subdirs, normalized);
+  if (phaseDirMatches.length > 1) {
+    output(
+      {
+        removed: null,
+        error:
+          `Phase ${normalized} is ambiguous: ${phaseDirMatches.length} directories match `
+          + `(${phaseDirMatches.map((m) => `"${m}"`).join(', ')}). Refusing to remove any of them. `
+          + 'Set a distinct project_code in .planning/config.json, or pass the full directory name.',
+        ambiguous_matches: phaseDirMatches,
+        directory_deleted: null,
+        renamed_directories: [],
+        renamed_files: [],
+        roadmap_updated: false,
+        state_updated: false,
+      },
+      raw,
+    );
+    return;
+  }
+  const targetDir = phaseDirMatches[0] || null;
 
   if (targetDir && !force) {
     // #3183: canonical summary set (root+nested) from the single owner —
@@ -1838,9 +1967,17 @@ function cmdPhaseRemove(
         if (targetDir && modified === stateContent) {
           // subdirs was read before the deletion; excluding the removed target
           // gives the remaining count. Renumbering changes names but not count.
-          const remainingPhases = subdirs.filter(
-            (d) => phaseTokenMatches(d, normalized) === false,
-          ).length;
+          //
+          // #2528: exclude the directory that was ACTUALLY deleted, by identity,
+          // rather than re-deriving "which dir was the target" from the query.
+          // The two are not the same predicate here: `targetDir` comes from
+          // `matchPhaseDirs`, whose bare-integer fallback resolves digit-leading
+          // dirs (`05-80-20-cleanup` for query `5`) that `phaseTokenMatches`
+          // reports as non-matching — so a token re-derivation would count the
+          // just-deleted directory as still present and write a `Total Phases`
+          // one too high. Identity is also what the comment above already
+          // claims this filter does, and the block is gated on targetDir.
+          const remainingPhases = subdirs.filter((d) => d !== targetDir).length;
           if (totalRaw) {
             modified =
               stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;
@@ -2127,7 +2264,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let nextPhaseName: string | null = null;
   let isLastPhase = true;
 
+  // #3311: typed conflict descriptor surfaced on the result JSON alongside the
+  // warnings[] entry below (same parity pattern as
+  // verification_stale_check_indeterminate).
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+
   const verificationBlocked = withPlanningLock(cwd, () => {
+    // #3311: completing a phase while a live milestone claim (phase + session)
+    // holds a DIFFERENT phase means two sessions are working two phases against
+    // the single Current Position slot. Warn via the established warnings[]
+    // channel (rendered by execute-phase.md's "If has_warnings is true" step)
+    // rather than blocking — the claim may simply be stale-but-live.
+    milestoneConflict = milestoneLockMod.checkMilestoneConflictForPhase(cwd, phaseNum);
+    if (milestoneConflict) {
+      const holder = milestoneConflict.locked_session ?? 'an unknown (headless) session';
+      const actor = milestoneConflict.session ?? 'an unknown (headless) session';
+      warnings.push(
+        `milestone lock conflict (#3311): ${holder} holds the milestone claim for phase ` +
+          `${milestoneConflict.locked_phase}, but ${actor} is completing phase ${phaseNum} — ` +
+          `STATE.md's Current Position is a single slot; verify it before trusting it`,
+      );
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `phase.complete ${phaseNum}`);
+    }
     // #2617: pass the project's runtime so the blocked-completion error below
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
@@ -2742,7 +2900,17 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       // pattern mirrors the sibling phasePattern's anchoring (only whitespace/bold
       // between the box and "Phase", a required `:`) so unrelated checklist lines
       // that merely mention "Phase N" don't match.
-      if (isLastPhase && roadmapContent !== null) {
+      // #3350: this stage answers a DIFFERENT question than stages 1-2 ("what is
+      // the next actionable phase?" vs "is this the last phase?"), so it must not
+      // be gated on their answer. Gating on isLastPhase let a merely-positionally
+      // next higher heading (stage 2) permanently mask a genuinely-outstanding
+      // lower phase — stage 2 cleared isLastPhase and this scan never ran. The
+      // scan already refuses anything not strictly lower than the completed phase
+      // (plus sentinels, #2949), so running it unconditionally cannot manufacture
+      // a wrong answer: when no lower phase is outstanding it finds nothing and
+      // stages 1-2's pick stands unchanged; in the masking case isLastPhase is
+      // already false, so the last-phase signal has no reachable regression.
+      if (roadmapContent !== null) {
         try {
           const milestoneScope = extractCurrentMilestone(roadmapContent, cwd);
           const cbPattern = new RegExp(
@@ -2797,7 +2965,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // this adapter: they are section-table / disk-scan concerns, not
         // classified fields, and `syncStateFrontmatter` is the post-sync this
         // transaction needs (it does NOT go through readModifyWriteStateMd
-        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS).
+        // because STATE.md is committed atomically with ROADMAP/REQUIREMENTS —
+        // the post-sync preservation pass runs via applyPostSyncPreservation
+        // instead, #3374).
         const nextPhaseDisplayName =
           phaseDisplayNameFromRoadmap(roadmapContent, nextPhaseNum) ??
           phaseDisplayNameFromSlug(nextPhaseName);
@@ -2831,10 +3001,49 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         // the intent; pass it as authoritative so the sync's prose
         // re-derivation cannot rewrite current_phase_name to the name's own
         // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`).
-        stateContent = syncStateFrontmatter(
+        // #3350: PAIR the override. When STATE.md's body carries no Current
+        // Phase / Phase field to re-derive from (narrative prose), the #905
+        // preserve guard in syncStateFrontmatter keeps the OLD frontmatter
+        // current_phase while the authoritative current_phase_name advances —
+        // leaving the two fields describing different phases. Pin BOTH to the
+        // resolved next phase in that case. When the body DOES carry the field
+        // (completePhaseCore just rewrote it), stay name-only so the body's
+        // richer `N of T (name)` derived shape survives the sync.
+        const fmBody = frontmatterMod.stripFrontmatter(stateContent);
+        const bodyHasPhaseField =
+          stateExtractField(fmBody, 'Current Phase') != null ||
+          stateExtractField(fmBody, 'Phase') != null;
+        const authoritativeFm: Record<string, string> | undefined = nextPhaseDisplayName
+          ? bodyHasPhaseField || !nextPhaseNum
+            ? { current_phase_name: nextPhaseDisplayName }
+            : {
+                current_phase: String(nextPhaseNum),
+                current_phase_name: nextPhaseDisplayName,
+              }
+          : undefined;
+        const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);
+        // #3374: the direct sync above deliberately bypasses
+        // readModifyWriteStateMd (STATE.md is committed atomically with
+        // ROADMAP/REQUIREMENTS), which also bypassed the #948/#1230
+        // preservation pass every RMW write gets — so a stale body
+        // `Stopped at:` line silently clobbered a fresher frontmatter
+        // stopped_at on every completion. Run the shared post-sync pass:
+        // snapshots from the on-disk pre-image (originalStateContent) and the
+        // transformed content, table-driven applyStatePreservation, then the
+        // #2736 authoritative re-assert (which restores the #3350 pairing
+        // override the preserve-always restore may have reverted). resync=true
+        // is the lifecycle-transition posture (progress recomputed from disk;
+        // only the preserve-when-unchanged deltas apply). Fields the
+        // transition legitimately rewrote (Status, Phase, Stopped At via
+        // completePhaseCore's #3374 continuity line) have changed body
+        // sources, so their deltas do not fire.
+        stateContent = applyPostSyncPreservation(
+          originalStateContent,
           stateContent,
-          cwd,
-          nextPhaseDisplayName ? { current_phase_name: nextPhaseDisplayName } : undefined,
+          synced,
+          statePath,
+          true,
+          authoritativeFm,
         );
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
@@ -2848,6 +3057,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     } else {
       runPhaseCompleteTransaction();
     }
+    // #3311: a successful completion of the CLAIMED phase releases the
+    // milestone claim — regardless of which session completes it (an
+    // orchestrator cleaning up after a dead session must not be blocked by the
+    // dead session's own claim). No-ops when the claim names another phase.
+    milestoneLockMod.releaseMilestonePhase(cwd, phaseNum);
     return null;
   });
 
@@ -2906,6 +3120,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     warnings,
     has_warnings: warnings.length > 0,
     verification_stale_check_indeterminate: staleCheckIndeterminate,
+    milestone_conflict: milestoneConflict,
   };
 
   output(result, raw);

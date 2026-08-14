@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const PLANNER = path.join(ROOT, 'agents', 'gsd-planner.md');
@@ -47,7 +48,7 @@ function namesRating(text, rating) {
   // js/incomplete-sanitization (CodeQL, high). `-` needs no escaping outside a
   // character class, so the previous `-`-only replace was both incomplete and
   // unnecessary.
-  const escaped = rating.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(rating);
   return new RegExp(`\\b${escaped}\\b`).test(text);
 }
 

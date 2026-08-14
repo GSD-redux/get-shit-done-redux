@@ -122,6 +122,7 @@ describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
   test('documents the null-manifest read-everything fallback (row F5)', () => {
     assert.ok(workflow.includes('section_manifest'), 'the field is documented');
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
       /`null`[^\r\n]*read this workflow in full/i.test(workflow),
       'a null section_manifest must be documented as "read everything" — without the rule, ' +
       'a null manifest reads as an empty selection and the workflow reads nothing'

@@ -949,9 +949,12 @@ function main() {
   // makes a chunk's `node --test` child hang ~150s on Windows AFTER its last test
   // prints; two such stalls push the windows full lane past its 20m cap and the
   // job is CANCELLED with no failed step — a false-negative gate (#1051, recurrence
-  // of #869). --test-force-exit (Node >=22; engines requires >=22.0.0) exits the
-  // runner once all tests finish regardless of lingering handles. The leaking
-  // tests are also fixed at the source; this is the defensive backstop.
+  // of #869). --test-force-exit (available since Node 22; engines.node now
+  // requires >=24.0.0, so it is always available here — the nodeMajor check
+  // below is kept as a floor-independent CLI-flag-availability guard, not a
+  // statement of this repo's supported version) exits the runner once all
+  // tests finish regardless of lingering handles. The leaking tests are also
+  // fixed at the source; this is the defensive backstop.
   // RUN_TESTS_NO_FORCE_EXIT=1 disables it (used by the harness regression test to
   // observe the pre-fix hang).
   const nodeMajor = Number(process.versions.node.split('.')[0]);

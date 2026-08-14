@@ -762,6 +762,7 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     const rendered = renderEffortForRuntime(runtime, universalEffort);
     const newEffortValue = rendered.value;
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, measured linear to 5MB (no-closing-marker adversarial input)
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 
@@ -1052,22 +1053,29 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     if (branchName) {
       const currentBranch = execGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
       if (currentBranch.exitCode === 0 && currentBranch.stdout.trim() !== branchName) {
-        // #2539/#3079: the #1278 intent is to CREATE the phase/milestone branch
-        // before the FIRST commit on it — not to force-switch an already-
-        // checked-out working branch onto a DIFFERENT existing branch. The
-        // prior `git checkout -b` both created AND switched (silently moving
-        // HEAD), which resurrected merged-and-deleted phase branches (#3079).
-        // Now: create-if-absent WITHOUT switching, using `git branch` instead
-        // of `git checkout -b`. The commit always lands on the current branch.
-        // If the resolved branch already exists, log the resolution so the
-        // operator sees that the phase branch was resolved and deliberately
-        // not switched to (#2539 AC2: an auto-checkout mid-commit must never
-        // happen silently).
+        // #2539/#3079/#3207: two cases the prior (#3079) code collapsed into one.
+        // #1278 intent: CREATE the phase/milestone branch before the FIRST commit
+        // on it so the phase's work accumulates there. #3079/#2539 hazard: never
+        // silently switch an already-checked-out working branch onto a DIFFERENT
+        // EXISTING branch — that resurrects merged-and-deleted phase branches and
+        // silently moves HEAD onto a stale ref (#2539 AC2: an auto-checkout
+        // mid-commit must never happen silently).
+        // Reconciliation (#3207): a brand-new branch has no resurrection target,
+        // so create-and-switch is safe here and is exactly the #1278 intent; an
+        // EXISTING branch is never switched to (the else arm logs + commits in
+        // place). The fresh create is logged so the first phase-scoped commit is
+        // not silent about where the work is landing (#3207 AC3).
         const verify = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd });
         if (verify.exitCode !== 0) {
-          // Branch does not exist — create it WITHOUT switching.
-          const create = execGit(['branch', branchName], { cwd });
-          if (create.exitCode !== 0) {
+          // Branch does not exist — CREATE AND SWITCH (the #1278 first-commit
+          // case). checkout -b cannot resurrect anything: the branch was just
+          // verified absent, so it is created fresh at HEAD.
+          const create = execGit(['checkout', '-b', branchName], { cwd });
+          if (create.exitCode === 0) {
+            process.stderr.write(
+              `${branchingStrategy} branch "${branchName}" created; switched to it for this commit.\n`
+            );
+          } else {
             process.stderr.write(
               `Warning: could not create ${branchingStrategy} branch "${branchName}" ` +
               `(${create.stderr.trim()}); committing on the current branch "${currentBranch.stdout.trim()}".\n`

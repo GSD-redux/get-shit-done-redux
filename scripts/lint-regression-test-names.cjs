@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * lint-regression-test-names.cjs — ban NEW top-level bug-NNNN test files.
+ * lint-regression-test-names.cjs — ban NEW top-level bug-NNNN/fix-NNNN/issue-NNNN test files.
  *
  * ## Why
  *
@@ -17,20 +17,22 @@
  * ## What this enforces
  *
  * Identity ratchet (scripts/lib/allowlist-ratchet.cjs) over basenames matching
- * /^bug-\d+.*\.test\.cjs$/ in tests/:
- *   - A NEW bug-* file (not in the allowlist) fails: fold the regression into
- *     the owning module's test file instead.
- *   - A REMOVED bug-* file with a stale allowlist entry also fails: prune the
- *     entry from scripts/lint-regression-test-names.allowlist.json so the
- *     baseline only ever shrinks.
+ * /^(?:bug|fix|issue)-\d+.*\.test\.cjs$/ in tests/:
+ *   - A NEW bug-*, fix-*, or issue-* file (not in the allowlist) fails: fold
+ *     the regression into the owning module's test file instead.
+ *   - A REMOVED bug-*, fix-*, or issue-* file with a stale allowlist entry
+ *     also fails: prune the entry from
+ *     scripts/lint-regression-test-names.allowlist.json so the baseline only
+ *     ever shrinks.
  *
  * ## --update (allowlist drift repair)
  *
  * `node scripts/lint-regression-test-names.cjs --update` regenerates the
  * allowlist from the files currently in tests/ and reports what changed.
  * Use it when the failure is INHERITED drift, not your own new file — e.g.
- * the base branch merged bug-* files without feeding the allowlist (the
- * #947/#948/#950 race after the ratchet landed), or after a rebase. The
+ * the base branch merged bug-*, fix-*, or issue-* files without feeding the
+ * allowlist (the #947/#948/#950 race after the ratchet landed), or after a
+ * rebase. The
  * allowlist is a snapshot artifact: regenerate it AFTER rebasing, never
  * carry a pre-rebase copy through.
  *
@@ -49,7 +51,7 @@ const ALLOWLIST_PATH =
   process.env.GSD_LINT_REGRESSION_ALLOWLIST ||
   path.join(__dirname, 'lint-regression-test-names.allowlist.json');
 
-const BUG_FILE_RE = /^bug-\d+.*\.test\.cjs$/;
+const BUG_FILE_RE = /^(?:bug|fix|issue)-\d+.*\.test\.cjs$/;
 
 function main() {
   const args = process.argv.slice(2);
@@ -97,8 +99,8 @@ function main() {
     for (const msg of failures) console.error(msg);
     if (novel.length > 0) {
       console.error(
-        '\nIf this PR added the file(s) above: new bug-NNNN test files are not ' +
-        "accepted — add the regression case to the owning module's test file " +
+        '\nIf this PR added the file(s) above: new bug-NNNN/fix-NNNN/issue-NNNN ' +
+        "test files are not accepted — add the regression case to the owning module's test file " +
         "(e.g. a describe('regressions') block in tests/<module>.test.cjs) instead.\n" +
         'If the file(s) came from the base branch (inherited allowlist drift, ' +
         'e.g. after a rebase): run ' +
@@ -110,7 +112,7 @@ function main() {
   }
 
   console.log(
-    `ok lint-regression-test-names: ${current.length} grandfathered bug-* file(s), no novel offenders`
+    `ok lint-regression-test-names: ${current.length} grandfathered bug-*/fix-*/issue-* file(s), no novel offenders`
   );
 }
 

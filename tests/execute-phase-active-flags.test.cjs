@@ -25,6 +25,7 @@ describe('execute-phase command: active flags are explicit', () => {
 
   test('objective says documented flags are not implied active', () => {
     const content = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const objectiveMatch = content.match(/<objective>([\s\S]*?)<\/objective>/);
     assert.ok(objectiveMatch, 'should have <objective> section');
     assert.ok(
@@ -82,7 +83,7 @@ describe('execute-phase command: active flags are explicit', () => {
  * Regression test for #2396: hardcoded host-level test commands bypass
  * container-only project Makefiles.
  *
- * Fix: execute-phase.md, verify-phase.md, and audit-fix.md must check for
+ * Fix: execute-phase.md and audit-fix.md must check for
  * Makefile with a test target (and other wrappers) before falling through
  * to hardcoded language-sniffed commands.
  */
@@ -95,7 +96,6 @@ const fs = require('fs');
 const path = require('path');
 
 const EXECUTE_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
-const VERIFY_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-phase.md');
 const AUDIT_FIX_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'audit-fix.md');
 // #1857: execute-phase's regression-gate test-command resolution was extracted
 // to this step file (execute-phase.md is size-frozen — phase-6 capstone).
@@ -108,6 +108,7 @@ function assertMakefileCheckBeforeNpmTest(filePath, label) {
   const content = fs.readFileSync(filePath, 'utf-8');
 
   // Must check for Makefile with test target
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
   const hasMakefileCheck = /Makefile.*grep.*test:|grep.*test:.*Makefile/s.test(content) ||
     (content.includes('Makefile') && content.includes('"^test:"'));
   assert.ok(
@@ -164,10 +165,6 @@ describe('bug-2396: Makefile test target must take priority over hardcoded comma
     assert.ok(fs.existsSync(EXECUTE_PHASE_PATH), 'execute-phase.md should exist');
   });
 
-  test('verify-phase.md exists', () => {
-    assert.ok(fs.existsSync(VERIFY_PHASE_PATH), 'verify-phase.md should exist');
-  });
-
   test('audit-fix.md exists', () => {
     assert.ok(fs.existsSync(AUDIT_FIX_PATH), 'audit-fix.md should exist');
   });
@@ -176,20 +173,12 @@ describe('bug-2396: Makefile test target must take priority over hardcoded comma
     assertMakefileCheckBeforeNpmTest(REGRESSION_GATE_PATH, 'regression-gate.md');
   });
 
-  test('verify-phase.md: Makefile check precedes npm test', () => {
-    assertMakefileCheckBeforeNpmTest(VERIFY_PHASE_PATH, 'verify-phase.md');
-  });
-
   test('audit-fix.md: Makefile check precedes npm test', () => {
     assertMakefileCheckBeforeNpmTest(AUDIT_FIX_PATH, 'audit-fix.md');
   });
 
   test('regression-gate step: workflow.test_command config checked first (within bash block) (#1857)', () => {
     assertConfigGetBeforeMakefile(REGRESSION_GATE_PATH, 'regression-gate.md');
-  });
-
-  test('verify-phase.md: workflow.test_command config checked first (within bash block)', () => {
-    assertConfigGetBeforeMakefile(VERIFY_PHASE_PATH, 'verify-phase.md');
   });
 
   test('audit-fix.md: workflow.test_command config checked first (within bash block)', () => {
@@ -359,54 +348,56 @@ const workflowPath = path.resolve(
   __dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'
 );
 
-describe('bug #2002: offer_next checks CONTEXT.md before suggesting next step', () => {
-  // offer_next body extracted to references/offer-next.md (#2537); content tests
-  // read the reference file. The <step name="offer_next"> tag + @-reference remain
-  // in execute-phase.md.
-  const offerNextRefPath = path.join(__dirname, '..', 'gsd-core', 'references', 'offer-next.md');
-  let content;
+describe('bug #2002: next-step suggestion checks CONTEXT.md (now via transition offer_next_phase, reached by execute-phase post-completion delegation — #1526)', () => {
+  // #1526: execute-phase no longer carries an inline offer_next step — it delegates
+  // post-completion to the transition workflow, whose offer_next_phase step performs
+  // the #2002 CONTEXT.md-gated next-step suggestion. These tests track that behavior
+  // in its new home (transition.md) and assert the delegation reaches it.
+  const transPath = path.resolve(__dirname, '..', 'gsd-core', 'workflows', 'transition.md');
+  let offerNextPhase;
 
-  test('setup: offer-next reference file is readable', () => {
-    content = fs.readFileSync(offerNextRefPath, 'utf-8');
-    assert.ok(content.length > 0, 'offer-next.md must not be empty');
+  test('setup: transition.md offer_next_phase section is readable', () => {
+    const trans = fs.readFileSync(transPath, 'utf-8');
+    const start = trans.indexOf('<step name="offer_next_phase">');
+    const end = trans.indexOf('</step>', start);
+    assert.notEqual(start, -1, 'transition.md must have an offer_next_phase step');
+    offerNextPhase = trans.slice(start, end);
+    assert.ok(offerNextPhase.length > 0, 'offer_next_phase section must be non-empty');
   });
 
-  test('execute-phase.md still carries the offer_next step + @-reference', () => {
+  test('#1526: execute-phase delegates post-completion to transition (no inline offer_next step)', () => {
     const wf = fs.readFileSync(workflowPath, 'utf-8');
-    assert.ok(wf.includes('<step name="offer_next">'), 'offer_next step tag must remain in execute-phase.md');
-    assert.ok(wf.includes('references/offer-next.md'), 'execute-phase.md must @-reference the extracted offer-next.md');
+    assert.ok(wf.includes('delegate_post_completion_to_transition'), 'execute-phase must delegate post-completion to transition');
+    assert.ok(wf.includes('@~/.claude/gsd-core/workflows/transition.md'), 'execute-phase must @-include transition.md');
+    assert.equal(wf.includes('<step name="offer_next">'), false, 'inline offer_next step is intentionally removed (delegated to transition.offer_next_phase)');
   });
 
-  test('offer_next section checks for CONTEXT.md existence', () => {
-    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
+  test('offer_next_phase checks for CONTEXT.md existence (#2002 preserved)', () => {
     assert.ok(
-      content.includes('CONTEXT.md'),
-      'offer_next must reference CONTEXT.md to determine primary next step'
+      offerNextPhase.includes('CONTEXT.md'),
+      'offer_next_phase must reference CONTEXT.md to determine primary next step'
     );
   });
 
-  test('offer_next presents /gsd-discuss-phase when CONTEXT.md does not exist', () => {
-    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
+  test('offer_next_phase presents /gsd-discuss-phase when CONTEXT.md does not exist', () => {
     assert.ok(
-      /CONTEXT\.md.*does not exist|CONTEXT\.md.*not.*exist|If CONTEXT\.md does/i.test(content) ||
-      /gsd-discuss-phase.*recommended|recommended.*gsd-discuss-phase/i.test(content),
-      'offer_next must present /gsd-discuss-phase as primary when CONTEXT.md does not exist'
+      /CONTEXT\.md.*does not exist|CONTEXT\.md.*not.*exist|If CONTEXT\.md does/i.test(offerNextPhase) ||
+      /discuss-phase/i.test(offerNextPhase),
+      'offer_next_phase must present /gsd-discuss-phase as primary when CONTEXT.md does not exist'
     );
   });
 
-  test('offer_next presents /gsd-plan-phase when CONTEXT.md exists', () => {
-    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
+  test('offer_next_phase presents /gsd-plan-phase when CONTEXT.md exists', () => {
     assert.ok(
-      /CONTEXT\.md.*exists|exists.*CONTEXT\.md|If CONTEXT\.md/i.test(content),
-      'offer_next must present /gsd-plan-phase as primary when CONTEXT.md exists'
+      /CONTEXT\.md.*exists|exists.*CONTEXT\.md|If CONTEXT\.md/i.test(offerNextPhase),
+      'offer_next_phase must present /gsd-plan-phase as primary when CONTEXT.md exists'
     );
   });
 
-  test('offer_next section contains at least one conditional guard before listing commands', () => {
-    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
+  test('offer_next_phase contains at least one conditional guard before listing commands', () => {
     assert.ok(
-      /If CONTEXT\.md/i.test(content),
-      'offer_next must contain at least one "If CONTEXT.md" conditional guard'
+      /If CONTEXT\.md/i.test(offerNextPhase),
+      'offer_next_phase must contain at least one "If CONTEXT.md" conditional guard'
     );
   });
 });

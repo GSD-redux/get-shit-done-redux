@@ -1627,6 +1627,109 @@ describe('phase add command', () => {
 // phase add — orphan directory collision prevention (#2026)
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe('#3163: phase add inserts in the active milestone phase list, not the trailing archive', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Fixture: a v1.0 ACTIVE milestone with a phase list, followed by a shipped
+  // v0.9 archive whose own `---` is the FILE's last `---`. The bug places the
+  // new phase before that archive `---`; the fix scopes to v1.0's window.
+  function writeArchiveRoadmap(dir, { singlePhase = false } = {}) {
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'STATE.md'),
+      'milestone: v1.0\ncurrent_phase: 2\n'
+    );
+    const phases = singlePhase
+      ? '### Phase 1: Foundation\n**Goal:** setup\n'
+      : '### Phase 1: Foundation\n**Goal:** setup\n\n### Phase 2: API\n**Goal:** build\n';
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## v1.0: Active Milestone\n\n' +
+        phases +
+        '\n---\n\n## v0.9: Shipped Archive\n\n### Phase 0 (original scope): Bootstrap\n**Goal:** init\n\n#### Operator decisions\n- decided X\n\n---\n'
+    );
+  }
+
+  test('row 1 — phase add lands in the active milestone, before the archive', () => {
+    writeArchiveRoadmap(tmpDir);
+    const result = runGsdTools('phase add New Feature', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase3 = roadmap.indexOf('### Phase 3: New Feature');
+    const phase2 = roadmap.indexOf('### Phase 2: API');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    assert.notStrictEqual(phase3, -1, 'new phase entry should exist in the roadmap');
+    assert.ok(phase2 > -1 && phase2 < phase3, `Phase 3 must come after Phase 2; got p2@${phase2} p3@${phase3}`);
+    assert.ok(
+      phase3 < archive,
+      `#3163: Phase 3 must land INSIDE the active v1.0 milestone (before the v0.9 archive), not before the file's last \`---\`; got phase3@${phase3} archive@${archive}`
+    );
+  });
+
+  test('row 2 — phase add-batch is also scoped to the active milestone', () => {
+    writeArchiveRoadmap(tmpDir);
+    const result = runGsdTools(
+      ['phase', 'add-batch', '--descriptions', '["First Add","Second Add"]'],
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    for (const [num, title] of [['3', 'First Add'], ['4', 'Second Add']]) {
+      const at = roadmap.indexOf(`### Phase ${num}: ${title}`);
+      assert.notStrictEqual(at, -1, `Phase ${num} (${title}) should exist`);
+      assert.ok(
+        at < archive,
+        `#3163: Phase ${num} must land before the archive; got @${at} archive@${archive}`
+      );
+    }
+  });
+
+  test('row 3 — no-milestone fallback keeps legacy insertion before the trailing ---', () => {
+    // No STATE.md milestone field and no WIP marker → currentMilestoneRawRanges
+    // returns null → the legacy whole-file lastIndexOf('\n---') path is used.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Foundation\n**Goal:** setup\n\n---\n'
+    );
+    const result = runGsdTools('phase add Next Phase', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase2 = roadmap.indexOf('### Phase 2: Next Phase');
+    const sep = roadmap.indexOf('\n---');
+    assert.notStrictEqual(phase2, -1, 'Phase 2 should exist');
+    assert.ok(
+      phase2 < sep,
+      `no-milestone fallback must preserve legacy placement (before the trailing ---); got phase2@${phase2} sep@${sep}`
+    );
+  });
+
+  test('row 4 — single-phase milestone still scopes to the active window', () => {
+    writeArchiveRoadmap(tmpDir, { singlePhase: true });
+    const result = runGsdTools('phase add Second Phase', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const phase2 = roadmap.indexOf('### Phase 2: Second Phase');
+    const archive = roadmap.indexOf('## v0.9: Shipped Archive');
+    assert.notStrictEqual(phase2, -1, 'Phase 2 should exist');
+    assert.ok(
+      phase2 < archive,
+      `Phase 2 must land inside the single-phase v1.0 window, before the archive; got @${phase2} archive@${archive}`
+    );
+  });
+});
+
 describe('phase add — orphan directory collision prevention (#2026)', () => {
   let tmpDir;
 
@@ -4267,6 +4370,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4338,6 +4442,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -4378,6 +4483,7 @@ describe('phase complete command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses ROADMAP.md the test itself wrote via a fixed fixture string, bounded, not adversarial input
     const rowMatch = roadmap.match(/^\|[^\r\n]*1\. Foundation[^\r\n]*$/m);
     assert.ok(rowMatch, 'table row should exist');
     const cells = rowMatch[0].split('|').slice(1, -1).map(c => c.trim());
@@ -5126,8 +5232,14 @@ describe('phase complete excludes 999.x backlog from next-phase (#2129)', () => 
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    // Should find phase 3 from roadmap, NOT 999.1 from filesystem
-    assert.strictEqual(output.next_phase, '3', 'next_phase should be 3, not 999.1');
+    // #3350: with stage 3 (#2028 lowest-outstanding) no longer gated behind
+    // stages 1-2 missing, the unchecked Phase 1 row outranks the positionally-
+    // next Phase 3 heading — a phase is complete iff its roadmap checkbox is
+    // `[x]` (#2028), and Phase 1's row is unchecked despite its dir on disk
+    // (same drift shape #2949's realLowerOutstandingPhaseStillSelected pins).
+    // The #2129 contract itself is unchanged: 999.x is NEVER selected.
+    assert.notEqual(output.next_phase, '999.1', '999.x backlog must never be next_phase');
+    assert.strictEqual(output.next_phase, '1', 'lowest unchecked phase (1) wins over positional 3 (#3350); never 999.1');
     assert.strictEqual(output.is_last_phase, false, 'should not be last phase');
   });
 });
@@ -8455,6 +8567,7 @@ const { cleanup, runGsdTools } = require('./helpers.cjs');
 // phase-command-router.cjs delegates to SDK when available; we must test the
 // CJS implementation directly since that is where the bug lives.
 const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const { cmdPhaseComplete } = phaseModule;
 
 function writePassedVerificationFile(phaseDir, phase = '01') {
@@ -8595,7 +8708,7 @@ function roadmapCompletionSnapshot(roadmapContent) {
 }
 
 function extractField(stateContent, fieldName) {
-  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegex(fieldName);
   const boldMatch = stateContent.match(new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i'));
   if (boldMatch) return boldMatch[1].trim();
   const plainMatch = stateContent.match(new RegExp(`^${escaped}:[ \\t]*(.+)`, 'im'));
@@ -9719,6 +9832,7 @@ describe('bug-2502: insert-phase must update STATE.md next-phase recommendation'
   test('insert-phase.md update_project_state step covers next-phase pointer', () => {
     const content = fs.readFileSync(INSERT_PHASE_PATH, 'utf-8');
 
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = content.match(/<step name="update_project_state">([\s\S]*?)<\/step>/i);
     assert.ok(stepMatch, 'insert-phase.md must contain update_project_state step');
     const stepContent = stepMatch[1];
@@ -10271,6 +10385,7 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
         assert.ok(
+          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
           /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );
@@ -10489,5 +10604,658 @@ describe('#2572: phase complete warns when a SUMMARY claims files that never lan
     } finally {
       cleanup(tmpDir);
     }
+  });
+});
+
+// Outer scope shared by the two fold blocks below (deliberately NOT module-scope:
+// this file already declares a distinct, 3-arg `runVerifiedPhaseComplete(args, tmpDir, env)`
+// at line 54 used throughout the rest of the file; nesting here avoids shadowing it).
+//
+// IIFE, not a bare `{ }` block: this file has no top-level 'use strict', so a plain
+// block is sloppy-mode and Annex B function-hoisting semantics apply — a `function`
+// declared directly inside a bare block still leaks out and REASSIGNS the enclosing
+// (module-scope) `runVerifiedPhaseComplete` var the moment this block runs, clobbering
+// the real one at line 54 for every call site in the file (test() bodies are deferred
+// and all run after this synchronous top-level code, so every caller ends up hitting
+// this one). Wrapping in a strict-mode function expression suppresses Annex B leakage,
+// matching how the two original un-consolidated copies were each scoped inside a
+// strict-mode `describe(() => { 'use strict'; ... })` arrow function body.
+(function () {
+'use strict';
+/**
+ * Write a passed-VERIFICATION marker for the phase, then run `phase complete N`.
+ * Mirrors phase.test.cjs's writePassedVerificationForPhase: a `<phase>-VERIFICATION.md`
+ * with `status: passed` frontmatter. Requires the phase directory to exist.
+ *
+ * Shared by the folded:issue-2945-phase-complete-checkbox-rollback and
+ * folded:issue-2949-phase-complete-stage3-sentinel blocks below — both fold sources
+ * defined this same helper independently; consolidated to one definition (PR #3339
+ * review, Fowler-baseline duplication finding) since both bodies were functionally
+ * identical modulo variable naming.
+ */
+function runVerifiedPhaseComplete(args, tmpDir) {
+  const argv = Array.isArray(args) ? args : args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g);
+  const completeIdx = argv.findIndex((t, i) => t === 'complete' && argv[i - 1] === 'phase');
+  const phase = argv[completeIdx + 1];
+  const phasesDir = path.join(tmpDir, '.planning', 'phases');
+  const wanted = parseInt(String(phase).replace(/^0+/, ''), 10);
+  const phaseDirName = fs.readdirSync(phasesDir).find((name) => {
+    const m = name.match(/^(\d+)/);
+    return m && parseInt(m[1], 10) === wanted;
+  });
+  if (!phaseDirName) throw new Error(`no phase directory for phase ${phase}`);
+  fs.writeFileSync(
+    path.join(phasesDir, phaseDirName, `${phase}-VERIFICATION.md`),
+    ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+  );
+  return runGsdTools(args, tmpDir);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2945-phase-complete-checkbox-rollback.test.cjs — H3 Wave 7 test-hygiene sweep (#3339)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2945-phase-complete-checkbox-rollback (#3339)', () => {
+'use strict';
+process.env.GSD_TEST_MODE = '1';
+
+/**
+ * Regression test for #2945 — `phase complete`'s inline REQUIREMENTS.md checkbox
+ * flip is traceability-blind: it flips `- [ ] **REQ-ID**` → `- [x]` unconditionally,
+ * then attempts the traceability-row write, and KEEPS the flip when the row exists
+ * but rejects the write (Out/Deferred/Blocked). The sibling `requirements.mark-complete`
+ * got the #2788 defect-2 rollback; `cmdPhaseComplete`'s inline copy did not.
+ *
+ * The fix ports the rollback from `cmdRequirementsMarkComplete` (src/milestone.cts):
+ * capture beforeCheckbox, track whether the row write actually changed (tableHit), and
+ * restore beforeCheckbox when the row EXISTS but rejects the write.
+ *
+ * Matrix: .gsd/bug/fix/2945-phase-complete-checkbox-rollback/50-test-matrix.md
+ */
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const { createTempProject, cleanup } = require('./helpers.cjs');
+
+// runVerifiedPhaseComplete is defined once, hoisted above both fold blocks (see
+// the shared helper preceding the "Folded from tests/issue-2945-..." banner);
+// this block closes over that module-scope definition.
+
+describe('phase complete checkbox rollback (#2945)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-2945-');
+  });
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /**
+   * Scaffold a single-phase project whose ROADMAP cites the given REQ-IDs, with a
+   * REQUIREMENTS.md whose traceability table rows carry the given statuses, then run
+   * `phase complete 1`. Returns the REQUIREMENTS.md content after completion.
+   */
+  function completeWithRows(reqIds, rowStatuses) {
+    const reqList = reqIds.join(', ');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [ ] Phase 1: The phase\n\n### Phase 1: The phase\n**Goal:** do it\n**Requirements:** ${reqList}\n**Plans:** 1 plans\n`,
+    );
+    const reqLines = reqIds.map((id) => `- [ ] **${id}**: a requirement`).join('\n');
+    const tableRows = reqIds.map((id, i) => `| ${id} | Phase 1 | ${rowStatuses[i]} |`).join('\n');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements\n\n## v1 Requirements\n\n${reqLines}\n\n## Traceability\n\n| Requirement | Phase | Status |\n|-------------|-------|--------|\n${tableRows}\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 01\n**Current Phase Name:** The phase\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n`,
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-the-phase');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error || result.output}`);
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+  }
+
+  test('deferredRowRollsBackCheckbox', () => {
+    // Row 1 (failing-first regression): a Deferred row rejects the Status write, so the
+    // checkbox must NOT flip (it stays [ ]), and the row must stay Deferred.
+    const req = completeWithRows(['DEF-01'], ['Deferred']);
+    assert.ok(req.includes('- [ ] **DEF-01**'), 'checkbox must stay [ ] when the row is Deferred (no silent divergence)');
+    assert.ok(/^\| DEF-01 \| Phase 1 \| Deferred \|/m.test(req), 'row must stay Deferred');
+    assert.ok(!req.includes('- [x] **DEF-01**'), 'checkbox must NOT have flipped to [x]');
+  });
+
+  test('blockedRowRollsBackCheckbox', () => {
+    // Row 2: an Out/Blocked row likewise rejects the write → checkbox stays [ ].
+    const req = completeWithRows(['BLK-01'], ['Blocked']);
+    assert.ok(req.includes('- [ ] **BLK-01**'), 'checkbox must stay [ ] when the row is Blocked');
+    assert.ok(/^\| BLK-01 \| Phase 1 \| Blocked \|/m.test(req), 'row must stay Blocked');
+    assert.ok(!req.includes('- [x] **BLK-01**'), 'checkbox must NOT have flipped to [x]');
+  });
+
+  test('pendingRowStillFlipsAndAdvances', () => {
+    // Row 3 (negative-space / unchanged forward behavior): a Pending row accepts the write,
+    // so the checkbox MUST flip to [x] and the row MUST advance to Complete. An over-broad
+    // rollback would break this.
+    const req = completeWithRows(['FWD-01'], ['Pending']);
+    assert.ok(req.includes('- [x] **FWD-01**'), 'checkbox MUST flip to [x] for a Pending (forward) row');
+    assert.ok(/^\| FWD-01 \| Phase 1 \| Complete \|/m.test(req), 'row MUST advance to Complete');
+  });
+
+  test('noRowStillFlipsCheckbox', () => {
+    // Row 4 (acceptance #3): a cited REQ-ID with NO traceability row → checkbox still flips
+    // (nothing to disagree with). The rollback only fires when a row EXISTS and rejects.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n- [ ] Phase 1: The phase\n\n### Phase 1: The phase\n**Goal:** do it\n**Requirements:** NOROW-01\n**Plans:** 1 plans\n`,
+    );
+    // REQUIREMENTS.md with the checkbox but NO traceability table.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
+      `# Requirements\n\n## v1 Requirements\n\n- [ ] **NOROW-01**: a requirement with no traceability row\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 01\n**Current Phase Name:** The phase\n**Status:** In progress\n**Current Plan:** 01-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n`,
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-the-phase');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error || result.output}`);
+    const req = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+    assert.ok(req.includes('- [x] **NOROW-01**'), 'checkbox MUST flip to [x] when no traceability row exists');
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2949-phase-complete-stage3-sentinel.test.cjs — H3 Wave 7 test-hygiene sweep (#3339)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2949-phase-complete-stage3-sentinel (#3339)', () => {
+'use strict';
+process.env.GSD_TEST_MODE = '1';
+
+/**
+ * Regression test for #2949 — `phase complete`'s stage-3 lowest-outstanding-override
+ * loop admits unchecked `0.x` backlog sentinel rows as `next_phase`, corrupting STATE.md
+ * and desyncing `current_phase` from `current_phase_name`.
+ *
+ * Root cause: `src/phase.cts` stage-3 condition `!isChecked && comparePhaseNum(cbm[2], phaseNum) < 0`
+ * has no sentinel filter, so `comparePhaseNum("0.1","12") === -12` admits the `0.x` backlog row.
+ * The fix adds `&& !isSentinelPhaseId(cbm[2])` (reusing the existing zero-caller predicate), which
+ * excludes both sentinel ranges (0 and 999). Stage-3 only here — PR #2815 (in-flight) covers
+ * stages 1-2 for #2786.
+ *
+ * Matrix: .gsd/bug/fix/2949-phase-complete-stage3-sentinel-filter/50-test-matrix.md
+ */
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const { createTempProject, cleanup } = require('./helpers.cjs');
+
+// runVerifiedPhaseComplete is defined once, in the outer scope shared by this block
+// and the folded:issue-2945-phase-complete-checkbox-rollback block above (see the
+// shared helper preceding that block's banner comment); this block closes over it.
+
+describe('phase complete stage-3 sentinel filter (#2949)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-2949-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** Scaffold a phase dir with one executed plan (PLAN + SUMMARY). */
+  function scaffoldPhase(slug, planNum) {
+    const dir = path.join(tmpDir, '.planning', 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const padded = String(planNum).padStart(2, '0');
+    fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan');
+    fs.writeFileSync(path.join(dir, `${padded}-01-SUMMARY.md`), '# Summary');
+  }
+
+  test('zeroXSentinelDoesNotBecomeNextPhase', () => {
+    // Row 1 (failing-first regression): completing the last real phase with an unchecked
+    // 0.x backlog sentinel row present must NOT select the sentinel as next_phase.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 0.1: Backlog sentinel item** — deferred work
+- [x] **Phase 11: First phase** (completed 2025-01-01)
+- [ ] **Phase 12: Last phase**
+
+### Phase 11: First phase
+**Goal:** first
+**Plans:** 1 plans
+
+### Phase 12: Last phase
+**Goal:** last
+**Plans:** 1 plans
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 12\n**Current Phase Name:** Last phase\n**Status:** In progress\n**Current Plan:** 12-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 12\n`,
+    );
+    scaffoldPhase('11-first-phase', 11);
+    scaffoldPhase('12-last-phase', 12);
+
+    const result = runVerifiedPhaseComplete('phase complete 12', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.completed_phase, '12');
+    assert.strictEqual(output.is_last_phase, true, '0.x sentinel must not prevent milestone completion (is_last_phase=true)');
+    assert.strictEqual(output.next_phase, null, '0.x sentinel must not be selected as next_phase');
+
+    // STATE.md current_phase must stay on the completed phase (12), not advance to 0.1.
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(!/\*\*Current Phase:\*\*\s*0\.1/i.test(state), 'STATE.md current_phase must NOT have advanced to the 0.x sentinel');
+  });
+
+  test('realLowerOutstandingPhaseStillSelected', () => {
+    // Row 2 (#2028 non-regression): a REAL lower-numbered unchecked phase must STILL be
+    // selected as next_phase. The sentinel filter must not over-broaden to real phases.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 9: Skipped-then-resumed phase**
+- [ ] **Phase 10: Current phase**
+
+### Phase 9: Skipped-then-resumed phase
+**Goal:** nine
+**Plans:** 1 plans
+
+### Phase 10: Current phase
+**Goal:** ten
+**Plans:** 1 plans
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 10\n**Current Phase Name:** Current phase\n**Status:** In progress\n**Current Plan:** 10-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 10\n`,
+    );
+    scaffoldPhase('09-skipped-then-resumed-phase', 9);
+    scaffoldPhase('10-current-phase', 10);
+
+    const result = runVerifiedPhaseComplete('phase complete 10', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    // A real lower phase (9) IS selected — the #2028 out-of-order behavior is preserved.
+    // next_phase may be padded ("09") or unpadded ("9"); compare numerically.
+    assert.strictEqual(output.is_last_phase, false, 'a real lower outstanding phase must keep is_last_phase=false');
+    const nextNum = parseInt(String(output.next_phase), 10);
+    assert.strictEqual(nextNum, 9, `real lower phase 9 must be selected as next_phase (got ${output.next_phase})`);
+  });
+
+  test('zeroXSentinelNoCurrentPhaseDesync', () => {
+    // Row 3 (acceptance #3/#4): current_phase and current_phase_name must not desync when
+    // a 0.x sentinel is present and the milestone completes.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 0.1: Backlog**
+- [ ] **Phase 5: Only phase**
+
+### Phase 5: Only phase
+**Goal:** five
+**Plans:** 1 plans
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 5\n**Current Phase Name:** Only phase\n**Status:** In progress\n**Current Plan:** 05-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 5\n`,
+    );
+    scaffoldPhase('05-only-phase', 5);
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'milestone completes despite the 0.x sentinel');
+
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // current_phase must NOT have advanced to 0.1 (no desync into the sentinel).
+    assert.ok(!/\*\*Current Phase:\*\*\s*0\.1/i.test(state), 'no desync: current_phase did not advance to 0.1');
+  });
+
+  test('checkedZeroXSentinelIrrelevant', () => {
+    // Row 4 (boundary): a CHECKED 0.x sentinel is irrelevant — completing the last real phase
+    // still completes the milestone.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [x] **Phase 0.1: Already-done backlog item**
+- [ ] **Phase 3: Last phase**
+
+### Phase 3: Last phase
+**Goal:** three
+**Plans:** 1 plans
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# State\n\n**Current Phase:** 3\n**Current Phase Name:** Last phase\n**Status:** In progress\n**Current Plan:** 03-01\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working on phase 3\n`,
+    );
+    scaffoldPhase('03-last-phase', 3);
+
+    const result = runVerifiedPhaseComplete('phase complete 3', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'checked sentinel is irrelevant; milestone completes');
+    assert.strictEqual(output.next_phase, null);
+  });
+});
+  });
+}
+})();
+
+// #3350 — phase complete: a merely-positionally-next higher phase heading
+// (stage 2) must not mask a genuinely-outstanding lower phase (stage 3), and
+// STATE.md frontmatter's current_phase/current_phase_name must stay paired.
+// Matrix: .gsd/bug/fix-3350-phase-complete-name-desync/50-test-matrix.md
+describe('phase complete lowest-outstanding vs positional-next (#3350)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3350-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** Scaffold a phase dir with one executed plan (PLAN + SUMMARY). */
+  function scaffoldPhase(slug, planNum) {
+    const dir = path.join(tmpDir, '.planning', 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const padded = String(planNum).padStart(2, '0');
+    fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan');
+    fs.writeFileSync(path.join(dir, `${padded}-01-SUMMARY.md`), '# Summary');
+  }
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+
+  /**
+   * Row-4 roadmap: phase 5 is completed (dir on disk); phases 3 and 4 are
+   * outstanding (unchecked, never executed, no dirs — optional); higher
+   * headings 6 and 7 are pre-declared with no dirs (stage-1 miss, stage-2 hit).
+   */
+  function writeRow4Roadmap({ withLowerDirs = false, withHigherDir = false } = {}) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+- [ ] **Phase 3: Attestation Freeze**
+- [ ] **Phase 4: Corpus Maturation**
+- [ ] **Phase 5: Harness Mechanization**
+- [ ] **Phase 6: Oracle Re-Hardening**
+- [ ] **Phase 7: Recall Monitoring**
+
+### Phase 3: Attestation Freeze
+**Goal:** three
+**Plans:** 1 plans
+
+### Phase 4: Corpus Maturation
+**Goal:** four
+**Plans:** 1 plans
+
+### Phase 5: Harness Mechanization
+**Goal:** five
+**Plans:** 1 plans
+
+### Phase 6: Oracle Re-Hardening
+**Goal:** six
+**Plans:** 1 plans
+
+### Phase 7: Recall Monitoring
+**Goal:** seven
+**Plans:** 1 plans
+`,
+    );
+    scaffoldPhase('05-harness-mechanization', 5);
+    if (withLowerDirs) {
+      scaffoldPhase('03-attestation-freeze', 3);
+      scaffoldPhase('04-corpus-maturation', 4);
+    }
+    if (withHigherDir) {
+      scaffoldPhase('06-oracle-re-hardening', 6);
+    }
+  }
+
+  /** Explicit-field STATE.md (body fields present — the 0xdhx fixture shape). */
+  function writeExplicitState() {
+    fs.writeFileSync(
+      statePath(),
+      `# State
+
+**Current Phase:** 5
+**Current Phase Name:** Harness Mechanization
+**Status:** In progress
+**Current Plan:** 05-01
+**Last Activity:** 2025-01-01
+**Last Activity Description:** Working on phase 5
+`,
+    );
+  }
+
+  /**
+   * Narrative-prose STATE.md (NO body fields) with frontmatter parked on the
+   * just-completed phase — the filed #3350 shape: without the pairing override
+   * current_phase stays at 5 while current_phase_name advances.
+   */
+  function writeNarrativeState() {
+    fs.writeFileSync(
+      statePath(),
+      `---
+current_phase: 5
+current_phase_name: Harness Mechanization
+---
+
+# State
+
+We are wrapping up phase 5 of the milestone; the next actionable phase is
+still to be determined by the roadmap.
+`,
+    );
+  }
+
+  function parseFrontmatterField(content, key) {
+    const m = content.match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  test('lowerOutstandingBeatsHigherHeading', () => {
+    // Row 4 (failing-first): completing 5 with outstanding 3/4 AND pre-declared
+    // higher headings 6/7 must pick the lowest outstanding phase (3), not the
+    // positionally-next heading (6).
+    writeRow4Roadmap();
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.completed_phase, '5');
+    assert.strictEqual(output.is_last_phase, false, 'a higher phase exists — not last');
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `lowest outstanding phase 3 must be next_phase (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.next_phase_name, 'attestation-freeze');
+  });
+
+  test('narrativeStateFrontmatterPairing', () => {
+    // Row 4 + acceptance #2/#5 (failing-first): with a narrative STATE.md and
+    // frontmatter parked on the completed phase, BOTH frontmatter fields must
+    // describe the resolved next phase (3) after the write — never a split.
+    writeRow4Roadmap();
+    writeNarrativeState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.ok(fmPhase !== null, 'frontmatter current_phase must exist');
+    assert.ok(fmName !== null, 'frontmatter current_phase_name must exist');
+    assert.strictEqual(
+      parseInt(fmPhase, 10),
+      3,
+      `current_phase must advance to the resolved next phase 3 (got ${fmPhase})`,
+    );
+    assert.match(fmName, /attestation freeze/i, `current_phase_name must name phase 3 (got ${fmName})`);
+  });
+
+  test('higherStillWinsWhenNoLowerOutstanding', () => {
+    // Row 2 non-regression (acceptance #4): N+k really is the correct next phase
+    // when no lower phase is genuinely outstanding.
+    writeRow4Roadmap();
+    writeExplicitState();
+    // Check phases 3 and 4 off — the higher heading is then the right answer.
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      fs.readFileSync(roadmapPath, 'utf-8')
+        .replace('- [ ] **Phase 3: Attestation Freeze**', '- [x] **Phase 3: Attestation Freeze**')
+        .replace('- [ ] **Phase 4: Corpus Maturation**', '- [x] **Phase 4: Corpus Maturation**'),
+    );
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 6, 'positionally-next 6 wins when no lower phase is outstanding');
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('lowerOnlyStillSelected', () => {
+    // Row 3 non-regression (#2028 original shape): lower outstanding, no higher.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    let roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 6: Oracle Re-Hardening**\n', '')
+      .replace('- [ ] **Phase 7: Recall Monitoring**\n', '')
+      .replace('### Phase 6: Oracle Re-Hardening\n**Goal:** six\n**Plans:** 1 plans\n\n', '')
+      .replace('### Phase 7: Recall Monitoring\n**Goal:** seven\n**Plans:** 1 plans\n', '');
+
+    fs.writeFileSync(roadmapPath, roadmap);
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3, '#2028 behavior preserved');
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('nothingOutstandingStillCompletesMilestone', () => {
+    // Row 1 non-regression: no higher phase (heading or dir) and no unchecked
+    // lower phase → is_last_phase stays true. Higher HEADINGS alone keep
+    // is_last_phase false (stage 2 matches headings regardless of checkbox
+    // state), so this fixture drops them entirely.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    let roadmap = fs.readFileSync(roadmapPath, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 3: Attestation Freeze**', '- [x] **Phase 3: Attestation Freeze**')
+      .replace('- [ ] **Phase 4: Corpus Maturation**', '- [x] **Phase 4: Corpus Maturation**')
+      .replace('- [ ] **Phase 6: Oracle Re-Hardening**\n', '')
+      .replace('- [ ] **Phase 7: Recall Monitoring**\n', '')
+      .replace('### Phase 6: Oracle Re-Hardening\n**Goal:** six\n**Plans:** 1 plans\n\n', '')
+      .replace('### Phase 7: Recall Monitoring\n**Goal:** seven\n**Plans:** 1 plans\n', '');
+    fs.writeFileSync(roadmapPath, roadmap);
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'nothing outstanding — milestone completes');
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  test('sentinelStillExcludedWithHigherPresent', () => {
+    // Acceptance #3: the #2949 sentinel filter keeps working alongside the
+    // ungate — an unchecked 0.x backlog row never becomes next_phase.
+    writeRow4Roadmap();
+    writeExplicitState();
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(
+      roadmapPath,
+      '- [ ] **Phase 0.1: Backlog sentinel item**\n' + fs.readFileSync(roadmapPath, 'utf-8'),
+    );
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `real phase 3 (not the 0.1 sentinel) is next_phase (got ${output.next_phase})`,
+    );
+  });
+
+  test('explicitBodyFieldsMoveTogether', () => {
+    // Row 4 explicit-field variant (0xdhx fixture A): the body fields AND the
+    // frontmatter must move to phase 3 together — never both-wrong on 6.
+    writeRow4Roadmap();
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 3);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\*\s*3\b/.test(state), `body Current Phase must be 3, got: ${state.match(/\*\*Current Phase:\*\*.*/)?.[0]}`);
+    assert.match(state, /\*\*Current Phase Name:\*\*\s*Attestation Freeze/);
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.strictEqual(parseInt(fmPhase, 10), 3, `frontmatter current_phase must derive to 3 (got ${fmPhase})`);
+    assert.match(fmName, /attestation freeze/i, `frontmatter current_phase_name must name phase 3 (got ${fmName})`);
+  });
+
+  test('diskPresentHigherStillLosesToLowerOutstanding', () => {
+    // Row 4 stage-1 variant (failing-first): a higher phase directory ON DISK
+    // (stage-1 hit) also must not mask an outstanding lower phase.
+    writeRow4Roadmap({ withHigherDir: true });
+    writeExplicitState();
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `lowest outstanding phase 3 beats the on-disk higher phase 6 (got ${output.next_phase})`,
+    );
   });
 });

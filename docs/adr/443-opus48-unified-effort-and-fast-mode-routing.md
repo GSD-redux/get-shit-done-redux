@@ -118,7 +118,8 @@ Common core: `low`, `medium`, `high`, `xhigh`.
 ## References
 
 - Tracking issue: #443
-- Prior art (inert reasoning_effort): #2517; `tests/issue-2517-runtime-aware-profiles.test.cjs`
+- Prior art (inert reasoning_effort): #2517; `tests/model-resolver.test.cjs` (folds former
+  `issue-2517-runtime-aware-profiles`)
 - dynamic_routing escalation: #3024; `tests/model-profiles.test.cjs` (folds former `feat-3024-dynamic-routing`, consolidation epic #1969)
 - phase-type tiers: #3023
 - Anthropic effort API: `output_config.effort` (`low`/`medium`/`high`/`xhigh`/`max`); fast mode: `speed` (`standard`/`fast`)

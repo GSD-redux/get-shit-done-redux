@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { normalizeEol } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const CAPABILITIES_DIR = path.join(ROOT, 'capabilities');
@@ -808,19 +809,6 @@ function stripGeneratedComment(content) {
     .join('\n');
 }
 
-/**
- * Normalize line endings to LF.
- * The generator always writes LF, but Windows git (autocrlf) checks out committed files with
- * CRLF. The --check comparison must be line-ending-agnostic so it only fails on REAL content
- * differences, not on checkout-introduced whitespace differences.
- *
- * @param {string} content
- * @returns {string}
- */
-function normalizeLineEndings(content) {
-  return content.replace(/\r/g, '');
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -859,7 +847,7 @@ function main() {
     }
 
     const committed = fs.readFileSync(REGISTRY_PATH, 'utf8');
-    if (normalizeLineEndings(stripGeneratedComment(committed)) !== normalizeLineEndings(stripGeneratedComment(live))) {
+    if (normalizeEol(stripGeneratedComment(committed)) !== normalizeEol(stripGeneratedComment(live))) {
       process.stderr.write(
         'gsd-core/bin/lib/capability-registry.cjs is stale. Run:\n' +
         '  node scripts/gen-capability-registry.cjs --write\n',
@@ -931,7 +919,7 @@ module.exports = {
   serializeRegistry,
   computeRequiresClosure,
   topoSortSteps,
-  normalizeLineEndings,
+  normalizeLineEndings: normalizeEol,
   stripGeneratedComment,
   validateConfigSliceEntry,
   VALID_CONFIG_SLICE_TYPES,

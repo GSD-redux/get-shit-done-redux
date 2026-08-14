@@ -113,7 +113,7 @@ const VERIFICATION_ROUTING_TABLE: Record<string, VerificationRoute> = {
   // the file has no parseable frontmatter status. Never emitted by the verifier.
   missing: {
     status: 'missing',
-    next_action: 'No verification report found — the verify step never completed. Re-run execute-phase.',
+    next_action: 'No verification report found — the verify step never completed. Running execute-phase is safe here: it resumes at the verification gates and does not re-run plans that already have a SUMMARY.md (see #2868).',
     next_command: 'execute-phase',
   },
   // INTERNAL SENTINEL: constructed when the file has a status value not in
@@ -504,7 +504,7 @@ function readVerificationStatus(
   const unknownRoute = VERIFICATION_ROUTING_TABLE['unknown'];
   return {
     status: unknownRoute.status,
-    next_action: `Unexpected verification status '${rawStatus}'. Re-run execute-phase verification.`,
+    next_action: `Unexpected verification status '${rawStatus}'. If this is an intentional non-standard marker (e.g. a hand-set failed/superseded state), no action is needed. Otherwise, run execute-phase to regenerate verification — it will not re-run plans that already have a SUMMARY.md.`,
     next_command: projectNextCommand(unknownRoute.next_command, runtime, phaseArg),
     ...(staleCheckIndeterminate ? { staleCheckIndeterminate: true } : {}),
   };

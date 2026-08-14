@@ -727,6 +727,9 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeAgentToCodexAgent',
   // ADR-1239 / #2092 Phase B Upgrade 1 — native .qwen/agents/*.md subagent projection.
   'convertClaudeAgentToQwenAgent',
+  // #3384 — ZCode agents are Claude-shaped but its dispatcher treats mcp__* tools
+  // grants as required MCP servers; this converter strips them at install time.
+  'convertClaudeAgentToZcodeAgent',
 ]);
 
 // C3: Validate role:runtime body
@@ -868,7 +871,36 @@ const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible', 'op
 // BOTH sub-shapes, or from NEITHER, has undefined meaning and fails validation.
 // The discriminator is explicit rather than inferred from field presence, which
 // is precisely the ambiguity these two sets exist to detect.
-const SPAWN_ONLY_INVOKE_FIELDS = ['binary', 'args', 'promptChannel', 'outputChannel', 'outputArg', 'modelArg'];
+// `env` added by #2483. It belongs in THIS set and not merely in validateSpawnInvoke: an environment
+// pair has no meaning for a transport that issues an HTTP POST, so a manifest declaring it alongside
+// `openai-http` fields is the undefined-meaning case the comment above describes. Registering it here
+// is what makes that case reportable — the openai-http arm rejects exactly the members of this list,
+// so a field absent from it is silently accepted on the wrong transport. Note `effortChannel` is
+// deliberately in NEITHER set: D2 defines it for both transports, so it is shared, not spawn-only.
+const SPAWN_ONLY_INVOKE_FIELDS = ['binary', 'args', 'promptChannel', 'outputChannel', 'outputArg', 'modelArg', 'env'];
+// Environment names refused outright on a reviewer lane (#2483): each one turns a declared pair into
+// arbitrary code execution in the spawned child. DEFENCE IN DEPTH, NOT THE BOUNDARY — say so plainly,
+// because a future reader who mistakes this for the control will under-invest in the one that is.
+// The boundary is install-time consent: `capability-trust` discloses every declared env pair, shows
+// its value, and binds it to the consent signature, so an unlisted name is still SEEN before it runs.
+//
+// Deliberately incomplete, and it cannot be otherwise: the spawned binary is arbitrary third-party
+// code, so the exhaustive set is every interpreter's injection variables. What this list buys is that
+// the highest-confidence, lowest-legitimacy routes cannot be taken quietly. `PATH` is included — it is
+// the most complete primitive of the set (repoint it at a directory holding a fake binary) and no
+// shipped reviewer manifest declares it; a lane that needs a specific executable declares an absolute
+// `invoke.binary` rather than reshaping the child's `PATH`.
+//
+// Matched CASE-INSENSITIVELY (members stored uppercase) — Windows environment lookup is
+// case-insensitive, so an exact-case set is bypassed by declaring `Path` or `node_options`.
+const DENIED_LANE_ENV_KEYS = new Set([
+  'PATH', 'NODE_OPTIONS', 'NODE_REPL_EXTERNAL_MODULE', 'NODE_PATH',
+  'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  'PYTHONSTARTUP', 'PYTHONPATH', 'BASH_ENV', 'ENV',
+  'PERL5OPT', 'RUBYOPT', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH',
+  'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF',
+]);
 // `defaultHost` / `fallbackModel` added by Phase 5b (#2799). Phase 4 federated every
 // `review.*_host` key with a default of `""`, so the REAL fallback destination and model
 // (`http://localhost:11434` / `llama3` and friends) existed only inside the bash leg. Once the
@@ -2384,6 +2416,66 @@ function validateSpawnInvoke(ctx, invoke) {
   }
 
   errors.push(...validateEnumField(ctx, 'reviewer.invoke.effortChannel', invoke.effortChannel, VALID_LANE_EFFORT_CHANNELS));
+
+  // `env` — per-invocation environment pairs (#2483). OPTIONAL, unlike every field above: only a lane
+  // that needs to shape its child's environment declares it, and absent is the common case. Validated
+  // when present, because `resolveLanePlan` DROPS a non-string value rather than coercing it — so an
+  // unvalidated manifest declares a pair that silently never reaches the spawn, which is the failure
+  // mode a shipped env-guard can least afford. Keys are held to the portable POSIX
+  // environment-name grammar, which is a POLICY — not a claim about what an environment can physically
+  // hold. Measured: of the names refused below only NUL is actually rejected by `spawnSync`; `=`, a
+  // leading digit, a dash and a space are all carried through to the child (an `A=B` key arrives as
+  // the raw entry `A=B=value`, and reads back via `process.env['A=B']`). They are refused because a
+  // name outside the grammar is not portably addressable by the program meant to read it.
+  if (invoke.env !== undefined) {
+    if (typeof invoke.env !== 'object' || invoke.env === null || Array.isArray(invoke.env)) {
+      errors.push(
+        ctx + ' reviewer.invoke.env must be an object of environment name/value pairs ' +
+        '(got: ' + describeValue(invoke.env) + ')',
+      );
+    } else {
+      for (const key of Object.keys(invoke.env)) {
+        // `__proto__` passes the grammar below and IS a real own key once a manifest is JSON-parsed,
+        // but assigning it onto a plain accumulator goes through the inherited `__proto__` SETTER
+        // instead of creating an own property. For the string values this field permits the setter is
+        // a no-op — the prototype is not even changed — so the pair would validate and then simply
+        // vanish before the spawn: the declared-but-never-delivered failure this block exists to catch.
+        // Refused by name, because the grammar cannot see it.
+        //
+        // Only `__proto__` needs this. Sibling reserved-name guards in this file reject
+        // `constructor`/`prototype` alongside it, but those guard bracket LOOKUPS that resolve
+        // prototype members; here the read is `Object.keys` + an own-value read, and `constructor`
+        // assigns as an ordinary own key. Refusing it too would reject a name the spawn could carry.
+        // CASE-INSENSITIVE, and that is not pedantry: Windows environment lookups are
+        // case-insensitive, so `Path` / `node_options` reach the child as `PATH` / `NODE_OPTIONS`
+        // and an exact-case set is bypassed by changing one letter. The grammar above already
+        // constrains keys to ASCII, so a plain uppercase fold is sufficient here.
+        if (DENIED_LANE_ENV_KEYS.has(key.toUpperCase())) {
+          errors.push(
+            ctx + ' reviewer.invoke.env key "' + key + '" is not permitted ' +
+            '(it makes the spawned reviewer run code of the manifest\'s choosing; ' +
+            'declare an absolute `invoke.binary` instead of reshaping the child\'s environment)',
+          );
+        } else if (key === '__proto__') {
+          errors.push(
+            ctx + ' reviewer.invoke.env key "__proto__" is not permitted ' +
+            '(it is silently dropped when the spawn plan is assembled, so it would never reach the child)',
+          );
+        } else if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          errors.push(
+            ctx + ' reviewer.invoke.env key ' + describeValue(key) +
+            ' is not a valid environment variable name',
+          );
+        }
+        if (typeof invoke.env[key] !== 'string') {
+          errors.push(
+            ctx + ' reviewer.invoke.env.' + key + ' must be a string ' +
+            '(got: ' + describeValue(invoke.env[key]) + ')',
+          );
+        }
+      }
+    }
+  }
 
   return errors;
 }

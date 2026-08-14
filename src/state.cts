@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -16,7 +17,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
+const { parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
@@ -27,7 +28,7 @@ const { planningDir, planningPaths } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -46,6 +47,11 @@ import stateTransitionMod = require('./state-transition.cjs');
 // #2573 D5: used to pin `git rev-parse` to the project's own repo. Imports only
 // node builtins, so it introduces no cycle on this path.
 import { findProjectRoot } from './project-root.cjs';
+// #3311: advisory (phase, session) claim over the single Current Position slot.
+// Imports only node builtins + planning-workspace + active-workstream-store, so
+// it introduces no cycle on this path.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import milestoneLockMod = require('./milestone-lock.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
@@ -68,6 +74,11 @@ import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
 import { clampPercent } from './phase-lifecycle.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import healthDiagnosticTypesMod = require('./health-diagnostic-types.cjs');
+const { SEVERITY, adviseRemedy } = healthDiagnosticTypesMod;
+type Severity = healthDiagnosticTypesMod.Severity;
+type Diagnostic = healthDiagnosticTypesMod.Diagnostic;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -177,7 +188,11 @@ function shouldResyncStateProgress(fields: Iterable<string>): boolean {
 // Avoids re-reading N+1 directories on every state write when the phase structure
 // hasn't changed within the same gsd-tools invocation.
 const _diskScanCache = new Map<string, {
-  totalPhases: number;
+  // #3354: null is the milestoned-but-unbounded WITHHOLD sentinel — the scan
+  // refused to substitute the on-disk dir count for a rejected whole-document
+  // ROADMAP total, so the caller must keep the pre-existing value (stored
+  // frontmatter, body annotation) or omit the key. Never a scan result.
+  totalPhases: number | null;
   completedPhases: number;
   totalPlans: number;
   completedPlans: number;
@@ -498,6 +513,34 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
       return result.content;
     }, cwd, { resync: shouldResync });
 
+    // #3351: reconcile the report against the bytes actually persisted.
+    // patchCore's bookkeeping says whether the stateReplaceField text-replace
+    // MATCHED — but its plain-line pattern (`m` flag over the full document)
+    // can match the YAML frontmatter line for a lower-cased key, and the write
+    // pipeline (syncStateFrontmatter re-derivation + the FIELD_CLASSIFICATION
+    // preservation rows) then discards or restores that text before the file is
+    // saved. A field is only reported `updated` when its post-write on-disk
+    // value equals the requested value: the frontmatter key when present,
+    // else the body field (the legitimate working case for state.patch is
+    // display-cased BODY fields — Status, Current Plan, Phase — which are
+    // never frontmatter keys).
+    const persisted = platformReadSync(statePath) || '';
+    const postFm = extractFrontmatter(persisted, statePath) as Record<string, unknown>;
+    const postBody = stripFrontmatter(persisted);
+    const updated: string[] = [];
+    const failed: string[] = [];
+    for (const [field, value] of Object.entries(patches)) {
+      const persistedValue = Object.prototype.hasOwnProperty.call(postFm, field)
+        ? String(postFm[field])
+        : stateExtractField(postBody, field);
+      if (persistedValue !== null && persistedValue.trim() === String(value).trim()) {
+        updated.push(field);
+      } else {
+        failed.push(field);
+      }
+    }
+    results = { updated, failed };
+
     output(results, raw, results.updated.length > 0 ? 'true' : 'false');
   } catch {
     error('STATE.md not found');
@@ -586,7 +629,25 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   };
 
   let resultData: Record<string, unknown> | undefined;
+  // #3311: the milestone (phase + session) claim is consulted INSIDE the
+  // STATE.md lock, so the position read and the claim read cannot interleave
+  // with another session's Current Position write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    // advance-plan has no phase argument of its own — the phase it advances is
+    // whatever ## Current Position names. Compare that against the milestone
+    // claim: a mismatch means another session moved the single-slot position
+    // away from the claimed phase (the #3311 flip) and must be surfaced, not
+    // silently absorbed.
+    const body = stripFrontmatter(content);
+    const positionScope = matchCurrentPositionSection(body) ?? body;
+    const positionPhase = parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    if (positionPhase !== null) {
+      milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
+      if (milestoneConflict) {
+        milestoneLockMod.warnMilestoneConflict(milestoneConflict, 'state.advance-plan');
+      }
+    }
     const result = transitionCore(content, intent, deps);
     resultData = result.data;
     return result.content;
@@ -598,9 +659,9 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }
 
   if (resultData['advanced'] === false) {
-    output(resultData, raw, 'false');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'false');
   } else {
-    output(resultData, raw, 'true');
+    output({ ...resultData, milestone_conflict: milestoneConflict }, raw, 'true');
   }
 }
 
@@ -801,6 +862,27 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
       `STATE.md's Progress field was left unchanged.\n`
     );
     output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+    return;
+  }
+
+  // #3233: zero plans in the current-milestone phases means there is nothing to
+  // measure — most often the milestone was just closed and its phases archived
+  // (.planning/phases/ empty, but scope COMPLETE — "a real empty"). clampPercent
+  // maps 0/0 to 0%, which would clobber the shipped Progress record (e.g.
+  // [██████████] 100% → [░░░░░░░░░░] 0%). No-op instead, mirroring the
+  // scope-withhold above and computeProgressPercent's null-for-empty contract
+  // ("nothing to measure" ≠ "0% done"). The legitimate 0% case (plans exist,
+  // none summarized → clampPercent(0, N>0) = 0) is unaffected: totalPlans > 0.
+  if (totalPlans === 0) {
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — no plans found in current-milestone phases (0 plans). ` +
+      `STATE.md's Progress field was left unchanged (milestone archived?).\n`
+    );
+    output(
+      { updated: false, reason: 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)' },
+      raw,
+      'false',
+    );
     return;
   }
 
@@ -1172,10 +1254,22 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
     if (result) { content = result; updated.push('Last Date'); }
 
     // Update Stopped at
+    // #3374 Variant B: stateReplaceField returns the replaced string on any
+    // label MATCH, including when the value is already the target. Pushing
+    // 'Stopped At' on match alone reported a write that never changed a byte
+    // (and that the #948 no-op guard may then discard entirely), leaving a
+    // stale frontmatter stopped_at undetectable to the caller. Report only on
+    // real change — and track the match separately so an identical value does
+    // not read as "label missing" to the #944 DWIM insertion below (whose
+    // section rewrite would reset an executor-authored resume file to None).
+    let stoppedAtMatched = false;
     if (options.stopped_at) {
       result = stateReplaceField(content, 'Stopped At', options.stopped_at);
       if (!result) result = stateReplaceField(content, 'Stopped at', options.stopped_at);
-      if (result) { content = result; updated.push('Stopped At'); }
+      if (result) {
+        stoppedAtMatched = true;
+        if (result !== content) { content = result; updated.push('Stopped At'); }
+      }
     }
 
     // Update Resume File — only when the caller explicitly passed a value OR the
@@ -1226,7 +1320,10 @@ function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, 
     // missing canonical fields are inserted while the heading and any prose are
     // preserved (#1101). Only append a brand-new section when NEITHER heading exists.
     const callerSuppliedValues = !!(options.stopped_at || (options.resume_file !== undefined && options.resume_file !== null));
-    const needsStoppedAt = options.stopped_at && !updated.includes('Stopped At');
+    // #3374: keyed on the label MATCH, not on updated[] — a matched-but-
+    // identical value is already persisted on disk and must not trigger the
+    // insertion rewrite below.
+    const needsStoppedAt = options.stopped_at && !stoppedAtMatched;
     const needsResumeFile = options.resume_file !== undefined && options.resume_file !== null && !updated.includes('Resume File');
     const needsLastSession = !updated.includes('Last session') && !updated.includes('Last Date');
 
@@ -1439,18 +1536,18 @@ function preferNewerLastActivity(
   const exDate = exRaw.slice(0, 10);
   const derDate = derRaw.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
+  // #3258: this guard now protects only `last_activity` (a `derive` row) against
+  // the stale-archive regression (#2567). `last_activity_desc` used to be
+  // restored here too (both the older-date and the #3052 same-date branches),
+  // but that was a date-comparison rule — a DIFFERENT policy from the
+  // `preserve-when-unchanged` row its FIELD_CLASSIFICATION entry declares.
+  // Keeping both was two rules that could disagree. last_activity_desc is now
+  // governed by exactly one rule: its table row, enforced by
+  // applyStatePreservation's #1230 delta heuristic on the RMW path (where every
+  // desc-preserving transition — planned-phase / advance / complete / milestone
+  // — runs). The #3052 same-date contract still holds via that delta rule.
   if (derDate < exDate) {
     derivedFm['last_activity'] = exRaw;
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
-  } else if (derDate === exDate) {
-    // #3052: same-date — frontmatter is authoritative for this date, so
-    // preserve its last_activity_desc rather than letting the derived body
-    // prose (which may be stale) overwrite it.
-    if (existingFm['last_activity_desc'] !== undefined) {
-      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
-    }
   }
 }
 
@@ -1681,7 +1778,7 @@ function extractRetiredPhaseNumbers(scope: string): Set<string> {
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
  */
-function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null): Record<string, unknown> {
+function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null, storedTotalPhases?: number | null): Record<string, unknown> {
   // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
   // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
   // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -1809,8 +1906,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
-          // de-duplicate by normalized phase number keeping the most recently
-          // modified dir. This prevents double-counting (e.g. two "Phase 1" dirs).
+          // de-duplicate by normalized phase number keeping exactly one dir
+          // per key (deterministic tie-break: see #3355 below). This prevents
+          // double-counting (e.g. two "Phase 1" dirs).
           const seenPhaseNums = new Map<string, string>(); // normalizedNum -> dirName
           for (const dir of allMatchingDirs) {
             // #1514: a retired/folded phase keeps a directory but no completion
@@ -1829,14 +1927,25 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
-              // Keep the dir that is newer on disk (more likely current milestone)
-              try {
-                const existing = path.join(phasesDir, seenPhaseNums.get(key) as string);
-                const candidate = path.join(phasesDir, dir);
-                if (fs.statSync(candidate).mtimeMs > fs.statSync(existing).mtimeMs) {
-                  seenPhaseNums.set(key, dir);
-                }
-              } catch { /* keep existing on stat error */ }
+              // #3355: the survivor of a same-milestone collision must be
+              // chosen from repository CONTENT, never from filesystem state.
+              // The pre-#3355 tie-break was `mtimeMs` — a checkout-order
+              // signal — so two byte-identical checkouts of the same commit
+              // that wrote the colliding dirs in a different order picked
+              // different survivors, and progress.total_plans /
+              // completed_plans drifted across clones and CI runs. The
+              // directory NAME is git-tracked content and a total order, so
+              // the lexicographically-first dir wins deterministically. The
+              // collision is still a project-level defect (duplicate phase
+              // number in scope), so it is surfaced on stderr instead of
+              // being silently resolved. The Bug #2445 invariant — exactly
+              // one survivor per normalized phase number — is unchanged.
+              const incumbent = seenPhaseNums.get(key) as string;
+              const survivor = dir < incumbent ? dir : incumbent;
+              seenPhaseNums.set(key, survivor);
+              process.stderr.write(
+                `gsd: warning — phase directories '${incumbent}' and '${dir}' both normalize to phase key '${key}' (duplicate phase number in .planning/phases/); keeping '${survivor}' by deterministic lexicographic order. (#3355)\n`
+              );
             }
           }
           const phaseDirs = [...seenPhaseNums.values()];
@@ -1924,10 +2033,31 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               && hasMilestoneSectioning(roadmapRaw);
             const safeToUseRoadmapCount = milestoneBounded
               || (roadmapPhaseCount > 0 && !roadmapHasMilestoneSectioning);
+            // #3354: the milestoned-but-unbounded sibling of the #2828/#3204
+            // shapes. The whole-document roadmapPhaseCount is rightly rejected
+            // above (it would conflate sibling milestones, #1761), but the
+            // on-disk phase-dir count is NOT an authoritative substitute for
+            // the rejected total either — it counts only the current
+            // milestone's realized directories (25 declared → 4 written in the
+            // issue's report), silently shrinking progress.total_phases on
+            // every STATE.md write. Mirror the branch's own percent withhold
+            // (milestoneUnbounded below): return a null sentinel so the caller
+            // keeps the pre-existing stored value instead of writing the
+            // substitute, and warn on stderr naming the unbounded token so the
+            // operator can curate the ROADMAP heading or the STATE assertion.
+            // The degenerate un-sectioned zero-heading case keeps the
+            // phaseDirs.length fallback — with nothing declared anywhere else,
+            // the disk count is the only source and remains correct.
+            const milestonedButUnbounded = !milestoneBounded && roadmapHasMilestoneSectioning;
+            if (milestonedButUnbounded) {
+              process.stderr.write(
+                `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries multiple milestone sections; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354)\n`
+              );
+            }
             return {
               totalPhases: safeToUseRoadmapCount
                 ? Math.max(phaseDirs.length, roadmapPhaseCount)
-                : phaseDirs.length,
+                : (milestonedButUnbounded ? null : phaseDirs.length),
               milestoneBounded,
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
@@ -1937,7 +2067,17 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           })();
           _diskScanCache.set(cwd, cached);
         }
-        totalPhases = cached.totalPhases;
+        // #3354: cached.totalPhases === null is the milestoned-but-unbounded
+        // WITHHOLD sentinel — the scan refused to substitute the dir count for
+        // a rejected whole-document total, so keep the pre-existing value:
+        // the stored frontmatter total when the caller can supply it, else the
+        // body "Total Phases" annotation already parsed above, else leave null
+        // (the key is omitted from the progress block).
+        if (cached.totalPhases !== null) {
+          totalPhases = cached.totalPhases;
+        } else if (storedTotalPhases !== null && storedTotalPhases !== undefined) {
+          totalPhases = storedTotalPhases;
+        }
         completedPhases = cached.completedPhases;
         totalPlans = cached.totalPlans;
         completedPlans = cached.completedPlans;
@@ -2200,6 +2340,23 @@ function readStateHeadFreshness(
   };
 }
 
+/**
+ * #3354: read `progress.total_phases` out of already-extracted STATE.md
+ * frontmatter as a finite number, or null. Feeds buildStateFrontmatter's
+ * milestoned-but-unbounded withhold so the stored total survives the write
+ * instead of being clobbered by the on-disk phase-directory count.
+ */
+function readStoredTotalPhases(existingFm: Record<string, unknown> | null | undefined): number | null {
+  if (!existingFm || typeof existingFm !== 'object') return null;
+  const progress = existingFm['progress'];
+  if (!progress || typeof progress !== 'object') return null;
+  const raw = (progress as Record<string, unknown>)['total_phases'];
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'string' && raw.trim() === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 function syncStateFrontmatter(content: string, cwd: string | undefined, authoritativeFm?: Record<string, unknown>): string {
   // Read existing frontmatter BEFORE stripping — it may contain values
   // that the body no longer has (e.g., Status field removed by an agent).
@@ -2214,7 +2371,11 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
   // buildStateFrontmatter scopes its disk scan to the correct milestone
   // instead of auto-deriving (and potentially mis-binding).
   const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
-  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone);
+  // #3354: also pass the stored total so buildStateFrontmatter's
+  // milestoned-but-unbounded withhold can preserve it across the write
+  // (the derived progress sub-block replaces the stored one wholesale below,
+  // so an omitted key would otherwise DELETE the stored value).
+  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone, readStoredTotalPhases(existingFm));
 
   // Preserve existing frontmatter status when body-derived status is 'unknown'.
   // This prevents a missing Status: field in the body from overwriting a
@@ -2262,13 +2423,20 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
   // survive every writeStateMd call.
   //
   // For stopped_at / paused_at: the original #905 "fall back when derived is
-  // absent" rule is preserved here. The stale-body-overwrites-frontmatter
-  // scenario from #948 is prevented by the no-op guard in
-  // readModifyWriteStateMd: when the transform produces no change the file is
-  // never written, so syncStateFrontmatter never even runs. Attempting to
-  // "always prefer frontmatter" here breaks legitimate callers like phase.complete
-  // that intentionally write a new stopped_at value to the body and expect
-  // syncStateFrontmatter to pick it up.
+  // absent" rule is preserved here — this block handles the EMPTY case only.
+  // The disagreeing case (a present-but-stale body value vs a fresher
+  // frontmatter value, #948/#3374) is NOT handled here: it is governed by
+  // applyStatePreservation's preserve-when-unchanged delta, applied post-sync
+  // by the shared applyPostSyncPreservation pass — run by
+  // readModifyWriteStateMd and by cmdPhaseComplete's adapter (the one caller
+  // that deliberately bypasses the RMW wrapper for the atomic
+  // ROADMAP/REQUIREMENTS/STATE commit; #3374). The writeStateMd path
+  // (state sync) intentionally derives from the body instead — its #905
+  // contract is body-beats-frontmatter. "Always prefer frontmatter" here
+  // would still be wrong: it would break transforms that legitimately write a
+  // new body value and expect this sync to project it — the #1230 delta
+  // ("did THIS write change the body source?") is what distinguishes those
+  // from a stale harvest.
   if (!derivedFm['stopped_at'] && existingFm['stopped_at']) {
     derivedFm['stopped_at'] = existingFm['stopped_at'];
   }
@@ -2340,6 +2508,12 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
       }
     }
   }
+
+  // #3257: propagate full-line frontmatter comments from the extracted source onto the
+  // rebuilt derivedFm (buildStateFrontmatter + the Object.keys carry-forward above both
+  // skip the Symbol-keyed channel, so without this the comments would be lost here even
+  // though parseYamlRegion/reconstructFrontmatter preserve them in isolation).
+  propagateCommentChannel(existingFm as unknown as Frontmatter, derivedFm as unknown as Frontmatter);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;
@@ -2597,6 +2771,178 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
 }
 
 /**
+ * #3374: the shared post-sync preservation pass — the pre/post body-source
+ * snapshot + table-driven `applyStatePreservation` + #2736 authoritative
+ * re-assert sequence. Extracted from readModifyWriteStateMd so
+ * `cmdPhaseComplete`'s atomic-commit adapter (phase.cts) — which syncs
+ * STATE.md directly because it is committed atomically with
+ * ROADMAP/REQUIREMENTS and so cannot go through the RMW wrapper — applies the
+ * identical policy instead of a second, weaker encoding. Previously the
+ * adapter had no preservation at all, letting a stale body `Stopped at:` line
+ * silently clobber a fresher frontmatter `stopped_at` on every phase
+ * completion (#3374 Variant A).
+ *
+ * NOT applied on the writeStateMd path: `state sync`'s contract is the
+ * opposite by design (#905 — "body annotation beats existing frontmatter when
+ * both are present": sync exists to re-derive frontmatter from the body), so a
+ * blanket preservation pass there re-locks stale frontmatter. The
+ * milestone-complete equivalent of the #3374 exposure is tracked as a
+ * follow-up (see PR #3491 / the closed PR #3442 review's MAJOR finding).
+ *
+ * `originalContent` is the pre-write on-disk content (drives the #1230
+ * pre-snapshots), `transformedContent` is the post-transform content (the
+ * sync only rewrites the frontmatter block, so its body IS the post-write
+ * body), and `syncedContent` is what `syncStateFrontmatter` produced.
+ */
+function applyPostSyncPreservation(
+  originalContent: string,
+  transformedContent: string,
+  syncedContent: string,
+  statePath: string,
+  resync: boolean,
+  authoritativeFm?: Record<string, unknown>,
+  deriveProgressKeys?: boolean,
+): string {
+  // Snapshot the existing progress block BEFORE the transform so we can
+  // restore it when resync is false.
+  const preFm = resync ? null : extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
+
+  // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
+  // we can detect whether THIS write changed them. syncStateFrontmatter
+  // re-derives frontmatter status/stopped_at from the body on every write;
+  // when the body's source field was NOT changed by the transform, the
+  // existing frontmatter value (e.g. a hand-set 'completed') must win over
+  // the body-derived value (e.g. 'verifying' from a stale "Status: Verifying
+  // Phase 3" line that an earlier tool wrote). We do NOT disturb `preFm`
+  // above (null when resync:true) — these are independent snapshots.
+  // Strip frontmatter before calling stateExtractField so the YAML `status:`
+  // key in the frontmatter block cannot shadow the body field we are tracking.
+  const preBody = stripFrontmatter(originalContent);
+  const preFmSnapshot = extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
+  const preBodyStatus = stateExtractField(preBody, 'Status');
+  // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
+  // mirroring buildStateFrontmatter's sessionBodyScope logic.
+  // A stale "Stopped at:" in a non-Session section (e.g. Session Continuity
+  // Archive prose) must not interfere with the delta comparison.
+  const preSessionMatch = matchSessionSection(preBody);
+  const preSessionScope = preSessionMatch ?? preBody;
+  const preBodyStoppedAt = stateExtractField(preSessionScope, 'Stopped At') || stateExtractField(preSessionScope, 'Stopped at');
+
+  // ADR-1769 Phase 6 / #1743 / #1695: snapshot the body source for the curated
+  // current_phase_name (the `Phase:` line parseProsePhaseField harvests). When
+  // this write does NOT change that line, the curated frontmatter value must
+  // win over syncStateFrontmatter's body re-derivation (which can harvest a
+  // wrong parenthetical aside — #1695). Gated by the field-classification
+  // table's preserve-always row so the rule lives in one place.
+  const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
+
+  // #3258: snapshot the body sources for the additional preserve-when-unchanged
+  // rows applyStatePreservation now honors (last_activity_desc, paused_at,
+  // current_phase, current_plan). Each mirrors buildStateFrontmatter's
+  // derivation so the #1230 delta ("did THIS write change the source?") is
+  // accurate: current_phase combines `Current Phase` with the prose `Phase:`
+  // fallback (parseProsePhaseField, scoped to ## Current Position); paused_at
+  // is session-scoped (mirrors stopped_at); last_activity_desc combines the
+  // `Last Activity Description` field with the prose desc fallback.
+  const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
+  const preBodyCurrentPlan = stateExtractField(preBody, 'Current Plan');
+  const preBodyCurrentPhase = stateExtractField(preBody, 'Current Phase')
+    ?? parseProsePhaseField(stateExtractField(preCurrentPositionScope, 'Phase')).phase;
+  const preBodyPausedAt = stateExtractField(preSessionScope, 'Paused At');
+  const preBodyLastActivityRaw = stateExtractField(preBody, 'Last Activity')
+    ?? stateExtractField(preBody, 'Last activity');
+  const preBodyLastActivityDesc = stateExtractField(preBody, 'Last Activity Description')
+    ?? parseProseLastActivityField(preBodyLastActivityRaw).description;
+
+  // Post-transform body source fields used for the delta comparison (#1230).
+  // Use `transformedContent` (not `syncedContent`): syncStateFrontmatter only
+  // rewrites the frontmatter block, so the body is identical in both — and we
+  // need the body the transform produced. Strip frontmatter so the YAML
+  // status key cannot shadow the body field we are tracking.
+  const postBody = stripFrontmatter(transformedContent);
+  const postBodyStatus = stateExtractField(postBody, 'Status');
+  // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
+  // consistent with the pre-transform snapshot above and buildStateFrontmatter.
+  const postSessionMatch = matchSessionSection(postBody);
+  const postSessionScope = postSessionMatch ?? postBody;
+  const postBodyStoppedAt = stateExtractField(postSessionScope, 'Stopped At') || stateExtractField(postSessionScope, 'Stopped at');
+  // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
+  // current_phase_name delta comparison.
+  const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
+  // #3258: post-transform body sources for the preserve-when-unchanged rows
+  // added in #3258 (mirrors the pre-transform block above).
+  const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
+  const postBodyCurrentPlan = stateExtractField(postBody, 'Current Plan');
+  const postBodyCurrentPhase = stateExtractField(postBody, 'Current Phase')
+    ?? parseProsePhaseField(stateExtractField(postCurrentPositionScope, 'Phase')).phase;
+  const postBodyPausedAt = stateExtractField(postSessionScope, 'Paused At');
+  const postBodyLastActivityRaw = stateExtractField(postBody, 'Last Activity')
+    ?? stateExtractField(postBody, 'Last activity');
+  const postBodyLastActivityDesc = stateExtractField(postBody, 'Last Activity Description')
+    ?? parseProseLastActivityField(postBodyLastActivityRaw).description;
+  // #3468: single channel for every preserve-when-unchanged row. Before this
+  // change, seven body-source pre/post pairs travelled in two different
+  // shapes — this map for four fields, six dedicated parameters
+  // (preBodyStatus/postBodyStatus, preBodyStoppedAt/postBodyStoppedAt,
+  // preBodyPhaseSource/postBodyPhaseSource) for the other three — same data,
+  // same purpose, which is exactly why applyStatePreservation needed a
+  // hand-written branch per field instead of one loop over the table. Every
+  // row FIELD_CLASSIFICATION declares preserve-when-unchanged MUST appear
+  // here — an omission now throws (STATE_PRESERVATION_UNWIRED_ROW, ADR-3408
+  // §8.2) at the first write rather than becoming a quiet preservation bug.
+  // Note current_phase_name's source is the body `Phase:` line, deliberately
+  // a DIFFERENT source from current_phase's: the key names the field the
+  // policy GUARDS, not the body field it reads.
+  const bodyDeltas = {
+    last_activity_desc: { pre: preBodyLastActivityDesc, post: postBodyLastActivityDesc },
+    paused_at: { pre: preBodyPausedAt, post: postBodyPausedAt },
+    current_phase: { pre: preBodyCurrentPhase, post: postBodyCurrentPhase },
+    current_plan: { pre: preBodyCurrentPlan, post: postBodyCurrentPlan },
+    status: { pre: preBodyStatus, post: postBodyStatus },
+    stopped_at: { pre: preBodyStoppedAt, post: postBodyStoppedAt },
+    current_phase_name: { pre: preBodyPhaseSource, post: postBodyPhaseSource },
+  };
+
+  // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
+  // preservation block is now the pure, table-driven `applyStatePreservation`
+  // in the STATE.md Transition Module. progress / status / stopped_at /
+  // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
+  // one policy source, not three drifting encodings. #3258 extends the same
+  // pass to last_activity_desc / paused_at / current_phase / current_plan
+  // (preserve-when-unchanged) and milestone / milestone_name (preserve-if-
+  // placeholder). Behavior-identical to the pre-#1796 inline block for the
+  // original four fields; this is the absorption ADR-1769 / CONTEXT.md
+  // already claimed shipped.
+  const postFm = extractFrontmatter(syncedContent, statePath) as Record<string, unknown>;
+  const preservation = applyStatePreservation({
+    preFm, postFm, preFmSnapshot, resync,
+    deriveProgressKeys: deriveProgressKeys === true,
+    bodyDeltas,
+  });
+  // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
+  // layouts with no body `Phase:` line, both phase-source snapshots are null
+  // (equal), so the #1695 restore fires and would put the stale pre-transition
+  // name back over the authoritative one. Intent beats both the prose
+  // re-derivation and the curated restore — the transition just resolved it.
+  let authoritativeReasserted = false;
+  if (authoritativeFm) {
+    for (const [key, value] of Object.entries(authoritativeFm)) {
+      if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
+        preservation.postFm[key] = value;
+        authoritativeReasserted = true;
+      }
+    }
+  }
+
+  if (preservation.mutated || authoritativeReasserted) {
+    const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
+    const body = stripFrontmatter(syncedContent);
+    return `---\n${yamlStr}\n---\n\n${body}`;
+  }
+  return syncedContent;
+}
+
+/**
  * Atomic read-modify-write for STATE.md.
  * Holds the lock across the entire read -> transform -> write cycle,
  * preventing the lost-update problem where two agents read the same
@@ -2621,38 +2967,6 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
   const lockPath = acquireStateLock(statePath, clock);
   try {
     const content = platformReadSync(statePath) || '';
-    // Snapshot the existing progress block BEFORE the transform so we can
-    // restore it when resync is false.
-    const preFm = resync ? null : extractFrontmatter(content, statePath) as Record<string, unknown>;
-
-    // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
-    // we can detect whether THIS write changed them. syncStateFrontmatter
-    // re-derives frontmatter status/stopped_at from the body on every write;
-    // when the body's source field was NOT changed by the transform, the
-    // existing frontmatter value (e.g. a hand-set 'completed') must win over
-    // the body-derived value (e.g. 'verifying' from a stale "Status: Verifying
-    // Phase 3" line that an earlier tool wrote). We do NOT disturb `preFm`
-    // above (null when resync:true) — these are independent snapshots.
-    // Strip frontmatter before calling stateExtractField so the YAML `status:`
-    // key in the frontmatter block cannot shadow the body field we are tracking.
-    const preBody = stripFrontmatter(content);
-    const preFmSnapshot = extractFrontmatter(content, statePath) as Record<string, unknown>;
-    const preBodyStatus = stateExtractField(preBody, 'Status');
-    // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
-    // mirroring buildStateFrontmatter's sessionBodyScope logic (line ~1172).
-    // A stale "Stopped at:" in a non-Session section (e.g. Session Continuity
-    // Archive prose) must not interfere with the delta comparison.
-    const preSessionMatch = matchSessionSection(preBody);
-    const preSessionScope = preSessionMatch ?? preBody;
-    const preBodyStoppedAt = stateExtractField(preSessionScope, 'Stopped At') || stateExtractField(preSessionScope, 'Stopped at');
-
-    // ADR-1769 Phase 6 / #1743 / #1695: snapshot the body source for the curated
-    // current_phase_name (the `Phase:` line parseProsePhaseField harvests). When
-    // this write does NOT change that line, the curated frontmatter value must
-    // win over syncStateFrontmatter's body re-derivation (which can harvest a
-    // wrong parenthetical aside — #1695). Gated by the field-classification
-    // table's preserve-always row so the rule lives in one place.
-    const preBodyPhaseSource = stateExtractField(preBody, 'Phase');
 
     const modified = transformFn(content);
 
@@ -2668,56 +2982,17 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     }
 
     let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
-
-    // Post-transform body source fields used for the delta comparison (#1230).
-    // Use `modified` (not `synced`): syncStateFrontmatter only rewrites the frontmatter block, so the body is identical in both — and we need the body the transform produced.
-    // Strip frontmatter so the YAML status key cannot shadow the body field we are tracking.
-    const postBody = stripFrontmatter(modified);
-    const postBodyStatus = stateExtractField(postBody, 'Status');
-    // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
-    // consistent with the pre-transform snapshot above and buildStateFrontmatter.
-    const postSessionMatch = matchSessionSection(postBody);
-    const postSessionScope = postSessionMatch ?? postBody;
-    const postBodyStoppedAt = stateExtractField(postSessionScope, 'Stopped At') || stateExtractField(postSessionScope, 'Stopped at');
-    // ADR-1769 Phase 6 / #1695: post-transform body Phase source for the
-    // current_phase_name delta comparison.
-    const postBodyPhaseSource = stateExtractField(postBody, 'Phase');
-
-    // ADR-1769 #1796 (Path A — finish the consolidation): the post-sync
-    // preservation block is now the pure, table-driven `applyStatePreservation`
-    // in the STATE.md Transition Module. progress / status / stopped_at /
-    // current_phase_name are all governed by their FIELD_CLASSIFICATION row —
-    // one policy source, not three drifting encodings. Behavior-identical to
-    // the pre-#1796 inline block; this is the absorption ADR-1769 / CONTEXT.md
-    // already claimed shipped.
-    const postFm = extractFrontmatter(synced, statePath) as Record<string, unknown>;
-    const preservation = applyStatePreservation({
-      preFm, postFm, preFmSnapshot, resync,
-      deriveProgressKeys: options?.deriveProgressKeys === true,
-      preBodyStatus, postBodyStatus,
-      preBodyStoppedAt, postBodyStoppedAt,
-      preBodyPhaseSource, postBodyPhaseSource,
-    });
-    // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
-    // layouts with no body `Phase:` line, both phase-source snapshots are null
-    // (equal), so the #1695 restore fires and would put the stale pre-transition
-    // name back over the authoritative one. Intent beats both the prose
-    // re-derivation and the curated restore — the transition just resolved it.
-    let authoritativeReasserted = false;
-    if (options?.authoritativeFm) {
-      for (const [key, value] of Object.entries(options.authoritativeFm)) {
-        if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
-          preservation.postFm[key] = value;
-          authoritativeReasserted = true;
-        }
-      }
-    }
-
-    if (preservation.mutated || authoritativeReasserted) {
-      const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
-      const body = stripFrontmatter(synced);
-      synced = `---\n${yamlStr}\n---\n\n${body}`;
-    }
+    // #3374: the post-sync preservation pass (snapshots, table-driven
+    // applyStatePreservation, #2736 re-assert) — see applyPostSyncPreservation.
+    synced = applyPostSyncPreservation(
+      content,
+      modified,
+      synced,
+      statePath,
+      resync,
+      options?.authoritativeFm,
+      options?.deriveProgressKeys === true,
+    );
 
     platformWriteSync(statePath, synced);
     return true;
@@ -2740,7 +3015,9 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   // Always rebuild from body + disk so progress counters reflect current state.
   // Returning cached frontmatter directly causes stale percent/completed_plans
   // when SUMMARY files were added after the last STATE.md write (#1589).
-  const built = buildStateFrontmatter(body, cwd);
+  // #3354: pass the stored total so the milestoned-but-unbounded withhold can
+  // report the preserved value instead of omitting the key.
+  const built = buildStateFrontmatter(body, cwd, undefined, readStoredTotalPhases(existingFm));
 
   // Preserve frontmatter-only fields that cannot be recovered from the body.
   if (existingFm && existingFm['stopped_at'] && !built['stopped_at']) {
@@ -2819,7 +3096,17 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
   };
   let updated: string[] = [];
+  // #3311: begin-phase is the claim point — it is the one Current Position
+  // transition that explicitly names its phase, so it both records this
+  // session's claim and detects a conflicting live claim for a different
+  // phase. The check runs INSIDE the STATE.md lock so concurrent begin-phase
+  // calls cannot both read "no claim" and both write.
+  let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
   readModifyWriteStateMd(statePath, (content) => {
+    milestoneConflict = milestoneLockMod.claimMilestonePhase(cwd, String(phaseNumber));
+    if (milestoneConflict) {
+      milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
+    }
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
     // #3127 resume: the core preserved the mid-flight Current Phase Name, so
@@ -2832,7 +3119,11 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     return result.content;
   }, cwd, rmwOptions);
 
-  output({ updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null }, raw, updated.length > 0 ? 'true' : 'false');
+  output(
+    { updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null, milestone_conflict: milestoneConflict },
+    raw,
+    updated.length > 0 ? 'true' : 'false',
+  );
 }
 
 /**
@@ -3061,7 +3352,7 @@ function updatePerformanceMetricsSection(content: string, cwd: string, phaseNum:
  * Gate 3a: Record state after plan-phase completes.
  * Updates Status to "Ready to execute", Total Plans, Last Activity.
  */
-function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCount: number | null | undefined, raw: boolean): void {
+function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
     output({ error: 'STATE.md not found' }, raw, undefined);
@@ -3079,6 +3370,7 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   const intent: StateTransitionIntent = {
     kind: 'plannedPhase',
     phaseNumber,
+    phaseName: phaseName ?? null,
     planCount: planCount ?? null,
   };
   const deps: StateTransitionDeps = {
@@ -3086,12 +3378,23 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
     sourcePath: statePath,
   };
 
+  // #3395 / #2736: the transition holds the exact display name. plannedPhaseCore
+  // writes it into the Current Position `Phase: N (Name) — READY TO EXECUTE`
+  // line, and the prose re-derivation of current_phase_name truncates names
+  // that themselves contain a parenthetical — the authoritative override keeps
+  // the exact value, exactly as cmdStateBeginPhase does for its EXECUTING line.
+  const rmwOptions: ReadModifyWriteOptions = {
+    resync: false,
+    deriveProgressKeys: true,
+    authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
+  };
+
   let updated: string[] = [];
   readModifyWriteStateMd(statePath, (content) => {
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
     return result.content;
-  }, cwd, { resync: false, deriveProgressKeys: true });
+  }, cwd, rmwOptions);
 
   const result = updated.length === 0
     ? { updated, phase: phaseNumber, plan_count: planCount, warning: 'STATE.md Current Position has no recognized labels — transition was a no-op. Verify STATE.md uses the canonical labeled format (Status:, Total Plans in Phase:, etc.).' }
@@ -3217,6 +3520,22 @@ function readStateFrontmatterScoped(content: string, statePath: string): { fm: R
   return { fm, body, scope };
 }
 
+/**
+ * Builds an S0NN `Diagnostic` for `cmdStateValidate` (§8.4 rule 3 —
+ * `cmdStateValidate` is a plain imperative function, not a `Rule.check`, so
+ * it builds `Diagnostic[]` directly rather than going through
+ * `evaluateRuleTable`/the `RULES` array machinery). Every S0NN subject is
+ * advisory-only today (`cmdStateValidate` has never had a repair path), so
+ * every remedy is `adviseRemedy` — `advice` is the short imperative command
+ * text shown to the operator, matching the style Phase 11's rule-group files
+ * already use for their own ADVISE-only findings (e.g.
+ * `roadmap-disk-consistency.cts`'s `adviseRemedy('Create phase directory or
+ * remove from roadmap')`).
+ */
+function stateDiagnostic(code: string, severity: Severity, message: string, advice: string): Diagnostic {
+  return { code, severity, message, remedy: adviseRemedy(advice) };
+}
+
 function cmdStateValidate(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
@@ -3230,11 +3549,17 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   // searchers downstream, reading as "absent" rather than "corrupt."
   const encErr = textEncodingError(content, 'STATE.md');
   if (encErr) {
-    output({ valid: false, warnings: [encErr], drift: {} }, raw, undefined);
+    // S001 — error-class severity (this branch has always set `valid: false`
+    // unconditionally and returned immediately, matching every other
+    // error-class code, not a mere warning). Message reused verbatim from
+    // `textEncodingError`, not paraphrased.
+    output({
+      valid: false,
+      warnings: [stateDiagnostic('S001', SEVERITY.ERROR, encErr, 'Re-save STATE.md as UTF-8 text with the embedded NUL byte(s) removed')],
+    }, raw, undefined);
     return;
   }
-  const warnings: string[] = [];
-  const drift: Record<string, unknown> = {};
+  const warnings: Diagnostic[] = [];
 
   // #1255/#3187: parse frontmatter and strip it from the body ONCE, so the
   // chain owner sees the same fm/body precedence every other migrated call
@@ -3252,20 +3577,32 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
 
   if (currentPhase === null) {
-    warnings.push('Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value');
-    drift['phase_reference'] = { reason: 'unresolved', selected: null, sources: resolvedPhase.sources };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S002',
+      SEVERITY.WARNING,
+      'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
+      'Set current_phase (frontmatter) or Current Phase / Current Position Phase (body) in STATE.md',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   const selectedPhaseKey = phaseKeyFromToken(currentPhase);
   if (Object.values(resolvedPhase.sources).some(source => source !== null && phaseKeyFromToken(source) !== selectedPhaseKey)) {
-    warnings.push(`Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`);
-    drift['phase_reference'] = { reason: 'conflict', selected: currentPhase, sources: resolvedPhase.sources };
+    warnings.push(stateDiagnostic(
+      'S003',
+      SEVERITY.WARNING,
+      `Phase reference conflict: validating authoritative phase ${currentPhase}; align STATE.md phase sources`,
+      'Align STATE.md phase sources (frontmatter, Current Phase, Current Position Phase) on one phase',
+    ));
   }
   if (!fs.existsSync(phasesDir)) {
-    warnings.push(`Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'missing_root', selected: currentPhase };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`,
+      'Create the phases directory or correct current_phase to a phase that exists on disk',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   let phaseDirPath: string;
@@ -3273,16 +3610,24 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name) === selectedPhaseKey);
     if (!phaseDir) {
-      warnings.push(`Cannot validate phase drift: no phase directory matches phase ${currentPhase}`);
-      drift['phase_directory'] = { reason: 'not_found', selected: currentPhase };
-      output({ valid: false, warnings, drift, scope }, raw, undefined);
+      warnings.push(stateDiagnostic(
+        'S004',
+        SEVERITY.WARNING,
+        `Cannot validate phase drift: no phase directory matches phase ${currentPhase}`,
+        'Create a phase directory matching the current phase or correct current_phase',
+      ));
+      output({ valid: false, warnings, scope }, raw, undefined);
       return;
     }
     phaseDirPath = path.join(phasesDir, phaseDir.name);
   } catch {
-    warnings.push(`Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
-    output({ valid: false, warnings, drift, scope }, raw, undefined);
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`,
+      'Check phases directory permissions and re-run validate',
+    ));
+    output({ valid: false, warnings, scope }, raw, undefined);
     return;
   }
   try {
@@ -3294,8 +3639,12 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
 
         // Check plan count mismatch
         if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
-          warnings.push(`Plan count mismatch: STATE.md says ${totalPlansInPhase} plans, disk has ${diskPlans}`);
-          drift['plan_count'] = { state: totalPlansInPhase, disk: diskPlans };
+          warnings.push(stateDiagnostic(
+            'S005',
+            SEVERITY.WARNING,
+            `Plan count mismatch: STATE.md says ${totalPlansInPhase} plans, disk has ${diskPlans}`,
+            'Run state sync or correct Total Plans in Phase to match the plans on disk',
+          ));
         }
 
         // Check for VERIFICATION.md
@@ -3305,8 +3654,12 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
           try {
             const vContent = fs.readFileSync(path.join(phaseDirPath, vf), 'utf-8');
             if (/status:\s*passed/i.test(vContent) && /executing/i.test(status)) {
-              warnings.push(`Status drift: STATE.md says "${status}" but ${vf} shows verification passed — phase may be complete`);
-              drift['verification_status'] = { state_status: status, verification: 'passed' };
+              warnings.push(stateDiagnostic(
+                'S006',
+                SEVERITY.WARNING,
+                `Status drift: STATE.md says "${status}" but ${vf} shows verification passed — phase may be complete`,
+                'Run state complete-phase (or otherwise advance STATE.md status past "executing")',
+              ));
             }
           } catch { /* best-effort (#2245 audit): cmdStateValidate is a diagnostic
              * warnings scan across N VERIFICATION.md files — one unreadable file
@@ -3319,16 +3672,29 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         if (diskPlans > 0 && diskSummaries >= diskPlans && /executing/i.test(status)) {
           // Only warn if no verification exists (if verification passed, the above warning covers it)
           if (verificationFiles.length === 0) {
-            warnings.push(`All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`);
+            // S007 stays WARNING (not INFO): closely related to S006 (both
+            // signal "phase may be ready to advance"), and S006 is WARNING —
+            // giving the sibling condition a different severity for the same
+            // underlying signal would be a false distinction.
+            warnings.push(stateDiagnostic(
+              'S007',
+              SEVERITY.WARNING,
+              `All ${diskPlans} plans have summaries but status is still "${status}" — phase may be ready for verification`,
+              'Run phase verification, then advance STATE.md status past "executing"',
+            ));
           }
         }
   } catch {
-    warnings.push(`Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`);
-    drift['phase_directory'] = { reason: 'unreadable', selected: currentPhase };
+    warnings.push(stateDiagnostic(
+      'S004',
+      SEVERITY.WARNING,
+      `Cannot validate phase drift: phase directory is unreadable for phase ${currentPhase}`,
+      'Check phase directory permissions and re-run validate',
+    ));
   }
 
   const valid = warnings.length === 0;
-  output({ valid, warnings, drift, scope }, raw, undefined);
+  output({ valid, warnings, scope }, raw, undefined);
 }
 
 /**
@@ -3985,6 +4351,12 @@ export = {
   writeStateMd,
   readModifyWriteStateMd,
   syncStateFrontmatter,
+  // #3374: the shared post-sync preservation pass (snapshots + table-driven
+  // applyStatePreservation + #2736 re-assert). Exported for cmdPhaseComplete's
+  // atomic-commit adapter in phase.cts, which syncs STATE.md directly (it is
+  // committed atomically with ROADMAP/REQUIREMENTS) and must apply the same
+  // preservation policy the RMW path applies.
+  applyPostSyncPreservation,
   readStateHeadFreshness,
   withStateLock,
   updatePerformanceMetricsSection,

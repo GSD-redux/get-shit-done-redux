@@ -495,6 +495,7 @@ describe('#2358 review.md temp paths are run-scoped, not phase-only', () => {
     );
     // The old isolation key must be gone entirely from path construction.
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored review.md workflow, bounded prose, not adversarial input
       !/\/tmp\/gsd-review[^\r\n]*\{phase\}/.test(reviewMdContent),
       'no temp path may still be keyed on a bare {phase} placeholder'
     );

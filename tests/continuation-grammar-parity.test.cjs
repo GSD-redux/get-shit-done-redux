@@ -34,6 +34,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const validate = require('../gsd-core/bin/lib/validate.cjs');
@@ -72,6 +73,7 @@ describe('#2232 continuation-grammar parity — owner vs. corpus', () => {
     assert.ok(re.test('02'), 'the 2-digit form must match');
     assert.ok(!re.test('2026'), 'a 4-digit run must not match');
     assert.ok(!re.test('6'), 'a 1-digit run must not match');
+    assert.ok(!re.test('10x'), 'a digit-plus-letter slug word must not match');
   });
 });
 
@@ -128,6 +130,156 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
       );
     });
   }
+
+  test('#2528: regex token extraction agrees on the literal reading at slug boundaries', () => {
+    const cases = [
+      // The reported shape and its indistinguishable twin read IDENTICALLY: no
+      // surface may guess which of the two a `NN-NN-<digit>-…` name is, because
+      // nothing in the name says. Phase 10 named "24/7 Autonomy" is reached by
+      // the resolution-layer fallback (see phase-id.test.cjs), NOT by the
+      // tokenizer re-reading its name.
+      ['10-24-7-autonomy', '10-24'],
+      ['10-24-7-zip', '10-24'],
+      ['05-80-20-25abc', '05-80-20'],
+      ['14-06-2026-photos-and-performance', '14-06'],
+      ['14-10x-growth', '14'],
+    ];
+    for (const [dir, expected] of cases) {
+      assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+      assert.strictEqual(
+        validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+        expected,
+        `PHASE_TOKEN_FROM_DIR_RE diverged from extractPhaseToken for ${dir}`,
+      );
+    }
+  });
+
+  test('#2528: a one-digit terminator does not re-tokenize the name on any non-I/O surface', () => {
+    // Every surface below is QUERY-LESS — it sees a name and nothing else — so
+    // none of them may resolve the "24 is a sub-phase" / "24 is a slug word"
+    // ambiguity. They agree on the literal reading, and the disambiguation is
+    // left to matchPhaseDirs, which does have a query.
+    for (const dir of ['10-24-7-autonomy', '10-24-7-zip']) {
+      assert.strictEqual(phaseId.extractPhaseToken(dir), '10-24');
+      assert.strictEqual(validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1], '10-24');
+      assert.strictEqual(validate.canonicalPlanStem(dir), '10-24');
+      assert.strictEqual(
+        coreUtils.extractCanonicalPlanId(`${dir}-PLAN.md`),
+        '10-24',
+      );
+    }
+
+    const bracketDir = '01-10-24-7-autonomy';
+    assert.strictEqual(
+      bracketDir.match(new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE))?.[0],
+      '01-10-24',
+    );
+  });
+
+  test('letter-suffixed plan components and dotted sub-phases keep their established grammar', () => {
+    assert.strictEqual(phaseId.isPhaseContinuationSegment('01A'), true);
+    assert.strictEqual(validate.PHASE_TOKEN_FROM_DIR_RE.exec('10-01A-auth')?.[1], '10-01A');
+    assert.strictEqual(validate.canonicalPlanStem('10-01A-auth-setup'), '10-01');
+    assert.strictEqual(
+      coreUtils.extractCanonicalPlanId('10-01A-auth-setup-PLAN.md'),
+      '10-01A',
+    );
+    assert.strictEqual(phaseId.extractPhaseToken('10-01.2-auth'), '10-01.2');
+    assert.strictEqual(
+      phaseId.phaseTokenMatches('10-01.2-auth', phaseId.normalizePhaseName('10')),
+      false,
+    );
+  });
+
+  test('#2528: digit-plus-letter slug words preserve owner/regex parity', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.integer({ min: 10, max: 99 }),
+        fc.string({
+          unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz'),
+          minLength: 1,
+          maxLength: 8,
+        }),
+        (phase, digits, letters) => {
+          const expected = String(phase).padStart(2, '0');
+          const dir = `${expected}-${digits}${letters}-growth`;
+          assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+          assert.strictEqual(
+            validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+            expected,
+            `PHASE_TOKEN_FROM_DIR_RE diverged from extractPhaseToken for ${dir}`,
+          );
+        },
+      ),
+    );
+  });
+
+  test('property: prefixed deep tokens stay identical across imperative and regex readers', () => {
+    const prefixArb = fc.constantFrom('', 'CK-', 'M1-', 'v2-', 'APP1-', 'APP_1-', 'phase-');
+    const phaseArb = fc.integer({ min: 0, max: 999 }).map(String);
+    const continuationArb = fc.array(
+      fc.integer({ min: 0, max: 99 }).map((n) => String(n).padStart(2, '0')),
+      { minLength: 2, maxLength: 5 },
+    );
+
+    fc.assert(
+      fc.property(prefixArb, phaseArb, continuationArb, (prefix, phase, continuations) => {
+        const token = `${prefix}${phase}-${continuations.join('-')}`;
+        const dir = `${token}-feature`;
+        assert.strictEqual(
+          validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+          phaseId.extractPhaseToken(dir),
+          `prefixed/deep grammar diverged for ${dir}`,
+        );
+        assert.strictEqual(phaseId.extractPhaseToken(dir), token);
+      }),
+    );
+  });
+
+  // #2528 re-review: the boundary the earlier revision of this fix had no
+  // coverage for. `minLength: 1` is the case that matters — EXACTLY one genuine
+  // sub-phase level followed by a slug that starts with a bare digit ("10-24-7-zip",
+  // sub-phase 10.24 named "7-Zip Integration"). A tokenizer that treats a
+  // one-digit terminator as evidence that the preceding continuation was a slug
+  // word cannot see the difference between that and "10-24-7-autonomy" (phase 10
+  // named "24/7 Autonomy") — so it silently makes the well-formed sub-phase
+  // unresolvable by its own id. The token therefore keeps EVERY absorbed
+  // continuation regardless of what terminates the scan, at one level and at five.
+  test('property: a digit-leading slug never shortens the absorbed continuation run', () => {
+    const prefixArb = fc.constantFrom('', 'CK-', 'M1-', 'v2-', 'APP1-', 'APP_1-', 'phase-');
+    const phaseArb = fc.integer({ min: 0, max: 999 }).map(String);
+    const continuationArb = fc.array(
+      fc.integer({ min: 0, max: 99 }).map((n) => String(n).padStart(2, '0')),
+      { minLength: 1, maxLength: 5 },
+    );
+    const terminatorArb = fc.integer({ min: 0, max: 9 }).map(String);
+
+    fc.assert(
+      fc.property(
+        prefixArb,
+        phaseArb,
+        continuationArb,
+        terminatorArb,
+        (prefix, phase, continuations, terminator) => {
+          const expected = `${prefix}${phase}-${continuations.join('-')}`;
+          const dir = `${prefix}${phase}-${continuations.join('-')}-${terminator}-feature`;
+          assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+          assert.strictEqual(
+            validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+            expected,
+            `deep continuation grammar diverged for ${dir}`,
+          );
+          // …and the directory stays reachable by that very token.
+          assert.deepStrictEqual(
+            phaseId.matchPhaseDirs([dir], expected).matches,
+            [dir],
+            `${dir} became unresolvable by its own id ${expected}`,
+          );
+        },
+      ),
+    );
+  });
 });
 
 // Surface 5 needs a real ROADMAP/STATE on disk, so it gets its own block.
@@ -173,6 +325,36 @@ describe('#2232 continuation-grammar parity — roadmap isDirInMilestone (hyphen
       tmpDir = null;
     });
   }
+
+  // #2528 RESIDUAL, pinned rather than left to prose. This filter is one of the
+  // query-less surfaces: it compares a directory's own token against the roadmap
+  // set, and the #2232 contract above already fixes what happens when that token
+  // is an absorbed continuation the roadmap does not list — the dir is excluded.
+  // A phase named "24/7 Autonomy" produces exactly that shape, so it is excluded
+  // for the same reason and by the same rule as the width-2 case above, and
+  // identically to the "05-80-20-cleanup" shape this fix documents. Widening the
+  // filter would contradict the #2232 pin one screen up; the bare-integer
+  // fallback lives where a query exists (matchPhaseDirs), and every phase-verb
+  // path that takes a phase number resolves this directory correctly — see
+  // tests/phase-resolution-parity.test.cjs.
+  test('#2528 residual: a digit-leading phase NAME is scoped by its literal token', () => {
+    writeProject([
+      '## v1.0: Current',
+      '### Phase 2-01: Alpha',
+      '**Goal:** force hyphenated mode',
+      '',
+      '### Phase 10: Autonomy',
+      '**Goal:** the 24/7 name',
+    ]);
+    const filter = getMilestonePhaseFilter(tmpDir);
+    // Token "10-24" — not a roadmap id, so out of milestone scope…
+    assert.strictEqual(filter('10-24-7-autonomy'), false);
+    // …exactly like the other member of the family, and unlike the plain form.
+    assert.strictEqual(filter('05-80-20-cleanup'), false);
+    assert.strictEqual(filter('10-autonomy'), true);
+    cleanup(tmpDir);
+    tmpDir = null;
+  });
 });
 
 // ─── #612: the DELIBERATE divergence, pinned ────────────────────────────────
@@ -220,5 +402,68 @@ describe('#612 bracket divergence — wider only where the delimiter disambiguat
     // what parsePhaseId rejects too — the read side under-collects rather than
     // inventing a field the parser would refuse.
     assert.strictEqual(tokenOf('01-014-slug'), '01');
+  });
+
+  // The `(?=-|$)` terminator this PR adds is what keeps surface 6 in step with
+  // the others: without it the run would stop mid-field and report a prefix.
+  // It also costs something, and the cost is pinned rather than left implicit —
+  // a token followed by any OTHER delimiter no longer tokenizes at all. No
+  // production caller reads this constant (its consumers are this file and
+  // adr-612-bracket-grammar.test.cjs), so the loss is confined to the display
+  // shapes below. Anyone restoring them must widen the terminator class
+  // deliberately, not by deleting the lookahead.
+  test('the terminator is dash-or-end, and display punctuation is not in it', () => {
+    assert.strictEqual(tokenOf('05.03-slug'), '05.03', 'dash terminates');
+    assert.strictEqual(tokenOf('05.03'), '05.03', 'end-of-string terminates');
+    assert.strictEqual(tokenOf('05.03: Title'), undefined, 'a colon does not');
+    assert.strictEqual(tokenOf('12A: X'), undefined, 'nor after a letter suffix');
+    assert.strictEqual(tokenOf('05.03]'), undefined, 'nor a closing bracket');
+  });
+});
+
+// ─── #2528: two more grammar edges this PR moves, pinned ────────────────────
+// Neither has a production consumer today, so neither can break a caller — they
+// are pinned so the change is a decision on record rather than a silent drift a
+// future reader has to reconstruct from a diff.
+describe('#2528 grammar edges without production consumers', () => {
+  test('canonicalPlanStem only strips an UPPERCASE plan suffix', () => {
+    // The `i` flag is gone and the lookahead is uppercase-only, so a lowercase
+    // suffix — and a dotted sub-plan — now fall through unchanged instead of
+    // being reduced to the stem. Uppercase, the shape `toDir` actually emits,
+    // is unaffected. If a production caller ever appears, this is the line to
+    // revisit.
+    assert.strictEqual(validate.canonicalPlanStem('10-01A-auth'), '10-01', 'uppercase: stripped');
+    assert.strictEqual(validate.canonicalPlanStem('10-01a-auth'), '10-01a-auth', 'lowercase: unchanged');
+    assert.strictEqual(validate.canonicalPlanStem('10-01.2-auth'), '10-01.2-auth', 'dotted sub-plan: unchanged');
+  });
+
+  test('a letter-suffixed phase with a sub-phase windows like its plain-numeric twin', () => {
+    // Before this PR `12A-01-foo` yielded `12A` while `12-01-foo` yielded
+    // `12-01` — the letter suffix was the only reason a sub-phase directory
+    // folded into its PARENT phase's milestone. That asymmetry is the defect;
+    // the two shapes now agree. The visible consequence is that a milestone
+    // declaring `12A` no longer absorbs `12A-01-foo`, exactly as one declaring
+    // `12` has never absorbed `12-01-foo`.
+    const tmpDir = createTempProject();
+    try {
+      const planning = path.join(tmpDir, '.planning');
+      fs.mkdirSync(planning, { recursive: true });
+      fs.writeFileSync(path.join(planning, 'STATE.md'), '---\nmilestone: v1.0\n---\n');
+      fs.writeFileSync(path.join(planning, 'ROADMAP.md'), [
+        '## v1.0: Current',
+        '### Phase 2-01: Alpha',
+        '**Goal:** puts the filter in hyphenated mode',
+        '',
+        '### Phase 12A: Letter Suffixed',
+        '**Goal:** the shape under test',
+      ].join('\n'));
+
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(filter('12-01-foo'), false, 'plain numeric: unchanged');
+      assert.strictEqual(filter('12A-01-foo'), false, 'letter-suffixed: now agrees');
+      assert.strictEqual(filter('12A-foo'), true, 'the phase itself still windows');
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 });

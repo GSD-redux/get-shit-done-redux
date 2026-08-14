@@ -97,8 +97,54 @@ describe('validate consistency command', () => {
     const output = JSON.parse(result.output);
     assert.ok(output.warning_count > 0, 'should have warnings');
     assert.ok(
-      output.warnings.some(w => w.includes('disk but not in ROADMAP')),
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP')),
       'should warn about orphan directory'
+    );
+    // W007 is REUSED verbatim from `validate.health`'s rule table (design doc,
+    // "Which rules run where") — the code is proof of reuse, not a mistake.
+    assert.ok(
+      output.warnings.some(w => w.code === 'W007'),
+      `expected code W007 for the orphan-on-disk warning; got: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('#3225: sentinel phase dirs (999/0) do not warn; real orphans still do', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n### Phase 1: A\n`
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    // Sentinel dirs — never-on-roadmap by convention (SENTINEL_RANGES=[0,999]).
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999-interim'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '0-drafts'), { recursive: true });
+    // A real orphan (non-sentinel) that SHOULD still warn.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-orphan'), { recursive: true });
+
+    const result = runGsdTools('validate consistency', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const sentinelWarnings = output.warnings.filter(
+      w => w.message.includes('disk but not in ROADMAP') && /\b(0|999)\b/.test(w.message)
+    );
+    assert.strictEqual(
+      sentinelWarnings.length, 0,
+      `sentinel phase dirs must not warn; got: ${JSON.stringify(sentinelWarnings)}`
+    );
+    // Negative space: the real orphan must still warn.
+    assert.ok(
+      output.warnings.some(w => w.message.includes('disk but not in ROADMAP') && /02\b/.test(w.message)),
+      `expected a warning for the real orphan 02; got: ${JSON.stringify(output.warnings)}`
+    );
+    // #3225 (review finding): a sentinel dir must NOT produce a spurious
+    // "Gap in phase numbering: N → 999" either (the gap check builds its integer
+    // sequence from diskPhases and would otherwise include 999).
+    const sentinelGaps = output.warnings.filter(
+      w => w.message.includes('Gap in phase numbering') && /999\b/.test(w.message)
+    );
+    assert.strictEqual(
+      sentinelGaps.length, 0,
+      `sentinel 999 must not create a spurious numbering gap; got: ${JSON.stringify(sentinelGaps)}`
     );
   });
 
@@ -115,8 +161,14 @@ describe('validate consistency command', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(
-      output.warnings.some(w => w.includes('Gap in phase numbering')),
+      output.warnings.some(w => w.message.includes('Gap in phase numbering')),
       'should warn about gap'
+    );
+    // C001 — new code namespace (design doc, "Code namespace"): not a W0NN,
+    // since this subject has no `validate.health` equivalent.
+    assert.ok(
+      output.warnings.some(w => w.code === 'C001'),
+      `expected code C001 for the phase-numbering gap; got: ${JSON.stringify(output.warnings)}`
     );
   });
 });
@@ -686,6 +738,280 @@ describe('verify plan-structure — checkpoint task types (#2444)', () => {
       `Expected type to contain no markup chars; got: ${JSON.stringify(hostile.type)}`
     );
     assert.strictEqual(hostile.type, 'evil', `Expected capture to stop at '<'; got: ${JSON.stringify(hostile.type)}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// verify plan-structure — attributed child tags (#3193)
+// A task's child elements (files/action/verify/done + every checkpoint-specific
+// field) must be recognized as present even when the opening tag carries an
+// attribute (e.g. <verify mode="auto">…</verify>), consistent with how the
+// parent <task type="…"> is already read. The presence regexes were literal
+// (/<verify>/.test(body)) and were defeated by any attribute.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('verify plan-structure — attributed child tags (#3193)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Helper: wrap a task body in a complete valid PLAN.md scaffold. Mirrors the
+  // #2444 suite's planWithTask so each test reads as a one-task plan.
+  function planWithTask(taskBody, { autonomous = 'false' } = {}) {
+    return [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [some/file.ts]',
+      `autonomous: ${autonomous}`,
+      'must_haves:',
+      '  truths:',
+      '    - "something"',
+      '---',
+      '',
+      '<tasks>',
+      taskBody,
+      '</tasks>',
+    ].join('\n');
+  }
+
+  function runVerify(planContent) {
+    const planPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-PLAN.md');
+    fs.writeFileSync(planPath, planContent);
+    const result = runGsdTools('verify plan-structure .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // ── AC1: attributed child tags pass with zero findings ──────────────────────
+
+  test('auto task with every required field attributed passes (AC1)', () => {
+    // Every required auto-task child carries a `mode="auto"` attribute on its
+    // opening tag — the exact shape the issue reports as false-flagged.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: attributed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Thing is done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('checkpoint:human-verify with attributed triple passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard, check layout</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:decision with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:decision" gate="blocking">',
+      '  <name>Checkpoint: pick auth provider</name>',
+      '  <decision mode="human">Select authentication provider</decision>',
+      '  <options mode="human">',
+      '    <option id="supabase"><name>Supabase Auth</name><pros>Built-in</pros><cons>Lock-in</cons></option>',
+      '  </options>',
+      '  <resume-signal mode="blocking">Select: supabase</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('checkpoint:human-action with attributed fields passes (AC1)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: complete email verification</name>',
+      '  <action mode="human">Click the verification link in your inbox</action>',
+      '  <instructions mode="human">I created the account; check your email.</instructions>',
+      '  <verification mode="auto">API key works via curl</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('mixed plan: attributed auto task + attributed checkpoint task passes (AC1 realistic)', () => {
+    // Mirrors the issue's "two plans in one project" shape: every required
+    // field across BOTH task types carries an attribute.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: build dashboard</name>',
+      '  <files mode="auto">src/dashboard.ts</files>',
+      '  <action mode="auto">Scaffold the dashboard</action>',
+      '  <verify mode="auto"><automated>npm test</automated></verify>',
+      '  <done mode="auto">Dashboard renders</done>',
+      '</task>',
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: visual review</name>',
+      '  <what-built mode="auto">Dashboard at localhost:3000</what-built>',
+      '  <how-to-verify mode="human">Visit /dashboard</how-to-verify>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.errors, [], `expected no errors; got: ${JSON.stringify(output.errors)}`);
+    assert.strictEqual(output.task_count, 2, 'should count both tasks');
+  });
+
+  // ── AC2: genuinely absent child tag is still flagged (no false negatives) ───
+
+  test('auto task with attributed siblings but verify omitted still warns (AC2)', () => {
+    // files/action/done are attributed; verify is entirely absent (not bare,
+    // not attributed). The fix must not invent presence from nothing.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: no verify</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action mode="auto">Do it</action>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('checkpoint:human-verify with attributed siblings but how-to-verify omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI at localhost:3000</what-built>',
+      '  <resume-signal mode="blocking">Type "approved"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <how-to-verify>')),
+      `Expected "missing <how-to-verify>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint:human-action with attributed siblings but instructions omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action mode="human">Do the thing</action>',
+      '  <verification mode="auto">curl returns 200</verification>',
+      '  <resume-signal mode="blocking">Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <instructions>')),
+      `Expected "missing <instructions>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  test('checkpoint task with attributed siblings but resume-signal omitted is flagged (AC2)', () => {
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-verify" gate="blocking">',
+      '  <name>Checkpoint: verify UI</name>',
+      '  <what-built mode="auto">UI</what-built>',
+      '  <how-to-verify mode="human">Visit</how-to-verify>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <resume-signal>')),
+      `Expected "missing <resume-signal>" error: ${JSON.stringify(output.errors)}`
+    );
+  });
+
+  // ── AC3: bare + attributed tags mix cleanly (no regression on bare form) ────
+
+  test('mixed bare and attributed tags within one task pass (AC3)', () => {
+    // <action> is bare; <verify>/<done>/<files> are attributed. Proves the
+    // attribute-tolerant regex did not stop matching the bare opener.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: mixed</name>',
+      '  <files mode="auto">some/file.ts</files>',
+      '  <action>Do the thing</action>',
+      '  <verify mode="auto"><automated>echo ok</automated></verify>',
+      '  <done mode="auto">Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.strictEqual(output.valid, true, `expected valid; errors: ${JSON.stringify(output.errors)}`);
+    assert.deepStrictEqual(output.warnings, [], `expected no warnings; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  // ── AC4: boundary — a hyphenated sibling tag must not satisfy a shorter tag ─
+
+  test('<verify-mode> present, <verify> absent does not satisfy <verify> (AC4 boundary)', () => {
+    // The fix uses /<tag[\s>]/ so that `<verify` followed by `-` (as in
+    // `<verify-mode>`) does NOT count as `<verify>` presence. A bare
+    // hyphenated opener must not mask a genuinely-missing shorter tag.
+    const output = runVerify(planWithTask([
+      '<task type="auto">',
+      '  <name>Task 1: hyphen sibling</name>',
+      '  <files>some/file.ts</files>',
+      '  <action>Do it</action>',
+      '  <verify-mode>not a real verify tag</verify-mode>',
+      '  <done>Done</done>',
+      '</task>',
+    ].join('\n'), { autonomous: 'true' }));
+
+    assert.ok(
+      output.warnings.some(w => w.includes('missing <verify>')),
+      `Expected "missing <verify>" warning despite <verify-mode>: ${JSON.stringify(output.warnings)}`
+    );
+  });
+
+  test('<verify> does not satisfy the checkpoint:human-action <verification> requirement (AC4 boundary)', () => {
+    // The [\s>] terminator after the tag name must keep <verify> and
+    // <verification> distinct: a <verify> opener is NOT a <verification>
+    // opener, so a human-action task with only <verify> must still be flagged
+    // for the missing <verification>.
+    const output = runVerify(planWithTask([
+      '<task type="checkpoint:human-action" gate="blocking">',
+      '  <name>Checkpoint: act</name>',
+      '  <action>Do it</action>',
+      '  <instructions>Do it.</instructions>',
+      '  <verify><automated>echo ok</automated></verify>',
+      '  <resume-signal>Type "done"</resume-signal>',
+      '</task>',
+    ].join('\n')));
+
+    assert.strictEqual(output.valid, false, 'should be invalid');
+    assert.ok(
+      output.errors.some(e => e.includes('missing <verification>')),
+      `Expected "missing <verification>" error (not satisfied by <verify>): ${JSON.stringify(output.errors)}`
+    );
   });
 });
 
@@ -1775,6 +2101,7 @@ describe('bug-967 verify key-links strict file-path contract', () => {
 
     // Also assert the corrected example actually uses a path-like value
     // (must contain at least one '/' and not start with 'http')
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/reference/plan-md.md, bounded prose, not adversarial input
     const toMatch = content.match(/key_links:[\s\S]*?to:\s*"([^"]+)"/);
     assert.ok(
       toMatch,
@@ -1896,6 +2223,76 @@ test('--backfill synthesizes missing MILESTONES.md entry from snapshot', () => {
   const content = fs.readFileSync(milestonesPath, 'utf-8');
   assert.ok(content.includes('## v1.0'), 'backfilled entry should contain v1.0');
   assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
+});
+
+// Phase 11 (#3309): pre-migration, `--backfill` ALONE (without `--repair`)
+// was dead code — `verify.cts:2504`'s inner backfill gate was unreachable
+// because the outer `if (options['repair'] && repairs.length > 0)` gate
+// already required `repair`. The migrated `applyRepairs` threads `backfill`
+// as its own boolean (`repair || backfill` for `backfillMilestones`
+// specifically), so `--backfill` alone now actually works — a disclosed
+// latent-bug fix (design doc, "Known limits"), not a preservation
+// requirement.
+test('--backfill alone (without --repair) now synthesizes the missing MILESTONES.md entry', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    '.planning/config.json': '{}',
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should create MILESTONES.md');
+  const content = fs.readFileSync(milestonesPath, 'utf-8');
+  assert.ok(content.includes('## v1.0'), 'backfilled entry should contain v1.0');
+  assert.ok(content.includes('Backfilled'), 'should note it was backfilled');
+});
+
+test('--backfill alone does NOT apply an unrelated NONE-risk repair (createConfig) — only backfillMilestones is gated by backfill', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n',
+    '.planning/STATE.md': '# State\n',
+    // No config.json — W003 (createConfig) would fire and be repairable, but
+    // must NOT be applied by --backfill alone (only --repair applies it).
+    '.planning/milestones/v1.0-ROADMAP.md': '# Milestone v1.0 First Release\n',
+  });
+
+  cmdValidateHealth(dir, { repair: false, backfill: true }, false);
+
+  const configPath = path.join(dir, '.planning', 'config.json');
+  assert.strictEqual(fs.existsSync(configPath), false, 'config.json must not be created by --backfill alone');
+  const milestonesPath = path.join(dir, '.planning', 'MILESTONES.md');
+  assert.ok(fs.existsSync(milestonesPath), '--backfill alone should still create MILESTONES.md');
+});
+
+// Phase 11 (#3309): W021 (phase_id_convention integer-prefix/milestone
+// mismatch) and W026 (STATE milestone-complete vs. unstarted ROADMAP
+// phases) are the split-off halves of the pre-migration 'W021' code — two
+// genuinely unrelated subjects (design doc, "New codes for the two split
+// subjects" section). This fixture triggers ONLY the phase_id_convention
+// mismatch (W021's remaining subject) and must not also produce W026.
+test('W021 (phase_id_convention mismatch) fires independently of W026 — same fixture never also emits W026', () => {
+  const dir = makeTempProject({
+    '.planning/PROJECT.md': '# P\n\n## What This Is\n\nX\n\n## Core Value\n\nY\n\n## Requirements\n\nZ\n',
+    '.planning/ROADMAP.md': '# Roadmap\n\n## [GSD] v2.0 — Expansion\n\n### Phase 1-01: Setup\n**Goal:** g\n',
+    // STATE.md status is plainly "In progress" — never "milestone complete"
+    // or "archived", so W026's precondition never holds for this fixture.
+    '.planning/STATE.md': '# State\n\n## Current Position\n\nPhase: 1-01\n\n**Status:** In progress\n',
+    '.planning/config.json': JSON.stringify({ phase_id_convention: 'milestone-prefixed' }),
+  });
+
+  const result = cmdValidateHealth(dir, { repair: false }, false);
+
+  const w021 = result.warnings.find(w => w.code === 'W021');
+  assert.ok(w021, `expected W021 for phase 1-01 (implies v1.0) listed under v2.0: ${JSON.stringify(result.warnings)}`);
+  assert.ok(
+    result.warnings.every(w => w.code !== 'W026'),
+    `W021 fixture must not also fire W026: ${JSON.stringify(result.warnings.map(w => w.code))}`
+  );
 });
 
 test('health.md mentions --backfill flag', () => {
@@ -3024,3 +3421,955 @@ describe('bug #1883 — listMilestoneArchiveDirs distinguishes a permission erro
       'an absent milestones/ dir (ENOENT) must still return [] — Hyrum: empty path unchanged');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2701-nul-corrupted-validators.test.cjs — test-hygiene sweep #3338 (H3 wave 6)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:issue-2701-nul-corrupted-validators", () => {
+// Regression tests for #2701 — plan/summary/verification/state validators silently
+// accept NUL-corrupted files and report valid:true.
+//
+// A NUL-corrupted text artifact is binary-classified by file(1) and silently
+// OMITTED from recursive / binary-skipping search results (rg -l, grep -rI,
+// exit 0), so the corruption reads downstream as "file absent" rather than
+// "file corrupt." The validators must fail loud, naming the encoding problem and
+// its consequence, before any schema/structure check. The fix is at the
+// validator entry points (a shared textEncodingError helper in validate.cjs),
+// NOT inside the broadly-shared platformReadSync read primitive.
+//
+// NUL bytes are written via Buffer so they survive onto disk (a string write
+// would not). Cleanup via t.after(() => cleanup(tmpDir)).
+
+'use strict';
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { writeState } = require('./fixtures/index.cjs');
+
+// A structurally-complete PLAN.md that passes both validators when clean.
+function validPlanBody() {
+  return [
+    '---',
+    'phase: 01-test',
+    'plan: 01',
+    'type: execute',
+    'wave: 1',
+    'depends_on: []',
+    'files_modified: [some/file.ts]',
+    'autonomous: true',
+    'must_haves:',
+    '  truths:',
+    '    - "something is true"',
+    '---',
+    '',
+    '<tasks>',
+    '',
+    '<task type="auto">',
+    '  <name>Task 1: Do something</name>',
+    '  <files>some/file.ts</files>',
+    '  <action>Do the thing</action>',
+    '  <verify><automated>npx vitest run</automated></verify>',
+    '  <done>Thing is done</done>',
+    '</task>',
+    '',
+    '</tasks>',
+  ].join('\n');
+}
+
+/** Write `body` to a fresh phase plan path, optionally injecting a NUL at `nulAt`. */
+function writePlan(tmpDir, name, body, nulAt) {
+  fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), { recursive: true });
+  const p = path.join(tmpDir, '.planning', 'phases', '01-test', name);
+  let buf = Buffer.from(body, 'utf8');
+  if (nulAt !== undefined) {
+    buf = Buffer.concat([buf.subarray(0, nulAt), Buffer.from([0x00]), buf.subarray(nulAt)]);
+  }
+  fs.writeFileSync(p, buf);
+  return p;
+}
+
+function parseResult(t, argv, tmpDir) {
+  const r = runGsdTools(argv, tmpDir);
+  assert.ok(r.success, `command failed: ${r.error}`);
+  return JSON.parse(r.output);
+}
+
+// ─── frontmatter validate --schema plan|summary|verification ────────────────
+
+describe('#2701: frontmatter validate rejects NUL-corrupted artifacts', () => {
+  test('PLAN.md with an embedded NUL byte → valid:false, error names encoding + consequence', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const rel = '.planning/phases/01-test/01-01-PLAN.md';
+    writePlan(tmpDir, '01-01-PLAN.md', validPlanBody(), 200);
+
+    const out = parseResult(t, ['frontmatter', 'validate', rel, '--schema', 'plan'], tmpDir);
+    assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
+    assert.ok(Array.isArray(out.errors) && out.errors.length > 0, 'must report errors');
+    const msg = out.errors.join(' ');
+    assert.ok(/NUL/i.test(msg), `error must name NUL/encoding: ${msg}`);
+    assert.ok(/skip|search|absent|missing/i.test(msg), `error must name the downstream consequence: ${msg}`);
+  });
+
+  test('SUMMARY.md with an embedded NUL byte → valid:false', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const dir = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(dir, { recursive: true });
+    const body = ['---', 'phase: 01-test', 'plan: 01', 'status: in_progress', '---', '', '# Summary', 'did the work'].join('\n');
+    const buf = Buffer.concat([Buffer.from(body, 'utf8').subarray(0, 30), Buffer.from([0x00]), Buffer.from(body, 'utf8').subarray(30)]);
+    fs.writeFileSync(path.join(dir, '01-01-SUMMARY.md'), buf);
+
+    const out = parseResult(t, ['frontmatter', 'validate', '.planning/phases/01-test/01-01-SUMMARY.md', '--schema', 'summary'], tmpDir);
+    assert.strictEqual(out.valid, false);
+    assert.ok(out.errors.some((e) => /NUL/i.test(e)));
+  });
+
+  test('VERIFICATION.md with an embedded NUL byte → valid:false', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const dir = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(dir, { recursive: true });
+    const body = ['---', 'phase: 01-test', 'plan: 01', 'status: passed', '---', '', '# Verification', 'all green'].join('\n');
+    const buf = Buffer.concat([Buffer.from(body, 'utf8').subarray(0, 40), Buffer.from([0x00]), Buffer.from(body, 'utf8').subarray(40)]);
+    fs.writeFileSync(path.join(dir, '01-01-VERIFICATION.md'), buf);
+
+    const out = parseResult(t, ['frontmatter', 'validate', '.planning/phases/01-test/01-01-VERIFICATION.md', '--schema', 'verification'], tmpDir);
+    assert.strictEqual(out.valid, false);
+    assert.ok(out.errors.some((e) => /NUL/i.test(e)));
+  });
+});
+
+// ─── verify plan-structure ──────────────────────────────────────────────────
+
+describe('#2701: verify plan-structure rejects NUL-corrupted PLAN.md', () => {
+  test('PLAN.md with an embedded NUL byte → valid:false, error names encoding', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const rel = '.planning/phases/01-test/01-01-PLAN.md';
+    writePlan(tmpDir, '01-01-PLAN.md', validPlanBody(), 200);
+
+    const out = parseResult(t, ['verify', 'plan-structure', rel], tmpDir);
+    assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
+    assert.ok(out.errors.some((e) => /NUL/i.test(e)), `error must name NUL: ${JSON.stringify(out.errors)}`);
+  });
+});
+
+// ─── state validate ─────────────────────────────────────────────────────────
+
+describe('#2701: state validate rejects NUL-corrupted STATE.md', () => {
+  test('STATE.md with an embedded NUL byte → valid:false', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // createTempProject() does NOT seed STATE.md; use writeState to create one,
+    // then corrupt it in place with a NUL byte (Buffer write so it survives).
+    const seed = [
+      '# Project',
+      '',
+      '## Status',
+      'executing',
+      '## Current Phase',
+      '01 of 01',
+      '## Total Plans in Phase',
+      '1',
+    ].join('\n');
+    const statePath = writeState(tmpDir, seed);
+    const body = Buffer.from(seed, 'utf8');
+    const buf = Buffer.concat([body.subarray(0, 50), Buffer.from([0x00]), body.subarray(50)]);
+    fs.writeFileSync(statePath, buf);
+
+    const out = parseResult(t, ['state', 'validate'], tmpDir);
+    assert.strictEqual(out.valid, false, `expected valid:false; got ${JSON.stringify(out)}`);
+    // `state validate` (Phase 12 migration) emits coded warning objects
+    // ({code, severity, message, remedy}), not bare strings — assert on the
+    // code as the primary check, with a message substring as a secondary,
+    // human-readable confirmation.
+    assert.ok(
+      out.warnings.some((w) => w.code === 'S001'),
+      `warning must carry code S001: ${JSON.stringify(out.warnings)}`,
+    );
+    assert.ok(
+      out.warnings.some((w) => /NUL/i.test(w.message)),
+      `warning must name NUL: ${JSON.stringify(out.warnings)}`,
+    );
+  });
+});
+
+// ─── negative space: clean files still pass; non-ASCII UTF-8 not over-rejected ─
+
+describe('#2701: clean and valid-UTF-8 files are not over-rejected', () => {
+  test('clean PLAN.md (no NUL) → frontmatter validate valid:true', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const rel = '.planning/phases/01-test/01-01-PLAN.md';
+    writePlan(tmpDir, '01-01-PLAN.md', validPlanBody());
+
+    const out = parseResult(t, ['frontmatter', 'validate', rel, '--schema', 'plan'], tmpDir);
+    assert.strictEqual(out.valid, true, `clean plan must pass; got ${JSON.stringify(out)}`);
+  });
+
+  test('clean PLAN.md (no NUL) → verify plan-structure valid:true', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const rel = '.planning/phases/01-test/01-01-PLAN.md';
+    writePlan(tmpDir, '01-01-PLAN.md', validPlanBody());
+
+    const out = parseResult(t, ['verify', 'plan-structure', rel], tmpDir);
+    assert.strictEqual(out.valid, true, `clean plan must pass; got ${JSON.stringify(out)}`);
+  });
+
+  test('non-ASCII UTF-8 (é, emoji) without NUL is NOT rejected', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const rel = '.planning/phases/01-test/01-01-PLAN.md';
+    // High bytes are valid UTF-8; only a NUL (0x00) is the corruption signal.
+    const body = validPlanBody().replace('Do the thing', 'Do the thing — café ☕ naïve');
+    writePlan(tmpDir, '01-01-PLAN.md', body);
+
+    const out = parseResult(t, ['frontmatter', 'validate', rel, '--schema', 'plan'], tmpDir);
+    assert.strictEqual(out.valid, true, `valid UTF-8 high bytes must not be rejected; got ${JSON.stringify(out)}`);
+  });
+});
+
+// ─── boundary: NUL at offset 0 and mid-file both rejected ───────────────────
+
+describe('#2701: NUL position does not matter (start and middle both rejected)', () => {
+  for (const nulAt of [0, 5, 250]) {
+    test(`NUL at offset ${nulAt} → frontmatter validate valid:false`, (t) => {
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+      const rel = '.planning/phases/01-test/01-01-PLAN.md';
+      writePlan(tmpDir, '01-01-PLAN.md', validPlanBody(), nulAt);
+
+      const out = parseResult(t, ['frontmatter', 'validate', rel, '--schema', 'plan'], tmpDir);
+      assert.strictEqual(out.valid, false, `NUL at offset ${nulAt} must be rejected; got ${JSON.stringify(out)}`);
+    });
+  }
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-429-comment-text-gate.test.cjs — test-hygiene sweep #3338 (H3 wave 6)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:issue-429-comment-text-gate", () => {
+// allow-test-rule: source-text-is-the-product (#3338)
+// Issue #429: the gate logic is tested behaviorally via the exported pure
+// function + runGsdTools; the discipline rule + allowlist escape hatch are
+// asserted against the agent/reference .md whose text IS the deployed contract.
+
+'use strict';
+
+const { test, describe, before, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
+
+// Build path to built verify.cjs
+const VERIFY_CJS = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'verify.cjs');
+
+// fast-check: loaded at top level so skip flags evaluate correctly
+let fc;
+try { fc = require('fast-check'); } catch { fc = null; }
+// Build path to agent/reference files
+const PLANNER_MD = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
+const ANTIPATTERNS_MD = path.join(__dirname, '..', 'gsd-core', 'references', 'planner-antipatterns.md');
+
+// ─── Fixtures ──────────────────────────────────────────────────────────────────
+
+function makePlan({ negativeGrep, actionEcho, allowlistMarker, positiveGrep } = {}) {
+  const lines = [
+    '---',
+    'phase: 01-test',
+    'plan: 01',
+    'type: execute',
+    'wave: 1',
+    'depends_on: []',
+    'files_modified: [src/animal-detail.tsx]',
+    'autonomous: true',
+    'must_haves:',
+    '  - AC1',
+    '---',
+    '',
+    '# Test Plan',
+    '',
+  ];
+
+  if (allowlistMarker) {
+    lines.push(allowlistMarker, '');
+  }
+
+  lines.push('<task>');
+  lines.push('<name>Test task</name>');
+  lines.push('<action>');
+  if (actionEcho) {
+    lines.push(actionEcho);
+  } else {
+    lines.push('Do the work.');
+  }
+  lines.push('</action>');
+
+  if (positiveGrep) {
+    lines.push(`<verify><automated>${positiveGrep}</automated></verify>`);
+  } else if (negativeGrep) {
+    lines.push(`<verify><automated>${negativeGrep}</automated></verify>`);
+  } else {
+    lines.push('<verify><automated>npm test</automated></verify>');
+  }
+
+  lines.push('<done>Task complete</done>');
+  lines.push('</task>');
+
+  return lines.join('\n');
+}
+
+// ─── Group 1: pure-function unit tests ────────────────────────────────────────
+
+describe('scanNegativeGrepCommentEcho — pure unit tests', () => {
+  let scanNegativeGrepCommentEcho;
+
+  before(() => {
+    const verify = require(VERIFY_CJS);
+    scanNegativeGrepCommentEcho = verify.scanNegativeGrepCommentEcho;
+  });
+
+  test('case 1 — regression Plan 12-04: action echoes the forbidden literal', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c '?from=' src/animal-detail.tsx == 0",
+      actionEcho: 'Do NOT reintroduce the old ?from= referrer hack.',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `expected 1 error, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('?from='), `error should mention ?from=, got: ${result.errors[0]}`);
+  });
+
+  test('case 2 — regression Plan 11-04: JSDoc head-comment echoes CardModalHost', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c 'CardModalHost' file == 0",
+      actionEcho: '* @see CardModalHost for the deprecated pattern.',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `expected 1 error, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('CardModalHost'), `error should mention CardModalHost, got: ${result.errors[0]}`);
+  });
+
+  test('case 3 — regression Plan 12-02: head-comment echoes .catch(() => null) (regex-special chars)', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c '.catch(() => null)' file == 0",
+      actionEcho: '// Old pattern: .catch(() => null)',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `expected 1 error, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('.catch(() => null)'), `error should mention the literal, got: ${result.errors[0]}`);
+  });
+
+  test('case 4 — boundary: positive count gate (== 60) must NOT be flagged (AC#2)', () => {
+    const content = makePlan({
+      positiveGrep: "grep -c '= makeParallel(' file == 60",
+      actionEcho: 'Use makeParallel() for concurrent processing.',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, `positive count gate must not flag, errors: ${JSON.stringify(result.errors)}`);
+  });
+
+  test('case 5 — no echo: literal only in verify, not in action', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c 'LEGACY_TOKEN' file == 0",
+      actionEcho: 'Remove the old token handling.',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, 'should be no errors');
+    assert.strictEqual(result.warnings.length, 0, 'should be no warnings');
+  });
+
+  test('case 6 — allowlist marker suppresses the error', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c '?from=' src/animal-detail.tsx == 0",
+      actionEcho: 'Do NOT reintroduce the old ?from= referrer hack.',
+      allowlistMarker: '<!-- planner-discipline-allow: ?from= -->',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, `allowlist should suppress error, got: ${JSON.stringify(result.errors)}`);
+  });
+
+  test('case 7 — ambiguous unquoted bareword echo: warning not error', () => {
+    const content = makePlan({
+      negativeGrep: 'grep -c badToken file == 0',
+      actionEcho: 'Remove badToken from codebase.',
+    });
+    const result = scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, `ambiguous token must not error, got: ${JSON.stringify(result.errors)}`);
+    assert.strictEqual(result.warnings.length, 1, `ambiguous token should warn once, got: ${JSON.stringify(result.warnings)}`);
+    assert.ok(result.warnings[0].includes('badToken'), `warning should mention badToken, got: ${result.warnings[0]}`);
+  });
+
+  test('case 8 — negative-grep command inside an <action> does NOT self-flag', () => {
+    // action tells executor to ADD the verify command — the grep itself is in the action
+    // but there is no echo of selfToken outside the grep command
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Add verify command</name>',
+      '<action>',
+      "Add this to the CI script: grep -c 'selfToken' file == 0",
+      '</action>',
+      '<verify><automated>npm test</automated></verify>',
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const r = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(r.errors.length, 0, `grep command in action must not self-flag, errors: ${JSON.stringify(r.errors)}`);
+  });
+
+  test('case 9 — CRLF newlines are normalized', () => {
+    const content = makePlan({
+      negativeGrep: "grep -c '?from=' src/animal-detail.tsx == 0",
+      actionEcho: 'Do NOT reintroduce the old ?from= referrer hack.',
+    });
+    const crlfContent = content.split('\n').join('\r\n');
+    const result = scanNegativeGrepCommentEcho(crlfContent);
+    assert.strictEqual(result.errors.length, 1, `CRLF content should still find error, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('?from='));
+  });
+
+  test('case 10 — multiple distinct echoed literals each produce their own error', () => {
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Multi literal task</name>',
+      '<action>',
+      "Remove tokA and tokB from the codebase.",
+      '</action>',
+      "<verify><automated>grep -c 'tokA' file == 0 && grep -c 'tokB' file == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 2, `expected 2 errors (one per literal), got: ${JSON.stringify(result.errors)}`);
+  });
+
+  test('case 11 — != 0 and >= 0 are NOT negative gates', () => {
+    const verify = require(VERIFY_CJS);
+    const content1 = makePlan({
+      negativeGrep: "grep -c 'nz' file != 0",
+      actionEcho: 'Ensure nz is present.',
+    });
+    const r1 = verify.scanNegativeGrepCommentEcho(content1);
+    assert.strictEqual(r1.errors.length, 0, `!= 0 must not trigger, errors: ${JSON.stringify(r1.errors)}`);
+
+    const content2 = makePlan({
+      negativeGrep: "grep -c 'nz' file >= 0",
+      actionEcho: 'Ensure nz is present.',
+    });
+    const r2 = verify.scanNegativeGrepCommentEcho(content2);
+    assert.strictEqual(r2.errors.length, 0, `>= 0 must not trigger, errors: ${JSON.stringify(r2.errors)}`);
+  });
+
+  // ── Bug-fix regression tests (adversarial-review findings) ───────────────────
+
+  test('case 12 — mixed positive+negative on one line: no false positive for positive gate token', () => {
+    // Bug 1: mixed positive+negative greps on one physical line — presentTok is a
+    // *positive* gate (== 1) and absentTok is a *negative* gate (== 0). Only absentTok
+    // should be flagged; presentTok must not produce a spurious error.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Mixed gate task</name>',
+      '<action>',
+      'Use presentTok for the new pattern.',
+      'Do not use absentTok any more.',
+      '</action>',
+      "<verify><automated>grep -c 'presentTok' f == 1 && grep -c 'absentTok' f == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `expected exactly 1 error (absentTok only), got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('absentTok'), `error must name absentTok, got: ${result.errors[0]}`);
+    assert.ok(!result.errors[0].includes('presentTok'), `error must NOT name presentTok, got: ${result.errors[0]}`);
+  });
+
+  test('case 13 — grep -c -F (separate count+fixed flags) extracts literal', () => {
+    // Bug 2: grep -c -F 'LIT' was not extracted by the old regex that required -c
+    // immediately before the pattern without intervening flags.
+    const verify = require(VERIFY_CJS);
+    const content = makePlan({
+      negativeGrep: "grep -c -F '.catch(() => null)' f == 0",
+      actionEcho: '// Old pattern: .catch(() => null)',
+    });
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `grep -c -F must extract literal, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('.catch(() => null)'), `error must name the literal, got: ${result.errors[0]}`);
+  });
+
+  test('case 14 — grep -F -c (reversed flag order) extracts literal', () => {
+    // Bug 2: grep -F -c 'LIT' — count flag not in the first position after grep.
+    const verify = require(VERIFY_CJS);
+    const content = makePlan({
+      negativeGrep: "grep -F -c 'CardModalHost' f == 0",
+      actionEcho: '* @see CardModalHost for the deprecated pattern.',
+    });
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `grep -F -c must extract literal, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('CardModalHost'), `error must name CardModalHost, got: ${result.errors[0]}`);
+  });
+
+  test('case 15 — grep --count (long option) extracts literal', () => {
+    // Bug 2: grep --count 'LIT' was not matched by the old -c pattern.
+    const verify = require(VERIFY_CJS);
+    const content = makePlan({
+      negativeGrep: "grep --count 'longCountTok' f == 0",
+      actionEcho: 'Remove longCountTok from the codebase.',
+    });
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, `grep --count must extract literal, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('longCountTok'), `error must name longCountTok, got: ${result.errors[0]}`);
+  });
+
+  test('case 16 — same-line command span stripped but prose echo on same line is still caught', () => {
+    // Bug 3: the old code filtered entire lines; a line with a pasted grep command AND
+    // a prose echo would be dropped, silencing the error. Only the command SPAN should
+    // be stripped; prose on the same line that echoes the token must still be detected.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Span strip task</name>',
+      '<action>',
+      // Single line: pasted command PLUS a prose mention of spanTok outside the command
+      "Run grep -c 'spanTok' f == 0 to confirm; note spanTok must be gone.",
+      '</action>',
+      "<verify><automated>grep -c 'spanTok' f == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `prose echo outside command span must still be caught, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('spanTok'), `error must name spanTok, got: ${result.errors[0]}`);
+  });
+
+  test('case 17 — command-only action (no prose echo) still does NOT self-flag', () => {
+    // Bug 3 regression guard: when the ONLY occurrence of the token in an action is
+    // inside the grep command span itself, no error should fire.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Solo command task</name>',
+      '<action>',
+      "grep -c 'soloTok' file == 0",
+      '</action>',
+      "<verify><automated>grep -c 'soloTok' file == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 0, `command-only action must not self-flag, errors: ${JSON.stringify(result.errors)}`);
+  });
+
+  test('case 18 — multi-line backslash continuation in verify command is joined and detected', () => {
+    // Bug 4: a verify command split with trailing backslash was not joined, so the
+    // == 0 appeared on a continuation line without the grep prefix → missed.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Multi-line verify task</name>',
+      '<action>',
+      'Remove mlTok from all modules.',
+      '</action>',
+      '<verify><automated>grep -c \'mlTok\' file \\\n  == 0</automated></verify>',
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `backslash-continued verify must be detected, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('mlTok'), `error must name mlTok, got: ${result.errors[0]}`);
+  });
+
+  // ── (A) assignment is not a gate ──────────────────────────────────────────────
+
+  test('case 19 — bare STATUS=0 assignment after semicolon is not a negative gate', () => {
+    // grep -c '...' f > /dev/null; STATUS=0 is an assignment, not a == 0 gate.
+    // deprecatedTok is echoed in the action but the verify line has no == 0 gate,
+    // so no error should fire.
+    const content = makePlan({
+      negativeGrep: "grep -c 'deprecatedTok' src/m.ts > /dev/null; STATUS=0",
+      actionEcho: 'Remove deprecatedTok from the module.',
+    });
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, [
+      'assignment after semicolon must not be treated as a negative gate,',
+      `errors: ${JSON.stringify(result.errors)}`,
+    ].join(' '));
+  });
+
+  test('case 19b — positive control: spaced == 0 IS a gate and fires when token is echoed', () => {
+    // Same plan as case 19 but the verify line now uses the real == 0 gate form.
+    // deprecatedTok is echoed in the action → expect exactly 1 error.
+    const content = makePlan({
+      negativeGrep: "grep -c 'deprecatedTok' src/m.ts == 0",
+      actionEcho: 'Remove deprecatedTok from the module.',
+    });
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 1, [
+      'spaced == 0 gate with echoed token must produce exactly 1 error,',
+      `errors: ${JSON.stringify(result.errors)}`,
+    ].join(' '));
+    assert.ok(result.errors[0].includes('deprecatedTok'), `error must name deprecatedTok, got: ${result.errors[0]}`);
+  });
+
+  // ── (B) inverted count is not a negative gate ─────────────────────────────────
+
+  test('case 20 — grep -cv with == 0 is NOT a negative gate', () => {
+    // -cv counts non-matching lines; "== 0" on a -cv result is a positive assertion
+    // (all lines match), which is out of scope for the negative-grep gate rule.
+    // invTok is echoed in the action but no error should fire.
+    const content = makePlan({
+      negativeGrep: "grep -cv 'invTok' file == 0",
+      actionEcho: 'Ensure every line contains invTok.',
+    });
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(content);
+    assert.strictEqual(result.errors.length, 0, [
+      'grep -cv counts non-matching lines; == 0 is a positive assertion — must not flag,',
+      `errors: ${JSON.stringify(result.errors)}`,
+    ].join(' '));
+  });
+});
+
+// ─── Group 2: end-to-end via runGsdTools ──────────────────────────────────────
+
+describe('scanNegativeGrepCommentEcho — end-to-end via verify plan-structure', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('e2e case 1 — echoed literal causes valid:false', () => {
+    const planContent = makePlan({
+      negativeGrep: "grep -c '?from=' src/animal-detail.tsx == 0",
+      actionEcho: 'Do NOT reintroduce the old ?from= referrer hack.',
+    });
+    const planDir = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(path.join(planDir, '01-01-PLAN.md'), planContent);
+
+    const result = runGsdTools('verify plan-structure .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, `expected valid:false, got: ${JSON.stringify(output)}`);
+    assert.ok(
+      output.errors.some(e => e.includes('?from=')),
+      `expected an error mentioning ?from=, got: ${JSON.stringify(output.errors)}`,
+    );
+  });
+
+  test('e2e case 2 — allowlist marker causes valid:true', () => {
+    const planContent = makePlan({
+      negativeGrep: "grep -c '?from=' src/animal-detail.tsx == 0",
+      actionEcho: 'Do NOT reintroduce the old ?from= referrer hack.',
+      allowlistMarker: '<!-- planner-discipline-allow: ?from= -->',
+    });
+    const planDir = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(path.join(planDir, '01-01-PLAN.md'), planContent);
+
+    const result = runGsdTools('verify plan-structure .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true, `expected valid:true with allowlist, got: ${JSON.stringify(output)}`);
+  });
+});
+
+// ─── Group 3: doc-contract (source-text-is-the-product) ───────────────────────
+
+describe('doc-contract: agent/reference .md files carry the deployed contract text', () => {
+  test('gsd-planner.md contains <comment_text_discipline> block', () => {
+    const content = fs.readFileSync(PLANNER_MD, 'utf8');
+    assert.ok(content.includes('<comment_text_discipline>'), 'gsd-planner.md must contain <comment_text_discipline>');
+  });
+
+  test('gsd-planner.md contains a usage example (<!-- planner-discipline-allow: ...)', () => {
+    const content = fs.readFileSync(PLANNER_MD, 'utf8');
+    assert.ok(
+      content.includes('<!-- planner-discipline-allow:'),
+      'gsd-planner.md must contain an HTML comment example of the allowlist syntax',
+    );
+  });
+
+  test('planner-antipatterns.md contains Comment-Text Discipline section heading', () => {
+    const content = fs.readFileSync(ANTIPATTERNS_MD, 'utf8');
+    assert.ok(
+      content.includes('Comment-Text Discipline'),
+      'planner-antipatterns.md must contain a Comment-Text Discipline section',
+    );
+  });
+
+  test('planner-antipatterns.md contains planner-discipline-allow: syntax', () => {
+    const content = fs.readFileSync(ANTIPATTERNS_MD, 'utf8');
+    assert.ok(
+      content.includes('planner-discipline-allow:'),
+      'planner-antipatterns.md must contain planner-discipline-allow: syntax',
+    );
+  });
+});
+
+// ─── Group 4: property-based (fast-check) ────────────────────────────────────
+
+describe('property-based: scanNegativeGrepCommentEcho — fast-check', () => {
+  let scanNegativeGrepCommentEcho;
+
+  before(() => {
+    const verify = require(VERIFY_CJS);
+    scanNegativeGrepCommentEcho = verify.scanNegativeGrepCommentEcho;
+  });
+
+  // Two-arm property (alphanumeric literals — DEFECT.GENERATIVE-FIX parity guard):
+  // both arms in one property so no stub can pass.
+  // arm1: lit only in gate (no echo) → 0 errors
+  // arm2: lit in gate AND echoed in action → exactly 1 error naming lit
+  test('property (two-arm): gate-only → 0 errors; gate+echo → 1 error', { skip: !fc }, () => {
+    if (!fc) return;
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{2,12}$/),
+        (lit) => {
+          const base = [
+            '---',
+            'phase: 01-test',
+            'plan: 01',
+            'type: execute',
+            'wave: 1',
+            'depends_on: []',
+            'files_modified: [f.ts]',
+            'autonomous: true',
+            'must_haves:',
+            '  - AC1',
+            '---',
+            '',
+            '<task>',
+            '<name>T</name>',
+          ];
+          const verifyLine = `<verify><automated>grep -c '${lit}' f.ts == 0</automated></verify>`;
+
+          // arm1: no echo in action
+          const arm1 = base.concat([
+            '<action>Do work, not the forbidden thing.</action>',
+            verifyLine,
+            '<done>Done</done>',
+            '</task>',
+          ]).join('\n');
+          const r1 = scanNegativeGrepCommentEcho(arm1);
+          if (r1.errors.length !== 0) return false;
+
+          // arm2: echo in action
+          const arm2 = base.concat([
+            `<action>Remove ${lit} from codebase.</action>`,
+            verifyLine,
+            '<done>Done</done>',
+            '</task>',
+          ]).join('\n');
+          const r2 = scanNegativeGrepCommentEcho(arm2);
+          return r2.errors.length === 1 && r2.errors[0].includes(lit);
+        },
+      ),
+      { numRuns: 100, seed: 42 },
+    );
+  });
+
+  // Two-arm property (regex-special literal alphabet): proves substring matching, not regex.
+  // Generates literals from safe chars that include regex-special characters.
+  // Same two-arm structure: gate-only → 0 errors; gate+echo → 1 error naming lit.
+  test('property (two-arm, regex-special chars): gate-only → 0 errors; gate+echo → 1 error', { skip: !fc }, () => {
+    if (!fc) return;
+    const safeChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.()?=*+[]{}-.'.split('');
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(...safeChars), { minLength: 3, maxLength: 15 }).map(a => a.join('')),
+        (lit) => {
+          // skip if lit contains single-quote (would break fixture shell quoting)
+          if (lit.includes("'")) return true;
+          const base = [
+            '---',
+            'phase: 01-test',
+            'plan: 01',
+            'type: execute',
+            'wave: 1',
+            'depends_on: []',
+            'files_modified: [f.ts]',
+            'autonomous: true',
+            'must_haves:',
+            '  - AC1',
+            '---',
+            '',
+            '<task>',
+            '<name>T</name>',
+          ];
+          const verifyLine = `<verify><automated>grep -c '${lit}' f.ts == 0</automated></verify>`;
+
+          // arm1: no echo in action
+          const arm1 = base.concat([
+            '<action>Do work, not the forbidden thing.</action>',
+            verifyLine,
+            '<done>Done</done>',
+            '</task>',
+          ]).join('\n');
+          const r1 = scanNegativeGrepCommentEcho(arm1);
+          if (r1.errors.length !== 0) return false;
+
+          // arm2: echo in action (wrap in prose so it is unambiguously a prose echo)
+          const arm2 = base.concat([
+            `<action>Remove the token ${lit} from codebase.</action>`,
+            verifyLine,
+            '<done>Done</done>',
+            '</task>',
+          ]).join('\n');
+          const r2 = scanNegativeGrepCommentEcho(arm2);
+          return r2.errors.length === 1 && r2.errors[0].includes(lit);
+        },
+      ),
+      { numRuns: 100, seed: 42 },
+    );
+  });
+});
+
+// ─── Group 5: allowlist-syntax parity (DEFECT.GENERATIVE-FIX) ─────────────────
+// Couples the documented marker syntax to runtime behaviour.
+// If the marker prefix is renamed in code without updating docs (or vice versa), this
+// test breaks — preventing silent drift between the two surfaces.
+
+describe('allowlist-syntax parity: doc marker == runtime marker', () => {
+  let scanNegativeGrepCommentEcho;
+
+  before(() => {
+    const verify = require(VERIFY_CJS);
+    scanNegativeGrepCommentEcho = verify.scanNegativeGrepCommentEcho;
+  });
+
+  test('ALLOW_PREFIX appears in both gsd-planner.md and planner-antipatterns.md', () => {
+    // allow-test-rule: source-text-is-the-product (#3338)
+    const ALLOW_PREFIX = '<!-- planner-discipline-allow:';
+    const plannerContent = fs.readFileSync(PLANNER_MD, 'utf8');
+    const antipatternContent = fs.readFileSync(ANTIPATTERNS_MD, 'utf8');
+    assert.ok(
+      plannerContent.includes(ALLOW_PREFIX),
+      `gsd-planner.md must contain "${ALLOW_PREFIX}"`,
+    );
+    assert.ok(
+      antipatternContent.includes(ALLOW_PREFIX),
+      `planner-antipatterns.md must contain "${ALLOW_PREFIX}"`,
+    );
+  });
+
+  test('ALLOW_PREFIX gates runtime: without marker → error; with marker → 0 errors', () => {
+    const ALLOW_PREFIX = '<!-- planner-discipline-allow:';
+
+    // Without marker: parityTok is echoed in action and gated in verify → must error
+    const withoutMarker = makePlan({
+      negativeGrep: "grep -c 'parityTok' src/m.ts == 0",
+      actionEcho: 'Remove parityTok from the module.',
+    });
+    const r1 = scanNegativeGrepCommentEcho(withoutMarker);
+    assert.ok(r1.errors.length >= 1, [
+      'expected at least 1 error without allowlist marker,',
+      `got: ${JSON.stringify(r1.errors)}`,
+    ].join(' '));
+
+    // With marker: same plan but allowlist marker suppresses the error
+    const withMarker = makePlan({
+      negativeGrep: "grep -c 'parityTok' src/m.ts == 0",
+      actionEcho: 'Remove parityTok from the module.',
+      allowlistMarker: `${ALLOW_PREFIX} parityTok -->`,
+    });
+    const r2 = scanNegativeGrepCommentEcho(withMarker);
+    assert.strictEqual(r2.errors.length, 0, [
+      `allowlist marker "${ALLOW_PREFIX} parityTok -->" must suppress error,`,
+      `got: ${JSON.stringify(r2.errors)}`,
+    ].join(' '));
+  });
+});
+  });
+}

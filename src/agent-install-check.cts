@@ -81,9 +81,17 @@ function truncatePostureValue(value: string): string {
  *
  * Priority:
  *   1. GSD_AGENTS_DIR env var (explicit override, any runtime)
- *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
- *      This is correct for both repo runs and real installs (the runtime config dir's
- *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
+ *   2. For claude runtime: __dirname-relative path (agents/ sibling of
+ *      gsd-core/) — correct for repo runs and runtime-config-dir installs,
+ *      where the sibling agents/ IS the user's agents dir — UNLESS that path
+ *      carries an exact node_modules segment. gsd-tools.cjs lives inside
+ *      gsd-core/bin/ in every install shape, but on an npm-global install
+ *      gsd-core/ sits inside the package (not the runtime config dir) and the
+ *      package ships its own agents/, so the install-relative path resolves
+ *      to the bundled copy and the check validates the package against
+ *      itself — agents_installed can never be false. In that case resolve
+ *      getGlobalConfigDir('claude')/agents (honours CLAUDE_CONFIG_DIR) like
+ *      every other runtime (#3203).
  *   3. For non-claude runtimes with a manifest-backed project-local install:
  *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
  *      the runtime's local install targets the project root). Requiring the
@@ -100,7 +108,16 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
   }
   const resolved = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
   if (resolved === 'claude') {
-    return path.join(__dirname, '..', '..', '..', 'agents');
+    const installRelative = path.join(__dirname, '..', '..', '..', 'agents');
+    // #3203: a lexical guard, not an install-shape test. It targets the
+    // layouts where the sibling agents/ is the package's own bundled copy and
+    // the check would otherwise validate the package against itself; a path
+    // merely carrying a directory of that name resolves the same way, and a
+    // non-empty GSD_AGENTS_DIR overrides both.
+    if (installRelative.split(path.sep).includes('node_modules')) {
+      return path.join(getGlobalConfigDir('claude'), 'agents');
+    }
+    return installRelative;
   }
   if (projectRoot) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -155,21 +172,7 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   }
 
   for (const agent of expectedAgents) {
-    const agentFile = path.join(agentsDir, `${agent}.md`);
-    const agentFileCopilot = path.join(agentsDir, `${agent}.agent.md`);
-    const agentFileCodex = path.join(agentsDir, `${agent}.toml`);
-    const agentFileKimiYaml = path.join(agentsDir, 'subagents', `${agent}.yaml`);
-    const agentFileKimiPrompt = path.join(agentsDir, 'subagents', `${agent}.md`);
-    const kimiAgentInstalled =
-      resolvedRuntime === 'kimi' &&
-      fs.existsSync(agentFileKimiYaml) &&
-      fs.existsSync(agentFileKimiPrompt);
-    if (
-      fs.existsSync(agentFile) ||
-      fs.existsSync(agentFileCopilot) ||
-      fs.existsSync(agentFileCodex) ||
-      kimiAgentInstalled
-    ) {
+    if (agentFileExists(agentsDir, agent, resolvedRuntime)) {
       installed.push(agent);
     } else {
       missing.push(agent);
@@ -342,9 +345,71 @@ function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexMo
   };
 }
 
+/**
+ * Probe a single agents dir for `<name>` across runtime filename variants.
+ * Mirrors {@link checkAgentsInstalled}'s probe (`.md`, `.agent.md`, `.toml`,
+ * and the kimi `subagents/<name>.{yaml,md}` pair) so the two can never disagree
+ * about which on-disk shapes count as "installed". Not exported — internal to
+ * {@link resolveAgentHint}.
+ */
+function agentFileExists(agentsDir: string, name: string, runtime: string): boolean {
+  const base = path.join(agentsDir, `${name}.md`);
+  const copilot = path.join(agentsDir, `${name}.agent.md`);
+  const codex = path.join(agentsDir, `${name}.toml`);
+  if (fs.existsSync(base) || fs.existsSync(copilot) || fs.existsSync(codex)) {
+    return true;
+  }
+  // kimi requires BOTH the persona yaml and the prompt md (same as checkAgentsInstalled).
+  const kimiYaml = path.join(agentsDir, 'subagents', `${name}.yaml`);
+  const kimiPrompt = path.join(agentsDir, 'subagents', `${name}.md`);
+  return runtime === 'kimi' && fs.existsSync(kimiYaml) && fs.existsSync(kimiPrompt);
+}
+
+/**
+ * Resolve a per-plan `agent_hint` specialist name to a dispatchable subagent
+ * type on the active runtime (#1689). Unlike {@link checkAgentsInstalled},
+ * which validates the fixed GSD roster, this answers "does an agent file for
+ * this ARBITRARY name exist in the active runtime's agent dir(s)?" — so a plan
+ * can opt into a domain specialist (e.g. a Flutter engineer) that shares the
+ * gsd-executor contract without being part of the built-in roster.
+ *
+ * Probes BOTH the runtime-canonical agents dir ({@link getAgentsDir}, which
+ * honors `GSD_AGENTS_DIR`, project-local manifest-backed installs, and the
+ * claude install-relative path) AND the runtime's global config agents dir, so
+ * a specialist installed at either level is recognized. The decision in #1689
+ * explicitly requires consulting the active runtime's agent dir rather than
+ * only the Claude runtime's user-global and project-local agent dirs.
+ *
+ * @returns the name when a matching agent file exists; `null` when it does not
+ *   (the caller falls back to `gsd-executor`). An empty/whitespace name always
+ *   returns `null`.
+ */
+function resolveAgentHint(name: string, runtime?: string, projectRoot?: string): string | null {
+  const trimmed = String(name ?? '').trim();
+  if (trimmed === '') return null;
+  // A hint is a bare agent name. Reject path separators and `..` so a value
+  // like `../../README` cannot path-traverse out of the agents dir via
+  // path.join and match an unrelated file — that would echo an invalid
+  // subagent_type and block the wave, defeating fail-closed resolution.
+  if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('..')) return null;
+  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+
+  const candidateDirs = new Set<string>();
+  candidateDirs.add(getAgentsDir(resolvedRuntime, projectRoot));
+  candidateDirs.add(path.join(getGlobalConfigDir(resolvedRuntime), 'agents'));
+
+  for (const dir of candidateDirs) {
+    if (agentFileExists(dir, trimmed, resolvedRuntime)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
 export = {
   getAgentsDir,
   checkAgentsInstalled,
   checkCodexModelPosture,
   POSTURE_REASON,
+  resolveAgentHint,
 };

@@ -1005,11 +1005,13 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 | Flag | Description |
 |------|-------------|
 | `--repair` | Auto-fix recoverable issues |
+| `--backfill` | Synthesize missing MILESTONES.md entries from `.planning/milestones/vX.Y-ROADMAP.md` snapshots |
 | `--context` | Probe context-window utilization; warns at 60 %, critical at 70 % |
 
 ```bash
 /gsd-health                         # Check integrity
 /gsd-health --repair                # Check and fix
+/gsd-health --backfill              # Backfill missing MILESTONES.md entries
 /gsd-health --context               # Context-utilization triage
 ```
 
@@ -1024,6 +1026,18 @@ command that writes STATE.md, so a low count means STATE.md was written recently
 rather than that its contents are correct. The advisory never changes health's
 pass/fail status, and stays silent when the stamp is absent or the project isn't
 a git repo — "unknown" is reported as unknown, not as fresh.
+
+**`--repair` does not apply destructive fixes.** Resetting config.json
+(`resetConfig`) and regenerating STATE.md (`regenerateState`) are destructive
+— the former loses custom settings, the latter loses session history — so
+`--repair` reports these fixes as available but never applies them
+automatically; the suggested command must be run by hand (ADR-3180,
+[#3309](https://github.com/open-gsd/gsd-core/issues/3309)). The same migration
+split two previously-conflated diagnostic codes: `W021` now covers only the
+phase-id-convention mismatch, with the STATE-vs-ROADMAP milestone-complete
+mismatch it used to also report moving to the new `W026`; likewise `W017` now
+covers only orphan worktrees, with the stale-worktree case moving to the new
+`W027`.
 
 ### `/gsd-cleanup`
 
@@ -1546,6 +1560,8 @@ Cross-AI peer review of phase plans from external AI CLIs.
 
 Reviewers are prompted to verify the plan's claims against the actual repository source — opening the referenced files and citing `file:line` evidence with the mechanism — rather than reviewing the plan text in isolation. A reviewer that has no file access flags what it cannot verify instead of asserting it, and `file:line`-grounded findings are weighted more heavily during consensus synthesis.
 
+**The prompt-fed CLI reviewers all start from the same assembled prompt.** It is built before any reviewer runs and carries the PROJECT.md excerpt, the roadmap section, every PLAN file, CONTEXT.md, RESEARCH.md and REQUIREMENTS.md — reviewers then open repository files from there, as described above. To keep the Claude reviewer on the same starting footing as the others, its lane declares `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so it does **not** additionally inherit your global `CLAUDE.md`, the project `CLAUDE.md`, or Claude Code auto-memory (the two are independently-toggled mechanisms, so each gets its own variable). The pair is merged into that one spawn's environment — it does not affect the session you ran `/gsd-review` from or any other reviewer in the same run, and it suppresses those memory mechanisms only, not hooks, skills, or MCP configuration. (Inside Claude Code the Claude reviewer is skipped entirely for independence, so this applies when reviewing from another runtime.)
+
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `--phase N` | **Yes** | Phase number to review |
@@ -1832,7 +1848,7 @@ Presence and posture are separate verdicts: a missing agent is reported in `miss
 Detect drift between STATE.md and the actual filesystem.
 
 **Prerequisites:** `.planning/STATE.md` exists
-**Produces:** Validation report showing any drift between STATE.md fields and filesystem reality
+**Produces:** Validation report showing any drift between STATE.md fields and filesystem reality, as coded diagnostics
 
 ```bash
 node gsd-tools.cjs state validate
@@ -1842,12 +1858,24 @@ The report also carries a `scope` field reporting whether the drift derivation c
 
 | `scope` | Meaning |
 |---|---|
-| `complete` | The derivation ran over usable input — a resolvable phase, a readable disk scan. `valid`/`warnings`/`drift` are a real answer. |
+| `complete` | The derivation ran over usable input — a resolvable phase, a readable disk scan. `valid`/`warnings` are a real answer. |
 | `truncated` | Part of the input was cut short (e.g. the phase's plan/summary scan hit its cap) — the answer may be incomplete. |
 | `unscoped` | `Current Phase` could not be resolved from either frontmatter or body — there was nothing to scope the disk lookup to, so the derivation never ran. |
 | `unreadable` | The frontmatter parse or a filesystem read (the phases directory scan) failed — the derivation could not consult its input. |
 
-`valid` is **not** routed from `scope`: `valid` still means "no drift warnings were found," and `scope` says whether the scan could actually run. A freshly-initialized project reports `{valid:true, warnings:[], drift:{}, scope:'unscoped'}` — nothing was wrong, and the phase could not be checked. See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) for how to act on each `scope` value.
+`valid` is **not** routed from `scope`: `valid` still means "no warnings were found," and `scope` says whether the scan could actually run. A freshly-initialized project reports `{valid:true, warnings:[], scope:'unscoped'}` — nothing was wrong, and the phase could not be checked. See [Interpret `state validate` results](how-to/interpret-state-validate-results.md) for how to act on each `scope` value.
+
+Each `warnings` entry is a coded diagnostic object (`{code, severity, message, remedy}`), not a bare string. Every remedy is an `ADVISE` action naming the command or edit to make — none is auto-applied. `S001` is `severity: ERROR` (STATE.md could not be read at all); every other code is `severity: WARNING`:
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `S001` | error | STATE.md is unreadable/corrupt (embedded NUL or binary content) — reported with `valid:false` and no other checks run |
+| `S002` | warning | No usable `current_phase`/`Current Phase`/`Current Position Phase` value anywhere in STATE.md |
+| `S003` | warning | STATE.md's phase sources (frontmatter vs. body) disagree on the current phase |
+| `S004` | warning | The phases directory, or a directory matching the current phase, is missing or unreadable |
+| `S005` | warning | STATE.md's plan count disagrees with the plan count on disk |
+| `S006` | warning | STATE.md still says "executing" but a `*-VERIFICATION.md` in the phase shows verification passed |
+| `S007` | warning | Every plan in the phase has a summary, but STATE.md still says "executing" |
 
 ---
 

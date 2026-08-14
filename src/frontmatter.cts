@@ -13,6 +13,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 import { platformReadSync as safeReadFile, platformWriteSync } from './shell-command-projection.cjs';
 import { textEncodingError } from './validate.cjs';
+import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
@@ -84,7 +85,7 @@ const UNTERMINATED_KEY_THRESHOLD = 2;
  * has a false-positive class the other closes.
  */
 function isFrontmatterShaped(region: string): boolean {
-  const lines = region.split(/\r?\n/).filter((line) => line.trim() !== '');
+  const lines = splitLines(region).filter((line) => line.trim() !== '');
   if (lines.length === 0) return false;
   return lines.every((line) => (
     /^\s*[a-zA-Z0-9_-]+:/.test(line)   // key: value
@@ -92,6 +93,20 @@ function isFrontmatterShaped(region: string): boolean {
     || /^\s+\S/.test(line)             // indented continuation of a nested value
   ));
 }
+
+/**
+ * #3257: a Symbol-keyed channel that carries full-line (column-0 `#`) YAML
+ * comments through a parse → reconstruct round-trip. Comments are otherwise
+ * unrepresentable on the Frontmatter object (Record<string, ...>) and were
+ * silently dropped by reconstructFrontmatter. The Symbol is invisible to
+ * Object.entries / Object.keys / JSON.stringify / for-in, so every existing
+ * reader is unchanged; only reconstructFrontmatter reads it. Leading comments
+ * are attached to the top-level key that follows them; comments after the last
+ * key go to `trailing`. Only set when a comment is actually seen, so comment-less
+ * frontmatter parses byte-identically to before.
+ */
+const FULL_LINE_COMMENTS = Symbol('fullLineComments');
+type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: string[] };
 
 /**
  * Parse one already-delimited YAML region into a Frontmatter object.
@@ -102,7 +117,11 @@ function isFrontmatterShaped(region: string): boolean {
  */
 function parseYamlRegion(yaml: string): Frontmatter {
   const frontmatter: Frontmatter = {};
-  const lines = yaml.split(/\r?\n/);
+  const lines = splitLines(yaml);
+
+  // #3257: pending column-0 full-line comments, attached to the next top-level key.
+  let pendingComments: string[] = [];
+  let commentChannel: FullLineCommentChannel | undefined;
 
   // Stack to track nested objects: [{obj, key, indent}]
   type StackEntry = { obj: Record<string, unknown> | unknown[]; key: string | null; indent: number };
@@ -111,6 +130,12 @@ function parseYamlRegion(yaml: string): Frontmatter {
   for (const line of lines) {
     // Skip empty lines
     if (line.trim() === '') continue;
+
+    // #3257: capture column-0 full-line comments; attach them to the next top-level key.
+    if (/^#/.test(line)) {
+      pendingComments.push(line);
+      continue;
+    }
 
     // Calculate indentation (number of leading spaces)
     const indentMatch = line.match(/^(\s*)/);
@@ -127,6 +152,12 @@ function parseYamlRegion(yaml: string): Frontmatter {
     const keyMatch = line.match(/^(\s*)([a-zA-Z0-9_-]+):\s*(.*)/);
     if (keyMatch) {
       const key = keyMatch[2];
+      // #3257: attach any pending comments to this (top-level) key.
+      if (pendingComments.length) {
+        if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
+        commentChannel.leading[key] = pendingComments;
+        pendingComments = [];
+      }
       const value = keyMatch[3].trim();
 
       if (value === '' || value === '[') {
@@ -166,6 +197,15 @@ function parseYamlRegion(yaml: string): Frontmatter {
         current.obj.push(itemValue);
       }
     }
+  }
+
+  // #3257: trailing comments (after the last key) + attach the channel if any comment was seen.
+  if (pendingComments.length) {
+    if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
+    commentChannel.trailing = pendingComments;
+  }
+  if (commentChannel) {
+    (frontmatter as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = commentChannel;
   }
 
   return frontmatter;
@@ -282,8 +322,14 @@ function scalarNeedsDoubleQuoting(s: string): boolean {
 
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
+  // #3257: read the full-line-comment channel (set by parseYamlRegion when comments
+  // were present). Object.entries skips the Symbol key, so the data loop is unchanged.
+  const commentChannel = (obj as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
   for (const [key, value] of Object.entries(obj)) {
     if (value === null || value === undefined) continue;
+    // #3257: re-emit this key's leading full-line comments before the key itself.
+    const leading = commentChannel?.leading[key];
+    if (leading) for (const c of leading) lines.push(c);
     if (Array.isArray(value)) {
       if (value.length === 0) {
         lines.push(`${key}: []`);
@@ -343,7 +389,32 @@ function reconstructFrontmatter(obj: Frontmatter): string {
       }
     }
   }
+  // #3257: re-emit any trailing full-line comments (those after the last key).
+  if (commentChannel?.trailing?.length) {
+    for (const c of commentChannel.trailing) lines.push(c);
+  }
   return lines.join('\n');
+}
+
+/**
+ * #3257: copy the full-line-comment channel from `source` onto `target`, filtering
+ * `leading` to keys still present in `target` (a deleted key's annotation goes with
+ * it — AC5). No-op when `source` carries no channel. Consumers that rebuild their
+ * target object fresh (syncStateFrontmatter builds derivedFm via buildStateFrontmatter
+ * and copies keys with Object.keys, which skips the Symbol) MUST call this before
+ * reconstructFrontmatter, or the channel parseYamlRegion attached to the extracted
+ * source is lost.
+ */
+function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void {
+  const channel = (source as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
+  if (!channel) return;
+  const filtered: FullLineCommentChannel = { leading: {}, trailing: channel.trailing };
+  for (const [key, comments] of Object.entries(channel.leading)) {
+    if (key in target) filtered.leading[key] = comments;
+  }
+  if (filtered.trailing.length || Object.keys(filtered.leading).length) {
+    (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = filtered;
+  }
 }
 
 /**
@@ -355,7 +426,7 @@ function reconstructFrontmatter(obj: Frontmatter): string {
  * not modify (e.g. must_haves.artifacts / .prohibitions).
  */
 function sliceTopLevelFrontmatterSegments(yaml: string): Array<{ key: string; raw: string }> {
-  const lines = yaml.split(/\r?\n/);
+  const lines = splitLines(yaml);
   const segments: Array<{ key: string; raw: string }> = [];
   let current: { key: string; raw: string[] } | null = null;
   for (const line of lines) {
@@ -421,7 +492,7 @@ function spliceFrontmatter(content: string, newObj: Frontmatter): string {
     // unrelated `must_haves` block. Keys absent from the original (genuinely new) are
     // regenerated and appended; keys absent from `newObj` are preserved (never silently
     // deleted by a set/merge).
-    const fmLines = fmBlock.split(/\r?\n/);
+    const fmLines = splitLines(fmBlock);
     const inner = fmLines.slice(1, -1).join('\n'); // drop the opening `---` and closing `---`
     let originalParsed: Frontmatter;
     try { originalParsed = extractFrontmatter(fmBlock); } catch { originalParsed = {}; }
@@ -501,28 +572,28 @@ function parseMustHavesBlock(content: string, blockName: string): unknown[] {
   if (!fmMatch) return [];
 
   const yaml = fmMatch[1];
+  const yamlLines = splitLines(yaml);
 
-  // Find must_haves: first to detect its indentation level
-  const mustHavesMatch = yaml.match(/^(\s*)must_haves:\s*$/m);
-  if (!mustHavesMatch) return [];
-  const mustHavesIndent = mustHavesMatch[1].length;
+  // Find must_haves: first to detect its indentation level. Split-then-scan
+  // (rather than a whole-string /m match) so a CRLF or blank-line boundary
+  // can never be absorbed into the indent capture (#3360) — see
+  // .gsd/phase/chore-3413-text-lines-seam/40-design.md.
+  const mustHavesLinePattern = /^(\s*)must_haves:\s*$/;
+  const mustHavesLineIndex = yamlLines.findIndex((line) => mustHavesLinePattern.test(line));
+  if (mustHavesLineIndex === -1) return [];
+  const mustHavesIndent = (yamlLines[mustHavesLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
 
   // Find the block (e.g., "truths:", "artifacts:", "key_links:") under must_haves
   // It must be indented more than must_haves but we detect the actual indent dynamically
-  const blockPattern = new RegExp(`^(\\s+)${blockName}:\\s*$`, 'm');
-  const blockMatch = yaml.match(blockPattern);
-  if (!blockMatch) return [];
+  const blockLinePattern = new RegExp(`^(\\s+)${blockName}:\\s*$`);
+  const blockLineIndex = yamlLines.findIndex((line) => blockLinePattern.test(line));
+  if (blockLineIndex === -1) return [];
 
-  const blockIndent = blockMatch[1].length;
+  const blockIndent = (yamlLines[blockLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
   // The block must be nested under must_haves (more indented)
   if (blockIndent <= mustHavesIndent) return [];
 
-  // Find where the block starts in the yaml string
-  const blockStart = yaml.indexOf(blockMatch[0]);
-  if (blockStart === -1) return [];
-
-  const afterBlock = yaml.slice(blockStart);
-  const blockLines = afterBlock.split(/\r?\n/).slice(1); // skip the header line
+  const blockLines = yamlLines.slice(blockLineIndex + 1); // skip the header line
 
   // List items are indented one level deeper than blockIndent
   // Continuation KVs are indented one level deeper than list items
@@ -826,4 +897,5 @@ export = {
   cmdFrontmatterSet,
   cmdFrontmatterMerge,
   cmdFrontmatterValidate,
+  propagateCommentChannel,
 };

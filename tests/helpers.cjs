@@ -922,6 +922,39 @@ function clearSessionEnv() {
 }
 
 /**
+ * Save + clear GSD_WORKSTREAM and GSD_PROJECT on process.env, paired with
+ * restoreWorkstreamEnv(). planningDir() reads both directly from
+ * process.env when its params are omitted, so a test asserting
+ * workstream/project-scoped behavior must isolate them from ambient shell
+ * state (and from whatever an earlier test in the same process left behind).
+ *
+ * Previously duplicated as a local isolateWorkstreamEnv()/restoreWorkstreamEnv()
+ * pair in tests/phase-locator.test.cjs, and as the GSD_WORKSTREAM/GSD_PROJECT
+ * slice of tests/model-resolver.test.cjs's broader isolateHome()/restoreHome()
+ * (which still isolates HOME/USERPROFILE/GSD_HOME/GSD_RUNTIME locally — that
+ * part is genuinely specific to model-resolver's tests and stays there).
+ *
+ * Module-level save slot (not a returned snapshot) to match the exact
+ * no-arg isolate()/restore() call shape both prior local copies used.
+ */
+let _origGsdWorkstream;
+let _origGsdProject;
+
+function isolateWorkstreamEnv() {
+  _origGsdWorkstream = process.env.GSD_WORKSTREAM;
+  _origGsdProject = process.env.GSD_PROJECT;
+  delete process.env.GSD_WORKSTREAM;
+  delete process.env.GSD_PROJECT;
+}
+
+function restoreWorkstreamEnv() {
+  if (_origGsdWorkstream === undefined) delete process.env.GSD_WORKSTREAM;
+  else process.env.GSD_WORKSTREAM = _origGsdWorkstream;
+  if (_origGsdProject === undefined) delete process.env.GSD_PROJECT;
+  else process.env.GSD_PROJECT = _origGsdProject;
+}
+
+/**
  * #3156: env for a RAW installer spawn — one that bypasses runGsdTools and so
  * never receives TEST_ENV_BASE on its own.
  *
@@ -965,7 +998,7 @@ function installSpawnEnv(overrides = {}) {
   return { ...process.env, ...testEnvBase(), HOME: home, USERPROFILE: home, ...overrides };
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still

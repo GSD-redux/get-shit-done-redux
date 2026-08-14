@@ -16,16 +16,14 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback } from './state-document.cjs';
+import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession } from './state-document.cjs';
 import { KNOWN_TEMPLATE_DEFAULTS } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import phaseIdMod = require('./phase-id.cjs');
+import { escapeRegex } from './pattern.cjs';
 
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
-const { escapeRegex } = phaseIdMod;
 
 // Stop predicate for section-body slicing: a level-2+ heading ends the section.
 const STOP_H2_PLUS = (lv: number): boolean => lv >= 2;
@@ -53,10 +51,31 @@ export type FieldPreservation =
   | 'derive' // always re-derive from source
   | 'preserve-when-unchanged' // #1230 delta heuristic: keep existing if body source field unchanged
   | 'preserve-always' // never overwrite unless the caller explicitly names this field
-  | 'preserve-if-placeholder' // overwrite only when derived value is a known placeholder (#948)
-  | 'clear'; // remove the field entirely
+  | 'preserve-if-placeholder'; // overwrite only when derived value is a known placeholder (#948)
+// ADR-3408 §8.6 amendment: 'clear' was deleted (no row used it, no executor
+// existed) rather than implemented — Speculative Generality, a policy
+// invented for a need that never arrived.
 
-export type FieldClassification = { source: FieldSource; preservation: FieldPreservation };
+/**
+ * ADR-3408 Decision 1 (Greenspun's Tenth Rule): guards and merge strategies
+ * are named members of a CLOSED vocabulary, never an open predicate slot. The
+ * table has already accreted five times (`preserve-always` #1743/#1695,
+ * `preserve-if-placeholder` #948/#2135, `state_head` #2573, `deriveProgressKeys`
+ * #2440, `bodyDeltas` #3258) — an open per-row predicate is what would turn
+ * this table into an interpreter. Adding a member to either union below is an
+ * amendment to ADR-3408, not a table edit.
+ */
+export type FieldGuard = 'non-sentinel-unknown';
+export type FieldMergeStrategy = 'progress-ratchet';
+
+export type FieldClassification = {
+  source: FieldSource;
+  preservation: FieldPreservation;
+  /** Closed vocabulary (see the comment above). Adding a member is an ADR-3408 amendment, not a table edit. */
+  guard?: FieldGuard;
+  /** Closed vocabulary. Same rule. */
+  mergeStrategy?: FieldMergeStrategy;
+};
 
 /**
  * Single source of truth for "which fields win when frontmatter and body
@@ -85,11 +104,17 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
 
       // Phase / plan position (body-derived)
       current_phase: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-      current_phase_name: { source: 'curated', preservation: 'preserve-always' } as FieldClassification, // #1743, #1695
+      // #1743, #1695. #3468: row corrected to match its long-standing behavior
+      // — was declared preserve-always, has always been delta-gated (only
+      // restores when the body `Phase:` source is unchanged this write).
+      current_phase_name: { source: 'curated', preservation: 'preserve-when-unchanged' } as FieldClassification,
       current_plan: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
 
       // Status / lifecycle (body-derived; #1230 delta heuristic applies)
-      status: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
+      // guard: the 'unknown' sentinel is the ONLY true executor-side guard in
+      // this table (stopped_at's `## Session` scoping is caller-side delta
+      // extraction, not an executor condition) — ADR-3408 Decision 1.
+      status: { source: 'body', preservation: 'preserve-when-unchanged', guard: 'non-sentinel-unknown' } as FieldClassification,
       stopped_at: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
       paused_at: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
 
@@ -104,7 +129,10 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
       state_head: { source: 'free', preservation: 'derive' } as FieldClassification, // #2573
 
       // Progress block (disk-derived, except the curated progress ratchet)
-      progress: { source: 'curated', preservation: 'preserve-always' } as FieldClassification, // #3242, #1446
+      // mergeStrategy: 'progress-ratchet' — completed_plans/completed_phases
+      // only ever ratchet UP toward the derived value (#2969); everything
+      // else in the merge is either always-derived (#2440) or always-curated.
+      progress: { source: 'curated', preservation: 'preserve-always', mergeStrategy: 'progress-ratchet' } as FieldClassification, // #3242, #1446
       'progress.total_phases': { source: 'disk', preservation: 'derive' } as FieldClassification,
       'progress.completed_phases': { source: 'disk', preservation: 'derive' } as FieldClassification,
       'progress.total_plans': { source: 'disk', preservation: 'derive' } as FieldClassification,
@@ -146,12 +174,6 @@ export type StatePreservationInput = {
   preFmSnapshot: Record<string, unknown>;
   /** True when the caller asked for a full disk re-derivation (sync / advancePlan / completePhase). */
   resync: boolean;
-  preBodyStatus: string | null;
-  postBodyStatus: string | null;
-  preBodyStoppedAt: string | null;
-  postBodyStoppedAt: string | null;
-  preBodyPhaseSource: string | null;
-  postBodyPhaseSource: string | null;
   /**
    * #2440: when true, total_plans and total_phases take the derived (post-sync)
    * value even under !resync, instead of the wholesale curated restore. Used
@@ -160,6 +182,21 @@ export type StatePreservationInput = {
    * leave this false — the #3242 wholesale protection stays in force.
    */
   deriveProgressKeys?: boolean;
+  /**
+   * #3258 / #3468: pre/post body-source values for every preserve-when-unchanged
+   * (#1230 delta heuristic) row, keyed by the FRONTMATTER field the policy
+   * guards — one channel for all seven rows (status, stopped_at,
+   * current_phase_name, current_phase, current_plan, paused_at,
+   * last_activity_desc), folded from the two channels (a bodyDeltas map plus
+   * three dedicated pre/post parameter pairs) #3468 replaced. The caller
+   * snapshots each field's body source before/after the transform (mirroring
+   * how buildStateFrontmatter derives it); `applyPreserveWhenUnchanged`
+   * restores the pre-write frontmatter value when that body source was left
+   * unchanged by this write. Adding a preserve-when-unchanged row is a
+   * one-row table edit PLUS a bodyDeltas entry from the caller — omitting the
+   * entry is not a silent no-op, it THROWS (ADR-3408 §8.2, `applyPreserveWhenUnchanged`).
+   */
+  bodyDeltas?: Record<string, { pre: string | null; post: string | null }>;
 };
 
 export type StatePreservationResult = {
@@ -168,112 +205,225 @@ export type StatePreservationResult = {
 };
 
 /**
- * Pure, table-driven post-sync preservation. Mutates `postFm` in place to
- * mirror the pre-consolidation inline block (which also mutated in place) and
- * returns whether any field was restored.
+ * Mutable, single-write dispatch context threaded through every policy
+ * executor below. `mutated` accumulates across the whole field loop (ADR-3408
+ * §8.1 — one executor per policy, sharing one result).
  */
-export function applyStatePreservation(input: StatePreservationInput): StatePreservationResult {
-  const { preFm, postFm, preFmSnapshot, resync } = input;
-  let mutated = false;
+type PreservationCtx = {
+  preFm: Record<string, unknown> | null;
+  postFm: Record<string, unknown>;
+  preFmSnapshot: Record<string, unknown>;
+  resync: boolean;
+  deriveProgressKeys: boolean;
+  bodyDeltas: Record<string, { pre: string | null; post: string | null }> | undefined;
+  mutated: boolean;
+};
 
-  // Curated progress ratchet (#3242/#1446; closes the #1264 class by routing
-  // the policy through the table). Restored only when the table says preserve-
-  // always AND this transition is not re-deriving from disk (!resync). sync and
-  // the lifecycle transitions pass resync=true and recompute; patch/update and
-  // body-only writes pass resync=false and keep the curated counters.
-  const progressCls = getFieldClassification('progress');
-  if (
-    progressCls !== null &&
-    progressCls.preservation === 'preserve-always' &&
-    !resync &&
-    preFm &&
-    preFm['progress']
-  ) {
-    // #2440: when the caller opts in (deriveProgressKeys), total_plans and
-    // total_phases always take the derived (post-sync) value even under !resync.
-    // This is used by cmdStatePlannedPhase where total_plans must correct upward
-    // after plans are added. For body-only writes (state.update/patch without
-    // the flag), the wholesale restore preserves everything as before — the
-    // #3242 Bug A protection stays fully in force.
-    if (input.deriveProgressKeys && postFm['progress']) {
-      const curated = preFm['progress'] as Record<string, unknown> | null;
-      const derived = (postFm['progress'] ?? {}) as Record<string, unknown>;
-      const merged: Record<string, unknown> = { ...derived };
-      if (curated) {
-        // #2440: total_plans and total_phases always take the derived value.
-        // #2969: completed_plans and completed_phases take the derived value
-        // when it is GREATER than the curated value (gap-closure plans that
-        // completed after the plan count grew) — ratcheting UP only, never
-        // deriving downward (preserves the #3242 curated-progress protection
-        // for cases unrelated to plan-count growth, e.g. a deleted SUMMARY).
-        // percent also takes the derived value — the resync recomputed it from
-        // disk counts, and a stale curated percent would be incoherent against
-        // the ratcheted-up completed counts (e.g. 54/54 at 93%).
-        const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
-        for (const [key, value] of Object.entries(curated)) {
-          if (key === 'total_plans' || key === 'total_phases' || key === 'percent') continue;
-          if (ratchetUpKeys.has(key)) {
-            const derivedNum = typeof derived[key] === 'number' ? derived[key] : -Infinity;
-            const curatedNum = typeof value === 'number' ? value : -Infinity;
-            // Take the derived value only when it ratchets up; else keep curated.
-            if (derivedNum > curatedNum) continue;
-            merged[key] = value;
-          } else {
-            merged[key] = value;
-          }
+/**
+ * ADR-3408 §8.2: an unenforced `preserve-when-unchanged` row throws. Both
+ * ends of this invariant are gsd-core's own source — a declared row the
+ * *caller code* forgot to wire via `bodyDeltas` — so it is a programming
+ * error, unreachable from any user document. The bright line, stated because
+ * conflating its two sides would be severe: a drifted, malformed, or
+ * unparseable user STATE.md NEVER reaches this throw (§8.5 governs that case
+ * with preserve-and-warn); this fires only when the *caller* omitted a
+ * `bodyDeltas` entry for a row the table itself declares. Getting this
+ * backwards turns every desynced project's `phase.complete` into a hard
+ * failure.
+ */
+function throwUnwiredRow(field: string): never {
+  const err = new Error(
+    `applyStatePreservation: preserve-when-unchanged row ${JSON.stringify(field)} reached the ` +
+    'executor with no wired ctx.bodyDeltas entry. This is an internal invariant violation (ADR-3408 ' +
+    '§8.2) — the caller (readModifyWriteStateMd) forgot to supply this field\'s body-source delta. ' +
+    'Add a bodyDeltas entry for this field per ADR-3408 §8.3, or remove the row from ' +
+    'FIELD_CLASSIFICATION if the field no longer needs this policy.',
+  ) as Error & { code: string; field: string };
+  err.code = 'STATE_PRESERVATION_UNWIRED_ROW';
+  err.field = field;
+  throw err;
+}
+
+/**
+ * Executor for `preservation: 'preserve-when-unchanged'` (ADR-3408 §8.1). The
+ * #1230 delta heuristic: restore the pre-write frontmatter snapshot when this
+ * write did not change the field's body source, and the snapshot is a real
+ * (non-empty-after-trim) curated value the derived value should not clobber.
+ *
+ * Every row carrying this policy — status, stopped_at, current_phase_name,
+ * current_phase, current_plan, paused_at, last_activity_desc — is honored by
+ * this ONE executor; `cls.guard` is the only field-specific variation (the
+ * closed vocabulary of ADR-3408 Decision 1).
+ */
+function applyPreserveWhenUnchanged(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
+  // 1. A declared row with no wired delta is an internal invariant violation
+  // — throw (ADR-3408 §8.2). Never reached for a user-document defect: the
+  // production caller (readModifyWriteStateMd) wires every preserve-when-
+  // unchanged row unconditionally.
+  const delta = ctx.bodyDeltas ? ctx.bodyDeltas[field] : undefined;
+  if (!delta) throwUnwiredRow(field);
+
+  // 2. Only a real, non-whitespace-only curated string is worth restoring
+  // (#3468: tightened from `.length > 0` to a trimmed check — a whitespace-
+  // only snapshot is not a real curated value).
+  const snapshot = ctx.preFmSnapshot[field];
+  if (typeof snapshot !== 'string' || snapshot.trim().length === 0) return;
+
+  // 3. Closed-vocabulary guard: status's 'unknown' sentinel is never restored.
+  // Exact-match, case-sensitive — 'Unknown' is a real value and IS restored.
+  if (cls.guard === 'non-sentinel-unknown' && snapshot === 'unknown') return;
+
+  // 4. The body source changed this write → the freshly-derived value wins.
+  if (delta.pre !== delta.post) return;
+
+  // 5. Already correct → no-op (avoid a spurious `mutated=true`).
+  if (ctx.postFm[field] === snapshot) return;
+
+  // 6. Restore.
+  ctx.postFm[field] = snapshot;
+  ctx.mutated = true;
+}
+
+/**
+ * Executor for `preservation: 'preserve-always'` (ADR-3408 §8.1). Only
+ * `progress` carries this policy today. Preserves #3242/#1446/#2440/#2969
+ * semantics byte-for-byte: gated on `!resync` and a truthy `preFm[field]`;
+ * the `mergeStrategy: 'progress-ratchet'` per-key merge only fires when the
+ * caller opts in via `deriveProgressKeys`, else the whole curated block wins
+ * wholesale.
+ */
+function applyPreserveAlways(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
+  if (ctx.resync || !ctx.preFm || !ctx.preFm[field]) return;
+
+  if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && ctx.postFm[field]) {
+    // #2440: total_plans and total_phases always take the derived (post-sync)
+    // value even under !resync. This is used by cmdStatePlannedPhase where
+    // total_plans must correct upward after plans are added. For body-only
+    // writes (state.update/patch without the flag), the wholesale restore
+    // below preserves everything as before — the #3242 Bug A protection
+    // stays fully in force.
+    const curated = ctx.preFm[field] as Record<string, unknown> | null;
+    const derived = (ctx.postFm[field] ?? {}) as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...derived };
+    if (curated) {
+      // #2440: total_plans and total_phases always take the derived value.
+      // #2969: completed_plans and completed_phases take the derived value
+      // when it is GREATER than the curated value (gap-closure plans that
+      // completed after the plan count grew) — ratcheting UP only, never
+      // deriving downward (preserves the #3242 curated-progress protection
+      // for cases unrelated to plan-count growth, e.g. a deleted SUMMARY).
+      // percent also takes the derived value — the resync recomputed it from
+      // disk counts, and a stale curated percent would be incoherent against
+      // the ratcheted-up completed counts (e.g. 54/54 at 93%).
+      const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
+      for (const [key, value] of Object.entries(curated)) {
+        if (key === 'total_plans' || key === 'total_phases' || key === 'percent') continue;
+        if (ratchetUpKeys.has(key)) {
+          const derivedNum = typeof derived[key] === 'number' ? derived[key] : -Infinity;
+          const curatedNum = typeof value === 'number' ? value : -Infinity;
+          // Take the derived value only when it ratchets up (strictly
+          // greater — #2969's `>` not `>=`); else keep curated.
+          if (derivedNum > curatedNum) continue;
+          merged[key] = value;
+        } else {
+          merged[key] = value;
         }
       }
-      postFm['progress'] = merged;
-    } else {
-      postFm['progress'] = preFm['progress'];
     }
-    mutated = true;
+    ctx.postFm[field] = merged;
+  } else {
+    ctx.postFm[field] = ctx.preFm[field];
   }
+  ctx.mutated = true;
+}
 
-  // status — #1230 body-delta heuristic. Table: preserve-when-unchanged.
-  const statusCls = getFieldClassification('status');
+/**
+ * Executor for `preservation: 'preserve-if-placeholder'` (ADR-3408 §8.1).
+ * `milestone` and `milestone_name` both carry this policy in the table, and
+ * both rows dispatch into this SAME executor body — no branch is selected by
+ * field name (ADR-3408 §8.1). The body always restores the name+version pair
+ * together (#948/#2135), ignoring which of the two rows triggered the call;
+ * this is deliberately safe because the executor is idempotent: whichever
+ * row fires first either performs the restore (after which the second row's
+ * call recomputes against already-restored state and finds nothing left to
+ * do) or finds no placeholder to restore (in which case the second row's
+ * call, seeing the same unchanged inputs, reaches the same conclusion). Two
+ * dispatches per write converge to the identical single-pass result, so the
+ * field argument itself is unused here — it exists only to satisfy the
+ * shared executor signature every policy branch in the dispatch loop shares.
+ */
+function applyPreserveIfPlaceholder(_field: string, _cls: FieldClassification, ctx: PreservationCtx): void {
+  const MILESTONE_PLACEHOLDER = 'milestone';
+  const derivedName = ctx.postFm['milestone_name'];
+  const derivedLooksLikeName = typeof derivedName === 'string'
+    && derivedName.length > 0
+    && derivedName !== MILESTONE_PLACEHOLDER
+    && !/^[\s—–:-]/.test(derivedName);
+  const snapshotName = ctx.preFmSnapshot['milestone_name'];
+  const snapshotNameIsReal = typeof snapshotName === 'string'
+    && snapshotName.length > 0
+    && snapshotName !== MILESTONE_PLACEHOLDER;
+  if (derivedLooksLikeName || !snapshotNameIsReal) return;
+
+  if (ctx.postFm['milestone_name'] !== snapshotName) {
+    ctx.postFm['milestone_name'] = snapshotName;
+    ctx.mutated = true;
+  }
+  const snapshotVersion = ctx.preFmSnapshot['milestone'];
   if (
-    statusCls !== null &&
-    statusCls.preservation === 'preserve-when-unchanged' &&
-    input.postBodyStatus === input.preBodyStatus &&
-    typeof preFmSnapshot['status'] === 'string' &&
-    preFmSnapshot['status'].length > 0 &&
-    preFmSnapshot['status'] !== 'unknown' &&
-    postFm['status'] !== preFmSnapshot['status']
+    typeof snapshotVersion === 'string' && snapshotVersion.length > 0 &&
+    ctx.postFm['milestone'] !== snapshotVersion
   ) {
-    postFm['status'] = preFmSnapshot['status'];
-    mutated = true;
+    ctx.postFm['milestone'] = snapshotVersion;
+    ctx.mutated = true;
+  }
+}
+
+/**
+ * Executor for `preservation: 'derive'`. Explicit no-op — the sync's
+ * freshly-derived value stands untouched. Naming this executor (rather than
+ * skipping `derive` rows by omission) is what makes ADR-3408 §8.2's throw
+ * decidable: "policy says do nothing" is now distinguishable from "nobody
+ * wired this", because every member of `FieldPreservation` reaches an
+ * executor.
+ */
+function applyDerive(_field: string, _cls: FieldClassification, _ctx: PreservationCtx): void {
+  // No-op by design — see docstring.
+}
+
+/**
+ * Pure, table-driven post-sync preservation (ADR-3408 §8.1). One loop over
+ * `FIELD_CLASSIFICATION`, dispatching on the row's `preservation` value —
+ * never on the field name. Mutates `postFm` in place to mirror the
+ * pre-#3468 inline block (which also mutated in place) and returns whether
+ * any field was restored.
+ */
+export function applyStatePreservation(input: StatePreservationInput): StatePreservationResult {
+  const ctx: PreservationCtx = {
+    preFm: input.preFm,
+    postFm: input.postFm,
+    preFmSnapshot: input.preFmSnapshot,
+    resync: input.resync,
+    deriveProgressKeys: input.deriveProgressKeys === true,
+    bodyDeltas: input.bodyDeltas,
+    mutated: false,
+  };
+
+  for (const field of Object.keys(FIELD_CLASSIFICATION)) {
+    const cls = getFieldClassification(field);
+    if (!cls) continue;
+    if (cls.preservation === 'preserve-when-unchanged') {
+      applyPreserveWhenUnchanged(field, cls, ctx);
+    } else if (cls.preservation === 'preserve-always') {
+      applyPreserveAlways(field, cls, ctx);
+    } else if (cls.preservation === 'preserve-if-placeholder') {
+      applyPreserveIfPlaceholder(field, cls, ctx);
+    } else if (cls.preservation === 'derive') {
+      applyDerive(field, cls, ctx);
+    }
   }
 
-  // stopped_at — same #1230 body-delta heuristic. Table: preserve-when-unchanged.
-  const stoppedCls = getFieldClassification('stopped_at');
-  if (
-    stoppedCls !== null &&
-    stoppedCls.preservation === 'preserve-when-unchanged' &&
-    input.postBodyStoppedAt === input.preBodyStoppedAt &&
-    typeof preFmSnapshot['stopped_at'] === 'string' &&
-    preFmSnapshot['stopped_at'].length > 0 &&
-    postFm['stopped_at'] !== preFmSnapshot['stopped_at']
-  ) {
-    postFm['stopped_at'] = preFmSnapshot['stopped_at'];
-    mutated = true;
-  }
-
-  // current_phase_name — curated (#1743/#1695). Table: preserve-always.
-  const phaseNameCls = getFieldClassification('current_phase_name');
-  if (
-    phaseNameCls !== null &&
-    phaseNameCls.preservation === 'preserve-always' &&
-    input.postBodyPhaseSource === input.preBodyPhaseSource &&
-    typeof preFmSnapshot['current_phase_name'] === 'string' &&
-    preFmSnapshot['current_phase_name'].length > 0 &&
-    postFm['current_phase_name'] !== preFmSnapshot['current_phase_name']
-  ) {
-    postFm['current_phase_name'] = preFmSnapshot['current_phase_name'];
-    mutated = true;
-  }
-
-  return { postFm, mutated };
+  return { postFm: ctx.postFm, mutated: ctx.mutated };
 }
 
 // ----------------------------------------------------------------------------
@@ -376,7 +526,7 @@ export type StateTransitionIntent =
       planCount: number;
       summaryCount: number;
     }
-  | { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null }
+  | { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null }
   | { kind: 'milestoneSwitch'; version: string; name: string }
   | {
       kind: 'milestoneComplete';
@@ -759,7 +909,7 @@ function mutateCurrentPositionResume(
  */
 function mutateCurrentPositionForAdvance(
   content: string,
-  fields: { status?: string; lastActivity?: string; plan?: string },
+  fields: { phase?: string; status?: string; lastActivity?: string; plan?: string },
   statusDefaults: string[] | null | undefined,
   lastActivityDefaults: string[] | null | undefined,
 ): string {
@@ -767,6 +917,22 @@ function mutateCurrentPositionForAdvance(
   if (span === null) return content;
   let sectionBody = content.slice(span.start, span.end);
   let mutated = false;
+
+  // #3395: Phase is always replaced when a caller passes it — system-derived,
+  // not executor-authored (same rule as Plan below). plannedPhaseCore uses
+  // this so the transition that declares phase N planned also owns the `Phase:`
+  // line the frontmatter resync and `state json` re-derive current_phase from;
+  // before, the line survived stale from a previous phase and every
+  // body-derived consumer kept reading it (#948 class).
+  if (fields.phase) {
+    if (/^Phase:/m.test(sectionBody)) {
+      sectionBody = sectionBody.replace(/^Phase:.*$/m, `Phase: ${fields.phase}`);
+      mutated = true;
+    } else {
+      const replaced = stateReplaceField(sectionBody, 'Phase', fields.phase);
+      if (replaced !== null) { sectionBody = replaced; mutated = true; }
+    }
+  }
 
   if (fields.status) {
     const replaced = stateReplaceFieldIfTemplate(sectionBody, 'Status', statusDefaults, fields.status);
@@ -955,6 +1121,7 @@ function completePhaseCore(
     'current_plan',
     'last_activity',
     'last_activity_desc',
+    'stopped_at',
     'progress',
   ]) {
     const cls = getFieldClassification(fmKey);
@@ -1005,8 +1172,8 @@ function completePhaseCore(
   }
 
   // Current Phase Name — only written when a next-phase display name is known
-  // (#1743/#1695: classified curated/preserve-always, so an absent name does
-  // NOT clear an existing curated value).
+  // (#1743/#1695: classified curated/preserve-when-unchanged, so an absent
+  // name does NOT clear an existing curated value).
   if (nextPhaseDisplayName) {
     const after = stateReplaceField(body, 'Current Phase Name', nextPhaseDisplayName);
     if (after) {
@@ -1053,6 +1220,29 @@ function completePhaseCore(
   if (ladAfter) {
     body = ladAfter;
     updated.push('Last Activity Description');
+  }
+
+  // Stopped At — #3374: write the continuity line this transition implies.
+  // The frontmatter `stopped_at` is a projection of this body line
+  // (source: 'body' in FIELD_CLASSIFICATION), and phase completion is exactly
+  // the event the line describes — leaving it stale made the post-sync harvest
+  // overwrite a fresher frontmatter value with pre-completion prose on every
+  // completion (#3374), and left the workflow's later prose refresh as a
+  // divergence source. Session-SCOPED replace (stateReplaceFieldInSession):
+  // the harvest reads only the session section, so the write must target the
+  // same scope — a whole-body replace let a decoy `**Stopped at:**` line in an
+  // unrelated section absorb the refresh. Replace-only (no insertion): a
+  // STATE.md with no session continuity line keeps its shape, and the
+  // unchanged body source then lets the preservation delta keep an existing
+  // frontmatter value. Last-phase wording reuses the ADR-2207 status phrase;
+  // milestone termination wording stays owned by milestoneCompleteCore.
+  const stoppedAtLine = intent.isLastPhase
+    ? `Phase ${intent.phaseNum} complete — all phases complete`
+    : `Phase ${intent.phaseNum} complete${intent.nextPhaseNum ? `, ready to plan Phase ${intent.nextPhaseNum}` : ''}`;
+  const stoppedAfter = stateReplaceFieldInSession(body, 'Stopped At', 'Stopped at', stoppedAtLine);
+  if (stoppedAfter !== body) {
+    body = stoppedAfter;
+    updated.push('Stopped At');
   }
 
   // Progress block — re-derive completed/total phases from the roadmap when
@@ -1112,7 +1302,10 @@ function completePhaseCore(
  * per-phase body fields after plan-phase runs: Status (template-aware — only
  * replaces handler-generated values, preserving executor-authored ones),
  * Total Plans in Phase, Last Activity (template-aware), Last Activity
- * Description, and the ## Current Position section. The adapter wraps this in
+ * Description, and the ## Current Position section — including its `Phase:`
+ * line, which this transition owns (#3395: the line is the body source
+ * `current_phase` re-derives from, so it must not survive stale from a
+ * previous phase). The adapter wraps this in
  * `readModifyWriteStateMd({ resync: false })` so the milestone-wide progress.*
  * frontmatter is NOT re-derived from a half-planned disk snapshot (#500 RC1).
  *
@@ -1122,7 +1315,7 @@ function completePhaseCore(
  */
 function plannedPhaseCore(
   content: string,
-  intent: { kind: 'plannedPhase'; phaseNumber: string | number; planCount: number | null },
+  intent: { kind: 'plannedPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null },
   deps: StateTransitionDeps,
 ): StateTransitionResult {
   const updated: string[] = [];
@@ -1184,11 +1377,22 @@ function plannedPhaseCore(
     updated.push('Last Activity Description');
   }
 
-  // ## Current Position section — Status + Last activity (template-aware).
+  // ## Current Position section — Phase + Status + Last activity.
+  // #3395: plannedPhaseCore owns the `Phase:` line for the same reason
+  // beginPhaseCore/completePhaseCore do — it is the body source the frontmatter
+  // resync and `state json` re-derive `current_phase` from. Before, a stale
+  // line from a previous phase survived this transition and every
+  // body-derived consumer kept reading it (the write path was already
+  // protected by the #3258 preserve-when-unchanged row; the source itself was
+  // never refreshed). The label mirrors beginPhaseCore's `N (Name) — EXECUTING`
+  // convention with this transition's status vocabulary ("Ready to execute").
+  // Phase is system-derived, always replaced (Knuth invariant does not apply);
+  // Status / Last activity stay template-aware.
   const beforePos = body;
   body = mutateCurrentPositionForAdvance(
     body,
     {
+      phase: `${intent.phaseNumber}${intent.phaseName ? ` (${intent.phaseName})` : ''} — READY TO EXECUTE`,
       status: 'Ready to execute',
       lastActivity: `${today} — Phase ${intent.phaseNumber} planning complete`,
     },
@@ -1229,10 +1433,11 @@ function plannedPhaseCore(
  * preserved.
  *
  * This is a destructive reset intent: it intentionally overwrites the curated
- * `progress` / `current_phase_name` fields (classified preserve-always) because
- * a new milestone starts from zero. That is the intent's contract, not a
- * violation of the field-classification table — the table governs the steady-
- * state RMW transitions; a milestone boundary is an explicit reset.
+ * `progress` (preserve-always) / `current_phase_name` (preserve-when-unchanged)
+ * fields because a new milestone starts from zero. That is the intent's
+ * contract, not a violation of the field-classification table — the table
+ * governs the steady-state RMW transitions; a milestone boundary is an
+ * explicit reset.
  *
  * The adapter wraps this in `acquireStateLock` + `platformWriteSync` (NOT
  * `readModifyWriteStateMd`) because milestoneSwitch rebuilds frontmatter
@@ -1495,7 +1700,9 @@ function milestoneCompleteCore(
  *
  * The curated-field preservation that fixes #1743/#1695 is NOT in this core —
  * it lives in `readModifyWriteStateMd`'s post-sync delta (table-driven via
- * `getFieldClassification('current_phase_name').preservation === 'preserve-always'`).
+ * `current_phase_name`'s `preserve-when-unchanged` row, ADR-3408 §8.1 —
+ * reclassified from `preserve-always` in #3468 to match its long-standing,
+ * delta-gated behavior).
  * `patch` consulting the table "refuses to overwrite" curated fields implicitly:
  * when the patch does not change a curated field's body source line, the
  * existing frontmatter value wins over the sync re-derivation. The adapter

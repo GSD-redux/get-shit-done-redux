@@ -107,11 +107,67 @@ describe('getAgentsDir', () => {
     assert.strictEqual(agentInstallCheck.getAgentsDir('cursor'), '/tmp/x');
   });
 
-  test('claude runtime returns __dirname-relative path', () => {
-    const fromModule = agentInstallCheck.getAgentsDir('claude');
-    // Should end with /agents
-    assert.ok(fromModule.endsWith(path.sep + 'agents') || fromModule.endsWith('/agents'),
-      `Expected path to end with /agents, got: ${fromModule}`);
+  test('claude runtime outside node_modules returns the install-relative path', () => {
+    // Repo runs and runtime-config-dir installs: the sibling agents/ IS the
+    // user's agents dir, so install-relative resolution is correct there.
+    const expected = path.resolve(
+      path.dirname(AGENT_INSTALL_CHECK_PATH), '..', '..', '..', 'agents'
+    );
+    assert.strictEqual(agentInstallCheck.getAgentsDir('claude'), expected);
+  });
+
+  test('npm-global install resolves the config dir, never the bundled agents (#3203)', (t) => {
+    // Mirror the published npm-global layout: the package sits inside a
+    // node_modules tree and ships its own agents/. Pre-fix, getAgentsDir
+    // resolved that bundled copy, so checkAgentsInstalled validated the
+    // package against itself and agents_installed could never be false.
+    const tmp = createTempDir('gsd-npm-global-');
+    const savedClaudeDir = process.env['CLAUDE_CONFIG_DIR'];
+    t.after(() => cleanup(tmp));
+    t.after(() => {
+      if (savedClaudeDir === undefined) {
+        delete process.env['CLAUDE_CONFIG_DIR'];
+      } else {
+        process.env['CLAUDE_CONFIG_DIR'] = savedClaudeDir;
+      }
+    });
+
+    const pkgRoot = path.join(tmp, 'node_modules', '@opengsd', 'gsd-core');
+    fs.cpSync(
+      path.join(__dirname, '..', 'gsd-core', 'bin'),
+      path.join(pkgRoot, 'gsd-core', 'bin'),
+      { recursive: true }
+    );
+    // Bundled agents/ is always complete — that is exactly why the pre-fix
+    // self-validation could never report a missing agent.
+    const bundledAgents = path.join(pkgRoot, 'agents');
+    fs.mkdirSync(bundledAgents, { recursive: true });
+    for (const agent of EXPECTED_AGENTS) {
+      fs.writeFileSync(path.join(bundledAgents, `${agent}.md`), `# ${agent}\n`);
+    }
+
+    // Config dir carries every expected agent except the first — the issue
+    // repro's negative control (gsd-verifier removed from ~/.claude/agents).
+    const configDir = path.join(tmp, 'claude-config');
+    const agentsDir = path.join(configDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const [removedAgent, ...presentAgents] = EXPECTED_AGENTS;
+    for (const agent of presentAgents) {
+      fs.writeFileSync(path.join(agentsDir, `${agent}.md`), `# ${agent}\n`);
+    }
+    process.env['CLAUDE_CONFIG_DIR'] = configDir;
+
+    const globalInstallCheck = require(
+      path.join(pkgRoot, 'gsd-core', 'bin', 'lib', 'agent-install-check.cjs')
+    );
+    // Pin the resolved directory, not just an /agents suffix — the pre-fix
+    // resolver also ended with /agents, which is how the bug survived.
+    assert.strictEqual(globalInstallCheck.getAgentsDir('claude'), agentsDir);
+
+    const result = globalInstallCheck.checkAgentsInstalled('claude');
+    assert.strictEqual(result.agents_dir, agentsDir);
+    assert.strictEqual(result.agents_installed, false);
+    assert.deepStrictEqual(result.missing_agents, [removedAgent]);
   });
 
   test('non-claude runtime returns getGlobalConfigDir(runtime)/agents', () => {

@@ -26,6 +26,7 @@ const { extractFrontmatter } = frontmatterMod;
 import { stripFencedCode, collectSections } from './markdown-sectionizer.cjs';
 import { validatePath } from './security.cjs';
 import { checkUiPresence } from './ui-safety-gate.cjs';
+import { hasStaticFrontendEvidence } from './ui-frontend-evidence.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verifyModule = require('./verify.cjs');
 const { cmdVerifySchemaDrift, cmdVerifyCodebaseDrift } = verifyModule;
@@ -477,8 +478,9 @@ function cmdDecisionCoverageVerify(projectDir: string, args: string[], raw: bool
  * ui-plan-gate: given a phase number, checks whether the phase has frontend
  * indicators and whether a *-UI-SPEC.md already exists in the phase directory.
  *
- * Returns JSON: { frontend: boolean, hasUiSpec: boolean, block: boolean }
- *   block = frontend && !hasUiSpec (gate fires when UI work is detected but no spec exists)
+ * Returns JSON: { frontend, hasFrontendEvidence, hasUiSpec, block, uiSpecPath, matchedToken, matchedLine }
+ *   block = frontend && hasFrontendEvidence && !hasUiSpec (#3312: gate fires when
+ *   UI work is detected AND the repo has static frontend evidence but no spec exists)
  *
  * Invocable as: gsd_run check ui-plan-gate <phase>
  *
@@ -511,16 +513,30 @@ function findUiSpecInDir(phaseDir: string): string {
  *   (b) Runs checkUiPresence (frontend detection) — no reimplementation.
  *   (c) Resolves the phase directory via findPhaseInternal (phase-locator.cjs); checks for *-UI-SPEC.md.
  *
- * Returns: { frontend, hasUiSpec, block, uiSpecPath, phaseLookupFailed }
- *   block = frontend && !hasUiSpec
+ * Returns: { frontend, hasFrontendEvidence, hasUiSpec, block, uiSpecPath, matchedToken, matchedLine, phaseLookupFailed }
+ *   block = frontend && hasFrontendEvidence && !hasUiSpec   (#3312)
  *   phaseLookupFailed = ROADMAP.md present but phase header not found (surfaced for
  *                       onError:halt gates so a missing phase doesn't silently bypass)
+ *
+ * #3312 — structural corroboration: `frontend` is a vocabulary signal only. A
+ * hyphen is a word boundary, so a phase naming the repo `dashboard-financeiro`
+ * matches the token `dashboard` exactly like the real compound `micro-frontend`
+ * (the boundary rule of #3718 is intentional and untouched). The gate therefore
+ * blocks only when the token match is corroborated by static frontend evidence
+ * in the repo tree (hasStaticFrontendEvidence: package.json UI-framework dep or
+ * a component-framework file). This mirrors the sibling post-wave gate
+ * computeUiSafetyGate, which requires `hasUiFiles` (git diff) before blocking.
+ * matchedToken/matchedLine surface what tripped the sniffer so an operator can
+ * judge the flag in one second instead of reaching for --skip-ui.
  */
 function computeUiPlanGate(projectDir: string, phase: string): {
   frontend: boolean;
+  hasFrontendEvidence: boolean;
   hasUiSpec: boolean;
   block: boolean;
   uiSpecPath: string | null;
+  matchedToken: string | null;
+  matchedLine: string | null;
   phaseLookupFailed?: boolean;
 } {
   // (a) Read the phase section text using the same two-pass lookup as roadmap.get-phase.
@@ -549,6 +565,10 @@ function computeUiPlanGate(projectDir: string, phase: string): {
   const presenceResult = checkUiPresence(phaseSection);
   const frontend = presenceResult.hasUI;
 
+  // (b') #3312 — static structural corroboration. Only probed when the sniffer
+  // matched (evidence is irrelevant otherwise); failures degrade to false.
+  const hasFrontendEvidence = frontend ? hasStaticFrontendEvidence(projectDir) : false;
+
   // (c) Resolve phase directory via findPhaseInternal and check for *-UI-SPEC.md
   let phaseDir = '';
   try {
@@ -568,11 +588,23 @@ function computeUiPlanGate(projectDir: string, phase: string): {
   const uiSpecPath = findUiSpecInDir(phaseDir);
   const hasUiSpec = uiSpecPath !== '';
 
-  // block = frontend phase with no UI-SPEC
-  const block = frontend && !hasUiSpec;
+  // block = frontend phase with structural frontend evidence and no UI-SPEC (#3312)
+  const block = frontend && hasFrontendEvidence && !hasUiSpec;
 
-  const result: { frontend: boolean; hasUiSpec: boolean; block: boolean; uiSpecPath: string | null; phaseLookupFailed?: boolean } = {
-    frontend, hasUiSpec, block, uiSpecPath: hasUiSpec ? uiSpecPath : null,
+  const result: {
+    frontend: boolean;
+    hasFrontendEvidence: boolean;
+    hasUiSpec: boolean;
+    block: boolean;
+    uiSpecPath: string | null;
+    matchedToken: string | null;
+    matchedLine: string | null;
+    phaseLookupFailed?: boolean;
+  } = {
+    frontend, hasFrontendEvidence, hasUiSpec, block,
+    uiSpecPath: hasUiSpec ? uiSpecPath : null,
+    matchedToken: presenceResult.matchedToken,
+    matchedLine: presenceResult.matchedLine,
   };
   if (phaseLookupFailed) result.phaseLookupFailed = true;
   return result;

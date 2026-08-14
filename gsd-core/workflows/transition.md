@@ -36,6 +36,31 @@ Mark current phase complete and advance to next. This is the natural point where
 
 <process>
 
+<step name="post_completion_mode" priority="first">
+
+**Invocation mode — read this FIRST.** This workflow runs two ways:
+
+1. **Standalone transition** (normal path): the phase is being marked complete AND
+   transitioned by this workflow. Run EVERY step below in order — `verify_completion`,
+   `update_roadmap_and_state` (which calls `gsd_run query phase.complete`), then the
+   post-processing.
+
+2. **Post-completion delegation** (invoked by `execute-phase` after its auto-chain
+   completion — #1526): `phase.complete` was already called by execute-phase's
+   `update_roadmap` step and verification already passed in execute-phase's
+   `verify_phase_goal`. SKIP `verify_completion` and `update_roadmap_and_state`
+   (re-running `phase.complete` would double-write STATE.md/ROADMAP.md). Run
+   `cleanup_handoff` (stale `.continue-here` handoffs are still cleared post-completion),
+   then BEGIN at `evolve_project` and run every step from there through
+   `offer_next_phase` (this is the post-processing parity set: graduation scan,
+   session-continuity, project-reference, accumulated-context, current-position/progress).
+   `archive_prompts` is a documented no-op in either mode.
+
+Detect post-completion mode when the caller states that phase completion and
+verification have already run. When in doubt, run standalone (mode 1) — it is
+idempotent enough to be safe, just slower.
+</step>
+
 <step name="load_project_state" priority="first">
 
 Before transition, read project state:

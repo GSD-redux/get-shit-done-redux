@@ -123,6 +123,7 @@ describe('#2529 workflow — agent_skills injection', () => {
     const src = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
     assert.ok(src.includes('agent_skills'), 'workflow must reference agent_skills');
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
       /agent_skills\.<[^>]+>|agent_skills\.\w+/.test(src),
       'workflow must reference agent_skills.<agent-type> or concrete agent_skills.<slug>'
     );
@@ -144,6 +145,7 @@ describe('#2529 workflow — API key masking', () => {
     assert.ok(src.includes('****'), 'workflow must document the **** mask pattern');
     // Must explicitly state that plaintext is not displayed
     assert.ok(
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
       /never\s+(echo|display|log|show)[^.]*plaintext|plaintext[^.]*never\s+(echo|display|log|shown)|plaintext[^.]*not\s+(echoed|displayed|logged|shown)|not\s+(echoed|displayed|logged|shown)[^.]*plaintext/i.test(src),
       'workflow must explicitly forbid displaying plaintext API keys'
     );

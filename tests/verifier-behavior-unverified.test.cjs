@@ -82,6 +82,7 @@ test('PARITY: per-truth state never leaks into the overall-status vocabulary', (
 
 test('overall-status enum in verification.cts is unchanged (no per-truth leak)', () => {
   const cts = fs.readFileSync(path.join(ROOT, 'src', 'verification.cts'), 'utf-8');
+  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded src/verification.cts source, not adversarial input
   const m = cts.match(/VERIFIER_STATUSES[^=]*=\s*\[([^\]]*)\]/);
   assert.ok(m, 'VERIFIER_STATUSES array must be present');
   assert.doesNotMatch(m[1], /present_behavior_unverified/i);
@@ -98,10 +99,10 @@ test('VERIFICATION.md templates carry behavior_unverified + the new truth-state'
   assert.match(standalone, /behavior_unverified_items/);
 });
 
-const verifyPhase = fs.readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'verify-phase.md'), 'utf-8');
+const verifyPhase = fs.readFileSync(path.join(ROOT, 'gsd-core', 'references', 'verifier-phase-gates.md'), 'utf-8');
 const planningArtifacts = fs.readFileSync(path.join(ROOT, 'docs', 'reference', 'planning-artifacts.md'), 'utf-8');
 
-test('shipped verify-phase workflow mirrors the behavior-unverified calibration', () => {
+test('shipped verifier-phase-gates reference mirrors the behavior-unverified calibration', () => {
   assert.match(verifyPhase, /PRESENT_BEHAVIOR_UNVERIFIED/);
   assert.match(verifyPhase, /behavior_unverified/);
   assert.match(verifyPhase, /state transition/i);

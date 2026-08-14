@@ -2,7 +2,6 @@
  * Tests for src/phase-id.cts (compiled to gsd-core/bin/lib/phase-id.cjs).
  *
  * Verifies behavioural contracts of the extracted pure phase-id helpers:
- *   - escapeRegex
  *   - normalizePhaseName
  *   - comparePhaseNum
  *   - extractPhaseToken
@@ -22,53 +21,27 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+const { buildPhaseHeadingRegex: headingRegex } = require('../gsd-core/bin/lib/roadmap.cjs');
 const fc = require('fast-check');
 
-// ─── escapeRegex ─────────────────────────────────────────────────────────────
+// escapeRegex moved off phase-id.cjs entirely in #3212 Phase 1 (#3412): it is
+// now owned by the pattern-construction seam (src/pattern.cts, tests in
+// tests/pattern.test.cjs) and phase-id.cjs no longer exports it — see
+// tests/phase-id-drift-guard.test.cjs's CANONICAL list, which drops it for
+// the same reason.
 
-describe('escapeRegex', () => {
-  test('escapes all regex special characters', () => {
-    assert.strictEqual(phaseId.escapeRegex('.'), '\\.');
-    assert.strictEqual(phaseId.escapeRegex('*'), '\\*');
-    assert.strictEqual(phaseId.escapeRegex('+'), '\\+');
-    assert.strictEqual(phaseId.escapeRegex('?'), '\\?');
-    assert.strictEqual(phaseId.escapeRegex('^'), '\\^');
-    assert.strictEqual(phaseId.escapeRegex('$'), '\\$');
-    assert.strictEqual(phaseId.escapeRegex('{'), '\\{');
-    assert.strictEqual(phaseId.escapeRegex('}'), '\\}');
-    assert.strictEqual(phaseId.escapeRegex('('), '\\(');
-    assert.strictEqual(phaseId.escapeRegex(')'), '\\)');
-    assert.strictEqual(phaseId.escapeRegex('|'), '\\|');
-    assert.strictEqual(phaseId.escapeRegex('['), '\\[');
-    assert.strictEqual(phaseId.escapeRegex(']'), '\\]');
-    assert.strictEqual(phaseId.escapeRegex('\\'), '\\\\');
-  });
-
-  test('leaves alphanumeric and hyphen characters unescaped', () => {
-    assert.strictEqual(phaseId.escapeRegex('abc'), 'abc');
-    assert.strictEqual(phaseId.escapeRegex('01-02'), '01-02');
-    assert.strictEqual(phaseId.escapeRegex('v1.0'), 'v1\\.0');
-  });
-
-  test('coerces non-string values via String()', () => {
-    assert.strictEqual(phaseId.escapeRegex(42), '42');
-    assert.strictEqual(phaseId.escapeRegex(null), 'null');
-    assert.strictEqual(phaseId.escapeRegex(undefined), 'undefined');
-  });
-
-  test('adversarial: path-traversal-like inputs are treated as literals', () => {
-    const result = phaseId.escapeRegex('../../../etc/passwd');
-    // The dots get escaped; slashes and alphanumeric pass through unchanged
-    assert.strictEqual(result, '\\.\\./\\.\\./\\.\\./etc/passwd');
-    // The result forms a valid regex (no throws)
-    assert.doesNotThrow(() => new RegExp(result));
-  });
-
-  test('unicode passthrough', () => {
-    assert.strictEqual(phaseId.escapeRegex('Phase Name'), 'Phase Name');
-    assert.strictEqual(phaseId.escapeRegex('中文'), '中文');
-  });
-});
+// ─── #3412 shared test helper ─────────────────────────────────────────────────
+//
+// phase-id.cts now delegates regex escaping to RegExp.escape via src/pattern.cts.
+// RegExp.escape is MATCH-equivalent to the retired hand-rolled escaper but not
+// TEXT-equivalent (it hex-escapes the first character and all hyphens), so any
+// test that pinned the literal source text (e.g. `'0*29'`, `'PROJ-42'`) is
+// brittle to that internal encoding, not to actual behavior. `headingRegex`
+// (imported above as `buildPhaseHeadingRegex` from gsd-core/bin/lib/roadmap.cjs)
+// is the SAME production function src/roadmap.cts's searchPhaseInContent uses to
+// build its heading regex — not a hand-duplicated copy — so tests assert what
+// matches and what doesn't — the real contract — rather than the escaper's
+// spelling, with no parity gap against the production pattern.
 
 // ─── normalizePhaseName ───────────────────────────────────────────────────────
 
@@ -387,20 +360,50 @@ describe('phaseMarkdownRegexSource', () => {
     const re = new RegExp(src);
     assert.ok(!re.test('3X1'), 'unescaped dot would match any char — must be escaped');
   });
+
+  test('regex metacharacters in a phase id are neutralized, not interpreted (#3412)', () => {
+    // The property RegExp.escape exists for: a literal metacharacter in the
+    // phase id (the dot in "1.2") must not behave as a regex wildcard once the
+    // source is compiled into the same heading regex production uses.
+    const src = phaseId.phaseMarkdownRegexSource('1.2');
+    const re = headingRegex(src);
+    assert.ok(re.test('Phase 1.2: Title'));
+    assert.ok(!re.test('Phase 1X2: Title'));
+  });
 });
 
 // ─── phaseMarkdownRegexSourceExact ────────────────────────────────────────────
 
 describe('phaseMarkdownRegexSourceExact', () => {
   test('returns escaped form for project-code-prefixed IDs', () => {
-    const result = phaseId.phaseMarkdownRegexSourceExact('PROJ-42');
-    // hyphen is not a regex special char so it passes through unescaped
-    assert.strictEqual(result, 'PROJ-42');
-    // The result is a valid regex source
-    assert.doesNotThrow(() => new RegExp(result));
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('MANIFOLD-117'), 'MANIFOLD-117');
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('APP1-117'), 'APP1-117');
-    assert.strictEqual(phaseId.phaseMarkdownRegexSourceExact('APP_1-117'), 'APP_1-117');
+    // Source text is RegExp.escape's business (#3412) — the actual contract
+    // is a non-null, compilable source that matches its own prefixed heading
+    // and rejects the bare-numeric heading.
+    for (const [id, bareHeadingNum, foreignPrefix] of [
+      ['PROJ-42', '42', 'OTHER'],
+      ['AB-29', '29', 'CK'],
+      ['MANIFOLD-117', '117', 'OTHER'],
+      ['APP1-117', '117', 'OTHER'],
+      ['APP_1-117', '117', 'OTHER'],
+    ]) {
+      const result = phaseId.phaseMarkdownRegexSourceExact(id);
+      assert.ok(result !== null, id);
+      assert.doesNotThrow(() => new RegExp(result));
+      const re = headingRegex(result);
+      assert.ok(re.test(`Phase ${id}: Title`), `${id} must match its own heading`);
+      assert.ok(!re.test(`Phase ${bareHeadingNum}: Title`), `${id} must not match the bare-numeric heading`);
+      // #3599 regression: the exact source must be tied to the FULL prefixed
+      // id, not just its trailing number — a different prefix with the same
+      // number must not match (an impl returning `[A-Z]+-42` would pass every
+      // assertion above but fail this one).
+      assert.ok(
+        !re.test(`Phase ${foreignPrefix}-${bareHeadingNum}: Title`),
+        `${id} must not match a foreign-prefixed heading with the same number`,
+      );
+      // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
+      // literal would, despite the hex escape (#3412).
+      assert.ok(re.test(`phase ${id.toLowerCase()}: title`));
+    }
   });
 
   test('returns null for non-prefixed IDs', () => {
@@ -657,24 +660,53 @@ describe('isForeignPrefixedPhaseQuery', () => {
 // ─── roadmapPhaseLookupSources (#2121, owned here after the move) ─────────────
 
 describe('roadmapPhaseLookupSources', () => {
-  const PREFIX_TOLERANT = `${phaseId.OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}0*29`;
-
   test('a bare numeric query yields the numeric then prefix-tolerant sources', () => {
     const sources = phaseId.roadmapPhaseLookupSources('29');
-    assert.deepEqual(sources, ['0*29', PREFIX_TOLERANT]);
+    assert.equal(sources.length, 2);
+    // Source text is RegExp.escape's business (#3412) — pin matching
+    // behavior instead: source[0] matches the bare and zero-padded heading
+    // but not a project-code-prefixed one; source[1] additionally tolerates
+    // the prefix.
+    const re0 = headingRegex(sources[0]);
+    const re1 = headingRegex(sources[1]);
+    assert.ok(re0.test('Phase 29: Title'));
+    assert.ok(re0.test('Phase 029: Title'));
+    assert.ok(!re0.test('Phase CK-29: Title'));
+    assert.ok(re1.test('Phase CK-29: Title'));
+    assert.ok(re1.test('Phase 29: Title'));
   });
 
   test('the bare numeric source precedes the prefix-tolerant fallback', () => {
     const sources = phaseId.roadmapPhaseLookupSources('29');
-    assert.ok(sources.indexOf('0*29') < sources.indexOf(PREFIX_TOLERANT));
+    // Behavioral ordering (#3412): the source that rejects a project-code
+    // prefix must appear before the source that accepts one.
+    const bareIdx = sources.findIndex((s) => !headingRegex(s).test('Phase CK-29: Title'));
+    const prefixTolerantIdx = sources.findIndex((s) => headingRegex(s).test('Phase CK-29: Title'));
+    assert.notEqual(bareIdx, -1);
+    assert.notEqual(prefixTolerantIdx, -1);
+    assert.ok(bareIdx < prefixTolerantIdx);
   });
 
   test('a project-code-prefixed query adds the exact source first (3 sources)', () => {
     const sources = phaseId.roadmapPhaseLookupSources('AB-29');
     assert.equal(sources.length, 3);
-    assert.equal(sources[0], 'AB-29');
-    assert.ok(sources.includes('0*29'));
-    assert.ok(sources.includes(PREFIX_TOLERANT));
+    // source[0] is the EXACT source (#3599): matches its own prefixed
+    // heading and must NOT match the bare numeric heading — that ordering
+    // is the whole point of #3599. Source text itself is RegExp.escape's
+    // business (#3412).
+    const reExact = headingRegex(sources[0]);
+    assert.ok(reExact.test('Phase AB-29: Title'));
+    assert.ok(!reExact.test('Phase 29: Title'));
+    // #3599 regression: the exact source is tied to the FULL prefix, not just
+    // the trailing number — a foreign prefix with the same number must not match.
+    assert.ok(!reExact.test('Phase CK-29: Title'));
+    // Case-insensitivity (the 'i' flag) — canonicalizes the same way a
+    // literal would, despite the hex escape (#3412).
+    assert.ok(reExact.test('phase ab-29: title'));
+    // The remaining two sources behave as the numeric/prefix-tolerant pair.
+    const rest = sources.slice(1).map(headingRegex);
+    assert.ok(rest.some((re) => re.test('Phase 29: Title') && !re.test('Phase CK-29: Title')));
+    assert.ok(rest.some((re) => re.test('Phase CK-29: Title')));
   });
 
   test('zero-padding is tolerated: 029 resolves the same sources as 29', () => {
@@ -776,6 +808,189 @@ describe('#2232 continuation cap — properties', () => {
           );
           if (!dir) return true;
           return phaseId.extractPhaseToken(dir) === phaseId.normalizePhaseName(`${major}-${sub}`);
+        },
+      ),
+    );
+  });
+});
+
+// ─── #2528 two-digit slug words + canonical dir-match selection ──────────────
+
+describe('#2528 two-digit numeric slug words', () => {
+  test('a 2-digit slug word is NOT re-read by the tokenizer, at any depth', () => {
+    // Phase 10 named "24/7 Autonomy" → dir "10-24-7[-autonomy]". "24" is exactly
+    // 2 digits (the gap between #2043's 1-digit and #2232's ≥3-digit guards) and
+    // the 1-digit "7" that follows is the ONLY local signal that it might be a
+    // slug word — but that signal cannot tell this dir apart from sub-phase 10.24
+    // named "7-Zip Integration". Both readings are real, so the tokenizer commits
+    // to neither: it reports the literal token and lets matchPhaseDirs (which has
+    // a query) break the tie.
+    for (const dir of ['10-24-7', '10-24-7-autonomy', '10-24-7-zip', '10-24-3d-printer']) {
+      assert.strictEqual(phaseId.extractPhaseToken(dir), '10-24');
+      assert.ok(
+        phaseId.phaseTokenMatches(dir, phaseId.normalizePhaseName('10-24')),
+        `${dir} must stay resolvable by its own literal id`,
+      );
+    }
+    assert.strictEqual(phaseId.extractPhaseToken('M1-10-24-7'), 'M1-10-24');
+  });
+
+  test('a digit+letter slug word is not absorbed as a continuation', () => {
+    // Phase 14 named "10x Growth" → dir "14-10x-growth". The write side only
+    // emits PURE 2-digit continuation segments, so "10x" is a slug word.
+    assert.strictEqual(phaseId.extractPhaseToken('14-10x-growth'), '14');
+    assert.ok(phaseId.phaseTokenMatches('14-10x-growth', phaseId.normalizePhaseName('14')));
+  });
+
+  test('locked boundaries are unchanged (#2043 / #2232 / genuine sub-phases)', () => {
+    assert.strictEqual(phaseId.extractPhaseToken('10-24'), '10-24'); // terminal sub-phase
+    assert.strictEqual(phaseId.extractPhaseToken('10-24-setup'), '10-24'); // sub-phase + slug
+    assert.strictEqual(phaseId.extractPhaseToken('02-03-04-deep'), '02-03-04'); // deep decomposition
+    assert.strictEqual(phaseId.extractPhaseToken('46-6-rs'), '46'); // 1-digit slug word (#2043)
+    assert.strictEqual(phaseId.extractPhaseToken('14-2026-photos'), '14'); // year slug word (#2232)
+    // A ≥2-digit-run terminator does NOT rewind: the year-after-sub-phase
+    // shape is locked by the #2232 metamorphic round-trip.
+    assert.strictEqual(phaseId.extractPhaseToken('14-06-2026-photos-and-performance'), '14-06');
+    assert.strictEqual(phaseId.extractPhaseToken('05-80-20-25abc'), '05-80-20');
+    assert.strictEqual(phaseId.extractPhaseToken('10-01.2-setup'), '10-01.2');
+    // The letter-prefixed family keeps its single-digit continuations.
+    assert.strictEqual(phaseId.extractPhaseToken('M1-2-brain'), 'M1-2');
+    assert.strictEqual(phaseId.extractPhaseToken('P0.3-tenant-primitives'), 'P0.3');
+  });
+
+  // Metamorphic: any phase name of the "NN/D …" family (24/7, 80/20 with a
+  // 1-digit second word) slugifies to "NN-D-…". The dir must be REACHABLE by the
+  // bare phase number — which is what #2528 reported — and the property is stated
+  // on the resolution result, not on the token, because the token is exactly the
+  // part no surface can decide from the name alone.
+  test('metamorphic: a 2-digit/1-digit name family resolves from the bare phase number', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.integer({ min: 10, max: 99 }),
+        fc.integer({ min: 0, max: 9 }),
+        (phase, w2, w1) => {
+          const lead = String(phase).padStart(2, '0');
+          const dir = `${lead}-${w2}-${w1}-autonomy`;
+          const { matches } = phaseId.matchPhaseDirs([dir], phaseId.normalizePhaseName(String(phase)));
+          return matches.length === 1 && matches[0] === dir;
+        },
+      ),
+    );
+  });
+});
+
+describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
+  const M = (dirs, q) => phaseId.matchPhaseDirs(dirs, phaseId.normalizePhaseName(q));
+
+  test('primary token matches win and never engage the fallback', () => {
+    assert.deepStrictEqual(M(['10-ten', '11-other'], '10'), {
+      matches: ['10-ten'],
+      usedBareFallback: false,
+    });
+    // A digit-leading phase NAME never shadows a genuine primary match for the
+    // same number: the fallback runs only when the primary pass found nothing.
+    assert.deepStrictEqual(M(['10-24-7-autonomy', '10-ten'], '10'), {
+      matches: ['10-ten'],
+      usedBareFallback: false,
+    });
+    assert.deepStrictEqual(M(['46-06-rs'], '46-6'), {
+      matches: ['46-06-rs'],
+      usedBareFallback: false,
+    });
+  });
+
+  test('bare-integer fallback resolves tokenizer-invisible digit-slug dirs', () => {
+    // "80/20 Cleanup" → dir "05-80-20-cleanup" → token "05-80-20" (byte-
+    // identical in shape to a genuine deep-decomposition dir, so the
+    // tokenizer must not rewind it); the leading-digit-run fallback is the
+    // resolution-level recovery.
+    assert.deepStrictEqual(M(['05-80-20-cleanup', '11-other'], '5'), {
+      matches: ['05-80-20-cleanup'],
+      usedBareFallback: true,
+    });
+    assert.deepStrictEqual(M(['30-12-factor-refactor'], '30'), {
+      matches: ['30-12-factor-refactor'],
+      usedBareFallback: true,
+    });
+    // The originally reported dir is in the same family and takes the same route.
+    assert.deepStrictEqual(M(['10-24-7-autonomy', '11-other'], '10'), {
+      matches: ['10-24-7-autonomy'],
+      usedBareFallback: true,
+    });
+  });
+
+  // #2528 re-review. The two dirs below are string-indistinguishable — phase 10
+  // named "24/7 Autonomy" and sub-phase 10.24 named "7-Zip Integration" — so the
+  // ONLY sound arrangement is one where each is reachable by its own id and
+  // neither is destroyed to serve the other. That is what splitting the work
+  // between a literal tokenizer and a query-driven fallback buys; a tokenizer
+  // that guesses can satisfy at most one of these four assertions per shape.
+  test('both readings of a digit-leading NN-NN-<digit> name stay reachable', () => {
+    assert.deepStrictEqual(M(['10-24-7-autonomy'], '10').matches, ['10-24-7-autonomy']);
+    assert.deepStrictEqual(M(['10-24-7-zip'], '10').matches, ['10-24-7-zip']);
+    // …and, the case the rewind heuristic silently lost:
+    assert.deepStrictEqual(M(['10-24-7-zip'], '10-24').matches, ['10-24-7-zip']);
+    assert.deepStrictEqual(M(['10-24-7-autonomy'], '10-24').matches, ['10-24-7-autonomy']);
+  });
+
+  test('fallback collisions surface every candidate for the #2237 ambiguity guard', () => {
+    assert.deepStrictEqual(M(['05-80-20-a', '05-90-x'], '5'), {
+      matches: ['05-80-20-a', '05-90-x'],
+      usedBareFallback: true,
+    });
+  });
+
+  test('non-bare queries never enter the fallback', () => {
+    // Deep-decomposition and letter-suffix lookups are untouched (#2528 scope).
+    assert.deepStrictEqual(M(['46-6-rs'], '46-6'), { matches: [], usedBareFallback: false });
+    assert.deepStrictEqual(M(['12-x'], '12A'), { matches: [], usedBareFallback: false });
+  });
+
+  test('phaseNumberForMatch uses the leading digit run only for fallback matches', () => {
+    assert.strictEqual(phaseId.phaseNumberForMatch('05-80-20-cleanup', true), '05');
+    assert.strictEqual(phaseId.phaseNumberForMatch('MEM-05-80-20-cleanup', true), 'MEM-05');
+    assert.strictEqual(phaseId.phaseNumberForMatch('10-24-setup', false), '10-24');
+  });
+
+  // The fallback compares a query against each directory's LEADING DIGIT RUN.
+  // Its whole correctness rests on that run being captured entire before the
+  // zero-strip compare: a regex that stopped at the first digit would make
+  // every query a prefix match, and "1" would claim 10, 100, and 12 alike.
+  // These are the digit-width transitions where that mistake shows up first.
+  test('a bare query never prefix-matches a wider leading digit run', () => {
+    const dirs = ['01-alpha', '09-nine', '10-ten', '12-twelve', '100-hundred'];
+    assert.deepStrictEqual(M(dirs, '1').matches, ['01-alpha']);
+    assert.deepStrictEqual(M(dirs, '9').matches, ['09-nine']);
+    assert.deepStrictEqual(M(dirs, '10').matches, ['10-ten']);
+    assert.deepStrictEqual(M(dirs, '100').matches, ['100-hundred']);
+    // …and the same holds when only the wider dirs exist, so the assertion is
+    // not being satisfied by an exact-width dir happening to be present.
+    assert.deepStrictEqual(M(['10-ten', '100-hundred'], '1').matches, []);
+    assert.deepStrictEqual(M(['90-ninety'], '9').matches, []);
+  });
+
+  // Property form of the same contract, over the whole integer corpus rather
+  // than the hand-picked transitions above: a directory is returned only if its
+  // own leading digit run IS the query. Stated as an invariant over the result
+  // rather than an expected list, so it holds for primary and fallback matches
+  // alike and cannot be satisfied by reimplementing the selection in the test.
+  test('resolution never crosses leading-digit-run boundaries', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.integer({ min: 1, max: 999 }), { minLength: 2, maxLength: 6 }),
+        fc.array(digitRun(1, 3), { minLength: 2, maxLength: 6 }),
+        (leads, tails) => {
+          const dirs = leads.map(
+            (n, i) => `${String(n).padStart(2, '0')}-${tails[i % tails.length]}-slug`,
+          );
+          for (const q of leads) {
+            for (const dir of M(dirs, String(q)).matches) {
+              const run = dir.match(/^(\d+)/)[1].replace(/^0+(?=\d)/, '');
+              if (run !== String(q)) return false;
+            }
+          }
+          return true;
         },
       ),
     );

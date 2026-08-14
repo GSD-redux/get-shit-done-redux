@@ -487,6 +487,7 @@
 - REQ-PHASE-03: Remove MUST renumber all subsequent phases
 - REQ-PHASE-04: Remove MUST prevent removing phases that have been executed
 - REQ-PHASE-05: All operations MUST update ROADMAP.md and create/remove phase directories
+- REQ-PHASE-06: Bare-number phase lookup MUST resolve digit-leading slug names consistently across phase verbs, preserve project-code-prefixed result shaping, and fail loudly when multiple directories match
 
 ---
 
@@ -643,7 +644,7 @@
 
 ### 19. Health Validation
 
-**Command:** `/gsd-health [--repair]`
+**Command:** `/gsd-health [--repair] [--backfill]`
 
 **Purpose:** Validate `.planning/` directory integrity and auto-repair issues.
 
@@ -652,7 +653,8 @@
 - REQ-HEALTH-02: System MUST validate configuration consistency
 - REQ-HEALTH-03: System MUST detect orphaned plans without summaries
 - REQ-HEALTH-04: System MUST check phase numbering and roadmap sync
-- REQ-HEALTH-05: `--repair` flag MUST auto-fix recoverable issues
+- REQ-HEALTH-05: `--repair` flag MUST auto-fix recoverable issues except DESTRUCTIVE-risk ones, which it MUST report but never auto-apply
+- REQ-HEALTH-06: `--backfill` flag MUST synthesize missing MILESTONES.md entries from archived milestone snapshots
 
 ---
 

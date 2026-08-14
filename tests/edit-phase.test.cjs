@@ -289,6 +289,7 @@ describe('edit-phase workflow: phase number and position preservation', () => {
 
   test('anti_patterns block renumbering', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const antiPatterns = content.match(/<anti_patterns>([\s\S]*?)<\/anti_patterns>/i);
     assert.ok(antiPatterns, 'workflow should have anti_patterns section');
     assert.ok(
@@ -306,6 +307,54 @@ describe('edit-phase workflow: phase number and position preservation', () => {
       /replace.*old.*section/i.test(content)
     );
     assert.ok(inPlace, 'workflow must write phase back in place (section replacement)');
+  });
+});
+
+// ─── Workflow: milestone scope guard (#3262) ─────────────────────────────────
+
+describe('edit-phase workflow: milestone scope guard (#3262)', () => {
+  test('workflow captures the milestone scope before writing the updated phase', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
+    const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
+    assert.ok(writeStep, 'write_updated_phase step must exist');
+    assert.match(
+      writeStep[1],
+      /milestone-scope/,
+      'write_updated_phase must run the roadmap milestone-scope probe before writing'
+    );
+    assert.match(writeStep[1], /SCOPE_BEFORE/i, 'the pre-write capture must be named for the post-write comparison');
+  });
+
+  test('workflow re-derives the milestone scope after the write and rolls back on mismatch', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
+    const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
+    assert.ok(writeStep, 'write_updated_phase step must exist');
+    assert.match(writeStep[1], /SCOPE_AFTER/i, 'the post-write re-derivation must be present');
+    assert.match(writeStep[1], /scope|phases/i, 'the comparison must cover the scope and the phase set');
+    assert.match(
+      writeStep[1],
+      /rollback|restore|revert|rolled back/i,
+      'a scope or phase-set mismatch must trigger rollback'
+    );
+    assert.match(
+      writeStep[1],
+      /milestone scope changed|scope changed/i,
+      'the rollback path must surface an explicit error'
+    );
+  });
+
+  test('milestone scope guard success criterion is checked (#3262)', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
+    const criteria = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
+    assert.ok(criteria, 'workflow should have a success_criteria section');
+    assert.match(
+      criteria[1],
+      /milestone scope/i,
+      'success criteria must include the milestone-scope verification'
+    );
   });
 });
 
@@ -335,6 +384,7 @@ describe('edit-phase: documentation registration', () => {
     );
     // Locate the edit-phase.md row in the Workflows table and assert the
     // "Invoked by" column documents /gsd-phase --edit (not the deleted form).
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/INVENTORY.md, bounded table rows, not adversarial input
     const rowMatch = inventory.match(/^\|\s*`edit-phase\.md`\s*\|[^|]*\|\s*([^|]+?)\s*\|$/m);
     assert.ok(rowMatch, 'docs/INVENTORY.md must contain an edit-phase.md workflow row');
     const invokedBy = rowMatch[1];

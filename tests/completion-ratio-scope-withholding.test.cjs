@@ -790,6 +790,7 @@ describe('H. self-consistency — after state sync, STATE.md body and frontmatte
     // the two halves could disagree within the SAME write: frontmatter
     // (already scoped) omitted percent while the body (hardcoded
     // SCOPE.COMPLETE) rendered one.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'STATE.md must carry a frontmatter block after a write');
     assert.ok(!/^\s*percent:/m.test(fmMatch[1]), 'frontmatter progress: block must not carry a percent key');

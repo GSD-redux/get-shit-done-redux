@@ -438,3 +438,114 @@ describe('bug-2831: OpenCode pathPrefix uses absolute path on all platforms', ()
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// #3133: global Claude @-references must resolve (tilde), not $HOME.
+//
+// Claude Code expands `~` and absolute paths in @-file references but NOT
+// `$HOME`. computePathPrefix returns `$HOME/.claude/` for global installs
+// (correct for double-quoted shell commands — `~` does not expand inside
+// double quotes, #1284), so context-blind substitution rewrote every
+// `@~/.claude/…` include to `@$HOME/.claude/…`, which silently resolves to
+// nothing — skills load with an empty <execution_context>. OpenCode already
+// has an absolute-path carve-out for the identical limitation (#2376/#2831);
+// Claude is not special. Fix: in the `claude` rewrite case, restore the
+// tilde form for @-references when the prefix is the $HOME (global) form.
+// ────────────────────────────────────────────────────────────────────────
+describe('#3133: global Claude @-references resolve on tilde, not $HOME', () => {
+  // Re-require to also pull _applyRuntimeRewrites (module is cached under GSD_TEST_MODE).
+  const conv = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const _computePathPrefix = conv._computePathPrefix;
+  const _applyRuntimeRewrites = conv._applyRuntimeRewrites;
+
+  const homeDir = os.homedir().replace(/\\/g, '/');
+  const isWin = process.platform === 'win32';
+  const globalClaudePrefix = _computePathPrefix({
+    isGlobal: true, isOpencode: false, isWindowsHost: isWin,
+    resolvedTarget: homeDir + '/.claude', homeDir,
+  });
+  // Sanity: the global claude prefix IS the $HOME form (the precondition for the bug).
+  assert.ok(globalClaudePrefix.startsWith('$HOME/'), `expected $HOME prefix, got ${globalClaudePrefix}`);
+
+  test('row 1 — global Claude @-reference stays on tilde (resolves), not $HOME', () => {
+    const src = '---\nname: gsd-stats\n---\n<execution_context>\n@~/.claude/gsd-core/workflows/stats.md\n</execution_context>\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    assert.match(out, /@~\/\.claude\/gsd-core\/workflows\/stats\.md/, `@-ref must stay on tilde; got:\n${out}`);
+    assert.doesNotMatch(out, /@\$HOME/, `must not emit @$HOME (Claude does not expand it); got:\n${out}`);
+  });
+
+  test('row 2 — global Claude normalizes an @$HOME source reference to @~', () => {
+    // Source may already carry @$HOME (e.g. a prior bad render); it must end on @~.
+    const src = '<execution_context>\n@$HOME/.claude/gsd-core/references/ui-brand.md\n</execution_context>\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    assert.match(out, /@~\/\.claude\/gsd-core\/references\/ui-brand\.md/, `@$HOME source must normalize to @~; got:\n${out}`);
+    assert.doesNotMatch(out, /@\$HOME/, `no @$HOME may remain; got:\n${out}`);
+  });
+
+  test('row 3 — global Claude shell contexts keep $HOME (#1284 preserved)', () => {
+    // `~` does NOT expand inside double quotes; $HOME does. Shell commands must stay $HOME.
+    const src = 'Run: node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" query state\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    assert.match(out, /node "\$HOME\/\.claude\/gsd-core\/bin\/gsd-tools\.cjs"/, `shell $HOME must be preserved; got:\n${out}`);
+    assert.doesNotMatch(out, /node "~\//, `must not introduce quoted-tilde (re-introduces #1284); got:\n${out}`);
+  });
+
+  test('row 4 — global Claude bare ~/ shell (unquoted) becomes $HOME', () => {
+    const src = 'cat ~/.claude/gsd-core/VERSION\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    assert.match(out, /cat \$HOME\/\.claude\/gsd-core\/VERSION/, `unquoted ~/ shell must become $HOME; got:\n${out}`);
+  });
+
+  test('row 5 — local Claude @-reference rewrites to the absolute target', () => {
+    // Local install is NOT under $HOME/.claude; @~/ would point at global home.
+    // pathPrefix is absolute; @-refs must follow it (Claude resolves absolute).
+    const localPrefix = _computePathPrefix({
+      isGlobal: false, isOpencode: false, isWindowsHost: isWin,
+      resolvedTarget: '/abs/projects/foo/.claude', homeDir,
+    });
+    assert.ok(!localPrefix.startsWith('$HOME'), `local prefix must be absolute, got ${localPrefix}`);
+    const src = '<execution_context>\n@~/.claude/gsd-core/workflows/stats.md\n</execution_context>\n';
+    const out = _applyRuntimeRewrites(src, 'claude', localPrefix, false, undefined);
+    assert.match(out, /@\/abs\/projects\/foo\/\.claude\/gsd-core\/workflows\/stats\.md/, `local @-ref must rewrite to absolute target; got:\n${out}`);
+    assert.doesNotMatch(out, /@~\/\.claude/, `local @-ref must not stay on global ~/; got:\n${out}`);
+  });
+
+  test('row 6 — global Claude @-ref normalization is idempotent (re-surface safe)', () => {
+    const src = '<execution_context>\n@~/.claude/gsd-core/workflows/stats.md\n</execution_context>\n';
+    const once = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    const twice = _applyRuntimeRewrites(once, 'claude', globalClaudePrefix, true, undefined);
+    assert.equal(twice, once, `re-running the rewrite must be stable (idempotent)`);
+    assert.doesNotMatch(twice, /@\$HOME/, `no @$HOME after 2nd pass; got:\n${twice}`);
+  });
+
+  test('row 7 — global Claude emits no resolved homedir literal (#3503 preserved)', () => {
+    const src = '<execution_context>\n@~/.claude/gsd-core/workflows/stats.md\n</execution_context>\nnode "$HOME/.claude/gsd-core/bin/gsd-tools.cjs"\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    // A real homedir leak is followed by a path separator (#3503 trailing-slash rule).
+    assert.ok(!out.includes(homeDir + '/'), `must not leak resolved homedir ${homeDir}/; got:\n${out}`);
+  });
+
+  test('row 8 — non-Claude runtime (codex) is unaffected by the claude @-ref fix', () => {
+    // The claude normalization targets @$HOME/.claude/; codex rewrites to .codex/,
+    // so its output must be byte-identical to pre-fix (no @~/.claude/ restoration).
+    const codexPrefix = _computePathPrefix({
+      isGlobal: true, isOpencode: false, isWindowsHost: isWin,
+      resolvedTarget: homeDir + '/.codex', homeDir,
+    });
+    const src = '<execution_context>\n@~/.claude/gsd-core/workflows/stats.md\n</execution_context>\n';
+    const out = _applyRuntimeRewrites(src, 'codex', codexPrefix, true, undefined);
+    // Codex rewrites .claude -> .codex; the @-ref must NOT have been restored to @~/.claude/.
+    assert.doesNotMatch(out, /@~\/\.claude\//, `codex must not get the claude @~/.claude restoration; got:\n${out}`);
+    assert.match(out, /@\$HOME\/\.codex\/gsd-core\/workflows\/stats\.md/, `codex keeps its own rewrite; got:\n${out}`);
+  });
+
+  test('row 9 — global Claude @-ref preserves the full tail path', () => {
+    // Deeper subpath than row 1 — ensures the @-ref normalization does not
+    // truncate the tail. (No `$` anchor: a realistic @-ref line ends with `\n`.)
+    const src = '@~/.claude/gsd-core/references/ui-brand.md\n';
+    const out = _applyRuntimeRewrites(src, 'claude', globalClaudePrefix, true, undefined);
+    assert.match(out, /@~\/\.claude\/gsd-core\/references\/ui-brand\.md/, `tail must be intact; got:\n${out}`);
+    assert.doesNotMatch(out, /@\$HOME/, `no @$HOME; got:\n${out}`);
+  });
+});

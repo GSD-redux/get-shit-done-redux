@@ -1,4 +1,3 @@
-// allow-test-rule: source-text-is-the-product (see #2840)
 // ~/.gsd/defaults.json is machine-wide. The `runtime` key is host-specific
 // (written by whichever installer ran last). It must NOT be copied into project
 // configs — on a machine with 2+ runtimes, it poisons every new project.

@@ -1,4 +1,3 @@
-// allow-test-rule: source-text-is-the-product (see #2279)
 // The gsd-codebase-mapper agent and map-codebase workflow .md files ARE the
 // contract the model loads at runtime. Regression lock for #2279: on an Update
 // run the agent must restamp the codebase-doc dates unconditionally, not merely

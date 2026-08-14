@@ -31,6 +31,7 @@ const {
   VALID_CONFIG_KEYS,
   RUNTIME_STATE_KEYS,
 } = require('../gsd-core/bin/lib/config-schema.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 describe('config-schema: isValidConfigKey properties', () => {
   // (a) Never throws on any input
@@ -487,7 +488,7 @@ const SECTION_HEADERS = ['Planning', 'Execution', 'Docs & Output', 'Features', '
 function hasPathLike(block, field) {
   const parts = field.split('.');
   if (parts.length === 1) return block.includes(parts[0]);
-  const escaped = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const escaped = parts.map((p) => escapeRegex(p));
   const pattern = new RegExp(escaped.join('[\\s\\S]{0,600}'), 'i');
   return pattern.test(block);
 }
@@ -1072,6 +1073,7 @@ describe('feat-3210: workflow and config contracts', () => {
     );
 
     // Parse: the <step name="structural_pre_pass"> block must exist and be closed
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const stepMatch = workflow.match(/<step\s+name="structural_pre_pass">([\s\S]*?)<\/step>/);
     assert.ok(
       stepMatch,

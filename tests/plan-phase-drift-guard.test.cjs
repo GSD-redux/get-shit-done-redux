@@ -121,6 +121,7 @@ describe('plan-phase workflow: Artifacts this phase produces section (#22)', () 
 
   test('quality_gate checklist includes Artifacts this phase produces item', () => {
     // Find the quality_gate block and confirm the checklist item is there
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const qualityGateMatch = workflow.match(/<quality_gate>([\s\S]*?)<\/quality_gate>/);
     assert.ok(
       qualityGateMatch,
@@ -157,6 +158,7 @@ describe('plan-phase workflow: Artifacts this phase produces section (#22)', () 
 describe('plan-phase workflow: top-level spawn guard (#913)', () => {
   // Extract the runtime_compatibility block for targeted assertions
   const rtBlock = (() => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const m = workflow.match(/<runtime_compatibility>([\s\S]*?)<\/runtime_compatibility>/);
     return m ? m[1] : '';
   })();
@@ -219,6 +221,7 @@ describe('plan-phase workflow: top-level spawn guard (#913)', () => {
 describe('plan-phase workflow: attempt-based Agent availability gate (#922)', () => {
   // Extract the runtime_compatibility block for targeted assertions
   const rtBlock = (() => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const m = workflow.match(/<runtime_compatibility>([\s\S]*?)<\/runtime_compatibility>/);
     return m ? m[1] : '';
   })();
@@ -501,6 +504,7 @@ describe('bug-2949: sketch --wrap-up dispatch wiring', () => {
   test('commands/gsd/sketch.md has sketch-wrap-up in execution_context section', () => {
     const content = fs.readFileSync(SKETCH_COMMAND, 'utf8');
     // Find execution_context block
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own command .md content, fixed-size author-controlled content
     const execCtxMatch = content.match(/<execution_context>([\s\S]*?)<\/execution_context>/);
     assert.ok(execCtxMatch, 'sketch.md must have an <execution_context> block');
     const execCtx = execCtxMatch[1];
@@ -1589,7 +1593,7 @@ describe('enh-2430 — INVENTORY sync', () => {
 /**
  * Bug #2492: Add gates to ensure discuss-phase decisions are translated to
  * plans (plan-phase, BLOCKING) and verified against shipped artifacts
- * (verify-phase, NON-BLOCKING).
+ * (verifier-phase-gates reference, NON-BLOCKING).
  *
  * These workflow files are loaded as prompts by the corresponding subagents.
  * The tests below verify that the prompt text contains the gate steps and
@@ -1603,7 +1607,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PLAN_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
-const VERIFY_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-phase.md');
+const VERIFY_GATES = path.join(__dirname, '..', 'gsd-core', 'references', 'verifier-phase-gates.md');
 const SCHEMA_MANIFEST_JSON = path.join(__dirname, '..', 'gsd-core', 'bin', 'shared', 'config-schema.manifest.json');
 
 describe('plan-phase decision-coverage gate (#2492)', () => {
@@ -1679,7 +1683,9 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
     const snippet = md.slice(gateIdx, gateIdx + 800);
     // Accept either an inline `|| exit 1` or a `|| { ...; exit 1; }` group.
     const hasJqGuard =
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a bounded slice of maintainer-authored workflow markdown, not adversarial input
       /jq[^\r\n]*\.data\.passed\s*==\s*true/.test(snippet) ||
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses a bounded slice of maintainer-authored workflow markdown, not adversarial input
       /jq[^\r\n]*\(\.passed\s*\/\/\s*\.data\.passed\)\s*==\s*true/.test(snippet);
     const hasExitOne = /\|\|\s*(?:exit\s+1|\{[\s\S]{0,200}?exit\s+1)/.test(snippet);
     assert.ok(
@@ -1700,20 +1706,20 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
   });
 });
 
-describe('verify-phase decision-coverage gate (#2492)', () => {
-  const md = fs.readFileSync(VERIFY_PHASE, 'utf-8');
+describe('verifier-phase-gates decision-coverage gate (#2492)', () => {
+  const md = fs.readFileSync(VERIFY_GATES, 'utf-8');
 
   test('contains a verify_decisions step', () => {
     assert.ok(
       /verify_decisions/.test(md),
-      'verify-phase.md must define a verify_decisions step',
+      'verifier-phase-gates.md must define a verify_decisions step',
     );
   });
 
   test('invokes the check.decision-coverage-verify handler', () => {
     assert.ok(
       md.includes('check.decision-coverage-verify'),
-      'verify-phase.md must call gsd-sdk query check.decision-coverage-verify',
+      'verifier-phase-gates.md must call gsd-sdk query check.decision-coverage-verify',
     );
   });
 
@@ -1721,14 +1727,14 @@ describe('verify-phase decision-coverage gate (#2492)', () => {
     const lower = md.toLowerCase();
     assert.ok(
       lower.includes('non-blocking') || lower.includes('warning only') || lower.includes('not block'),
-      'verify-phase.md must declare the decision gate is non-blocking',
+      'verifier-phase-gates.md must declare the decision gate is non-blocking',
     );
   });
 
   test('mentions workflow.context_coverage_gate skip clause', () => {
     assert.ok(
       md.includes('workflow.context_coverage_gate'),
-      'verify-phase.md must reference workflow.context_coverage_gate to allow skipping',
+      'verifier-phase-gates.md must reference workflow.context_coverage_gate to allow skipping',
     );
   });
 });
@@ -1741,6 +1747,90 @@ describe('runtime wiring for #2492 gates', () => {
       'workflow.context_coverage_gate must be present in config-schema manifest',
     );
   });
+
+  test('gsd-verifier eagerly imports verifier-phase-gates.md (#1892)', () => {
+    // The decision-coverage gate (and the other migrated verify-time gates) only
+    // reach the runtime if the verifier agent actually loads the reference that
+    // now carries them — a reference nothing imports is the exact orphan class
+    // epic #1891 exists to remove.
+    const agent = fs.readFileSync(
+      path.join(__dirname, '..', 'agents', 'gsd-verifier.md'),
+      'utf-8',
+    );
+    assert.ok(
+      agent.includes('@~/.claude/gsd-core/references/verifier-phase-gates.md'),
+      'agents/gsd-verifier.md must @-import references/verifier-phase-gates.md in required_reading',
+    );
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2762-plan-reviews-chunked.test.cjs — H3 Wave 6 (#3338)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2762-plan-reviews-chunked', () => {
+// allow-test-rule: structural-implementation-guard (#2762)
+// Regression guard for #2762: /gsd-plan-phase --reviews was a silent no-op in chunked
+// mode. Two defects in plan-phase.md §8.5:
+//   A. §8.5.1 outline resume-check greps for a marker the agent only RETURNED (never
+//      wrote to the file) → outline always re-ran/overwrote (broke crash-resume).
+//   B. §8.5.2 per-plan resume-check skipped any plan with frontmatter, with no
+//      --reviews exception → --reviews skipped 100% of plans (contradicted §6's
+//      "go straight to replanning" contract).
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+
+// #2993 fragmentization moved §8.5 (chunked planning mode, including §8.5.1 /
+// §8.5.2) out of plan-phase.md into gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md.
+// Read that step file directly — it is the sole remaining source of the §8.5.1/§8.5.2
+// content these regression guards assert on.
+const MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase', 'steps', 'chunked-planning-mode.md');
+const read = () => fs.readFileSync(MD, 'utf8');
+
+test('§8.5.1 outline agent writes the resume marker into the file (#2762 defect A)', () => {
+  const src = read();
+  // The outline prompt must instruct writing ## OUTLINE COMPLETE into PLAN-OUTLINE.md
+  // (the §8.5.1 resume-check greps for it in the file).
+  const outlineSection = src.slice(src.indexOf('### 8.5.1'), src.indexOf('### 8.5.2'));
+  assert.ok(
+    /outline|PLAN-OUTLINE/i.test(outlineSection) && /End the file.*## OUTLINE COMPLETE|write.*## OUTLINE COMPLETE.*file/i.test(outlineSection.replace(/\s+/g, ' ')),
+    'the outline agent prompt must instruct writing ## OUTLINE COMPLETE into the file (the resume-check greps the file for it) (#2762)'
+  );
+});
+
+test('§8.5.2 per-plan resume-check does NOT skip under --reviews (#2762 defect B)', () => {
+  const src = read();
+  const perPlanSection = src.slice(src.indexOf('### 8.5.2'));
+  // The resume-check bash must gate the skip on --reviews being ABSENT.
+  const bashMatch = perPlanSection.match(/PLAN_FILE=[\s\S]*?fi\s*\n/);
+  assert.ok(bashMatch, '§8.5.2 must contain the per-plan resume-check bash block');
+  const bash = bashMatch[0];
+  assert.ok(
+    /--reviews/.test(bash),
+    'the per-plan resume-check must reference --reviews so it does NOT skip when replanning with review feedback (#2762)'
+  );
+  // The skip must be conditional on --reviews being ABSENT (e.g. ARGUMENTS != *"--reviews"*).
+  assert.ok(
+    /!=\s*\*"--reviews"\*|!~.*--reviews|--reviews.*absent|not.*--reviews/i.test(bash),
+    'the resume-check skip must be gated on --reviews being ABSENT (so --reviews overwrites/replans) (#2762)'
+  );
+});
+
+test('§8.5.2 crash-resume (non-reviews) still skips written plans (#2762 negative space)', () => {
+  const src = read();
+  const perPlanSection = src.slice(src.indexOf('### 8.5.2'));
+  const bashMatch = perPlanSection.match(/PLAN_FILE=[\s\S]*?fi\s*\n/);
+  const bash = bashMatch ? bashMatch[0] : '';
+  assert.ok(
+    /head -1.*grep.*\^---|frontmatter/i.test(bash + perPlanSection.slice(0, 400)),
+    'crash-resume (non-reviews) must still skip plans with valid frontmatter (resume safety preserved) (#2762)'
+  );
 });
   });
 }

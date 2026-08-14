@@ -8,6 +8,7 @@ const {
   isValidActiveWorkstreamName,
   INVALID_ACTIVE_WORKSTREAM_NAME_MESSAGE,
 } = require('../gsd-core/bin/lib/workstream-name-policy.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 describe('workstream-name-policy', () => {
   test('normalizeWorkstreamNameInput trims and nulls empty input', () => {
@@ -39,7 +40,7 @@ describe('workstream-name-policy', () => {
     assert.equal(assertValidActiveWorkstreamName('  alpha  '), 'alpha');
     assert.throws(
       () => assertValidActiveWorkstreamName('alpha/beta'),
-      new RegExp(INVALID_ACTIVE_WORKSTREAM_NAME_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      new RegExp(escapeRegex(INVALID_ACTIVE_WORKSTREAM_NAME_MESSAGE))
     );
   });
 

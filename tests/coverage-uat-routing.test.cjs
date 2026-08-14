@@ -1,4 +1,3 @@
-// allow-test-rule: source-text-is-the-product (see #1602)
 // verify-work.md / execute-plan.md / summary*.md are workflow & template text the
 // runtime loads and executes. Asserting that they wire the deterministic coverage
 // classifier (and preserve the legacy prose fall-through) tests the deployed

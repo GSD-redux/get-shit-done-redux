@@ -22,7 +22,7 @@
  * hang or take super-linear time on an adversarial `workflow.test_command`.
  *
  * Single source of truth: all four test-command gates (regression, post-merge,
- * audit-fix, verify-phase) route their resolved command through this helper so
+ * audit-fix) route their resolved command through this helper so
  * the paths cannot drift.
  *
  * Leaf module — depends only on node:fs / node:path.

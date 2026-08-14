@@ -81,7 +81,9 @@ describe('#2198 regression: dead scan exports removed, docs corrected', () => {
       const fullPath = path.join(PROJECT_ROOT, relPath);
       const source = fs.readFileSync(fullPath, 'utf-8');
       assert.ok(
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/*.js source, not adversarial input
         !source.match(/require\s*\(\s*['"][^'"]*security\.(cjs|js)['"]\s*\)/) &&
+        // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/*.js source, not adversarial input
         !source.match(/import\s+.*from\s+['"][^'"]*security\.(cjs|js)['"]\s*;?/),
         `${relPath} must not require/import security.cjs — hooks inline patterns for independence`
       );

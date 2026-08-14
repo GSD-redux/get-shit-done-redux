@@ -90,7 +90,7 @@ describe('verify-work — MVP mode UAT framing', () => {
  * "manually invoke methods", "manually check database state" — and left
  * work half-finished specifically to create things for a human to do.
  *
- * Fix: The verify-phase workflow's identify_human_verification step must
+ * Fix: The verifier reference's identify_human_verification step must
  * explicitly handle phases with no user-facing elements by auto-passing UAT
  * with a logged rationale instead of inventing manual steps.
  */
@@ -103,7 +103,7 @@ const fs = require('fs');
 const path = require('path');
 
 const VERIFY_PHASE_PATH = path.join(
-  __dirname, '..', 'gsd-core', 'workflows', 'verify-phase.md'
+  __dirname, '..', 'gsd-core', 'references', 'verifier-phase-gates.md'
 );
 
 /**
@@ -119,10 +119,10 @@ function extractSection(content, heading) {
 }
 
 describe('bug #2504: UAT auto-pass for foundation/infrastructure phases', () => {
-  test('verify-phase workflow file exists', () => {
+  test('verifier-phase-gates reference file exists', () => {
     assert.ok(
       fs.existsSync(VERIFY_PHASE_PATH),
-      'gsd-core/workflows/verify-phase.md should exist'
+      'gsd-core/references/verifier-phase-gates.md should exist'
     );
   });
 
@@ -142,7 +142,7 @@ describe('bug #2504: UAT auto-pass for foundation/infrastructure phases', () => 
 
     assert.ok(
       hasInfrastructureHandling,
-      'verify-phase.md identify_human_verification step must explicitly handle ' +
+      'verifier-phase-gates.md identify_human_verification step must explicitly handle ' +
       'infrastructure/foundation phases that have no user-facing elements. Without ' +
       'this, agents invent artificial manual steps to satisfy UAT requirements ' +
       '(root cause of #2504).'
@@ -164,7 +164,7 @@ describe('bug #2504: UAT auto-pass for foundation/infrastructure phases', () => 
 
     assert.ok(
       hasAutoPass,
-      'verify-phase.md identify_human_verification step must contain language about ' +
+      'verifier-phase-gates.md identify_human_verification step must contain language about ' +
       'auto-passing or skipping UAT for phases without user-facing elements. Agents ' +
       'must not invent manual steps when there is nothing user-facing to test ' +
       '(root cause of #2504).'
@@ -196,7 +196,7 @@ describe('bug #2504: UAT auto-pass for foundation/infrastructure phases', () => 
 
     assert.ok(
       hasProhibition,
-      'verify-phase.md identify_human_verification step must explicitly prohibit ' +
+      'verifier-phase-gates.md identify_human_verification step must explicitly prohibit ' +
       'inventing artificial manual UAT steps for infrastructure phases. The current ' +
       'wording causes agents to create fake "manually run git commits" steps to ' +
       'satisfy UAT mandates (root cause of #2504).'
@@ -217,7 +217,7 @@ describe('bug #2504: UAT auto-pass for foundation/infrastructure phases', () => 
 
     assert.ok(
       hasNaState,
-      'verify-phase.md identify_human_verification step must include some concept of ' +
+      'verifier-phase-gates.md identify_human_verification step must include some concept of ' +
       'a "not applicable" or N/A UAT state for phases with no user-facing elements. ' +
       'This prevents agents from blocking phase completion on invented manual steps ' +
       '(root cause of #2504).'

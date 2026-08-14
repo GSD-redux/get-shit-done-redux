@@ -295,6 +295,47 @@ describe('reconstructFrontmatter', () => {
     const extracted2 = extractFrontmatter(roundTrip);
     assert.deepStrictEqual(extracted2, extracted1, 'round-trip should preserve multiple data types');
   });
+
+  test('#3257: full-line comments survive an extract→reconstruct round-trip', () => {
+    const original = '---\ngsd_state_version: 1.0\n# NOTE: current_phase is hand-maintained here\ncurrent_phase: 3\nstatus: executing\n---';
+    const extracted = extractFrontmatter(original);
+    assert.strictEqual(extracted['gsd_state_version'], '1.0');
+    assert.strictEqual(extracted['current_phase'], '3');
+
+    const reconstructed = reconstructFrontmatter(extracted);
+    // #3257: the comment must survive in place (between gsd_state_version and current_phase).
+    assert.ok(
+      reconstructed.includes('# NOTE: current_phase is hand-maintained here'),
+      `comment should survive reconstruct; got:\n${reconstructed}`,
+    );
+    // data identity preserved alongside the comment.
+    assert.ok(reconstructed.includes('gsd_state_version: 1.0'));
+    assert.ok(reconstructed.includes('current_phase: 3'));
+    assert.ok(reconstructed.includes('status: executing'));
+    // the reconstructed output re-parses to the same data (idempotent round-trip).
+    const reextracted = extractFrontmatter(`---\n${reconstructed}\n---`);
+    assert.strictEqual(reextracted['current_phase'], '3');
+  });
+
+  test('#3257: leading (before first key) and trailing (after last key) comments survive', () => {
+    const original = '---\n# top comment\na: 1\nb: 2\n# trailing comment\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# top comment'), `leading comment lost:\n${reconstructed}`);
+    assert.ok(reconstructed.includes('# trailing comment'), `trailing comment lost:\n${reconstructed}`);
+  });
+
+  test('#3257: multiple consecutive comments survive in order', () => {
+    const original = '---\na: 1\n# first note\n# second note\nb: 2\n---';
+    const extracted = extractFrontmatter(original);
+    const reconstructed = reconstructFrontmatter(extracted);
+    assert.ok(reconstructed.includes('# first note') && reconstructed.includes('# second note'),
+      `consecutive comments lost:\n${reconstructed}`);
+    const aIdx = reconstructed.indexOf('a: 1');
+    const firstIdx = reconstructed.indexOf('# first note');
+    const secondIdx = reconstructed.indexOf('# second note');
+    assert.ok(aIdx < firstIdx && firstIdx < secondIdx, `order wrong (a:${aIdx} first:${firstIdx} second:${secondIdx})`);
+  });
 });
 
 // ─── spliceFrontmatter ──────────────────────────────────────────────────────
@@ -348,6 +389,12 @@ describe('spliceFrontmatter', () => {
 });
 
 // ─── parseMustHavesBlock ────────────────────────────────────────────────────
+
+// #3413 / #3360: LF -> CRLF fixture converter. Naming precedent:
+// tests/codex-agent-toml.test.cjs's toCrlf, tests/agent-install-check.test.cjs's toCrlf.
+function crlf(s) {
+  return s.replace(/\n/g, '\r\n');
+}
 
 describe('parseMustHavesBlock', () => {
   test('extracts truths as string array', () => {
@@ -602,6 +649,122 @@ must_haves:
     assert.strictEqual(result[0].path, 'src/api.ts');
     // The nested array should be captured
     assert.ok(result[0].exports !== undefined, 'should have exports field');
+  });
+
+  test('#3360: parseMustHavesBlock returns real items for a CRLF plan (no leading blank line) — rows 24-25', () => {
+    // Exact #3360 repro (design doc 40-design.md, "Rubber-duck" section):
+    // \s inside an anchored /m pattern is not "whitespace on this line" — it
+    // is "whitespace, including the boundary I just anchored on." A CRLF
+    // pair inflates the captured indent by one char, tripping the
+    // blockIndent <= mustHavesIndent nesting guard on a block that IS
+    // legitimately nested. Today (pre-fix) this returns [] for both blocks.
+    const lfPlan = `---
+phase: 01
+must_haves:
+  truths:
+    - "first truth"
+    - "second truth"
+  prohibitions:
+    - "MUST NOT drop the table"
+---
+
+Body content.`;
+    const crlfPlan = crlf(lfPlan);
+    const truths = parseMustHavesBlock(crlfPlan, 'truths');
+    const prohibitions = parseMustHavesBlock(crlfPlan, 'prohibitions');
+    assert.ok(Array.isArray(truths), 'truths should return an array');
+    assert.deepStrictEqual(truths, ['first truth', 'second truth']);
+    assert.ok(Array.isArray(prohibitions), 'prohibitions should return an array');
+    assert.deepStrictEqual(prohibitions, ['MUST NOT drop the table']);
+  });
+
+  test('#3360: the silent-exit variant (blank line before must_haves:) also recovers — row 26', () => {
+    // #3360 "second variant": a blank line preceding `must_haves:` lets the
+    // (\s*) capture before it absorb the blank line's own terminator too —
+    // same indent-inflation mechanism, but with zero diagnostic emitted
+    // today (the silent exit the design doc calls out).
+    const lfPlanWithBlankLine = `---
+phase: 01
+
+must_haves:
+  truths:
+    - "first truth"
+    - "second truth"
+  prohibitions:
+    - "MUST NOT drop the table"
+---
+
+Body content.`;
+    const crlfPlanWithBlankLine = crlf(lfPlanWithBlankLine);
+    const truths = parseMustHavesBlock(crlfPlanWithBlankLine, 'truths');
+    assert.ok(Array.isArray(truths), 'should return an array');
+    assert.deepStrictEqual(truths, ['first truth', 'second truth']);
+  });
+
+  test('#3360 parity: CRLF and LF plans parse to identical must_haves for every block name (maintainer-established invariant — see #3360, Cortex-recorded prior art for repeated CRLF-fix parity assertions in this file\'s neighborhood) — row 28', () => {
+    // Reuses the ACTUAL fixture shapes already present in this describe
+    // block (not a fourth parallel fixture set) so this generalizes real
+    // existing coverage rather than adding new, narrower cases.
+    const fourSpaceIndentTruths = `---
+phase: 01
+must_haves:
+    truths:
+      - "All tests pass on CI"
+      - "Coverage exceeds 80%"
+---
+
+Body content.`;
+    const twoSpaceIndentTruths = `---
+phase: 01
+must_haves:
+  truths:
+    - "All tests pass on CI"
+    - "Coverage exceeds 80%"
+---
+`;
+    const quotedColonTruths = `---
+phase: 01
+must_haves:
+  truths:
+    - "App-side UUIDv4: generated locally"
+    - "No colon in this one"
+    - "Another colon: example"
+---
+`;
+
+    for (const fixture of [fourSpaceIndentTruths, twoSpaceIndentTruths, quotedColonTruths]) {
+      assert.deepStrictEqual(
+        parseMustHavesBlock(crlf(fixture), 'truths'),
+        parseMustHavesBlock(fixture, 'truths'),
+        `CRLF/LF parity diverged for fixture:\n${fixture}`
+      );
+    }
+  });
+
+  test('#3360 regression guard: the nesting guard still rejects a non-nested block on CRLF input — row 29', () => {
+    // `truths:` sits at the SAME indent (column 0) as `must_haves:` — a
+    // sibling, not a nested child — so the blockIndent <= mustHavesIndent
+    // guard must still reject it, even on CRLF input, post-fix.
+    const lfPlan = `---
+phase: 01
+must_haves:
+truths:
+  - "should not be picked up"
+---
+`;
+    const result = parseMustHavesBlock(crlf(lfPlan), 'truths');
+    assert.deepStrictEqual(result, []);
+  });
+
+  test('parseMustHavesBlock: CRLF content with no must_haves block still returns [] — row 30', () => {
+    const lfPlan = `---
+phase: 01
+truths:
+  - "Some truth"
+---
+`;
+    const result = parseMustHavesBlock(crlf(lfPlan), 'truths');
+    assert.deepStrictEqual(result, []);
   });
 });
 
@@ -2051,5 +2214,458 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
         `a resume must keep the preserved mid-flight name, not the resume's --name; got ${JSON.stringify(fm.current_phase_name)}`,
       );
     });
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// #3374 — `phase complete`'s adapter calls syncStateFrontmatter directly
+// (deliberately bypassing readModifyWriteStateMd for the atomic
+// ROADMAP/REQUIREMENTS/STATE commit), which also bypassed the #948/#1230
+// preservation pass every RMW write gets. A stale body `Stopped at:` line then
+// silently clobbered a fresher frontmatter `stopped_at` on every phase
+// completion. Placed beside the #2736 suite (the same defect family: the
+// adapter's post-sync policy diverging from the RMW path's). The fix is
+// two-layered: completePhaseCore now refreshes the body continuity line it
+// implies (`Phase N complete, ready to plan Phase N+1`) — session-scoped, so a
+// decoy `**Stopped at:**` line in an unrelated section cannot absorb the
+// refresh — so the harvest projects a value this very completion produced
+// (keeping #3517's refresh expectation), and the adapter runs the RMW post-sync
+// preservation pass (applyPostSyncPreservation) so a body source this write did
+// not refresh cannot beat a fresher frontmatter value.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __d3374, test: __t3374, beforeEach: __be3374, afterEach: __ae3374 } = require('node:test');
+  const __assert3374 = require('node:assert/strict');
+  const __fs3374 = require('node:fs');
+  const __path3374 = require('node:path');
+  const { runGsdTools: __run3374, createTempProject: __mk3374, cleanup: __rm3374 } = require('./helpers.cjs');
+  const { extractFrontmatter: __extractFm3374 } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const { stateExtractField: __extractField3374 } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  const FRESH_3374 = 'Phase 2 gap closure executed — FRESH frontmatter value';
+  const STALE_3374 = 'Phase 1 complete, ready to plan Phase 2';
+  const COMPLETION_LINE_3374 = 'Phase 2 complete, ready to plan Phase 3';
+
+  // Mirrors the issue's repro: a 3-phase roadmap completing phase 2 (not-last),
+  // body `## Session Continuity` holding a stale plain-label `Stopped at:` line
+  // that phase.complete's transition previously never touched.
+  function writeCompleteFixture3374(tmpDir, { fmStoppedAt = null, sessionStoppedAt = STALE_3374, decoy = false } = {}) {
+    const planningDir = __path3374.join(tmpDir, '.planning');
+    const phase2Dir = __path3374.join(planningDir, 'phases', '02-second-phase');
+    __fs3374.mkdirSync(phase2Dir, { recursive: true });
+
+    __fs3374.writeFileSync(
+      __path3374.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 1: First phase',
+        '**Plans:** 1 plans',
+        '',
+        '### Phase 2: Second phase',
+        '**Plans:** 1 plans',
+        '',
+        '### Phase 3: Third phase',
+        '**Plans:** 1 plans',
+        '',
+        '## Progress',
+        '',
+        '- [x] **Phase 1: First phase** - done',
+        '- [ ] **Phase 2: Second phase** - pending',
+        '- [ ] **Phase 3: Third phase** - pending',
+        '',
+      ].join('\n'),
+    );
+
+    const sessionLines = [
+      'Last session: 2026-08-10',
+      ...(sessionStoppedAt === null ? [] : [`Stopped at: ${sessionStoppedAt}`]),
+      'Resume file: None',
+    ];
+    __fs3374.writeFileSync(
+      __path3374.join(planningDir, 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'current_phase: 2',
+        'current_phase_name: Second phase',
+        'status: executing',
+        ...(fmStoppedAt ? [`stopped_at: "${fmStoppedAt}"`] : []),
+        '---',
+        '',
+        '# Project State',
+        ...(decoy ? ['', '## Archive notes', '', '**Stopped at:** old prose from June'] : []),
+        '',
+        '## Session Continuity',
+        '',
+        ...sessionLines,
+        '',
+      ].join('\n'),
+    );
+
+    __fs3374.writeFileSync(__path3374.join(phase2Dir, '02-01-PLAN.md'), '# Plan\n');
+    __fs3374.writeFileSync(__path3374.join(phase2Dir, '02-01-SUMMARY.md'), '# Summary\n');
+    __fs3374.writeFileSync(
+      __path3374.join(phase2Dir, '02-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
+  }
+
+  __d3374('#3374: phase complete must not harvest a stale body Stopped at over fresher frontmatter', () => {
+    let tmpDir;
+    const statePath = () => __path3374.join(tmpDir, '.planning', 'STATE.md');
+
+    __be3374(() => { tmpDir = __mk3374(); });
+    __ae3374(() => { __rm3374(tmpDir); });
+
+    __t3374('AC1: the stale body Stopped at never reaches the frontmatter — the transition refreshes the line it implies', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374 });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const stateContent = __fs3374.readFileSync(statePath(), 'utf-8');
+      const fm = __extractFm3374(stateContent);
+      __assert3374.notStrictEqual(
+        fm.stopped_at,
+        STALE_3374,
+        'phase.complete harvested the stale pre-completion body value into the frontmatter (#3374 Variant A)',
+      );
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `the frontmatter must project the continuity line this completion wrote, never the stale value; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+      __assert3374.strictEqual(
+        __extractField3374(stateContent, 'Stopped at'),
+        COMPLETION_LINE_3374,
+        'the body continuity line must be refreshed by the transition itself, not left for a later prose step',
+      );
+    });
+
+    __t3374('AC1 scoping: a decoy Stopped at in a non-session section cannot absorb the continuity refresh', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374, decoy: true });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      // The harvest reads ONLY the session scope, so the projected frontmatter
+      // value proves the session line (not the decoy) was the one refreshed.
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `the session-scoped continuity write must win over the whole-body decoy; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+
+    __t3374('AC1 preservation leg: with no session Stopped at line to refresh, the fresher frontmatter value survives', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374, sessionStoppedAt: null });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      // Replace-only continuity write missed → nothing to harvest → the
+      // pre-existing (fresher) frontmatter value must be preserved, not
+      // dropped or replaced with pre-completion prose.
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        FRESH_3374,
+        `with no body source refreshed by this write, the existing frontmatter value must survive; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+
+    __t3374('AC2 (no-regress): with no pre-existing frontmatter stopped_at, the body line populates it', () => {
+      writeCompleteFixture3374(tmpDir, {});
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `first-write population from the (refreshed) body line must keep working; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/fix-2847-gap-closure-frontmatter.test.cjs — test-hygiene sweep #3335 (H3 Wave 3)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:fix-2847-gap-closure-frontmatter (test-hygiene sweep #3335 H3 Wave 3)", () => {
+'use strict';
+
+// allow-test-rule: source-text-is-the-product (see #2847)
+// agents/gsd-planner.md is the deployed runtime prompt contract — testing its
+// text content tests the deployed contract (CONTRIBUTING.md exception matrix).
+//
+// Regression tests for #2847: "--gaps does not load planner-gap-closure.md,
+// so generated gap plans may miss gap_closure metadata". Root cause: the
+// planner's only machine-checked gate (`frontmatter.validate ... --schema
+// plan`) never required gap_closure — the requirement lived only in
+// conditionally-loaded prose. Fix: src/frontmatter.cts gained a
+// `plan-gap-closure` schema (covered behaviorally in frontmatter-cli.test.cjs
+// / frontmatter.unit.test.cjs); this block covers the prompt-level wiring in
+// agents/gsd-planner.md's <step name="validate_plan"> that selects it via a
+// real `--schema "$SCHEMA"` shell-variable reference instead of a hardcoded
+// literal. An earlier revision left the bash line unconditional
+// (`--schema plan)`) while only prose mentioned the conditional — caught by
+// review, not tests; the assertions below target executable content
+// specifically to catch that shape. See
+// .gsd/bug/fix-2847-gap-closure-frontmatter/10-diagnosis.md.
+//
+// Deliberately NOT touched: gsd-core/workflows/plan-phase.md sits under the
+// ADR-857 PRE_PHASE6 byte ceiling and cannot absorb a gap_closure mention;
+// the gsd-planner.md validate_plan step is the actual call site and is
+// sufficient on its own.
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const PLANNER_AGENT_PATH = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
+
+function readFile(p) {
+  return fs.readFileSync(p, 'utf-8');
+}
+
+function extractStep(content, stepName) {
+  const marker = `<step name="${stepName}">`;
+  const start = content.indexOf(marker);
+  if (start === -1) return null;
+  const end = content.indexOf('</step>', start);
+  if (end === -1) return null;
+  return content.slice(start, end + '</step>'.length);
+}
+
+/**
+ * Extract the FIRST ```bash ... ``` fenced block from a step's text. Returns null
+ * if no fenced bash block is found.
+ */
+function extractFirstBashBlock(stepText) {
+  const m = /```bash\r?\n([\s\S]*?)```/.exec(stepText);
+  return m ? m[1] : null;
+}
+
+/**
+ * Find the literal line, within a bash block, that invokes `frontmatter.validate`.
+ * Returns null if not found.
+ */
+function findValidateInvocationLine(bashBlock) {
+  if (!bashBlock) return null;
+  return bashBlock.split('\n').find((l) => l.includes('frontmatter.validate')) || null;
+}
+
+// ─── agents/gsd-planner.md: validate_plan step BINDS schema to mode (#2847) ──
+//
+// This describe block asserts on the EXECUTABLE content of the step — the literal
+// argument passed to `--schema` in the fenced bash block the agent actually runs —
+// not on whether explanatory words appear anywhere in the step's prose. A prose
+// sentence like "use plan-gap-closure in gap_closure mode, else plan" sitting next
+// to an UNCONDITIONAL `--schema plan)` line satisfies every substring-presence
+// check imaginable while the agent still only ever executes `--schema plan`. That
+// exact shape shipped in an earlier revision of this fix and was caught by review,
+// not by tests — these tests are written specifically to catch it mechanically:
+// verified RED against that revision (`--schema plan)` hardcoded in the bash
+// block, `--schema plan-gap-closure` only in the prose sentence above it) before
+// the bash block was changed to `--schema "$SCHEMA"`.
+
+describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure mode (executable content, not prose)', () => {
+  const plannerContent = readFile(PLANNER_AGENT_PATH);
+  const validateStep = extractStep(plannerContent, 'validate_plan');
+  const bashBlock = extractFirstBashBlock(validateStep || '');
+  const invocationLine = findValidateInvocationLine(bashBlock);
+
+  test('validate_plan step exists and has a fenced bash block invoking frontmatter.validate', () => {
+    assert.ok(validateStep, '<step name="validate_plan"> must exist in agents/gsd-planner.md');
+    assert.ok(bashBlock, 'validate_plan step must have a ```bash fenced block');
+    assert.ok(invocationLine, 'validate_plan step bash block must invoke frontmatter.validate');
+  });
+
+  test('the --schema argument in the bash invocation is NOT a hardcoded literal', () => {
+    // Precondition: both regex checks below use `.test(invocationLine)`, and
+    // RegExp#test coerces a null/undefined argument to the STRING "null"/
+    // "undefined" rather than throwing — neither hardcoded-literal pattern
+    // matches that string, so both negative assertions would pass vacuously
+    // (reporting "not hardcoded") even if the step or its bash block were
+    // deleted entirely. Fail loudly on that precondition first so a deleted
+    // step is reported as exactly that, not as a false "fix confirmed".
+    assert.ok(invocationLine, 'precondition: invocationLine must be found (see the first test in this block)');
+
+    // This is the exact regression: a prior revision had this line read
+    // `--schema plan)` verbatim — a plain, hardcoded, always-the-same-value
+    // literal that an agent executes as-is regardless of mode. Reject BOTH
+    // possible hardcoded literals explicitly, not just one, so a fix that
+    // flips the hardcoded default to plan-gap-closure (breaking standard mode
+    // instead of gap_closure mode) is caught too.
+    assert.ok(
+      !/--schema\s+plan\)/.test(invocationLine),
+      `bash invocation must not hardcode --schema plan — found: ${invocationLine}`
+    );
+    assert.ok(
+      !/--schema\s+plan-gap-closure\)/.test(invocationLine),
+      `bash invocation must not hardcode --schema plan-gap-closure — found: ${invocationLine}`
+    );
+  });
+
+  test('the --schema argument in the bash invocation IS a shell variable reference', () => {
+    // A variable reference means the value is resolved at execution time from
+    // whatever the agent has bound it to, not printed once in the template and
+    // copy-executed unchanged. Matches --schema "$SCHEMA", --schema $SCHEMA,
+    // or --schema "${SCHEMA}".
+    const varMatch = /--schema\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\)/.exec(invocationLine);
+    assert.ok(
+      varMatch,
+      `bash invocation's --schema argument must be a shell variable (e.g. --schema "$SCHEMA"), not a literal — found: ${invocationLine}`
+    );
+  });
+
+  test('the bound variable is actually conditioned on gap_closure mode in the step prose, and both target schema names are named', () => {
+    const varMatch = /--schema\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\)/.exec(invocationLine);
+    assert.ok(varMatch, 'precondition: --schema must reference a variable (see previous test)');
+    const varName = varMatch[1];
+
+    // The SAME variable name the bash block reads must appear in the step's prose
+    // (outside the bash block) — otherwise the "binding" is a variable nothing
+    // ever explains how to set, which is not meaningfully better than a literal.
+    const proseOutsideBash = validateStep.replace(/```bash\r?\n[\s\S]*?```/, '');
+    assert.ok(
+      proseOutsideBash.includes(`$${varName}`) || proseOutsideBash.includes(`\`$${varName}\``),
+      `step prose must explain how $${varName} is set — the bash block references it but nothing binds it`
+    );
+
+    // Both concrete schema names this variable can resolve to must be named
+    // somewhere in the step, and gap_closure mode must be the stated condition
+    // for choosing between them. Match the plain `plan` schema as a standalone
+    // backtick-quoted token (`` `plan` ``), not the bare substring "plan" —
+    // a bare-substring check is satisfied incidentally by "verify.plan-structure"
+    // a few lines below even if the plain-plan branch were deleted entirely from
+    // the prose, which would make this assertion unable to ever fail.
+    assert.ok(validateStep.includes('plan-gap-closure'), 'step must name the plan-gap-closure schema');
+    assert.ok(
+      /`plan`/.test(validateStep),
+      'step must name the plain plan schema, as a standalone `plan` token, as the other branch'
+    );
+    assert.ok(/gap_closure mode/i.test(validateStep), 'step must condition the choice on gap_closure mode by name');
+  });
+
+  test('the plan-structure validation call below (unrelated step) is unaffected', () => {
+    // Regression guard for the fix itself: confirm the edit did not touch the
+    // sibling verify.plan-structure invocation in the same step.
+    assert.ok(
+      validateStep.includes('verify.plan-structure "$PLAN_PATH"'),
+      'validate_plan step must still invoke verify.plan-structure unchanged'
+    );
+  });
+});
+
+// ─── Cross-file consistency: schema name used by both files matches (#2847) ──
+
+describe('#2847: schema name consistency between gsd-planner.md and src/frontmatter.cts', () => {
+  test('gsd-planner.md references the exact schema name "plan-gap-closure"', () => {
+    const plannerContent = readFile(PLANNER_AGENT_PATH);
+    assert.ok(
+      plannerContent.includes('plan-gap-closure'),
+      'agents/gsd-planner.md must reference the literal schema name "plan-gap-closure" ' +
+      '(the exact key registered in FRONTMATTER_SCHEMAS in src/frontmatter.cts) — a ' +
+      'mismatched name would fail at runtime with "Unknown schema"'
+    );
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded from tests/issue-2977-frontmatter-bom.test.cjs — test-hygiene sweep #3339 (H3 Wave 7)
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:issue-2977-frontmatter-bom', () => {
+'use strict';
+
+/**
+ * Regression test for #2977 — `extractFrontmatter` returns {} for any file whose
+ * frontmatter fence is preceded by a UTF-8 BOM (Windows PowerShell `>`/`Out-File`,
+ * several editors). The `startsWith('---')` byte-0 check fails on any leading byte,
+ * so every frontmatter field silently disappears with no error.
+ *
+ * The fix strips a leading UTF-8 BOM (U+FEFF) before the fence check. Scope: BOM only
+ * (acceptance criteria 1-3). The generalized "arbitrary content before the fence" fork
+ * (tolerate vs diagnose) is a product-intent decision, surfaced in the PR — out of scope.
+ *
+ * Matrix: .gsd/bug/fix/2977-frontmatter-bom-tolerance/50-test-matrix.md
+ */
+
+const { describe, test } = require('node:test');
+const assert = require('node:assert/strict');
+const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+const BOM = '\uFEFF';
+
+describe('extractFrontmatter BOM tolerance (#2977)', () => {
+  test('bomPrefixedFrontmatterParses', () => {
+    // Row 1 (failing-first regression): a BOM-prefixed frontmatter document parses
+    // identically to the same document without the BOM.
+    const clean = '---\ntitle: T\nphase: "01"\nstatus: passed\n---\n\n# Body\n';
+    const bommed = BOM + clean;
+    const expected = extractFrontmatter(clean, 'a.md');
+    const actual = extractFrontmatter(bommed, 'a.md');
+    assert.deepEqual(actual, expected, 'BOM-prefixed frontmatter must parse identically to no-BOM');
+    assert.strictEqual(actual.title, 'T', 'title field recovered');
+    assert.strictEqual(actual.phase, '01', 'phase field recovered');
+    assert.strictEqual(actual.status, 'passed', 'status field recovered');
+  });
+
+  test('bomWithCrlfParses', () => {
+    // Row 2 (acceptance #2): BOM + CRLF line endings together still parse correctly.
+    const clean = '---\r\ntitle: T\r\nphase: "01"\r\n---\r\n\r\n# Body\r\n';
+    const bommed = BOM + clean;
+    const actual = extractFrontmatter(bommed, 'a.md');
+    assert.strictEqual(actual.title, 'T', 'title recovered (BOM + CRLF)');
+    assert.strictEqual(actual.phase, '01', 'phase recovered (BOM + CRLF)');
+  });
+
+  test('bomWithNoFrontmatterStaysEmpty', () => {
+    // Row 3 (acceptance #3): a BOM prefixing a document with no frontmatter (or genuinely
+    // empty frontmatter) returns {} with no false diagnostic — same as no-BOM.
+    assert.deepEqual(extractFrontmatter(BOM + 'just plain text', 'a.md'), {}, 'BOM + no frontmatter -> {}');
+    assert.deepEqual(extractFrontmatter(BOM + '', 'a.md'), {}, 'BOM + empty -> {}');
+    // A thematic-break-first-line Markdown doc (--- then prose) must stay {} — protected by
+    // the existing false-positive threshold; the BOM strip must not lower that bar.
+    assert.deepEqual(extractFrontmatter(BOM + '---\n\nA horizontal rule, not frontmatter.\n', 'a.md'), {},
+      'BOM + thematic-break Markdown -> {} (no false diagnostic)');
+  });
+
+  test('bomAcrossArtifactTypes', () => {
+    // Row 4 (acceptance #1 across artifact types): each frontmatter-bearing artifact shape
+    // recovers its fields when BOM-prefixed.
+    const cases = [
+      { name: 'STATE.md', body: '---\ncurrent_phase: "01"\nstatus: "In progress"\n---\n\n# State\n', expect: { current_phase: '01', status: 'In progress' } },
+      { name: 'PLAN.md', body: '---\nphase: "01"\nplan: "01-01"\nstatus: "done"\n---\n\n# Plan\n', expect: { phase: '01', plan: '01-01', status: 'done' } },
+      { name: 'SUMMARY.md', body: '---\none-liner: "shipped the thing"\n---\n\n# Summary\n', expect: { 'one-liner': 'shipped the thing' } },
+      { name: 'UAT.md', body: '---\nphase: "02"\nverdict: "pass"\n---\n\n# UAT\n', expect: { phase: '02', verdict: 'pass' } },
+    ];
+    for (const c of cases) {
+      const actual = extractFrontmatter(BOM + c.body, c.name);
+      assert.deepEqual(actual, c.expect, `${c.name}: BOM-prefixed frontmatter must recover fields`);
+    }
+  });
+
+  test('controlNoBom', () => {
+    // Row 5 (no regression): no BOM, valid frontmatter still parses correctly (unchanged).
+    const actual = extractFrontmatter('---\ntitle: T\nphase: "01"\n---\n\n# Body\n', 'a.md');
+    assert.strictEqual(actual.title, 'T');
+    assert.strictEqual(actual.phase, '01');
+  });
+});
   });
 }

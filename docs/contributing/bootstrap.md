@@ -83,7 +83,7 @@ This runs `scripts/check-env.cjs` and reports pass/fail for each check:
 
 | Check | What it verifies |
 |---|---|
-| `node-version` | Active Node satisfies `engines.node` (`>=22.0.0`) |
+| `node-version` | Active Node satisfies `engines.node` (`>=24.0.0`) |
 | `npm-version` | Active npm satisfies `engines.npm` (`>=10.0.0`) |
 | `lockfile-present` | `package-lock.json` exists at root |
 | `lockfile-sync` | `npm ci --dry-run` exits 0 (lockfile matches installed state) |
@@ -104,7 +104,7 @@ npm run check:env -- --json
 
 ## Troubleshooting
 
-### `node-version` FAIL — Node X does NOT satisfy `>=22.0.0`
+### `node-version` FAIL — Node X does NOT satisfy `>=24.0.0`
 
 **Cause:** The system Node is too old, or the version manager hasn't activated the correct version.
 

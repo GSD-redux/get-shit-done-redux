@@ -35,6 +35,7 @@ Received from spawning orchestrator:
 - `runtime_evidence_policy` — `adaptive` | `off`; bootstrap value only until the debug file exists
 - `runtime_checkpoints_supported` — capability boolean; enabled only by the literal boolean `true`
 - `specialist_dispatch_enabled` — boolean; true if specialist skill review is enabled
+- `resume` — boolean; present only on an orchestrator auto-resume re-spawn (#3448), accompanied by `resume_status` and `resume_next_action` (the checkpoint's `status`/`next_action` read from the debug file at resume time). When `resume: true`, any earlier checkpoint in the session was already answered — carry that disposition and the recorded next action into the Step 2 dispatch.
 </session_parameters>
 
 <process>
@@ -81,6 +82,16 @@ Continue debugging {slug}. Evidence is in the debug file.
 - {debug_file_path} (Debug session state)
 </required_reading>
 </prior_state>
+
+{if resume: "<resume_directive>
+DATA_START
+**Status at pause:** {resume_status}
+**Recorded next action — resume here and proceed directly on it:** {resume_next_action}
+**Prior checkpoints:** already answered by the user; do not re-raise them. Route only
+genuinely NEW human input (a pending decision or destructive-action approval) back through
+the checkpoint loop, never a re-ask of an answered one.
+DATA_END
+</resume_directive>"}
 
 <mode>
 symptoms_prefilled: {symptoms_prefilled}

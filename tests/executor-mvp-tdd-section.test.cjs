@@ -87,6 +87,7 @@ describe('gsd-executor — state.* calls use the named-only router form (#1863 r
     // silently dropping the values. Guard them alongside the executor.
     for (const rel of ['gsd-core/workflows/milestone-summary.md', 'gsd-core/workflows/forensics.md']) {
       const wf = fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow markdown, bounded prose, not adversarial input
       const m = wf.match(/gsd_run query state\.record-session\b(?:[^\r\n]*\\\r?\n)*[^\r\n]*/);
       assert.ok(m, `${rel} must invoke state.record-session`);
       assert.ok(m[0].includes('--stopped-at') && m[0].includes('--resume-file'),

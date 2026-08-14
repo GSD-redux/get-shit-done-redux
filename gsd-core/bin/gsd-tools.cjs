@@ -1386,10 +1386,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
         // gate used in runWithTimeout: detect .cmd/.bat and mediate through
         // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        //
+        // #3275: descriptors declare BARE names, so the gate above never saw an
+        // extension — resolve through the shared PATH+PATHEXT resolver FIRST
+        // (the same one `hasBinary` uses, so probe and spawn can never disagree
+        // about what the lane's binary is). POSIX keeps the bare name: Node's own
+        // PATH search already worked there, and the #3275 acceptance contract
+        // holds macOS/Linux behavior unchanged. A name that resolves to nothing
+        // falls back to the declared name so the ENOENT still surfaces (#3086).
         const isWin = process.platform === 'win32';
-        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(binary));
-        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : binary;
-        const spawnArgv = winShim ? ['/d', '/s', '/c', binary, ...argv] : argv;
+        const target = isWin ? (resolveSpawnBinary(binary) || binary) : binary;
+        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(target));
+        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : target;
+        const spawnArgv = winShim ? ['/d', '/s', '/c', target, ...argv] : argv;
         const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
@@ -1397,6 +1406,10 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           killSignal: 'SIGKILL',
           maxBuffer: 64 * 1024 * 1024,
           shell: false, // argv array only — never a shell string (no interpolation of config values)
+          // #2483: a lane's declared env pairs merged OVER this process's environment, for this
+          // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
+          // into the orchestrating session or into the next lane.
+          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
         });
         return {
           status: r.status,
@@ -1425,24 +1438,13 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // all (a probe that costs a process is a probe you avoid running, which is how the original
       // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
       // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
-      hasBinary: (name) => {
-        if (!name || name.includes('/') || name.includes('\\')) {
-          try { return fsx.statSync(name).isFile(); } catch { return false; }
-        }
-        const exts = process.platform === 'win32'
-          ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-          : [''];
-        for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
-          for (const ext of exts) {
-            const candidate = path.join(dir, name + ext);
-            try {
-              const st = fsx.statSync(candidate);
-              if (st.isFile()) return true;
-            } catch { /* next candidate */ }
-          }
-        }
-        return false;
-      },
+      //
+      // #3275: the scan lives in `resolveSpawnBinary` now, SHARED with `deps.spawn`
+      // above. Two private copies of "what is this declared binary?" is how the
+      // defect hid: the probe resolved WITH PATHEXT while spawn resolved WITHOUT,
+      // so a lane reported available for a spawn that could never start. One
+      // resolver, both seams — if one changes, the other changes with it.
+      hasBinary: (name) => resolveSpawnBinary(name) !== null,
       configGet,
       homeDir: os.homedir(),
       warn: (m) => process.stderr.write(`${m}\n`),
@@ -1576,7 +1578,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeDispatchShouldFlatten({ args, cwd, raw, error }) {
     // #1708 / #853: typed query replacing the `RUNTIME === 'codex'` prose rule.
           //
-          // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+          // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+          // .gsd-runtime marker > 'claude'),
           // looks up registry.runtimes[id].runtime.hostIntegration.dispatch, and
           // calls shouldFlattenDispatch(dispatch) from host-integration.cjs.
           //
@@ -1630,7 +1633,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // #853) for exactly this reason — it replaced a `RUNTIME === 'codex'`
     // prose rule.
     //
-    // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+    // Resolves the current runtime (GSD_RUNTIME > config.runtime > per-install
+    // .gsd-runtime marker > 'claude'),
     // reads registry.runtimes[id].runtime.hostIntegration.dispatch.isolation,
     // and validates it against the closed vocabulary.
     //
@@ -1665,12 +1669,83 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `per-plan-worktree-gate.md`) override the naturally-resolved mode
     // while still going through this single write path. Best-effort: a
     // sentinel write failure here must never fail the wave.
-    const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+    const decision = resolveDispatchIsolationDecision({ args, cwd });
+    const runtimeId = decision.runtimeId;
+    let { isolation, exec, harnessFlag } = decision;
+
+    // `--force-isolation <mode>` overrides the naturally-resolved mode with
+    // context this resolver has no way to see on its own (e.g. the #2474
+    // per-plan submodule intersection). Invalid/unrecognized values are
+    // ignored rather than erroring — this is a best-effort recording call,
+    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
+    // neither applies to sequential dispatch.
+    const forceIdx = args.indexOf('--force-isolation');
+    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
+    if (forcedIsolation && DISPATCH_ISOLATION_VOCABULARY.has(forcedIsolation)) {
+      isolation = forcedIsolation;
+      if (isolation === 'none') {
+        harnessFlag = null;
+        exec = null;
+      }
+    }
+
+    const phaseIdx = args.indexOf('--phase');
+    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+    const planIdx = args.indexOf('--plan');
+    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
+
+    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
+    // Never allowed to affect this query's own stdout contract or throw.
+    try {
+      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
+    } catch {
+      // writeDispatchIsolationSentinel already swallows its own errors into
+      // a { recorded: false } result; this catch is defense in depth only.
+    }
+
+    if (args.indexOf('--json') !== -1) {
+      output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
+    } else {
+      process.stdout.write(isolation);
+    }
+  }
+
+  const DISPATCH_ISOLATION_VOCABULARY = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+
+  /**
+   * Shared, side-effect-free resolution of the negotiated dispatch isolation:
+   * runtime (GSD_RUNTIME > config.runtime > per-install .gsd-runtime marker >
+   * 'claude') → declared
+   * `dispatch.isolation` → harness-flag / orchestrator-exec degrade rules.
+   * Extracted (#2486) so `routeDispatchIsolation` (the #3045 recording
+   * dispatch path) and `routeInspectDispatchIsolation` (the read-only
+   * inspection path) share exactly one negotiation implementation and cannot
+   * drift apart. Resolution only — the caller decides whether the decision is
+   * recorded to the sentinel.
+   */
+  function resolveDispatchIsolationDecision({ args, cwd }) {
     let isolation = 'none';
     let runtimeId = null;
     let exec = null;
     let harnessFlag = null;
     try {
+      // Deliberately `resolveRuntime`, NOT `resolveActiveRuntime`/`loadConfig`:
+      // loadConfig normalizes and rewrites legacy keys back to disk, and this
+      // resolver backs the sentinel-free `inspect-dispatch-isolation` verb,
+      // which must never write. resolveRuntime reads config.json directly.
+      //
+      // KNOWN LIMITATION, tracked separately: resolveRuntime stops at
+      // GSD_RUNTIME > config.runtime > 'claude' and does not consult the
+      // per-install `.gsd-runtime` marker, so on a non-Claude install whose
+      // project config carries no `runtime` key this resolves 'claude'. That is
+      // open-gsd/gsd-core#2395 — a pre-existing defect in the canonical
+      // resolver, not introduced here, and deliberately NOT fixed in this PR
+      // (its blast radius reaches every consumer of that resolver, so it is
+      // being handled on its own).
       const { resolveRuntime } = require('./lib/runtime-slash.cjs');
       runtimeId = resolveRuntime(cwd);
 
@@ -1679,7 +1754,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         ? registry.runtimes[runtimeId]
         : null;
       const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
-      if (typeof declared === 'string' && VALID_ISOLATION.has(declared)) {
+      if (typeof declared === 'string' && DISPATCH_ISOLATION_VOCABULARY.has(declared)) {
         isolation = declared;
       }
 
@@ -1722,41 +1797,49 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       exec = null;
       harnessFlag = null;
     }
+    return { runtimeId, isolation, exec, harnessFlag };
+  }
 
-    // `--force-isolation <mode>` overrides the naturally-resolved mode with
-    // context this resolver has no way to see on its own (e.g. the #2474
-    // per-plan submodule intersection). Invalid/unrecognized values are
-    // ignored rather than erroring — this is a best-effort recording call,
-    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
-    // neither applies to sequential dispatch.
-    const forceIdx = args.indexOf('--force-isolation');
-    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
-    if (forcedIsolation && VALID_ISOLATION.has(forcedIsolation)) {
-      isolation = forcedIsolation;
-      if (isolation === 'none') {
-        harnessFlag = null;
-        exec = null;
-      }
+  function routeInspectDispatchIsolation({ args, cwd, raw }) {
+    // #2486: sentinel-free sibling of `dispatch-isolation` for INSPECTION
+    // surfaces — /gsd:health's W025 check and /gsd:settings' Worktrees
+    // branching. The dispatch verb above intentionally records its resolved
+    // decision to the isolation sentinel as an unconditional side effect
+    // (#3045 CORE REDESIGN): correct for executor dispatch, where the record
+    // must be structurally unskippable — but wrong for a read-only
+    // diagnostic. A health check that records a phase:null/plan:null
+    // sentinel can hard-block every executor dispatch for the sentinel's
+    // lifetime, across sessions sharing the main checkout. Inspection
+    // surfaces call this verb instead. Two claims, both narrower than
+    // "side-effect-free", and both exactly true (#2486 review, Majors 2 & 4):
+    //
+    //  1. SENTINEL-FREE, not write-free. This route writes nothing itself, and
+    //     in particular never writes .gsd/dispatch-isolation-sentinel.json —
+    //     the only write that can hard-block a later executor dispatch. It is
+    //     NOT a claim of total filesystem purity: like every gsd-tools
+    //     invocation, it runs the shared bootstrap and active-workstream
+    //     resolution first, and getActiveWorkstream self-heals (unlinks) a
+    //     stale or invalid pointer. That is pre-existing, verb-independent,
+    //     and harmless to dispatch.
+    //
+    //  2. SHARED NEGOTIATION, for the arguments this verb accepts. Both verbs
+    //     call resolveDispatchIsolationDecision, so the natural resolution
+    //     cannot drift. It is NOT a claim of byte-identical output for every
+    //     argv: routeDispatchIsolation applies --force-isolation AFTER the
+    //     shared helper returns, so the same argv could otherwise yield
+    //     'none' there and the declared capability here. Rather than let a
+    //     caller receive a silently different answer, this verb REJECTS the
+    //     recording-only knobs outright — they exist to be recorded, and a
+    //     read has nothing to record.
+    const RECORDING_ONLY_ARGS = ['--force-isolation', '--phase', '--plan'];
+    const rejected = RECORDING_ONLY_ARGS.filter((flag) => args.indexOf(flag) !== -1);
+    if (rejected.length > 0) {
+      error(
+        `inspect-dispatch-isolation: ${rejected.join(', ')} ${rejected.length === 1 ? 'is a' : 'are'} recording-only argument${rejected.length === 1 ? '' : 's'} and cannot be used on the inspection verb — it resolves the runtime's DECLARED capability and records nothing. Use 'query dispatch-isolation' if you need the override applied and the decision recorded.`,
+        ERROR_REASON.USAGE,
+      );
     }
-
-    const phaseIdx = args.indexOf('--phase');
-    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
-      ? args[phaseIdx + 1]
-      : null;
-    const planIdx = args.indexOf('--plan');
-    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
-      ? args[planIdx + 1]
-      : null;
-
-    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
-    // Never allowed to affect this query's own stdout contract or throw.
-    try {
-      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
-    } catch {
-      // writeDispatchIsolationSentinel already swallows its own errors into
-      // a { recorded: false } result; this catch is defense in depth only.
-    }
-
+    const { runtimeId, isolation, exec, harnessFlag } = resolveDispatchIsolationDecision({ args, cwd });
     if (args.indexOf('--json') !== -1) {
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
     } else {
@@ -1905,6 +1988,50 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
              const requested = requestedIdx !== -1 ? args[requestedIdx + 1] : '';
              process.stdout.write(String(requested));
            }
+  }
+
+  function routeResolveAgent({ args, cwd, raw, error }) {
+    // #1689: resolve a per-plan agent_hint specialist name to the subagent_type
+           // an Agent() call should use. Returns the name unchanged when a
+           // matching agent file exists in the active runtime's agent dir(s);
+           // 'gsd-executor' when the name is absent, blank, or does not resolve.
+           // Fail-closed is the fallback (gsd-executor) — never echo an
+           // unvalidated name, which would make Agent() error and block the wave.
+           //
+           // Output:
+           //   --raw (default) -> prints the resolved type (the hint, or 'gsd-executor')
+           //   --json          -> prints { runtime, requested, resolved, fallback }
+    const FALLBACK = 'gsd-executor';
+    try {
+      const nameIdx = args.indexOf('--name');
+      const requested = nameIdx !== -1 ? args[nameIdx + 1] : '';
+      const { resolveRuntime } = require('./lib/runtime-slash.cjs');
+      const runtimeId = resolveRuntime(cwd);
+      const { resolveAgentHint } = require('./lib/agent-install-check.cjs');
+      let resolved = FALLBACK;
+      let resolvedOk = false; // true only when resolveAgentHint returned a hit
+      if (requested && !requested.startsWith('-')) {
+        const hit = resolveAgentHint(requested, runtimeId, cwd);
+        if (hit !== null) {
+          resolved = hit;
+          resolvedOk = true;
+        }
+      }
+      // `fallback` = we did NOT honor a resolvable hint (absent/flag-shaped name,
+      // the named agent did not resolve, or resolution errored). Requesting
+      // gsd-executor explicitly and resolving to it is NOT a fallback.
+      const fellBack = !resolvedOk;
+      const jsonIdx = args.indexOf('--json');
+      if (jsonIdx !== -1) {
+        output({ runtime: runtimeId, requested: requested || null, resolved, fallback: fellBack }, raw);
+      } else {
+        process.stdout.write(String(resolved));
+      }
+    } catch {
+      // Fail-closed: degrade to the legacy executor on any error so dispatch
+      // never blocks on resolution.
+      process.stdout.write(FALLBACK);
+    }
   }
 
   function routeAgentSkills({ args, cwd, raw, error }) {
@@ -3429,6 +3556,60 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   }
 
 
+/**
+ * #3275: resolve a DECLARED command name to the file a spawn can actually start.
+ *
+ * Lane descriptors (src/review-lane-descriptor.cts) declare BARE, platform-unaware
+ * binary names ('codex', 'gemini', 'kimi', 'agy'), and `review-lane invoke`'s
+ * `deps.spawn` + `deps.hasBinary` both need the on-disk form of that name. Before
+ * this helper existed they disagreed: `hasBinary` scanned PATH WITH PATHEXT (so
+ * probes reported lanes AVAILABLE on Windows) while `spawn` received the bare name
+ * — `CreateProcess` performs no PATHEXT resolution, so every spawn-transport lane
+ * ENOENT'd there, and the #3086 `.cmd`/`.bat` cmd.exe mediation gate never fired
+ * because the declared name never carried an extension. One shared resolver is the
+ * only shape that cannot drift back apart.
+ *
+ * win32: tries PATHEXT entries ONLY — never the bare name. npm global installs
+ * drop an EXTENSIONLESS POSIX sh shim (`...\npm\codex`) next to `codex.CMD`; a
+ * bare-name-first scan resolves to it, the mediation gate sees no `.cmd`, and the
+ * ENOENT returns unchanged (field-reported on Windows 11 — see the #3275 issue
+ * comment pinning exactly this pitfall).
+ *
+ * POSIX: answers EXISTENCE only (the old `hasBinary` contract, preserved
+ * byte-for-byte) by scanning PATH for the bare name. `deps.spawn` does NOT consult
+ * this on POSIX — the bare name goes to spawnSync unchanged and Node's own PATH
+ * search does the work, so macOS/Linux behavior is untouched (#3275 acceptance).
+ *
+ * Path-like names (any '/' or '\') bypass the PATH scan: the name is already an
+ * address, so it passes through when the file exists and is a file.
+ */
+function resolveSpawnBinary(name, platform = process.platform, env = process.env) {
+  if (!name) return null;
+  if (name.includes('/') || name.includes('\\')) {
+    try { return fs.statSync(name).isFile() ? name : null; } catch { return null; }
+  }
+  const segments = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+  if (platform !== 'win32') {
+    for (const dir of segments) {
+      const candidate = path.join(dir, name);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* next candidate */ }
+    }
+    return null;
+  }
+  const exts = String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean);
+  for (const dir of segments) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* next candidate */ }
+    }
+  }
+  return null;
+}
+
 const HOST_COMMAND_ROUTERS = {
   // Each entry wraps its `route*Command` router so it receives the module-scope
   // lib the old `case` arm passed, plus the per-dispatch context
@@ -3496,8 +3677,10 @@ const HOST_COMMAND_ROUTERS = {
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'inspect-dispatch-isolation': routeInspectDispatchIsolation,
     'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
+    'resolve-agent': routeResolveAgent,
     'agent-skills': routeAgentSkills,
     'skill-manifest': routeSkillManifest,
     'history-digest': routeHistoryDigest,
@@ -3750,7 +3933,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
+  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
@@ -4163,5 +4346,8 @@ module.exports = {
   TOP_LEVEL_USAGE,
   skipsRootResolution,
   resolveMainWorktreeCwd,
+  // #3275: exported for tests — the shared PATH+PATHEXT resolver behind
+  // review-lane invoke's `deps.spawn` / `deps.hasBinary` seams.
+  resolveSpawnBinary,
 };
 

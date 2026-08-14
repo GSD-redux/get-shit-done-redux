@@ -195,7 +195,7 @@ Contributor requirements (summary):
 - **One concern per PR** — bug fixes, enhancements, and features must be separate PRs
 - **No drive-by formatting** — don't reformat code unrelated to your change
 - **Don't bundle test-fixture updates into `docs:` or unrelated commits** — when a production change makes an existing test assertion stale, the test correction MUST land as its own `test:` (or `fix:`) commit, not bundled into a `docs:` commit that also updates the explanation. The release-sdk hotfix cherry-pick filter routes by commit-subject prefix (`fix:`, `chore:`, `test:`); a test-fixture correction packed under a `docs:` prefix is invisible to the picker and ships a half-state to the hotfix branch — production code changed, test assertion stale. v1.42.3 hit this exact mode (#3621). The fix is upstream: keep the test-fixture commit separate.
-- **CI must pass** — all configured matrix jobs must be green. Node 22 remains the compatibility floor; Node 24 is the primary target; Node 26 compatibility must be preserved for code and tests even when a Node 26 CI lane is not yet available.
+- **CI must pass** — all configured matrix jobs must be green. Node 24 is the compatibility floor and primary target; Node 26 compatibility must be preserved for code and tests even when a Node 26 CI lane is not yet available.
 - **Scope matches the approved issue** — if your PR does more than what the issue describes, the extra changes will be asked to be removed or moved to a new issue
 
 ## CHANGELOG Entries — Drop a Fragment
@@ -871,17 +871,16 @@ For everything else, if a test reaches for `.includes()` / `.startsWith()` / `as
 
 ### Node.js Version Compatibility
 
-**Node 22 is the minimum supported version.** Node 24 is the primary CI target. Node 26 is the forward-compatibility target: do not add tests or production code that depend on deprecated behavior likely to fail there.
+**Node 24 is the minimum supported version.** Node 24 is also the primary CI target. Node 26 is the forward-compatibility target: do not add tests or production code that depend on deprecated behavior likely to fail there.
 
 | Version | Status |
 |---------|--------|
-| **Node 22** | Minimum required — Active LTS until October 2026, Maintenance LTS until April 2027 |
-| **Node 24** | Primary CI target — current Active LTS, all tests must pass |
+| **Node 24** | Minimum required and primary CI target — Active LTS, all tests must pass |
 | Node 26 | Forward-compatible target — avoid deprecated APIs and exact runtime-error prose |
 
 Do not use:
 - Deprecated APIs
-- APIs not available in Node 22
+- APIs not available in Node 24
 
 Safe to use:
 - `node:test` — stable since Node 18, fully featured in 24
@@ -1048,6 +1047,47 @@ export GSD_BLOCKED_AUTHOR_REGEX='@example-corp\.com$'
 
 With that exported, a push carrying a commit whose author email matches is blocked,
 and the hook names the offending commits. Unset the variable to disable it.
+
+### Every `commit` invocation in shipped content must declare `--files`
+
+`tests/commit-files-pathspec.test.cjs` scans every `.md` under `gsd-core/workflows/`,
+`gsd-core/references/`, `agents/`, `commands/`, `skills/` and `docs/` for invocations of
+the `commit` seam, and fails if any of them reaches the runtime without a `--files`
+scope. An unscoped invocation lands on the blanket-stage default and sweeps the whole
+`.planning/` index into a commit whose message names one artifact — that is [#2269](https://github.com/open-gsd/gsd-core/issues/2269),
+and `cmdCommit` is a CRITICAL-blast-radius seam, so the guard is repo-wide rather than
+keyed to the three sites that were reported.
+
+The scan decides what is an invocation by **command shape**, not by the markup around
+it — a fenced block, an indented block, a `cd … &&` prefix and a bare line are all
+scanned alike, because 96 of the live invocations sit inside fences and exempting them
+would blind the guard to every site the issue was filed about. Two consequences you may
+hit while editing shipped content, and the failure output names both:
+
+**A prose mention that runs into its sentence is flagged.** Nothing distinguishes
+`gsd_run query commit` followed by ordinary words from an invocation with arguments
+without guessing at English, so the scan does not try. Write the command reference in
+backticks — the repo's own convention — and it is correctly read as a mention.
+
+**A deliberate wrong-example must declare itself.** An example that *shows* the unscoped
+form is byte-identical to a regression, so no property of the surrounding markup can
+stand in for your intent. Declare it on the invocation's own line, in shell-comment
+position:
+
+```
+gsd_run query commit "docs: message"   # gsd-scan-ignore: #2269 counter-example for the docs
+```
+
+That block is a live example of itself: the invocation above really is unscoped, and it
+is the declaration — not the fence around it — that keeps the scan quiet.
+
+The reason **must** name a tracking issue (`#NNN`) or an `http(s)://` URL, exactly as
+[ADR-456](docs/adr/456-test-rigor-architecture.md) requires of the sibling
+`allow-test-rule:` marker — an exemption with no ledger never gets revisited. A marker
+with a free-text reason is reported as a malformed declaration rather than as an unscoped
+commit, so you are told which of the two problems you actually have. A marker that
+survives shell tokenization as an *argument* declares nothing: it reached argv, which
+means the runtime executed the line.
 
 ### CI Test Quality Checks
 

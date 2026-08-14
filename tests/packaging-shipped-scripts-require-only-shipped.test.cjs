@@ -21,6 +21,8 @@ const { execFileSync } = require('node:child_process');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
+const { extractRequires } = require('./helpers/copy-script-fixture.cjs');
+
 /**
  * Resolve the tarball file list via `npm pack --dry-run --json`.
  * This is the ACTUAL set of files that ship — not a hardcoded list — so adding
@@ -45,27 +47,6 @@ function resolveTarballFiles() {
   });
   const parsed = JSON.parse(raw);
   return new Set(parsed[0].files.map((f) => f.path.replace(/\\/g, '/')));
-}
-
-/**
- * Extract all require('...') string-literal calls from a .cjs source.
- * Only static string-literal requires are checked — dynamic require(variable)
- * is out of scope (and would itself be a red flag in a shipped script).
- */
-function extractRequires(source) {
-  const requires = [];
-  // Strip block comments (/* ... */) and inline line comments (// ...) before
-  // matching, so a require() appearing in a doc comment or fenced code block
-  // inside a /* */ does not produce a false positive.
-  const stripped = source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '');
-  const requireRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  let m;
-  while ((m = requireRe.exec(stripped)) !== null) {
-    requires.push(m[1]);
-  }
-  return requires;
 }
 
 /**
@@ -195,6 +176,15 @@ describe('#2858 — shipped scripts require only shipped paths', () => {
     assert.ok(
       !shippedFiles.has('scripts/gen-emitted-baseline.cjs'),
       'scripts/gen-emitted-baseline.cjs must NOT ship — it requires tests/ which does not ship (#2858)',
+    );
+  });
+
+  test('lint-no-adhoc-regex-escape.cjs does NOT ship (repo-only CI tooling)', () => {
+    // This script requires ../eslint-rules/ which does not ship. It is
+    // repo-only CI tooling. It must be excluded from the npm tarball (#3412).
+    assert.ok(
+      !shippedFiles.has('scripts/lint-no-adhoc-regex-escape.cjs'),
+      'scripts/lint-no-adhoc-regex-escape.cjs must NOT ship — it requires ../eslint-rules/ which does not ship (#3412)',
     );
   });
 
