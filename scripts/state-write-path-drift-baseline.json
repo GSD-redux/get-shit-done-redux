@@ -17,7 +17,7 @@
     },
     {
       "file": "src/phase.cts",
-      "source": "stateContent = syncStateFrontmatter(stateContent, cwd, authoritativeFm);",
+      "source": "const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);",
       "symbol": "syncStateFrontmatter",
       "count": 1,
       "owner": "#3469"
