@@ -1863,8 +1863,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
-          // de-duplicate by normalized phase number keeping the most recently
-          // modified dir. This prevents double-counting (e.g. two "Phase 1" dirs).
+          // de-duplicate by normalized phase number keeping exactly one dir
+          // per key (deterministic tie-break: see #3355 below). This prevents
+          // double-counting (e.g. two "Phase 1" dirs).
           const seenPhaseNums = new Map<string, string>(); // normalizedNum -> dirName
           for (const dir of allMatchingDirs) {
             // #1514: a retired/folded phase keeps a directory but no completion
@@ -1883,14 +1884,25 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
-              // Keep the dir that is newer on disk (more likely current milestone)
-              try {
-                const existing = path.join(phasesDir, seenPhaseNums.get(key) as string);
-                const candidate = path.join(phasesDir, dir);
-                if (fs.statSync(candidate).mtimeMs > fs.statSync(existing).mtimeMs) {
-                  seenPhaseNums.set(key, dir);
-                }
-              } catch { /* keep existing on stat error */ }
+              // #3355: the survivor of a same-milestone collision must be
+              // chosen from repository CONTENT, never from filesystem state.
+              // The pre-#3355 tie-break was `mtimeMs` — a checkout-order
+              // signal — so two byte-identical checkouts of the same commit
+              // that wrote the colliding dirs in a different order picked
+              // different survivors, and progress.total_plans /
+              // completed_plans drifted across clones and CI runs. The
+              // directory NAME is git-tracked content and a total order, so
+              // the lexicographically-first dir wins deterministically. The
+              // collision is still a project-level defect (duplicate phase
+              // number in scope), so it is surfaced on stderr instead of
+              // being silently resolved. The Bug #2445 invariant — exactly
+              // one survivor per normalized phase number — is unchanged.
+              const incumbent = seenPhaseNums.get(key) as string;
+              const survivor = dir < incumbent ? dir : incumbent;
+              seenPhaseNums.set(key, survivor);
+              process.stderr.write(
+                `gsd: warning — phase directories '${incumbent}' and '${dir}' both normalize to phase key '${key}' (duplicate phase number in .planning/phases/); keeping '${survivor}' by deterministic lexicographic order. (#3355)\n`
+              );
             }
           }
           const phaseDirs = [...seenPhaseNums.values()];
