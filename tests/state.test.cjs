@@ -21,6 +21,7 @@ const fc = require('fast-check');
 // consumer's OBSERVABLE output is compared against (Decision 4c) — never the
 // owner's return value against itself.
 const stateLib = require('../gsd-core/bin/lib/state.cjs');
+const stateTransitionMod = require('../gsd-core/bin/lib/state-transition.cjs');
 const stateDocument = require('../gsd-core/bin/lib/state-document.cjs');
 const frontmatterLib = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
@@ -5272,7 +5273,9 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const onDisk = fs.readFileSync(statePath, 'utf8');
       const fm = frontmatterLib.extractFrontmatter(onDisk);
       assert.strictEqual(fm.current_phase_name, 'Fresh Curated Name', 'fresher curated frontmatter must win over the stale body value — unchanged from Phases 1-3');
-      assert.ok(onDisk.includes('Phase: 3 (Stale Body Name)'), 'the stale body text itself is untouched (frontmatter wins, body prose is not rewritten)');
+      const onDiskBody = frontmatterLib.stripFrontmatter(onDisk);
+      const originalBody = frontmatterLib.stripFrontmatter(original);
+      assert.strictEqual(onDiskBody, originalBody, 'the stale body text itself is untouched (frontmatter wins, body prose is not rewritten)');
       assert.deepStrictEqual(divergedFields, ['current_phase_name'], 'the restore must be reported');
     });
 
@@ -5726,6 +5729,44 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
         ),
         { seed: 3471, numRuns: 40 },
       );
+    });
+  });
+
+  // ─── Parity: FRONTMATTER_KEY_TO_BODY_LABEL vs FIELD_CLASSIFICATION (#3471 review) ─
+  // A second hand-maintained table beside FIELD_CLASSIFICATION is exactly the
+  // "policy declared in one table, a second table beside it drifting quietly"
+  // shape this epic exists to remove — CLAUDE.md's "Generative Fix
+  // Divergence" entry requires a parity assertion for any two surfaces
+  // sharing a constant. `bodyLabelFor` (state.cts) throws for a
+  // preserve-when-unchanged field missing here (mirrors `throwUnwiredRow` in
+  // state-transition.cts) rather than silently falling back to the raw
+  // snake_case name — this test is what keeps that throw unreachable.
+  describe('Parity: every preserve-when-unchanged row has a FRONTMATTER_KEY_TO_BODY_LABEL entry (#3471 review)', () => {
+    test('FRONTMATTER_KEY_TO_BODY_LABEL has a label for every FIELD_CLASSIFICATION preserve-when-unchanged row', () => {
+      const preserveWhenUnchangedFields = Object.keys(stateTransitionMod.FIELD_CLASSIFICATION)
+        .filter((field) => stateTransitionMod.FIELD_CLASSIFICATION[field].preservation === 'preserve-when-unchanged');
+
+      // Sanity: the table this test pins is non-empty — a passing loop over
+      // zero fields would be a vacuous-truth false green (CLAUDE.md's Test
+      // Cleanup rule).
+      assert.ok(preserveWhenUnchangedFields.length > 0, 'expected at least one preserve-when-unchanged row to pin');
+
+      const missing = preserveWhenUnchangedFields.filter(
+        (field) => !Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, field),
+      );
+      assert.deepStrictEqual(missing, [], `preserve-when-unchanged field(s) with no body label, would hit bodyLabelFor's throw: ${JSON.stringify(missing)}`);
+    });
+
+    // Reverse direction: every label row IS a real field, and is either
+    // preserve-when-unchanged (the contract this table documents) or absent
+    // from FIELD_CLASSIFICATION entirely — never a preserve-always /
+    // preserve-if-placeholder field masquerading with a stale label.
+    test('every FRONTMATTER_KEY_TO_BODY_LABEL row is a preserve-when-unchanged FIELD_CLASSIFICATION field', () => {
+      const wrongPolicy = Object.keys(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL).filter((field) => {
+        const cls = stateTransitionMod.getFieldClassification(field);
+        return cls !== null && cls.preservation !== 'preserve-when-unchanged';
+      });
+      assert.deepStrictEqual(wrongPolicy, [], `FRONTMATTER_KEY_TO_BODY_LABEL row(s) whose FIELD_CLASSIFICATION policy is not preserve-when-unchanged: ${JSON.stringify(wrongPolicy)}`);
     });
   });
 });

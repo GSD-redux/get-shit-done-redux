@@ -3208,13 +3208,26 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
 
 /**
  * ADR-3408 §8.4/§8.5 (D4): frontmatter field name → the body Title-Case
- * label the `updated` arrays below use. Every field in this table is
- * `preserve-when-unchanged` / `preserve-always` in `FIELD_CLASSIFICATION` —
- * the only fields `applyStatePreservation` can restore, and therefore the
- * only fields `divergedFields` can ever name. `reconcileReportedFields`
- * consults this so a preservation event on `current_phase_name` folds into
- * a report that otherwise only ever speaks in body labels like `Current
- * Phase Name` (#3345's direction).
+ * label the `updated` arrays below use. Every `preserve-when-unchanged` row
+ * in `FIELD_CLASSIFICATION` MUST have an entry here (pinned by a parity test,
+ * #3471 review) — `reconcileReportedFields` consults this so a preservation
+ * event on `current_phase_name` folds into a report that otherwise only ever
+ * speaks in body labels like `Current Phase Name` (#3345's direction). A
+ * `preserve-when-unchanged` field missing here is a table drift bug and
+ * `bodyLabelFor` throws rather than silently degrading to the raw
+ * snake_case key (#3471 review — this is a second hand-maintained table
+ * parallel to `FIELD_CLASSIFICATION`, so an unwired row must fail as loudly
+ * as `throwUnwiredRow` in `state-transition.cts` does for the same shape of
+ * omission). `preserve-always`/`preserve-if-placeholder` fields (`progress`,
+ * `milestone`, `milestone_name`) are deliberately absent — `divergedFields`
+ * (ADR-3408 §8.5's out-param) is NOT scoped to `preserve-when-unchanged`
+ * rows alone (see `applyPostSyncPreservation`'s "regardless of which policy
+ * executor fired" diff), so those fields legitimately reach the lookup with
+ * no body-line label to report — `progress` is a structured sub-object and
+ * `milestone`/`milestone_name` version/name pairs, neither ever rendered as
+ * a body prose line — and `bodyLabelFor` falls through to the raw key for
+ * exactly that closed, tested set (`tests/state.test.cjs` A2f pins
+ * `divergedFields` reporting bare `'progress'`).
  */
 const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.freeze({
   current_phase: 'Current Phase',
@@ -3225,6 +3238,36 @@ const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.f
   status: 'Status',
   last_activity_desc: 'Last Activity Description',
 });
+
+/**
+ * ADR-3408 §8.4 (D4) / #3471 review: label lookup for a `divergedFields`
+ * entry. Throws for a `preserve-when-unchanged` field with no
+ * `FRONTMATTER_KEY_TO_BODY_LABEL` row — that combination can only happen if
+ * a future row is added to `FIELD_CLASSIFICATION` without a matching label,
+ * an internal table-drift bug, never a user-document defect (mirrors
+ * `throwUnwiredRow`'s shape in `state-transition.cts`: an `Error` carrying
+ * `code` and `field` own-properties). Falls through to the raw field name
+ * for every other policy (`preserve-always`, `preserve-if-placeholder`) —
+ * those fields were never claimed to have a body-line label and reaching
+ * this lookup with one of them is the documented, tested, working case
+ * (e.g. `progress`), not a silent degrade.
+ */
+function bodyLabelFor(field: string): string {
+  const label = FRONTMATTER_KEY_TO_BODY_LABEL[field];
+  if (label !== undefined) return label;
+  const cls = stateTransitionMod.getFieldClassification(field);
+  if (cls && cls.preservation === 'preserve-when-unchanged') {
+    const err = new Error(
+      `reconcileReportedFields: preserve-when-unchanged field ${JSON.stringify(field)} has no ` +
+      'FRONTMATTER_KEY_TO_BODY_LABEL entry. This is an internal invariant violation (ADR-3408 ' +
+      '§8.4/D4) — add a label for this field to FRONTMATTER_KEY_TO_BODY_LABEL.',
+    ) as Error & { code: string; field: string };
+    err.code = 'STATE_BODY_LABEL_UNWIRED_ROW';
+    err.field = field;
+    throw err;
+  }
+  return field;
+}
 
 /**
  * ADR-3408 §8.4 (D4): shared persisted-bytes reconciliation, generalized
@@ -3281,7 +3324,7 @@ function reconcileReportedFields(
     }
   }
   for (const field of divergedFields) {
-    const label = FRONTMATTER_KEY_TO_BODY_LABEL[field] ?? field;
+    const label = bodyLabelFor(field);
     if (!reconciled.includes(label)) reconciled.push(label);
   }
   return reconciled;
@@ -4751,6 +4794,10 @@ export = {
   // Test seam (#1514): the pure retired/folded-phase parser, exposed so its
   // strikethrough-detection logic can be property-tested directly.
   _extractRetiredPhaseNumbers: extractRetiredPhaseNumbers,
+  // Test seam (#3471 review): the second hand-maintained table beside
+  // FIELD_CLASSIFICATION, exposed so a parity test can pin that every
+  // `preserve-when-unchanged` row has a label here.
+  _FRONTMATTER_KEY_TO_BODY_LABEL: FRONTMATTER_KEY_TO_BODY_LABEL,
   // Test seam (audit M1): inject a deterministic isPidAlive so the liveness-gated
   // steal decision is exercised without real pids. Mirrors capability-lock.cts.
   _setLockProbes(probes: Partial<{ isPidAlive: (pid: number) => boolean }>): void {
