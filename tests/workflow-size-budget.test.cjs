@@ -602,3 +602,90 @@ describe('SIZE: byteCount is line-ending independent (#683 regression)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3324 — @-include lines inside Agent() prompt strings never expand
+// ---------------------------------------------------------------------------
+// Claude Code expands @path only in natively-loaded markdown bodies (CLAUDE.md,
+// slash-command/skill bodies, agent definitions) — never inside the prompt
+// parameter of a dynamically constructed Agent() call, which is delivered as
+// literal turn text. A bare @-include line in a prompt string means the
+// subagent never sees the referenced file (#3324).
+describe('#3324: no @-include lines inside Agent() prompt strings', () => {
+  const BARE_INCLUDE_LINE = /^\s*@(\$HOME|~)\//;
+
+  function listWorkflowFilesRecursive(dir, out = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) listWorkflowFilesRecursive(p, out);
+      else if (entry.name.endsWith('.md')) out.push(p);
+    }
+    return out;
+  }
+
+  // A prompt region opens at a line ending in `prompt="` and closes at the
+  // first subsequent line that is only whitespace + a double quote.
+  function bareIncludeLinesInPromptRegions(content) {
+    const hits = [];
+    let inPrompt = false;
+    content.split('\n').forEach((line, i) => {
+      if (!inPrompt && /prompt="\s*$/.test(line)) { inPrompt = true; return; }
+      if (inPrompt && /^\s*"\s*$/.test(line)) { inPrompt = false; return; }
+      if (inPrompt && BARE_INCLUDE_LINE.test(line)) {
+        hits.push({ line: i + 1, text: line.trim() });
+      }
+    });
+    return hits;
+  }
+
+  test('no workflow prompt string contains a bare @-include line (repo-wide guard)', () => {
+    const offenders = [];
+    for (const file of listWorkflowFilesRecursive(WORKFLOWS_DIR)) {
+      const rel = path.relative(path.join(__dirname, '..'), file);
+      for (const hit of bareIncludeLinesInPromptRegions(fs.readFileSync(file, 'utf-8'))) {
+        offenders.push(`${rel}:${hit.line} ${hit.text}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'Claude Code never expands @path inside a dynamically built Agent() ' +
+      'prompt="..." string — the include arrives as literal text and the ' +
+      'subagent never sees the referenced file. Use the ORCHESTRATOR ' +
+      'build-time embed pattern (see execute-phase.md <worktree_branch_check> ' +
+      'and <execution_context>) or inline the content. See #3324.'
+    );
+  });
+
+  test('execute-phase.md <execution_context> build-time embeds execute-plan.md instead of @-including it', () => {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-phase.md'), 'utf-8');
+    const block = content.match(/<execution_context>([\s\S]{0,4000}?)<\/execution_context>/);
+    assert.ok(
+      block,
+      'execute-phase.md must keep an <execution_context> block in the executor dispatch prompt'
+    );
+    assert.ok(
+      /ORCHESTRATOR build-time embed/.test(block[1]),
+      '<execution_context> must carry the ORCHESTRATOR build-time embed instruction (#3324)'
+    );
+    assert.ok(
+      /`~\/\.claude\/gsd-core\/workflows\/execute-plan\.md`/.test(block[1]),
+      '<execution_context> must list execute-plan.md (backticked, no @ sigil) for build-time embed (#3324)'
+    );
+  });
+
+  test('execute-plan.md still defines the steps only it carries into the dispatch', () => {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-plan.md'), 'utf-8');
+    for (const marker of [
+      'segment_execution',
+      'previous_phase_check',
+      'verification_failure_gate',
+      'update_codebase_map',
+    ]) {
+      assert.ok(
+        content.includes(marker),
+        `execute-plan.md must still define ${marker} — it reaches executors only via the build-time embed (#3324)`
+      );
+    }
+  });
+});
