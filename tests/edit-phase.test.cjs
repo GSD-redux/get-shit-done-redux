@@ -315,6 +315,7 @@ describe('edit-phase workflow: phase number and position preservation', () => {
 describe('edit-phase workflow: milestone scope guard (#3262)', () => {
   test('workflow captures the milestone scope before writing the updated phase', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
     assert.ok(writeStep, 'write_updated_phase step must exist');
     assert.match(
@@ -327,6 +328,7 @@ describe('edit-phase workflow: milestone scope guard (#3262)', () => {
 
   test('workflow re-derives the milestone scope after the write and rolls back on mismatch', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const writeStep = content.match(/<step name="write_updated_phase">([\s\S]*?)<\/step>/);
     assert.ok(writeStep, 'write_updated_phase step must exist');
     assert.match(writeStep[1], /SCOPE_AFTER/i, 'the post-write re-derivation must be present');
@@ -345,6 +347,7 @@ describe('edit-phase workflow: milestone scope guard (#3262)', () => {
 
   test('milestone scope guard success criterion is checked (#3262)', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
     const criteria = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
     assert.ok(criteria, 'workflow should have a success_criteria section');
     assert.match(
