@@ -85,6 +85,7 @@ function hasUnboundedBroadQuantifier(pattern, hasDotAll) {
       let closed = false;
       while (j < len) {
         if (pattern[j] === ']') { closed = true; break; }
+        if (units > 2) break;
         if (pattern[j] === '\\' && j + 1 < len) { j += 2; units++; continue; }
         j++; units++;
       }

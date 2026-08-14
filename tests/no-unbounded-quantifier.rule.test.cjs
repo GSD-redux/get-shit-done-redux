@@ -211,4 +211,23 @@ describe('no-unbounded-quantifier: valid cases', () => {
       invalid: [],
     });
   });
+
+  test('row 14: does not hang on an adversarial run of unclosed negated classes (quadratic-scan regression)', () => {
+    // Security review finding: hasUnboundedBroadQuantifier's inner negated-class
+    // scan previously ran unbounded from every `[^` offset with no closing `]`,
+    // making this O(n^2). The fix bails once units > 2. This test's only
+    // assertion is that RuleTester.run() completes at all (a stuck inner scan
+    // would hang the test rather than fail it) — no wall-clock threshold here.
+    const adversarialPattern = '[^' + '[^'.repeat(50000);
+    const result = ruleTester.run('no-unbounded-quantifier', rule, {
+      valid: [
+        {
+          code: `const m = fs.readFileSync(p, 'utf8').match(new RegExp('${adversarialPattern}'));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+    assert.strictEqual(result, undefined);
+  });
 });
