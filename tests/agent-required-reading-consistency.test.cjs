@@ -205,5 +205,48 @@ describe('debugger agent references bug patterns', () => {
     );
   });
 });
+
+// ─── Emit-Side Parity (F8 #3423 / epic #1891) ───────────────────────────────
+// The agent-side ban above is half the retirement. Spawner workflows and
+// commands must not EMIT the legacy tag either: a <files_to_read> block sent to
+// an agent whose gate reads <required_reading> never fires the MUST-Read clause
+// (the ui-review → gsd-ui-auditor instance: a score produced against a baseline
+// the auditor was never required to open). This sweep pins the workflow-side
+// emit tag to the agent-side gate tag — the two vocabularies cannot drift again.
+
+function listMarkdownRecursive(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listMarkdownRecursive(full));
+    else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
+}
+
+describe('READING: no legacy <files_to_read> blocks in spawner surfaces', () => {
+  const SPAWNER_DIRS = [
+    path.join(__dirname, '..', 'gsd-core', 'workflows'),
+    path.join(__dirname, '..', 'commands'),
+    path.join(__dirname, '..', 'gsd-core', 'references'),
+    path.join(__dirname, '..', 'gsd-core', 'templates'),
+  ];
+  const files = SPAWNER_DIRS.flatMap((d) => listMarkdownRecursive(d)).sort();
+
+  test('spawner surfaces enumerated (guard is not scanning nothing)', () => {
+    assert.ok(files.length > 100, `expected a large spawner surface, found ${files.length}`);
+  });
+
+  for (const file of files) {
+    const rel = path.relative(path.join(__dirname, '..'), file);
+    test(`${rel} does not contain <files_to_read>`, () => {
+      const content = fs.readFileSync(file, 'utf-8');
+      assert.ok(
+        !content.includes('<files_to_read>') && !content.includes('</files_to_read>'),
+        `${rel} still emits the legacy tag — migrate to <required_reading> (#3423)`
+      );
+    });
+  }
+});
   });
 }

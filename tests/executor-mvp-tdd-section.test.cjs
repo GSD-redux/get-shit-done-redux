@@ -193,7 +193,7 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
   });
 
   test('execute-phase prompt anchors subagent file paths to project_root before files_to_read (#280)', () => {
-    const filesIdx = executePhaseSrc.indexOf('<files_to_read>');
+    const filesIdx = executePhaseSrc.indexOf('<required_reading>');
     assert.ok(filesIdx !== -1, 'files_to_read block not found in execute-phase.md');
     const dispatchSnippet = executePhaseSrc.slice(filesIdx, filesIdx + 1800);
     assert.ok(

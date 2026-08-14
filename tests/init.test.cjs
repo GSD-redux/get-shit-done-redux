@@ -2786,7 +2786,7 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
 
   // allow-test-rule: source-text-is-the-product (see #2376)
   //
-  // Checks verbatim presence of the exact edited <files_to_read>/output blocks
+  // Checks verbatim presence of the exact edited <required_reading>/output blocks
   // rather than scanning the whole file for absence of the old literals: several
   // of those literals (e.g. .planning/PROJECT.md, .planning/config.json) remain
   // legitimately elsewhere in this file in orchestrator-local bash/doc-table
@@ -2797,17 +2797,17 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
     const content = fs.readFileSync(wfPath, 'utf8');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</files_to_read>'
+      '<required_reading>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</required_reading>'
     ), 'research-synthesizer spawn must read from {research_dir}, not bare .planning/research/*.md literals');
     assert.ok(content.includes('Write to: {research_dir}/SUMMARY.md'),
       'research-synthesizer spawn must write to {research_dir}/SUMMARY.md, not a bare literal');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {project_path} (Project context)\n- {requirements_path} (v1 Requirements)\n- {research_dir}/SUMMARY.md (Research findings - if exists)\n- {config_path} (Granularity and mode settings)\n</files_to_read>'
+      '<required_reading>\n- {project_path} (Project context)\n- {requirements_path} (v1 Requirements)\n- {research_dir}/SUMMARY.md (Research findings - if exists)\n- {config_path} (Granularity and mode settings)\n</required_reading>'
     ), 'roadmapper spawn must read from {project_path}/{requirements_path}/{research_dir}/{config_path}, not bare .planning literals');
 
     assert.ok(content.includes(
-      '<files_to_read>\n  - {roadmap_path} (Current roadmap to revise)\n  </files_to_read>'
+      '<required_reading>\n  - {roadmap_path} (Current roadmap to revise)\n  </required_reading>'
     ), 'roadmapper revision spawn must read {roadmap_path}, not a bare .planning/ROADMAP.md literal');
   });
 
@@ -2817,13 +2817,13 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
     const content = fs.readFileSync(wfPath, 'utf8');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</files_to_read>'
+      '<required_reading>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</required_reading>'
     ), 'research-synthesizer spawn must read from {research_dir}, not bare .planning/research/*.md literals');
     assert.ok(content.includes('Write to: {research_dir}/SUMMARY.md'),
       'research-synthesizer spawn must write to {research_dir}/SUMMARY.md, not a bare literal');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {project_path}\n- {requirements_path}\n- {research_dir}/SUMMARY.md (if exists)\n- {config_path}\n- {milestones_path}\n</files_to_read>'
+      '<required_reading>\n- {project_path}\n- {requirements_path}\n- {research_dir}/SUMMARY.md (if exists)\n- {config_path}\n- {milestones_path}\n</required_reading>'
     ), 'roadmapper spawn must read from {project_path}/{requirements_path}/{research_dir}/{config_path}/{milestones_path}, not bare .planning literals');
   });
 

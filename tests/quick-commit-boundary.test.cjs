@@ -174,8 +174,8 @@ describe('quick.md pre-dispatch PLAN.md commit (#2432)', () => {
     const executorTask = content.indexOf('subagent_type="gsd-executor"');
     assert.ok(executorTask !== -1, 'executor Task() spawn must exist');
     // Find the files_to_read block near the executor spawn
-    const filesBlock = content.lastIndexOf('<files_to_read>', executorTask);
-    const filesBlockEnd = content.indexOf('</files_to_read>', filesBlock);
+    const filesBlock = content.lastIndexOf('<required_reading>', executorTask);
+    const filesBlockEnd = content.indexOf('</required_reading>', filesBlock);
     const filesContent = content.slice(filesBlock, filesBlockEnd);
     assert.ok(
       filesContent.includes('QUICK_DIR') || filesContent.includes('.planning/quick'),
@@ -219,7 +219,7 @@ describe('quick.md pre-dispatch PLAN.md commit (#2432)', () => {
       'executor prompt must materialize PLAN.md from git show <plan-commit>:<plan-path> when absent (#1265)'
     );
     assert.ok(
-      executorPrompt.indexOf('git show') < executorPrompt.indexOf('<files_to_read>'),
+      executorPrompt.indexOf('git show') < executorPrompt.indexOf('<required_reading>'),
       'PLAN.md materialization must be a first action before files_to_read can prime paths (#1265)'
     );
   });
