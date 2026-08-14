@@ -82,7 +82,7 @@ describe('execute-phase command: active flags are explicit', () => {
  * Regression test for #2396: hardcoded host-level test commands bypass
  * container-only project Makefiles.
  *
- * Fix: execute-phase.md, verify-phase.md, and audit-fix.md must check for
+ * Fix: execute-phase.md and audit-fix.md must check for
  * Makefile with a test target (and other wrappers) before falling through
  * to hardcoded language-sniffed commands.
  */
@@ -95,7 +95,6 @@ const fs = require('fs');
 const path = require('path');
 
 const EXECUTE_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
-const VERIFY_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-phase.md');
 const AUDIT_FIX_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'audit-fix.md');
 // #1857: execute-phase's regression-gate test-command resolution was extracted
 // to this step file (execute-phase.md is size-frozen — phase-6 capstone).
@@ -164,10 +163,6 @@ describe('bug-2396: Makefile test target must take priority over hardcoded comma
     assert.ok(fs.existsSync(EXECUTE_PHASE_PATH), 'execute-phase.md should exist');
   });
 
-  test('verify-phase.md exists', () => {
-    assert.ok(fs.existsSync(VERIFY_PHASE_PATH), 'verify-phase.md should exist');
-  });
-
   test('audit-fix.md exists', () => {
     assert.ok(fs.existsSync(AUDIT_FIX_PATH), 'audit-fix.md should exist');
   });
@@ -176,20 +171,12 @@ describe('bug-2396: Makefile test target must take priority over hardcoded comma
     assertMakefileCheckBeforeNpmTest(REGRESSION_GATE_PATH, 'regression-gate.md');
   });
 
-  test('verify-phase.md: Makefile check precedes npm test', () => {
-    assertMakefileCheckBeforeNpmTest(VERIFY_PHASE_PATH, 'verify-phase.md');
-  });
-
   test('audit-fix.md: Makefile check precedes npm test', () => {
     assertMakefileCheckBeforeNpmTest(AUDIT_FIX_PATH, 'audit-fix.md');
   });
 
   test('regression-gate step: workflow.test_command config checked first (within bash block) (#1857)', () => {
     assertConfigGetBeforeMakefile(REGRESSION_GATE_PATH, 'regression-gate.md');
-  });
-
-  test('verify-phase.md: workflow.test_command config checked first (within bash block)', () => {
-    assertConfigGetBeforeMakefile(VERIFY_PHASE_PATH, 'verify-phase.md');
   });
 
   test('audit-fix.md: workflow.test_command config checked first (within bash block)', () => {

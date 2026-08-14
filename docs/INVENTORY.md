@@ -264,10 +264,9 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 | `thread.md` | Create, list, close, or resume persistent context threads for cross-session work. | `/gsd-thread` |
 | `update.md` | Update GSD to latest version with changelog display. | `/gsd-update` |
 | `validate-phase.md` | Retroactively audit and fill Nyquist validation gaps for a completed phase. | `/gsd-validate-phase` |
-| `verify-phase.md` | Verify phase goal achievement through goal-backward analysis. | `execute-phase.md` (post-execution) |
 | `verify-work.md` | Conversational UAT with auto-diagnosis — produces UAT.md and fix plans. | `/gsd-verify-work` |
 
-> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `verify-phase.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`.
+> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`. (The former `verify-phase` workflow — goal-backward verification with no loader of its own — was deleted in #1892; its still-live gates moved to `references/verifier-phase-gates.md` behind `gsd-verifier`.)
 
 ### Workflow Sub-Files
 
@@ -305,6 +304,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `model-profile-resolution.md` | Model resolution algorithm documentation. |
 | `verification-patterns.md` | How to verify different artifact types. |
 | `verification-overrides.md` | Per-artifact verification override rules. |
+| `verifier-phase-gates.md` | Verifier-time gates eagerly imported by `gsd-verifier` (migrated from the retired `verify-phase` workflow, #1892): decision-coverage validation (#2492), test-quality audit, and infrastructure-phase human-verification scoping (#2504). |
 | `planning-config.md` | Full config schema and behavior. |
 | `security-asvs-levels.md` | OWASP ASVS level definitions for GSD threat modeling — per-level planner disposition rigor and auditor verification depth (L1 opportunistic, L2 standard, L3 comprehensive). |
 | `git-integration.md` | Git commit, branching, and history patterns. |
@@ -598,8 +598,9 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `surface.cjs` | Runtime surface module — manages the runtime enable/disable surface state independently of the install-time profile marker (ADR-0011 Phase 2) |
 | `task-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools task` |
 | `template.cjs` | Template selection and filling with variable substitution |
-| `text-lines.cjs` | Line-terminator handling seam — `splitLines`/`normalizeEol`/`detectEol`/`joinLines`, the sole owner of `\r?\n` splitting and CRLF normalization; closes #3360's split-then-match fix in `frontmatter.cjs` (ADR-3212 §3, epic #3212 Phase 2, #3413) |
-| `normalize-test-command.cjs` | Normalizes a resolved test command to a one-shot form so a watch-mode runner (vitest/jest) cannot hang a verification gate (#1857); shared by all four test-command gates (regression, post-merge, audit-fix, verify-phase) |
+| `text-lines.cjs` | Line-terminator handling seam — `splitLines`/`normalizeEol`/`detectEol`/`joinLines`, the sole owner of `?
+` splitting and CRLF normalization; closes #3360's split-then-match fix in `frontmatter.cjs` (ADR-3212 §3, epic #3212 Phase 2, #3413) |
+| `normalize-test-command.cjs` | Normalizes a resolved test command to a one-shot form so a watch-mode runner (vitest/jest) cannot hang a verification gate (#1857); shared by all three live test-command gates (regression, post-merge, audit-fix) |
 | `uat.cjs` | UAT file parsing, verification debt tracking, audit-uat support |
 | `uat-predicate.cjs` | UAT-passed predicate — markdown-aware evaluation of HUMAN-UAT results; returns pass only when all required checks pass; ignores false-positive contexts (frontmatter, fenced code, blockquotes, HTML comments) |
 | `ui-consideration-probe.cjs` | Spec-completeness UI-consideration probe (compiled from `src/ui-consideration-probe.cts`, gitignored) — the third adapter of the `probe-core` resolution model (ADR-550 Decision 7): element-kind classification, applicable-category relevance filter, consideration proposal, `proposeElements`/`autoResolve` (propose-then-confirm + the `--auto` never-dismiss floor), and the `{explicit, backstop}` validators; delegates merge/rollup/CLI to `probe-core`; exports `classifyElement`, `applicableCategories`, `proposeConsiderations`, `proposeElements`, `autoResolve`, `analyzeCoverage`, `UI_TAXONOMY` (#1867) |

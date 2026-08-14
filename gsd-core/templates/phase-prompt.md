@@ -606,5 +606,3 @@ Task completion ≠ Goal achievement. A task "create chat component" can complet
 4. Verification subagent checks must_haves against codebase
 5. Gaps found → fix plans created → execute → re-verify
 6. All must_haves pass → phase complete
-
-See `~/.claude/gsd-core/workflows/verify-phase.md` for verification logic.
