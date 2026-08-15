@@ -1417,7 +1417,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   lines.push(hr);
   lines.push(`  ${counts.total} item${counts.total !== 1 ? 's' : ''} require decisions before close.`);
   if (acknowledged.total > 0) {
-    lines.push(`  ${acknowledged.total} additional item${acknowledged.total !== 1 ? 's' : ''} previously acknowledged and still suppressed.`);
+    lines.push(`  ${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} also suppressed above the ${counts.total} open item${counts.total !== 1 ? 's' : ''}.`);
   }
   lines.push(hr);
 
