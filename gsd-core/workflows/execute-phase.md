@@ -280,7 +280,7 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 <step name="handle_branching">
 **"none":**
 ```bash
-B=$(gsd_run query git.base-branch||echo main);C=$(git branch --show-current);[ $C = $B ]&&echo "WARNING: base branch $B" >&2
+B=$(gsd_run query git.base-branch||echo main);C=$(git branch --show-current);[ "$C" = "$B" ]&&echo "WARNING: base branch $B" >&2
 ```
 **"phase" or "milestone":**
 Fork the new phase branch off `origin/HEAD` (the project's default branch), not the current HEAD — otherwise consecutive phases compound and stay unpushed (#2916). If `$BRANCH_NAME` already exists locally, reuse it as-is.
