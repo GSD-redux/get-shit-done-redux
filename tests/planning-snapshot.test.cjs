@@ -43,6 +43,7 @@ const { worstScope } = planningSnapshotLib;
 
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const { _unusableInputEmissionCountForTests } = require('../gsd-core/bin/lib/unusable-input.cjs');
+const { normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
 
 // Phase 11 (#3309) additions — agent-install fixture helper mirrors
 // tests/agent-install-check.test.cjs's own EXPECTED_AGENTS/createCompleteAgents
@@ -107,9 +108,10 @@ function makeDirUnreadableAsFile(fullPath) {
 // on a "healthy" phase (Phase 12, #3310) get a genuinely clean baseline
 // rather than a false positive from a plan that predates the `wave:` field.
 function makeCompletePhaseDir(cwd, relPhaseDir) {
+  const phaseNum = normalizePhaseName(path.basename(relPhaseDir));
   writeFile(cwd, `${relPhaseDir}/01-01-PLAN.md`, '---\nwave: 1\n---\n\n# Plan\n');
   writeFile(cwd, `${relPhaseDir}/01-01-SUMMARY.md`, '# Summary\n');
-  writeFile(cwd, `${relPhaseDir}/01-VERIFICATION.md`, '---\nstatus: passed\n---\n');
+  writeFile(cwd, `${relPhaseDir}/${phaseNum}-VERIFICATION.md`, '---\nstatus: passed\n---\n');
 }
 
 function buildHealthyTwoPhaseFixture(cwd) {
@@ -953,6 +955,24 @@ describe('researchValidationStatus field (Phase 11, #3309)', () => {
     const snap = buildPlanningSnapshot(cwd);
     const entry = snap.researchValidationStatus.value.find((r) => r.dir === '01-foo');
     assert.deepStrictEqual(entry, { dir: '01-foo', hasValidationArchitecture: false, hasValidationMd: false });
+  });
+
+  test('#3511-class: a phase dir holding only ANOTHER phase\'s -RESEARCH.md/-VALIDATION.md does not set this phase\'s flags', (t) => {
+    const cwd = createTempDir('gsd-3511-rvs4-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo', '', '### Phase 2: Bar'].join('\n'));
+    // Phase 01's directory is empty. Phase 02's directory holds ONLY stray
+    // artifacts whose filename token ("01-") belongs to phase 01, not to
+    // this directory's own phase (02).
+    fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', '01-foo'), { recursive: true });
+    writeFile(cwd, '.planning/phases/02-bar/01-RESEARCH.md', '# Research\n\n## Validation Architecture\n\ntext\n');
+    writeFile(cwd, '.planning/phases/02-bar/01-VALIDATION.md', '# Validation\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    const entry = snap.researchValidationStatus.value.find((r) => r.dir === '02-bar');
+    assert.deepStrictEqual(entry, { dir: '02-bar', hasValidationArchitecture: false, hasValidationMd: false },
+      'phase 2 must not report validation status from a file that belongs to phase 1');
   });
 
   test('hostile: an unreadable phase directory degrades that entry to false/false without throwing', (t) => {

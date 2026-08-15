@@ -2240,6 +2240,27 @@ describe('stats command', () => {
     assert.strictEqual(phase.status, 'Complete', 'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet');
   });
 
+  // #3511 BLOCKER-2 regression: a cross-phase stray VERIFICATION.md must not
+  // resolve as THIS phase's report. Phase 03's directory holds only a
+  // '04-VERIFICATION.md' (belongs to phase 04); an unscoped resolver would
+  // pick it up as phase 03's own report and read 'Complete'.
+  test('#3511: phase status is not Complete off a cross-phase stray VERIFICATION.md', () => {
+    const p1 = path.join(tmpDir, '.planning', 'phases', '03-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '03-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '03-01-SUMMARY.md'), '# Summary');
+    fs.writeFileSync(path.join(p1, '04-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stats = JSON.parse(result.output);
+    const phase = stats.phases.find(p => p.number === '03');
+    assert.ok(phase, 'phase 03 must be present in stats output');
+    assert.notStrictEqual(phase.status, 'Complete',
+      `phase 03 must not report Complete off phase 04's report; got: ${phase.status}`);
+  });
+
   test('counts requirements from REQUIREMENTS.md', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
@@ -3725,6 +3746,85 @@ description: Executes GSD phase plans
 ---
 Body of the agent.
 `;
+
+describe('#3533 effort sync: inherit means the key must not exist', () => {
+  test('10d: sync does not re-add a hand-stripped key when inherit is configured', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-absent-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITHOUT_EFFORT);
+    // Tier standard -> inherit.
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'high', standard: 'inherit', heavy: 'xhigh' } });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 0, `absent key + inherit is IN SYNC, not drift: ${JSON.stringify(result.changes)}`);
+    assert.equal(result.changes.length, 0, 'no change may be reported for an absent key under inherit');
+    const after = fs.readFileSync(path.join(agentsDir, 'gsd-executor.md'), 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'the effort: key must NOT be re-added');
+
+    cleanup(tmpDir);
+  });
+
+  test('10d: sync strips the key when inherit is configured and a value is present', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-strip-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    // Fixture carries its own name so the survivor assertion below is
+    // satisfiable (AGENT_WITH_EFFORT names gsd-planner — wrong file).
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITH_EFFORT.replace('name: gsd-planner', 'name: gsd-executor'));
+    writePlanningConfig(tmpDir, { default: 'inherit' });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 1);
+    assert.equal(result.changes[0].agent, 'gsd-executor');
+    assert.equal(result.changes[0].from, 'medium');
+    assert.equal(result.changes[0].to, null, 'to: null is the typed IR for omission');
+    const after = fs.readFileSync(path.join(agentsDir, 'gsd-executor.md'), 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'the effort: line must be stripped');
+    assert.ok(after.includes('name: gsd-executor'), 'every other frontmatter line survives');
+    assert.ok(after.includes('Body of the agent.'), 'the body survives');
+
+    cleanup(tmpDir);
+  });
+
+  test('10d: strip preserves CRLF files and leaves comments and sibling keys intact', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-crlf-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const crlfAgent = [
+      '---',
+      'name: gsd-executor',
+      '# a hand comment that must survive',
+      'effort: high',
+      'description: Executes GSD phase plans',
+      '---',
+      'Body.',
+      '',
+    ].join('\r\n');
+    const agentPath = path.join(agentsDir, 'gsd-executor.md');
+    fs.writeFileSync(agentPath, crlfAgent);
+    writePlanningConfig(tmpDir, { agent_overrides: { 'gsd-executor': 'inherit' } });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 1, `expected one strip: ${JSON.stringify(result.changes)}`);
+    const after = fs.readFileSync(agentPath, 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'effort line gone');
+    assert.ok(after.includes('\r\n'), 'CRLF endings preserved');
+    assert.ok(after.includes('# a hand comment that must survive'), 'comment preserved');
+    assert.ok(/^description: Executes GSD phase plans\r?$/m.test(after), 'sibling key preserved');
+
+    cleanup(tmpDir);
+  });
+});
 
 describe('feat-488: effort sync command', () => {
   test('dry-run mode reports pending changes without writing files', () => {

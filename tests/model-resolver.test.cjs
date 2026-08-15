@@ -290,10 +290,60 @@ describe('resolveEffortInternal', () => {
   test('VALID_EFFORTS and EFFORT_SET are consistent', () => {
     assert.ok(Array.isArray(VALID_EFFORTS));
     assert.ok(EFFORT_SET instanceof Set);
-    assert.strictEqual(EFFORT_SET.size, VALID_EFFORTS.length);
+    // #3533 (10d): the VOCABULARY (EFFORT_SET) carries one more member than
+    // the LADDER (VALID_EFFORTS) — 'inherit' is a declarable effort choice
+    // but not a level nextEffort may step into.
+    assert.strictEqual(EFFORT_SET.size, VALID_EFFORTS.length + 1);
+    assert.ok(EFFORT_SET.has('inherit'), "EFFORT_SET must accept 'inherit'");
+    assert.ok(!VALID_EFFORTS.includes('inherit'), "the escalation ladder must NOT contain 'inherit'");
     for (const e of VALID_EFFORTS) {
       assert.ok(EFFORT_SET.has(e), `EFFORT_SET missing: ${e}`);
     }
+  });
+});
+
+// ─── #3533 (10d): effort inheritance ──────────────────────────────────────────
+
+describe('#3533 effort inherit: expressible at every layer, never a wire level', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('inherit accepted at every cascade layer (runtime)', () => {
+    writeConfig(tmpDir, { effort: { agent_overrides: { 'gsd-executor': 'inherit' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor'), 'inherit');
+
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: { heavy: 'inherit' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'inherit');
+
+    writeConfig(tmpDir, { effort: { default: 'inherit' } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'completely-unknown-agent-xyz'), 'inherit');
+    // A tiered agent under an inherit tier default also inherits (tier layer won).
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'inherit');
+
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor', { override: 'inherit' }), 'inherit');
+  });
+
+  test('explicit inherit does not escalate', () => {
+    writeConfig(tmpDir, {
+      effort: { routing_tier_defaults: { heavy: 'inherit' } },
+      dynamic_routing: { enabled: true, escalate_on_failure: true, max_escalations: 3 },
+    });
+    assert.strictEqual(resolveEffortForTier(tmpDir, 'gsd-planner', 2), 'inherit');
+  });
+
+  test('renderEffortForRuntime inherit never yields a wire level', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    for (const runtime of ['claude', 'codex', 'something-unknown']) {
+      const r = renderEffortForRuntime(runtime, 'inherit');
+      assert.strictEqual(r.value, 'inherit', `${runtime}: value`);
+      assert.strictEqual(r.param, null, `${runtime}: param`);
+      assert.strictEqual(r.channel, null, `${runtime}: channel`);
+    }
+    // Concrete levels unchanged.
+    assert.strictEqual(renderEffortForRuntime('claude', 'minimal').value, 'low');
+    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'xhigh');
+    assert.strictEqual(renderEffortForRuntime('claude', 'xhigh').value, 'xhigh');
   });
 });
 

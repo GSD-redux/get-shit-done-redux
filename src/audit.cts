@@ -24,7 +24,7 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -527,7 +527,13 @@ function scanUatGaps(planDir: string): UatGapItem[] {
       continue;
     }
 
-    for (const file of files.filter(f => f.includes('-UAT') && f.endsWith('.md'))) {
+    // Scoped to THIS phase's own token (#3511) so a stray, cross-phase, or
+    // ad-hoc UAT file cannot surface as this phase's gap — same fix as
+    // scanVerificationGaps below.
+    for (const file of scopeToPhase(
+      files.filter(f => f.includes('-UAT') && f.endsWith('.md')),
+      dir,
+    )) {
       const filePath = path.join(phaseDir, file);
 
       let safeFilePath: string;
@@ -597,7 +603,12 @@ function scanVerificationGaps(planDir: string): VerificationGapItem[] {
       continue;
     }
 
-    for (const file of files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md'))) {
+    // Scoped to THIS phase's own token (#3511) so a stray, cross-phase, or
+    // ad-hoc VERIFICATION file cannot surface as this phase's gap.
+    for (const file of scopeToPhase(
+      files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')),
+      dir,
+    )) {
       const filePath = path.join(phaseDir, file);
 
       let safeFilePath: string;

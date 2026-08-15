@@ -59,7 +59,7 @@ import worktreeSafetyMod = require('./worktree-safety.cjs');
 const { inspectWorktreeHealth } = worktreeSafetyMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { PHASE_NUMBER_TOKEN_SOURCE, OPTIONAL_PHASE_TAG_SOURCE, stripProjectCodePrefix } = phaseIdMod;
+const { PHASE_NUMBER_TOKEN_SOURCE, OPTIONAL_PHASE_TAG_SOURCE, stripProjectCodePrefix, scopeToPhase } = phaseIdMod;
 import { buildRoadmapPhaseVariants, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE } from './validate.cjs';
 
 // ─── worstScope — the one new piece of coordination logic ───────────────────
@@ -630,8 +630,13 @@ function buildResearchValidationStatusField(
     } catch {
       return { dir, hasValidationArchitecture: false, hasValidationMd: false };
     }
-    const researchFile = files.find((f) => f.endsWith('-RESEARCH.md'));
-    const hasValidationMd = files.some((f) => f.endsWith('-VALIDATION.md'));
+    // #3511: scope the raw listing to this phase dir before the two
+    // phase-numbered-artifact predicates, so a stray cross-phase
+    // -RESEARCH.md/-VALIDATION.md sitting in the wrong directory cannot flip
+    // this phase's flags — mirrors core-utils.cts's getPhaseFileStats.
+    const scopedFiles = scopeToPhase(files, dir);
+    const researchFile = scopedFiles.find((f) => f.endsWith('-RESEARCH.md'));
+    const hasValidationMd = scopedFiles.some((f) => f.endsWith('-VALIDATION.md'));
     let hasValidationArchitecture = false;
     if (researchFile) {
       try {

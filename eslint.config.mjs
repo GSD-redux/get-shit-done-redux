@@ -159,6 +159,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/milestone-archive-hygiene.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/consistency.cjs',
+      // #2873 (epic #2866 Phase 4): tsc-generated runtime artifact — lint the
+      // src/health-diagnostic-rules/install-surface-shadowing.cts source.
+      'gsd-core/bin/lib/health-diagnostic-rules/install-surface-shadowing.cjs',
       'gsd-core/bin/lib/shell-command-projection.cjs',
       'gsd-core/bin/lib/security.cjs',
       'gsd-core/bin/lib/command-aliases.cjs',
@@ -200,6 +203,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/runtime-artifact-layout.cjs',
       'gsd-core/bin/lib/install-scope.cjs',
       'gsd-core/bin/lib/installed-surface-resolver.cjs',
+      // #2873 (epic #2866 Phase 4): tsc-generated runtime artifact — lint the
+      // src/install-shadow-report.cts source.
+      'gsd-core/bin/lib/install-shadow-report.cjs',
       'gsd-core/bin/lib/runtime-config-adapter-registry.cjs',
       'gsd-core/bin/lib/runtime-hooks-surface.cjs',
       'gsd-core/bin/lib/command-routing-hub.cjs',

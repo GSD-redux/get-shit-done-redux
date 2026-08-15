@@ -106,7 +106,8 @@ interface CommitToSubrepoRepoResult {
 interface EffortSyncChange {
   agent: string;
   from: string | null;
-  to: string;
+  // #3533 (10d): to === null is the typed IR for omission (inherit strips the key).
+  to: string | null;
 }
 
 // ─── Phase Status ─────────────────────────────────────────────────────────────
@@ -169,8 +170,9 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
     // #3492: pin selection to THIS phase's own token so a stray cross-phase
     // or sentinel-numbered canonically-shaped file cannot outrank this
     // phase's own (possibly non-canonical) report.
-    const phaseToken = extractPhaseToken(path.basename(phaseDir));
-    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken });
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken, phaseDirName });
     if (verificationFile) {
       const verificationFilePath = path.join(phaseDir, verificationFile);
       const content = platformReadSync(verificationFilePath) || '';
@@ -620,6 +622,45 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
+  // #3534 (10a): the effective effort — what the installed agent will actually
+  // run at. `effort` above is the config cascade; for the claude runtime the
+  // per-agent frontmatter key is the source of truth (Claude Code's Agent tool
+  // has no per-spawn effort parameter), so the query reads the installed file.
+  // An ABSENT key is a real state — the agent follows the session effort
+  // ('inherit'), not drift. No file / no frontmatter / any read failure means
+  // no evidence: the resolved value is reported, flagged 'resolved' so a
+  // consumer can tell evidence from echo. Additive only — every existing key
+  // is unchanged.
+  let effortEffectiveSource: 'frontmatter' | 'frontmatter-absent' | 'resolved' = 'resolved';
+  let effortEffective: string = effort;
+  if (runtime === 'claude') {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+      const { getGlobalConfigDir } = require('./runtime-homes.cjs') as { getGlobalConfigDir(runtime: string, explicitDir?: string | null): string };
+      const agentsDirEff = path.join(getGlobalConfigDir(runtime), 'agents');
+      const agentPath = path.join(agentsDirEff, `${agentType}.md`);
+      // agentType is an unvalidated CLI positional: keep the read inside the
+      // agents dir so `../../x` cannot point it elsewhere (defense in depth —
+      // the reflected surface is only a frontmatter effort line).
+      if (!path.resolve(agentPath).startsWith(path.resolve(agentsDirEff) + path.sep)) {
+        throw new Error('agent path escapes the agents directory');
+      }
+      const agentContent = fs.readFileSync(agentPath, 'utf8');
+      // eslint-disable-next-line local/no-unbounded-quantifier -- same lazy `*?` bounded by the `^---$/m` closing anchor as the sibling frontmatter regexes in this file
+      const fmMatchEff = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(agentContent);
+      if (fmMatchEff) {
+        const effortLine = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatchEff[1]);
+        if (effortLine) {
+          effortEffective = effortLine[1];
+          effortEffectiveSource = 'frontmatter';
+        } else {
+          effortEffective = 'inherit';
+          effortEffectiveSource = 'frontmatter-absent';
+        }
+      }
+    } catch { /* no frontmatter evidence — stay on the resolved value */ }
+  }
+
   // Own-property guard: agentType is an unvalidated CLI positional, so a
   // prototype-chain value ("toString", "constructor") would otherwise return
   // an inherited truthy member from this plain object and misreport a
@@ -633,6 +674,8 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
     effort_rendered: rendered.value,
     effort_param: rendered.param,
     effort_propagation: rendered.channel,
+    effort_effective: effortEffective,
+    effort_effective_source: effortEffectiveSource,
     fast_mode: fastMode,
     fast_mode_supported: fastModeSupported,
   };
@@ -704,6 +747,28 @@ function setEffortFrontmatter(content: string, effortValue: string): string {
 }
 
 /**
+ * #3533 (10d) — remove exactly the frontmatter `effort:` line (and its line
+ * ending) so an agent configured for `inherit` carries NO key. Mirrors the
+ * codex-agent-toml strip discipline: targeted line removal, EOL-aware, every
+ * other byte (comments, sibling keys, the body) untouched.
+ */
+function removeEffortFrontmatter(content: string): string {
+  // Scoped to the FIRST frontmatter block (not a whole-file /m match): a
+  // preamble or body line starting with `effort:` (a fenced config example,
+  // a thematic-break flanked fragment) must never be the line removed.
+  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
+  const match = fmRe.exec(content);
+  if (!match) return content;
+  const fmBody = match[1];
+  const lineRe = /^effort:[ \t]*.*\r?\n?/m;
+  if (!lineRe.test(fmBody)) return content;
+  const strippedFm = fmBody.replace(lineRe, '');
+  const openLen = 3 + (/^---\r\n/.test(content) ? 2 : 1);
+  const closingStart = match.index + openLen + fmBody.length;
+  return content.slice(0, match.index + openLen) + strippedFm + content.slice(closingStart);
+}
+
+/**
  * #488 — Re-sync effort: frontmatter in all installed gsd-*.md agent files to
  * match the current effort config, without requiring a full reinstall.
  *
@@ -770,6 +835,25 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
 
     // Resolve using install-time logic: home defaults merged with project config.
     const universalEffort = resolveInstallTimeEffort(effortCfg, agentName);
+
+    // #3533 (10d): 'inherit' means the key must NOT exist. An absent key is
+    // the CORRECT state (in sync, skipped) — before #3533 absence read as null
+    // drift and the sync re-added a hand-stripped key on every apply. A
+    // present key under inherit is stripped, reported as {from, to: null}.
+    if (universalEffort === 'inherit') {
+      // eslint-disable-next-line local/no-unbounded-quantifier -- same lazy `*?` bounded by the `^---$/m` closing anchor as the concrete-path fmMatch below; duplicated here so the inherit branch validates against the same frontmatter span the strip targets
+      const fmMatchInherit = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
+      if (!fmMatchInherit) { skipped++; continue; }
+      const effortMatchInherit = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatchInherit[1]);
+      if (!effortMatchInherit) { skipped++; continue; }
+      changes.push({ agent: agentName, from: effortMatchInherit[1], to: null });
+      synced++;
+      if (!dryRun) {
+        fs.writeFileSync(filePath, removeEffortFrontmatter(content));
+      }
+      continue;
+    }
+
     const rendered = renderEffortForRuntime(runtime, universalEffort);
     const newEffortValue = rendered.value;
 

@@ -250,6 +250,7 @@ Report final status.
 | W024 | warning | STATE.md was written many commits ago — treat its contents as approximate | No |
 | W026 | warning | STATE says milestone complete but ROADMAP lists an unstarted phase for that milestone | No |
 | W027 | warning | Stale git worktree (not modified in a long time) | No |
+| W028 | warning | A GSD-owned install scope shadows another on this machine | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
 | I010 | info | Resolved CWD reported alongside the E010 home-directory guard | No |
 

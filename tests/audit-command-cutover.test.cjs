@@ -738,6 +738,103 @@ describe('bug #2836: audit-open quick-task summary filename + UAT terminal statu
     }
   });
 
+  test('#3511: scanUatGaps excludes a cross-phase stray UAT file sitting in the same phase dir; this phase\'s own open gap still reports', () => {
+    const cwd = mkTmp();
+    try {
+      const phaseDir = path.join(cwd, '.planning', 'phases', '03-test');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      // This phase's own open UAT gap.
+      fs.writeFileSync(
+        path.join(phaseDir, '03-UAT.md'),
+        '---\nstatus: pending\n---\nresult: pending\n',
+        'utf-8',
+      );
+      // Cross-phase stray in the SAME directory — token "04", not "03".
+      fs.writeFileSync(
+        path.join(phaseDir, '04-UAT.md'),
+        '---\nstatus: pending\n---\nresult: pending\n',
+        'utf-8',
+      );
+
+      const result = auditOpenArtifacts(cwd);
+      const realUatGaps = result.items.uat_gaps.filter(i => !i.scan_error);
+
+      assert.equal(realUatGaps.length, 1,
+        `only this phase's own gap must report; got: ${JSON.stringify(realUatGaps)}`);
+      assert.equal(realUatGaps[0].file, '03-UAT.md');
+      assert.equal(realUatGaps[0].phase, '03');
+      assert.ok(!realUatGaps.some(i => i.file === '04-UAT.md'),
+        'the cross-phase stray must not appear in uat_gaps');
+      assert.equal(result.counts.uat_gaps, 1);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test('#3511: scanVerificationGaps excludes a cross-phase stray VERIFICATION file sitting in the same phase dir; this phase\'s own open gap still reports', () => {
+    const cwd = mkTmp();
+    try {
+      const phaseDir = path.join(cwd, '.planning', 'phases', '03-test');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      // This phase's own open VERIFICATION gap.
+      fs.writeFileSync(
+        path.join(phaseDir, '03-VERIFICATION.md'),
+        '---\nstatus: gaps_found\n---\n# Verification\n',
+        'utf-8',
+      );
+      // Cross-phase stray in the SAME directory — token "04", not "03".
+      fs.writeFileSync(
+        path.join(phaseDir, '04-VERIFICATION.md'),
+        '---\nstatus: human_needed\n---\n# Verification\n',
+        'utf-8',
+      );
+
+      const result = auditOpenArtifacts(cwd);
+      const realVerificationGaps = result.items.verification_gaps.filter(i => !i.scan_error);
+
+      assert.equal(realVerificationGaps.length, 1,
+        `only this phase's own gap must report; got: ${JSON.stringify(realVerificationGaps)}`);
+      assert.equal(realVerificationGaps[0].file, '03-VERIFICATION.md');
+      assert.equal(realVerificationGaps[0].phase, '03');
+      assert.ok(!realVerificationGaps.some(i => i.file === '04-VERIFICATION.md'),
+        'the cross-phase stray must not appear in verification_gaps');
+      assert.equal(result.counts.verification_gaps, 1);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test('#3511 follow-up: own gap still reports from a NON-canonical dir shape (over-exclusion check)', () => {
+    const cwd = mkTmp();
+    try {
+      // "1-unpadded" tokenizes to literal "1", but scaffold writes the PADDED
+      // "01-…" form — a literal token compare excluded the phase's own file.
+      const phaseDir = path.join(cwd, '.planning', 'phases', '1-unpadded');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(phaseDir, '01-UAT.md'),
+        '---\nstatus: partial\n---\n\n## Tests\n\n### 1. Test\nexpected: works\nresult: pending\n',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        '---\nstatus: gaps_found\n---\n# Verification\n',
+        'utf-8',
+      );
+
+      const result = auditOpenArtifacts(cwd);
+      const realUatGaps = result.items.uat_gaps.filter(i => !i.scan_error);
+      const realVerificationGaps = result.items.verification_gaps.filter(i => !i.scan_error);
+
+      assert.equal(realUatGaps.length, 1,
+        `own UAT gap in an unpadded-dir phase must still report; got: ${JSON.stringify(realUatGaps)}`);
+      assert.equal(realVerificationGaps.length, 1,
+        `own VERIFICATION gap in an unpadded-dir phase must still report; got: ${JSON.stringify(realVerificationGaps)}`);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
   test('quick task without any SUMMARY file is still flagged as missing', () => {
     const cwd = mkTmp();
     try {

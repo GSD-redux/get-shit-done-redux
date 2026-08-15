@@ -89,7 +89,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken } = phaseId;
+const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -518,7 +518,12 @@ function detectHasPriorPhases(cwd: string, phaseInfo: Record<string, unknown> | 
       } catch {
         continue;
       }
-      if (files.some((f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md')) {
+      // #3511-class: scope the raw listing to THIS entry's own phase artifacts
+      // before the bare `.some()` predicate runs, so a stray `07-VERIFICATION.md`
+      // physically sitting in another phase's directory cannot make that
+      // directory appear to have its own verification report.
+      const scopedFiles = scopeToPhase(files, entry.name);
+      if (scopedFiles.some((f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md')) {
         return true;
       }
     }
@@ -706,7 +711,11 @@ function detectUiPhaseActive(cwd: string, phaseInfo: Record<string, unknown> | n
       // comments elsewhere in this file), same technique as detectHasPriorPhases above.
       const dirName = path.basename(rawDir);
       const files = fs.readdirSync(path.join(planningDir(cwd), 'phases', dirName));
-      hasUiSpecFile = files.some((f) => f.endsWith('-UI-SPEC.md') || f === 'UI-SPEC.md');
+      // #3511-class: scope the raw listing to this phase dir before the
+      // phase-numbered -UI-SPEC.md predicate, so a stray cross-phase
+      // UI-SPEC file cannot flip this phase's ui-phase-active flag.
+      const scopedFiles = scopeToPhase(files, dirName);
+      hasUiSpecFile = scopedFiles.some((f) => f.endsWith('-UI-SPEC.md') || f === 'UI-SPEC.md');
     } catch {
       hasUiSpecFile = false;
     }
@@ -1134,11 +1143,21 @@ function cmdInitPlanPhase(
     const phaseDirFull = path.join(cwd, phaseInfo['directory'] as string);
     try {
       const files = fs.readdirSync(phaseDirFull);
-      const contextFile = findContextMdIn(phaseDirFull);
+      const phaseDirName = path.basename(phaseDirFull);
+      // #3511 BLOCKER-3: scope the raw listing to THIS phase's own artifacts
+      // before any bare `.find()` predicate runs, so a `04-UAT.md` (or
+      // `04-RESEARCH.md`/`04-REVIEWS.md`/`04-PATTERNS.md`) sitting in phase
+      // 03's directory cannot win a phase-03 lookup — the same
+      // `isPhaseArtifact` membership rule `resolveVerificationFile` already
+      // applies via `phaseDirName` below. `findContextMdIn` is passed the
+      // scoped array (rather than the raw directory path) so this call site
+      // alone is scoped; its other call sites are unaffected.
+      const scopedFiles = scopeToPhase(files, phaseDirName);
+      const contextFile = findContextMdIn(scopedFiles);
       if (contextFile) {
         result['context_path'] = toPosixPath(path.join(phaseDirFull, contextFile));
       }
-      const researchFile = files.find(
+      const researchFile = scopedFiles.find(
         (f) => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md',
       );
       if (researchFile) {
@@ -1151,10 +1170,11 @@ function cmdInitPlanPhase(
       // #3492: pin selection to THIS phase's own token so a stray cross-phase
       // or sentinel-numbered canonically-shaped file cannot outrank this
       // phase's own (possibly non-canonical) report.
-      const phaseToken = extractPhaseToken(path.basename(phaseDirFull));
+      const phaseToken = extractPhaseToken(phaseDirName);
       const verificationFile = resolveVerificationFile(files, {
         allowBare: true,
         phaseToken,
+        phaseDirName,
       });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
@@ -1163,21 +1183,24 @@ function cmdInitPlanPhase(
       // `.find()` over unsorted readdir order had no phase check and no
       // ordering, so a stray cross-phase 02-UAT.md could become this phase's
       // uat_path, filesystem-dependently. Pinned to this phase's own token
-      // (same rule as verification_path above).
+      // (same rule as verification_path above), and phase-scoped via
+      // phaseDirName (#3511) so the alphabetically-first fallback tier also
+      // excludes cross-phase strays.
       const uatFile = resolveUatFile(files, {
         allowBare: true,
         phaseToken,
+        phaseDirName,
       });
       if (uatFile) {
         result['uat_path'] = toPosixPath(path.join(phaseDirFull, uatFile));
       }
-      const reviewsFile = files.find(
+      const reviewsFile = scopedFiles.find(
         (f) => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md',
       );
       if (reviewsFile) {
         result['reviews_path'] = toPosixPath(path.join(phaseDirFull, reviewsFile));
       }
-      const patternsFile = files.find(
+      const patternsFile = scopedFiles.find(
         (f) => f.endsWith('-PATTERNS.md') || f === 'PATTERNS.md',
       );
       if (patternsFile) {
@@ -1976,11 +1999,15 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
     const phaseDirFull = path.join(cwd, phaseInfo['directory'] as string);
     try {
       const files = fs.readdirSync(phaseDirFull);
-      const contextFile = findContextMdIn(phaseDirFull);
+      const phaseDirName = path.basename(phaseDirFull);
+      // #3511 BLOCKER-3: see the parallel site above — scope before any bare
+      // `.find()` predicate so a misfiled cross-phase artifact cannot win.
+      const scopedFiles = scopeToPhase(files, phaseDirName);
+      const contextFile = findContextMdIn(scopedFiles);
       if (contextFile) {
         result['context_path'] = toPosixPath(path.join(phaseDirFull, contextFile));
       }
-      const researchFile = files.find(
+      const researchFile = scopedFiles.find(
         (f) => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md',
       );
       if (researchFile) {
@@ -1993,10 +2020,11 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       // #3492: pin selection to THIS phase's own token so a stray cross-phase
       // or sentinel-numbered canonically-shaped file cannot outrank this
       // phase's own (possibly non-canonical) report.
-      const phaseToken = extractPhaseToken(path.basename(phaseDirFull));
+      const phaseToken = extractPhaseToken(phaseDirName);
       const verificationFile = resolveVerificationFile(files, {
         allowBare: true,
         phaseToken,
+        phaseDirName,
       });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
@@ -2005,15 +2033,18 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       // `.find()` over unsorted readdir order had no phase check and no
       // ordering, so a stray cross-phase 02-UAT.md could become this phase's
       // uat_path, filesystem-dependently. Pinned to this phase's own token
-      // (same rule as verification_path above).
+      // (same rule as verification_path above), and phase-scoped via
+      // phaseDirName (#3511) so the alphabetically-first fallback tier also
+      // excludes cross-phase strays.
       const uatFile = resolveUatFile(files, {
         allowBare: true,
         phaseToken,
+        phaseDirName,
       });
       if (uatFile) {
         result['uat_path'] = toPosixPath(path.join(phaseDirFull, uatFile));
       }
-      const reviewsFile = files.find(
+      const reviewsFile = scopedFiles.find(
         (f) => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md',
       );
       if (reviewsFile) {
@@ -2324,8 +2355,13 @@ function cmdInitManager(cwd: string, raw: boolean): void {
         const phaseFiles = fs.readdirSync(fullDir);
         planCount = listPhasePlanFiles(fullDir).length;
         summaryCount = listPhaseSummaryFiles(fullDir).length;
-        hasContext = findContextMdIn(fullDir) !== null;
-        hasResearch = phaseFiles.some(
+        // #3511-class: scope the raw listing to THIS phase's own artifacts
+        // before the hasContext/hasResearch predicates run, so a stray
+        // cross-phase `-CONTEXT.md`/`-RESEARCH.md` sitting in this directory
+        // cannot win this phase's lookup.
+        const scopedFiles = scopeToPhase(phaseFiles, dirMatch);
+        hasContext = findContextMdIn(scopedFiles) !== null;
+        hasResearch = scopedFiles.some(
           (f) => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md',
         );
         completion = buildPhaseCompletionProjection(
@@ -2938,7 +2974,12 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
 
       const plans = listPhasePlanFiles(phasePath);
       const summaries = listPhaseSummaryFiles(phasePath);
-      const hasResearch = phaseFiles.some(
+      // #3511-class: scope the raw listing to THIS phase's own artifacts
+      // before the hasResearch predicate runs, so a stray cross-phase
+      // `-RESEARCH.md` sitting in this directory cannot win this phase's
+      // lookup.
+      const scopedPhaseFiles = scopeToPhase(phaseFiles, dir);
+      const hasResearch = scopedPhaseFiles.some(
         (f) => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md',
       );
       const phaseDirRel = toPosixPath(

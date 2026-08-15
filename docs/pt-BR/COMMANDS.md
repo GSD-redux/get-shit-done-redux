@@ -817,6 +817,8 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 /gsd-health --context               # Triagem de utilização de contexto
 ```
 
+**Sombreamento de instalação entre escopos (`W028`).** Quando um runtime é instalado em ambos os escopos `global` e `local` e as regras de resolução de gatilhos do host tornam a superfície `/gsd-*` de um dos escopos inalcançável — o caso do Claude Code: a skill pessoal sempre vence o comando de projeto — a checagem de integridade adiciona um aviso de severidade WARNING nomeando os gatilhos sombreados, o escopo vencedor e o escopo perdedor. Isso nunca altera o status de aprovação/reprovação e nunca é corrigido automaticamente (não existe um único escopo correto a remover), então `--repair` nunca o toca. É idêntico ao mesmo aviso que o GSD Core imprime no momento da instalação.
+
 ### `/gsd-cleanup`
 
 Arquiva diretórios de fases acumulados de milestones concluídos e poda branches locais cujo upstream foi excluído.

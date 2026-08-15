@@ -1414,7 +1414,22 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 | `effort.routing_tier_defaults.heavy` | enum | `"xhigh"` | Effort for heavy-tier agents (deep reasoning). |
 | `effort.agent_overrides.<agent-id>` | enum | (none) | Per-agent effort override. Beats tier defaults. |
 
-Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `inherit` ([#3533](https://github.com/open-gsd/gsd-core/issues/3533)).
+
+`inherit` means "follow the session/host default" — it is a declarable choice, not a level:
+at install time the agent's `effort:` frontmatter key (claude) or `model_reasoning_effort`
+pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort sync` treats
+an absent key as the correct in-sync state and strips a present one; no runtime ever receives
+the literal. An explicit `inherit` also never escalates on failed attempts — your choice
+outranks the automatic ladder.
+
+`query resolve-execution --json` reports two effort views ([#3534](https://github.com/open-gsd/gsd-core/issues/3534)):
+`effort` is the **resolved** config-cascade value; `effort_effective` is what the installed
+agent will actually run at — read from the installed agent's `effort:` frontmatter for the
+claude runtime (`effort_effective_source: "frontmatter"`), reported as `"inherit"` when the
+key is absent (`"frontmatter-absent"` — the agent follows the session effort), and equal to
+the resolved value with source `"resolved"` when there is no install-time channel or no
+agent file to read. `--pick effort` still returns the resolved value.
 
 #### Where effort actually reaches — added in v1.8.0
 
@@ -1743,6 +1758,22 @@ Save settings as global defaults for future projects:
 **Location:** `~/.gsd/defaults.json`
 
 When `/gsd-new-project` creates a new `config.json`, it reads global defaults and merges them as the starting configuration. Per-project settings always override globals.
+
+### What a global file can and cannot set at runtime
+
+Two different rules apply, and the difference is deliberate ([#3532](https://github.com/open-gsd/gsd-core/issues/3532)):
+
+- **In a directory with no `.planning/` at all**, `~/.gsd/defaults.json` is the active
+  configuration — model resolution reads it directly.
+- **In a real project (`.planning/config.json` present, even if empty)**, the global file is
+  **not read for model resolution** — every model-side key it sets (`model_profile`,
+  `model_overrides`, `models`, `dynamic_routing`, `runtime`, and the rest of the resolution
+  set) is inert there. GSD prints a one-time stderr warning naming the shadowed keys when it
+  detects this, instead of failing silently. To apply a global model setting to a project,
+  put it in that project's `.planning/config.json`.
+- **`effort` is the exception**: the install-time effort channel always merges
+  `~/.gsd/defaults.json` with the project config (that is how `effort sync` works), so a
+  global `effort` block keeps working in projects and does not trigger the warning.
 
 ---
 

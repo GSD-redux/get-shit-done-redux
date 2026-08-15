@@ -395,6 +395,16 @@ function skillsKind(
       // undefined here); `isGlobalScope` projects it to the boolean
       // `realConverter`'s positional `isGlobal` arg requires.
       const isGlobal = isGlobalScope(scope);
+      // #2873 (4b): spec-root reachability is applied LATER in the pipeline —
+      // see `rewriteStagedSkillBodies` in runtime-artifact-conversion.cts, not
+      // here. This stage() closure runs BEFORE the staged directory's generic
+      // path-prefix rewrite pass (`applyRuntimeContentRewritesInPlace`'s
+      // `case 'claude'`), which unconditionally rewrites any bare (non-`@`)
+      // `~/.claude/` substring to the undocumented `$HOME/.claude/` form and
+      // only restores the `@`-prefixed form. Emitting the imperative
+      // tilde-path prose here would get silently mangled by that later pass;
+      // it must run AFTER it instead, once the `@`-include is in its final
+      // rewritten shape.
       const wrappedConverter = (content: string, skillName: string): string =>
         realConverter(content, skillName, runtime, cmdNames, isGlobal);
       return stageSkillsForRuntimeAsSkills(findInstallSourceRoot(configDir), resolved, wrappedConverter, prefix, nested, capabilityRegistry);

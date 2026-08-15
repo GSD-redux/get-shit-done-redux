@@ -91,6 +91,92 @@ function projectWithEffort(effort) {
   return dir;
 }
 
+describe('#3534 resolve-execution reports resolved AND effective effort', () => {
+  function agentHome(t, agentFileBody) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3534-home-'));
+    t.after(() => cleanup(home));
+    if (agentFileBody !== null) {
+      fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'agents', 'gsd-executor.md'), agentFileBody);
+    }
+    return home;
+  }
+
+  function resolveExecution(dir, agent = 'gsd-executor', extra = [], env = {}) {
+    return JSON.parse(
+      runGsdTools(`query resolve-execution ${agent} ${extra.join(' ')}`, dir, env).output,
+    );
+  }
+
+  test('10a: effective effort reads the installed frontmatter (claude)', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, '---\nname: gsd-executor\neffort: low\ndescription: x\n---\nBody.\n');
+    // #3534: pass the fixture home as the CHILD env argument — testEnvBase()
+    // blanks CLAUDE_CONFIG_DIR after the process.env spread, so a process.env
+    // mutation never reaches the child (and a dev's real ~/.claude would).
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort, 'high', 'resolved cascade value unchanged');
+    assert.equal(out.effort_effective, 'low', 'the installed frontmatter value');
+    assert.equal(out.effort_effective_source, 'frontmatter');
+    // Existing keys all still present, unchanged shape.
+    for (const k of ['model', 'profile', 'effort', 'effort_rendered', 'effort_param', 'effort_propagation', 'fast_mode', 'fast_mode_supported']) {
+      assert.ok(k in out, `existing key ${k} must remain`);
+    }
+  });
+
+  test('10a: absent frontmatter reports inherit as the effective state (the 10a repro)', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, '---\nname: gsd-executor\ndescription: x\n---\nBody.\n');
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort, 'high');
+    assert.equal(out.effort_effective, 'inherit', 'absent key = follows the session');
+    assert.equal(out.effort_effective_source, 'frontmatter-absent');
+  });
+
+  test('10a: missing agent file falls back to resolved with the flag', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, null);
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, out.effort);
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+  test('10a: runtimes without an install-time channel report resolved', (t) => {
+    const dir = createTempProject();
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'codex', effort: { default: 'medium' } }, null, 2),
+    );
+    const out = resolveExecution(dir);
+    assert.equal(out.effort, 'medium');
+    assert.equal(out.effort_effective, 'medium');
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+  test('10a: CRLF frontmatter is read', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, ['---', 'name: gsd-executor', 'effort: xhigh', 'description: x', '---', 'Body.', ''].join('\r\n'));
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, 'xhigh');
+    assert.equal(out.effort_effective_source, 'frontmatter');
+  });
+
+  test('10a: frontmatter-less agent file degrades to resolved', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, 'No frontmatter here at all.\n');
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, out.effort);
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+});
+
 describe('#2481 effortSurface — closed vocabulary', () => {
   test('is exactly argv|none — no config-file member', () => {
     // Gemini CLI was the only host with a config-file effort surface and was
@@ -320,6 +406,23 @@ describe('#2481 live path — resolve-execution carries invocation-time effort',
     assert.ok(r.success);
     assert.deepEqual(JSON.parse(r.output).effort_argv, []);
     assert.ok(!fs.existsSync(path.join(dir, 'pwned')), 'no shell interpolation of the host value');
+  });
+});
+
+describe('#3533 inherit renders no host argv argument', () => {
+  test('a project configuring inherit resolves effort inherit and renders NO argv', (t2) => {
+    const dir = createTempProject();
+    t2.after(() => cleanup(dir));
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } }, null, 2),
+    );
+    const out = JSON.parse(
+      runGsdTools('query resolve-execution gsd-planner --host claude', dir).output,
+    );
+    assert.equal(out.effort, 'inherit');
+    assert.deepEqual(out.effort_argv, [], 'inherit must render no argument');
+    assert.equal(out.effort_propagation, null);
   });
 });
 

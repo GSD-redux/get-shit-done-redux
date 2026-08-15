@@ -83,6 +83,8 @@ import worktreeHealthMod = require('./health-diagnostic-rules/worktree-health.cj
 import milestoneArchiveHygieneMod = require('./health-diagnostic-rules/milestone-archive-hygiene.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import consistencyMod = require('./health-diagnostic-rules/consistency.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installSurfaceShadowingMod = require('./health-diagnostic-rules/install-surface-shadowing.cjs');
 
 const RULES: Rule[] = [
   ...rootExistenceMod.RULES,
@@ -93,6 +95,7 @@ const RULES: Rule[] = [
   ...roadmapDiskConsistencyMod.RULES,
   ...worktreeHealthMod.RULES,
   ...milestoneArchiveHygieneMod.RULES,
+  ...installSurfaceShadowingMod.RULES,
 ];
 
 /**

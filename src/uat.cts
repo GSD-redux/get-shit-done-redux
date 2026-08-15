@@ -31,7 +31,7 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocator;
@@ -134,8 +134,12 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     const phaseNum = phaseMatch ? phaseMatch[1] : dir;
     const files = fs.readdirSync(phaseDir);
 
-    // Process UAT files
-    for (const file of files.filter(f => f.includes('-UAT') && f.endsWith('.md'))) {
+    // Process UAT files — scoped to THIS phase's own token (#3511) via
+    // scopeToPhase, so a stray, cross-phase, or ad-hoc file cannot be reported
+    // under this phase's audit-uat entry. A phase whose own UAT file is
+    // genuinely absent scopes to empty and contributes nothing — correct, and
+    // the reason scopeToPhase has no unfiltered fallback.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
@@ -153,8 +157,9 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       }
     }
 
-    // Process VERIFICATION files
-    for (const file of files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md'))) {
+    // Process VERIFICATION files — scoped to THIS phase's own token (#3511)
+    // for the same reason as the UAT loop above.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), dir)) {
       const verificationFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(verificationFilePath, 'utf-8');
       const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';

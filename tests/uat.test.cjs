@@ -433,6 +433,78 @@ All checks passed.
     assert.strictEqual(output.summary.total_files, 0);
   });
 
+  // #3511: a cross-phase, stray, or ad-hoc UAT/VERIFICATION file sitting in
+  // this phase's directory must not surface under this phase's audit-uat
+  // entry; this phase's own UAT/VERIFICATION artifacts must keep reporting
+  // exactly as before (non-stray case unchanged).
+  test('#3511: cross-phase stray UAT/VERIFICATION files in the same dir do not surface; own artifacts still do', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-foo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    // This phase's own UAT — must still report its pending item.
+    fs.writeFileSync(path.join(phaseDir, '03-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Own Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+    // This phase's own VERIFICATION — must still report its human-needed item.
+    fs.writeFileSync(path.join(phaseDir, '03-VERIFICATION.md'), [
+      '---', 'status: human_needed', 'phase: 03-foo', '---', '',
+      '## Human Verification', '',
+      '1. Own human check',
+    ].join('\n'));
+
+    // Cross-phase strays sitting in the SAME directory — token "04", not "03".
+    fs.writeFileSync(path.join(phaseDir, '04-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Stray Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, '04-VERIFICATION.md'), [
+      '---', 'status: human_needed', 'phase: 04-bar', '---', '',
+      '## Human Verification', '',
+      '1. Stray human check',
+    ].join('\n'));
+
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.summary.total_files, 2,
+      `only this phase's own 2 files must be scanned; got: ${JSON.stringify(output.results.map(r => r.file))}`);
+    assert.strictEqual(output.summary.total_items, 2,
+      `1 own UAT item + 1 own VERIFICATION item, strays excluded; got: ${output.summary.total_items}`);
+    assert.strictEqual(output.summary.by_phase['03'], 2, 'own phase must be credited both items');
+    assert.ok(!('04' in output.summary.by_phase), 'the cross-phase stray must not appear in by_phase at all');
+    assert.ok(!result.output.includes('04-UAT.md'), 'stray UAT filename must never surface in the output');
+    assert.ok(!result.output.includes('04-VERIFICATION.md'), 'stray VERIFICATION filename must never surface in the output');
+    assert.ok(output.results.some(r => r.file === '03-UAT.md' && r.items.some(i => i.name === 'Own Test')));
+    assert.ok(output.results.some(r => r.file === '03-VERIFICATION.md' && r.items.some(i => i.name === 'Own human check')));
+  });
+
+  // #3511 follow-up: over-exclusion check on the #2528 digit-leading-slug
+  // family. "05-80-20-cleanup" tokenizes to "05-80-20" (mis-absorbed past
+  // the digit run scaffold actually writes into), so a literal token compare
+  // excluded the phase's own report — audit-uat reported total_files: 0.
+  test('#3511 follow-up: own UAT file still surfaces from the digit-leading-slug dir "05-80-20-cleanup" (over-exclusion check)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '05-80-20-cleanup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    fs.writeFileSync(path.join(phaseDir, '05-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Own Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.summary.total_files, 1,
+      `own UAT file in a digit-leading-slug dir must still surface; got: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.summary.by_phase['05'], 1);
+  });
+
   // Regression: #2286 — parseUatItems never scanned a `## Gaps` section, so a
   // *-UAT.md file recording its only outstanding findings there returned
   // total_items: 0 (false-clean). Boundary: 0 / 1 / 2+ unresolved entries.

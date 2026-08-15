@@ -27,6 +27,7 @@ import capabilityRegistry = require('./capability-registry.cjs');
 import hostIntegration = require('./host-integration.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { escapeRegex as escapeRegExp } from './pattern.cjs';
+import { scanFencedBlocks } from './markdown-sectionizer.cjs';
 // #2870: install-scope.cts is a leaf-tier sibling (imports only
 // runtime-homes.cjs + node builtins, never this module) — no cycle. See the
 // isGlobal sites below for why the boolean projection is centralized here too.
@@ -502,6 +503,90 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   fm += '---';
 
   return `${fm}\n${normalizedBody}`;
+}
+
+// #2873 (4b) — spec-root reachability. Matches ONLY a line that is a real
+// `@~/.claude/gsd-core/workflows/<stem>.md` include: line-start `@`, exact
+// spec-root shape, nothing else on the line. This is deliberately narrower
+// than "any line mentioning gsd-core/workflows" so prose mentions and
+// `references/`/`templates/`/`@.planning/...` includes are never touched
+// (rows 24/25). CRLF-safe: an optional trailing `\r` is captured and
+// preserved rather than dropped.
+const WORKFLOW_SPEC_ROOT_INCLUDE_RE = /^@~\/\.claude\/gsd-core\/workflows\/([A-Za-z0-9._-]+)\.md[ \t]*(\r?)$/gm;
+
+/**
+ * Rewrite a static global-scope Claude skill `@`-include of the command's own
+ * workflow spec into an imperative two-step resolution the agent performs at
+ * runtime: prefer the project-local spec (cwd-relative), fall back to the
+ * global spec, and treat "neither exists" as a visible failure rather than a
+ * silent no-spec proceed.
+ *
+ * WHY this can't stay a static `@`-include (even a relative one): Claude Code
+ * documents relative `@`-paths as resolving against the file *containing* the
+ * import, which for a global skill is `~/.claude/skills/gsd-<stem>/` — not
+ * the project's working directory. `@./.claude/...` would therefore always
+ * resolve inside the skill's own install directory, never the project, so
+ * there is no static include syntax that can express "prefer local, fall
+ * back to global". This function exists precisely so that resolution can be
+ * performed by the agent, not the host's pre-expansion.
+ *
+ * Scope-free by design: this function does not know or care whether it is
+ * being applied to a global or local artifact, or which runtime — that
+ * judgment belongs to the caller (`skillsKind` in
+ * `runtime-artifact-layout.cts`, the one site that knows install scope).
+ * Applying it to a body with no workflow include is a no-op (row 26); a body
+ * with two independent workflow includes has each rewritten independently
+ * (row 27); an include inside a fenced code block or wrapped in inline
+ * backticks is left untouched (the backtick case is already excluded by the
+ * line-start anchor, since a backtick-wrapped line does not begin with `@`).
+ * Idempotent: the replacement text never begins with `@` and never matches
+ * `WORKFLOW_SPEC_ROOT_INCLUDE_RE`, so re-applying this function to its own
+ * output is a no-op.
+ *
+ * Fence detection reuses `scanFencedBlocks` (markdown-sectionizer.cts) — the
+ * same CommonMark-correct state machine `stripFencedCode`/`extractFencedBlock`
+ * are built on — instead of a hand-rolled "any delimiter line toggles
+ * open/closed" tracker. A naive toggle is wrong under CommonMark: a fence
+ * opened with ``` is NOT closed by a ~~~ line (closer must share the
+ * opener's delimiter character and have run length >= the opener's), so a
+ * mismatched delimiter is fence CONTENT, not a boundary. #2873 review.
+ */
+function resolveSpecRootReference(body) {
+  if (typeof body !== 'string' || body.length === 0) return body;
+  if (!body.includes('@~/.claude/gsd-core/workflows/')) return body;
+
+  // Collect [start, end) character-offset ranges covered by fenced code
+  // blocks so matches inside them are skipped. An unterminated trailing
+  // fence covers to the end of the string (still "inside a fence").
+  const lines = body.split('\n');
+  const lineStartOffsets = [];
+  {
+    let offset = 0;
+    for (const line of lines) {
+      lineStartOffsets.push(offset);
+      offset += line.length + 1; // +1 for the '\n' separator
+    }
+  }
+  const fenceRanges = scanFencedBlocks(lines).map(({ openLineIdx, closeLineIdx }) => {
+    const start = lineStartOffsets[openLineIdx];
+    const end = closeLineIdx === -1
+      ? body.length
+      : lineStartOffsets[closeLineIdx] + lines[closeLineIdx].length;
+    return [start, end];
+  });
+  const isInsideFence = (offset) => fenceRanges.some(([start, end]) => offset >= start && offset < end);
+
+  return body.replace(WORKFLOW_SPEC_ROOT_INCLUDE_RE, (match, stem, cr, offset) => {
+    if (isInsideFence(offset)) return match;
+    return (
+      `To load this command's workflow spec: check for ` +
+      `\`.claude/gsd-core/workflows/${stem}.md\` relative to the current working ` +
+      `directory first (project-local); if it is not there, fall back to ` +
+      `\`~/.claude/gsd-core/workflows/${stem}.md\` (the global install). If ` +
+      `neither file exists, stop — a workflow spec is required and none was found.` +
+      cr
+    );
+  });
 }
 
 function normalizeKimiSkillName(skillName) {
@@ -2996,6 +3081,38 @@ function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathP
 }
 
 /**
+ * #2873 (4b) — second pass over a staged skills directory, run strictly AFTER
+ * `applyRuntimeContentRewritesInPlace`. That pass's `case 'claude':` branch
+ * unconditionally rewrites any bare (non-`@`-prefixed) `~/.claude/` substring
+ * in the body to the computed pathPrefix (`$HOME/.claude/` for a global
+ * install) and restores ONLY the `@`-prefixed form back to `~`
+ * (`@$HOME/.claude/` → `@~/.claude/`). `resolveSpecRootReference`'s
+ * replacement text is deliberately imperative prose containing a literal,
+ * non-`@`-prefixed `~/.claude/gsd-core/workflows/<stem>.md` — running it
+ * BEFORE the pass above would let that literal tilde text get silently
+ * mangled into the undocumented `$HOME/` form the design explicitly rejects.
+ * Running it here, after, means it only ever sees the FINAL
+ * `@~/.claude/gsd-core/workflows/<stem>.md` include line (which survives the
+ * pass above intact via its own `@`-guarded restore).
+ */
+function applySpecRootReferenceToStagedSkills(stagedDir) {
+  if (!fs.existsSync(stagedDir)) return;
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.name === 'SKILL.md') {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const rewritten = resolveSpecRootReference(content);
+        if (rewritten !== content) fs.writeFileSync(fullPath, rewritten);
+      }
+    }
+  };
+  walk(stagedDir);
+}
+
+/**
  * HIGH-LEVEL: In-place fs walk: rewrite all .md files under stagedDir for the given runtime.
  *
  * Deep public seam (ADR-1508 Phase 2). Derives resolvedTarget/homeDir/isGlobal/pathPrefix/
@@ -3032,6 +3149,17 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
   const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
 
   applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGlobal, attribution);
+  // #2873 (4b): claude, global scope only — see
+  // applySpecRootReferenceToStagedSkills's doc comment for why this MUST run
+  // after the rewrite pass above, not before. `rewriteStagedSkillBodies` is
+  // the skills-kind seam (`kind.kind === 'skills'`), so this never touches a
+  // 'commands' or 'agents' kind body (rows 24/25 unaffected), and claude has
+  // no skills-kind entry at local scope, so this is already structurally
+  // scoped to global (row 23) — the explicit isGlobal check is defense-in-depth
+  // against that descriptor wiring ever changing.
+  if (runtime === 'claude' && isGlobal) {
+    applySpecRootReferenceToStagedSkills(stagedDir);
+  }
 }
 
 /**
@@ -3176,6 +3304,11 @@ export = {
   convertClaudeToAntigravityContent,
   convertClaudeCommandToAntigravitySkill,
   convertClaudeCommandToClaudeSkill,
+  // #2873 (4b): pure, scope-free transform — applied by the one call site
+  // that knows install scope (skillsKind's stage() in
+  // runtime-artifact-layout.cts), never inside convertClaudeCommandToClaudeSkill
+  // itself.
+  resolveSpecRootReference,
   convertClaudeCommandToKimiSkill,
   convertClaudeCommandToKimiCodeSkill,
   buildKimiAgentArtifacts,

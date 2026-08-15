@@ -325,6 +325,13 @@ export function renderEffortArgv(
  * Render a universal effort string for a specific runtime.
  */
 export function renderEffortForRuntime(runtime: string, universalEffort: string): RenderedEffort {
+  // #3533 (10d): 'inherit' is not a wire level on ANY runtime — it means
+  // "omit the key / pass no argument and follow the session/host default".
+  // Renderers must never emit it as a literal; null param/channel tells
+  // resolve-execution consumers there is no propagation.
+  if (universalEffort === 'inherit') {
+    return { value: 'inherit', param: null, channel: null };
+  }
   const spec = EFFORT_RENDERING[runtime];
   if (!spec) {
     return { value: universalEffort, param: null, channel: null };

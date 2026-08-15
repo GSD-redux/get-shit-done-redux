@@ -935,10 +935,11 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         result.content,
         statePath,
         cwd,
-        true,
-        Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,
-        undefined,
-        divergedFields,
+        {
+          resync: true,
+          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,
+          divergedFields,
+        },
       );
       platformWriteSync(statePath, finalContent);
       for (const field of divergedFields) {
