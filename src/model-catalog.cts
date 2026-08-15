@@ -343,5 +343,32 @@ export function renderEffortForRuntime(runtime: string, universalEffort: string)
   };
 }
 
+/**
+ * #3531 (10c) — Merge a config `effort.routing_tier_defaults` block over the
+ * manifest tier defaults instead of replacing them. A partial config must not
+ * discard built-ins: per tier, a valid override value wins and an invalid one
+ * is ignored so the manifest value for that tier surfaces (ADR-443 D1's
+ * "invalid values fall through" holds within the merged layer).
+ *
+ * Pure: returns a new object and never mutates either input — the manifest
+ * constants (`CANONICAL_CONFIG_DEFAULTS`, the catalog cache) stay frozen. The
+ * validator is injected because `EFFORT_SET` lives in model-resolver, which
+ * imports this leaf (a reverse import would be a cycle); both effort
+ * resolvers pass their own `(v) => typeof v === 'string' && EFFORT_SET.has(v)`.
+ */
+export function mergeEffortTierDefaults(
+  manifest: Record<string, string> | null | undefined,
+  override: unknown,
+  isValid: (v: unknown) => boolean,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...(manifest || {}) };
+  if (override && typeof override === 'object' && !Array.isArray(override)) {
+    for (const [tier, value] of Object.entries(override as Record<string, unknown>)) {
+      if (isValid(value)) merged[tier] = value as string;
+    }
+  }
+  return merged;
+}
+
 // ─── Fast mode propagation ───────────────────────────────────────────────────
 export const RUNTIMES_WITH_FAST_MODE: Set<string> = new Set(['api']);

@@ -31,7 +31,7 @@ import { CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS } from './configuration.cj
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier } = modelProfiles;
 
-import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS, CLAUDE_AGENT_ALIASES } from './model-catalog.cjs';
+import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS, CLAUDE_AGENT_ALIASES, mergeEffortTierDefaults } from './model-catalog.cjs';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -801,23 +801,26 @@ function resolveEffortInternal(cwd: string, agentType: string, opts?: EffortOpts
   }
 
   // Step 3: routing_tier_defaults by agent's default tier.
+  // #3531 (10c): the config block merges OVER the manifest tier defaults
+  // rather than replacing them — an effort block without
+  // routing_tier_defaults (or missing this agent's tier) falls back to the
+  // manifest built-in for that tier instead of skipping to effort.default.
+  // Invalid config values are dropped by the merge, so the manifest value for
+  // the tier surfaces (the same "invalid falls through" rule every layer has).
   const agentTier = (AGENT_DEFAULT_TIERS)[agentType];
   if (agentTier) {
-    if (effortCfg && effortCfg['routing_tier_defaults'] &&
-        typeof effortCfg['routing_tier_defaults'] === 'object' &&
-        !Array.isArray(effortCfg['routing_tier_defaults'])) {
-      const v = (effortCfg['routing_tier_defaults'] as Record<string, unknown>)[agentTier];
-      if (typeof v === 'string' && EFFORT_SET.has(v)) return v;
-    } else if (!effortCfg) {
-      const canonicalEffort = (CANONICAL_CONFIG_DEFAULTS)['effort'];
-      const manifestDefaults = canonicalEffort && typeof canonicalEffort === 'object'
-        ? (canonicalEffort as Record<string, unknown>)['routing_tier_defaults']
-        : undefined;
-      if (manifestDefaults && typeof manifestDefaults === 'object') {
-        const v = (manifestDefaults as Record<string, unknown>)[agentTier];
-        if (typeof v === 'string' && EFFORT_SET.has(v)) return v;
-      }
-    }
+    const canonicalEffort = (CANONICAL_CONFIG_DEFAULTS)['effort'];
+    const manifestDefaults = canonicalEffort && typeof canonicalEffort === 'object'
+      ? (canonicalEffort as Record<string, unknown>)['routing_tier_defaults'] as Record<string, string> | undefined
+      : undefined;
+    const isValidEffort = (v: unknown): v is string => typeof v === 'string' && EFFORT_SET.has(v);
+    const merged = mergeEffortTierDefaults(
+      manifestDefaults,
+      effortCfg ? effortCfg['routing_tier_defaults'] : undefined,
+      isValidEffort,
+    );
+    const v = merged[agentTier];
+    if (isValidEffort(v)) return v;
   }
 
   // Step 4: effort.default
