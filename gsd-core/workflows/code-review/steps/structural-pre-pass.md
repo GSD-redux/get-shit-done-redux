@@ -26,14 +26,20 @@ FALLOW_STDERR_TMP=$(mktemp)
 
 # Phase scope uses fallow's native changed-files scoping (--changed-since <base>).
 # Derive the phase base commit; if none is found, fall back to repo scope (fallow
-# auto-detects the base branch). #3191: the grep is the SAME anchored,
-# POSIX-portable phase-mention derivation the workflow's Tier-3 scope step uses
-# ("Phase N" followed by a non-alphanumeric or end-of-line) — a bare digit
-# substring matches version strings, dates, and other phases, and the oldest
+# auto-detects the base branch). #3191/#3503: the grep is the SAME anchored,
+# POSIX-portable conventional-commit-scope derivation the workflow's Tier-3
+# scope step uses (subject-line `type((phase-)?N(-plan)?):`, padded or unpadded
+# phase spelling). Free prose in commit bodies — "deferred to Phase N per
+# D-09", "### Phase N" format examples — never captures the base, and a bare
+# digit substring matches version strings, dates, and other phases; the oldest
 # such false match would silently widen --changed-since far past the phase.
 FALLOW_SCOPE_ARGS=()
 if [ \"$FALLOW_SCOPE\" = \"phase\" ]; then
-  FALLOW_PHASE_COMMITS=$(git log --oneline --all --grep=\"[Pp]hase ${PADDED_PHASE}([^[:alnum:]_]|$)\" --extended-regexp --format=\"%H\" 2>/dev/null)
+  PHASE_SCOPE_NUM=\"${PADDED_PHASE}\"
+  case \"$PADDED_PHASE\" in
+    0[0-9]*) PHASE_SCOPE_NUM=\"${PADDED_PHASE#0}|${PADDED_PHASE}\" ;;
+  esac
+  FALLOW_PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep=\"^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:\" --format=\"%H\" 2>/dev/null)
   if [ -n \"$FALLOW_PHASE_COMMITS\" ]; then
     FALLOW_BASE=$(echo \"$FALLOW_PHASE_COMMITS\" | tail -1)^
     FALLOW_SCOPE_ARGS=(--changed-since \"$FALLOW_BASE\")
