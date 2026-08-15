@@ -1625,6 +1625,7 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
 {
   const fs = require('node:fs');
   const path = require('node:path');
+  const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
   function readJson(result) {
     assert.ok(result.success, `command must succeed. stdout: ${result.output}\nstderr: ${result.error}`);
@@ -2109,9 +2110,26 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
 
       const content = fs.readFileSync(filePath, 'utf-8');
-      const criticalBlock = content.slice(content.indexOf('- CRITICAL'), content.indexOf('- minor typo'));
+      // Derive the CRITICAL entry's block by LINES, not by `content.indexOf('- minor typo')`
+      // on the raw string — that substring also occurs INSIDE the CRITICAL entry's own
+      // continuation line ("  see also: - minor typo"), so an indexOf-based slice truncates
+      // before the continuation line is fully captured. Walk lines from the CRITICAL bullet
+      // up to (not including) the next TOP-LEVEL bullet (a line starting with "- ", no
+      // leading indentation) to get the entry's own span, continuation lines included.
+      const lines = splitLines(content);
+      const criticalIdx = lines.findIndex((l) => l.startsWith('- CRITICAL'));
+      let criticalEndIdx = lines.length;
+      for (let i = criticalIdx + 1; i < lines.length; i++) {
+        if (lines[i].startsWith('- ')) { criticalEndIdx = i; break; }
+      }
+      const criticalBlock = lines.slice(criticalIdx, criticalEndIdx).join('\n');
       assert.doesNotMatch(criticalBlock, /status: acknowledged/, 'the CRITICAL entry (and its continuation line) must NEVER be touched');
       assert.match(criticalBlock, /see also: - minor typo/, 'the CRITICAL entry continuation line is preserved verbatim');
+      // Measured: the write seam's `_normalizeMd` (src/shell-command-projection.cts:837)
+      // inserts a blank line before a list item whose predecessor is a non-blank, non-list
+      // line — so a blank line appears between the CRITICAL continuation line and the
+      // "- minor typo" bullet after this write. That is repo-wide `.md`-write normalization
+      // (50 callers through the single write seam), not something specific to this feature.
       assert.match(content, /- minor typo\n {2}status: acknowledged/, 'the standalone "minor typo" entry (its OWN span) now carries the marker');
 
       const after = audit(tmpDir);
@@ -2149,8 +2167,16 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.match(content, /- minor typo\n {2}status: acknowledged/, 'the real, standalone "minor typo" entry (its OWN carried span) is the one acknowledged');
 
       const after = audit(tmpDir);
-      assert.equal(after.counts.deferred_items, 0, 're-audit: the real entry is correctly suppressed');
-      assert.equal(after.acknowledged.deferred_items, 1);
+      // The decoy `- Note: reference - minor typo elsewhere, ignore` line is ITSELF a
+      // separate, un-acknowledged deferred entry — it was never targeted or written to,
+      // so it remains open. Only the real "minor typo" entry was suppressed.
+      assert.equal(after.counts.deferred_items, 1, 're-audit: the decoy Note entry remains open — it was never acknowledged');
+      assert.equal(after.acknowledged.deferred_items, 1, 're-audit: only the real "minor typo" entry is acknowledged');
+      assert.deepEqual(
+        after.items.deferred_items.filter((i) => !i.scan_error).map((i) => i.text),
+        ['Note: reference - minor typo elsewhere, ignore'],
+        'the one remaining open item is the decoy Note entry — proving the REAL entry (not the decoy) was the one suppressed',
+      );
     });
 
     test('F1: --text matching only a SUBSTRING of a prose entry (no entry\'s OWN text equals it) is refused as not_found, not silently corrupted', () => {
