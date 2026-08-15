@@ -3774,7 +3774,10 @@ describe('#3533 effort sync: inherit means the key must not exist', () => {
     // Fixture carries its own name so the survivor assertion below is
     // satisfiable (AGENT_WITH_EFFORT names gsd-planner — wrong file).
     fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITH_EFFORT.replace('name: gsd-planner', 'name: gsd-executor'));
-    writePlanningConfig(tmpDir, { default: 'inherit' });
+    // #3531+#3533 combined: pin every TIER to inherit — a bare effort.default
+    // no longer reaches a tiered agent now that the config block merges over
+    // the built-in tier ladder (the manifest standard tier would answer 'high').
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'inherit', standard: 'inherit', heavy: 'inherit' } });
 
     const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
     const result = captureOutput(() =>

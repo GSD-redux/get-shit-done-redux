@@ -149,7 +149,9 @@ describe('#3534 resolve-execution reports resolved AND effective effort', () => 
     t.after(() => cleanup(dir));
     fs.writeFileSync(
       path.join(dir, '.planning', 'config.json'),
-      JSON.stringify({ runtime: 'codex', effort: { default: 'medium' } }, null, 2),
+      // #3531+#3534 combined: pin the AGENT — a bare effort.default no longer
+      // reaches a tiered agent under the merged tier ladder.
+      JSON.stringify({ runtime: 'codex', effort: { agent_overrides: { 'gsd-executor': 'medium' } } }, null, 2),
     );
     const out = resolveExecution(dir);
     assert.equal(out.effort, 'medium');

@@ -323,8 +323,10 @@ describe('#3533 effort inherit: expressible at every layer, never a wire level',
 
     writeConfig(tmpDir, { effort: { default: 'inherit' } });
     assert.strictEqual(resolveEffortInternal(tmpDir, 'completely-unknown-agent-xyz'), 'inherit');
-    // A tiered agent under an inherit tier default also inherits (tier layer won).
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'inherit');
+    // #3531+#3533 combined: a bare effort.default no longer reaches a TIERED
+    // agent — the merged tier layer answers (manifest heavy = xhigh). To
+    // inherit at a tier, pin the tier; the tier-default row above covers that.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
 
     assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor', { override: 'inherit' }), 'inherit');
   });
