@@ -1020,34 +1020,60 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
       '.planning/ is an excluded path — scanner must be silent even for a flagging probe');
   });
 
-  test('rendered advisory is derived from the typed findings IR', () => {
-    // Multi-line probe that trips at least two MD-LINK findings so the
-    // parity check below is not vacuously true on a single-finding payload.
+  test('every finding family renders into the advisory exactly as the IR describes', () => {
+    // Payload built from pieces already present elsewhere so it exercises
+    // ALL FOUR finding families the hook can produce, not just MD-LINK-*:
+    //   - MD-LINK-JS-SCHEME  <- MARKDOWN_LINK_PROBES (existing fixture)
+    //   - INJECTION-PATTERN  <- a real entry from hooks/lib/injection-patterns.js
+    //   - INVISIBLE-UNICODE  <- a zero-width char (U+200B-U+200F range)
+    //   - UNICODE-TAG-BLOCK  <- a char in the \u{E0000}-\u{E007F} tag block
+    // Joined with array.join('\n'), not a template literal (CONTRIBUTING.md
+    // fixture convention).
+    const injectionProbe = 'ignore previous instructions';
+    const invisibleUnicodeProbe = 'zero-width\u200bmarker';
+    const unicodeTagBlockProbe = 'tag-block\u{E0001}marker';
     const probe = [
       MARKDOWN_LINK_PROBES['MD-LINK-JS-SCHEME'],
-      MARKDOWN_LINK_PROBES['MD-LINK-USERINFO'],
+      injectionProbe,
+      invisibleUnicodeProbe,
+      unicodeTagBlockProbe,
     ].join('\n');
+
     const r = runHook(READ_SCANNER_HOOK, {
       tool_name: 'Read',
       tool_input: { file_path: '/proj/docs/notes.md' },
       tool_response: probe,
     });
     assert.strictEqual(r.status, 0);
-    assert.ok(
-      Array.isArray(r.findings) && r.findings.length >= 2,
-      `probe must produce at least 2 findings to make this parity check non-vacuous; got: ${JSON.stringify(r.findings)}`,
-    );
     assert.ok(typeof r.additionalContext === 'string' && r.additionalContext.length > 0,
       'advisory must be a non-empty string when findings are present');
+    assert.ok(Array.isArray(r.findings), `hook must emit a findings array; got: ${JSON.stringify(r.findings)}`);
 
-    // Every MD-LINK-* finding's ruleId must appear in the advisory prose as
-    // `${ruleId}:` — the advisory is DERIVED from the same IR, so it cannot
-    // report a finding the typed array does not also carry.
-    for (const f of r.findings) {
-      if (!f.ruleId.startsWith('MD-LINK-')) continue;
+    // Assert up front that all four families actually fired — otherwise this
+    // test would silently degrade to covering fewer branches than intended.
+    const presentFamilies = new Set(r.findings.map(f => f.ruleId));
+    for (const family of ['MD-LINK-JS-SCHEME', 'INJECTION-PATTERN', 'INVISIBLE-UNICODE', 'UNICODE-TAG-BLOCK']) {
       assert.ok(
-        r.additionalContext.includes(`${f.ruleId}:`),
-        `advisory must contain ${f.ruleId}: for every MD-LINK finding — findings: ${JSON.stringify(r.findings)}, advisory: ${r.additionalContext}`,
+        presentFamilies.has(family),
+        `probe must produce a ${family} finding for this test to be non-vacuous — findings: ${JSON.stringify(r.findings)}`,
+      );
+    }
+
+    // Expected-rendering table mirrors renderFinding's contract from the TEST
+    // side (independently coded, not reused from the hook) so this is a real
+    // parity check: it fails if the two surfaces diverge.
+    function expectedRendering(f) {
+      if (f.ruleId === 'INVISIBLE-UNICODE') return 'invisible-unicode';
+      if (f.ruleId === 'UNICODE-TAG-BLOCK') return 'unicode-tag-block';
+      if (f.ruleId === 'INJECTION-PATTERN') return f.match;
+      return `${f.ruleId}:${f.match}`;
+    }
+
+    for (const f of r.findings) {
+      const expected = expectedRendering(f);
+      assert.ok(
+        r.additionalContext.includes(expected),
+        `advisory must contain "${expected}" for finding ${JSON.stringify(f)} — findings: ${JSON.stringify(r.findings)}, advisory: ${r.additionalContext}`,
       );
     }
 

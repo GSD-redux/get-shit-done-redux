@@ -85,6 +85,16 @@ const ALL_PATTERNS = [...INJECTION_PATTERNS, ...SUMMARISATION_PATTERNS];
 // construction. Normalized to forward slashes to match `p` below.
 const OWN_BUNDLE_PREFIX = __dirname.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
 
+// Synthetic rule ids for the finding classes that have no entry in
+// MARKDOWN_LINK_PATTERNS. Frozen and referenced from BOTH the push sites and
+// renderFinding so the two can never drift — a bare literal repeated at each
+// site is how a rename silently falls through to the generic render branch.
+const RULE_IDS = Object.freeze({
+  INJECTION_PATTERN: 'INJECTION-PATTERN',
+  INVISIBLE_UNICODE: 'INVISIBLE-UNICODE',
+  UNICODE_TAG_BLOCK: 'UNICODE-TAG-BLOCK',
+});
+
 function isExcludedPath(filePath) {
   const p = filePath.replace(/\\/g, '/');
   return (
@@ -264,7 +274,7 @@ process.stdin.on('end', () => {
       if (pattern.test(content)) {
         // Trim pattern source for readable output
         findings.push({
-          ruleId: 'INJECTION-PATTERN',
+          ruleId: RULE_IDS.INJECTION_PATTERN,
           match: pattern.source.replace(/\\s\+/g, '-').replace(/[()\\]/g, '').substring(0, 50),
         });
       }
@@ -284,13 +294,13 @@ process.stdin.on('end', () => {
 
     // Invisible Unicode (zero-width, RTL override, soft hyphen, BOM)
     if (/[\u200B-\u200F\u2028-\u202F\uFEFF\u00AD\u2060-\u2069]/.test(content)) {
-      findings.push({ ruleId: 'INVISIBLE-UNICODE', match: null });
+      findings.push({ ruleId: RULE_IDS.INVISIBLE_UNICODE, match: null });
     }
 
     // Unicode tag block U+E0000–E007F (invisible instruction injection vector)
     try {
       if (/[\u{E0000}-\u{E007F}]/u.test(content)) {
-        findings.push({ ruleId: 'UNICODE-TAG-BLOCK', match: null });
+        findings.push({ ruleId: RULE_IDS.UNICODE_TAG_BLOCK, match: null });
       }
     } catch {
       // Engine does not support Unicode property escapes — skip this check
@@ -304,9 +314,9 @@ process.stdin.on('end', () => {
     // always embedded. Kept as the ONLY place that maps IR -> text, so the
     // `additionalContext` string and the `findings` array can never diverge.
     function renderFinding(f) {
-      if (f.ruleId === 'INVISIBLE-UNICODE') return 'invisible-unicode';
-      if (f.ruleId === 'UNICODE-TAG-BLOCK') return 'unicode-tag-block';
-      if (f.ruleId === 'INJECTION-PATTERN') return f.match;
+      if (f.ruleId === RULE_IDS.INVISIBLE_UNICODE) return 'invisible-unicode';
+      if (f.ruleId === RULE_IDS.UNICODE_TAG_BLOCK) return 'unicode-tag-block';
+      if (f.ruleId === RULE_IDS.INJECTION_PATTERN) return f.match;
       return `${f.ruleId}:${f.match}`;
     }
 
