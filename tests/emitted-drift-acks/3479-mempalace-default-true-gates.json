@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-mempalace-curator.md": {
+      "reason": "#3479: the diary_journal and mirror_kg task gates changed from positive presence ('when <key> is true') to disabled-only-on-explicit-false ('unless <key> !== false — registry default is true, an absent key means enabled'), matching the registry-declared defaults. The ~124-byte growth is the two inline absence-semantics clarifications."
+    }
+  }
+}
