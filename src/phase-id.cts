@@ -731,8 +731,8 @@ function extractPhaseToken(dirName: string, convention?: string): string {
  * containment is the only signal available for a token-less file, and it is
  * sufficient: every call site passes `fs.readdirSync` results for ONE
  * specific phase dir, so a token-less candidate already reaching this
- * predicate (past each call site's own `.includes('VERIFICATION')` /
- * `.endsWith('-UAT.md')` pre-filter) is, by construction, that phase's own
+ * predicate (past each call site's own verification/UAT suffix pre-filter)
+ * is, by construction, that phase's own
  * listing. Returns `true` unconditionally, same as the dir-side fail-safe.
  *
  * RECONCILIATION WITH resolveVerificationFile (#3357/#3492/#3511) — the two
