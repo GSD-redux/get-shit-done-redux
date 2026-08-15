@@ -114,8 +114,9 @@ const {
  *   - stdout is either empty (silent exit) or a single-line JSON
  *     document with `hookSpecificOutput.additionalContext`.
  *
- * The IR exposes structural fields so tests assert on them, not on
- * the human-readable `additionalContext` prose.
+ * The IR exposes structural fields — including the typed `findings` array
+ * gsd-read-injection-scanner.js emits on hookSpecificOutput — so tests assert
+ * on them, not on the human-readable `additionalContext` prose.
  */
 function runHook(hookPath, payload, { timeoutMs = 5000 } = {}) {
   const r = runHookSeam(hookPath, [], { input: JSON.stringify(payload), timeoutMs });
@@ -133,6 +134,7 @@ function runHook(hookPath, payload, { timeoutMs = 5000 } = {}) {
     parsed,
     silent: trimmed.length === 0,
     additionalContext: parsed?.hookSpecificOutput?.additionalContext ?? null,
+    findings: parsed?.hookSpecificOutput?.findings ?? null,
   };
 }
 
@@ -904,8 +906,8 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
         `hook must emit a non-empty advisory for probe: ${probe}`,
       );
       assert.ok(
-        r.additionalContext.includes(`${ruleId}:`),
-        `hook advisory must contain ${ruleId}: — got: ${r.additionalContext}`,
+        Array.isArray(r.findings) && r.findings.some(f => f.ruleId === ruleId),
+        `hook findings must contain a record with ruleId ${ruleId} for probe: ${probe} — got: ${JSON.stringify(r.findings)}`,
       );
     });
   }
@@ -925,8 +927,8 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
     });
     assert.strictEqual(r.status, 0);
     assert.ok(
-      r.additionalContext === null || !r.additionalContext.includes('MD-LINK-DATA-SCHEME:'),
-      `hook must not flag the data:image/png safe control with MD-LINK-DATA-SCHEME; got: ${r.additionalContext}`,
+      r.findings === null || !r.findings.some(f => f.ruleId === 'MD-LINK-DATA-SCHEME'),
+      `hook must not flag the data:image/png safe control with MD-LINK-DATA-SCHEME; got findings: ${JSON.stringify(r.findings)}`,
     );
   });
 
@@ -945,8 +947,8 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
     });
     assert.strictEqual(r.status, 0);
     assert.ok(
-      r.additionalContext === null || !r.additionalContext.includes('MD-LINK-TOKEN-IN-QUERY:'),
-      `hook must not flag benign query keys with MD-LINK-TOKEN-IN-QUERY; got: ${r.additionalContext}`,
+      r.findings === null || !r.findings.some(f => f.ruleId === 'MD-LINK-TOKEN-IN-QUERY'),
+      `hook must not flag benign query keys with MD-LINK-TOKEN-IN-QUERY; got findings: ${JSON.stringify(r.findings)}`,
     );
   });
 
@@ -983,8 +985,8 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
       });
       assert.strictEqual(r.status, 0);
       assert.ok(
-        typeof r.additionalContext === 'string' && r.additionalContext.includes('MD-LINK-JS-SCHEME:'),
-        `content at the minimum length must be scanned; got: ${r.additionalContext}`,
+        r.findings && r.findings.some(f => f.ruleId === 'MD-LINK-JS-SCHEME'),
+        `content at the minimum length must be scanned; got findings: ${JSON.stringify(r.findings)}`,
       );
     });
 
@@ -996,8 +998,8 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
       });
       assert.strictEqual(r.status, 0);
       assert.ok(
-        typeof r.additionalContext === 'string' && r.additionalContext.includes('MD-LINK-JS-SCHEME:'),
-        `content above the minimum length must be scanned; got: ${r.additionalContext}`,
+        r.findings && r.findings.some(f => f.ruleId === 'MD-LINK-JS-SCHEME'),
+        `content above the minimum length must be scanned; got findings: ${JSON.stringify(r.findings)}`,
       );
     });
   });
@@ -1016,6 +1018,49 @@ describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canoni
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.silent, true,
       '.planning/ is an excluded path — scanner must be silent even for a flagging probe');
+  });
+
+  test('rendered advisory is derived from the typed findings IR', () => {
+    // Multi-line probe that trips at least two MD-LINK findings so the
+    // parity check below is not vacuously true on a single-finding payload.
+    const probe = [
+      MARKDOWN_LINK_PROBES['MD-LINK-JS-SCHEME'],
+      MARKDOWN_LINK_PROBES['MD-LINK-USERINFO'],
+    ].join('\n');
+    const r = runHook(READ_SCANNER_HOOK, {
+      tool_name: 'Read',
+      tool_input: { file_path: '/proj/docs/notes.md' },
+      tool_response: probe,
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      Array.isArray(r.findings) && r.findings.length >= 2,
+      `probe must produce at least 2 findings to make this parity check non-vacuous; got: ${JSON.stringify(r.findings)}`,
+    );
+    assert.ok(typeof r.additionalContext === 'string' && r.additionalContext.length > 0,
+      'advisory must be a non-empty string when findings are present');
+
+    // Every MD-LINK-* finding's ruleId must appear in the advisory prose as
+    // `${ruleId}:` — the advisory is DERIVED from the same IR, so it cannot
+    // report a finding the typed array does not also carry.
+    for (const f of r.findings) {
+      if (!f.ruleId.startsWith('MD-LINK-')) continue;
+      assert.ok(
+        r.additionalContext.includes(`${f.ruleId}:`),
+        `advisory must contain ${f.ruleId}: for every MD-LINK finding — findings: ${JSON.stringify(r.findings)}, advisory: ${r.additionalContext}`,
+      );
+    }
+
+    // The advisory's "${n} pattern(s)" count must match findings.length —
+    // the count and the array are rendered from the same source, not from
+    // two independently-maintained tallies.
+    const countMatch = r.additionalContext.match(/(\d+) pattern\(s\)/);
+    assert.ok(countMatch, `advisory must report a "N pattern(s)" count; got: ${r.additionalContext}`);
+    assert.strictEqual(
+      Number(countMatch[1]),
+      r.findings.length,
+      `advisory pattern count must match findings.length — advisory: ${r.additionalContext}, findings: ${JSON.stringify(r.findings)}`,
+    );
   });
 });
 
