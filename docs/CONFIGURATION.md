@@ -1426,6 +1426,12 @@ an absent key as the correct in-sync state and strips a present one; no runtime 
 the literal. An explicit `inherit` also never escalates on failed attempts — your choice
 outranks the automatic ladder.
 
+Where you set `inherit` matters: every GSD agent has a routing tier, and the merged tier
+ladder (#3531) answers for tiered agents before `effort.default` is consulted — so a bare
+`effort.default: "inherit"` only affects agents **without** a catalog tier. To make tiered
+agents follow the session, set `effort.routing_tier_defaults` (per tier, or all three) or the
+agent's `agent_overrides` entry to `"inherit"`. `query resolve-execution` shows both views.
+
 `query resolve-execution --json` reports two effort views ([#3534](https://github.com/open-gsd/gsd-core/issues/3534)):
 `effort` is the **resolved** config-cascade value; `effort_effective` is what the installed
 agent will actually run at — read from the installed agent's `effort:` frontmatter for the
