@@ -43,7 +43,7 @@
  *
  * Each test below extracts the LIVE fenced-bash / single-line snippet out of
  * the shipped workflow markdown (never a hand-typed copy — see
- * `extractFencedBashAfterAnchor` / `extractLineStartingWith`) and executes it
+ * `extractFencedBashAfterAnchor` / `extractAssignmentBlockFor`) and executes it
  * with `runHook(..., { interpreter: 'bash' })`
  * (`tests/helpers/process-seam.cjs`), against a temp project fixture, driving
  * the real CLI at `gsd-core/bin/gsd-tools.cjs` through the real `gsd_run`
@@ -59,7 +59,6 @@ const path = require('node:path');
 const { createTempDir, cleanup, readWorkflowCombined } = require('./helpers.cjs');
 const { runHook, OUTCOME } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
-const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
@@ -104,18 +103,28 @@ function extractFencedBashAfterAnchor(content, anchor, sourcePath) {
 }
 
 /**
- * Extract the single source line beginning with `prefix` (e.g.
- * `PHASE_REQ_IDS=`). Throws with a message naming the prefix and file if the
- * line is not found, so a rename/relocation fails loudly rather than
- * silently testing nothing.
+ * Extract the CONTIGUOUS RUN of source lines beginning with `prefix` (e.g.
+ * `PHASE_REQ_IDS=`) — from the first matching line, keep consuming
+ * subsequent lines while they ALSO start with `prefix`, and join them with
+ * `\n`. A single-line extraction would silently test only half a
+ * multi-line contract (e.g. the capture line of `X=$(...)` / `X="${X:-D}"`
+ * without its fallback-default line), which is exactly the "guard that
+ * cannot observe its own failure" class this suite exists to catch. Throws
+ * with a message naming the prefix and file if no matching line is found,
+ * so a rename/relocation fails loudly rather than silently testing nothing.
  */
-function extractLineStartingWith(content, prefix, sourcePath) {
-  const re = new RegExp(`^${escapeRegex(prefix)}.*$`, 'm');
-  const match = content.match(re);
-  if (!match) {
-    throw new Error(`extractLineStartingWith: no line starting with "${prefix}" found in ${sourcePath}`);
+function extractAssignmentBlockFor(content, prefix, sourcePath) {
+  const lines = content.split('\n');
+  const startIdx = lines.findIndex((l) => l.startsWith(prefix));
+  if (startIdx === -1) {
+    throw new Error(`extractAssignmentBlockFor: no line starting with "${prefix}" found in ${sourcePath}`);
   }
-  return match[0];
+  const block = [];
+  for (let i = startIdx; i < lines.length; i += 1) {
+    if (!lines[i].startsWith(prefix)) break;
+    block.push(lines[i]);
+  }
+  return block.join('\n');
 }
 
 // ─── shared bash-script runner ────────────────────────────────────────────
@@ -252,14 +261,14 @@ test('#3409 G3: an empty phase_req_ids falls back to TBD, not the empty string',
   // resolves `phase_req_ids: null` and `--pick` renders that as empty stdout
   // (probe-confirmed: exit 0, empty stdout).
 
-  const line = extractLineStartingWith(
+  const block = extractAssignmentBlockFor(
     readWorkflowCombined(PLAN_PHASE_PATH),
     'PHASE_REQ_IDS=',
     PLAN_PHASE_PATH,
   );
   const script = [
     `. "${LAUNCHER_PATH}"`,
-    line,
+    block,
     'echo "GSD_TEST_PHASE_REQ_IDS=$PHASE_REQ_IDS"',
   ].join('\n');
   const result = runBashScript(t, script, {
