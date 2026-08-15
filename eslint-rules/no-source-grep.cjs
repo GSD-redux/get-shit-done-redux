@@ -45,6 +45,95 @@ const MAX_TRANSITIVE_HOPS = 3;
 // site 40+ lines later (test-matrix.md row 4, the defect this closes).
 const MAX_MARKER_LOOKAHEAD_LINES = 8;
 
+// Matches a `allow-test-rule: <reason>` directive inside a comment's VALUE
+// (the AST comment node's text with delimiters stripped -- i.e. this is
+// tested against `c.value`, never against raw source text). Exported so
+// external consumers (scripts/lint-allow-test-rule-refs.cjs) that need to
+// find marker comments via the SAME AST-comment definition the rule itself
+// honors can import this instead of hand-rolling an equivalent pattern that
+// could silently drift from what the rule actually recognizes.
+const MARKER_COMMENT_RE = /allow-test-rule:\s*\S/;
+
+/**
+ * Given every comment in a file (`sourceCode.getAllComments()`), compute the
+ * two line-level facts `isSuppressedAt` needs: which lines carry a
+ * `allow-test-rule:` marker, and which lines are wholly comment (used for the
+ * "nothing but blank/comment lines between the marker and the violation"
+ * purity check). Extracted verbatim from the per-file computation `create()`
+ * used to do inline, so a second consumer (the effective-exemption counter)
+ * can derive the identical inputs without re-deriving the marker-detection
+ * logic itself.
+ *
+ * @param {{value: string, loc: {start: {line:number}, end: {line:number}}}[]} allComments
+ * @returns {{markerLines: number[], commentLineSet: Set<number>}}
+ */
+function collectMarkerAndCommentLines(allComments) {
+  const markerLines = [];
+  const commentLineSet = new Set();
+  for (const c of allComments) {
+    for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
+      commentLineSet.add(l);
+    }
+    if (MARKER_COMMENT_RE.test(c.value)) {
+      for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
+        markerLines.push(l);
+      }
+    }
+  }
+  return { markerLines, commentLineSet };
+}
+
+/**
+ * Site-scoped suppression predicate: is `violationLine` suppressed by any of
+ * `markerLines`? Extracted verbatim from the logic `create()` used to close
+ * over directly (previously named `isSuppressed`), generalized to take its
+ * per-file inputs as parameters instead of reading them off closure state, so
+ * a second consumer (scripts/lint-allow-test-rule-refs.cjs, the
+ * effective-exemption counter) can call the EXACT SAME adjacency arithmetic
+ * the rule uses at report time -- rather than reimplementing it, which is the
+ * generative-fix-divergence defect class this repo has shipped before.
+ *
+ * A violation at `violationLine` is suppressed if some marker sits on that
+ * exact line (trailing form) or on an earlier line within `maxLookahead`,
+ * with every line strictly between the marker and the violation being blank
+ * and/or itself a comment line -- i.e. no live code sits between the marker
+ * and the call it suppresses. This is what makes suppression SITE-scoped
+ * rather than file-wide.
+ *
+ * @param {object} opts
+ * @param {number[]} opts.markerLines - line numbers carrying a marker.
+ * @param {number} opts.violationLine - the candidate violation's line.
+ * @param {Set<number>} opts.commentLineSet - lines wholly occupied by a comment.
+ * @param {string[]} opts.lines - the file's source lines (sourceCode.lines).
+ * @param {number} [opts.maxLookahead] - defaults to MAX_MARKER_LOOKAHEAD_LINES.
+ * @returns {boolean}
+ */
+function isSuppressedAt({
+  markerLines,
+  violationLine,
+  commentLineSet,
+  lines,
+  maxLookahead = MAX_MARKER_LOOKAHEAD_LINES,
+}) {
+  function isBlankLine(line) {
+    const text = lines[line - 1];
+    return text !== undefined && text.trim() === '';
+  }
+  for (const markerLine of markerLines) {
+    if (markerLine > violationLine) continue;
+    if (violationLine - markerLine > maxLookahead) continue;
+    let pure = true;
+    for (let l = markerLine + 1; l < violationLine; l++) {
+      if (!isBlankLine(l) && !commentLineSet.has(l)) {
+        pure = false;
+        break;
+      }
+    }
+    if (pure) return true;
+  }
+  return false;
+}
+
 const TEXT_METHODS = new Set([
   'includes',
   'match',
@@ -120,10 +209,32 @@ const rule = {
         'Disallow reading source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and then doing text search on the result',
       category: 'Best Practices',
     },
-    schema: [],
+    // `neutralizeSuppression` is a diagnostic-only knob for
+    // scripts/lint-allow-test-rule-refs.cjs (the effective-exemption
+    // counter): when true, every candidate violation is reported regardless
+    // of a marker, so the script can enumerate the FULL site inventory via
+    // one real ESLint pass, then classify each site with isSuppressedAt
+    // (exported below) against the real markers. No config in this repo
+    // passes this option, so default (real) linting is unaffected -- this is
+    // an extract-and-export refactor of existing logic, not a behavior
+    // change to `no-source-grep` itself.
+    schema: [
+      {
+        type: 'object',
+        properties: {
+          neutralizeSuppression: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
+    ],
     messages: {
       noSourceGrep:
         'Source-grep test: do not read source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and call .includes/.match/.matchAll/.startsWith/.indexOf/.split/.replace/.search (or regex.test()) on the result. Use require() to run the module instead. Add // allow-test-rule: <reason> (#NNN) directly above (or trailing) the flagged line to suppress just that site.',
+      // Diagnostic-only companion to `noSourceGrep`, emitted ONLY when the
+      // `neutralizeSuppression` schema option is set (see its doc comment
+      // and `reportUnlessSuppressed` above) -- never fires with the real
+      // (shipped) config, so this never appears in real lint output.
+      noSourceGrepDiagnosticReadLine: '{{readLine}}',
     },
   },
   create(context) {
@@ -136,34 +247,18 @@ const rule = {
     const allComments = sourceCode.getAllComments();
 
     // Line numbers of every `// allow-test-rule: <reason>` marker comment in
-    // the file. A marker may span one line (the normal `//` form) or several
-    // (a block comment) -- record every line it occupies so a violation on
-    // any of those lines counts as "same line" (trailing-marker form, row 2
-    // of the test matrix).
-    const markerLines = [];
-    for (const c of allComments) {
-      if (/allow-test-rule:\s*\S/.test(c.value)) {
-        for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
-          markerLines.push(l);
-        }
-      }
-    }
+    // the file (a marker may span one line or several -- see
+    // collectMarkerAndCommentLines' doc comment above), and the set of lines
+    // fully occupied by ANY comment (used by isSuppressedAt's purity check).
+    const { markerLines, commentLineSet } = collectMarkerAndCommentLines(allComments);
 
-    // Line numbers fully occupied by ANY comment (marker or not) -- a marker
-    // followed by ordinary prose lines before the flagged call is the repo's
-    // real style (test-matrix.md row 3), so those in-between lines must not
-    // disqualify the marker.
-    const commentLineSet = new Set();
-    for (const c of allComments) {
-      for (let l = c.loc.start.line; l <= c.loc.end.line; l++) {
-        commentLineSet.add(l);
-      }
-    }
-
-    function isBlankLine(line) {
-      const text = sourceCode.lines[line - 1];
-      return text !== undefined && text.trim() === '';
-    }
+    // Diagnostic-only: see the `neutralizeSuppression` schema option doc
+    // comment above. Never true for any config in this repo.
+    const neutralizeSuppression = !!(
+      context.options &&
+      context.options[0] &&
+      context.options[0].neutralizeSuppression
+    );
 
     // A violation at `violationLine` is suppressed if some marker sits on
     // that exact line (trailing form) or on an earlier line within
@@ -173,21 +268,17 @@ const rule = {
     // ostensibly about) sits between the marker and the call it suppresses.
     // This is what makes suppression SITE-scoped rather than file-wide: a
     // marker parked far above an unrelated later violation (test-matrix.md
-    // row 4) no longer reaches it.
+    // row 4) no longer reaches it. Delegates to the exported isSuppressedAt
+    // predicate (see its doc comment) rather than duplicating the adjacency
+    // arithmetic here.
     function isSuppressed(violationLine) {
-      for (const markerLine of markerLines) {
-        if (markerLine > violationLine) continue;
-        if (violationLine - markerLine > MAX_MARKER_LOOKAHEAD_LINES) continue;
-        let pure = true;
-        for (let l = markerLine + 1; l < violationLine; l++) {
-          if (!isBlankLine(l) && !commentLineSet.has(l)) {
-            pure = false;
-            break;
-          }
-        }
-        if (pure) return true;
-      }
-      return false;
+      if (neutralizeSuppression) return false;
+      return isSuppressedAt({
+        markerLines,
+        violationLine,
+        commentLineSet,
+        lines: sourceCode.lines,
+      });
     }
 
     // Map from Identifier AST node -> resolved ESLint `Variable`, built once
@@ -548,6 +639,25 @@ const rule = {
         // site-scoped, way to annotate it). `readLine` is optional -- pass
         // it whenever the call site can determine one.
         function reportUnlessSuppressed(node, readLine) {
+          if (neutralizeSuppression) {
+            // Diagnostic-only mode (see the `neutralizeSuppression` schema
+            // option doc comment): report every candidate site regardless of
+            // suppression, PLUS a paired companion message at the exact same
+            // node carrying `readLine` -- the other half of the read+search
+            // pair that the real (non-neutralized) suppression check above
+            // also consults. This lets a consumer (the effective-exemption
+            // counter) replicate this rule's own OR-of-two-lines suppression
+            // decision from the OUTSIDE via `isSuppressedAt` without this
+            // rule re-exposing its internal hop/scope-resolution machinery.
+            // Never fires with the real (shipped) config.
+            context.report({ node, messageId: 'noSourceGrep' });
+            context.report({
+              node,
+              messageId: 'noSourceGrepDiagnosticReadLine',
+              data: { readLine: readLine === undefined || readLine === null ? '' : String(readLine) },
+            });
+            return;
+          }
           if (isSuppressed(node.loc.start.line)) return;
           if (readLine !== undefined && readLine !== null && isSuppressed(readLine)) {
             return;
@@ -596,3 +706,14 @@ const rule = {
 };
 
 module.exports = rule;
+// Named exports consumed by scripts/lint-allow-test-rule-refs.cjs (the
+// effective-exemption counter) and its tests -- ESLint itself only reads
+// `.create`/`.meta` off this module, so these extra properties are inert to
+// ESLint and exist purely as the single source of truth for anything that
+// needs to reason about marker suppression outside the rule's own
+// Program:exit walk. See each function's doc comment above for why this
+// extraction exists (generative-fix-divergence prevention).
+module.exports.MAX_MARKER_LOOKAHEAD_LINES = MAX_MARKER_LOOKAHEAD_LINES;
+module.exports.MARKER_COMMENT_RE = MARKER_COMMENT_RE;
+module.exports.collectMarkerAndCommentLines = collectMarkerAndCommentLines;
+module.exports.isSuppressedAt = isSuppressedAt;

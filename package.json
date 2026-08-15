@@ -28,6 +28,7 @@
     "!scripts/affected-tests-lib.cjs",
     "!scripts/run-affected-tests.cjs",
     "!scripts/lint-no-adhoc-regex-escape.cjs",
+    "!scripts/lint-allow-test-rule-refs.cjs",
     "pi",
     "vscode"
   ],
