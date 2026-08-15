@@ -680,13 +680,26 @@ function extractPhaseToken(dirName: string, convention?: string): string {
  *   4. each of (1)-(3) additionally passed through `normalizePhaseName`,
  *      since files always carry the PADDED form and directories often do
  *      not (`1-unpadded` vs `01-...`).
- * A file belongs when it starts with any candidate + `-`, compared
- * case-insensitively (matching `phaseTokenMatches`' own rule — review item
- * 8: `03A-VERIFICATION.md` vs `03a-foo`). This is a PREFIX check, not a
- * full-token equality — `03-01-SUMMARY.md` (phase 03, plan 01) must still
- * match dir `03-foo` on candidate `03`, even though
+ * A file belongs when it starts with any candidate + `-` OR any candidate +
+ * `.`, compared case-insensitively (matching `phaseTokenMatches`' own rule —
+ * review item 8: `03A-VERIFICATION.md` vs `03a-foo`). This is a PREFIX check,
+ * not a full-token equality — `03-01-SUMMARY.md` (phase 03, plan 01) must
+ * still match dir `03-foo` on candidate `03`, even though
  * `extractPhaseToken('03-01-SUMMARY.md')` would (wrongly, for this purpose)
  * read `03-01` as a mis-absorbed 2-digit continuation.
+ *
+ * DOTTED SUB-PHASE CONTINUATION: the dot arm of the check exists because this
+ * module's own token grammar (`PHASE_NUMBER_TOKEN_SOURCE`) admits a dotted
+ * sub-phase continuation (`(?:\.\d+)*`) alongside dash-continuations — a
+ * sub-phase artifact `01.1-CONTEXT.md` is `01`'s own file, written into `01`'s
+ * directory, not a stray from a different phase. A dash-only prefix check
+ * excluded it (`01.1-` does not start with `01-`), which is over-exclusion:
+ * the dangerous direction for an aggregate scan whose fail-safes above all
+ * default to inclusion when membership is unclear. Widening dash-only to
+ * dash-OR-dot only ever ADDS a match a candidate already earned; it cannot
+ * newly admit a file whose leading digits differ from `candidate`, so it
+ * cannot resolve a genuinely different phase's artifact (`02.1-...` still
+ * fails every `01`-rooted candidate).
  *
  * BRACKET CONVENTION (review item 7): a letter-prefixed-decimal dir
  * (`P0.3-2-slug`) is string-INDISTINGUISHABLE from a bracket-dir token
@@ -764,7 +777,31 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
 
   const fileUpper = fileName.toUpperCase();
   for (const candidate of candidates) {
-    if (fileUpper.startsWith(`${candidate}-`)) return true;
+    // A dotted sub-phase segment (e.g. `01.1-CONTEXT.md`) is a legitimate
+    // continuation of `candidate` per this module's own token grammar
+    // (PHASE_NUMBER_TOKEN_SOURCE admits `(?:\.\d+)*`), so it belongs to
+    // `candidate`'s own directory just as a dash-continuation does. Inclusion
+    // is the safe direction for these aggregate scans (see FAIL-SAFE above) —
+    // widening a dash-only check to dash-OR-dot never drops a genuine match,
+    // it only stops wrongly excluding one.
+    //
+    // Accepted separator class after a matched candidate: `-`, `.`, or `_`.
+    // The underscore was added for state.cts's `cmdStateValidate` S006/S007
+    // scan, whose own pre-filter is deliberately broader than the dashed
+    // grammar every other call site uses (`.includes('VERIFICATION')`, no
+    // dash required — see the WARNING-4 comment there), so it admits names
+    // like `03_VERIFICATION.md`. Before this predicate accepted `_` as a
+    // boundary, such a file failed the `-`/`.`-only check here even though
+    // its digits matched `candidate` exactly, and `scopeToPhase` dropped it —
+    // a real same-phase verification report reported as absent. Widening the
+    // separator class only ever EXTENDS a candidate whose digits already
+    // match exactly; it cannot admit a genuinely different phase's file,
+    // since the candidate comparison itself is unchanged.
+    if (
+      fileUpper.startsWith(`${candidate}-`) ||
+      fileUpper.startsWith(`${candidate}.`) ||
+      fileUpper.startsWith(`${candidate}_`)
+    ) return true;
   }
 
   // FIX 2: token-less filename (bare "VERIFICATION.md"/"UAT.md") — containment

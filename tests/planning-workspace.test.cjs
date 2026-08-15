@@ -370,7 +370,7 @@ describe('withPlanningLock PID-liveness staleness + EEXIST safety (audit M1+M2)'
   __foldDescribe("folded:bug-3739-gap-checker-padded-prefix-context (consolidation epic #1969 B3 #1972)", () => {
 /**
  * Bug #3739: gap-analysis silently skips CONTEXT.md decisions when the file
- * uses the padded-prefix convention (e.g. 01-CONTEXT.md, 02.1-CONTEXT.md).
+ * uses the padded-prefix convention (e.g. 01-CONTEXT.md, 01.1-CONTEXT.md).
  *
  * Verifies:
  *   1. Padded-prefix CONTEXT.md (NN-CONTEXT.md) decisions ARE included in the
@@ -481,10 +481,10 @@ describe('bug #3739 — gap-analysis padded-prefix CONTEXT.md', () => {
     assert.strictEqual(d05.status, 'Covered', 'D-05 must be Covered');
   });
 
-  // ── Test 4: deeper padded prefix (02.1-CONTEXT.md) ───────────────────────
+  // ── Test 4: deeper padded prefix (01.1-CONTEXT.md) ───────────────────────
 
-  test('multi-segment padded prefix (02.1-CONTEXT.md) decisions appear in gap report', () => {
-    writeContextAs('02.1-CONTEXT.md', [
+  test('multi-segment padded prefix (01.1-CONTEXT.md) decisions appear in gap report', () => {
+    writeContextAs('01.1-CONTEXT.md', [
       { id: 'D-03', text: 'Use postgres' },
     ]);
     writePlan('01', '# Plan\n\nImplements D-03.\n');
@@ -494,7 +494,7 @@ describe('bug #3739 — gap-analysis padded-prefix CONTEXT.md', () => {
     const out = JSON.parse(r.output);
 
     const d03 = out.rows.find(x => x.item === 'D-03');
-    assert.ok(d03, 'D-03 must appear from 02.1-CONTEXT.md');
+    assert.ok(d03, 'D-03 must appear from 01.1-CONTEXT.md');
     assert.strictEqual(d03.status, 'Covered');
   });
 

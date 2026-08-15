@@ -164,6 +164,16 @@ describe('init commands', () => {
 
   test('#3511-class: init verify-work ui_phase_active ignores another phase\'s misplaced UI-SPEC file', () => {
     writePlanningDocs(tmpDir);
+    // ui_phase_active is `hasActiveUiStep || hasUiSpecFile` (detectUiPhaseActive,
+    // src/init.cts) — the `ui` capability's `workflow.ui_phase` config key
+    // defaults to `true` (capabilities/ui/capability.json), which alone would
+    // make `hasActiveUiStep` (and therefore the whole OR) true regardless of
+    // which file the phase directory holds. Disabling it here isolates the
+    // signal this test actually exercises: the misplaced-file half of the OR.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ workflow: { ui_phase: false } }),
+    );
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       [

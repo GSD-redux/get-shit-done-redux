@@ -1037,13 +1037,14 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
 
   test('#3511: cross-phase stray alongside this phase\'s own non-canonical report → own report wins, stray excluded (not merely outsorted)', () => {
     // Distinguishes "excluded from the fallback" from "just happens to sort
-    // after" — 03-CORRECTION- sorts AFTER 04- alphabetically, so this would
-    // pass under the OLD (unscoped) fallback too; the real regression case is
-    // the null-returning test above, where no phase-owned candidate exists at
-    // all. This test just confirms scoping does not disturb the ordinary case.
+    // after" — candidates are sorted at verification.cts's own call site
+    // before reaching resolveVerificationFile, and '01-VERIFICATION.md'
+    // sorts BEFORE '03-CORRECTION-VERIFICATION.md' alphabetically, so an
+    // UNSCOPED (alphabetical-first) fallback would wrongly pick the stray
+    // here. Scoping must actively exclude it for '03-CORRECTION-…' to win.
     assert.equal(
       resolveVerificationFile(
-        ['04-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md'],
+        ['01-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md'],
         { phaseDirName: '03-foo' },
       ),
       '03-CORRECTION-VERIFICATION.md',

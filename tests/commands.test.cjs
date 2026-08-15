@@ -2240,6 +2240,27 @@ describe('stats command', () => {
     assert.strictEqual(phase.status, 'Complete', 'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet');
   });
 
+  // #3511 BLOCKER-2 regression: a cross-phase stray VERIFICATION.md must not
+  // resolve as THIS phase's report. Phase 03's directory holds only a
+  // '04-VERIFICATION.md' (belongs to phase 04); an unscoped resolver would
+  // pick it up as phase 03's own report and read 'Complete'.
+  test('#3511: phase status is not Complete off a cross-phase stray VERIFICATION.md', () => {
+    const p1 = path.join(tmpDir, '.planning', 'phases', '03-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '03-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '03-01-SUMMARY.md'), '# Summary');
+    fs.writeFileSync(path.join(p1, '04-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stats = JSON.parse(result.output);
+    const phase = stats.phases.find(p => p.number === '03');
+    assert.ok(phase, 'phase 03 must be present in stats output');
+    assert.notStrictEqual(phase.status, 'Complete',
+      `phase 03 must not report Complete off phase 04's report; got: ${phase.status}`);
+  });
+
   test('counts requirements from REQUIREMENTS.md', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),

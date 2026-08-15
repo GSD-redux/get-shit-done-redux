@@ -1525,9 +1525,14 @@ function renameDecimalPhases(
 function renameIntegerPhases(
   phasesDir: string,
   removedInt: number,
-): { renamedDirs: { from: string; to: string }[]; renamedFiles: { from: string; to: string }[] } {
+): {
+  renamedDirs: { from: string; to: string }[];
+  renamedFiles: { from: string; to: string }[];
+  renamedFileCollisions: { from: string; to: string }[];
+} {
   const renamedDirs: { from: string; to: string }[] = [];
   const renamedFiles: { from: string; to: string }[] = [];
+  const renamedFileCollisions: { from: string; to: string }[] = [];
   const dirs = readSubdirectories(phasesDir, true);
   const toRename: RenameIntInfo[] = dirs
     .map((dir) => {
@@ -1579,21 +1584,36 @@ function renameIntegerPhases(
       } else if (
         oldPrefixUnpadded !== oldPrefix &&
         f.startsWith(oldPrefixUnpadded) &&
-        !/^\d/.test(f.slice(oldPrefixUnpadded.length))
+        // Token-boundary check: the character immediately after the unpadded
+        // prefix must be a separator (`-`, `.`) or end-of-name, not any
+        // non-digit. A bare `!/^\d/` test (prior form) let a LETTER through
+        // too, so unpadded prefix "2" wrongly matched "2FA-notes.md" (a
+        // wholly unrelated file whose name merely starts with the digit).
+        (f.length === oldPrefixUnpadded.length || /^[-.]/.test(f.slice(oldPrefixUnpadded.length)))
       ) {
         matchedPrefix = oldPrefixUnpadded;
       }
       if (matchedPrefix) {
         const newFileName = newPrefix + f.slice(matchedPrefix.length);
-        retryRenameSync(
-          path.join(phasesDir, newDirName, f),
-          path.join(phasesDir, newDirName, newFileName),
-        );
+        const destPath = path.join(phasesDir, newDirName, newFileName);
+        // Collision guard: the padded and unpadded prefix forms can both
+        // resolve to the SAME destination (e.g. `09-VERIFICATION.md` and
+        // `9-VERIFICATION.md` in one directory both target
+        // `08-VERIFICATION.md`). Renaming blindly over an existing target
+        // silently destroys whichever file loses the readdirSync-order race.
+        // Skip and report instead of overwriting; this also catches a target
+        // that was already claimed by an EARLIER file in this same pass,
+        // since that earlier rename already created it on disk.
+        if (fs.existsSync(destPath)) {
+          renamedFileCollisions.push({ from: f, to: newFileName });
+          continue;
+        }
+        retryRenameSync(path.join(phasesDir, newDirName, f), destPath);
         renamedFiles.push({ from: f, to: newFileName });
       }
     }
   }
-  return { renamedDirs, renamedFiles };
+  return { renamedDirs, renamedFiles, renamedFileCollisions };
 }
 
 function decrementRoadmapPhaseNumber(raw: string, removedInt: number): string {
@@ -1919,16 +1939,22 @@ function cmdPhaseRemove(
 
   let renamedDirs: { from: string; to: string }[] = [];
   let renamedFiles: { from: string; to: string }[] = [];
+  let renamedFileCollisions: { from: string; to: string }[] = [];
   try {
-    const renamed = isDecimal
-      ? renameDecimalPhases(
-          phasesDir,
-          parseInt(normalized.split('.')[0], 10),
-          parseInt(normalized.split('.')[1], 10),
-        )
-      : renameIntegerPhases(phasesDir, parseInt(normalized, 10));
-    renamedDirs = renamed.renamedDirs;
-    renamedFiles = renamed.renamedFiles;
+    if (isDecimal) {
+      const renamed = renameDecimalPhases(
+        phasesDir,
+        parseInt(normalized.split('.')[0], 10),
+        parseInt(normalized.split('.')[1], 10),
+      );
+      renamedDirs = renamed.renamedDirs;
+      renamedFiles = renamed.renamedFiles;
+    } else {
+      const renamed = renameIntegerPhases(phasesDir, parseInt(normalized, 10));
+      renamedDirs = renamed.renamedDirs;
+      renamedFiles = renamed.renamedFiles;
+      renamedFileCollisions = renamed.renamedFileCollisions;
+    }
   } catch (e) {
     // #2245 audit (was ERROR-HIDING): renameDecimalPhases/renameIntegerPhases
     // rename subsequent phase directories ON DISK one at a time — a mid-loop
@@ -2021,6 +2047,7 @@ function cmdPhaseRemove(
       directory_deleted: targetDir,
       renamed_directories: renamedDirs,
       renamed_files: renamedFiles,
+      renamed_file_collisions: renamedFileCollisions,
       roadmap_updated: true,
       state_updated: stateUpdated,
     },

@@ -3748,7 +3748,12 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         // is now ALSO subject to the same `scopeToPhase` membership check as
         // every dashed-grammar site, so a stray `04_VERIFICATION.md`-shaped
         // file in phase 03's directory is excluded exactly like a stray
-        // `04-VERIFICATION.md` would be.
+        // `04-VERIFICATION.md` would be — while `03_VERIFICATION.md` (own
+        // phase, underscore separator) is NOT excluded: `isPhaseArtifact`
+        // (`phase-id.cts`) accepts `_` as a candidate-boundary separator
+        // alongside `-` and `.` for exactly this reason, so an S006/S007
+        // scan of `03-alpha/03_VERIFICATION.md` still resolves to S006
+        // ("verification passed" drift), not a false S007.
         const files = fs.readdirSync(phaseDirPath);
         const phaseDirBaseName = path.basename(phaseDirPath);
         const verificationFiles = scopeToPhase(
