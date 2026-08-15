@@ -219,10 +219,18 @@ is (highest → lowest):
 6. Pass model parameter to Task call
 ```
 
-The same precedence applies to `reasoning_effort` resolution on runtimes
-that support it (Codex), so `model` and `reasoning_effort` always derive
-from the same tier source — a `models[phase_type]` or
-`dynamic_routing` override flips both.
+`model` and `effort` resolve through different mechanisms at different
+times — they do not share the ladder above. `model` resolves at runtime,
+per spawn, from `.planning/config.json`; a config change takes effect on
+the next spawn. `effort` (claude runtime) has its own cascade
+(`agent_overrides` → `routing_tier_defaults` → `default`; see
+`docs/CONFIGURATION.md` § "Where effort actually reaches") and is baked at
+install time into the `effort:` frontmatter key of
+`~/.claude/agents/gsd-*.md` — Claude Code's Agent tool has no per-spawn
+effort parameter, so per-agent frontmatter is the only channel. An effort
+config change has no effect until `node gsd-tools.cjs effort sync --apply`
+re-syncs the agent files. Codex agents instead pin
+`model_reasoning_effort` in `~/.codex/agents/*.toml` at install time.
 
 ## Per-Agent Overrides
 
