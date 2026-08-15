@@ -1500,6 +1500,16 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
  * exists to provide. GSD-authored literals (fallback placeholders, headings, `<redacted>`) are never
  * escaped — only manifest-supplied data is.
  */
+/**
+ * #3515: one predicate for "this MCP server is remote (connects to a URL; nothing local is
+ * spawned)" — shared by the section's confinement notice and the per-server rendering so the
+ * consent-prompt claim cannot drift from what is actually disclosed per server. Branches on the
+ * DECLARED SHAPE: an http/sse transport, or a server with no command but a url.
+ */
+function isRemoteMcpServer(s: McpServerSurface): boolean {
+  return (s.transport === 'http' || s.transport === 'sse') || (!s.command && !!s.url);
+}
+
 function summarizeDisclosure(disclosure: Disclosure): string[] {
   const lines: string[] = [];
   const instructionLines = summarizeInstructionSurfaces(disclosure);
@@ -1540,10 +1550,26 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
   }
   if (disclosure.mcpServers.length > 0) {
     lines.push(`  MCP servers (${disclosure.mcpServers.length}): spawned/connected by the host runtime`);
+    // #3515 (epic #1900 F20): the confinement-posture notice. Hook commands are confined to the
+    // capability bundle (D5 rule 5); an MCP server's command/args/env/cwd are written VERBATIM and
+    // may point anywhere on the machine — an intentional asymmetry (confining them would break
+    // global/npx servers), disclosed here so the consent is informed rather than assumed. env is
+    // named explicitly (isolated review finding): an execution-primitive env value changes WHAT
+    // runs without touching command or argv — the classic vector — and omitting it would invite
+    // the inference that env IS confined. Only SPAWNED (stdio) servers earn the line: a remote
+    // (http/sse) server runs nothing locally, and the claim must be exact in a consent prompt.
+    // One shared predicate (below) decides spawn-vs-remote for the notice AND the per-server
+    // rendering, so the two cannot drift into an inexact claim.
+    if (disclosure.mcpServers.some((s) => !isRemoteMcpServer(s))) {
+      lines.push(
+        '    intentionally NOT confined to the bundle: a server\'s command, args, env, and cwd are written ' +
+          'verbatim and may point anywhere on this machine — unlike hooks, which are confined to the capability bundle root'
+      );
+    }
     for (const s of disclosure.mcpServers) {
       // TRUST2-2 (#1459): a non-stdio (http/sse) server connects to a URL; disclose the endpoint, not
       // a (nonexistent) command. A stdio server discloses command + args as before.
-      const isRemote = (s.transport === 'http' || s.transport === 'sse') || (!s.command && !!s.url);
+      const isRemote = isRemoteMcpServer(s);
       const name = renderValueForPrompt(s.name);
       if (isRemote) {
         const t = s.transport ? renderValueForPrompt(s.transport) : 'http';

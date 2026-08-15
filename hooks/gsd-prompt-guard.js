@@ -13,23 +13,12 @@
 
 const path = require('path');
 
-// Prompt injection patterns (subset of security.cjs patterns, inlined for hook independence)
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /ignore\s+(all\s+)?above\s+instructions/i,
-  /disregard\s+(all\s+)?previous/i,
-  /forget\s+(all\s+)?(your\s+)?instructions/i,
-  /override\s+(system|previous)\s+(prompt|instructions)/i,
-  /you\s+are\s+now\s+(?:a|an|the)\s+/i,
-  /act\s+as\s+(?:a|an|the)\s+(?!plan|phase|wave)/i,
-  /pretend\s+(?:you(?:'re| are)\s+|to\s+be\s+)/i,
-  /from\s+now\s+on,?\s+you\s+(?:are|will|should|must)/i,
-  /(?:print|output|reveal|show|display|repeat)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions)/i,
-  /<\/?(?:system|assistant|human)>/i,
-  /\[SYSTEM\]/i,
-  /\[INST\]/i,
-  /<<\s*SYS\s*>>/i,
-];
+// Prompt injection patterns — shared with gsd-read-injection-scanner.js via
+// hooks/lib/injection-patterns.js so the two surfaces cannot drift (#3504).
+// Deliberately a subset of security.cjs's set: hooks stay loadable without the
+// compiled lib tree. Staging of the lib helper is allowlisted in
+// GSD_HOOK_LIB_FILES (bin/install.js).
+const { INJECTION_PATTERNS } = require('./lib/injection-patterns.js');
 
 // #2304: Kimi's native hook bus delivers Kimi's tool vocabulary in the payload
 // (Write → WriteFile, Edit/MultiEdit → StrReplaceFile) while the [[hooks]]
@@ -152,8 +141,21 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Get the content being written
-    const content = data.tool_input?.content || data.tool_input?.new_string || '';
+    // Get the content being written. #3504 (isolated review finding 3): the
+    // bare `||` chain handed a NON-STRING truthy `content` straight to
+    // pattern.test(), where ToString can throw ("Cannot convert object to a
+    // primitive value" for `{"toString": null}`) into the outer catch — the
+    // exact crash-to-allow class #2547/#2595 hardened inside
+    // normalizeKimiPayload, unreached on this read. Guarded selection: take
+    // the first field that is a string, or String-coerces without throwing,
+    // so a poisoned `content` no longer shadows a real `new_string`.
+    let content = '';
+    for (const candidate of [data.tool_input?.content, data.tool_input?.new_string]) {
+      if (typeof candidate === 'string' && candidate) { content = candidate; break; }
+      if (candidate && typeof candidate !== 'string') {
+        try { const s = String(candidate); if (s) { content = s; break; } } catch { /* keep looking */ }
+      }
+    }
     if (!content) {
       process.exit(0);
     }

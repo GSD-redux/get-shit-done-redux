@@ -214,7 +214,13 @@ Both are **permanent entries in the ratchet with `owner: sanctioned-permanent`**
 
 **Question.** The body source disagrees with frontmatter and the derived value is non-empty. Who wins?
 
-**Rule.** The declared policy decides, on the same terms as an empty derived value. `preserve-when-unchanged` restores the curated frontmatter value when that field's body source did not change in **this** write. The empty-only "#905" guards in `syncStateFrontmatter` are **deleted**, not kept in sync — one enforcement point on every path, including `writeStateMd` and `cmdStateJson`.
+**Rule.** The declared policy decides, on the same terms as an empty derived value. `preserve-when-unchanged` restores the curated frontmatter value when that field's body source did not change in **this** write.
+
+**One enforcement point on the write seam — with the §8.3 exceptions carved out explicitly.** The empty-only "#905" guards in `syncStateFrontmatter` are **gated, not deleted** (corrected by Amendment 3): they stay active for the two sanctioned-permanent exceptions, which never run `applyStatePreservation` and for which those guards are the *only* empty-field fallback, and are off on the write seam where the executor owns the empty case.
+
+**Rule — a discard is as visible as a restore.** When the body source *did* change this write and the derived value is empty, the derived value wins per the delta rule and the curated value is dropped. That drop is reported through the same channel as a restore. Silence would make "preservation is visible" true only for the half of the rule that adds a value back.
+
+**Rule — `cmdStateJson` is governed too.** It is a read path, and it carried its **own private copy** of the empty-only guards with no delta check at all. It routes through the executor's `preserve-when-unchanged` rule instead. *(This section previously described those guards as living "in `syncStateFrontmatter`". They did not — they were a separate third encoding, corrected by Amendment 3.)*
 
 **Rule.** **Preservation is visible.** When policy restores a curated value over a disagreeing derived one, the command emits a divergence warning. Silence is the defect #3374 reported (`warnings: []`), not the fix.
 
@@ -333,4 +339,24 @@ This was not a theoretical over-reach. #3469's own scope line, inherited from th
 
 **Criterion 6 context.** All five of the epic's named instances were closed by point fixes while Phase 1 was in flight, so Phase 2 and Phase 4 are driven by **characterization tests at the consumer's output** (Decision 4(b)/(c)) rather than fail-first tests. Weaker, and stated as such.
 
-*(Phase 3 records the §8.4 bucket decision here — though see the epic: `fix(#3351)` (#3487) appears to have subsumed most of Phase 3.)*
+### Amendment 3 — Phase 4 (#3471): there was a FOURTH enforcement point, and the guards could not be deleted
+
+The contract held. Two of this section's own statements did not.
+
+**§8.5 said the guards are "deleted". They cannot be.** `writeStateMd` — the sole path for both §8.3 sanctioned-permanent exceptions — never runs `applyStatePreservation`, so those six conditions were their **only** empty-field fallback. A baseline probe on the unedited tree confirmed unconditional deletion drops `current_phase`, `current_phase_name`, `current_plan`, `stopped_at` and `paused_at` from a blank-body STATE.md on `state sync`, breaking the byte-identical guarantee §8.3 grants it. They are **gated**: on for the exceptions, off for the write seam. §8.5 is corrected above.
+
+**§8.5 mis-located `cmdStateJson`'s guards.** It described them as living "in `syncStateFrontmatter`". They were a **separate private copy** on the read path, with no delta check at all — so a stale body annotation always beat fresher curated frontmatter in `state.json`, reproducing #3395's shape entirely outside the write seam. Now routed through `applyPreserveWhenUnchanged`. `shouldPreserveExistingProgress`'s cross-milestone logic is a different rule and is untouched.
+
+**THE FINDING: a fourth enforcement point nobody had counted.** The pre-existing #2202 unknown-key carry-forward loop independently restored the same six fields whenever `derivedFm` lacked the key — silently neutralizing the gating fix. It is named nowhere in this ADR, in Phase 4's design, or in three prior phases. It was found only because a probe that should have passed did not: the first attempt reported `divergedFields: []` and restored the stale values, reproducing the exact bug the phase existed to close.
+
+That is the **fourth consecutive time** a copy count in this epic proved a lower bound — 2 write-seam bypasses became 4, three preservation encodings became four, and the estimate was wrong every single time. ADR-3180 Amendment 3's standing rule has now earned itself in every phase of this epic: **read the code, not the write-up.**
+
+**`divergedFields` could not see a discard.** It diffed `postFm` before and after preservation, so it could only observe fields actively *restored*. A discard-to-empty is absent on both sides and was therefore invisible. A second pass reports it, which is what makes the new "a discard is as visible as a restore" rule real rather than aspirational.
+
+**Decided — Row 2, the delete-the-body-line case.** When a transform deliberately removes a body line, the derived (empty) value wins per the delta rule and the curated value is dropped. Consistent with "same terms as empty", and it discards a value that previously survived on that path — so it is reported rather than silent. This is the sharpest Hyrum exposure in the epic and ships with its own call-out.
+
+**§8.4's residue, folded in when Phase 3 (#3470) closed as subsumed.** `fix(#3351)` reconciled only `cmdStatePatch`. Seven commands now share **one** `reconcileReportedFields` helper — not five copies of that block, which would have been this epic's own defect class introduced in its final phase. Both previously-untraced commands were traced rather than assumed: `cmdStatePlannedPhase` matched `cmdStateBeginPhase` exactly; `cmdStateCompletePhase` turned out to be a different legacy path reporting field names **and** a section name, where the naive helper would have dropped `Current Position` as a false negative every time.
+
+**A parity assertion, because the fix needed one.** `FRONTMATTER_KEY_TO_BODY_LABEL` is a second table beside `FIELD_CLASSIFICATION`, and a missing entry originally fell back silently to the raw key. That is this epic's shape in miniature. A missing `preserve-when-unchanged` label now throws with a structured error mirroring §8.2's `throwUnwiredRow`, and a test asserts every such row has an entry — the parity assertion `CLAUDE.md`'s *Generative Fix Divergence* entry requires whenever two surfaces share a constant. The throw is deliberately scoped to that policy: `divergedFields` legitimately carries `progress`, `milestone` and `milestone_name`, which have no body-line label, and an unconditional throw would have broken a live case.
+
+*(Phase 3's §8.4 bucket decision was folded here; `fix(#3351)` (#3487) subsumed most of Phase 3, which closed as subsumed.)*

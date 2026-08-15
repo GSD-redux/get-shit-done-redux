@@ -209,6 +209,18 @@ signature is a stable, key-order-independent encoding, so any later add or chang
 to a surface — including an env or cwd change — deactivates the capability until
 the user re-consents, while a harmless key reorder does not.
 
+One asymmetry the summary now names explicitly
+([#3515](https://github.com/open-gsd/gsd-core/issues/3515)): hook commands are
+*confined to the capability bundle*, but an MCP server's `command`, `args`,
+`env`, and `cwd` are written **verbatim** and may point anywhere on the machine.
+That is intentional — most real MCP servers legitimately resolve to global
+or `npx` installs outside the bundle, and confining them would break every
+such server — so the prompt says "intentionally NOT confined to the bundle"
+for every spawned server rather than letting the asymmetry go unstated. The
+re-consent signature covers this surface completely: any change to a
+server's command, argv, env, cwd, or any other declared field forces
+re-consent (above).
+
 For everything else the bundle carries, the disclosure note explains what the
 artifact does and consent is lighter. But "everything else" is not one class, and
 treating it as one was a mistake this document made until ADR-2363 — see the next

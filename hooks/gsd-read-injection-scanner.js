@@ -72,23 +72,10 @@ const MARKDOWN_LINK_PATTERNS = [
   },
 ];
 
-// Standard injection patterns — mirrors gsd-prompt-guard.js, inlined for hook independence.
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /ignore\s+(all\s+)?above\s+instructions/i,
-  /disregard\s+(all\s+)?previous/i,
-  /forget\s+(all\s+)?(your\s+)?instructions/i,
-  /override\s+(system|previous)\s+(prompt|instructions)/i,
-  /you\s+are\s+now\s+(?:a|an|the)\s+/i,
-  /act\s+as\s+(?:a|an|the)\s+(?!plan|phase|wave)/i,
-  /pretend\s+(?:you(?:'re| are)\s+|to\s+be\s+)/i,
-  /from\s+now\s+on,?\s+you\s+(?:are|will|should|must)/i,
-  /(?:print|output|reveal|show|display|repeat)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions)/i,
-  /<\/?(?:system|assistant|human)>/i,
-  /\[SYSTEM\]/i,
-  /\[INST\]/i,
-  /<<\s*SYS\s*>>/i,
-];
+// Standard injection patterns — shared with gsd-prompt-guard.js via
+// hooks/lib/injection-patterns.js so the two surfaces cannot drift (#3504).
+// Staging of the lib helper is allowlisted in GSD_HOOK_LIB_FILES (bin/install.js).
+const { INJECTION_PATTERNS } = require('./lib/injection-patterns.js');
 
 const ALL_PATTERNS = [...INJECTION_PATTERNS, ...SUMMARISATION_PATTERNS];
 

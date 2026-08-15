@@ -697,3 +697,110 @@ test('#3514: integrityStatus NEVER enters the consent signature (executableSetCh
     'a prompt-only integrity line must not read as a changed executable set'
   );
 });
+
+// ---------------------------------------------------------------------------
+// #3515 (epic #1900 F20) — MCP server config is INTENTIONALLY unconfined
+// (unlike hooks); the consent disclosure must say so. Adopted decision: the
+// document+disclose arm — confining args/cwd would break global/npx MCP
+// servers (Hyrum); honest disclosure is the defense-in-depth.
+// ---------------------------------------------------------------------------
+
+test('#3515: stdio MCP disclosure carries the intentionally-unconfined notice', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+    mcpServers: {
+      'cap-srv': { command: 'node', args: ['/opt/global/server.js'], cwd: '/opt/somewhere-else' },
+    },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /MCP servers \(1\)/);
+  assert.match(
+    joined,
+    /not confined to the bundle.*anywhere on this machine/i,
+    'the notice must state the unconfined posture and its scope'
+  );
+  assert.match(joined, /command, args, env, and cwd/i,
+    'isolated-review finding: env is the classic execution-primitive channel — omitting it invites the inference that env IS confined');
+  assert.match(joined, /unlike hooks/i, 'the hooks contrast is the load-bearing part of the claim');
+});
+
+test('#3515: the notice is unconditional for spawned servers (no per-value path heuristics)', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap-min',
+    mcpServers: { 'min-srv': { command: 'npx' } },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /not confined to the bundle/i);
+});
+
+test('#3515: remote-only MCP does not claim a local spawn', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap-remote',
+    mcpServers: { 'remote-srv': { transport: 'http', url: 'https://example.com/mcp' } },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /MCP servers \(1\)/);
+  assert.doesNotMatch(joined, /not confined to the bundle/i, 'nothing local is spawned — no unconfined claim');
+});
+
+test('#3515: no MCP section, no notice', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'hooks-only',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.doesNotMatch(joined, /not confined to the bundle/i);
+});
+
+test('#3515: the notice changes no consent signature — golden value for a spawned-server manifest', () => {
+  const manifest = {
+    id: 'sig-cap',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+    mcpServers: { 'sig-srv': { command: 'node', args: ['x'], env: { K: 'V' }, cwd: '/tmp' } },
+  };
+  // GOLDEN (isolated-review finding m1: a self-comparison can never fail). Base64 of the exact
+  // signature so the literal carries no escaping. If you intentionally extend disclosureSignature,
+  // these bytes change and this fails — update the literal in the same, conscious change.
+  const GOLDEN_B64 = 'W1siW1wiaG9va1wiLFwiUG9zdFRvb2xVc2VcIixcImhvb2tzL3J1bi5qc1wiXSJdLFtdLFsiW1wibWNwXCIsXCJzaWctc3J2XCIsXCJcIixcIm5vZGVcIixbXCJ4XCJdLFwiXCIse30se1wiS1wiOlwiVlwifSxcIi90bXBcIix7XCJhcmdzXCI6W1wieFwiXSxcImNvbW1hbmRcIjpcIm5vZGVcIixcImN3ZFwiOlwiL3RtcFwiLFwiZW52XCI6e1wiS1wiOlwiVlwifX1dIl1d';
+  assert.strictEqual(
+    Buffer.from(trust.signatureForManifest(manifest), 'utf8').toString('base64'),
+    GOLDEN_B64
+  );
+  const d1 = trust.discloseExecutableSurfaces(manifest);
+  trust.summarizeDisclosure(d1); // rendering reads only — assert it cannot mutate disclosure state
+  assert.strictEqual(trust.executableSetChanged(d1, trust.discloseExecutableSurfaces(manifest)), false);
+});
+
+test('#3515: mixed transports render exactly one notice and still disclose the remote endpoint', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mixed-cap',
+    mcpServers: {
+      'local-srv': { command: 'node', args: ['server.js'] },
+      'remote-srv': { transport: 'http', url: 'https://example.com/mcp' },
+    },
+  });
+  const lines = trust.summarizeDisclosure(d);
+  assert.strictEqual(
+    lines.filter((l) => /not confined to the bundle/i.test(l)).length,
+    1,
+    'one section-level notice, not one per server'
+  );
+  assert.ok(lines.some((l) => /\[http\] https:\/\/example\.com\/mcp/.test(l)), 'the remote endpoint is still disclosed');
+});
+
+test('#3515: boundary server shapes — no command and no url renders as spawned (exact-claim edges)', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'edge-cap',
+    mcpServers: {
+      'empty-srv': {},
+      'http-with-command': { transport: 'http', command: 'node', url: 'https://example.com/mcp' },
+    },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  // `{}` has neither transport nor url nor command — the shared predicate classifies it SPAWNED
+  // (nothing proves it is remote), so the notice fires.
+  assert.match(joined, /not confined to the bundle/i);
+  // An http-transport server WITH a command is remote by declared shape (transport wins).
+  assert.ok(/\[http\]/.test(joined));
+});
