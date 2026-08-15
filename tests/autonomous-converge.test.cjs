@@ -286,3 +286,42 @@ describe('autonomous verification deferral contract', () => {
     assert.match(iterateStep, /drop deferred phases from the autonomous queue/);
   });
 });
+
+// ─── Issue #3210: bounded blocker retries, needs_human escalation ────────────
+//
+// handle_blocker's "Fix and retry" path had no attempt ceiling across
+// invocations and no automatic escalation to a terminal needs_human state, so
+// a non-converging blocker (e.g. an operator gate the executor cannot satisfy)
+// looped indefinitely. Regression coverage lives here because this file owns
+// the autonomous.md host-workflow contract.
+
+describe('issue #3210: autonomous handle_blocker has a retry ceiling with needs_human escalation', () => {
+  function stepOf(content, name) {
+    const open = `<step name="${name}">`;
+    const from = content.indexOf(open);
+    assert.ok(from !== -1, `step "${name}" not found`);
+    const to = content.indexOf('</step>', from);
+    assert.ok(to !== -1, `step "${name}" has no closing tag`);
+    return content.slice(from, to);
+  }
+
+  test('handle_blocker bounds "Fix and retry" attempts per phase step', () => {
+    const step = stepOf(read(WORKFLOW_PATH), 'handle_blocker');
+    assert.match(
+      step,
+      /\b3\b.*retr|\bretr.*\b3\b|RETRY_COUNT|retry (ceiling|limit|count)/i,
+      'handle_blocker must track a bounded retry count for the same phase step instead of ' +
+      're-presenting "Fix and retry" indefinitely (#3210)'
+    );
+  });
+
+  test('handle_blocker auto-escalates to a terminal needs_human halt once the ceiling is exceeded', () => {
+    const step = stepOf(read(WORKFLOW_PATH), 'handle_blocker');
+    assert.match(
+      step,
+      /needs_human/,
+      'once the retry ceiling is exceeded, handle_blocker must halt autonomously in a terminal ' +
+      'needs_human state (surfacing the unmet items) instead of looping or asking again (#3210)'
+    );
+  });
+});

@@ -121,7 +121,7 @@ The executor agent reads `<precondition>` before any other task work:
 |---|---|
 | **Absent** | No visible change — execute the task exactly as today. Back-compat for every existing plan. |
 | **Met** | No visible change — proceed with the task. The precondition is logged in the SUMMARY only if it was non-trivial to verify. |
-| **Unmet** | STOP — return a `checkpoint:human-verify` (use `checkpoint_return_format`) with `**Blocked by:** Precondition not met: <precondition text>`. Do NOT partial-commit the task. Unmet preconditions are NEVER auto-approved — a missing prerequisite is not a verification step a human can rubber-stamp, it is a fact the executor cannot establish on its own. |
+| **Unmet** | STOP — return a `checkpoint:human-verify` reporting `**Gate:** blocking-human` (use `checkpoint_return_format`) with `**Blocked by:** Precondition not met: <precondition text>`. Do NOT partial-commit the task. Unmet preconditions are NEVER auto-approved — a missing prerequisite is not a verification step a human can rubber-stamp, it is a fact the executor cannot establish on its own. |
 
 ## Plan-structure validation
 

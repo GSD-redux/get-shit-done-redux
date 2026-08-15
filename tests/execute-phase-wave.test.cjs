@@ -908,3 +908,29 @@ describe('bug #3096: ai-integration-phase sequential ordering and Edit-only disc
 });
   });
 }
+
+// ─── Issue #3210: auto-mode carve-out exempts precondition-unmet checkpoints ─
+//
+// The checkpoint_handling auto-spawn rule dispatched on checkpoint type alone;
+// a checkpoint returned because a task's <precondition> was unmet would have
+// been auto-approved with a synthetic "approved" — re-approving the very
+// checkpoint the executor refused to auto-approve (it reports Gate:
+// blocking-human). This file owns the execute-phase.md host-workflow contract.
+
+describe('issue #3210: execute-phase auto-mode carve-out exempts precondition-unmet checkpoints', () => {
+  test('the checkpoint_handling auto-spawn rule names precondition-unmet checkpoints', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const open = content.indexOf('<step name="checkpoint_handling">');
+    assert.ok(open !== -1, 'checkpoint_handling step not found');
+    const close = content.indexOf('</step>', open);
+    const step = content.slice(open, close);
+    const carveOut = step.split('\n').find((l) => l.includes('Carve-out'));
+    assert.ok(carveOut, 'checkpoint_handling must keep the blocking-human carve-out');
+    assert.match(
+      carveOut,
+      /precondition/i,
+      'the auto-mode carve-out must state that a precondition-unmet checkpoint reports ' +
+      'blocking-human and is never auto-approved (#3210)'
+    );
+  });
+});

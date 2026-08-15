@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "autonomous.md": "#3210: handle_blocker's 'Fix and retry' path gained a retry ceiling — a per-phase-step RETRY_COUNT that escalates to a terminal needs_human halt (STATE.md '## Needs Human' row + unmet items surfaced) after 3 failed fix attempts, instead of re-presenting the options indefinitely. This is the loop-fixing behavior the issue title names; +704 bytes is the ceiling rule itself, not incidental prose. (The matching gsd-executor.md growth is acknowledged in the 2943 fragment, which already names that path.)"
+  }
+}
