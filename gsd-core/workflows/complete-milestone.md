@@ -366,7 +366,8 @@ Full PROJECT.md evolution review at milestone completion.
 Read all phase summaries:
 
 ```bash
-cat .planning/phases/*-*/*-SUMMARY.md
+_SUMMARIES=( .planning/phases/*-*/*-SUMMARY.md )
+if [ ${#_SUMMARIES[@]} -gt 0 ]; then cat "${_SUMMARIES[@]}"; fi
 ```
 
 **Full review checklist:**
