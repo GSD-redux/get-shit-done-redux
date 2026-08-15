@@ -364,6 +364,10 @@ export function mergeEffortTierDefaults(
   const merged: Record<string, string> = { ...(manifest || {}) };
   if (override && typeof override === 'object' && !Array.isArray(override)) {
     for (const [tier, value] of Object.entries(override as Record<string, unknown>)) {
+      // House pollution guard (mirrors _deepMergeConfig in config-loader): the
+      // string-only validator already makes these inert, but an explicit skip
+      // keeps this merge safe even if a caller's validator is ever relaxed.
+      if (tier === '__proto__' || tier === 'constructor' || tier === 'prototype') continue;
       if (isValid(value)) merged[tier] = value as string;
     }
   }

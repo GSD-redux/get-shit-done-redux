@@ -354,7 +354,7 @@ describe('#3533 effort inherit: expressible at every layer, never a wire level',
 
 describe('#3531 routing_tier_defaults merge: manifest built-ins survive partial config', () => {
   let tmpDir;
-  beforeEach(() => { tmpDir = createTempProject(); });
+  beforeEach(() => { tmpDir = makeTempProject(); });
   afterEach(() => { cleanup(tmpDir); });
 
   test('effort block without routing_tier_defaults keeps manifest tier defaults (runtime)', () => {
@@ -391,7 +391,7 @@ describe('#3531 routing_tier_defaults merge: manifest built-ins survive partial 
 
 describe('#3531 parity: runtime and install-time resolvers agree on the merged tier ladder', () => {
   let tmpDir;
-  beforeEach(() => { tmpDir = createTempProject(); });
+  beforeEach(() => { tmpDir = makeTempProject(); });
   afterEach(() => { cleanup(tmpDir); });
 
   const PARITY_AGENTS = ['gsd-planner', 'gsd-executor', 'gsd-codebase-mapper', 'completely-unknown-agent-xyz'];
@@ -424,7 +424,7 @@ describe('#3531 parity: runtime and install-time resolvers agree on the merged t
 
 describe('#3531 readGsdEffectiveEffortConfig: home/project routing_tier_defaults deep-merge', () => {
   test('project partial tier block unions with home partial tier block per-tier', (t) => {
-    const tmpDir = createTempProject('gsd-3531-home-merge-');
+    const tmpDir = makeTempProject('gsd-3531-home-merge-');
     t.after(() => cleanup(tmpDir));
 
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3531-home-'));
@@ -2427,22 +2427,25 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'medium');
   });
 
-  test('invalid routing_tier_defaults value falls through to effort.default', () => {
+  test('invalid routing_tier_defaults value falls back to the manifest value for that tier (#3531)', () => {
     writeConfig(tmpDir, {
       effort: {
         routing_tier_defaults: { heavy: 'turbo' },
         default: 'low',
       },
     });
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'low');
+    // #3531: the config block merges OVER the manifest built-ins; an invalid
+    // entry is dropped by the merge, so the manifest heavy default surfaces.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
-  test('invalid effort.default falls through to hardcoded "high" (no routing_tier_defaults set)', () => {
+  test('invalid effort.default falls through to the manifest tier default (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { default: 'turbo' },
     });
-    // effortCfg set but no routing_tier_defaults; turbo is invalid; fallback = hardcoded 'high'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'high');
+    // #3531: an effort block without routing_tier_defaults keeps the manifest
+    // tier ladder; the invalid default never answers for a tiered agent.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('unknown agent -> uses effort.default', () => {
@@ -2453,12 +2456,12 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'unknown-agent-xyz'), 'medium');
   });
 
-  test('effort.default numeric value (123) ignored, hardcoded "high" fallback', () => {
+  test('effort.default numeric value (123) ignored, manifest tier default answers (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { default: 123 },
     });
-    // effortCfg set, no routing_tier_defaults -> no tier default; numeric ignored -> 'high'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'high');
+    // #3531: no valid tier override -> manifest heavy default; numeric default ignored.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('effort block missing entirely -> uses tier default', () => {
@@ -2474,11 +2477,12 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
-  test('effort.routing_tier_defaults empty object -> effort.default', () => {
+  test('effort.routing_tier_defaults empty object -> manifest tier default (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { routing_tier_defaults: {}, default: 'low' },
     });
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'low');
+    // #3531: an empty override block leaves the manifest built-ins in force.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 });
 
@@ -2901,8 +2905,9 @@ describe('#443 QA matrix — malformed effort/fast_mode configs', () => {
         default: 'medium',
       },
     });
-    // boolean true is not a valid effort -> falls through to default 'medium'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'medium');
+    // #3531: boolean true is not a valid effort -> the merge drops it and the
+    // manifest heavy default (xhigh) surfaces, not effort.default 'medium'.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('effort.agent_overrides is non-object -> falls through gracefully', () => {
