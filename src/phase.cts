@@ -1522,17 +1522,39 @@ function renameDecimalPhases(
   return { renamedDirs, renamedFiles };
 }
 
+/**
+ * Find a free name to move an occupying file aside to, on collision, so the
+ * intended rename can proceed without destroying either file. Appends the
+ * literal `.orphaned` suffix to the whole existing filename (never `.md`,
+ * so no phase-directory scan predicate — all of which filter on
+ * `.endsWith('.md')` / `.endsWith('-VERIFICATION.md')` etc — can ever pick
+ * the displaced file back up as any phase's artifact). Falls back to a
+ * numeric discriminator (`.orphaned.2`, `.orphaned.3`, ...) if `.orphaned`
+ * itself is taken, bounded at 100 attempts so a pathological directory
+ * cannot loop forever; returns null if no free name is found within that
+ * bound, letting the caller fall back to skip-and-report.
+ */
+function findOrphanedDisplacementName(dir: string, fileName: string): string | null {
+  const base = `${fileName}.orphaned`;
+  if (!fs.existsSync(path.join(dir, base))) return base;
+  for (let n = 2; n <= 100; n++) {
+    const candidate = `${base}.${n}`;
+    if (!fs.existsSync(path.join(dir, candidate))) return candidate;
+  }
+  return null;
+}
+
 function renameIntegerPhases(
   phasesDir: string,
   removedInt: number,
 ): {
   renamedDirs: { from: string; to: string }[];
   renamedFiles: { from: string; to: string }[];
-  renamedFileCollisions: { from: string; to: string }[];
+  renamedFileCollisions: { from: string; to: string; displaced_to: string | null }[];
 } {
   const renamedDirs: { from: string; to: string }[] = [];
   const renamedFiles: { from: string; to: string }[] = [];
-  const renamedFileCollisions: { from: string; to: string }[] = [];
+  const renamedFileCollisions: { from: string; to: string; displaced_to: string | null }[] = [];
   const dirs = readSubdirectories(phasesDir, true);
   const toRename: RenameIntInfo[] = dirs
     .map((dir) => {
@@ -1599,13 +1621,33 @@ function renameIntegerPhases(
         // Collision guard: the padded and unpadded prefix forms can both
         // resolve to the SAME destination (e.g. `09-VERIFICATION.md` and
         // `9-VERIFICATION.md` in one directory both target
-        // `08-VERIFICATION.md`). Renaming blindly over an existing target
-        // silently destroys whichever file loses the readdirSync-order race.
-        // Skip and report instead of overwriting; this also catches a target
-        // that was already claimed by an EARLIER file in this same pass,
-        // since that earlier rename already created it on disk.
+        // `08-VERIFICATION.md`), and a stray cross-phase file can already sit
+        // at the destination name (e.g. a leftover `08-VERIFICATION.md`
+        // belonging to a DIFFERENT phase, inside phase 9's directory).
+        // Renaming blindly over an existing target silently destroys
+        // whichever file loses; skipping the rename instead lets the stray
+        // outrank the phase's own renamed artifact once it lands at the
+        // canonical name. Neither is acceptable: move the OCCUPYING file
+        // aside first (never overwrite, never skip the real rename), then
+        // complete the intended rename so the phase's own artifact takes the
+        // canonical name. This also handles a target that was already
+        // claimed by an EARLIER file in this same pass, since that earlier
+        // rename already created it on disk.
         if (fs.existsSync(destPath)) {
-          renamedFileCollisions.push({ from: f, to: newFileName });
+          const displacedName = findOrphanedDisplacementName(
+            path.join(phasesDir, newDirName),
+            newFileName,
+          );
+          if (displacedName === null) {
+            // No free displacement name within the bounded search — fall
+            // back to skip-and-report rather than looping or overwriting.
+            renamedFileCollisions.push({ from: f, to: newFileName, displaced_to: null });
+            continue;
+          }
+          retryRenameSync(destPath, path.join(phasesDir, newDirName, displacedName));
+          retryRenameSync(path.join(phasesDir, newDirName, f), destPath);
+          renamedFiles.push({ from: f, to: newFileName });
+          renamedFileCollisions.push({ from: f, to: newFileName, displaced_to: displacedName });
           continue;
         }
         retryRenameSync(path.join(phasesDir, newDirName, f), destPath);
@@ -1939,7 +1981,7 @@ function cmdPhaseRemove(
 
   let renamedDirs: { from: string; to: string }[] = [];
   let renamedFiles: { from: string; to: string }[] = [];
-  let renamedFileCollisions: { from: string; to: string }[] = [];
+  let renamedFileCollisions: { from: string; to: string; displaced_to: string | null }[] = [];
   try {
     if (isDecimal) {
       const renamed = renameDecimalPhases(

@@ -2509,6 +2509,83 @@ describe('phase remove command', () => {
     assert.strictEqual(findOutput.found, true, 'renumbered phase 8 should resolve');
   });
 
+  // #3511 BLOCKER-2 follow-up (security-review regression): the collision
+  // guard added to stop the original overwrite-and-lose-data bug (BLOCKER-1)
+  // introduced a NEW wrong-answer regression — skipping the rename let a
+  // STRAY cross-phase file outrank the phase's own report at the canonical
+  // name. Phase 9's directory holds its OWN `09-VERIFICATION.md` (gaps_found)
+  // and a stray `08-VERIFICATION.md` (passed) that actually belongs to phase
+  // 8. Removing phase 8 renumbers phase 9 -> phase 8 and must displace the
+  // stray (never overwrite it, never let it win) so the phase's own report
+  // lands at the canonical name.
+  test('#3511 BLOCKER-2 follow-up: collision displaces the occupying file instead of skip-or-overwrite', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n### Phase 8: A\n**Goal:** A\n### Phase 9: B\n**Goal:** B\n`
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '08-a'), { recursive: true });
+    const p9 = path.join(tmpDir, '.planning', 'phases', '09-foo');
+    fs.mkdirSync(p9, { recursive: true });
+    // The phase's OWN report.
+    fs.writeFileSync(
+      path.join(p9, '09-VERIFICATION.md'),
+      '---\nstatus: gaps_found\n---\n\nOwn report for phase 9.'
+    );
+    // A STRAY report belonging to phase 8, sitting inside phase 9's directory.
+    fs.writeFileSync(
+      path.join(p9, '08-VERIFICATION.md'),
+      '---\nstatus: passed\n---\n\nStray report belonging to phase 8.'
+    );
+
+    const result = runGsdTools('phase remove 8', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    const newDir = path.join(tmpDir, '.planning', 'phases', '08-foo');
+    assert.ok(fs.existsSync(newDir), 'phase 9 should be renumbered to 08-foo');
+
+    // (a) no file is lost — both original contents still exist on disk.
+    const canonicalPath = path.join(newDir, '08-VERIFICATION.md');
+    const displacedPath = path.join(newDir, '08-VERIFICATION.md.orphaned');
+    assert.ok(fs.existsSync(canonicalPath), 'canonical 08-VERIFICATION.md must exist');
+    assert.ok(fs.existsSync(displacedPath), 'the displaced stray file must still exist on disk');
+    const canonical = fs.readFileSync(canonicalPath, 'utf-8');
+    const displaced = fs.readFileSync(displacedPath, 'utf-8');
+    assert.ok(
+      displaced.includes('Stray report belonging to phase 8'),
+      'displaced file must retain the stray content'
+    );
+
+    // (b) 08-VERIFICATION.md in the renamed dir is the phase's OWN former
+    // 09-VERIFICATION.md — assert on its body/status, not just its name.
+    assert.ok(
+      canonical.includes('status: gaps_found'),
+      `canonical 08-VERIFICATION.md must be the phase's own report (gaps_found), ` +
+      `not the stray (passed). Got: ${canonical}`
+    );
+    assert.ok(
+      canonical.includes('Own report for phase 9'),
+      'canonical file body must be the phase\'s own former 09-VERIFICATION.md content'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(newDir, '09-VERIFICATION.md')),
+      'the stale 09-VERIFICATION.md name should no longer exist'
+    );
+
+    // (c) the displacement is reported in the command output.
+    assert.ok(
+      Array.isArray(output.renamed_file_collisions),
+      'renamed_file_collisions must be present in the output'
+    );
+    const entry = output.renamed_file_collisions.find((c) => c.to === '08-VERIFICATION.md');
+    assert.ok(
+      entry,
+      `expected a collision entry for 08-VERIFICATION.md, got: ${JSON.stringify(output.renamed_file_collisions)}`
+    );
+    assert.strictEqual(entry.from, '09-VERIFICATION.md');
+    assert.strictEqual(entry.displaced_to, '08-VERIFICATION.md.orphaned');
+  });
+
   test('rejects removal of phase with summaries unless --force', () => {
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
     fs.mkdirSync(p1, { recursive: true });
