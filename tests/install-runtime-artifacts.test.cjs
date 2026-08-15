@@ -4167,10 +4167,6 @@ describe('#3531 resolveInstallTimeEffort: agent_overrides-only effort block keep
 });
 
 // ─── describe 5: Source stays clean ──────────────────────────────────────────
-  });
-});
-
-// ─── describe 5: Source stays clean ──────────────────────────────────────────
 
 describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
   test('source agents/gsd-planner.md frontmatter does not contain effort:', () => {

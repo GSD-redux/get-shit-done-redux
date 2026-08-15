@@ -349,6 +349,8 @@ describe('#3533 effort inherit: expressible at every layer, never a wire level',
     assert.strictEqual(renderEffortForRuntime('claude', 'minimal').value, 'low');
     assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'xhigh');
     assert.strictEqual(renderEffortForRuntime('claude', 'xhigh').value, 'xhigh');
+  });
+});
 
 // ─── #3531 (10c): routing_tier_defaults merges over manifest tier defaults ───
 
