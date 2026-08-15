@@ -237,14 +237,26 @@ against the diff and warn about (then add) any changed files the SUMMARY extract
 surface — so a partial SUMMARY result can no longer silently mask the rest of the phase.
 ```bash
 # Compute diff base from phase commits — fail closed if no reliable base found.
-# #2989: anchor the grep to the phase-mention convention ("Phase N" / "phase N")
-# so a bare digit substring doesn't match version strings, dates, issue refs,
-# or other phases' numbers. When no commit genuinely references the phase, this
-# yields empty and the fail-closed warning below actually fires.
-# #3191: the trailing boundary is the POSIX class ([^[:alnum:]_]|$), NOT \b —
-# \b is not a POSIX ERE token, so under --extended-regexp it silently matches
-# nothing on macOS regex(3), making this fallback dead on Apple platforms.
-PHASE_COMMITS=$(git log --oneline --all --grep="[Pp]hase ${PADDED_PHASE}([^[:alnum:]_]|$)" --extended-regexp --format="%H" 2>/dev/null)
+# #3503: anchor the grep to GSD's own conventional-commit phase scopes — the
+# subject-line formats this system itself emits (docs(phase-N): from
+# execute-phase.md, plan scopes feat(N-MM):/test(N-MM): from references/tdd.md,
+# bare phase scopes docs(N):). The #2989/#3191 prose anchor "[Pp]hase N"
+# matched free prose in ANY commit body — planning commits forward-reference
+# later phases ("deferred to Phase N per D-09"), doc commits use "### Phase N"
+# as a format example — and tail -1 (oldest match) turned each false positive
+# into a base unboundedly before the phase, while GSD's own scope commits
+# never contain the literal "Phase N" at all. The ^ anchor makes this a
+# subject-line match, so commit-body prose can never capture the base.
+# Workflows emit the UNPADDED roadmap phase number (docs(phase-6):) while
+# PADDED_PHASE is zero-padded ("06") — accept both spellings.
+# #3191: stay POSIX-ERE portable — the boundary is the closing paren + colon,
+# never \b (not a POSIX ERE token; under --extended-regexp it silently matches
+# nothing on macOS regex(3), making this fallback dead on Apple platforms).
+PHASE_SCOPE_NUM="${PADDED_PHASE}"
+case "${PADDED_PHASE}" in
+  0[0-9]*) PHASE_SCOPE_NUM="${PADDED_PHASE#0}|${PADDED_PHASE}" ;;
+esac
+PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep="^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:" --format="%H" 2>/dev/null)
 DIFF_BASE=""
 if [ -n "$PHASE_COMMITS" ]; then
   DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
@@ -425,13 +437,17 @@ Compute the review output path:
 REVIEW_PATH="${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md"
 ```
 
-Compute DIFF_BASE for agent context (in case agent needs it). #3191: this must be
-the SAME anchored, POSIX-portable derivation the Tier-3 scope step uses — the
-reviewer agent consumes `diff_base` exactly when `files:` is empty, i.e. the same
-fail-closed scenario Tier 3 protects, so a divergent unanchored recomputation here
-re-arms the mis-scoping one tier down:
+Compute DIFF_BASE for agent context (in case agent needs it). #3191/#3503: this
+must be the SAME anchored, POSIX-portable conventional-commit-scope derivation
+the Tier-3 scope step uses — the reviewer agent consumes `diff_base` exactly
+when `files:` is empty, i.e. the same fail-closed scenario Tier 3 protects, so
+a divergent recomputation here re-arms the mis-scoping one tier down:
 ```bash
-PHASE_COMMITS=$(git log --oneline --all --grep="[Pp]hase ${PADDED_PHASE}([^[:alnum:]_]|$)" --extended-regexp --format="%H" 2>/dev/null)
+PHASE_SCOPE_NUM="${PADDED_PHASE}"
+case "${PADDED_PHASE}" in
+  0[0-9]*) PHASE_SCOPE_NUM="${PADDED_PHASE#0}|${PADDED_PHASE}" ;;
+esac
+PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep="^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:" --format="%H" 2>/dev/null)
 if [ -n "$PHASE_COMMITS" ]; then
   DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
   # Verify the parent commit exists (first commit in repo has no parent)

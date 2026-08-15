@@ -151,12 +151,14 @@ module is the central security utility. It provides:
 
 **Runtime hook: `gsd-prompt-guard.js`.** This hook fires on every Write or
 Edit call that targets `.planning/` files. It scans the content being written
-for the same injection patterns as `security.cjs` (a subset inlined directly
-into the hook for independence — the hook does not `require()` the module, so
-it runs even if the module path changes). Detection is **advisory-only**: the
-hook logs the finding but does not block the write. The rationale is that a
-false-positive block on a legitimate planning write would be more disruptive
-than a missed injection in a secondary scan layer.
+for injection patterns shared with `gsd-read-injection-scanner.js` through
+`hooks/lib/injection-patterns.js` — one module both hooks `require()`, so the
+two surfaces cannot drift apart (#3504). The set is deliberately a subset of
+`security.cjs`'s patterns: the hooks stay loadable standalone, without the
+compiled lib tree. Detection is **advisory-only**: the hook logs the finding
+but does not block the write. The rationale is that a false-positive block on
+a legitimate planning write would be more disruptive than a missed injection
+in a secondary scan layer.
 
 **Runtime hook: `gsd-read-injection-scanner.js`.** This hook fires on the
 output of every Read, WebFetch, and WebSearch tool call. It scans the *content
@@ -206,6 +208,25 @@ WebFetch or WebSearch). The in-prompt `<security_context>` boundary in research
 agents provides an additional containment layer: even if an injected string
 reaches an agent, it is structurally separated from the instruction region.
 Together these controls bracket the ingest → store → re-read lifecycle.
+
+**Runtime hook: `gsd-workflow-guard.js` — advisory vs. blocking posture.**
+This hook has two legs with two deliberately different failure postures. The
+edit leg is **advisory**: when `hooks.workflow_guard` is enabled it warns on
+edits made outside a GSD workflow, and on any internal error it fails open
+(exit 0) — a broken advisory must never wedge a session's tool calls. The
+Bash leg carries the hook's one **hard block**: `git add -f` / `git add
+--force` on an `agent-*` or `worktree-agent-*` branch is blocked outright
+(`WORKTREE_AGENT_FORCE_ADD_FORBIDDEN`, exit 2), enforcing the
+skipped-gitignored contract. When the guard is enabled, this block leg
+**fails closed** (#3504): if an internal error strikes before the block
+decision and the blocking context can be re-derived from the payload (a Bash
+tool call, the guard enabled, the branch determinably an agent branch), the
+hook exits 2 rather than silently allowing. What it cannot establish — an
+unparseable payload, a non-Bash tool, the guard disabled, or a branch it
+cannot determine — still fails open. The known trade-off: on an agent branch
+with the guard enabled, a Bash call that trips an internal error is blocked
+even when it was not a force-add; that is the conservative direction for the
+one hard block this hook owns.
 
 ---
 

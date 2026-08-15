@@ -902,19 +902,56 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         { clock: realClock, sourcePath: statePath },
       );
       const divergedFields: string[] = [];
+      // #2111 (found by #3471 review): `milestoneCompleteCore` never declares
+      // `current_phase`/`current_phase_name` among the fields it touches — but
+      // its ## Current Position reset REWRITES the `Phase:` prose line to a
+      // closure message ("Milestone vX.Y complete"), which is not a number.
+      // That is an unavoidable side effect of the wholesale section reset
+      // `resetSectionVerbatim` performs, not an intent to change the phase.
+      // Downstream, `current_phase`/`current_phase_name` are
+      // `preserve-when-unchanged` rows: the #1230 delta heuristic sees the
+      // body source go from a real value to unparseable and — correctly, per
+      // ADR-3408 §8.5 Row 2 — lets the derived (empty) value win, discarding
+      // the curated phase entirely. §8.5 Row 2 governs a genuine mid-write
+      // body edit (e.g. `state.patch` deleting the Phase line); milestone
+      // closure is a different shape — the transition never intended to
+      // touch these fields at all. Re-assert them via `authoritativeFm` (the
+      // same #2736 intent-first mechanism `beginPhaseCore`/`completePhaseCore`
+      // already use to freeze a field the transition resolved out-of-band),
+      // so the closure-message side effect cannot clobber the last real
+      // phase. Scoped to non-empty strings only, mirroring #2736's own guard.
+      const authoritativeFm: Record<string, unknown> = {};
+      const preFm = extractFrontmatter(originalStateContent, statePath) as Record<string, unknown>;
+      const preCurrentPhase = preFm['current_phase'];
+      const preCurrentPhaseName = preFm['current_phase_name'];
+      if (typeof preCurrentPhase === 'string' && preCurrentPhase.trim().length > 0) {
+        authoritativeFm['current_phase'] = preCurrentPhase;
+      }
+      if (typeof preCurrentPhaseName === 'string' && preCurrentPhaseName.trim().length > 0) {
+        authoritativeFm['current_phase_name'] = preCurrentPhaseName;
+      }
       const finalContent = syncAndPreserveStateMd(
         originalStateContent,
         result.content,
         statePath,
         cwd,
-        true,
-        undefined,
-        undefined,
-        divergedFields,
+        {
+          resync: true,
+          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,
+          divergedFields,
+        },
       );
       platformWriteSync(statePath, finalContent);
       for (const field of divergedFields) {
         preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
+      }
+      // The authoritativeFm re-assert above (unlike a delta-based restore) is
+      // invisible to `divergedFields` — #2736's re-assert runs after that
+      // diff — so surface it explicitly here for "liberal but visible".
+      for (const field of Object.keys(authoritativeFm)) {
+        if (!divergedFields.includes(field)) {
+          preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
+        }
       }
     });
   }

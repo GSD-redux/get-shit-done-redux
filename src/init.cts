@@ -103,7 +103,7 @@ const {
 
 const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
-const { isPhaseComplete, resolveVerificationFile } = verificationMod;
+const { isPhaseComplete, resolveVerificationFile, resolveUatFile } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
@@ -1170,15 +1170,27 @@ function cmdInitPlanPhase(
       // #3492: pin selection to THIS phase's own token so a stray cross-phase
       // or sentinel-numbered canonically-shaped file cannot outrank this
       // phase's own (possibly non-canonical) report.
+      const phaseToken = extractPhaseToken(phaseDirName);
       const verificationFile = resolveVerificationFile(files, {
         allowBare: true,
-        phaseToken: extractPhaseToken(phaseDirName),
+        phaseToken,
         phaseDirName,
       });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
       }
-      const uatFile = scopedFiles.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md');
+      // #3518: routed through the shared UAT resolver — the prior hand-rolled
+      // `.find()` over unsorted readdir order had no phase check and no
+      // ordering, so a stray cross-phase 02-UAT.md could become this phase's
+      // uat_path, filesystem-dependently. Pinned to this phase's own token
+      // (same rule as verification_path above), and phase-scoped via
+      // phaseDirName (#3511) so the alphabetically-first fallback tier also
+      // excludes cross-phase strays.
+      const uatFile = resolveUatFile(files, {
+        allowBare: true,
+        phaseToken,
+        phaseDirName,
+      });
       if (uatFile) {
         result['uat_path'] = toPosixPath(path.join(phaseDirFull, uatFile));
       }
@@ -2008,15 +2020,27 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       // #3492: pin selection to THIS phase's own token so a stray cross-phase
       // or sentinel-numbered canonically-shaped file cannot outrank this
       // phase's own (possibly non-canonical) report.
+      const phaseToken = extractPhaseToken(phaseDirName);
       const verificationFile = resolveVerificationFile(files, {
         allowBare: true,
-        phaseToken: extractPhaseToken(phaseDirName),
+        phaseToken,
         phaseDirName,
       });
       if (verificationFile) {
         result['verification_path'] = toPosixPath(path.join(phaseDirFull, verificationFile));
       }
-      const uatFile = scopedFiles.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md');
+      // #3518: routed through the shared UAT resolver — the prior hand-rolled
+      // `.find()` over unsorted readdir order had no phase check and no
+      // ordering, so a stray cross-phase 02-UAT.md could become this phase's
+      // uat_path, filesystem-dependently. Pinned to this phase's own token
+      // (same rule as verification_path above), and phase-scoped via
+      // phaseDirName (#3511) so the alphabetically-first fallback tier also
+      // excludes cross-phase strays.
+      const uatFile = resolveUatFile(files, {
+        allowBare: true,
+        phaseToken,
+        phaseDirName,
+      });
       if (uatFile) {
         result['uat_path'] = toPosixPath(path.join(phaseDirFull, uatFile));
       }

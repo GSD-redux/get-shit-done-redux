@@ -651,6 +651,26 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
     const output = JSON.parse(result.output);
     assert.deepStrictEqual(output.preservation_warnings, []);
   });
+
+  // ADR-3408 §8.5 Matrix B3 (#3471, regression-only): D1's guard deletion and
+  // D3's cmdStateJson change both scope explicitly to `state.cts`/the write
+  // seam — `cmdMilestoneComplete` (src/milestone.cts) is untouched by this
+  // phase (per the implementation report: "No changes to src/milestone.cts").
+  // Re-runs the exact B1/B3 shape above as this phase's own pin, so a future
+  // change cannot silently regress it without a Phase-4-owned test noticing.
+  test('B3 (#3471 regression pin): preservation_warnings shape and content unchanged by Phase 4', () => {
+    writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
+
+    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.deepStrictEqual(
+      output.preservation_warnings,
+      [{ field: 'stopped_at', reason: 'preserved-over-disagreeing-derived' }],
+      'cmdMilestoneComplete\'s preservation_warnings shape must be unaffected by Phase 4 (#3471)',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

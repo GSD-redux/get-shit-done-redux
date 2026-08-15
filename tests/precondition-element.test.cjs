@@ -231,3 +231,64 @@ describe('issue #1949: parity between plan-md.md and planner-preconditions.md', 
     assert.ok(ref.includes('<precondition>'), 'planner-preconditions.md must spell <precondition>');
   });
 });
+
+// ─── Issue #3210: the precondition-unmet checkpoint must be human-gated ──────
+//
+// The executor's own invariant ("unmet preconditions are NEVER auto-approved,
+// even under AUTO_CFG=true") was unenforceable: the checkpoint it returns for an
+// unmet <precondition> carried no gate, and both auto-mode bypass rules only
+// exempt `gate="blocking-human"`. Auto-mode therefore auto-approved it with a
+// synthetic "approved", the task's <verify> failed closed, and the loop read
+// the failure as an executable gap — retrying an operator gate forever (#3210).
+
+describe('issue #3210: executor gates the precondition-unmet checkpoint as blocking-human', () => {
+  const CHECKPOINTS_REF = path.join(ROOT, 'gsd-core', 'references', 'checkpoints.md');
+
+  test('unmet-precondition branch stamps the returned checkpoint with Gate: blocking-human', () => {
+    const exec = read(EXECUTOR);
+    const unmet = exec.split('\n').find((l) => l.includes('**Unmet:**'));
+    assert.ok(unmet, 'gsd-executor.md must keep the **Unmet:** precondition branch');
+    assert.match(
+      unmet,
+      /blocking-human/,
+      'the unmet-precondition branch must report the checkpoint with **Gate:** blocking-human — ' +
+      'that gate is what both auto-mode bypass layers check (#3210)'
+    );
+  });
+
+  test('auto-mode human-verify rule explicitly exempts precondition-unmet checkpoints', () => {
+    const exec = read(EXECUTOR);
+    const rule = exec.split('\n').find((l) => l.includes('**checkpoint:human-verify**') && /Auto-approve/.test(l));
+    assert.ok(rule, 'gsd-executor.md must keep the auto-mode human-verify bypass rule');
+    assert.match(
+      rule,
+      /precondition/i,
+      'the executor auto-mode bypass rule must name precondition-unmet checkpoints as never ' +
+      'auto-approved, not only gate="blocking-human" tasks (#3210)'
+    );
+  });
+
+  test('checkpoints.md maps precondition-unmet checkpoints onto the blocking-human gate', () => {
+    const ref = read(CHECKPOINTS_REF);
+    const rule = ref.split('\n').find((l) => l.includes('never auto-approved'));
+    assert.ok(rule, 'checkpoints.md must keep golden rule 6 (blocking-human is never auto-approved)');
+    assert.match(
+      rule,
+      /precondition/i,
+      'golden rule 6 must name the executor\'s precondition-unmet checkpoint as a carrier of ' +
+      'gate="blocking-human" (#3210)'
+    );
+  });
+
+  test('planner-preconditions.md documents the blocking-human gate on the unmet path', () => {
+    const ref = read(PRECONDITIONS_REF);
+    const unmet = ref.split('\n').find((l) => l.includes('**Unmet**'));
+    assert.ok(unmet, 'planner-preconditions.md must keep the executor-behavior Unmet row');
+    assert.match(
+      unmet,
+      /blocking-human/,
+      'the Unmet row must state the returned checkpoint carries gate="blocking-human", matching ' +
+      'agents/gsd-executor.md (#3210)'
+    );
+  });
+});

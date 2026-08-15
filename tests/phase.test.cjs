@@ -6790,6 +6790,61 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.strictEqual(after.state, before.state, 'STATE.md must be unchanged — none of the three partially written');
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADR-3408 §8.5 Matrix B (#3471): cmdPhaseComplete's preservation is now
+  // visible via `preservation_warnings` (D2 — #3374's "warnings: []"
+  // complaint, on the exact command it was filed against). Design:
+  // .gsd/phase/refactor-3471-stale-but-present/40-design.md. Matrix:
+  // .gsd/phase/refactor-3471-stale-but-present/50-test-matrix.md section B.
+  // Reuses setupPhase3517Project/runSdkQuery/writePassedVerificationForPhase
+  // from this same folded block (bug #3517 fixture).
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('ADR-3408 §8.5 Matrix B (#3471): cmdPhaseComplete preservation visibility (D2)', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3471-b-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // B1 — consumer-level (ADR-3180 Decision 4(c)): a curated field the
+    // transition never touches (its body source is unchanged this write)
+    // must be named in `preservation_warnings`, closing #3374's exact
+    // "warnings: []" silence for the command it was filed against.
+    test('B1: cmdPhaseComplete names the field it preserved in preservation_warnings', () => {
+      setupPhase3517Project(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const before = fs.readFileSync(statePath, 'utf8');
+      fs.writeFileSync(statePath, before.replace(/^gsd_state_version: 1\.0$/m, 'gsd_state_version: 1.0\npaused_at: "curated pause note — must survive"'));
+
+      const r = runSdkQuery(['phase.complete', '5'], tmpDir);
+      assert.ok(r.success, `call failed: ${r.error}`);
+
+      assert.ok(Array.isArray(r.data.preservation_warnings), 'preservation_warnings must be an array');
+      assert.deepStrictEqual(
+        r.data.preservation_warnings,
+        [{ field: 'paused_at', reason: 'preserved-over-disagreeing-derived' }],
+      );
+    });
+
+    // B2 — negative: no false alarm. When nothing is preserved (no
+    // disagreeing curated field), `preservation_warnings` must be empty, not
+    // populated with a phantom entry.
+    test('B2: cmdPhaseComplete emits an empty preservation_warnings when nothing was preserved', () => {
+      setupPhase3517Project(tmpDir);
+
+      const r = runSdkQuery(['phase.complete', '5'], tmpDir);
+      assert.ok(r.success, `call failed: ${r.error}`);
+
+      assert.deepStrictEqual(r.data.preservation_warnings, []);
+    });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
