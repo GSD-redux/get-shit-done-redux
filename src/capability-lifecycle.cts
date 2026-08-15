@@ -655,6 +655,14 @@ function applyCapabilitySharedEdits(args: {
     }
 
     if (mcpEntries.length > 0) {
+      // #3515 (epic #1900 F20): the MCP config below is written VERBATIM — command/args/env/cwd
+      // are NOT confined to the bundle the way hook scripts are (confinedBundleScript, D5 rule 5).
+      // This asymmetry is INTENTIONAL: most real MCP servers legitimately resolve command/args/cwd
+      // to global or npx installs outside the capability bundle, so confinement would break them.
+      // The compensating controls are disclosure + re-consent: the consent prompt renders an
+      // explicit "not confined to the bundle" notice for every spawned server (summarizeDisclosure,
+      // capability-trust.cts), and disclosureSignature folds command/args/env/cwd + the FULL
+      // rawConfig as stable-sorted JSON (#1459 finding 5), so ANY config change forces re-consent.
       const mcpObj = (typeof settings['mcpServers'] === 'object' && settings['mcpServers'] !== null && !Array.isArray(settings['mcpServers']))
         ? (settings['mcpServers'] as Record<string, unknown>)
         : {};
