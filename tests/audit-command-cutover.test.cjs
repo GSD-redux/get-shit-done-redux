@@ -2086,6 +2086,94 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
     });
 
+    // ── F1 (#3458 follow-up review, HIGH): the writer must splice by the
+    // SELECTED entry's own carried span, never re-find it by searching —
+    // otherwise a byte-identical substring living inside an EARLIER entry
+    // (a continuation/quoted line) can steal the write ─────────────────────
+
+    test('F1: a target entry text appearing as a continuation line INSIDE an earlier entry is never targeted — the earlier (CRITICAL) entry is untouched', () => {
+      const phaseDir = planningPath('phases', '03-x');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      const before = [
+        '## Deferred Items',
+        '',
+        '- CRITICAL unfixed auth bypass',
+        '  see also: - minor typo',
+        '- minor typo',
+        '',
+      ].join('\n');
+      fs.writeFileSync(filePath, before);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '03', '--file', 'deferred-items.md', '--text', 'minor typo', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const criticalBlock = content.slice(content.indexOf('- CRITICAL'), content.indexOf('- minor typo'));
+      assert.doesNotMatch(criticalBlock, /status: acknowledged/, 'the CRITICAL entry (and its continuation line) must NEVER be touched');
+      assert.match(criticalBlock, /see also: - minor typo/, 'the CRITICAL entry continuation line is preserved verbatim');
+      assert.match(content, /- minor typo\n {2}status: acknowledged/, 'the standalone "minor typo" entry (its OWN span) now carries the marker');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 1, 're-audit: the CRITICAL entry is still open');
+      assert.equal(after.acknowledged.deferred_items, 1, 're-audit: only the typo entry is acknowledged');
+      assert.deepEqual(
+        after.items.deferred_items.filter((i) => !i.scan_error).map((i) => i.text),
+        ['CRITICAL unfixed auth bypass see also: - minor typo'],
+        'the still-open item must be the CRITICAL one, not suppressed',
+      );
+    });
+
+    test('F1 (weaker/prose variant): the target text also appears as a decoy substring INLINE inside an earlier entry\'s prose — the decoy prose must never be corrupted, and the one real matching entry is acknowledged (pre-fix: the decoy prose line was split mid-sentence, the real entry was never touched, and the CLI still exited 0)', () => {
+      const phaseDir = planningPath('phases', '03-x');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      const before = [
+        '## Deferred Items',
+        '',
+        '- Note: reference - minor typo elsewhere, ignore',
+        '- minor typo',
+        '',
+      ].join('\n');
+      fs.writeFileSync(filePath, before);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '03', '--file', 'deferred-items.md', '--text', 'minor typo', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed — the real "minor typo" entry unambiguously matches. stderr: ${result.error}`);
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      assert.match(
+        content,
+        /- Note: reference - minor typo elsewhere, ignore\n/,
+        'the decoy prose line must be preserved VERBATIM, never split mid-sentence by an inserted status: field',
+      );
+      assert.match(content, /- minor typo\n {2}status: acknowledged/, 'the real, standalone "minor typo" entry (its OWN carried span) is the one acknowledged');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 0, 're-audit: the real entry is correctly suppressed');
+      assert.equal(after.acknowledged.deferred_items, 1);
+    });
+
+    test('F1: --text matching only a SUBSTRING of a prose entry (no entry\'s OWN text equals it) is refused as not_found, not silently corrupted', () => {
+      const phaseDir = planningPath('phases', '03-x');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      const before = [
+        '## Deferred Items',
+        '',
+        '- Some unrelated note mentioning minor typo inline as commentary',
+        '',
+      ].join('\n');
+      fs.writeFileSync(filePath, before);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '03', '--file', 'deferred-items.md', '--text', 'minor typo', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.equal(result.success, false, 'a --text that only matches a SUBSTRING of an entry (not the whole entry) must be refused, never silently split/corrupted');
+      assert.match(result.error, /no deferred item matched/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 1, 'the prose entry remains open and intact — not silently acknowledged/corrupted');
+    });
+
     // ── WARNING 1 (#3458 follow-up review): every `.md` write normalizes to
     // LF — a CRLF deferred-items.md is normalized, not byte-preserved,
     // matching every other `.md` writer in this codebase ─────────────────
@@ -2163,6 +2251,76 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
         after.items.context_questions.filter((i) => !i.scan_error).map((i) => i.questions),
         [['BRAND NEW BLOCKER: is data loss possible?', 'ANOTHER NEW BLOCKER: auth bypass?']],
       );
+    });
+
+    // ── F2 (#3458 follow-up review): the digest must see the WHOLE question
+    // set, not the first-3-display-truncated slice `deriveOpenQuestions` used
+    // to hash — a 4th+ question was invisible to the snapshot ─────────────
+
+    test('F2: a 4th open question added after acknowledging a 3-question body-section set RESURFACES the item (digest was blind past position 3)', () => {
+      const phaseDir = planningPath('phases', '02-beta');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '02-CONTEXT.md');
+      fs.writeFileSync(
+        filePath,
+        '# Context\n\n## Open Questions\n\n- Q1?\n- Q2?\n- Q3?\n- Q4?\n',
+      );
+
+      const before = audit(tmpDir);
+      const beforeItem = before.items.context_questions.find((i) => !i.scan_error && i.file === '02-CONTEXT.md');
+      assert.equal(beforeItem.question_count, 4, 'question_count must reflect all 4 questions, not the display cap');
+
+      const result = ack(tmpDir, ['--category', 'context_questions', '--phase', '02', '--file', '02-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+      assert.equal(audit(tmpDir).items.context_questions.filter((i) => !i.scan_error && i.file === '02-CONTEXT.md').length, 0, 'BEFORE mutation: suppressed');
+
+      // Q1–Q3 UNCHANGED (still the first 3 lines — a pre-fix digest hashing
+      // only `slice(0, 3)` would see NO difference at all); Q4 replaced with
+      // two brand-new unanswered blockers.
+      fs.writeFileSync(
+        filePath,
+        '# Context\n\n## Open Questions\n\n- Q1?\n- Q2?\n- Q3?\n- Brand new unanswered blocker A?\n- Brand new unanswered blocker B?\n',
+      );
+
+      const after = audit(tmpDir);
+      const afterItem = after.items.context_questions.find((i) => !i.scan_error && i.file === '02-CONTEXT.md');
+      assert.ok(afterItem, 'AFTER replacing Q4 with new blockers: the item must RESURFACE — a slice(0,3) digest cannot see past position 3');
+      assert.equal(afterItem.question_count, 5);
+    });
+
+    // ── SWEEP finding (#3458 follow-up review): the digest's element-join
+    // must be unambiguous — two DIFFERENT question sets must never encode to
+    // the same joined string and collide on the same digest ───────────────
+
+    test('SWEEP: two different open-question sets that collide under a naive separator-join must record DIFFERENT digests', () => {
+      const phase1Dir = planningPath('phases', '03-one');
+      const phase2Dir = planningPath('phases', '04-two');
+      fs.mkdirSync(phase1Dir, { recursive: true });
+      fs.mkdirSync(phase2Dir, { recursive: true });
+      const file1 = path.join(phase1Dir, '03-CONTEXT.md');
+      const file2 = path.join(phase2Dir, '04-CONTEXT.md');
+
+      // Both sets embed a literal NUL codepoint (via the YAML `\x00`
+      // double-quoted hex escape) at the exact position needed to make the
+      // TWO DIFFERENT arrays below encode to the byte-identical string under
+      // ANY single-character-separator join (a plain space join, OR the
+      // separator this seam actually shipped with) — the general proof that
+      // NO fixed separator closes this class, only a length-prefixed,
+      // self-delimiting encoding does.
+      //   Set 1: ["foo\0bar", "baz"]  →  "foo\0bar" + SEP + "baz"
+      //   Set 2: ["foo", "bar\0baz"]  →  "foo" + SEP + "bar\0baz"
+      // For SEP = "\0" both concatenate to the identical "foo\0bar\0baz".
+      fs.writeFileSync(file1, '---\nopen_questions:\n  - "foo\\x00bar"\n  - "baz"\n---\n# Context\n');
+      fs.writeFileSync(file2, '---\nopen_questions:\n  - "foo"\n  - "bar\\x00baz"\n---\n# Context\n');
+
+      const r1 = ack(tmpDir, ['--category', 'context_questions', '--phase', '03', '--file', '03-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      const r2 = ack(tmpDir, ['--category', 'context_questions', '--phase', '04', '--file', '04-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(r1.success, `stderr: ${r1.error}`);
+      assert.ok(r2.success, `stderr: ${r2.error}`);
+
+      const digest1 = fs.readFileSync(file1, 'utf-8').match(/questions_digest:\s*([0-9a-f]{64})/)[1];
+      const digest2 = fs.readFileSync(file2, 'utf-8').match(/questions_digest:\s*([0-9a-f]{64})/)[1];
+      assert.notEqual(digest1, digest2, 'two DIFFERENT question sets must never record the same digest, even when they collide under a naive separator-join');
     });
 
     test('WARNING-2 disproof: adding more pending scenarios to an acknowledged UAT gap (status unchanged) resurfaces the item', () => {

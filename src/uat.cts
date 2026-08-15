@@ -39,7 +39,6 @@ import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
 const { loadConfig } = configLoader;
-import { escapeRegex } from './pattern.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1011,28 +1010,36 @@ interface AcknowledgeDeferredItemResult {
  * verdict-preserving direction: acknowledging a genuinely-fixed item would
  * silently downgrade its terminal state.
  *
- * CRLF-tolerant MATCHING (not byte-preserving writing — see WARNING 1 note
- * further down): the target entry's original lines are located via a regex
- * anchored on their (regex-escaped) exact text with an optional `\r` before
- * each `\n` join — `splitGapsEntries` strips a trailing `\r` from every line
- * it stores, so a literal substring search would miss a match on a CRLF
- * document. Only the ONE matched span is ever touched. The write itself
- * always normalizes to LF, same as every other `.md` write in this
- * codebase — see the comment above `newMatchedLines` below.
+ * SPAN-CARRIED, not re-searched (F1, #3458 follow-up review — see
+ * `splitGapsEntriesWithSpans`'s doc comment): the target entry's location
+ * within `sectionBody` is the (start, end) character span recorded by
+ * `splitGapsEntriesWithSpans` in the SAME pass that produced `entryLines` /
+ * `targetText` above — never re-derived afterwards by searching. The
+ * previous implementation re-found the entry with a regex anchored on its
+ * own (escaped) exact text; that regex necessarily matches the FIRST
+ * occurrence of that text within `sectionBody`, which is not always the
+ * entry that was actually selected (a continuation/quoted line inside an
+ * EARLIER or LATER entry can carry byte-identical text) — and because the
+ * mis-targeted span is byte-identical to `targetText`, no downstream check
+ * on the WRITTEN text could ever distinguish a wrong-entry write from a
+ * correct one. Carrying the span removes the re-derivation step entirely:
+ * there is no second search to mis-target.
  *
- * Section-anchored (BLOCKER 1, #3458 follow-up review): the regex is `exec`d
- * against `sectionBody` — the SAME string `matches`/the `ambiguous` guard
- * were computed over — not the whole `content`, so an identical bullet
- * living outside `## Deferred Items` (e.g. in an unrelated `# Notes` or a
- * UAT/VERIFICATION body) can never steal the write. The match's offset
- * within `sectionBody` is translated back into `content` via
- * `deferredSection.bodyStart` (the section's own start offset, an invariant
- * `collectSection` guarantees: `content.slice(bodyStart, bodyEnd) ===
- * body`). Before writing, the matched span's own raw text is re-derived and
- * compared against `targetText` one more time — if it does not match
- * (defensive: should be unreachable given `matches[0]` already came from
- * `sectionBody`), the write is refused with `match_verification_failed`
- * rather than risk touching the wrong span.
+ * Section-anchored (BLOCKER 1, #3458 follow-up review): the span is
+ * `sectionBody`-relative — the SAME string `matches`/the `ambiguous` guard
+ * were computed over — not `content`-relative, so an identical bullet living
+ * outside `## Deferred Items` (e.g. in an unrelated `# Notes` or a
+ * UAT/VERIFICATION body) can never steal the write. The span is translated
+ * into `content`-relative offsets via `deferredSection.bodyStart` (the
+ * section's own start offset, an invariant `collectSection` guarantees:
+ * `content.slice(bodyStart, bodyEnd) === body`). Before writing, the
+ * spanned text's own raw entry is re-derived and compared against
+ * `targetText` one more time — this is now a GENUINE invariant check (the
+ * span was computed by `splitGapsEntriesCore`'s independent offset
+ * bookkeeping, a different code path than the `entryLines`/`targetText`
+ * comparison above), not a no-op — if it does not match, the write is
+ * refused with `match_verification_failed` rather than risk touching the
+ * wrong span.
  */
 function acknowledgeDeferredItem(content: string, targetText: string): AcknowledgeDeferredItemResult {
   const deferredSection = collectSection(
@@ -1046,38 +1053,38 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
     return { content, status: 'unsupported_heading_shape' };
   }
 
-  const entries = splitGapsEntries(sectionBody);
+  const entries = splitGapsEntriesWithSpans(sectionBody);
   const matches = entries
-    .map((entryLines) => ({ entryLines, text: rawGapEntryText(entryLines) }))
+    .map((entry) => ({ entry, text: rawGapEntryText(entry.lines) }))
     .filter((e) => e.text === targetText);
 
   if (matches.length === 0) return { content, status: 'not_found' };
   if (matches.length > 1) return { content, status: 'ambiguous' };
 
-  const { entryLines } = matches[0];
+  const { entry } = matches[0];
+  const { lines: entryLines, start, end } = entry;
   const fields = extractGapEntryFields(entryLines);
   if (fields.status && fields.status.toLowerCase() === 'resolved') {
     return { content, status: 'already_resolved' };
   }
 
-  // Anchor the search to the SAME section body `matches`/the `ambiguous`
-  // guard above were computed over (BLOCKER 1) — never the whole `content`,
-  // which could contain an identical bullet elsewhere.
+  // Anchor to the SAME section body `matches`/the `ambiguous` guard above
+  // were computed over (BLOCKER 1) — never the whole `content`, which could
+  // contain an identical bullet elsewhere. `start`/`end` are the entry's own
+  // span, carried directly from `splitGapsEntriesWithSpans` — no re-search.
   const sectionOffset = deferredSection ? deferredSection.bodyStart : 0;
-  const pattern = new RegExp(entryLines.map(escapeRegex).join('\\r?\\n'));
-  const match = pattern.exec(sectionBody);
-  if (!match) return { content, status: 'not_found' }; // defensive — entryLines came from this content
+  const matchedLines = sectionBody.slice(start, end).split('\n');
 
-  const matchedLines = match[0].split('\n');
-
-  // Defensive re-verification: the matched span's own raw text must equal
-  // the selected entry's text before any write is attempted.
+  // Genuine invariant re-verification (see doc comment above): the span was
+  // computed by a code path independent of the `entryLines`/`targetText`
+  // comparison that selected this entry — this catches real drift between
+  // the two rather than a regex trivially guaranteed to agree with itself.
   const strippedForVerify = matchedLines.map((l) => l.replace(/\r$/, ''));
   if (rawGapEntryText(strippedForVerify) !== targetText) {
     return { content, status: 'match_verification_failed' };
   }
 
-  const matchIndexInContent = sectionOffset + match.index;
+  const matchIndexInContent = sectionOffset + start;
   const statusFieldRe = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
   const statusLineIdx = matchedLines.findIndex((rawLine) => statusFieldRe.test(rawLine.replace(/\r$/, '')));
 
@@ -1116,7 +1123,7 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
     newMatchedLines[statusLineIdx] = replaced;
   }
 
-  const newContent = content.slice(0, matchIndexInContent) + newMatchedLines.join('\n') + content.slice(matchIndexInContent + match[0].length);
+  const newContent = content.slice(0, matchIndexInContent) + newMatchedLines.join('\n') + content.slice(matchIndexInContent + (end - start));
   return { content: newContent, status: 'ok' };
 }
 
@@ -1266,6 +1273,79 @@ function parseDeferredTableItems(sectionBody: string): UatItem[] {
 }
 
 /**
+ * One `splitGapsEntries` entry together with the exact character SPAN it
+ * occupies within the `sectionBody` it was derived from —
+ * `sectionBody.slice(start, end)` is the entry's own original text,
+ * byte-for-byte (CRLF preserved, unlike `lines`, which strips a trailing
+ * `\r` off every line). See `splitGapsEntriesWithSpans`'s doc comment for why
+ * a caller would want this over the plain `lines` shape.
+ */
+interface GapsEntrySpan {
+  lines: string[];
+  start: number;
+  end: number;
+}
+
+/**
+ * Shared walk behind `splitGapsEntries` and `splitGapsEntriesWithSpans` — ONE
+ * pass over `sectionBody` that both groups its lines into entries (see
+ * `splitGapsEntries`'s doc comment for the grouping rule) AND records each
+ * entry's (start, end) character offset within `sectionBody`. Extracted so
+ * the two public shapes can never drift apart on what counts as an entry
+ * boundary — a second, independently-written grouping pass is exactly how a
+ * span-carrying sibling could disagree with the plain-lines version it is
+ * supposed to be span-annotating.
+ */
+function splitGapsEntriesCore(sectionBody: string): GapsEntrySpan[] {
+  const rawLines = sectionBody.split('\n');
+  const lineStarts: number[] = [];
+  const lineEnds: number[] = [];
+  let cursor = 0;
+  for (const rawLine of rawLines) {
+    lineStarts.push(cursor);
+    cursor += rawLine.length;
+    lineEnds.push(cursor);
+    cursor += 1; // the '\n' separator — absent after the final line, but nothing reads past it
+  }
+
+  const entries: GapsEntrySpan[] = [];
+  let current: string[] | null = null;
+  let currentStartLine = -1;
+  let currentEndLine = -1;
+  let baseIndent: number | null = null;
+
+  const flush = (): void => {
+    if (current !== null) {
+      entries.push({ lines: current, start: lineStarts[currentStartLine], end: lineEnds[currentEndLine] });
+    }
+  };
+
+  rawLines.forEach((rawLine, idx) => {
+    const line = rawLine.replace(/\r$/, '');
+    const bulletMatch = line.match(/^(\s*)-\s/);
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length;
+      if (baseIndent === null) baseIndent = indent;
+      if (indent <= baseIndent) {
+        flush();
+        current = [line];
+        currentStartLine = idx;
+        currentEndLine = idx;
+        return;
+      }
+    }
+    if (current !== null) {
+      current.push(line);
+      currentEndLine = idx;
+    }
+    // else: pre-first-bullet content (e.g. the template's HTML comment) — discarded.
+  });
+  flush();
+
+  return entries;
+}
+
+/**
  * Split a `## Gaps` section body into per-entry line groups on TOP-LEVEL
  * `- ` bullet openers.
  *
@@ -1283,29 +1363,27 @@ function parseDeferredTableItems(sectionBody: string): UatItem[] {
  * (heading present, no bullets) returns `[]`.
  */
 function splitGapsEntries(sectionBody: string): string[][] {
-  const lines = sectionBody.split('\n');
-  const entries: string[][] = [];
-  let current: string[] | null = null;
-  let baseIndent: number | null = null;
+  return splitGapsEntriesCore(sectionBody).map((entry) => entry.lines);
+}
 
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/, '');
-    const bulletMatch = line.match(/^(\s*)-\s/);
-    if (bulletMatch) {
-      const indent = bulletMatch[1].length;
-      if (baseIndent === null) baseIndent = indent;
-      if (indent <= baseIndent) {
-        if (current) entries.push(current);
-        current = [line];
-        continue;
-      }
-    }
-    if (current) current.push(line);
-    // else: pre-first-bullet content (e.g. the template's HTML comment) — discarded.
-  }
-  if (current) entries.push(current);
-
-  return entries;
+/**
+ * Sibling of `splitGapsEntries` (F1, #3458 follow-up review) that ADDITIVELY
+ * carries each entry's character span — every existing `splitGapsEntries`
+ * caller (`parseGapsItems`, `parseDeferredItemsWithStatus`,
+ * `splitDeferredHeadingEntries`'s `flushPending`) is unaffected and keeps
+ * using the plain `lines`-only shape. `acknowledgeDeferredItem` is the one
+ * caller that needs a span: it used to select an entry via `splitGapsEntries`
+ * and then RE-FIND that entry's location with a fresh regex search over
+ * `sectionBody` — matching the FIRST occurrence of the entry's exact text,
+ * not necessarily the entry actually selected (a continuation/quoted line
+ * inside a DIFFERENT entry can carry byte-identical text). Because the
+ * mis-targeted span is byte-identical to the target text, no check on the
+ * WRITTEN result could ever tell a wrong-entry write apart from a correct
+ * one. Carrying the span out of THIS same pass — the one that already knows
+ * exactly where the entry lives — removes the re-derivation step entirely.
+ */
+function splitGapsEntriesWithSpans(sectionBody: string): GapsEntrySpan[] {
+  return splitGapsEntriesCore(sectionBody);
 }
 
 /**

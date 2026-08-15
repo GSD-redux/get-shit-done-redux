@@ -326,18 +326,30 @@ function deriveUatGapSnapshotValue(status: string, content: string): string {
 }
 
 /**
- * Derive a CONTEXT file's open-questions list: the structured
- * `open_questions` frontmatter array when present and non-empty, else the
- * `## Open Questions` body section. Extracted from `scanContextQuestions`'s
- * inline logic for the same reason as `deriveThreadStatus` — one derivation,
- * shared by the scanner and `cmdAuditAcknowledge`, so the acknowledged
- * `question_count` snapshot can never diverge from what the scanner counts.
+ * Derive a CONTEXT file's FULL, UNTRUNCATED open-questions list: the
+ * structured `open_questions` frontmatter array when present and
+ * non-empty, else EVERY qualifying line of the `## Open Questions` body
+ * section. Extracted from `scanContextQuestions`'s inline logic for the same
+ * reason as `deriveThreadStatus` — one derivation, shared by the scanner and
+ * `cmdAuditAcknowledge`, so the acknowledged `question_count`/digest snapshot
+ * can never diverge from what the scanner counts.
+ *
+ * F2 (#3458 follow-up review, sibling of the deferred_items span-carrying
+ * fix): this used to `slice(0, 3)` the body-section list AND clamp each
+ * question to 200 chars BEFORE returning — a value meant for DISPLAY reused
+ * for the IDENTITY snapshot `deriveOpenQuestionsDigest` hashes. A 4th+
+ * question, or anything past char 200 of an earlier one, was invisible to
+ * the digest: an attacker could ship 3 innocuous questions first, then add
+ * real blockers afterward with zero effect on the recorded snapshot. Every
+ * caller that wants a bounded list for DISPLAY (`scanContextQuestions`'s
+ * `questions` field) truncates its OWN copy at the call site; this function
+ * always returns the complete, unclamped set.
  */
 function deriveOpenQuestions(content: string, fm: Record<string, unknown>): string[] {
   let questions: string[] = [];
   if (fm.open_questions) {
     if (Array.isArray(fm.open_questions) && fm.open_questions.length > 0) {
-      questions = (fm.open_questions as unknown[]).map(q => sanitizeForDisplay(String(q).slice(0, 200)));
+      questions = (fm.open_questions as unknown[]).map(q => sanitizeForDisplay(String(q)));
     }
   }
 
@@ -350,12 +362,17 @@ function deriveOpenQuestions(content: string, fm: Record<string, unknown>): stri
           .map((l: string) => l.trim())
           .filter((l: string) => l && l !== '-' && l !== '*')
           .filter((l: string) => /^[-*\d]/.test(l) || l.includes('?'));
-        questions = items.slice(0, 3).map((q: string) => sanitizeForDisplay(q.slice(0, 200)));
+        questions = items.map((q: string) => sanitizeForDisplay(q));
       }
     }
   }
 
   return questions;
+}
+
+/** Bound a question's DISPLAY text (never fed into the identity digest — see `deriveOpenQuestions`'s doc comment). */
+function truncateQuestionForDisplay(question: string): string {
+  return question.slice(0, 200);
 }
 
 /**
@@ -368,9 +385,35 @@ function deriveOpenQuestions(content: string, fm: Record<string, unknown>): stri
  * add, remove, reword, or reorder — changes the digest and the item
  * resurfaces. sha256 (not the raw joined string) keeps the marker's stored
  * value bounded regardless of question length/count.
+ *
+ * `questions` MUST be the untruncated, unclamped set `deriveOpenQuestions`
+ * returns — never a display-sliced/-clamped copy (F2, #3458 follow-up
+ * review); a truncated input reintroduces exactly the blind spot this digest
+ * exists to close.
+ *
+ * Length-prefixed, separator-free encoding (SWEEP finding, #3458 follow-up
+ * review) — NOT a plain join (the prior revision joined on a literal
+ * embedded NUL byte, `questions.join('\\0')` written as a raw control
+ * character in the SOURCE FILE itself — invisible in a normal diff/editor
+ * and still forgeable: attacker-controlled markdown CAN contain a literal
+ * NUL codepoint, since the file is read as UTF-8 text, so that scheme never
+ * actually closed the boundary-collision gap it was reaching for). A bare
+ * separator-joined string has no reliably unambiguous element boundary: two
+ * DIFFERENT question arrays can render the identical joined string and
+ * collide on the same digest — e.g. `['- Is X ready?', '- Y done?']` and
+ * `['- Is X ready? - Y', 'done?']` both join to
+ * `'- Is X ready? - Y done?'` under a space-join, and both could be forced to
+ * collide under a NUL-join too by an attacker who embeds the separator
+ * itself. Prefixing each element with its own CHARACTER LENGTH
+ * (`<len>:<text>`, concatenated with no separator at all) makes the encoding
+ * self-delimiting instead: decoding always consumes exactly `<len>`
+ * characters after each `:` before reading the next length prefix, so no two
+ * distinct arrays can ever encode to the same string — regardless of what
+ * characters the questions themselves contain.
  */
 function deriveOpenQuestionsDigest(questions: string[]): string {
-  return crypto.createHash('sha256').update(questions.join(' ')).digest('hex');
+  const encoded = questions.map((q) => `${q.length}:${q}`).join('');
+  return crypto.createHash('sha256').update(encoded).digest('hex');
 }
 
 // ─── scanDebugSessions ────────────────────────────────────────────────────────
@@ -1083,7 +1126,7 @@ function scanContextQuestions(planDir: string, cwd: string): ScanOutcome<Context
         phase: sanitizeLabel(phaseNum),
         file: sanitizeLabel(file),
         question_count: questions.length,
-        questions: questions.slice(0, 3),
+        questions: questions.slice(0, 3).map(truncateQuestionForDisplay),
       };
       if (target.milestone !== undefined) item.archived_milestone = sanitizeLabel(target.milestone);
       results.push(item);
