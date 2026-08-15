@@ -518,15 +518,24 @@ interface AuditPhaseTarget {
  * unresolved when a milestone closed and its phase dirs archived became
  * permanently invisible to every later audit.
  *
- * ACTIVE dirs: raw readdirSync + isDirectory filter + sort — UNCHANGED from
- * the scanners' prior inline behavior. Deliberately NOT routed through
+ * ACTIVE dirs: raw readdirSync + isDirectory filter + sort. The enumeration
+ * walk itself (readdirSync + isDirectory filter + sort) is UNCHANGED from the
+ * scanners' prior inline behavior; what IS new is that a failed read here no
+ * longer aborts the whole scan the way each scanner's own inline
+ * `if (!fs.existsSync) return []` / try-readdirSync-catch-return-sentinel
+ * pair used to — see `activeUnreadable` below, which is how that signal is
+ * now surfaced to callers instead. Deliberately NOT routed through
  * listMilestonePhaseDirs: these scanners are deliberately not
  * milestone-filtered today, and switching would silently add window/sentinel
  * filtering — a behavior change belonging to #3372, not here.
  *
  * A missing/unreadable active root does NOT short-circuit the archive walk —
  * the old `if (!fs.existsSync(phasesDir)) return []` was the whole bug in a
- * fully-archived project; it degrades to "skip the active half" only.
+ * fully-archived project; it degrades to "skip the active half" only. An
+ * UNREADABLE (as opposed to merely absent) active root is reported back via
+ * `activeUnreadable: true` so each of the four callers can still emit the
+ * `scan_error` sentinel they emitted pre-#3458 for this exact case (a real
+ * I/O failure, not "verified clean") — see each scanner's own use of it.
  *
  * ARCHIVED dirs: sourced from `getArchivedPhaseDirs` (phase-locator.cjs), the
  * canonical archive-enumeration seam `uat.cts`'s `cmdAuditUat` already uses.
@@ -536,15 +545,24 @@ interface AuditPhaseTarget {
  * archived phases belong to past milestones by definition, so filtering them
  * discards every one and silently reinstates the bug this function fixes.
  *
- * Each root's read is wrapped independently so an unreadable one degrades to
- * skipping that root rather than throwing (matches the existing try/catch
- * style in these scanners).
+ * An unreadable/unresolvable ARCHIVE root does NOT get its own sentinel.
+ * Pre-#3458 there was no archived read at all, so — unlike the active root —
+ * there is no prior `scan_error` contract to preserve here, and no existing
+ * consumer can regress. It also degrades the same way `listArchiveVersionDirs`
+ * (phase-locator.cts) already treats an absent `milestones/` dir: a real
+ * empty, not a failure, matching this function's existing "skip that root"
+ * idiom for the missing-active-dir case above. Adding a second sentinel path
+ * would let a machine consumer conflate "no milestones archived yet" (the
+ * overwhelmingly common case for an active project) with an actual read
+ * failure, which is a worse signal-to-noise trade than the one this
+ * function's own fix removes for the active root.
  *
  * Same-named dirs in both roots (e.g. "01-alpha" active AND archived) are
  * DISTINCT targets — no dedupe.
  */
-function listAuditPhaseTargets(planDir: string, cwd: string): AuditPhaseTarget[] {
+function listAuditPhaseTargets(planDir: string, cwd: string): { targets: AuditPhaseTarget[]; activeUnreadable: boolean } {
   const targets: AuditPhaseTarget[] = [];
+  let activeUnreadable = false;
 
   const phasesDir = path.join(planDir, 'phases');
   if (fs.existsSync(phasesDir)) {
@@ -557,7 +575,9 @@ function listAuditPhaseTargets(planDir: string, cwd: string): AuditPhaseTarget[]
         targets.push({ dir, fullPath: path.join(phasesDir, dir) });
       }
     } catch {
-      // Unreadable active root: skip it, do not abort the archive walk.
+      // Unreadable active root: skip it, do not abort the archive walk, but
+      // report it so callers can emit their pre-#3458 scan_error sentinel.
+      activeUnreadable = true;
     }
   }
 
@@ -567,10 +587,10 @@ function listAuditPhaseTargets(planDir: string, cwd: string): AuditPhaseTarget[]
     }
   } catch {
     // Unreadable/unresolvable archive root: skip it, keep whatever active
-    // targets were already collected.
+    // targets were already collected. No sentinel — see docstring above.
   }
 
-  return targets;
+  return { targets, activeUnreadable };
 }
 
 // ─── scanUatGaps ──────────────────────────────────────────────────────────────
@@ -581,8 +601,12 @@ function listAuditPhaseTargets(planDir: string, cwd: string): AuditPhaseTarget[]
  */
 function scanUatGaps(planDir: string, cwd: string): UatGapItem[] {
   const results: UatGapItem[] = [];
+  const { targets, activeUnreadable } = listAuditPhaseTargets(planDir, cwd);
+  if (activeUnreadable) {
+    results.push({ scan_error: true, phase: '', file: '', status: '', open_scenario_count: 0 });
+  }
 
-  for (const target of listAuditPhaseTargets(planDir, cwd)) {
+  for (const target of targets) {
     const phaseMatch = target.dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
     const phaseNum = phaseMatch ? phaseMatch[1] : target.dir;
 
@@ -646,8 +670,12 @@ function scanUatGaps(planDir: string, cwd: string): UatGapItem[] {
  */
 function scanVerificationGaps(planDir: string, cwd: string): VerificationGapItem[] {
   const results: VerificationGapItem[] = [];
+  const { targets, activeUnreadable } = listAuditPhaseTargets(planDir, cwd);
+  if (activeUnreadable) {
+    results.push({ scan_error: true, phase: '', file: '', status: '' });
+  }
 
-  for (const target of listAuditPhaseTargets(planDir, cwd)) {
+  for (const target of targets) {
     const phaseMatch = target.dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
     const phaseNum = phaseMatch ? phaseMatch[1] : target.dir;
 
@@ -702,8 +730,12 @@ function scanVerificationGaps(planDir: string, cwd: string): VerificationGapItem
  */
 function scanContextQuestions(planDir: string, cwd: string): ContextQuestionItem[] {
   const results: ContextQuestionItem[] = [];
+  const { targets, activeUnreadable } = listAuditPhaseTargets(planDir, cwd);
+  if (activeUnreadable) {
+    results.push({ scan_error: true, phase: '', file: '', question_count: 0, questions: [] });
+  }
 
-  for (const target of listAuditPhaseTargets(planDir, cwd)) {
+  for (const target of targets) {
     const phaseMatch = target.dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
     const phaseNum = phaseMatch ? phaseMatch[1] : target.dir;
 
@@ -794,12 +826,15 @@ function scanContextQuestions(planDir: string, cwd: string): ContextQuestionItem
  * route never loads the module it does not need.
  */
 function scanDeferredItems(planDir: string, cwd: string): DeferredItem[] {
-  const targets = listAuditPhaseTargets(planDir, cwd);
+  const { targets, activeUnreadable } = listAuditPhaseTargets(planDir, cwd);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
   const uat: UatDeferredModule = require('./uat.cjs');
 
   const results: DeferredItem[] = [];
+  if (activeUnreadable) {
+    results.push({ scan_error: true, phase: '', file: '', text: '' });
+  }
 
   for (const target of targets) {
     const phaseMatch = target.dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
@@ -955,7 +990,8 @@ function formatAuditReport(auditResult: AuditResult): string {
     lines.push('');
     lines.push(`🔴 UAT Gaps (${counts.uat_gaps} phases with incomplete UAT)`);
     for (const item of items.uat_gaps.filter(i => !i.scan_error)) {
-      lines.push(`   • Phase ${item.phase}: ${item.file} [${item.status}] — ${item.open_scenario_count} pending scenarios`);
+      const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
+      lines.push(`   • Phase ${item.phase}${archived}: ${item.file} [${item.status}] — ${item.open_scenario_count} pending scenarios`);
     }
   }
 
@@ -964,7 +1000,8 @@ function formatAuditReport(auditResult: AuditResult): string {
     lines.push('');
     lines.push(`🔴 Verification Gaps (${counts.verification_gaps} unresolved)`);
     for (const item of items.verification_gaps.filter(i => !i.scan_error)) {
-      lines.push(`   • Phase ${item.phase}: ${item.file} [${item.status}]`);
+      const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
+      lines.push(`   • Phase ${item.phase}${archived}: ${item.file} [${item.status}]`);
     }
   }
 
@@ -1020,7 +1057,8 @@ function formatAuditReport(auditResult: AuditResult): string {
     lines.push('');
     lines.push(`🔵 CONTEXT Open Questions (${counts.context_questions} phases with open questions)`);
     for (const item of items.context_questions.filter(i => !i.scan_error)) {
-      lines.push(`   • Phase ${item.phase}: ${item.file} (${item.question_count} question${item.question_count !== 1 ? 's' : ''})`);
+      const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
+      lines.push(`   • Phase ${item.phase}${archived}: ${item.file} (${item.question_count} question${item.question_count !== 1 ? 's' : ''})`);
       for (const q of item.questions) {
         lines.push(`     - ${q}`);
       }
@@ -1033,7 +1071,8 @@ function formatAuditReport(auditResult: AuditResult): string {
     lines.push('');
     lines.push(`🔵 Deferred Items (${counts.deferred_items} unresolved)`);
     for (const item of items.deferred_items.filter(i => !i.scan_error)) {
-      lines.push(`   • Phase ${item.phase}: ${item.text}`);
+      const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
+      lines.push(`   • Phase ${item.phase}${archived}: ${item.text}`);
     }
   }
 

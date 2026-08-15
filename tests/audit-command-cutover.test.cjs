@@ -723,7 +723,8 @@ describe('audit-open — output shape (#2911)', () => {
     // The active phases root is scaffolded empty by createTempProject; the bug
     // report's own repro has it ABSENT entirely in a fully-archived project —
     // remove it so this fixture matches that exactly, not just "empty".
-    fs.rmdirSync(path.join(tmpDir, '.planning', 'phases'));
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- removing only the .planning/phases subdir within a still-live fixture (INFO-7 fix for #3458 review: fs.rmdirSync threw on a non-empty dir); helpers.cleanup() tears down the whole tmpDir, not a subdirectory, so it cannot substitute here.
+    fs.rmSync(path.join(tmpDir, '.planning', 'phases'), { recursive: true, force: true });
 
     const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-alpha');
     writePhaseArtifacts(archivedPhaseDir, '01', UNRESOLVED_ARTIFACTS);
@@ -773,7 +774,8 @@ describe('audit-open — output shape (#2911)', () => {
   });
 
   test('#3458 archived-only project with all-RESOLVED items: contributes 0 (fix must not blindly count archived files)', () => {
-    fs.rmdirSync(path.join(tmpDir, '.planning', 'phases'));
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- removing only the .planning/phases subdir within a still-live fixture (INFO-7 fix for #3458 review: fs.rmdirSync threw on a non-empty dir); helpers.cleanup() tears down the whole tmpDir, not a subdirectory, so it cannot substitute here.
+    fs.rmSync(path.join(tmpDir, '.planning', 'phases'), { recursive: true, force: true });
 
     const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-alpha');
     writePhaseArtifacts(archivedPhaseDir, '01', RESOLVED_ARTIFACTS);
@@ -787,6 +789,120 @@ describe('audit-open — output shape (#2911)', () => {
     assert.equal(parsed.counts.context_questions, 0, `context_questions: expected 0 (resolved), got ${parsed.counts.context_questions}`);
     assert.equal(parsed.counts.deferred_items, 0, `deferred_items: expected 0 (resolved), got ${parsed.counts.deferred_items}`);
     assert.equal(parsed.has_open_items, false, 'has_open_items must be false when the only archived phase is fully resolved');
+  });
+
+  // ── adversarial-review follow-ups on #3458 ─────────────────────────────────
+
+  test('WARNING-4a: archived_milestone is present (correct value) on archived items and absent (no key at all) on active items', () => {
+    const activePhaseDir = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    writePhaseArtifacts(activePhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '02-beta');
+    writePhaseArtifacts(archivedPhaseDir, '02', UNRESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    for (const category of ['uat_gaps', 'verification_gaps', 'context_questions', 'deferred_items']) {
+      const items = parsed.items[category].filter(i => !i.scan_error);
+      const active = items.find(i => i.phase === '01');
+      const archived = items.find(i => i.phase === '02');
+      assert.ok(active, `${category}: expected an active-phase item; got: ${JSON.stringify(items)}`);
+      assert.ok(archived, `${category}: expected an archived-phase item; got: ${JSON.stringify(items)}`);
+      assert.strictEqual('archived_milestone' in active, false,
+        `${category}: active item must not carry the archived_milestone key at all`);
+      assert.strictEqual(archived.archived_milestone, 'v1.0',
+        `${category}: archived item must carry archived_milestone: 'v1.0'`);
+    }
+  });
+
+  test('BLOCKER-1 regression: an unreadable active root (a FILE at .planning/phases) still yields a scan_error sentinel in all four phase-scoped categories', () => {
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- removing only the .planning/phases subdir within a still-live fixture (INFO-7 fix for #3458 review: fs.rmdirSync threw on a non-empty dir); helpers.cleanup() tears down the whole tmpDir, not a subdirectory, so it cannot substitute here.
+    fs.rmSync(path.join(tmpDir, '.planning', 'phases'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases'), 'not a directory');
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    for (const category of ['uat_gaps', 'verification_gaps', 'context_questions', 'deferred_items']) {
+      const sentinel = parsed.items[category].find(i => i.scan_error === true);
+      assert.ok(sentinel,
+        `${category}: expected a scan_error sentinel when the active root is unreadable (ENOTDIR); ` +
+        `got: ${JSON.stringify(parsed.items[category])}`);
+    }
+  });
+
+  test('an unreadable archived root does not prevent the active half from being scanned (no sentinel for the archive half — see docstring)', () => {
+    const activePhaseDir = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    writePhaseArtifacts(activePhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    // Make `.planning/milestones` an unreadable FILE instead of a directory so
+    // getArchivedPhaseDirs's readdirSync throws (ENOTDIR).
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'milestones'), 'not a directory');
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    // Active half still scanned — the four counts include the active item.
+    assert.equal(parsed.counts.uat_gaps, 1, `uat_gaps: expected 1 (active only), got ${parsed.counts.uat_gaps}`);
+    assert.equal(parsed.counts.verification_gaps, 1, `verification_gaps: expected 1, got ${parsed.counts.verification_gaps}`);
+    assert.equal(parsed.counts.context_questions, 1, `context_questions: expected 1, got ${parsed.counts.context_questions}`);
+    assert.equal(parsed.counts.deferred_items, 1, `deferred_items: expected 1, got ${parsed.counts.deferred_items}`);
+
+    // Pinned decision: an unreadable archive root does NOT get a scan_error
+    // sentinel (no pre-#3458 contract to preserve for it — see the
+    // listAuditPhaseTargets docstring).
+    for (const category of ['uat_gaps', 'verification_gaps', 'context_questions', 'deferred_items']) {
+      const hasSentinel = parsed.items[category].some(i => i.scan_error === true);
+      assert.strictEqual(hasSentinel, false,
+        `${category}: an unreadable archive root must not produce a scan_error sentinel; got: ${JSON.stringify(parsed.items[category])}`);
+    }
+  });
+
+  test('WARNING-3: duplicate phase name across active and archived roots produces two distinct entries, and the human report distinguishes them', () => {
+    const activePhaseDir = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    writePhaseArtifacts(activePhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-alpha');
+    writePhaseArtifacts(archivedPhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const jsonResult = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(jsonResult.success, `audit-open --json must not crash. stderr: ${jsonResult.error}`);
+    const parsed = JSON.parse(jsonResult.output);
+
+    const uatEntries = parsed.items.uat_gaps.filter(i => !i.scan_error);
+    assert.equal(uatEntries.length, 2,
+      `same-named active + archived phase must produce two distinct uat_gaps entries; got: ${JSON.stringify(uatEntries)}`);
+    const archivedFlags = uatEntries.map(i => Boolean(i.archived_milestone)).sort();
+    assert.deepEqual(archivedFlags, [false, true],
+      'exactly one of the two duplicate-named entries must carry archived_milestone');
+
+    const textResult = runGsdTools(['audit-open'], tmpDir);
+    assert.ok(textResult.success, `audit-open (text) must not crash. stderr: ${textResult.error}`);
+    const uatLines = textResult.output.split('\n').filter(l => l.includes('01-UAT.md'));
+    assert.equal(uatLines.length, 2,
+      `expected two UAT-gap report lines (one active, one archived); got: ${JSON.stringify(uatLines)}`);
+    assert.notStrictEqual(uatLines[0], uatLines[1],
+      'the active and archived duplicate-named entries must render as distinguishable lines, not byte-identical duplicates');
+    assert.ok(uatLines.some(l => l.includes('archived v1.0')),
+      `expected one report line to be labeled with its archived milestone; got: ${JSON.stringify(uatLines)}`);
+  });
+
+  test('INFO-5: archived milestones v1.0, v1.9, v1.10 sort newest-first, numerically (v1.10 before v1.9, not lexicographically)', () => {
+    writePhaseArtifacts(path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-a'), '01', UNRESOLVED_ARTIFACTS);
+    writePhaseArtifacts(path.join(tmpDir, '.planning', 'milestones', 'v1.9-phases', '01-b'), '01', UNRESOLVED_ARTIFACTS);
+    writePhaseArtifacts(path.join(tmpDir, '.planning', 'milestones', 'v1.10-phases', '01-c'), '01', UNRESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    const milestoneOrder = parsed.items.uat_gaps.filter(i => !i.scan_error).map(i => i.archived_milestone);
+    assert.deepEqual(milestoneOrder, ['v1.10', 'v1.9', 'v1.0'],
+      `expected numeric-aware newest-first ordering (v1.10, v1.9, v1.0); got: ${JSON.stringify(milestoneOrder)}`);
   });
 });
   });
