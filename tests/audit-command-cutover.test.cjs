@@ -803,9 +803,34 @@ describe('audit-open — output shape (#2911)', () => {
   // closes this by escaping control bytes rather than stripping them.
   const FORGED_PHASE_DIR_NAME = 'zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED';
 
-  test('a phase directory name containing a newline cannot forge a new report line', () => {
+  /**
+   * Windows/NTFS forbids control characters (including \n and ESC/0x1B) in
+   * path components, so `mkdirSync` throws ENOENT there rather than creating
+   * the doctored directory — the directory-name forgery vector these tests
+   * exercise does not exist on that platform. `t.skip()` degrades cleanly
+   * (same convention as trySymlink() in tests/adr-index-gate.test.cjs, which
+   * skips on EPERM for the analogous symlink-creation gap); a bare `return`
+   * would silently report a PASS in node:test and hide the gap. The
+   * sanitizer itself (`sanitizeLabel`) remains fully covered on every
+   * platform by the platform-independent, filesystem-free string tests in
+   * tests/security.test.cjs (describe('sanitizeLabel', ...)).
+   */
+  function tryMkdirForgedName(t, dirPath) {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+      return true;
+    } catch (err) {
+      if (err && (err.code === 'ENOENT' || err.code === 'EINVAL')) {
+        t.skip(`cannot create a directory name with control characters on this platform (${err.code})`);
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  test('a phase directory name containing a newline cannot forge a new report line', (t) => {
     const forgedPhaseDir = path.join(tmpDir, '.planning', 'phases', FORGED_PHASE_DIR_NAME);
-    fs.mkdirSync(forgedPhaseDir, { recursive: true });
+    if (!tryMkdirForgedName(t, forgedPhaseDir)) return;
     fs.writeFileSync(path.join(forgedPhaseDir, 'deferred-items.md'), DEFERRED_ITEM_UNRESOLVED);
 
     const result = runGsdTools('audit-open', tmpDir);
@@ -818,9 +843,9 @@ describe('audit-open — output shape (#2911)', () => {
     );
   });
 
-  test('a phase directory name with an ESC/ANSI payload never reaches raw output', () => {
+  test('a phase directory name with an ESC/ANSI payload never reaches raw output', (t) => {
     const forgedPhaseDir = path.join(tmpDir, '.planning', 'phases', FORGED_PHASE_DIR_NAME);
-    fs.mkdirSync(forgedPhaseDir, { recursive: true });
+    if (!tryMkdirForgedName(t, forgedPhaseDir)) return;
     fs.writeFileSync(path.join(forgedPhaseDir, 'deferred-items.md'), DEFERRED_ITEM_UNRESOLVED);
 
     const result = runGsdTools('audit-open', tmpDir);
@@ -956,9 +981,9 @@ describe('audit-open — output shape (#2911)', () => {
   // newlines — it is not the right tool for a single-line label).
   const FORGED_QUICK_TASK_DIR_NAME = 'zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED';
 
-  test('a quick-task directory name containing a newline cannot forge a new report line', () => {
+  test('a quick-task directory name containing a newline cannot forge a new report line', (t) => {
     const forgedQuickDir = path.join(tmpDir, '.planning', 'quick', FORGED_QUICK_TASK_DIR_NAME);
-    fs.mkdirSync(forgedQuickDir, { recursive: true });
+    if (!tryMkdirForgedName(t, forgedQuickDir)) return;
 
     const result = runGsdTools('audit-open', tmpDir);
     assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
@@ -970,9 +995,9 @@ describe('audit-open — output shape (#2911)', () => {
     );
   });
 
-  test('a quick-task directory name with an ESC/ANSI payload never reaches raw output', () => {
+  test('a quick-task directory name with an ESC/ANSI payload never reaches raw output', (t) => {
     const forgedQuickDir = path.join(tmpDir, '.planning', 'quick', FORGED_QUICK_TASK_DIR_NAME);
-    fs.mkdirSync(forgedQuickDir, { recursive: true });
+    if (!tryMkdirForgedName(t, forgedQuickDir)) return;
 
     const result = runGsdTools('audit-open', tmpDir);
     assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
