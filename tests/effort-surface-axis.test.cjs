@@ -323,6 +323,23 @@ describe('#2481 live path — resolve-execution carries invocation-time effort',
   });
 });
 
+describe('#3533 inherit renders no host argv argument', () => {
+  test('a project configuring inherit resolves effort inherit and renders NO argv', (t2) => {
+    const dir = createTempProject();
+    t2.after(() => cleanup(dir));
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } }, null, 2),
+    );
+    const out = JSON.parse(
+      runGsdTools('query resolve-execution gsd-planner --host claude', dir).output,
+    );
+    assert.equal(out.effort, 'inherit');
+    assert.deepEqual(out.effort_argv, [], 'inherit must render no argument');
+    assert.equal(out.effort_propagation, null);
+  });
+});
+
 describe('#2481 — the escalation surface renders argv (CLI-level, not a workflow claim)', () => {
   // NAMING IS DELIBERATE. This exercises `resolve-execution --attempt` directly,
   // which is the CLI surface ADR-443's blocker explicitly EXCLUDES when it asks

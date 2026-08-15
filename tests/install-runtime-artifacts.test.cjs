@@ -4040,6 +4040,61 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
   });
 });
 
+// ─── describe 5d: #3533 (10d) — inherit omits the effort key at install ──────
+
+describe('#3533 inherit: install writes NO effort key when the agent resolves to inherit', () => {
+  let tmpDir;
+  let claudeHome;
+  let codexHome;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3533-inherit-');
+    const projectDir = path.join(tmpDir, 'project');
+    claudeHome = path.join(projectDir, '.claude');
+    codexHome = path.join(projectDir, '.codex');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeProjectConfig(config) {
+    const projectDir = path.dirname(claudeHome);
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config, null, 2)
+    );
+  }
+
+  test('claude .md frontmatter has no effort: key for an inherit-resolving agent', () => {
+    writeProjectConfig({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } });
+    runGlobalInstall('claude', claudeHome);
+    const fm = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-planner.md'));
+    assert.doesNotMatch(fm, /^effort:/m,
+      `an inherit-resolving agent must carry NO effort key\nActual:\n${fm}`);
+    // A non-inherit agent still gets its concrete value.
+    const fmExecutor = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-executor.md'));
+    const m = fmExecutor.match(/^effort:\s*(\S+)$/m);
+    assert.ok(m && m[1] === 'high', `gsd-executor keeps its concrete tier value, got: ${m && m[1]}`);
+  });
+
+  test('codex .toml omits model_reasoning_effort for an inherit-resolving pinned agent', () => {
+    writeProjectConfig({
+      runtime: 'codex',
+      model_overrides: { 'gsd-planner': 'gpt-5.6-sol' },
+      effort: { agent_overrides: { 'gsd-planner': 'inherit' } },
+    });
+    runGlobalInstall('codex', codexHome);
+    const toml = fs.readFileSync(path.join(codexHome, 'agents', 'gsd-planner.toml'), 'utf8');
+    assert.match(toml, /^model\s*=\s*"gpt-5.6-sol"$/m, 'the model pin stays');
+    assert.doesNotMatch(toml, /^model_reasoning_effort\s*=/m,
+      `inherit must not pin a literal effort level\nActual:\n${toml.slice(0, 400)}`);
+  });
+});
+
 // ─── describe 5: Source stays clean ──────────────────────────────────────────
 
 describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
