@@ -1384,7 +1384,10 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 **Precedence (highest → lowest):**
 1. Invocation override (e.g. `--effort` flag on `resolve-execution`)
 2. `effort.agent_overrides[<agent-id>]`
-3. `effort.routing_tier_defaults[<light|standard|heavy>]`
+3. `effort.routing_tier_defaults[<light|standard|heavy>]`, **merged per-tier over the
+   built-in tier defaults** (`light: low`, `standard: high`, `heavy: xhigh`) — a partial
+   block fills its gaps from the built-ins instead of discarding them, and an invalid
+   value falls back to that tier's built-in ([#3531](https://github.com/open-gsd/gsd-core/issues/3531))
 4. `effort.default`
 5. `"high"` (Anthropic Opus 4.8 universal default)
 
