@@ -5115,7 +5115,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const transformed = original.replace('Status: Executing', 'Status: Verifying');
       const statePath = path.join(tmp, 'STATE.md');
       const divergedFields = [];
-      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, undefined, divergedFields);
+      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false, divergedFields });
       const fm = frontmatterLib.extractFrontmatter(out);
       assert.strictEqual(fm.current_phase, '5', 'current_phase must be restored by the executor, not lost');
       assert.strictEqual(fm.current_phase_name, 'Curated Name', 'current_phase_name must be restored by the executor, not lost');
@@ -5135,7 +5135,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const tmp = createTempDir('gsd-3471-a2-');
       const statePath = path.join(tmp, 'STATE.md');
       const divergedFields = [];
-      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, undefined, divergedFields);
+      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false, divergedFields });
       cleanup(tmp);
       return { fm: frontmatterLib.extractFrontmatter(out), divergedFields };
     }
@@ -5205,7 +5205,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const statePath = path.join(tmp, 'STATE.md');
       const divergedFields = [];
       assert.doesNotThrow(() => {
-        const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, undefined, divergedFields);
+        const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false, divergedFields });
         const fm = frontmatterLib.extractFrontmatter(out);
         assert.strictEqual(fm.current_phase, undefined);
         assert.strictEqual(fm.current_phase_name, undefined);
@@ -5235,7 +5235,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       ].join('\n');
       const transformed = original.replace('Total Phases: 3', 'Total Phases: 10');
       const statePath = path.join(tmp, 'STATE.md');
-      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, true);
+      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false, deriveProgressKeys: true });
       const fm = frontmatterLib.extractFrontmatter(out);
       // #3471 review: extractFrontmatter's mini-YAML parser returns nested
       // `progress.*` scalars as raw strings — see `numericProgress` above
@@ -5262,7 +5262,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const statePath = path.join(tmp, 'STATE.md');
       fs.writeFileSync(statePath, original);
       const divergedFields = [];
-      const written = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, undefined, divergedFields);
+      const written = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false, divergedFields });
       fs.writeFileSync(statePath, written);
 
       // Consumer-level: read the real file back, never compare the owner's
@@ -5293,7 +5293,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       fs.writeFileSync(statePath, original);
       const divergedFields = [];
       // No transform this write — delta unchanged (transformedContent === originalContent).
-      const written = stateLib.syncAndPreserveStateMd(original, original, statePath, tmp, false, undefined, undefined, divergedFields);
+      const written = stateLib.syncAndPreserveStateMd(original, original, statePath, tmp, { resync: false, divergedFields });
       fs.writeFileSync(statePath, written);
 
       const onDisk = fs.readFileSync(statePath, 'utf8');
@@ -5314,9 +5314,45 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       ].join('\n');
       const transformed = original.replace('Executing', 'Verifying');
       const statePath = path.join(tmp, 'STATE.md');
-      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false);
+      const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, { resync: false });
       const fm = frontmatterLib.extractFrontmatter(out);
       assert.strictEqual(fm.custom_unknown_key, 'preserved-value', 'an unknown/custom frontmatter key must still carry forward — a different mechanism from the six deleted guards');
+    });
+
+    // A8 (#3471): the actual defect the 14-failure incident exposed — a
+    // plain-.cjs caller passing the OLD positional `resync` boolean where the
+    // options object now goes. `tsc` never catches this (it only
+    // type-checks src/); before this guard the function silently proceeded
+    // with every option `undefined`, producing a well-formed-looking but
+    // empty `divergedFields: []` rather than failing loudly. Assert on the
+    // structured `code`/`receivedType`, never on prose (CONTRIBUTING.md,
+    // "Prohibited: Raw Text Matching on Test Outputs").
+    test('A8: passing a boolean in the options slot throws a structured error instead of silently degrading', () => {
+      const tmp = createTempDir('gsd-3471-a8-');
+      const original = ['---', 'gsd_state_version: 1.0', '---', '', '# Project State', '', '## Current Position', '', 'Status: Executing', ''].join('\n');
+      const transformed = original.replace('Status: Executing', 'Status: Verifying');
+      const statePath = path.join(tmp, 'STATE.md');
+      cleanup(tmp);
+
+      assert.throws(
+        () => stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false),
+        (err) => {
+          assert.strictEqual(err.code, 'STATE_PRESERVATION_OPTIONS_INVALID');
+          assert.strictEqual(err.receivedType, 'boolean');
+          return true;
+        },
+        'syncAndPreserveStateMd must throw a structured error, not silently return with every option undefined',
+      );
+
+      assert.throws(
+        () => stateLib.applyPostSyncPreservation(original, transformed, transformed, statePath, false),
+        (err) => {
+          assert.strictEqual(err.code, 'STATE_PRESERVATION_OPTIONS_INVALID');
+          assert.strictEqual(err.receivedType, 'boolean');
+          return true;
+        },
+        'applyPostSyncPreservation must throw a structured error, not silently return with every option undefined',
+      );
     });
   });
 
@@ -5731,7 +5767,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
             // Write-side: syncAndPreserveStateMd with an UNCHANGED delta
             // (transformedContent === originalContent) — the same regime
             // cmdStateJson's synthetic {pre,post} delta represents.
-            const written = stateLib.syncAndPreserveStateMd(content, content, statePath, tmp, false);
+            const written = stateLib.syncAndPreserveStateMd(content, content, statePath, tmp, { resync: false });
             const writeFm = frontmatterLib.extractFrontmatter(written);
             const writeVal = writeFm[field] !== undefined && writeFm[field] !== null ? String(writeFm[field]) : null;
 
@@ -10889,7 +10925,7 @@ describe('ADR-3408 §8.3 Matrix A1/A2/A3 (property): the shared write-seam compo
           // syncAndPreserveStateMd, then the adapter's own write.
           const pathA = path.join(tmp, 'A.md');
           fs.writeFileSync(pathA, original);
-          const composed = stateLib.syncAndPreserveStateMd(original, transformed, pathA, tmp, resync, authoritativeFm);
+          const composed = stateLib.syncAndPreserveStateMd(original, transformed, pathA, tmp, { resync, authoritativeFm });
           fs.writeFileSync(pathA, composed);
 
           // Path B: readModifyWriteStateMd's owner shape — same composition,

@@ -2922,6 +2922,31 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
  * sync only rewrites the frontmatter block, so its body IS the post-write
  * body), and `syncedContent` is what `syncStateFrontmatter` produced.
  */
+/**
+ * #3471 Fix: `StatePreservationOptions` is silently mis-consumable by any
+ * non-TypeScript caller — `tsc` only type-checks src/, so a plain-.cjs test
+ * (or any future JS caller) can pass a boolean where this options object
+ * goes and both functions below would previously proceed with `resync`,
+ * `authoritativeFm`, `deriveProgressKeys`, and `divergedFields` all
+ * `undefined`, degrading to a well-formed-looking but silently-empty
+ * `divergedFields: []` — exactly the "stale but present" failure shape
+ * ADR-3408 exists to remove. This is a contract assertion (caller-shape
+ * only), not field-level validation — mirrors `throwUnwiredRow`'s
+ * structured-error shape in src/state-transition.cts.
+ */
+function assertStatePreservationOptions(options: unknown, caller: string): asserts options is StatePreservationOptions {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    const err = new Error(
+      `${caller}: options argument must be a StatePreservationOptions object, got ${typeof options === 'object' ? 'array/null' : typeof options} ` +
+      `(${JSON.stringify(options)}). This function takes a single options object as its final ` +
+      'parameter, not positional resync/authoritativeFm/deriveProgressKeys/divergedFields arguments (#3471).',
+    ) as Error & { code: string; receivedType: string };
+    err.code = 'STATE_PRESERVATION_OPTIONS_INVALID';
+    err.receivedType = Array.isArray(options) ? 'array' : typeof options;
+    throw err;
+  }
+}
+
 function applyPostSyncPreservation(
   originalContent: string,
   transformedContent: string,
@@ -2929,6 +2954,7 @@ function applyPostSyncPreservation(
   statePath: string,
   options: StatePreservationOptions,
 ): string {
+  assertStatePreservationOptions(options, 'applyPostSyncPreservation');
   const { resync, authoritativeFm, deriveProgressKeys, divergedFields } = options;
   // Snapshot the existing progress block BEFORE the transform so we can
   // restore it when resync is false.
@@ -3151,6 +3177,7 @@ function syncAndPreserveStateMd(
   cwd: string | undefined,
   options: StatePreservationOptions,
 ): string {
+  assertStatePreservationOptions(options, 'syncAndPreserveStateMd');
   const synced = syncStateFrontmatter(transformedContent, cwd, options.authoritativeFm);
   return applyPostSyncPreservation(
     originalContent,

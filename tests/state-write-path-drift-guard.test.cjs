@@ -621,10 +621,11 @@ describe('E2 — a legitimate single call to the composition is not detected', (
       '        result.content,',
       '        statePath,',
       '        cwd,',
-      '        true,',
-      '        undefined,',
-      '        undefined,',
-      '        divergedFields,',
+      '        {',
+      '          resync: true,',
+      '          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,',
+      '          divergedFields,',
+      '        },',
       '      );',
     ].join('\n');
 
