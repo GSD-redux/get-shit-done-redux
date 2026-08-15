@@ -791,6 +791,47 @@ describe('audit-open — output shape (#2911)', () => {
     assert.equal(parsed.has_open_items, false, 'has_open_items must be false when the only archived phase is fully resolved');
   });
 
+  // ── phase-directory-name forgery (sanitizeLabel) ───────────────────────────
+  //
+  // A phase directory NAME (not file content) is filesystem-controlled, not
+  // frontmatter-controlled — a doctored checkout can name a directory
+  // anything. `phaseNum` falls back to the raw directory name verbatim when
+  // it doesn't match PHASE_NUMBER_TOKEN_SOURCE, so an embedded `\n`/ESC in
+  // the NAME itself used to reach the human report unescaped
+  // (`sanitizeForDisplay` deliberately preserves newlines — it is not the
+  // right tool for a single-line label). `sanitizeLabel` (src/security.cts)
+  // closes this by escaping control bytes rather than stripping them.
+  const FORGED_PHASE_DIR_NAME = 'zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED';
+
+  test('a phase directory name containing a newline cannot forge a new report line', () => {
+    const forgedPhaseDir = path.join(tmpDir, '.planning', 'phases', FORGED_PHASE_DIR_NAME);
+    fs.mkdirSync(forgedPhaseDir, { recursive: true });
+    fs.writeFileSync(path.join(forgedPhaseDir, 'deferred-items.md'), DEFERRED_ITEM_UNRESOLVED);
+
+    const result = runGsdTools('audit-open', tmpDir);
+    assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
+
+    const lines = result.output.split('\n').map(l => l.trim());
+    assert.ok(
+      !lines.includes('0 open items require decisions.'),
+      `the doctored directory name must not inject its own report line; got lines: ${JSON.stringify(lines)}`
+    );
+  });
+
+  test('a phase directory name with an ESC/ANSI payload never reaches raw output', () => {
+    const forgedPhaseDir = path.join(tmpDir, '.planning', 'phases', FORGED_PHASE_DIR_NAME);
+    fs.mkdirSync(forgedPhaseDir, { recursive: true });
+    fs.writeFileSync(path.join(forgedPhaseDir, 'deferred-items.md'), DEFERRED_ITEM_UNRESOLVED);
+
+    const result = runGsdTools('audit-open', tmpDir);
+    assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
+
+    assert.ok(
+      !result.output.includes('\x1b'),
+      'no raw ESC byte from the doctored directory name may reach the report output'
+    );
+  });
+
   // ── adversarial-review follow-ups on #3458 ─────────────────────────────────
 
   test('WARNING-4a: archived_milestone is present (correct value) on archived items and absent (no key at all) on active items', () => {
@@ -903,6 +944,43 @@ describe('audit-open — output shape (#2911)', () => {
     const milestoneOrder = parsed.items.uat_gaps.filter(i => !i.scan_error).map(i => i.archived_milestone);
     assert.deepEqual(milestoneOrder, ['v1.10', 'v1.9', 'v1.0'],
       `expected numeric-aware newest-first ordering (v1.10, v1.9, v1.0); got: ${JSON.stringify(milestoneOrder)}`);
+  });
+
+  // ── quick-task directory-name forgery (sanitizeLabel) ──────────────────────
+  //
+  // scanQuickTasks derives `slug` from the `.planning/quick/<dirName>`
+  // directory NAME (filesystem-controlled, same shape as the phase-directory
+  // case above), not from file content. Before sanitizeLabel was applied
+  // here, an embedded `\n`/ESC byte in the directory name reached the human
+  // report unescaped via `sanitizeForDisplay` (which deliberately preserves
+  // newlines — it is not the right tool for a single-line label).
+  const FORGED_QUICK_TASK_DIR_NAME = 'zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED';
+
+  test('a quick-task directory name containing a newline cannot forge a new report line', () => {
+    const forgedQuickDir = path.join(tmpDir, '.planning', 'quick', FORGED_QUICK_TASK_DIR_NAME);
+    fs.mkdirSync(forgedQuickDir, { recursive: true });
+
+    const result = runGsdTools('audit-open', tmpDir);
+    assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
+
+    const lines = result.output.split('\n').map(l => l.trim());
+    assert.ok(
+      !lines.includes('0 open items require decisions.'),
+      `the doctored directory name must not inject its own report line; got lines: ${JSON.stringify(lines)}`
+    );
+  });
+
+  test('a quick-task directory name with an ESC/ANSI payload never reaches raw output', () => {
+    const forgedQuickDir = path.join(tmpDir, '.planning', 'quick', FORGED_QUICK_TASK_DIR_NAME);
+    fs.mkdirSync(forgedQuickDir, { recursive: true });
+
+    const result = runGsdTools('audit-open', tmpDir);
+    assert.ok(result.success, `audit-open must not crash. stderr: ${result.error}`);
+
+    assert.ok(
+      !result.output.includes('\x1b'),
+      'no raw ESC byte from the doctored directory name may reach the report output'
+    );
   });
 });
   });

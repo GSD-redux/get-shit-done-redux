@@ -28,7 +28,7 @@ const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs } = phaseLocator;
-import { requireSafePath, sanitizeForDisplay } from './security.cjs';
+import { requireSafePath, sanitizeForDisplay, sanitizeLabel } from './security.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ function scanDebugSessions(planDir: string): DebugSessionItem[] {
 
     const slug = path.basename(entry.name, '.md');
     results.push({
-      slug: sanitizeForDisplay(slug),
+      slug: sanitizeLabel(slug),
       status: sanitizeForDisplay(status),
       updated: sanitizeForDisplay(fm.updated || fm.date || ''),
       hypothesis,
@@ -293,11 +293,16 @@ function scanQuickTasks(planDir: string): QuickTaskItem[] {
 
     // Parse date and slug from directory name: YYYYMMDD-slug or YYYY-MM-DD-slug
     let date = '';
-    let slug = sanitizeForDisplay(dirName);
+    let slug = sanitizeLabel(dirName);
     const dateMatch = dirName.match(/^(\d{4}-?\d{2}-?\d{2})-(.+)$/);
     if (dateMatch) {
-      date = dateMatch[1];
-      slug = sanitizeForDisplay(dateMatch[2]);
+      // dateMatch[1] is regex-constrained to `\d{4}-?\d{2}-?\d{2}` (digits and
+      // literal hyphens only — the same "constrained at the source" shape as
+      // `archived_milestone`), so it cannot itself carry a control byte.
+      // Still routed through sanitizeLabel as defense-in-depth for
+      // consistency with every other directory-name-derived field here.
+      date = sanitizeLabel(dateMatch[1]);
+      slug = sanitizeLabel(dateMatch[2]);
     }
 
     results.push({
@@ -371,7 +376,7 @@ function scanThreads(planDir: string): ThreadItem[] {
 
     const slug = path.basename(entry.name, '.md');
     results.push({
-      slug: sanitizeForDisplay(slug),
+      slug: sanitizeLabel(slug),
       status: sanitizeForDisplay(status),
       updated: sanitizeForDisplay(fm.updated || fm.date || ''),
       title,
@@ -424,7 +429,7 @@ function scanTodos(planDir: string): TodoItem[] {
     const summary = sanitizeForDisplay(firstLine.slice(0, 100));
 
     results.push({
-      filename: sanitizeForDisplay(entry.name),
+      filename: sanitizeLabel(entry.name),
       priority: sanitizeForDisplay(fm.priority || ''),
       area: sanitizeForDisplay(fm.area || ''),
       summary,
@@ -479,10 +484,16 @@ function scanSeeds(planDir: string): SeedItem[] {
 
     if (!unimplementedStatuses.has(status)) continue;
 
-    // Extract seed_id from filename or frontmatter
+    // Extract seed_id from filename or frontmatter. The regex match is
+    // `\w`/hyphen-constrained (safe by construction, like `archived_milestone`)
+    // but the fallback taken when a filename doesn't fully match — e.g. a
+    // `SEED-`-prefixed, `.md`-suffixed name with a control byte SOMEWHERE in
+    // the middle, which still passes the `startsWith`/`endsWith` filter above
+    // — is the raw, unconstrained basename. Both branches are routed through
+    // sanitizeLabel below.
     const seedIdMatch = entry.name.match(/^(SEED-[\w-]+)\.md$/);
     const seed_id = seedIdMatch ? seedIdMatch[1] : path.basename(entry.name, '.md');
-    const slug = sanitizeForDisplay(seed_id.replace(/^SEED-/, ''));
+    const slug = sanitizeLabel(seed_id.replace(/^SEED-/, ''));
 
     let title = sanitizeForDisplay(fm.title || '');
     if (!title) {
@@ -491,7 +502,7 @@ function scanSeeds(planDir: string): SeedItem[] {
     }
 
     results.push({
-      seed_id: sanitizeForDisplay(seed_id),
+      seed_id: sanitizeLabel(seed_id),
       slug,
       status: sanitizeForDisplay(status),
       title,
@@ -649,12 +660,12 @@ function scanUatGaps(planDir: string, cwd: string): UatGapItem[] {
       const pendingMatches = (content.match(/result:\s*(?:pending|\[pending\])/gi) || []).length;
 
       const item: UatGapItem = {
-        phase: sanitizeForDisplay(phaseNum),
-        file: sanitizeForDisplay(file),
+        phase: sanitizeLabel(phaseNum),
+        file: sanitizeLabel(file),
         status: sanitizeForDisplay(status),
         open_scenario_count: pendingMatches,
       };
-      if (target.milestone !== undefined) item.archived_milestone = target.milestone;
+      if (target.milestone !== undefined) item.archived_milestone = sanitizeLabel(target.milestone);
       results.push(item);
     }
   }
@@ -710,11 +721,11 @@ function scanVerificationGaps(planDir: string, cwd: string): VerificationGapItem
       if (status !== 'gaps_found' && status !== 'human_needed') continue;
 
       const item: VerificationGapItem = {
-        phase: sanitizeForDisplay(phaseNum),
-        file: sanitizeForDisplay(file),
+        phase: sanitizeLabel(phaseNum),
+        file: sanitizeLabel(file),
         status: sanitizeForDisplay(status),
       };
-      if (target.milestone !== undefined) item.archived_milestone = target.milestone;
+      if (target.milestone !== undefined) item.archived_milestone = sanitizeLabel(target.milestone);
       results.push(item);
     }
   }
@@ -787,12 +798,12 @@ function scanContextQuestions(planDir: string, cwd: string): ContextQuestionItem
       if (questions.length === 0) continue;
 
       const item: ContextQuestionItem = {
-        phase: sanitizeForDisplay(phaseNum),
-        file: sanitizeForDisplay(file),
+        phase: sanitizeLabel(phaseNum),
+        file: sanitizeLabel(file),
         question_count: questions.length,
         questions: questions.slice(0, 3),
       };
-      if (target.milestone !== undefined) item.archived_milestone = target.milestone;
+      if (target.milestone !== undefined) item.archived_milestone = sanitizeLabel(target.milestone);
       results.push(item);
     }
   }
@@ -855,11 +866,11 @@ function scanDeferredItems(planDir: string, cwd: string): DeferredItem[] {
 
     for (const item of uat.parseDeferredItems(content)) {
       const resultItem: DeferredItem = {
-        phase: sanitizeForDisplay(phaseNum),
-        file: DEFERRED_ITEMS_FILENAME,
+        phase: sanitizeLabel(phaseNum),
+        file: sanitizeLabel(DEFERRED_ITEMS_FILENAME),
         text: sanitizeForDisplay(item.name),
       };
-      if (target.milestone !== undefined) resultItem.archived_milestone = target.milestone;
+      if (target.milestone !== undefined) resultItem.archived_milestone = sanitizeLabel(target.milestone);
       results.push(resultItem);
     }
   }
