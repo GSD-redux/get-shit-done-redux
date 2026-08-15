@@ -3059,10 +3059,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           stateContent,
           statePath,
           cwd,
-          true,
-          authoritativeFm,
-          undefined,
-          divergedFields,
+          {
+            resync: true,
+            authoritativeFm,
+            divergedFields,
+          },
         );
         for (const field of divergedFields) {
           preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });

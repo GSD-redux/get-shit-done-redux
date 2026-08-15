@@ -114,6 +114,31 @@ interface ReadModifyWriteOptions {
   divergedFields?: string[];
 }
 
+/**
+ * #3408 review (close-known-limits): options for `applyPostSyncPreservation`
+ * and `syncAndPreserveStateMd` — replaces the 8-positional-parameter
+ * signatures (a Data Clump / out-param smell flagged in review and deferred
+ * pending "a third consumer"; `cmdMilestoneComplete` is that third consumer).
+ * Same shape as `ReadModifyWriteOptions` minus `resync` being required here
+ * (every existing call site already passes it explicitly).
+ */
+interface StatePreservationOptions {
+  resync: boolean;
+  /**
+   * #2736: intent-first frontmatter values forwarded to syncStateFrontmatter.
+   * See `ReadModifyWriteOptions.authoritativeFm` for the full rationale.
+   */
+  authoritativeFm?: Record<string, unknown>;
+  deriveProgressKeys?: boolean;
+  /**
+   * ADR-3408 §8.5 (D4): out-param — every frontmatter field name whose value
+   * preservation restored over a disagreeing freshly-derived one during THIS
+   * write. Stays an out-param (not a return value) deliberately: converting
+   * it ripples into every caller's control flow for no behavior change.
+   */
+  divergedFields?: string[];
+}
+
 interface StateRecordMetricOptions {
   phase: string;
   plan: string;
@@ -2902,11 +2927,9 @@ function applyPostSyncPreservation(
   transformedContent: string,
   syncedContent: string,
   statePath: string,
-  resync: boolean,
-  authoritativeFm?: Record<string, unknown>,
-  deriveProgressKeys?: boolean,
-  divergedFields?: string[],
+  options: StatePreservationOptions,
 ): string {
+  const { resync, authoritativeFm, deriveProgressKeys, divergedFields } = options;
   // Snapshot the existing progress block BEFORE the transform so we can
   // restore it when resync is false.
   const preFm = resync ? null : extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
@@ -3126,21 +3149,15 @@ function syncAndPreserveStateMd(
   transformedContent: string,
   statePath: string,
   cwd: string | undefined,
-  resync: boolean,
-  authoritativeFm?: Record<string, unknown>,
-  deriveProgressKeys?: boolean,
-  divergedFields?: string[],
+  options: StatePreservationOptions,
 ): string {
-  const synced = syncStateFrontmatter(transformedContent, cwd, authoritativeFm);
+  const synced = syncStateFrontmatter(transformedContent, cwd, options.authoritativeFm);
   return applyPostSyncPreservation(
     originalContent,
     transformedContent,
     synced,
     statePath,
-    resync,
-    authoritativeFm,
-    deriveProgressKeys,
-    divergedFields,
+    options,
   );
 }
 
@@ -3193,10 +3210,12 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
       modified,
       statePath,
       cwd,
-      resync,
-      options?.authoritativeFm,
-      options?.deriveProgressKeys === true,
-      options?.divergedFields,
+      {
+        resync,
+        authoritativeFm: options?.authoritativeFm,
+        deriveProgressKeys: options?.deriveProgressKeys === true,
+        divergedFields: options?.divergedFields,
+      },
     );
 
     platformWriteSync(statePath, synced);
@@ -4605,6 +4624,21 @@ function resolvePhaseIdForCompletePhase(fm: Record<string, unknown>, body: strin
   return parsePhaseFromProse(candidate).phase;
 }
 
+/**
+ * #3408 review (close-known-limits): `cmdStateCompletePhase`'s `updated`
+ * tracks two different kinds of thing — a single FIELD `reconcileReportedFields`
+ * can look up against the persisted bytes, or the whole `Current Position`
+ * SECTION block, which is not a field at all. Typing the distinction at the
+ * producer (each `updated.push(...)` site) means the reconciliation step
+ * below reads the kind directly instead of re-deriving it by matching the
+ * entry's `name` against a hardcoded Set of section names. The command's
+ * OUTPUT CONTRACT is unaffected: `updated` is still flattened to a flat
+ * `string[]` (same entries, same order) at the single `output()` call site.
+ */
+type StateCompletePhaseUpdateEntry =
+  | { kind: 'field'; name: string }
+  | { kind: 'section'; name: string };
+
 function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
@@ -4671,7 +4705,16 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   }
 
   const today = realClock.localToday();
-  const updated: string[] = [];
+  // #3408 review (close-known-limits): `updated` mixes two different kinds of
+  // thing — FIELD names (Status, Last Activity, ...), each reconcilable
+  // against the persisted bytes via `reconcileReportedFields`, and the
+  // SECTION name `Current Position` (the whole Current-Position block, not a
+  // single field `stateExtractField` can look up). Rather than re-deriving
+  // the distinction downstream by string-matching against a Set, each entry
+  // now carries its kind at the point it is PRODUCED; the flattening to a
+  // flat `string[]` (the command's OUTPUT CONTRACT — unchanged) happens once
+  // below, right before `output()`.
+  const updated: StateCompletePhaseUpdateEntry[] = [];
   let preSyncContent = '';
   const divergedFields: string[] = [];
 
@@ -4690,16 +4733,16 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
     // Update Status field (body only — #1255)
     const statusValue = `Phase ${currentPhase} complete`;
     let result = stateReplaceField(body, 'Status', statusValue);
-    if (result) { body = result; updated.push('Status'); }
+    if (result) { body = result; updated.push({ kind: 'field', name: 'Status' }); }
 
     // Update Last Activity date
     result = stateReplaceField(body, 'Last Activity', today);
-    if (result) { body = result; updated.push('Last Activity'); }
+    if (result) { body = result; updated.push({ kind: 'field', name: 'Last Activity' }); }
 
     // Update Last Activity Description
     const activityDesc = `Phase ${currentPhase} marked complete`;
     result = stateReplaceField(body, 'Last Activity Description', activityDesc);
-    if (result) { body = result; updated.push('Last Activity Description'); }
+    if (result) { body = result; updated.push({ kind: 'field', name: 'Last Activity Description' }); }
 
     // Update ## Current Position section
     // ADR-1372 T6: positionPattern → tokenizeHeadings; stop at level ≥ 2.
@@ -4753,7 +4796,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
         }
 
         body = body.slice(0, cpBodyStart) + posBody + body.slice(cpBodyEnd);
-        updated.push('Current Position');
+        updated.push({ kind: 'section', name: 'Current Position' });
       }
     }
 
@@ -4764,18 +4807,19 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
 
   // ADR-3408 §8.4 (D4): traced for this phase (design doc: "not traced in
   // the analysis pass"). Unlike the transitionCore-based commands, this
-  // adapter's `updated` mixes FIELD names (Status, Last Activity, Last
+  // adapter's `updated` mixes FIELD entries (Status, Last Activity, Last
   // Activity Description — each reconcilable against the persisted bytes,
-  // same as every other command in this phase) with the SECTION name
+  // same as every other command in this phase) with the SECTION entry
   // `Current Position` (the whole Current-Position block, not a single
   // field `stateExtractField` can look up — reconciling it the same way as
   // a field would always drop it as a false negative). Reconcile only the
   // field-shaped entries (#3351's direction), pass the section entry
   // through unconditionally, and fold in any field preservation restored
-  // that this transform never touched (#3345's direction).
-  const SECTION_ENTRIES = new Set(['Current Position']);
-  const sectionEntries = updated.filter((f) => SECTION_ENTRIES.has(f));
-  const fieldEntries = updated.filter((f) => !SECTION_ENTRIES.has(f));
+  // that this transform never touched (#3345's direction). The kind was
+  // decided at PUSH time above (typed producer), not re-derived here by
+  // string-matching a name against a Set.
+  const sectionEntries = updated.filter((e) => e.kind === 'section').map((e) => e.name);
+  const fieldEntries = updated.filter((e) => e.kind === 'field').map((e) => e.name);
   const reconciled = [...sectionEntries, ...reconcileReportedFields(statePath, preSyncContent, fieldEntries, divergedFields)];
 
   output(
