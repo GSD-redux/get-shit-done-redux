@@ -39,6 +39,7 @@ import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
 const { loadConfig } = configLoader;
+import { escapeRegex } from './pattern.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -903,7 +904,18 @@ function parseGapsTableItems(sectionBody: string): UatItem[] {
  * one item PER BULLET. A body with no headings keeps the original
  * one-bullet-per-item split unchanged.
  */
-function parseDeferredItems(content: string): UatItem[] {
+/**
+ * One `deferred-items.md` entry with its RAW (un-lowercased) `status:` field
+ * value (`''` when the entry carries no parseable status). #3458 follow-up:
+ * `parseDeferredItems` (below) is now DEFINED IN TERMS OF this — it filters
+ * to `status !== 'resolved'` — and `audit.cts`'s `scanDeferredItems` also
+ * consumes this directly so it can tell `resolved` (fixed for real, never
+ * counted), the newer `acknowledged` (suppressed-but-tallied, #3458
+ * follow-up), and everything else (open) apart WITHOUT a second,
+ * independent entry-boundary/field-extraction pass that could drift from
+ * this one.
+ */
+function parseDeferredItemsWithStatus(content: string): Array<{ name: string; status: string }> {
   const deferredSection = collectSection(
     content,
     (h) => /^deferred\s+items$/i.test(h.text) && h.level === 2,
@@ -911,7 +923,7 @@ function parseDeferredItems(content: string): UatItem[] {
   );
   const sectionBody = deferredSection ? deferredSection.body : content;
 
-  const items: UatItem[] = [];
+  const items: Array<{ name: string; status: string }> = [];
 
   // #3457: heading-delimited shape — an entry's fields live in sibling bullets
   // (`- **Status:** resolved`), so the bullet marker is stripped on EVERY line
@@ -930,25 +942,139 @@ function parseDeferredItems(content: string): UatItem[] {
     }));
 
   for (const { lines: entryLines, fields } of entries) {
-    const rawStatus = fields.status;
-    if (rawStatus && rawStatus.toLowerCase() === 'resolved') continue;
-
     const text = rawGapEntryText(entryLines);
     if (!text) continue;
 
-    items.push({
-      name: text,
-      result: 'unresolved',
-      category: 'deferred',
-    });
+    items.push({ name: text, status: fields.status || '' });
   }
 
   // #2766: union with the table form — see parseDeferredTableItems. Executors
   // write this file by hand with no mandated shape, and a GFM table is a natural
   // choice for the common "test → failing seeds" case, which produced ZERO items.
-  items.push(...parseDeferredTableItems(sectionBody));
+  // Table rows carry no independently-parseable status column in general —
+  // `parseDeferredTableItems` already excludes resolved/done/pass rows at its
+  // own layer (any cell reading exactly one of those three) — so anything it
+  // returns here is inherently open; `acknowledge` (#3458 follow-up) has no
+  // representable field to write for a table row, so those are reported with
+  // status `''` (never `resolved`/`acknowledged`) and remain permanently
+  // un-acknowledgeable via the CLI writer — a known, deliberate limitation
+  // (see `acknowledgeDeferredItem`'s doc comment).
+  items.push(...parseDeferredTableItems(sectionBody).map((item) => ({ name: item.name, status: '' })));
 
   return items;
+}
+
+function parseDeferredItems(content: string): UatItem[] {
+  return parseDeferredItemsWithStatus(content)
+    .filter((entry) => !(entry.status && entry.status.toLowerCase() === 'resolved'))
+    .map((entry) => ({
+      name: entry.name,
+      result: 'unresolved',
+      category: 'deferred',
+    }));
+}
+
+// ─── acknowledgeDeferredItem ───────────────────────────────────────────────────
+
+/** Result of `acknowledgeDeferredItem`. */
+interface AcknowledgeDeferredItemResult {
+  content: string;
+  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved';
+}
+
+/**
+ * CLI-writer half of the #3458 follow-up deferred_items suppression seam.
+ * Sets the ONE deferred entry whose rendered text (`rawGapEntryText`, the
+ * same value `parseDeferredItemsWithStatus`/the audit's JSON output surface
+ * as `name`/`text`) exactly equals `targetText` to `status: acknowledged` —
+ * a NEW terminal value, distinct from the existing `resolved` (which keeps
+ * meaning "actually fixed"). This is the marker for this category: unlike
+ * every other audit category (a sibling `audit_acknowledged` frontmatter map
+ * that never touches the artifact's own `status:`), a deferred-items.md
+ * entry's `status:` field carries no OTHER meaning, so the field itself
+ * doubles as the marker — self-invalidating for free: edit the entry's
+ * `status:` away from `acknowledged` (or delete the field) and it resurfaces
+ * with no separate cleanup step, exactly like every other category's marker.
+ *
+ * Deliberately refuses (`unsupported_heading_shape`) rather than guess when
+ * the section uses the heading-delimited (#3457) entry shape: reliably
+ * mapping a `splitDeferredHeadingEntries` entry back to its EXACT source line
+ * span is not safely derivable without re-deriving that function's
+ * leaf/container walk against a document that may also mix in headless
+ * (`splitGapsEntries`-derived) entries between headings — attempting it risks
+ * writing into the WRONG entry. The bullet-only (headless) shape below is the
+ * primary, documented SCOPE BOUNDARY convention and is handled precisely.
+ *
+ * Also refuses `ambiguous` (2+ entries share the exact same text — status must
+ * be unique to identify one) and `not_found`, and is a no-op
+ * (`already_resolved`) on an entry already carrying `status: resolved` — the
+ * verdict-preserving direction: acknowledging a genuinely-fixed item would
+ * silently downgrade its terminal state.
+ *
+ * CRLF-safe: the target entry's original lines are located via a regex
+ * anchored on their (regex-escaped) exact text with an optional `\r` before
+ * each `\n` join — `splitGapsEntries` strips a trailing `\r` from every line
+ * it stores, so a literal substring search would miss a match on a CRLF
+ * document. Only the ONE matched span is ever touched.
+ */
+function acknowledgeDeferredItem(content: string, targetText: string): AcknowledgeDeferredItemResult {
+  const deferredSection = collectSection(
+    content,
+    (h) => /^deferred\s+items$/i.test(h.text) && h.level === 2,
+    { levelBounded: true },
+  );
+  const sectionBody = deferredSection ? deferredSection.body : content;
+
+  if (splitDeferredHeadingEntries(sectionBody) !== null) {
+    return { content, status: 'unsupported_heading_shape' };
+  }
+
+  const entries = splitGapsEntries(sectionBody);
+  const matches = entries
+    .map((entryLines) => ({ entryLines, text: rawGapEntryText(entryLines) }))
+    .filter((e) => e.text === targetText);
+
+  if (matches.length === 0) return { content, status: 'not_found' };
+  if (matches.length > 1) return { content, status: 'ambiguous' };
+
+  const { entryLines } = matches[0];
+  const fields = extractGapEntryFields(entryLines);
+  if (fields.status && fields.status.toLowerCase() === 'resolved') {
+    return { content, status: 'already_resolved' };
+  }
+
+  const pattern = new RegExp(entryLines.map(escapeRegex).join('\\r?\\n'));
+  const match = pattern.exec(content);
+  if (!match) return { content, status: 'not_found' }; // defensive — entryLines came from this content
+
+  const matchedLines = match[0].split('\n');
+  const statusFieldRe = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
+  const statusLineIdx = matchedLines.findIndex((rawLine) => statusFieldRe.test(rawLine.replace(/\r$/, '')));
+
+  let newMatchedLines: string[];
+  if (statusLineIdx === -1) {
+    const bulletIndentMatch = matchedLines[0].match(/^(\s*)-\s+/);
+    const continuationIndent = ' '.repeat((bulletIndentMatch ? bulletIndentMatch[1].length : 0) + 2);
+    const crlf = matchedLines.length > 1 && matchedLines[0].endsWith('\r');
+    newMatchedLines = [
+      matchedLines[0],
+      `${continuationIndent}status: acknowledged${crlf ? '\r' : ''}`,
+      ...matchedLines.slice(1),
+    ];
+  } else {
+    const original = matchedLines[statusLineIdx];
+    const eol = original.endsWith('\r') ? '\r' : '';
+    const bodyNoEol = eol ? original.slice(0, -1) : original;
+    const replaced = bodyNoEol.replace(
+      /^(\s*(?:-\s+)?)(\*+status:\*+|status:)(\s*).*$/i,
+      (_m, indent: string, key: string, ws: string) => `${indent}${key}${ws}acknowledged`,
+    );
+    newMatchedLines = matchedLines.slice();
+    newMatchedLines[statusLineIdx] = replaced + eol;
+  }
+
+  const newContent = content.slice(0, match.index) + newMatchedLines.join('\n') + content.slice(match.index + match[0].length);
+  return { content: newContent, status: 'ok' };
 }
 
 /**
@@ -1416,4 +1542,6 @@ export = {
   resolveCheckpointFrame,
   checkpointBoxLine,
   parseDeferredItems,
+  parseDeferredItemsWithStatus,
+  acknowledgeDeferredItem,
 };

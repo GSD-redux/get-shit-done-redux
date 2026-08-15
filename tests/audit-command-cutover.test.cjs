@@ -1608,3 +1608,412 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #3458 follow-up: `audit_acknowledged` suppression seam + the
+// `audit-open acknowledge` CLI writer.
+//
+// BACKGROUND: #3458 made `audit-open` scan archived milestone phase dirs too,
+// so an item still unresolved when a milestone closed now resurfaces at
+// EVERY later close, forever — `[A] Acknowledge all` documented that
+// decision to STATE.md but never suppressed it. This suite verifies the
+// suppression seam: `audit_acknowledged` is VERDICT-PRESERVING (never
+// touches the artifact's own `status:` verdict) and SELF-INVALIDATING (a
+// stale acknowledgment resurfaces automatically the moment the artifact's
+// current state stops matching the marker's recorded snapshot).
+// ────────────────────────────────────────────────────────────────────────
+{
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  function readJson(result) {
+    assert.ok(result.success, `command must succeed. stdout: ${result.output}\nstderr: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  function ack(tmpDir, args) {
+    return runGsdTools(['audit-open', 'acknowledge', ...args, '--json'], tmpDir);
+  }
+
+  function audit(tmpDir) {
+    return readJson(runGsdTools(['audit-open', '--json'], tmpDir));
+  }
+
+  describe('audit-open acknowledge — suppression seam (#3458 follow-up)', () => {
+    let tmpDir;
+
+    beforeEach(() => { tmpDir = createTempProject('gsd-3458-ack-'); });
+    afterEach(() => { cleanup(tmpDir); });
+
+    function planningPath(...segs) {
+      return path.join(tmpDir, '.planning', ...segs);
+    }
+
+    // ── per-category suppression + verdict preservation ───────────────────
+
+    test('debug_sessions: acknowledged item drops out of counts/has_open_items; status: field unchanged', () => {
+      const debugDir = planningPath('debug');
+      fs.mkdirSync(debugDir, { recursive: true });
+      const filePath = path.join(debugDir, 'investigate.md');
+      fs.writeFileSync(filePath, '---\nstatus: open\n---\n## Current Focus\ndigging\n');
+
+      assert.equal(audit(tmpDir).counts.debug_sessions, 1);
+
+      const result = ack(tmpDir, ['--category', 'debug_sessions', '--slug', 'investigate', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.debug_sessions, 0);
+      assert.equal(after.acknowledged.debug_sessions, 1);
+      assert.equal(after.has_open_items, false);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /^status: open$/m, 'verdict-preserving: status: must be unchanged');
+    });
+
+    test('quick_tasks: acknowledged item drops out of counts; status: field unchanged', () => {
+      const taskDir = planningPath('quick', '20260810-fixthing');
+      fs.mkdirSync(taskDir, { recursive: true });
+      const filePath = path.join(taskDir, '20260810-fixthing-SUMMARY.md');
+      fs.writeFileSync(filePath, '---\nstatus: needs_review\n---\nbody\n');
+
+      assert.equal(audit(tmpDir).counts.quick_tasks, 1);
+
+      const result = ack(tmpDir, ['--category', 'quick_tasks', '--dir', '20260810-fixthing', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.quick_tasks, 0);
+      assert.equal(after.acknowledged.quick_tasks, 1);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /^status: needs_review$/m, 'verdict-preserving: status: must be unchanged');
+    });
+
+    test('quick_tasks: task with NO SUMMARY.md at all can still be acknowledged (writer creates the marker file)', () => {
+      const taskDir = planningPath('quick', '20260811-nosummary');
+      fs.mkdirSync(taskDir, { recursive: true });
+
+      assert.equal(audit(tmpDir).counts.quick_tasks, 1);
+
+      const result = ack(tmpDir, ['--category', 'quick_tasks', '--dir', '20260811-nosummary', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.quick_tasks, 0);
+      assert.equal(after.acknowledged.quick_tasks, 1);
+    });
+
+    test('threads: acknowledged item drops out of counts; status: field unchanged', () => {
+      const threadsDir = planningPath('threads');
+      fs.mkdirSync(threadsDir, { recursive: true });
+      const filePath = path.join(threadsDir, 'design-debate.md');
+      fs.writeFileSync(filePath, '---\nstatus: open\n---\n# Thread: design debate\n');
+
+      assert.equal(audit(tmpDir).counts.threads, 1);
+
+      const result = ack(tmpDir, ['--category', 'threads', '--slug', 'design-debate', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.threads, 0);
+      assert.equal(after.acknowledged.threads, 1);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /^status: open$/m, 'verdict-preserving: status: must be unchanged');
+    });
+
+    test('seeds: acknowledged item drops out of counts; status: field unchanged', () => {
+      const seedsDir = planningPath('seeds');
+      fs.mkdirSync(seedsDir, { recursive: true });
+      const filePath = path.join(seedsDir, 'SEED-idea.md');
+      fs.writeFileSync(filePath, '---\nstatus: dormant\n---\n# An idea\n');
+
+      assert.equal(audit(tmpDir).counts.seeds, 1);
+
+      const result = ack(tmpDir, ['--category', 'seeds', '--seed-id', 'SEED-idea', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.seeds, 0);
+      assert.equal(after.acknowledged.seeds, 1);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /^status: dormant$/m, 'verdict-preserving: status: must be unchanged');
+    });
+
+    test('todos: acknowledged item drops out of counts (presence-only — no snapshot field)', () => {
+      const pendingDir = planningPath('todos', 'pending');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      const filePath = path.join(pendingDir, 'fix-thing.md');
+      fs.writeFileSync(filePath, '---\npriority: low\narea: docs\n---\nFix the thing\n');
+
+      assert.equal(audit(tmpDir).counts.todos, 1);
+
+      const result = ack(tmpDir, ['--category', 'todos', '--filename', 'fix-thing.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.todos, 0);
+      assert.equal(after.acknowledged.todos, 1);
+    });
+
+    test('uat_gaps: acknowledged item drops out of counts; status: field unchanged (CLI writer round-trip)', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-UAT.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# UAT\n\n## Gaps\n\n- truth: "something broke"\n  status: open\n');
+
+      assert.equal(audit(tmpDir).counts.uat_gaps, 1);
+
+      const result = ack(tmpDir, ['--category', 'uat_gaps', '--phase', '01', '--file', '01-UAT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.uat_gaps, 0);
+      assert.equal(after.acknowledged.uat_gaps, 1);
+      assert.equal(after.has_open_items, false);
+      assert.match(
+        fs.readFileSync(filePath, 'utf-8'), /^status: gaps_found$/m,
+        'CLI writer round-trip: the artifact\'s own status: must be UNCHANGED after acknowledge (verdict-preserving)',
+      );
+    });
+
+    test('verification_gaps: acknowledged item drops out of counts; status: field unchanged', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-VERIFICATION.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# Verification\n\nGaps found.\n');
+
+      assert.equal(audit(tmpDir).counts.verification_gaps, 1);
+
+      const result = ack(tmpDir, ['--category', 'verification_gaps', '--phase', '01', '--file', '01-VERIFICATION.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.verification_gaps, 0);
+      assert.equal(after.acknowledged.verification_gaps, 1);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /^status: gaps_found$/m, 'verdict-preserving: status: must be unchanged');
+    });
+
+    test('context_questions: acknowledged item drops out of counts; question_count snapshot recorded', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-CONTEXT.md');
+      fs.writeFileSync(filePath, '# Context\n\n## Open Questions\n\n- Which backend?\n- What about auth?\n');
+
+      assert.equal(audit(tmpDir).counts.context_questions, 1);
+
+      const result = ack(tmpDir, ['--category', 'context_questions', '--phase', '01', '--file', '01-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.context_questions, 0);
+      assert.equal(after.acknowledged.context_questions, 1);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /question_count: 2/, 'marker records the question_count snapshot');
+    });
+
+    test('deferred_items: acknowledged entry drops out of counts; entry text otherwise unchanged', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      fs.writeFileSync(filePath, '## Deferred Items\n\n- an out of scope thing\n  severity: low\n');
+
+      assert.equal(audit(tmpDir).counts.deferred_items, 1);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'an out of scope thing severity: low', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 0);
+      assert.equal(after.acknowledged.deferred_items, 1);
+      const content = fs.readFileSync(filePath, 'utf-8');
+      assert.match(content, /an out of scope thing/, 'entry text is preserved');
+      assert.match(content, /status: acknowledged/, 'entry now carries status: acknowledged');
+      assert.match(content, /severity: low/, 'sibling field is preserved');
+    });
+
+    // ── SELF-INVALIDATION: edit the artifact after acknowledging → resurfaces ──
+
+    test('SELF-INVALIDATION debug_sessions: status changes after acknowledge → item resurfaces', () => {
+      const debugDir = planningPath('debug');
+      fs.mkdirSync(debugDir, { recursive: true });
+      const filePath = path.join(debugDir, 'investigate.md');
+      fs.writeFileSync(filePath, '---\nstatus: open\n---\n## Current Focus\ndigging\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'debug_sessions', '--slug', 'investigate', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.debug_sessions, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: open', 'status: in_progress');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.debug_sessions, 1, 'AFTER edit: resurfaces — stale acknowledgment no longer applies');
+    });
+
+    test('SELF-INVALIDATION quick_tasks: status changes after acknowledge → item resurfaces', () => {
+      const taskDir = planningPath('quick', '20260810-fixthing');
+      fs.mkdirSync(taskDir, { recursive: true });
+      const filePath = path.join(taskDir, '20260810-fixthing-SUMMARY.md');
+      fs.writeFileSync(filePath, '---\nstatus: needs_review\n---\nbody\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'quick_tasks', '--dir', '20260810-fixthing', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.quick_tasks, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: needs_review', 'status: in_progress');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.quick_tasks, 1, 'AFTER edit: resurfaces');
+    });
+
+    test('SELF-INVALIDATION threads: status changes after acknowledge → item resurfaces', () => {
+      const threadsDir = planningPath('threads');
+      fs.mkdirSync(threadsDir, { recursive: true });
+      const filePath = path.join(threadsDir, 'design-debate.md');
+      fs.writeFileSync(filePath, '---\nstatus: open\n---\n# Thread: design debate\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'threads', '--slug', 'design-debate', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.threads, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: open', 'status: in_progress');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.threads, 1, 'AFTER edit: resurfaces (still open, but a DIFFERENT open status than the snapshot)');
+    });
+
+    test('SELF-INVALIDATION seeds: status changes after acknowledge → item resurfaces', () => {
+      const seedsDir = planningPath('seeds');
+      fs.mkdirSync(seedsDir, { recursive: true });
+      const filePath = path.join(seedsDir, 'SEED-idea.md');
+      fs.writeFileSync(filePath, '---\nstatus: dormant\n---\n# An idea\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'seeds', '--seed-id', 'SEED-idea', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.seeds, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: dormant', 'status: active');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.seeds, 1, 'AFTER edit: resurfaces');
+    });
+
+    test('SELF-INVALIDATION uat_gaps: status changes after acknowledge → item resurfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-UAT.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# UAT\n\n## Gaps\n\n- truth: "something broke"\n  status: open\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'uat_gaps', '--phase', '01', '--file', '01-UAT.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.uat_gaps, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: gaps_found', 'status: human_needed');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.uat_gaps, 1, 'AFTER edit: resurfaces');
+    });
+
+    test('SELF-INVALIDATION verification_gaps: status changes after acknowledge → item resurfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-VERIFICATION.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# Verification\n\nGaps found.\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'verification_gaps', '--phase', '01', '--file', '01-VERIFICATION.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.verification_gaps, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: gaps_found', 'status: human_needed');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.verification_gaps, 1, 'AFTER edit: resurfaces');
+    });
+
+    test('SELF-INVALIDATION context_questions: question_count changes after acknowledge → item resurfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-CONTEXT.md');
+      fs.writeFileSync(filePath, '# Context\n\n## Open Questions\n\n- Which backend?\n- What about auth?\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'context_questions', '--phase', '01', '--file', '01-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.context_questions, 0, 'BEFORE edit: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8') + '- What about the third thing?\n';
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.context_questions, 1, 'AFTER a new open question is added: resurfaces');
+    });
+
+    test('SELF-INVALIDATION deferred_items: reopening the entry (status changed away from acknowledged) → item resurfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      fs.writeFileSync(filePath, '## Deferred Items\n\n- an out of scope thing\n  severity: low\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'an out of scope thing severity: low', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.deferred_items, 0, 'BEFORE reopen: suppressed');
+
+      const content = fs.readFileSync(filePath, 'utf-8').replace('status: acknowledged', 'status: reopened');
+      fs.writeFileSync(filePath, content);
+
+      assert.equal(audit(tmpDir).counts.deferred_items, 1, 'AFTER reopen: resurfaces');
+    });
+
+    // ── malformed marker never suppresses ──────────────────────────────────
+
+    test('malformed audit_acknowledged (not a map) does NOT suppress — item still surfaces', () => {
+      const debugDir = planningPath('debug');
+      fs.mkdirSync(debugDir, { recursive: true });
+      const filePath = path.join(debugDir, 'investigate.md');
+      // Hand-authored, deliberately malformed: audit_acknowledged is a bare
+      // scalar, not a map — must be treated as ABSENT, never suppress.
+      fs.writeFileSync(filePath, '---\nstatus: open\naudit_acknowledged: not-a-map\n---\nstill open\n');
+
+      const parsed = audit(tmpDir);
+      assert.equal(parsed.counts.debug_sessions, 1, 'a malformed marker must never suppress');
+      assert.equal(parsed.acknowledged.debug_sessions, 0);
+    });
+
+    test('malformed audit_acknowledged (missing milestone/at) does NOT suppress — item still surfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-UAT.md');
+      fs.writeFileSync(
+        filePath,
+        '---\nstatus: gaps_found\naudit_acknowledged:\n  status: gaps_found\n---\n# UAT\n\n## Gaps\n\n- truth: "x"\n  status: open\n',
+      );
+
+      const parsed = audit(tmpDir);
+      assert.equal(parsed.counts.uat_gaps, 1, 'a marker missing milestone/at must never suppress');
+    });
+
+    // ── deferred_items status matrix ───────────────────────────────────────
+
+    test('deferred_items status matrix: acknowledged suppresses, resolved still suppresses, no status still surfaces', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      fs.writeFileSync(
+        filePath,
+        [
+          '## Deferred Items',
+          '',
+          '- an acknowledged item',
+          '  status: acknowledged',
+          '- a resolved item',
+          '  status: resolved',
+          '- a plain open item with no status field',
+          '',
+        ].join('\n'),
+      );
+
+      const parsed = audit(tmpDir);
+      assert.equal(parsed.counts.deferred_items, 1, 'only the no-status entry is open');
+      assert.equal(parsed.acknowledged.deferred_items, 1, 'the acknowledged entry is tallied, not silenced');
+      assert.deepEqual(
+        parsed.items.deferred_items.map((i) => i.text),
+        ['a plain open item with no status field'],
+      );
+    });
+
+    // ── writer refuses a path outside the project ──────────────────────────
+
+    test('writer refuses to acknowledge a path that escapes the project (path traversal)', () => {
+      const result = ack(tmpDir, ['--category', 'debug_sessions', '--slug', '../../../../etc/passwd', '--milestone', 'v1.0']);
+      assert.equal(result.success, false, 'a traversal-shaped --slug must be refused, not written');
+    });
+
+    test('writer refuses to acknowledge a category with a required flag missing', () => {
+      const result = ack(tmpDir, ['--category', 'uat_gaps', '--milestone', 'v1.0']); // no --phase/--file
+      assert.equal(result.success, false, 'missing --phase/--file must be refused');
+    });
+  });
+}

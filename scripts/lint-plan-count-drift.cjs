@@ -125,9 +125,13 @@ const CORE_UTILS_EXEMPT_FUNCTIONS = new Set([
 // anywhere else in these same files is still caught. Mirrors the
 // CORE_UTILS_EXEMPT_FUNCTIONS mechanism above, generalized per-file.
 //
-//   - audit.cts scanQuickTasks: scans a quick task's OWN directory
-//     (`.planning/quick/<task>/`) for that ONE task's completion record —
-//     not a phase directory's live-plan/summary counting question.
+//   - audit.cts resolveQuickTaskSummaryFile: scans a quick task's OWN
+//     directory (`.planning/quick/<task>/`) for that ONE task's completion
+//     record — not a phase directory's live-plan/summary counting question.
+//     #3458 follow-up extracted this out of `scanQuickTasks` (the prior
+//     exemption target) into its own function so `scanQuickTasks` (read) and
+//     `cmdAuditAcknowledge`'s quick_tasks writer share the ONE discovery
+//     rule instead of each re-deriving it independently.
 //   - gsd2-import.cts readTasksDir: reads a FOREIGN GSD-2 legacy project's
 //     `tasks/` dir convention during a one-time import, not this project's
 //     `.planning/phases/` layout at all.
@@ -162,7 +166,7 @@ const CORE_UTILS_EXEMPT_FUNCTIONS = new Set([
 //     owner's boolean plan/summary classification cannot answer.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [CORE_UTILS_FILE, CORE_UTILS_EXEMPT_FUNCTIONS],
-  [path.join('src', 'audit.cts'), new Set(['scanQuickTasks'])],
+  [path.join('src', 'audit.cts'), new Set(['resolveQuickTaskSummaryFile'])],
   [path.join('src', 'gsd2-import.cts'), new Set(['readTasksDir'])],
   [path.join('src', 'estimate-cli.cts'), new Set(['collectCalibrationSamples'])],
   [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnnotateDependencies'])],
