@@ -5076,6 +5076,25 @@ describe('ADR-3408 §8.3 Matrix C: cmdStateSync — the sanctioned exception (#3
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report residue', () => {
+  // #3471: extractFrontmatter's mini-YAML parser returns nested `progress.*`
+  // scalars as raw strings unless a caller runs them through
+  // normalizeProgressNumbers (the sanctioned-permanent guard path does; the
+  // write-seam merge exercised throughout this block does not). This exact
+  // string-vs-number round-trip has bitten test authoring FOUR times in this
+  // phase alone (twice self-caught before shipping, once as A4, now as
+  // A2f) — route every progress-reading assertion in this block through this
+  // helper rather than comparing against numeric literals. Mirrors
+  // `tests/frontmatter.test.cjs`'s `readPersistedProgress` (which is
+  // file-path based, reading from disk); this variant operates on an
+  // already-extracted `fm.progress` object since not every case in this
+  // block round-trips through a file.
+  function numericProgress(fmProgress) {
+    assert.ok(fmProgress, 'frontmatter must have a progress block');
+    return Object.fromEntries(
+      Object.entries(fmProgress).map(([key, value]) => [key, Number(value)]),
+    );
+  }
+
   // ─── Section A — deleting the six guards (D1) ──────────────────────────────
   // A1-A4/A7 assert on the write seam's own returned content (not required to
   // be consumer-level by the matrix's assertion rule). A5/A6 ARE in the
@@ -5171,7 +5190,10 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
         ['progress:', '  total_phases: 3', '  completed_phases: 2', '  total_plans: 5', '  completed_plans: 4', '  percent: 80'].join('\n'),
         ['## Current Position', '', 'Status: Executing', ''],
       );
-      assert.deepStrictEqual(fm.progress, { total_phases: 3, completed_phases: 2, total_plans: 5, completed_plans: 4, percent: 80 });
+      assert.deepStrictEqual(
+        numericProgress(fm.progress),
+        { total_phases: 3, completed_phases: 2, total_plans: 5, completed_plans: 4, percent: 80 },
+      );
       assert.deepStrictEqual(divergedFields, ['progress']);
     });
 
@@ -5216,14 +5238,12 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, true);
       const fm = frontmatterLib.extractFrontmatter(out);
       // #3471 review: extractFrontmatter's mini-YAML parser returns nested
-      // `progress.*` scalars as raw strings unless a caller runs them through
-      // `normalizeProgressNumbers` (the sanctioned-permanent guard path does;
-      // the write-seam merge here does not) — the same quoted-YAML round-trip
-      // `frontmatter.test.cjs`'s `readPersistedProgress` helper already
-      // Number()-coerces for. Compare numerically, not by strict type.
-      assert.strictEqual(Number(fm.progress.total_phases), 10, 'total_phases (derive-flagged) must take the freshly-derived disk value');
-      assert.strictEqual(Number(fm.progress.completed_phases), 2, 'completed_phases (ratchet-protected) must keep curated — the partial derive must not clobber it');
-      assert.strictEqual(Number(fm.progress.completed_plans), 4, 'completed_plans (ratchet-protected) must keep curated — the partial derive must not clobber it');
+      // `progress.*` scalars as raw strings — see `numericProgress` above
+      // for why. Compare numerically, not by strict type.
+      const progress = numericProgress(fm.progress);
+      assert.strictEqual(progress.total_phases, 10, 'total_phases (derive-flagged) must take the freshly-derived disk value');
+      assert.strictEqual(progress.completed_phases, 2, 'completed_phases (ratchet-protected) must keep curated — the partial derive must not clobber it');
+      assert.strictEqual(progress.completed_plans, 4, 'completed_plans (ratchet-protected) must keep curated — the partial derive must not clobber it');
     });
 
     // A5 — the D1 defect itself, at the CONSUMER's output (ADR-3180 Decision
