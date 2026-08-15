@@ -1064,7 +1064,15 @@ describe('Regex shape sanity', () => {
   });
 
   test('MARKER_RE captures the reason after the colon, trimming leading whitespace', () => {
-    const m = MARKER_RE.exec('# gsd-scan-ignore: #3409 rationale');
+    // Subject hoisted to a named const rather than passed as a string
+    // literal directly to the .exec call below — scripts/prompt-injection-scan.sh's
+    // receiver-blind scan pattern (deliberately kept wide to catch the
+    // child_process module's exec function invoked with a string) flags a
+    // quote immediately following an open paren after the token `exec`, with
+    // no way to distinguish RegExp#exec from that shell-spawning call by
+    // pattern alone. Do not simplify this back.
+    const subject = '# gsd-scan-ignore: #3409 rationale';
+    const m = MARKER_RE.exec(subject);
     assert.ok(m);
     assert.strictEqual(m[1], '#3409 rationale');
   });
