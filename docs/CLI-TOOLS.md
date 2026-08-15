@@ -804,6 +804,12 @@ node gsd-tools.cjs audit-uat
 # Cross-artifact audit queue — scan `.planning/` for unresolved audit items
 node gsd-tools.cjs audit-open [--json]
 
+# Suppress one open audit item — writes a self-invalidating `audit_acknowledged`
+# marker; never overwrites the artifact's own `status:` (except `deferred_items`,
+# where the marker IS the entry's `status:`). See docs/COMMANDS.md's
+# `/gsd-complete-milestone` entry for the full per-category identifier flag table.
+node gsd-tools.cjs audit-open acknowledge --category <category> --milestone <version> [--at <date>] <identifier flags…>
+
 # Reverse-migrate a GSD-2 project into the current structure (backs `/gsd-import --from-gsd2`)
 node gsd-tools.cjs from-gsd2 [--path <dir>] [--force] [--dry-run]
 

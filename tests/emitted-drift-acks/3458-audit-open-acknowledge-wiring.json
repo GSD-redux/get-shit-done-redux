@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "complete-milestone.md": "#3458 follow-up: the `pre_close_artifact_audit` step's `[A]` branch previously told the model to hand-author a `## Deferred Items` markdown table with no writer, no schema, and no reader — the acknowledgment never actually suppressed anything at the next close. This wires the real `audit-open acknowledge` CLI writer that landed in src/audit.cts: step 2 now calls it once per open item, per category, using the identifiers the audit JSON already emits (including the quick_tasks `--dir` reconstruction from `date`+`slug`, and the phase-scoped `--archived-milestone` passthrough), before step 3 writes the STATE.md table as a disclosure record only. Also converges the STATE.md `## Deferred Items` table to the template's 5-column shape (adds `Milestone`) and updates the MILESTONES.md disclosure line to distinguish newly-acknowledged items from ones a prior close already suppressed. The growth (+6,764 bytes) is this new per-category acknowledgment loop plus the expanded disclosure/security prose — no unrelated content moved."
+  }
+}

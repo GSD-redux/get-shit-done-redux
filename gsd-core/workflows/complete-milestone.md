@@ -61,26 +61,100 @@ These items are open. Choose an action:
 ```
 
 If user chooses [A] (Acknowledge):
-1. Re-run `gsd-tools.cjs query audit-open --json` to get structured data
-2. Write acknowledged items to STATE.md under `## Deferred Items` section:
+1. Re-run `gsd-tools.cjs query audit-open --json` to get structured data.
+2. Acknowledge every open item through the `audit-open acknowledge` CLI writer — this is what actually suppresses each item starting at the NEXT `audit-open` scan; the STATE.md table in step 3 is a disclosure record only, it is no longer the suppression mechanism:
+   ```bash
+   AUDIT_JSON=$(gsd_run query audit-open --json)
+   MILESTONE_VERSION="v[X.Y]"   # already known from ROADMAP.md's active milestone header — the same identifier `milestone.complete` uses in the archive_milestone step
+
+   # debug_sessions / threads (--slug)
+   for cat in debug_sessions threads; do
+     printf '%s' "$AUDIT_JSON" | jq -r --arg cat "$cat" '.items[$cat][] | select(.scan_error | not) | .slug' |
+     while IFS= read -r slug; do
+       gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --slug "$slug"
+     done
+   done
+
+   # seeds (--seed-id)
+   printf '%s' "$AUDIT_JSON" | jq -r '.items.seeds[] | select(.scan_error | not) | .seed_id' |
+   while IFS= read -r seed_id; do
+     gsd_run query audit-open acknowledge --category seeds --milestone "$MILESTONE_VERSION" --seed-id "$seed_id"
+   done
+
+   # todos (--filename) — the scanner caps its list to 5 entries per scan
+   # (remainder items carry `_remainder_count`, no `filename`, and are skipped)
+   printf '%s' "$AUDIT_JSON" | jq -r '.items.todos[] | select((.scan_error or ._remainder_count) | not) | .filename' |
+   while IFS= read -r filename; do
+     gsd_run query audit-open acknowledge --category todos --milestone "$MILESTONE_VERSION" --filename "$filename"
+   done
+
+   # quick_tasks (--dir) — the scanner's `slug` strips a leading
+   # YYYYMMDD-/YYYY-MM-DD- date prefix for display; `--dir` needs the
+   # ORIGINAL .planning/quick/<dir>/ name, so reconstruct it from `date`+`slug`.
+   printf '%s' "$AUDIT_JSON" | jq -r '.items.quick_tasks[] | select(.scan_error | not) | if .date != "" then "\(.date)-\(.slug)" else .slug end' |
+   while IFS= read -r dir; do
+     gsd_run query audit-open acknowledge --category quick_tasks --milestone "$MILESTONE_VERSION" --dir "$dir"
+   done
+
+   # uat_gaps / verification_gaps / context_questions — phase-scoped
+   # (--phase --file [--archived-milestone] when the item was found in an archived phase)
+   for cat in uat_gaps verification_gaps context_questions; do
+     printf '%s' "$AUDIT_JSON" | jq -c --arg cat "$cat" '.items[$cat][] | select(.scan_error | not)' |
+     while IFS= read -r item; do
+       phase=$(printf '%s' "$item" | jq -r '.phase')
+       file=$(printf '%s' "$item" | jq -r '.file')
+       archived=$(printf '%s' "$item" | jq -r '.archived_milestone // empty')
+       if [ -n "$archived" ]; then
+         gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --archived-milestone "$archived"
+       else
+         gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file"
+       fi
+     done
+   done
+
+   # deferred_items — same phase-scoped identification, plus --text (the
+   # exact bullet the audit read, which uniquely identifies the entry)
+   printf '%s' "$AUDIT_JSON" | jq -c '.items.deferred_items[] | select(.scan_error | not)' |
+   while IFS= read -r item; do
+     phase=$(printf '%s' "$item" | jq -r '.phase')
+     file=$(printf '%s' "$item" | jq -r '.file')
+     text=$(printf '%s' "$item" | jq -r '.text')
+     archived=$(printf '%s' "$item" | jq -r '.archived_milestone // empty')
+     if [ -n "$archived" ]; then
+       gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text" --archived-milestone "$archived"
+     else
+       gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text"
+     fi
+   done
+   ```
+   `todos` is the only category the scanner caps (5 entries per scan, with a remainder count for the rest). Re-run `gsd-tools.cjs query audit-open --json` and repeat the `todos` block until it reports no `todos` items — every other category always returns its full open set in one pass.
+3. Re-run `gsd-tools.cjs query audit-open --json` once more and write the items just acknowledged as new rows to STATE.md under `## Deferred Items` — append to the existing table (creating the section if absent) rather than overwriting it, preserving rows recorded at earlier milestone closes:
    ```markdown
    ## Deferred Items
 
-   Items acknowledged and deferred at milestone close on {date}:
+   Items acknowledged and deferred at milestone close, most recent first:
 
-   | Category | Item | Status |
-   |----------|------|--------|
-   | debug | {slug} | {status} |
-   | quick_task | {slug} | {status} |
-   ...
+   | Category | Item | Status | Deferred At | Milestone |
+   |----------|------|--------|-------------|-----------|
+   | debug_sessions | {slug} | {status} | {date} | {milestone} |
+   | quick_tasks | {slug} | {status} | {date} | {milestone} |
+   | threads | {slug} | {status} | {date} | {milestone} |
+   | seeds | {seed_id} | {status} | {date} | {milestone} |
+   | todos | {filename} | (presence-only) | {date} | {milestone} |
+   | uat_gaps | {phase}/{file} | {status} | {date} | {milestone} |
+   | verification_gaps | {phase}/{file} | {status} | {date} | {milestone} |
+   | context_questions | {phase}/{file} | {question_count} questions | {date} | {milestone} |
+   | deferred_items | {phase}/{file}: {text} | acknowledged | {date} | {milestone} |
    ```
-   Sanitize all slug and status values via `sanitizeForDisplay()` before writing. Never inject raw file content into STATE.md.
-3. Set `closeout_type=override_closeout` and record `Known verification overrides: {count} (see STATE.md Deferred Items)` in the MILESTONES.md entry.
-4. Proceed with milestone close.
+   One row per item actually acknowledged in step 2 (omit categories with nothing to disclose this close). `{date}` is today's date; `{milestone}` is `MILESTONE_VERSION`. Sanitize all slug/status/text values via `sanitizeForDisplay()` before writing. Never inject raw file content into STATE.md.
+4. Set `closeout_type=override_closeout` and record in the MILESTONES.md entry: `Known verification overrides: {N} newly acknowledged, {M} carried forward from a prior close (see STATE.md Deferred Items)` — `{N}` is the count of items acknowledged in step 2 (the pre-acknowledgment audit JSON's `counts.total`) and `{M}` is that same audit JSON's `acknowledged.total` (items a PRIOR close already suppressed and still are).
+5. Proceed with milestone close.
 
-If output shows all clear (no open items): set `closeout_type=verified_closeout`, print `All artifact types clear.`, and proceed.
+Acknowledging is verdict-preserving and self-invalidating: it never rewrites the artifact's own `status:` field (except `deferred_items`, whose entry has no other meaning for that field), and the suppression it grants lapses automatically the moment the artifact's observed state changes again — a reopened debug session, an edited UAT gap, a re-triggered seed, etc. resurfaces on its own at the next audit and must be acknowledged again.
 
-SECURITY: Audit JSON output is structured data from the `audit-open` query handler (same JSON contract as legacy `gsd-tools.cjs audit-open`) — validated and sanitized at source. When writing to STATE.md, item slugs and descriptions are sanitized via `sanitizeForDisplay()` before inclusion. Never inject raw user-supplied content into STATE.md without sanitization.
+If output shows all clear (no open items): set `closeout_type=verified_closeout`. If the audit JSON's `acknowledged.total` is `0`, print `All artifact types clear.` and proceed. Otherwise the close is clean only because `{acknowledged.total}` item(s) acknowledged at an earlier milestone close are still being suppressed, not because everything was fixed this time — print `All artifact types clear ({acknowledged.total} previously acknowledged item(s) still suppressed — see STATE.md Deferred Items).` and record `Known verification overrides: 0 newly acknowledged, {acknowledged.total} carried forward from a prior close (see STATE.md Deferred Items)` in the MILESTONES.md entry before proceeding.
+
+SECURITY: Audit JSON output is structured data from the `audit-open` query handler (same JSON contract as legacy `gsd-tools.cjs audit-open`) — validated and sanitized at source. The `audit-open acknowledge` writer is the only path that sets the `audit_acknowledged` suppression marker — it snapshots each artifact's current state itself from the identifiers passed on the command line, so this workflow never hand-authors the marker. When writing the STATE.md disclosure table, item identifiers, statuses, and deferred-item text are sanitized via `sanitizeForDisplay()` before inclusion. Never inject raw user-supplied content into STATE.md without sanitization.
 </step>
 
 <step name="verify_readiness">
