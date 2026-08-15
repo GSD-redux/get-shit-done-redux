@@ -3312,8 +3312,31 @@ function reconcileReportedFields(
   const preFm = extractFrontmatter(preSyncContent, statePath) as Record<string, unknown>;
   const preBody = stripFrontmatter(preSyncContent);
 
-  const valueOf = (fm: Record<string, unknown>, body: string, field: string): string | null =>
-    Object.prototype.hasOwnProperty.call(fm, field) ? String(fm[field]) : stateExtractField(body, field);
+  // #3471 review: body-FIRST, frontmatter-fallback — mirrors the actual write
+  // precedence `patchCore`/`updateCore` apply (their own docstrings: "a key
+  // that resolves against the STRIPPED body ... wins deterministically even
+  // when the same key also happens to exist as a parsed frontmatter key").
+  // The prior frontmatter-first order was silently correct for every
+  // Title-Case body label (`Status`, `Current Plan`, ...) only because those
+  // never case-exact-match a frontmatter key (frontmatter keys are always
+  // lowercase snake_case) — so `hasOwnProperty` always missed and it fell
+  // through to the body anyway. It broke the one case where `field` IS
+  // lowercase and DOES exact-match a frontmatter key: a table-format
+  // STATE.md with a lowercase field name (e.g. `state update status ...`
+  // against `| status | ... |`). There, `preFm` (extracted from the
+  // transform's own pre-sync output) never has a `status` key yet — but
+  // `persistedFm` (extracted after `syncStateFrontmatter` ran) always does,
+  // since `status` is a schema-owned frontmatter key re-derived on every
+  // write. Reading frontmatter first made `intended` (body text) and
+  // `persistedValue` (frontmatter-derived enum) compare two different
+  // representations of the same field, and the write was never reconciled
+  // (regression: #1162's "state update is case-insensitive for table field
+  // names").
+  const valueOf = (fm: Record<string, unknown>, body: string, field: string): string | null => {
+    const bodyValue = stateExtractField(body, field);
+    if (bodyValue !== null) return bodyValue;
+    return Object.prototype.hasOwnProperty.call(fm, field) ? String(fm[field]) : null;
+  };
 
   const reconciled: string[] = [];
   for (const field of reported) {
@@ -3323,7 +3346,24 @@ function reconcileReportedFields(
       reconciled.push(field);
     }
   }
+  // #3471 review: only fold a `divergedFields` entry into the reported array
+  // when it is a `preserve-when-unchanged` row (has a genuine body-line
+  // label — Status, Current Plan, Current Phase, ...). #3345's direction
+  // ("preservation restored a field the intent never named") is about a
+  // caller-visible BODY field the transform could plausibly have named —
+  // never about `progress` (`preserve-always`) or `milestone`/`milestone_name`
+  // (`preserve-if-placeholder`), which are structured/paired fields no
+  // caller ever names via a per-field body label and whose restoration is
+  // the long-standing, silent #3242/#948 protection, not a caller-visible
+  // "update". Folding them in unconditionally reported `progress` as
+  // `updated` on every `state.patch`/`state.update` write that happened to
+  // preserve it — even when the call never touched Current Phase's
+  // curated-progress-preserving field at all (regression: #1264's
+  // `state.patch` of `Current Phase` reporting `updated: ['Current Phase',
+  // 'progress']` instead of `['Current Phase']`).
   for (const field of divergedFields) {
+    const cls = stateTransitionMod.getFieldClassification(field);
+    if (!cls || cls.preservation !== 'preserve-when-unchanged') continue;
     const label = bodyLabelFor(field);
     if (!reconciled.includes(label)) reconciled.push(label);
   }

@@ -5110,7 +5110,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
     // A2 — deliberately SIX separate named tests, one per gated guard. A list
     // over these six field names is easy to quietly shorten; six named tests
     // are not (matrix's own stated rationale).
-    function a2Case(field, curatedFrontmatterLine, body) {
+    function a2Case(curatedFrontmatterLine, body) {
       const original = ['---', 'gsd_state_version: 1.0', curatedFrontmatterLine, '---', '', '# Project State', '', ...body].join('\n');
       const transformed = original.replace('Executing', 'Verifying');
       const tmp = createTempDir('gsd-3471-a2-');
@@ -5215,9 +5215,15 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const statePath = path.join(tmp, 'STATE.md');
       const out = stateLib.syncAndPreserveStateMd(original, transformed, statePath, tmp, false, undefined, true);
       const fm = frontmatterLib.extractFrontmatter(out);
-      assert.strictEqual(fm.progress.total_phases, 10, 'total_phases (derive-flagged) must take the freshly-derived disk value');
-      assert.strictEqual(fm.progress.completed_phases, 2, 'completed_phases (ratchet-protected) must keep curated — the partial derive must not clobber it');
-      assert.strictEqual(fm.progress.completed_plans, 4, 'completed_plans (ratchet-protected) must keep curated — the partial derive must not clobber it');
+      // #3471 review: extractFrontmatter's mini-YAML parser returns nested
+      // `progress.*` scalars as raw strings unless a caller runs them through
+      // `normalizeProgressNumbers` (the sanctioned-permanent guard path does;
+      // the write-seam merge here does not) — the same quoted-YAML round-trip
+      // `frontmatter.test.cjs`'s `readPersistedProgress` helper already
+      // Number()-coerces for. Compare numerically, not by strict type.
+      assert.strictEqual(Number(fm.progress.total_phases), 10, 'total_phases (derive-flagged) must take the freshly-derived disk value');
+      assert.strictEqual(Number(fm.progress.completed_phases), 2, 'completed_phases (ratchet-protected) must keep curated — the partial derive must not clobber it');
+      assert.strictEqual(Number(fm.progress.completed_plans), 4, 'completed_plans (ratchet-protected) must keep curated — the partial derive must not clobber it');
     });
 
     // A5 — the D1 defect itself, at the CONSUMER's output (ADR-3180 Decision
