@@ -924,7 +924,8 @@ describe('issue #3210: execute-phase auto-mode carve-out exempts precondition-un
     assert.ok(open !== -1, 'checkpoint_handling step not found');
     const close = content.indexOf('</step>', open);
     const step = content.slice(open, close);
-    const carveOut = step.split('\n').find((l) => l.includes('Carve-out'));
+    const splitLines = require('../gsd-core/bin/lib/text-lines.cjs').splitLines;
+    const carveOut = splitLines(step).find((l) => l.includes('Carve-out'));
     assert.ok(carveOut, 'checkpoint_handling must keep the blocking-human carve-out');
     assert.match(
       carveOut,
