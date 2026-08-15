@@ -983,7 +983,21 @@ function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw:
 
   if (!summaryText) { output({ error: 'summary required' }, raw, undefined); return; }
 
-  const entry = `- [Phase ${phase || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
+  // #3231/#3481: `--phase` omitted → resolve from the STATE.md being written, via
+  // the canonical ladder `state prune` uses. A decision entry is a permanent
+  // record, so a literal `[Phase ?]` written while `current_phase` sat three
+  // lines above the insertion point loses that decision's provenance for good.
+  // Explicit `--phase` still wins, and its path is untouched — the file is not
+  // even read. When no rung resolves, `?` is still written: an unknown phase
+  // stays visibly unknown rather than being guessed or defaulted to a number.
+  let phaseId: string | undefined = phase;
+  if (!phaseId) {
+    const rawState = fs.readFileSync(statePath, 'utf-8');
+    const fm = extractFrontmatter(rawState, statePath) as Record<string, unknown>;
+    phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState)) ?? undefined;
+  }
+
+  const entry = `- [Phase ${phaseId || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
   let _added = false;
   let created = false;
 
@@ -1126,7 +1140,21 @@ function cmdStateAddRoadmapEvolution(cwd: string, options: StateAddRoadmapEvolut
   const actionText = (action && action.trim()) || 'changed';
   const afterText = after && after.trim() ? ` after Phase ${after.trim()}` : '';
   const urgentText = urgent ? ' (URGENT)' : '';
-  const entry = `- Phase ${phase || '?'} ${actionText}${afterText}: ${flatNote}${urgentText}`;
+  // #3481: same treatment as add-decision's #3231 fix — `--phase` omitted →
+  // resolve from the STATE.md being written via the shared write-path ladder.
+  // A roadmap-evolution entry is a permanent record of why the roadmap changed
+  // shape, so a literal `Phase ?` written while `current_phase` sat in the
+  // frontmatter above the insertion point makes that trail unattributable.
+  // Explicit `--phase` still wins (the file is not even read on that path), and
+  // `?` is still written when nothing resolves — never a guess.
+  let phaseId: string | undefined = phase;
+  if (!phaseId) {
+    const rawState = fs.readFileSync(statePath, 'utf-8');
+    const fm = extractFrontmatter(rawState, statePath) as Record<string, unknown>;
+    phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState)) ?? undefined;
+  }
+
+  const entry = `- Phase ${phaseId || '?'} ${actionText}${afterText}: ${flatNote}${urgentText}`;
 
   let duplicate = false;
   let created = false;
@@ -1628,6 +1656,59 @@ function resolveStatePhase(fm: Record<string, unknown>, body: string): {
       ?? prosePhase.name,
     sources,
   };
+}
+
+/**
+ * Resolve a STATE.md's own current phase id from the document itself — the
+ * WRITE-PATH ladder shared by `cmdStateAddDecision` (#3231) and
+ * `cmdStateAddRoadmapEvolution` (#3481), extracted from the ladder
+ * `cmdStatePrune` already ran (#1760).
+ *
+ * The rungs are the canonical ones owned by state-document.cjs's
+ * `stateFieldValue` (#3187, ADR-3180 §7.7): frontmatter `current_phase` → body
+ * `Current Phase` field → prose `Phase: X of Y` scoped to `## Current
+ * Position`.
+ *
+ * #1776: the prose rung stays scoped to `## Current Position`. Over the whole
+ * body, `stateExtractField`'s pipe-table fallback matches any `| Phase | N |`
+ * row — e.g. a historical verification table — and would resolve a stale phase.
+ * Frontmatter and the explicit `Current Phase` field are unambiguous, so they
+ * stay document-wide. `cmdStateSnapshot` deliberately keeps the looser
+ * whole-body fallback for its own prose rung and is not routed through here.
+ *
+ * Returns the id exactly as written, NOT parsed to a number: phase ids are not
+ * always integers (`11-01` and `04.1` are both real). Callers needing an
+ * integer parse it themselves. Returns null when no rung carries a value — a
+ * genuinely absent phase is a real answer (§7.7 behavior table row 4), and
+ * callers must render it as unknown rather than guess one.
+ *
+ * NOT the same function as `resolveStatePhase` above (#3208), and deliberately
+ * not routed through it — the difference is one line and it is the whole point:
+ *
+ *   resolveStatePhase:     matchCurrentPositionSection(body) ?? body
+ *   resolveCurrentPhaseId: null when the section is absent
+ *
+ * That `?? body` fallback is exactly the #1776 hazard. With no `## Current
+ * Position` section, the prose rung widens to the entire document, where
+ * `stateExtractField`'s pipe-table fallback matches any `| Phase | N |` row —
+ * a historical verification table included — and resolves a stale phase.
+ *
+ * `resolveStatePhase`'s callers (`cmdStateSnapshot`, `cmdStateValidate`) READ
+ * and report; a stale guess there is a wrong line in output a human is already
+ * looking at. This function's callers WRITE: `cmdStateAddDecision` and
+ * `cmdStateAddRoadmapEvolution` persist the result into records that outlive
+ * the session, and `cmdStatePrune` decides what to delete from it. A wrong
+ * phase there is durable and silent, so the write path takes the strict rung
+ * and renders `?` rather than guessing.
+ *
+ * Reconcile the two only by giving `resolveStatePhase` an explicit scope
+ * parameter — never by pointing this at it and dropping the difference.
+ */
+function resolveCurrentPhaseId(fm: Record<string, unknown>, body: string): string | null {
+  const positionSection = sliceCurrentPositionSection(body);
+  const prosePhase =
+    positionSection !== null ? parseProsePhaseField(stateFieldValue(fm, positionSection, null, 'Phase').value).phase : null;
+  return stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase;
 }
 
 function parseProseLastActivityField(value: string | null): { date: string | null; description: string | null } {
@@ -4319,30 +4400,18 @@ function cmdStatePrune(cwd: string, options: StatePruneOptions, raw: boolean): v
 
   const keepRecent = parseInt(String(options.keepRecent), 10) || 3;
   const dryRun = !!options.dryRun;
-  // Resolve the current phase via the same canonical chain buildStateFrontmatter
-  // uses (frontmatter `current_phase` → `Current Phase` field → prose `Phase: X
-  // of Y`), so prune engages on template-conformant STATE.md instead of bailing
-  // "Only 0 phases" (#1760).
-  // #1776: scope ONLY the prose `Phase:` term to the canonical `## Current
-  // Position` section. Over the whole body, `stateExtractField`'s pipe-table
-  // fallback matches any `| Phase | N |` row (e.g. a historical verification
-  // table), resolving a stale phase and computing a wrong cutoff. Frontmatter and
-  // the explicit `Current Phase` field are unambiguous, so they stay document-wide;
-  // the shared extractor is not narrowed for any other caller.
+  // Resolve the current phase via `resolveCurrentPhaseId` — the shared owner of
+  // the canonical frontmatter → `Current Phase` field → scoped prose ladder
+  // (#1760 origin, #1776 scoping, #3187 ownership; see its doc comment). Prune
+  // engages on a template-conformant STATE.md instead of bailing "Only 0
+  // phases" (#1760). #3231/#3481 routed the phase-labeled write commands
+  // through the same helper rather than leaving a second copy of the ladder here.
   const rawState = fs.readFileSync(statePath, 'utf-8');
   const fm = extractFrontmatter(rawState, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(rawState);
-  // #3187: frontmatter-scalar-then-body-field precedence is owned by
-  // state-document.cjs's `stateFieldValue` (ADR-3180 §7.7). This comment
-  // previously claimed to mirror `buildStateFrontmatter`'s fmScalar — that
-  // attribution was stale: buildStateFrontmatter (state.cts:1620) reads body
-  // only and never consults frontmatter at all; this actually mirrored
-  // cmdStateSnapshot's now-removed closure instead.
-  const positionSection = sliceCurrentPositionSection(body);
-  const prosePhase =
-    positionSection !== null ? parseProsePhaseField(stateFieldValue(fm, positionSection, null, 'Phase').value).phase : null;
-  const currentPhaseRaw = stateFieldValue(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase;
-  const currentPhase = parseInt(String(currentPhaseRaw), 10) || 0;
+  // Prune needs an integer cutoff, so it parses the resolved id itself; a
+  // non-numeric or absent id lands on 0 and prune bails, as before.
+  const currentPhase = parseInt(String(resolveCurrentPhaseId(fm, body)), 10) || 0;
   const cutoff = currentPhase - keepRecent;
 
   if (cutoff <= 0) {

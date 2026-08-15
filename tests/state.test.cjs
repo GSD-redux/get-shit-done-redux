@@ -14698,3 +14698,246 @@ describe('#3468 B8: a drifted / malformed / unparseable STATE.md never reaches t
     });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3481: `state add-roadmap-evolution` resolves the phase from STATE.md's own
+// frontmatter/body when `--phase` is omitted, instead of persisting a literal
+// `Phase ?`. This is the #3231 defect at a second call site — the sibling
+// `add-decision` site (also currently unfixed on next, per the #3481 triage)
+// is pinned here too, so the whole class is covered by one contract.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const { describe, test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert/strict');
+  const path = require('path');
+
+  describe('#3481 phase-labeled write commands resolve the phase from STATE.md when --phase is omitted', () => {
+    let tmpDir;
+
+    beforeEach(() => { tmpDir = createTempProject(); });
+    afterEach(() => { cleanup(tmpDir); });
+
+    const statePathIn = (d) => path.join(d, '.planning', 'STATE.md');
+
+    // Write a STATE.md verbatim, bypassing the project scaffold, so each test
+    // controls exactly which rung of the resolution ladder is populated.
+    const writeState = (d, content) => fs.writeFileSync(statePathIn(d), content);
+
+    const run = (d, args) => {
+      const result = runGsdTools(args, d);
+      assert.ok(result.success, `command must succeed, got: ${result.error}`);
+      return JSON.parse(result.output);
+    };
+
+    // Assert on the persisted file, not only the JSON echo — the defect in
+    // #3481 is that the placeholder is written to disk permanently.
+    const persistedLines = (d, prefix) =>
+      fs.readFileSync(statePathIn(d), 'utf-8')
+        .split(/\r?\n/)
+        .filter(l => l.startsWith(prefix));
+
+    const STATE_WITH_FM_PHASE = [
+      '---',
+      'gsd_state_version: 1.0',
+      'current_phase: 3',
+      'current_phase_name: Sourcing Coverage',
+      'status: executing',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      '### Decisions',
+      '',
+    ].join('\n');
+
+    // ── add-roadmap-evolution (the site #3481 reports) ──────────────────────
+
+    test('add-roadmap-evolution: frontmatter current_phase resolves the entry when --phase is omitted', () => {
+      writeState(tmpDir, STATE_WITH_FM_PHASE);
+
+      const parsed = run(tmpDir, ['state', 'add-roadmap-evolution', '--action', 'added', '--note', 'Phase 4.2 inserted for enrichment reach']);
+
+      assert.strictEqual(
+        parsed.entry,
+        '- Phase 3 added: Phase 4.2 inserted for enrichment reach',
+        'omitted --phase must resolve from frontmatter current_phase, not render "?"',
+      );
+      assert.deepStrictEqual(
+        persistedLines(tmpDir, '- Phase 3 added:'),
+        ['- Phase 3 added: Phase 4.2 inserted for enrichment reach'],
+        'the resolved phase must be what lands in STATE.md',
+      );
+    });
+
+    test('add-roadmap-evolution: explicit --phase wins over a resolvable frontmatter current_phase', () => {
+      writeState(tmpDir, STATE_WITH_FM_PHASE);
+
+      const parsed = run(tmpDir, ['state', 'add-roadmap-evolution', '--phase', '7', '--action', 'verified', '--note', 'Explicit wins']);
+
+      assert.strictEqual(
+        parsed.entry,
+        '- Phase 7 verified: Explicit wins',
+        'an explicitly passed --phase must never be overridden by the resolved value',
+      );
+    });
+
+    test('add-roadmap-evolution: prose "Phase:" under ## Current Position resolves, preserving a non-integer id', () => {
+      writeState(tmpDir, [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 04.1 of 7',
+        '',
+        '## Accumulated Context',
+        '',
+      ].join('\n'));
+
+      const parsed = run(tmpDir, ['state', 'add-roadmap-evolution', '--action', 'edited', '--note', 'Prose rung']);
+
+      // Phase ids are not always integers — 04.1 must survive verbatim.
+      assert.strictEqual(parsed.entry, '- Phase 04.1 edited: Prose rung');
+    });
+
+    // Counter-test (TESTING-STANDARDS.md contract 6): assert the specific
+    // degraded verdict. When no rung resolves, the entry must still read "?"
+    // — an unknown phase stays visibly unknown and is never guessed.
+    test('add-roadmap-evolution CONTROL: no phase resolvable from any rung still writes a literal "?"', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Accumulated Context',
+        '',
+      ].join('\n'));
+
+      const parsed = run(tmpDir, ['state', 'add-roadmap-evolution', '--action', 'added', '--note', 'Unresolvable stays unknown']);
+
+      assert.strictEqual(
+        parsed.entry,
+        '- Phase ? added: Unresolvable stays unknown',
+        'with no frontmatter current_phase, no body "Current Phase" field and no scoped prose Phase line, the entry must degrade to "?" — not to a default, an empty string, or a guessed number',
+      );
+      assert.deepStrictEqual(persistedLines(tmpDir, '- Phase ? added:'), ['- Phase ? added: Unresolvable stays unknown']);
+    });
+
+    // Counter-test pinning #1776: the write path must NOT adopt a phase-shaped
+    // token from outside the designated current-position location. A stale
+    // historical `| Phase | 7 |` table row is not this document's current phase.
+    test('add-roadmap-evolution CONTROL: a historical Phase row outside Current Position must not resolve (#1776)', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Verification History',
+        '',
+        '| Field | Value |',
+        '|---|---|',
+        '| Phase | 7 |',
+        '',
+        '## Accumulated Context',
+        '',
+      ].join('\n'));
+
+      const parsed = run(tmpDir, ['state', 'add-roadmap-evolution', '--action', 'added', '--note', 'Stale table must not win']);
+
+      assert.strictEqual(
+        parsed.entry,
+        '- Phase ? added: Stale table must not win',
+        'the prose rung is scoped to ## Current Position; a | Phase | N | row in a historical table must not be persisted as this entry\'s phase',
+      );
+    });
+
+    // ── add-decision (the #3231 sibling site — same defect, same fix) ───────
+
+    test('add-decision: frontmatter current_phase resolves the entry when --phase is omitted', () => {
+      writeState(tmpDir, STATE_WITH_FM_PHASE);
+
+      const parsed = run(tmpDir, ['state', 'add-decision', '--summary', 'Dedup threshold set to 0.85 by sweep']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase 3]: Dedup threshold set to 0.85 by sweep',
+        'omitted --phase must resolve from frontmatter current_phase, not render "?"',
+      );
+      assert.deepStrictEqual(
+        persistedLines(tmpDir, '- [Phase 3]:'),
+        ['- [Phase 3]: Dedup threshold set to 0.85 by sweep'],
+        'the resolved phase must be what lands in STATE.md',
+      );
+    });
+
+    test('add-decision: explicit --phase wins over a resolvable frontmatter current_phase', () => {
+      writeState(tmpDir, STATE_WITH_FM_PHASE);
+
+      const parsed = run(tmpDir, ['state', 'add-decision', '--phase', '7', '--summary', 'Explicit wins']);
+
+      assert.strictEqual(parsed.decision, '- [Phase 7]: Explicit wins');
+    });
+
+    test('add-decision CONTROL: a historical Phase row outside Current Position must not resolve (#1776)', () => {
+      writeState(tmpDir, [
+        '---',
+        'gsd_state_version: 1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Verification History',
+        '',
+        '| Field | Value |',
+        '|---|---|',
+        '| Phase | 7 |',
+        '',
+        '### Decisions',
+        '',
+      ].join('\n'));
+
+      const parsed = run(tmpDir, ['state', 'add-decision', '--summary', 'Stale table must not win']);
+
+      assert.strictEqual(
+        parsed.decision,
+        '- [Phase ?]: Stale table must not win',
+        'the prose rung is scoped to ## Current Position; a | Phase | N | row in a historical table is not this document\'s current phase',
+      );
+    });
+
+    // ── Guard (skill "Partial Fix Across Call Sites"): the #3481/#3231 defect
+    // class is "entry text built from the RAW CLI phase flag with a '?' fallback,
+    // never consulting the document being written". Behavioral tests above pin
+    // the two known sites; this static sweep catches any NEW site that
+    // regresses to the same shape — the fix routes every such site through the
+    // resolved id, so the raw-flag pattern must not reappear in src/.
+    test('GUARD: no phase-labeled entry is built from the raw CLI phase flag with a "?" fallback', () => {
+      const SRC_DIR = path.join(__dirname, '..', 'src');
+      const offenders = fs.readdirSync(SRC_DIR)
+        .filter(f => f.endsWith('.cts'))
+        .flatMap(f => {
+          const rel = path.join('src', f);
+          const lines = fs.readFileSync(path.join(SRC_DIR, f), 'utf-8').split(/\r?\n/);
+          return lines
+            .map((line, i) => ({ rel, i, line }))
+            .filter(({ line }) => line.includes('Phase ${phase || \'?\'}'));
+        })
+        .map(({ rel, i }) => `${rel}:${i + 1}`);
+
+      assert.deepStrictEqual(
+        offenders,
+        [],
+        'raw `phase || \'?\'` placeholder in a phase-labeled entry — resolve the phase from the STATE.md being written '
+          + '(see resolveCurrentPhaseId, #3231/#3481): ' + offenders.join(', '),
+      );
+    });
+  });
+}
