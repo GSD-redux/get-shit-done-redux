@@ -62,72 +62,107 @@ These items are open. Choose an action:
 
 If user chooses [A] (Acknowledge):
 1. Re-run `gsd-tools.cjs query audit-open --json` to get structured data.
-2. Acknowledge every open item through the `audit-open acknowledge` CLI writer — this is what actually suppresses each item starting at the NEXT `audit-open` scan; the STATE.md table in step 3 is a disclosure record only, it is no longer the suppression mechanism:
+2. Acknowledge every open item through the `audit-open acknowledge` CLI writer — this is what actually suppresses each item starting at the NEXT `audit-open` scan; the STATE.md table in step 3 is a disclosure record only, it is no longer the suppression mechanism. Every acknowledge call's exit status is accumulated (`ACK_FAILURES`); the step HALTS before closing if any failed — a refusal (`unsupported_heading_shape`, `ambiguous`, `not_found`, missing file, etc.) must never be silently discarded and let the close proceed as if everything were suppressed. `AUDIT_JSON` uses the same `@file:` large-payload sentinel handling `INIT_MANAGER` uses in `verify_readiness` below — `io.output` swaps any JSON payload over 50000 chars for a `@file:<path>` marker, and feeding that literal string to `jq` would silently make every loop body below iterate zero times:
    ```bash
    AUDIT_JSON=$(gsd_run query audit-open --json)
+   if [[ "$AUDIT_JSON" == @file:* ]]; then AUDIT_JSON=$(cat "${AUDIT_JSON#@file:}"); fi
    MILESTONE_VERSION="v[X.Y]"   # already known from ROADMAP.md's active milestone header — the same identifier `milestone.complete` uses in the archive_milestone step
 
+   ACK_FAILURES=0
+   ACK_FAILURE_LOG=""
+   record_ack_failure() {
+     ACK_FAILURES=$((ACK_FAILURES + 1))
+     ACK_FAILURE_LOG="${ACK_FAILURE_LOG}
+   - $1"
+   }
+
    # debug_sessions / threads (--slug)
+   # NOTE: `< <(...)` process substitution, not `... | while`, so the loop
+   # runs in THIS shell — a `| while` pipeline puts the loop in a subshell
+   # and any ACK_FAILURES/ACK_FAILURE_LOG update inside it is lost the
+   # moment the pipeline exits.
    for cat in debug_sessions threads; do
-     printf '%s' "$AUDIT_JSON" | jq -r --arg cat "$cat" '.items[$cat][] | select(.scan_error | not) | .slug' |
      while IFS= read -r slug; do
-       gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --slug "$slug"
-     done
+       [ -z "$slug" ] && continue
+       if ! gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --slug "$slug"; then
+         record_ack_failure "$cat slug=$slug"
+       fi
+     done < <(printf '%s' "$AUDIT_JSON" | jq -r --arg cat "$cat" '.items[$cat][] | select(.scan_error | not) | .slug')
    done
 
    # seeds (--seed-id)
-   printf '%s' "$AUDIT_JSON" | jq -r '.items.seeds[] | select(.scan_error | not) | .seed_id' |
    while IFS= read -r seed_id; do
-     gsd_run query audit-open acknowledge --category seeds --milestone "$MILESTONE_VERSION" --seed-id "$seed_id"
-   done
+     [ -z "$seed_id" ] && continue
+     if ! gsd_run query audit-open acknowledge --category seeds --milestone "$MILESTONE_VERSION" --seed-id "$seed_id"; then
+       record_ack_failure "seeds seed_id=$seed_id"
+     fi
+   done < <(printf '%s' "$AUDIT_JSON" | jq -r '.items.seeds[] | select(.scan_error | not) | .seed_id')
 
    # todos (--filename) — the scanner caps its list to 5 entries per scan
    # (remainder items carry `_remainder_count`, no `filename`, and are skipped)
-   printf '%s' "$AUDIT_JSON" | jq -r '.items.todos[] | select((.scan_error or ._remainder_count) | not) | .filename' |
    while IFS= read -r filename; do
-     gsd_run query audit-open acknowledge --category todos --milestone "$MILESTONE_VERSION" --filename "$filename"
-   done
+     [ -z "$filename" ] && continue
+     if ! gsd_run query audit-open acknowledge --category todos --milestone "$MILESTONE_VERSION" --filename "$filename"; then
+       record_ack_failure "todos filename=$filename"
+     fi
+   done < <(printf '%s' "$AUDIT_JSON" | jq -r '.items.todos[] | select((.scan_error or ._remainder_count) | not) | .filename')
 
    # quick_tasks (--dir) — the scanner's `slug` strips a leading
    # YYYYMMDD-/YYYY-MM-DD- date prefix for display; `--dir` needs the
    # ORIGINAL .planning/quick/<dir>/ name, so reconstruct it from `date`+`slug`.
-   printf '%s' "$AUDIT_JSON" | jq -r '.items.quick_tasks[] | select(.scan_error | not) | if .date != "" then "\(.date)-\(.slug)" else .slug end' |
    while IFS= read -r dir; do
-     gsd_run query audit-open acknowledge --category quick_tasks --milestone "$MILESTONE_VERSION" --dir "$dir"
-   done
+     [ -z "$dir" ] && continue
+     if ! gsd_run query audit-open acknowledge --category quick_tasks --milestone "$MILESTONE_VERSION" --dir "$dir"; then
+       record_ack_failure "quick_tasks dir=$dir"
+     fi
+   done < <(printf '%s' "$AUDIT_JSON" | jq -r '.items.quick_tasks[] | select(.scan_error | not) | if .date != "" then "\(.date)-\(.slug)" else .slug end')
 
    # uat_gaps / verification_gaps / context_questions — phase-scoped
    # (--phase --file [--archived-milestone] when the item was found in an archived phase)
    for cat in uat_gaps verification_gaps context_questions; do
-     printf '%s' "$AUDIT_JSON" | jq -c --arg cat "$cat" '.items[$cat][] | select(.scan_error | not)' |
      while IFS= read -r item; do
+       [ -z "$item" ] && continue
        phase=$(printf '%s' "$item" | jq -r '.phase')
        file=$(printf '%s' "$item" | jq -r '.file')
        archived=$(printf '%s' "$item" | jq -r '.archived_milestone // empty')
        if [ -n "$archived" ]; then
-         gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --archived-milestone "$archived"
+         if ! gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --archived-milestone "$archived"; then
+           record_ack_failure "$cat phase=$phase file=$file archived-milestone=$archived"
+         fi
        else
-         gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file"
+         if ! gsd_run query audit-open acknowledge --category "$cat" --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file"; then
+           record_ack_failure "$cat phase=$phase file=$file"
+         fi
        fi
-     done
+     done < <(printf '%s' "$AUDIT_JSON" | jq -c --arg cat "$cat" '.items[$cat][] | select(.scan_error | not)')
    done
 
    # deferred_items — same phase-scoped identification, plus --text (the
    # exact bullet the audit read, which uniquely identifies the entry)
-   printf '%s' "$AUDIT_JSON" | jq -c '.items.deferred_items[] | select(.scan_error | not)' |
    while IFS= read -r item; do
+     [ -z "$item" ] && continue
      phase=$(printf '%s' "$item" | jq -r '.phase')
      file=$(printf '%s' "$item" | jq -r '.file')
      text=$(printf '%s' "$item" | jq -r '.text')
      archived=$(printf '%s' "$item" | jq -r '.archived_milestone // empty')
      if [ -n "$archived" ]; then
-       gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text" --archived-milestone "$archived"
+       if ! gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text" --archived-milestone "$archived"; then
+         record_ack_failure "deferred_items phase=$phase file=$file archived-milestone=$archived"
+       fi
      else
-       gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text"
+       if ! gsd_run query audit-open acknowledge --category deferred_items --milestone "$MILESTONE_VERSION" --phase "$phase" --file "$file" --text "$text"; then
+         record_ack_failure "deferred_items phase=$phase file=$file"
+       fi
      fi
-   done
+   done < <(printf '%s' "$AUDIT_JSON" | jq -c '.items.deferred_items[] | select(.scan_error | not)')
+
+   if [ "$ACK_FAILURES" -gt 0 ]; then
+     echo "ERROR: $ACK_FAILURES acknowledge call(s) failed — HALTING before milestone close. Resolve each listed item manually (e.g. edit the file directly for unsupported_heading_shape/ambiguous, or re-run the audit if a --text/--file target has since changed) and re-run /gsd:complete-milestone:" >&2
+     printf '%s\n' "$ACK_FAILURE_LOG" >&2
+     exit 1
+   fi
    ```
-   `todos` is the only category the scanner caps (5 entries per scan, with a remainder count for the rest). Re-run `gsd-tools.cjs query audit-open --json` and repeat the `todos` block until it reports no `todos` items — every other category always returns its full open set in one pass.
+   `todos` is the only category the scanner caps (5 entries per scan, with a remainder count for the rest). Re-run `gsd-tools.cjs query audit-open --json` (through the same `@file:` handling above) and repeat the `todos` block until it reports no `todos` items — every other category always returns its full open set in one pass.
 3. Re-run `gsd-tools.cjs query audit-open --json` once more and write the items just acknowledged as new rows to STATE.md under `## Deferred Items` — append to the existing table (creating the section if absent) rather than overwriting it, preserving rows recorded at earlier milestone closes:
    ```markdown
    ## Deferred Items

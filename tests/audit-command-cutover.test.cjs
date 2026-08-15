@@ -1802,7 +1802,11 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       const after = audit(tmpDir);
       assert.equal(after.counts.context_questions, 0);
       assert.equal(after.acknowledged.context_questions, 1);
-      assert.match(fs.readFileSync(filePath, 'utf-8'), /question_count: 2/, 'marker records the question_count snapshot');
+      // WARNING 2 (#3458 follow-up review): the marker snapshots a content
+      // digest of the FULL question set, not a bare count — a count-only
+      // snapshot cannot see a same-count REPLACEMENT of every question (see
+      // the WARNING-2 disproof tests below).
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /questions_digest: [0-9a-f]{64}/, 'marker records the questions_digest snapshot');
     });
 
     test('deferred_items: acknowledged entry drops out of counts; entry text otherwise unchanged', () => {
@@ -2002,6 +2006,212 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
         parsed.items.deferred_items.map((i) => i.text),
         ['a plain open item with no status field'],
       );
+    });
+
+    // ── BLOCKER 1 (#3458 follow-up review): deferred_items writer must be
+    // section-anchored, never write into the wrong span, and refuse rather
+    // than guess on every shape it cannot safely handle ────────────────────
+
+    test('BLOCKER 1: an identical bullet OUTSIDE `## Deferred Items` is never targeted — mixed-section fixture', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      // The SAME bullet text appears once under an unrelated `# Notes`
+      // section and once under `## Deferred Items`. Before the fix, the
+      // unanchored regex matched the FIRST occurrence anywhere in the file —
+      // i.e. the one under `# Notes` — not the one `matches`/`ambiguous`
+      // were computed over.
+      fs.writeFileSync(
+        filePath,
+        [
+          '# Notes',
+          '',
+          '- Fix the parser',
+          '',
+          '## Deferred Items',
+          '',
+          '- Fix the parser',
+          '',
+        ].join('\n'),
+      );
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Fix the parser', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const notesSection = content.slice(content.indexOf('# Notes'), content.indexOf('## Deferred Items'));
+      const deferredSection = content.slice(content.indexOf('## Deferred Items'));
+      assert.doesNotMatch(notesSection, /status: acknowledged/, 'the UNRELATED # Notes bullet must never be touched');
+      assert.match(deferredSection, /status: acknowledged/, 'the actual Deferred Items entry must carry the marker');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 0, 're-audit: the correct entry is suppressed');
+      assert.equal(after.acknowledged.deferred_items, 1);
+    });
+
+    test('BLOCKER 1: --text matching 2+ deferred entries is refused as ambiguous, nothing written', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      const before = ['## Deferred Items', '', '- duplicated text', '- duplicated text', ''].join('\n');
+      fs.writeFileSync(filePath, before);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'duplicated text', '--milestone', 'v1.0']);
+      assert.equal(result.success, false, 'ambiguous --text must be refused');
+      assert.match(result.error, /matches more than one/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
+    });
+
+    test('BLOCKER 1: --text matching no deferred entry is refused as not_found', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      fs.writeFileSync(filePath, '## Deferred Items\n\n- a real entry\n');
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'no such entry', '--milestone', 'v1.0']);
+      assert.equal(result.success, false, 'unmatched --text must be refused');
+      assert.match(result.error, /no deferred item matched/i);
+    });
+
+    test('BLOCKER 1: heading-delimited (#3457) deferred-items shape is refused as unsupported_heading_shape, not guessed at', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      const before = ['## Deferred Items', '', '### Something out of scope', '', 'Some detail line.', ''].join('\n');
+      fs.writeFileSync(filePath, before);
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope', '--milestone', 'v1.0']);
+      assert.equal(result.success, false, 'heading-delimited shape must be refused');
+      assert.match(result.error, /heading-delimited/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
+    });
+
+    // ── WARNING 1 (#3458 follow-up review): every `.md` write normalizes to
+    // LF — a CRLF deferred-items.md is normalized, not byte-preserved,
+    // matching every other `.md` writer in this codebase ─────────────────
+
+    test('WARNING 1: acknowledging an entry in a CRLF deferred-items.md normalizes the whole file to LF (no dead CRLF preservation)', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, 'deferred-items.md');
+      fs.writeFileSync(filePath, '## Deferred Items\r\n\r\n- a crlf entry\r\n  severity: low\r\n');
+
+      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'a crlf entry severity: low', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      assert.ok(!content.includes('\r'), 'the whole file normalizes to LF on any .md write — no stray \\r bytes');
+      assert.match(content, /status: acknowledged/, 'the entry still carries the marker after normalization');
+      assert.match(content, /a crlf entry/, 'entry text is preserved');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.deferred_items, 0);
+      assert.equal(after.acknowledged.deferred_items, 1);
+    });
+
+    // ── BLOCKER 2 (#3458 follow-up review): todos beyond the display cap
+    // must not be permanently hidden by acknowledging the displayed 5 ─────
+
+    test('BLOCKER 2: acknowledging the 5 displayed todos surfaces the remaining 2, not zero — filter-before-cap', () => {
+      const pendingDir = planningPath('todos', 'pending');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      for (let i = 1; i <= 7; i++) {
+        fs.writeFileSync(path.join(pendingDir, `t${i}.md`), `---\npriority: low\narea: misc\n---\ntodo ${i}\n`);
+      }
+
+      const before = audit(tmpDir);
+      assert.equal(before.counts.todos, 5, 'display cap: 5 of 7 shown in one scan');
+      assert.equal(before.has_open_items, true);
+
+      const shown = before.items.todos.filter((i) => !i.scan_error && !i._remainder_count).map((i) => i.filename);
+      assert.equal(shown.length, 5);
+
+      for (const filename of shown) {
+        const result = ack(tmpDir, ['--category', 'todos', '--filename', filename, '--milestone', 'v1.0', '--at', '2026-08-15']);
+        assert.ok(result.success, `acknowledge must succeed for ${filename}. stderr: ${result.error}`);
+      }
+
+      const after = audit(tmpDir);
+      // Pre-fix this was 0 (the 2 unshown files were permanently invisible —
+      // `mdFiles.length` drove both the cap and the remainder count, so once
+      // the raw 7 dropped to the still-raw-7-minus-nothing count computation
+      // never noticed 2 files had never been shown at all).
+      assert.equal(after.counts.todos, 2, 'the 2 never-displayed todos must still surface');
+      assert.equal(after.has_open_items, true, 'must not report clean while 2 todos remain unacknowledged');
+      assert.equal(after.acknowledged.todos, 5);
+    });
+
+    // ── WARNING 2 (#3458 follow-up review): the snapshot must identify
+    // CONTENT, not just its size — a same-count/same-status change must
+    // still resurface ───────────────────────────────────────────────────
+
+    test('WARNING-2 disproof: replacing every acknowledged open_question with a NEW one (same count) resurfaces the item', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-CONTEXT.md');
+      fs.writeFileSync(filePath, '---\nopen_questions:\n  - "Which backend?"\n  - "What about auth?"\n---\n# Context\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'context_questions', '--phase', '01', '--file', '01-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      assert.equal(audit(tmpDir).counts.context_questions, 0, 'BEFORE replacement: suppressed');
+
+      // Same COUNT (2), completely different TEXT.
+      fs.writeFileSync(filePath, '---\nopen_questions:\n  - "BRAND NEW BLOCKER: is data loss possible?"\n  - "ANOTHER NEW BLOCKER: auth bypass?"\n---\n# Context\n');
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.context_questions, 1, 'AFTER replacement: must RESURFACE — a count-only snapshot cannot see this');
+      assert.deepEqual(
+        after.items.context_questions.filter((i) => !i.scan_error).map((i) => i.questions),
+        [['BRAND NEW BLOCKER: is data loss possible?', 'ANOTHER NEW BLOCKER: auth bypass?']],
+      );
+    });
+
+    test('WARNING-2 disproof: adding more pending scenarios to an acknowledged UAT gap (status unchanged) resurfaces the item', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-UAT.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# UAT\n\n## Scenarios\n\n1. result: pending\n');
+
+      assert.ok(ack(tmpDir, ['--category', 'uat_gaps', '--phase', '01', '--file', '01-UAT.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+      let after = audit(tmpDir);
+      assert.equal(after.counts.uat_gaps, 0, 'BEFORE: 1 pending scenario, suppressed');
+
+      // status: stays `gaps_found` — only the scenario count moves, 1 → 6.
+      fs.writeFileSync(
+        filePath,
+        '---\nstatus: gaps_found\n---\n# UAT\n\n## Scenarios\n\n1. result: pending\n2. result: pending\n3. result: pending\n4. result: pending\n5. result: pending\n6. result: pending\n',
+      );
+
+      after = audit(tmpDir);
+      assert.equal(after.counts.uat_gaps, 1, 'AFTER: same status, MORE pending scenarios — must RESURFACE');
+      const item = after.items.uat_gaps.find((i) => !i.scan_error);
+      assert.equal(item.open_scenario_count, 6);
+    });
+
+    // ── WARNING 3 (#3458 follow-up review): the human report must carry the
+    // same "clean vs silenced" signal --json already did ──────────────────
+
+    test('WARNING 3: human-readable report shows the acknowledged tally, per-category and in the all-clear footer', () => {
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-UAT.md');
+      fs.writeFileSync(filePath, '---\nstatus: gaps_found\n---\n# UAT\n\n## Gaps\n\n- truth: "x"\n  status: open\n');
+      assert.ok(ack(tmpDir, ['--category', 'uat_gaps', '--phase', '01', '--file', '01-UAT.md', '--milestone', 'v1.0', '--at', '2026-08-15']).success);
+
+      // All-clear case: the only item left is a previously-acknowledged one.
+      const clearReport = runGsdTools(['audit-open'], tmpDir);
+      assert.ok(clearReport.success, `stderr: ${clearReport.error}`);
+      assert.match(clearReport.output, /1 previously acknowledged item/i, 'all-clear footer must disclose the suppressed item');
+
+      // Now add a genuinely NEW open item so has_open_items is true, and
+      // confirm the per-category line also discloses the acknowledged one
+      // still sitting alongside it.
+      const debugDir = planningPath('debug');
+      fs.mkdirSync(debugDir, { recursive: true });
+      fs.writeFileSync(path.join(debugDir, 'investigate.md'), '---\nstatus: open\n---\n## Current Focus\ndigging\n');
+
+      const openReport = runGsdTools(['audit-open'], tmpDir);
+      assert.ok(openReport.success, `stderr: ${openReport.error}`);
+      assert.match(openReport.output, /previously acknowledged item/i, 'footer must still disclose the acknowledged item while other items are open');
     });
 
     // ── writer refuses a path outside the project ──────────────────────────

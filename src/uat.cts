@@ -979,7 +979,7 @@ function parseDeferredItems(content: string): UatItem[] {
 /** Result of `acknowledgeDeferredItem`. */
 interface AcknowledgeDeferredItemResult {
   content: string;
-  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved';
+  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved' | 'match_verification_failed';
 }
 
 /**
@@ -1011,11 +1011,28 @@ interface AcknowledgeDeferredItemResult {
  * verdict-preserving direction: acknowledging a genuinely-fixed item would
  * silently downgrade its terminal state.
  *
- * CRLF-safe: the target entry's original lines are located via a regex
+ * CRLF-tolerant MATCHING (not byte-preserving writing — see WARNING 1 note
+ * further down): the target entry's original lines are located via a regex
  * anchored on their (regex-escaped) exact text with an optional `\r` before
  * each `\n` join — `splitGapsEntries` strips a trailing `\r` from every line
  * it stores, so a literal substring search would miss a match on a CRLF
- * document. Only the ONE matched span is ever touched.
+ * document. Only the ONE matched span is ever touched. The write itself
+ * always normalizes to LF, same as every other `.md` write in this
+ * codebase — see the comment above `newMatchedLines` below.
+ *
+ * Section-anchored (BLOCKER 1, #3458 follow-up review): the regex is `exec`d
+ * against `sectionBody` — the SAME string `matches`/the `ambiguous` guard
+ * were computed over — not the whole `content`, so an identical bullet
+ * living outside `## Deferred Items` (e.g. in an unrelated `# Notes` or a
+ * UAT/VERIFICATION body) can never steal the write. The match's offset
+ * within `sectionBody` is translated back into `content` via
+ * `deferredSection.bodyStart` (the section's own start offset, an invariant
+ * `collectSection` guarantees: `content.slice(bodyStart, bodyEnd) ===
+ * body`). Before writing, the matched span's own raw text is re-derived and
+ * compared against `targetText` one more time — if it does not match
+ * (defensive: should be unreachable given `matches[0]` already came from
+ * `sectionBody`), the write is refused with `match_verification_failed`
+ * rather than risk touching the wrong span.
  */
 function acknowledgeDeferredItem(content: string, targetText: string): AcknowledgeDeferredItemResult {
   const deferredSection = collectSection(
@@ -1043,37 +1060,63 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
     return { content, status: 'already_resolved' };
   }
 
+  // Anchor the search to the SAME section body `matches`/the `ambiguous`
+  // guard above were computed over (BLOCKER 1) — never the whole `content`,
+  // which could contain an identical bullet elsewhere.
+  const sectionOffset = deferredSection ? deferredSection.bodyStart : 0;
   const pattern = new RegExp(entryLines.map(escapeRegex).join('\\r?\\n'));
-  const match = pattern.exec(content);
+  const match = pattern.exec(sectionBody);
   if (!match) return { content, status: 'not_found' }; // defensive — entryLines came from this content
 
   const matchedLines = match[0].split('\n');
+
+  // Defensive re-verification: the matched span's own raw text must equal
+  // the selected entry's text before any write is attempted.
+  const strippedForVerify = matchedLines.map((l) => l.replace(/\r$/, ''));
+  if (rawGapEntryText(strippedForVerify) !== targetText) {
+    return { content, status: 'match_verification_failed' };
+  }
+
+  const matchIndexInContent = sectionOffset + match.index;
   const statusFieldRe = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
   const statusLineIdx = matchedLines.findIndex((rawLine) => statusFieldRe.test(rawLine.replace(/\r$/, '')));
 
+  // No CRLF-preservation branch here (WARNING 1, #3458 follow-up review):
+  // every write goes through `platformWriteSync` → `normalizeContent`, which
+  // for a `.md` path unconditionally runs `_normalizeMd` — whole-file
+  // `\r\n` → `\n`, plus blank-line normalization around headings/lists — on
+  // EVERY write, not just this one. That is this codebase's single,
+  // deliberate OS-facing I/O seam (`shell-command-projection.cts`), applied
+  // uniformly to every `.md` writer; carving out one exception here would
+  // fight it rather than follow it, for a guarantee (byte-identical CRLF on
+  // disk) the seam already makes impossible. A marker write on a CRLF
+  // `deferred-items.md` normalizes the WHOLE file to LF, same as any other
+  // `.md` write in this codebase — expected, not a regression to guard
+  // against. Where a source line still carries a trailing `\r` (read from an
+  // on-disk CRLF document before normalization), `String.prototype.replace`
+  // consumes it as part of `.*$` and the replacement text does not
+  // reproduce it, so it is dropped here too — consistent with the eventual
+  // whole-file normalization rather than duplicating it.
   let newMatchedLines: string[];
   if (statusLineIdx === -1) {
     const bulletIndentMatch = matchedLines[0].match(/^(\s*)-\s+/);
     const continuationIndent = ' '.repeat((bulletIndentMatch ? bulletIndentMatch[1].length : 0) + 2);
-    const crlf = matchedLines.length > 1 && matchedLines[0].endsWith('\r');
     newMatchedLines = [
       matchedLines[0],
-      `${continuationIndent}status: acknowledged${crlf ? '\r' : ''}`,
+      `${continuationIndent}status: acknowledged`,
       ...matchedLines.slice(1),
     ];
   } else {
     const original = matchedLines[statusLineIdx];
-    const eol = original.endsWith('\r') ? '\r' : '';
-    const bodyNoEol = eol ? original.slice(0, -1) : original;
-    const replaced = bodyNoEol.replace(
+    const replaced = original.replace(
       /^(\s*(?:-\s+)?)(\*+status:\*+|status:)(\s*).*$/i,
       (_m, indent: string, key: string, ws: string) => `${indent}${key}${ws}acknowledged`,
     );
     newMatchedLines = matchedLines.slice();
-    newMatchedLines[statusLineIdx] = replaced + eol;
+    newMatchedLines[statusLineIdx] = replaced;
   }
 
-  const newContent = content.slice(0, match.index) + newMatchedLines.join('\n') + content.slice(match.index + match[0].length);
+  const newContent = content.slice(0, matchIndexInContent) + newMatchedLines.join('\n') + content.slice(matchIndexInContent + match[0].length);
   return { content: newContent, status: 'ok' };
 }
 

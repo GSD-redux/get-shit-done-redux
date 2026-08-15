@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { platformReadSync } from './shell-command-projection.cjs';
 import { collectSection } from './markdown-sectionizer.cjs';
 import { splitLines } from './text-lines.cjs';
@@ -143,7 +144,7 @@ interface UatDeferredModule {
 /** Result of `UatDeferredModule.acknowledgeDeferredItem`. */
 interface AcknowledgeDeferredItemResult {
   content: string;
-  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved';
+  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved' | 'match_verification_failed';
 }
 
 /**
@@ -221,15 +222,26 @@ const TERMINAL_UAT_STATUSES = new Set(['complete', 'resolved']);
 //     milestone: v1.0        # which milestone close acknowledged it
 //     at: 2026-08-15          # ISO date
 //     status: gaps_found      # snapshot of the artifact's state AT acknowledgment
-//                              # (named `question_count` for CONTEXT files — see
-//                              # `isAuditItemAcknowledged`'s `snapshotKey` param)
+//                              # (named `gap_snapshot` — status + open-scenario
+//                              # count — for `uat_gaps`, and `questions_digest`
+//                              # — a content hash of the question set, not just
+//                              # its count — for `context_questions`; see
+//                              # `isAuditItemAcknowledged`'s `snapshotKey` param
+//                              # and each category's `deriveXxx` snapshot
+//                              # helper for why a bare status/count was not
+//                              # enough for those two — #3458 follow-up review)
 //
 // It is VERDICT-PRESERVING (this section never writes `status:` itself — see
 // `cmdAuditAcknowledge` below) and SELF-INVALIDATING: it suppresses ONLY while
 // `snapshotKey`'s recorded value still equals the artifact's CURRENT
 // effective value. Edit the artifact after acknowledging it and the item
 // resurfaces automatically — no separate revive/carry-forward state, and a
-// stale acknowledgment can never hide a NEW problem.
+// stale acknowledgment can never hide a NEW problem, PROVIDED the category's
+// snapshot actually captures the dimension that changed — `uat_gaps` and
+// `context_questions` snapshot more than their status/count for exactly this
+// reason (see above); every other category's only tracked dimension IS its
+// `status:` (or, for `todos`, presence), so a bare status/presence snapshot
+// is already complete for those.
 //
 // `isAuditItemAcknowledged` is the ONE shared predicate every scanner below
 // routes through — this file has already been through the "hand-rolled the
@@ -291,6 +303,29 @@ function deriveThreadStatus(fm: Record<string, unknown>, content: string): strin
 }
 
 /**
+ * Count a UAT file's still-open (`result: pending`/`[pending]`) scenarios.
+ * Extracted from `scanUatGaps`'s inline logic for the same reason as
+ * `deriveThreadStatus` — one derivation, shared by the scanner and
+ * `cmdAuditAcknowledge`'s `deriveUatGapSnapshotValue` below.
+ */
+function deriveUatGapOpenScenarioCount(content: string): number {
+  return (content.match(/result:\s*(?:pending|\[pending\])/gi) || []).length;
+}
+
+/**
+ * Stable snapshot value for a `uat_gaps` item (WARNING 2, #3458 follow-up
+ * review). `status` alone is COUNT-blind the other direction: a UAT file can
+ * stay in the SAME open status (`gaps_found`) while gaining MORE pending
+ * scenarios (measured: 1→6 pending, status unchanged, item stayed
+ * suppressed under the old status-only scheme). Composing `status` with the
+ * open-scenario count means either dimension changing invalidates the
+ * snapshot.
+ */
+function deriveUatGapSnapshotValue(status: string, content: string): string {
+  return `${status}::scenarios=${deriveUatGapOpenScenarioCount(content)}`;
+}
+
+/**
  * Derive a CONTEXT file's open-questions list: the structured
  * `open_questions` frontmatter array when present and non-empty, else the
  * `## Open Questions` body section. Extracted from `scanContextQuestions`'s
@@ -321,6 +356,21 @@ function deriveOpenQuestions(content: string, fm: Record<string, unknown>): stri
   }
 
   return questions;
+}
+
+/**
+ * Stable normalized digest of a CONTEXT file's open-questions set (WARNING 2,
+ * #3458 follow-up review). `question_count` alone is COUNT-only: replacing
+ * every question's TEXT with brand-new ones while holding the count steady
+ * left an acknowledged item permanently suppressed (measured: 2 questions
+ * acknowledged, then both replaced with unrelated new blockers — still
+ * `counts:0`). Hashing the full, ordered question text means ANY edit —
+ * add, remove, reword, or reorder — changes the digest and the item
+ * resurfaces. sha256 (not the raw joined string) keeps the marker's stored
+ * value bounded regardless of question length/count.
+ */
+function deriveOpenQuestionsDigest(questions: string[]): string {
+  return crypto.createHash('sha256').update(questions.join(' ')).digest('hex');
 }
 
 // ─── scanDebugSessions ────────────────────────────────────────────────────────
@@ -609,8 +659,16 @@ function scanTodos(planDir: string): ScanOutcome<TodoItem> {
   const results: TodoItem[] = [];
   let acknowledged = 0;
 
-  const displayFiles = mdFiles.slice(0, 5);
-  for (const entry of displayFiles) {
+  // BLOCKER 2 (#3458 follow-up review): filter acknowledged items BEFORE
+  // the display cap. Capping the RAW file list to 5 first meant an
+  // acknowledge of one of those 5 files simply revealed the 6th on the next
+  // scan — files 6/7/... (never shown, never acknowledgeable via the CLI's
+  // own remedy) permanently vanished from every later scan once 5+ items
+  // existed, because `mdFiles.length` (not the post-filter open count) drove
+  // both the cap and the remainder count. Read every file's acknowledgment
+  // state first, THEN cap the OPEN (unacknowledged) set for display.
+  const openFiles: { entry: fs.Dirent; content: string; fm: Record<string, unknown> }[] = [];
+  for (const entry of mdFiles) {
     const filePath = path.join(pendingDir, entry.name);
 
     let safeFilePath: string;
@@ -634,6 +692,11 @@ function scanTodos(planDir: string): ScanOutcome<TodoItem> {
       continue;
     }
 
+    openFiles.push({ entry, content, fm });
+  }
+
+  const displayFiles = openFiles.slice(0, 5);
+  for (const { entry, content, fm } of displayFiles) {
     // Extract first line of body after frontmatter
     const bodyMatch = content.replace(/^---[\s\S]*?---\r?\n?/, '');
     const firstLine = splitLines(bodyMatch.trim())[0] || '';
@@ -647,8 +710,8 @@ function scanTodos(planDir: string): ScanOutcome<TodoItem> {
     });
   }
 
-  if (mdFiles.length > 5) {
-    results.push({ _remainder_count: mdFiles.length - 5, filename: '', priority: '', area: '', summary: '' });
+  if (openFiles.length > 5) {
+    results.push({ _remainder_count: openFiles.length - 5, filename: '', priority: '', area: '', summary: '' });
   }
 
   return { items: results, acknowledged };
@@ -874,13 +937,14 @@ function scanUatGaps(planDir: string, cwd: string): ScanOutcome<UatGapItem> {
       if (TERMINAL_UAT_STATUSES.has(status)) continue;
       if (status === 'unknown' && result === 'all_pass') continue;
 
-      if (isAuditItemAcknowledged(fm, { snapshotKey: 'status', currentValue: status })) {
+      // Count open scenarios — computed BEFORE the acknowledged check
+      // (WARNING 2) so the snapshot comparison sees it too, not just status.
+      const pendingMatches = deriveUatGapOpenScenarioCount(content);
+
+      if (isAuditItemAcknowledged(fm, { snapshotKey: 'gap_snapshot', currentValue: deriveUatGapSnapshotValue(status, content) })) {
         acknowledged++;
         continue;
       }
-
-      // Count open scenarios
-      const pendingMatches = (content.match(/result:\s*(?:pending|\[pending\])/gi) || []).length;
 
       const item: UatGapItem = {
         phase: sanitizeLabel(phaseNum),
@@ -1005,7 +1069,12 @@ function scanContextQuestions(planDir: string, cwd: string): ScanOutcome<Context
 
       if (questions.length === 0) continue;
 
-      if (isAuditItemAcknowledged(fm, { snapshotKey: 'question_count', currentValue: String(questions.length) })) {
+      // WARNING 2 (#3458 follow-up review): snapshot the QUESTIONS
+      // THEMSELVES (a content digest), not just their count — a count-only
+      // snapshot cannot see the same-count REPLACEMENT of every question
+      // with brand-new ones (measured: 2 acknowledged, then both swapped for
+      // unrelated new blockers, still suppressed under the old scheme).
+      if (isAuditItemAcknowledged(fm, { snapshotKey: 'questions_digest', currentValue: deriveOpenQuestionsDigest(questions) })) {
         acknowledged++;
         continue;
       }
@@ -1214,7 +1283,7 @@ function auditOpenArtifacts(cwd: string): AuditResult {
  * @returns Formatted report
  */
 function formatAuditReport(auditResult: AuditResult): string {
-  const { counts, items, has_open_items } = auditResult;
+  const { counts, items, has_open_items, acknowledged } = auditResult;
   const lines: string[] = [];
   const hr = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
 
@@ -1222,18 +1291,31 @@ function formatAuditReport(auditResult: AuditResult): string {
   lines.push('  Milestone Close: Open Artifact Audit');
   lines.push(hr);
 
+  // WARNING 3 (#3458 follow-up review): the acknowledged tally previously
+  // existed only in `--json` output — the human report could not tell
+  // "clean because fixed" apart from "clean because silenced", which is the
+  // exact distinction the acknowledged/counts split exists to preserve.
   if (!has_open_items) {
     lines.push('');
-    lines.push('  All artifact types clear. Safe to proceed.');
+    if (acknowledged.total > 0) {
+      lines.push(`  All artifact types clear (${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} still suppressed).`);
+    } else {
+      lines.push('  All artifact types clear. Safe to proceed.');
+    }
     lines.push('');
     lines.push(hr);
     return lines.join('\n');
   }
 
+  // WARNING 3: per-category "N previously acknowledged" suffix, so the
+  // human report carries the same "clean vs silenced" signal `--json`
+  // already did via `acknowledged`.
+  const ackSuffix = (n: number): string => (n > 0 ? `, ${n} previously acknowledged` : '');
+
   // Debug sessions (blocking quality — red)
   if (counts.debug_sessions > 0) {
     lines.push('');
-    lines.push(`🔴 Debug Sessions (${counts.debug_sessions} open)`);
+    lines.push(`🔴 Debug Sessions (${counts.debug_sessions} open${ackSuffix(acknowledged.debug_sessions)})`);
     for (const item of items.debug_sessions.filter(i => !i.scan_error)) {
       const hyp = item.hypothesis ? ` — ${item.hypothesis}` : '';
       lines.push(`   • ${item.slug} [${item.status}]${hyp}`);
@@ -1243,7 +1325,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // UAT gaps (blocking quality — red)
   if (counts.uat_gaps > 0) {
     lines.push('');
-    lines.push(`🔴 UAT Gaps (${counts.uat_gaps} phases with incomplete UAT)`);
+    lines.push(`🔴 UAT Gaps (${counts.uat_gaps} phases with incomplete UAT${ackSuffix(acknowledged.uat_gaps)})`);
     for (const item of items.uat_gaps.filter(i => !i.scan_error)) {
       const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
       lines.push(`   • Phase ${item.phase}${archived}: ${item.file} [${item.status}] — ${item.open_scenario_count} pending scenarios`);
@@ -1253,7 +1335,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // Verification gaps (blocking quality — red)
   if (counts.verification_gaps > 0) {
     lines.push('');
-    lines.push(`🔴 Verification Gaps (${counts.verification_gaps} unresolved)`);
+    lines.push(`🔴 Verification Gaps (${counts.verification_gaps} unresolved${ackSuffix(acknowledged.verification_gaps)})`);
     for (const item of items.verification_gaps.filter(i => !i.scan_error)) {
       const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
       lines.push(`   • Phase ${item.phase}${archived}: ${item.file} [${item.status}]`);
@@ -1263,7 +1345,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // Quick tasks (incomplete work — yellow)
   if (counts.quick_tasks > 0) {
     lines.push('');
-    lines.push(`🟡 Quick Tasks (${counts.quick_tasks} incomplete)`);
+    lines.push(`🟡 Quick Tasks (${counts.quick_tasks} incomplete${ackSuffix(acknowledged.quick_tasks)})`);
     for (const item of items.quick_tasks.filter(i => !i.scan_error)) {
       const d = item.date ? ` (${item.date})` : '';
       lines.push(`   • ${item.slug}${d} [${item.status}]`);
@@ -1275,7 +1357,7 @@ function formatAuditReport(auditResult: AuditResult): string {
     const realTodos = items.todos.filter(i => !i.scan_error && !i._remainder_count);
     const remainder = items.todos.find(i => i._remainder_count);
     lines.push('');
-    lines.push(`🟡 Pending Todos (${counts.todos} pending)`);
+    lines.push(`🟡 Pending Todos (${counts.todos} pending${ackSuffix(acknowledged.todos)})`);
     for (const item of realTodos) {
       const area = item.area ? ` [${item.area}]` : '';
       const pri = item.priority ? ` (${item.priority})` : '';
@@ -1290,7 +1372,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // Threads (deferred decisions — blue)
   if (counts.threads > 0) {
     lines.push('');
-    lines.push(`🔵 Open Threads (${counts.threads} active)`);
+    lines.push(`🔵 Open Threads (${counts.threads} active${ackSuffix(acknowledged.threads)})`);
     for (const item of items.threads.filter(i => !i.scan_error)) {
       const title = item.title ? ` — ${item.title}` : '';
       lines.push(`   • ${item.slug} [${item.status}]${title}`);
@@ -1300,7 +1382,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // Seeds (deferred decisions — blue)
   if (counts.seeds > 0) {
     lines.push('');
-    lines.push(`🔵 Unimplemented Seeds (${counts.seeds} pending)`);
+    lines.push(`🔵 Unimplemented Seeds (${counts.seeds} pending${ackSuffix(acknowledged.seeds)})`);
     for (const item of items.seeds.filter(i => !i.scan_error)) {
       const title = item.title ? ` — ${item.title}` : '';
       lines.push(`   • ${item.seed_id} [${item.status}]${title}`);
@@ -1310,7 +1392,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // Context questions (deferred decisions — blue)
   if (counts.context_questions > 0) {
     lines.push('');
-    lines.push(`🔵 CONTEXT Open Questions (${counts.context_questions} phases with open questions)`);
+    lines.push(`🔵 CONTEXT Open Questions (${counts.context_questions} phases with open questions${ackSuffix(acknowledged.context_questions)})`);
     for (const item of items.context_questions.filter(i => !i.scan_error)) {
       const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
       lines.push(`   • Phase ${item.phase}${archived}: ${item.file} (${item.question_count} question${item.question_count !== 1 ? 's' : ''})`);
@@ -1324,7 +1406,7 @@ function formatAuditReport(auditResult: AuditResult): string {
   // phase agent recorded rather than fixed, still unresolved at close (#2646).
   if (counts.deferred_items > 0) {
     lines.push('');
-    lines.push(`🔵 Deferred Items (${counts.deferred_items} unresolved)`);
+    lines.push(`🔵 Deferred Items (${counts.deferred_items} unresolved${ackSuffix(acknowledged.deferred_items)})`);
     for (const item of items.deferred_items.filter(i => !i.scan_error)) {
       const archived = item.archived_milestone ? ` (archived ${item.archived_milestone})` : '';
       lines.push(`   • Phase ${item.phase}${archived}: ${item.text}`);
@@ -1334,6 +1416,9 @@ function formatAuditReport(auditResult: AuditResult): string {
   lines.push('');
   lines.push(hr);
   lines.push(`  ${counts.total} item${counts.total !== 1 ? 's' : ''} require decisions before close.`);
+  if (acknowledged.total > 0) {
+    lines.push(`  ${acknowledged.total} additional item${acknowledged.total !== 1 ? 's' : ''} previously acknowledged and still suppressed.`);
+  }
   lines.push(hr);
 
   return lines.join('\n');
@@ -1439,6 +1524,9 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       if (result.status === 'unsupported_heading_shape') {
         ioError('this deferred-items.md uses the heading-delimited (#3457) entry shape, which the CLI writer does not yet support — edit the file directly');
       }
+      if (result.status === 'match_verification_failed') {
+        ioError(`internal error: matched span for --text "${text as string}" did not re-verify before write — refused rather than risk writing the wrong entry`);
+      }
       platformWriteSync(safeFilePath, result.content);
       output({ acknowledged: true, category, phase, file, text }, raw, 'true');
       return;
@@ -1448,13 +1536,21 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
     const fm = extractFrontmatter(content, safeFilePath);
     let snapshotKey: string;
     let currentValue: string;
-    if (category === 'uat_gaps' || category === 'verification_gaps') {
+    if (category === 'uat_gaps') {
+      // WARNING 2 (#3458 follow-up review): status alone can't see MORE
+      // pending scenarios added under the same status — snapshot the
+      // composite `deriveUatGapSnapshotValue` instead (see its doc comment).
+      snapshotKey = 'gap_snapshot';
+      currentValue = deriveUatGapSnapshotValue(((fm.status as string) || 'unknown').toLowerCase(), content);
+    } else if (category === 'verification_gaps') {
       snapshotKey = 'status';
       currentValue = ((fm.status as string) || 'unknown').toLowerCase();
     } else {
-      // context_questions
-      snapshotKey = 'question_count';
-      currentValue = String(deriveOpenQuestions(content, fm).length);
+      // context_questions — WARNING 2: snapshot a content digest of the
+      // question set, not just its count (see `deriveOpenQuestionsDigest`'s
+      // doc comment).
+      snapshotKey = 'questions_digest';
+      currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(content, fm));
     }
     fm.audit_acknowledged = { ...markerBase, [snapshotKey]: currentValue };
     const newContent = spliceFrontmatter(content, fm);
