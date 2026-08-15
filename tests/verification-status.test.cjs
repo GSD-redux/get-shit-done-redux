@@ -48,6 +48,7 @@ const {
   VERIFICATION_ROUTING_TABLE,
   defaultPhaseCleanCommitTimesMs,
   resolveVerificationFile,
+  resolveUatFile,
   readVerificationStatus,
   findStaleVerificationSummary,
 } = require('../gsd-core/bin/lib/verification.cjs');
@@ -1122,6 +1123,126 @@ describe('#3473 F2: resolveVerificationFile allowBare option', () => {
     );
   });
 
+});
+
+// ─── #3518: resolveUatFile — phase-pinned, deterministic *-UAT.md pick ───────
+//
+// Both uat_path projectors in src/init.cts picked the phase's UAT artifact
+// with a bare `.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md')` over an
+// unsorted readdir listing: no phase-membership check, no ordering. A stray
+// cross-phase 04-UAT.md in phase 03's directory could become phase 03's
+// uat_path, and WHICH file won was filesystem-dependent (creation order on
+// APFS, hash order on ext4/XFS) — two machines on the same commit could emit
+// different uat_path values for the same phase (#3518).
+//
+// resolveUatFile is the UAT counterpart of resolveVerificationFile, sharing
+// the identical selection rule via the resolvePhaseArtifactFile core: the
+// phase's own <token>-UAT.md always wins; otherwise alphabetically-first
+// dashed candidate (deterministic on every filesystem); a bare UAT.md only
+// when allowBare is set and no dashed candidate exists at all.
+//
+// These unit tests are the RELIABLE ANCHORS for the rule (a real phaseToken
+// string, no readdir order involved). The end-to-end red/green repro for the
+// two init.cts projector call sites lives in tests/init.test.cjs (#3518).
+describe('#3518: resolveUatFile — phase-pinned *-UAT.md resolution', () => {
+
+  test('#3518 regression: a stray cross-phase -UAT.md does not outrank this phase\'s own UAT file', () => {
+    assert.equal(
+      resolveUatFile(
+        ['04-UAT.md', '03-UAT.md'],
+        { phaseToken: '03' },
+      ),
+      '03-UAT.md',
+      'this phase (token "03") owns 03-UAT.md; the stray 04-UAT.md belongs to a different phase',
+    );
+  });
+
+  test('order-independence: same candidates reversed → same answer', () => {
+    assert.equal(
+      resolveUatFile(
+        ['03-UAT.md', '04-UAT.md'],
+        { phaseToken: '03' },
+      ),
+      '03-UAT.md',
+      'input order must not change which file is selected',
+    );
+  });
+
+  test('fallback: only a stray cross-phase file present → still returned, never null', () => {
+    // Load-bearing: a phase whose only UAT artifact is not its own
+    // canonically-named file must keep resolving to SOMETHING, not to null —
+    // deterministically (alphabetically-first) rather than by readdir order.
+    assert.equal(
+      resolveUatFile(['04-UAT.md', '02-UAT.md'], { phaseToken: '03' }),
+      '02-UAT.md',
+      '"02-UAT.md" sorts before "04-UAT.md" — deterministic even when the phase\'s own file is absent',
+    );
+  });
+
+  test('fallback determinism: several candidates, no phase token given → alphabetically first', () => {
+    assert.equal(resolveUatFile(['02-UAT.md', '01-a-UAT.md']), '01-a-UAT.md');
+  });
+
+  test('allowBare defaults to false — a bare-only list returns null without the option', () => {
+    assert.equal(resolveUatFile(['UAT.md']), null);
+  });
+
+  test('allowBare:true, bare + dashed → the dashed candidate wins', () => {
+    assert.equal(
+      resolveUatFile(['UAT.md', '03-UAT.md'], { allowBare: true, phaseToken: '03' }),
+      '03-UAT.md',
+      'a dashed file names its phase and must win over a bare match',
+    );
+  });
+
+  test('allowBare:true, bare-only candidate → bare file returned', () => {
+    assert.equal(resolveUatFile(['UAT.md'], { allowBare: true }), 'UAT.md');
+  });
+
+  test('no matches → null', () => {
+    assert.equal(resolveUatFile(['03-PLAN.md', '03-SUMMARY.md'], { phaseToken: '03' }), null);
+  });
+});
+
+// ─── #3518: call-site guard — no hand-rolled *-UAT.md single-pick survives ────
+//
+// The "Partial Fix Across Call Sites" regression class: a future contributor
+// adding a NEW uat_path-style projection (or reverting one of the two fixed
+// init.cts sites) would hand-roll `.find((f) => f.endsWith('-UAT.md') ||
+// f === 'UAT.md')` again — reintroducing the readdir-order,
+// no-phase-check pick #3518 closed. This scans src/ for that literal shape
+// and fails on any site outside src/verification.cts, whose
+// resolvePhaseArtifactFile core is the single owner of the pattern.
+// (src/commands.cts's scaffold WRITER builds `${padded}-UAT.md` directly —
+// a canonical-name construction, not a discovery pick — and does not match.)
+describe('#3518: call-site guard — every *-UAT.md single-pick routes through resolveUatFile', () => {
+
+  test('no hand-rolled -UAT.md discovery pick exists outside src/verification.cts', () => {
+    const srcDir = path.join(__dirname, '..', 'src');
+    const owner = path.join(srcDir, 'verification.cts');
+    // The two shapes the pre-#3518 bug appeared as: an endsWith('-UAT.md')
+    // predicate, or a bare `=== 'UAT.md'` equality, anywhere in src/.
+    const HAND_ROLLED_RE = /endsWith\(['"`]-UAT\.md['"`]\)|===\s*['"`]UAT\.md['"`]/;
+    const offenders = [];
+    for (const file of fs.readdirSync(srcDir)) {
+      if (!file.endsWith('.cts')) continue;
+      const fullPath = path.join(srcDir, file);
+      if (fullPath === owner) continue;
+      // CRLF-tolerant split (local/no-crlf-fragile-split): Windows
+      // git-autocrlf checkouts yield \r\n line endings.
+      const lines = fs.readFileSync(fullPath, 'utf-8').split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (HAND_ROLLED_RE.test(line)) offenders.push(`src/${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      'hand-rolled *-UAT.md single-pick(s) — route through resolveUatFile '
+        + '(src/verification.cts, issue #3518):\n'
+        + offenders.join('\n'),
+    );
+  });
 });
 
 // ─── #3057 B3: findStaleVerificationSummary — indeterminate vs not-stale ─────

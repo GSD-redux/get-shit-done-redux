@@ -316,6 +316,61 @@ interface ResolveVerificationFileOptions {
 }
 
 /**
+ * #3518: `resolveUatFile`'s options — same two knobs, same semantics, as
+ * `ResolveVerificationFileOptions` above (the UAT artifact is selected by the
+ * identical phase-pinned rule the verification report is; see
+ * `resolvePhaseArtifactFile` below for the single shared selection core).
+ */
+type ResolveUatFileOptions = ResolveVerificationFileOptions;
+
+/**
+ * #3518: the shared phase-pinned artifact-selection core BOTH single-pick
+ * resolvers (`resolveVerificationFile` for `*-VERIFICATION.md`,
+ * `resolveUatFile` for `*-UAT.md`) delegate to — one rule, not two grammars
+ * that agree today and drift tomorrow (epic #3473 F2's defect class).
+ *
+ * `bareName` is the artifact filename WITHOUT the leading dash (`'UAT.md'`);
+ * a "dashed" candidate is any entry ending `-${bareName}`.
+ *
+ * Selection order (identical to resolveVerificationFile's documented tiers,
+ * generalized off the suffix):
+ *   1. `options.phaseToken` given and `<phaseToken>-${bareName}` is among
+ *      the candidates — that exact file always wins: it is THIS phase's own
+ *      artifact, and no other candidate (whichever phase's token it carries)
+ *      can outrank it (#3492 / #3518).
+ *   2. Fallback — no exact phase-token match (or no token given):
+ *      alphabetically first of ALL dashed candidates (deterministic —
+ *      `entries` is an unsorted readdir listing whose order is
+ *      filesystem-dependent, so the sort is what makes the answer
+ *      machine-independent). Load-bearing: a phase whose only artifact is
+ *      non-canonically named must keep resolving to it, not to null — the
+ *      fix must not turn "found an artifact" into "found nothing".
+ *   3. `options.allowBare` only — a bare `${bareName}`, ranked BELOW both of
+ *      the above (a dashed file names its phase; a bare one does not).
+ *      Reached only when (1) and (2) found no dashed candidate at all.
+ *
+ * Pure — takes an already-read directory listing and does no I/O of its own,
+ * so every call site keeps its existing `fsImpl` seam and no-throw contract
+ * untouched.
+ */
+function resolvePhaseArtifactFile(
+  entries: string[],
+  bareName: string,
+  options: ResolveVerificationFileOptions = {},
+): string | null {
+  const candidates = entries.filter((f) => f.endsWith(`-${bareName}`)).sort();
+  if (candidates.length > 0) {
+    if (options.phaseToken) {
+      const thisPhaseFile = `${options.phaseToken}-${bareName}`;
+      if (candidates.includes(thisPhaseFile)) return thisPhaseFile;
+    }
+    return candidates[0];
+  }
+  if (options.allowBare && entries.includes(bareName)) return bareName;
+  return null;
+}
+
+/**
  * Resolve which `*-VERIFICATION.md` entry in a phase directory's listing IS
  * the phase's verification report, when more than one such file exists.
  *
@@ -328,40 +383,41 @@ interface ResolveVerificationFileOptions {
  * (findStaleVerificationSummary and readVerificationStatus) — this is the
  * single resolver both now call (#3473 F2).
  *
- * Selection order:
- *   1. `options.phaseToken` given and `<phaseToken>-VERIFICATION.md` is among
- *      the candidates — that exact file always wins. This is THIS phase's own
- *      report; no other candidate (canonically-shaped or not, whichever
- *      phase's token it carries) can outrank it (#3492).
- *   2. Fallback — no exact phase-token match (or no token given): alphabetically
- *      first of ALL `*-VERIFICATION.md` entries, unchanged from the original
- *      pre-#3357 behavior. Load-bearing: a phase whose only report is
- *      non-canonically named must keep resolving to it, not to null — this
- *      fix must not turn "found a report" into "found nothing" for anyone.
- *   3. `options.allowBare` only — a bare `VERIFICATION.md`, ranked BELOW both
- *      of the above. Rationale: a dashed file names its phase, a bare one
- *      does not, so a dashed file (canonical or not) is always the better
- *      answer when both exist. Reached only when neither (1) nor (2) found
- *      any dashed candidate at all.
- *
- * Pure — takes an already-read directory listing and does no I/O of its own,
- * so every call site keeps its existing `fsImpl` seam and no-throw contract
- * untouched.
+ * Selection order: see `resolvePhaseArtifactFile` (the shared core this
+ * delegates to since #3518) — phase-token-pinned, then alphabetically-first
+ * dashed fallback, then (allowBare only) a bare `VERIFICATION.md`. Behavior
+ * is byte-identical to the pre-#3518 standalone implementation.
  */
 function resolveVerificationFile(
   entries: string[],
   options: ResolveVerificationFileOptions = {},
 ): string | null {
-  const candidates = entries.filter((f) => f.endsWith('-VERIFICATION.md')).sort();
-  if (candidates.length > 0) {
-    if (options.phaseToken) {
-      const thisPhaseFile = `${options.phaseToken}-VERIFICATION.md`;
-      if (candidates.includes(thisPhaseFile)) return thisPhaseFile;
-    }
-    return candidates[0];
-  }
-  if (options.allowBare && entries.includes('VERIFICATION.md')) return 'VERIFICATION.md';
-  return null;
+  return resolvePhaseArtifactFile(entries, 'VERIFICATION.md', options);
+}
+
+/**
+ * #3518: resolve which `*-UAT.md` entry in a phase directory's listing IS
+ * the phase's UAT artifact, when more than one such file exists — the UAT
+ * counterpart of `resolveVerificationFile`, sharing its exact selection rule
+ * via `resolvePhaseArtifactFile`.
+ *
+ * The bug this closes: both `uat_path` projectors in `src/init.cts` picked
+ * with a bare `.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md')` over an
+ * unsorted `readdir` listing — no phase-membership check and no ordering — so
+ * a stray or cross-phase `04-UAT.md` sitting in phase 03's directory could
+ * become phase 03's `uat_path`, and WHICH file won was filesystem-dependent
+ * (creation order on APFS, hash order on ext4/XFS): two machines on the same
+ * commit could emit different `uat_path` values for the same phase. `uat_path`
+ * is consumed downstream by workflows that then read the named file, so a
+ * wrong path routes UAT state from another phase.
+ *
+ * Deterministic by construction: same answer on every machine.
+ */
+function resolveUatFile(
+  entries: string[],
+  options: ResolveUatFileOptions = {},
+): string | null {
+  return resolvePhaseArtifactFile(entries, 'UAT.md', options);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -735,6 +791,7 @@ export = {
   VERIFICATION_ROUTING_TABLE,
   defaultPhaseCleanCommitTimesMs,
   resolveVerificationFile,
+  resolveUatFile,
   findStaleVerificationSummary,
   readVerificationStatus,
   isPhaseComplete,
