@@ -4104,6 +4104,72 @@ describe('#3533 inherit: install writes NO effort key when the agent resolves to
   });
 });
 
+// ─── describe 5c: #3531 (10c) — a partial effort block must not discard manifest tier defaults ──
+//
+// Regression fixture from issue #3160: adding four agent_overrides produced a
+// 23-agent dry-run diff that DOWNGRADED xhigh-tier agents to high and UPGRADED
+// low-tier agents to high — because an effort block without
+// routing_tier_defaults disabled the built-in tier ladder (manifest tier
+// defaults were consulted only when the whole effort block was absent).
+
+describe('#3531 resolveInstallTimeEffort: agent_overrides-only effort block keeps manifest tier defaults', () => {
+  let tmpDir;
+  let claudeHome;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3531-tier-merge-');
+    const projectDir = path.join(tmpDir, 'project');
+    claudeHome = path.join(projectDir, '.claude');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeProjectConfig(config) {
+    const projectDir = path.dirname(claudeHome);
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config, null, 2)
+    );
+  }
+
+  function readInstalledEffort(agentFile) {
+    const fm = readFrontmatter(path.join(claudeHome, 'agents', agentFile));
+    const match = fm.match(/^effort:\s*(\S+)$/m);
+    assert.ok(match, `effort: must be present in ${agentFile} frontmatter\nActual:\n${fm}`);
+    return match[1];
+  }
+
+  test('agent_overrides-only block leaves untiered agents on their manifest tier defaults', () => {
+    // The exact #3160 shape: one agent overridden, no routing_tier_defaults.
+    writeProjectConfig({ effort: { agent_overrides: { 'gsd-code-reviewer': 'medium' } } });
+    runGlobalInstall('claude', claudeHome);
+
+    // Before #3531: every non-overridden agent collapsed to the manifest
+    // default 'high' — downgrading planner (xhigh) and upgrading mapper (low).
+    assert.strictEqual(readInstalledEffort('gsd-planner.md'), 'xhigh');
+    assert.strictEqual(readInstalledEffort('gsd-executor.md'), 'high');
+    assert.strictEqual(readInstalledEffort('gsd-codebase-mapper.md'), 'low');
+    // The one agent the user actually named still gets its override.
+    assert.strictEqual(readInstalledEffort('gsd-code-reviewer.md'), 'medium');
+  });
+
+  test('partial routing_tier_defaults fills gaps from the manifest at install', () => {
+    writeProjectConfig({ effort: { routing_tier_defaults: { heavy: 'medium' } } });
+    runGlobalInstall('claude', claudeHome);
+    assert.strictEqual(readInstalledEffort('gsd-planner.md'), 'medium');
+    assert.strictEqual(readInstalledEffort('gsd-executor.md'), 'high');
+    assert.strictEqual(readInstalledEffort('gsd-codebase-mapper.md'), 'low');
+  });
+});
+
+// ─── describe 5: Source stays clean ──────────────────────────────────────────
+  });
+});
+
 // ─── describe 5: Source stays clean ──────────────────────────────────────────
 
 describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
