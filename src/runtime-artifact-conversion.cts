@@ -2786,20 +2786,25 @@ function _stampNonClaudeRuntimeDefaults(content: string, runtime: string): strin
 }
 
 /**
- * #3544 (extending #3133's fix): restore `@$HOME/.claude/` `@`-file-reference
- * lines back to `@~/.claude/` in Claude-emitted content whose pathPrefix is
- * the `$HOME` form. This is a NARROW, context-sensitive correction layered on
- * top of the blanket `~/.claude/` / `$HOME/.claude/` -> pathPrefix
- * substitution every Claude emit path applies: that blanket substitution
- * MUST keep emitting `$HOME` for global installs — shell commands embedded
- * in workflow/command bodies (e.g. `node "$HOME/.claude/gsd-core/bin/
- * gsd-tools.cjs"`) need it, since `~` does not expand inside double-quoted
- * shell strings (#1284). But Claude Code's own `@`-import resolver does the
- * opposite: it documents `~` expansion and does NOT expand `$HOME`
- * (undocumented, and measured non-functional — see
- * .gsd/bug/fix-3544-home-expansion-spec-tree/10-diagnosis.md's ADDENDUM). A
- * single pathPrefix string cannot satisfy both consumers, so this runs as a
- * second, `@`-anchored pass AFTER the blanket substitution.
+ * #3544 (extending #3133's fix): restore `@$HOME<suffix>` `@`-file-reference
+ * lines back to their tilde equivalent (`@~<suffix>`) in Claude-emitted
+ * content whose pathPrefix is the `$HOME` form. This is a NARROW,
+ * context-sensitive correction layered on top of the blanket `~/.claude/` /
+ * `$HOME/.claude/` -> pathPrefix substitution every Claude emit path
+ * applies: that blanket substitution MUST keep emitting `$HOME` for global
+ * installs — shell commands embedded in workflow/command bodies (e.g.
+ * `node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs"`) need it, since `~` does
+ * not expand inside double-quoted shell strings (#1284). But Claude Code's
+ * own `@`-import resolver does the opposite: it documents `~` expansion and
+ * does NOT expand `$HOME`. That is not merely undocumented — a controlled
+ * `/context` measurement showed an `@$HOME/…` import loading nothing (see
+ * .gsd/bug/fix-3544-home-expansion-spec-tree/10-diagnosis.md's ADDENDUM). No
+ * automated test can verify *resolution* inside a live Claude Code session
+ * (nothing in CI can spawn one and read `/context`); every test here — unit
+ * and spawned-installer alike — verifies only the emitted STRING takes the
+ * `~` form Claude Code documents as expanding. A single pathPrefix string
+ * cannot satisfy both the shell and the `@`-import consumer, so this runs as
+ * a second, `@`-anchored pass AFTER the blanket substitution.
  *
  * #3133 first applied this restore inline in `_applyRuntimeRewrites`'s
  * `case 'claude'` below (the skill/command staging pipeline). #3544 found
@@ -2814,14 +2819,45 @@ function _stampNonClaudeRuntimeDefaults(content: string, runtime: string): strin
  * bake an absolute, `@`-resolvable pathPrefix and are unaffected, as are
  * every non-Claude runtime (never called for them).
  *
+ * #3544 review (2nd pass): the first cut of this function hardcoded the
+ * literal `.claude/` segment, so it silently no-opped for any global install
+ * under a non-default `--config-dir` (e.g. `~/.claude-work`) — reproducing
+ * the exact defect #3544 fixes, just one directory name later. This ALSO
+ * corrects the same latent gap in #3133's original path, since both call
+ * sites share this one implementation. Fixed by deriving the rewrite from
+ * `pathPrefix` itself rather than a hardcoded directory name: the tilde
+ * equivalent of any `$HOME`-form prefix is `'~' + pathPrefix.slice(5)`
+ * (`'$HOME'.length === 5`), so the transform generalizes to any config-dir
+ * name with no runtime-specific literal.
+ *
+ * #3544 review (2nd pass), quote-awareness: the anchor is a negative
+ * lookbehind for a preceding quote character, NOT a line-start anchor —
+ * Claude Code documents `@`-references as valid "anywhere in your
+ * CLAUDE.md" (e.g. `See @README for project overview`), so anchoring to
+ * line-start would miss a legitimate mid-line reference. The lookbehind
+ * instead guards the one demonstrated false-positive: a quoted shell string
+ * like `echo "@$HOME/.claude/x"`, where rewriting `$HOME` to `~` inside
+ * double quotes reintroduces the #1284 failure mode (`~` does not expand in
+ * double-quoted shell). Deliberately NOT fenced-code-block aware (unlike
+ * `resolveSpecRootReference`'s `scanFencedBlocks` use above): this pass
+ * targets genuine `@`-import lines and inline shell references across the
+ * whole emitted corpus, and today there are zero occurrences anywhere in the
+ * tree of an `@$HOME<suffix>` sequence inside a fenced code block (the
+ * quote-guard already closes the one reachable false-positive class).
+ * Layering `scanFencedBlocks` on top would roughly double this function's
+ * size to guard an undemonstrated case — the opposite of the brief's
+ * "simpler, not more complex" direction. If a fenced example ever needs this
+ * literal sequence, add fence-awareness then, with a regression test proving
+ * the fence is real.
+ *
  * @private — exported as `_restoreClaudeGlobalAtRefTilde` for tests and for
  * bin/install.js's `copyWithPathReplacement`.
  */
 function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
-  if (typeof pathPrefix === 'string' && pathPrefix.startsWith('$HOME')) {
-    return content.replace(/@\$HOME\/\.claude\//g, '@~/.claude/');
-  }
-  return content;
+  if (typeof pathPrefix !== 'string' || !pathPrefix.startsWith('$HOME')) return content;
+  const tildeEquivalent = '~' + pathPrefix.slice('$HOME'.length);
+  const atRefRe = new RegExp(`(?<!["'])@${escapeRegExp(pathPrefix)}`, 'g');
+  return content.replace(atRefRe, `@${tildeEquivalent}`);
 }
 
 /**

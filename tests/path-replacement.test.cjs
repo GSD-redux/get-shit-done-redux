@@ -607,8 +607,57 @@ describe('#3544: _restoreClaudeGlobalAtRefTilde (spec-tree @-ref restore, unit)'
       '@~/.claude/gsd-core/references/b.md\n',
     );
   });
+
+  // #3544 review (Finding 1): a custom --config-dir under $HOME produces a
+  // pathPrefix like '$HOME/.claude-work/' — the directory name is NOT
+  // '.claude'. The restore must derive the tilde form from pathPrefix itself
+  // rather than a hardcoded '.claude' literal, or it silently no-ops for any
+  // non-default config-dir name (reproducing the exact defect #3544 fixes).
+  test('generalizes to a non-default config-dir name (not hardcoded to .claude)', () => {
+    const src = '@$HOME/.claude-work/gsd-core/workflows/plan-phase.md\n';
+    const out = _restoreClaudeGlobalAtRefTilde(src, '$HOME/.claude-work/');
+    assert.strictEqual(out, '@~/.claude-work/gsd-core/workflows/plan-phase.md\n');
+  });
+
+  // #3544 review (Finding 2): quote-aware, not line-start-anchored. A
+  // double-quoted or single-quoted `@$HOME/...` sequence must be left alone
+  // (rewriting $HOME -> ~ inside a quoted shell string reintroduces #1284 —
+  // ~ does not expand in double quotes). A bare line-start `@$HOME/...` and a
+  // legitimate MID-LINE `@`-reference (Claude Code documents @-references as
+  // valid "anywhere in your CLAUDE.md") must both still be rewritten.
+  test('leaves a double-quoted @$HOME/.claude/ sequence untouched (quote-aware)', () => {
+    const src = 'echo "@$HOME/.claude/x"\n';
+    const out = _restoreClaudeGlobalAtRefTilde(src, '$HOME/.claude/');
+    assert.strictEqual(out, src, 'a double-quoted @$HOME sequence must not be rewritten');
+  });
+
+  test('leaves a single-quoted @$HOME/.claude/ sequence untouched (quote-aware)', () => {
+    const src = "'@$HOME/.claude/x'\n";
+    const out = _restoreClaudeGlobalAtRefTilde(src, '$HOME/.claude/');
+    assert.strictEqual(out, src, 'a single-quoted @$HOME sequence must not be rewritten');
+  });
+
+  test('rewrites a bare line-start @$HOME/.claude/ reference', () => {
+    const src = '@$HOME/.claude/x\n';
+    const out = _restoreClaudeGlobalAtRefTilde(src, '$HOME/.claude/');
+    assert.strictEqual(out, '@~/.claude/x\n');
+  });
+
+  test('rewrites a legitimate mid-line @$HOME/.claude/ reference (not line-start-anchored)', () => {
+    const src = 'See @$HOME/.claude/x for details\n';
+    const out = _restoreClaudeGlobalAtRefTilde(src, '$HOME/.claude/');
+    assert.strictEqual(out, 'See @~/.claude/x for details\n');
+  });
 });
 
+// Verification boundary (#3544): this suite proves the emitted @-line takes
+// the `~` STRING form Claude Code documents as expanding. It cannot prove
+// the host actually resolves it — no automated test can spawn a live Claude
+// Code session and read `/context` in CI. Read a green run here as "the
+// installer emits the documented form", not as "the include loads". See
+// restoreClaudeGlobalAtRefTilde's doc comment (runtime-artifact-conversion.cts)
+// for the controlled measurement that established the documented form is the
+// one that actually resolves.
 describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on tilde', () => {
   const { before, after } = require('node:test');
   const { cleanup } = require('./helpers.cjs');
@@ -655,7 +704,7 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
     return out;
   }
 
-  let claudeGlobalHome, claudeLocalHome, opencodeGlobalHome, cursorGlobalHome;
+  let claudeGlobalHome, claudeLocalHome, opencodeGlobalHome, cursorGlobalHome, claudeConfigDirHome, claudeConfigDirTarget;
 
   before(() => {
     claudeGlobalHome = makeSandbox('claude-global');
@@ -673,6 +722,16 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
     cursorGlobalHome = makeSandbox('cursor-global');
     const c = spawnInstall(['--cursor', '--global'], cursorGlobalHome);
     assert.strictEqual(c.exitCode, 0, `cursor --global install failed:\n${c.stdout}\n${c.stderr}`);
+
+    // #3544 review (Finding 1): a custom --config-dir name under $HOME
+    // (i.e. NOT the default .claude) — the target must be a subdirectory of
+    // HOME (not HOME itself) so computePathPrefix takes the $HOME-shorthand
+    // branch with a non-'.claude' suffix, the exact precondition the
+    // hardcoded-'.claude' bug required.
+    claudeConfigDirHome = makeSandbox('claude-config-dir-home');
+    claudeConfigDirTarget = path.join(claudeConfigDirHome, '.claude-work');
+    const cd = spawnInstall(['--claude', '--global', '--config-dir', claudeConfigDirTarget], claudeConfigDirHome);
+    assert.strictEqual(cd.exitCode, 0, `claude --global --config-dir install failed:\n${cd.stdout}\n${cd.stderr}`);
   });
 
   after(() => {
@@ -698,6 +757,21 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
     const gsdCoreDir = path.join(claudeGlobalHome, '.claude', 'gsd-core');
     const homeLines = collectAtLines(gsdCoreDir).filter(({ line }) => /^@\$HOME/.test(line));
     assert.deepStrictEqual(homeLines, [], `found @$HOME lines: ${JSON.stringify(homeLines)}`);
+  });
+
+  // #3544 review (Finding 1): a real install under a non-default --config-dir
+  // name reproduces the exact defect #3544 fixes if the restore is hardcoded
+  // to '.claude/'. This must FAIL against the pre-fix restoreClaudeGlobalAtRefTilde.
+  test('claude --global --config-dir <custom>: zero @$HOME lines remain, and @~/<custom>/ appears', () => {
+    const gsdCoreDir = path.join(claudeConfigDirTarget, 'gsd-core');
+    assert.ok(fs.existsSync(gsdCoreDir), `expected ${gsdCoreDir} to exist`);
+    const homeLines = collectAtLines(gsdCoreDir).filter(({ line }) => /^@\$HOME/.test(line));
+    assert.deepStrictEqual(homeLines, [], `found @$HOME lines under a custom --config-dir: ${JSON.stringify(homeLines)}`);
+    const tildeLines = collectAtLines(gsdCoreDir).filter(({ line }) => line.startsWith('@~/.claude-work/'));
+    assert.ok(
+      tildeLines.length > 0,
+      `expected at least one @~/.claude-work/ line under a custom --config-dir, got: ${JSON.stringify(collectAtLines(gsdCoreDir))}`,
+    );
   });
 
   test('claude --global: double-quoted shell $HOME references are preserved (#1284)', () => {
