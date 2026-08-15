@@ -498,8 +498,127 @@ describe('audit-open — does not crash with ReferenceError (#2659)', () => {
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+
+// ─── #3458 fixtures: phase-scoped scanners must also see archived phases ─────
+//
+// scanUatGaps, scanVerificationGaps, scanContextQuestions, and scanDeferredItems
+// resolve ONLY the active `.planning/phases/` root. Once a milestone closes and
+// its phase dirs move to `.planning/milestones/v<X.Y>-phases/`, items still
+// unresolved at that moment become invisible to every later audit — these
+// fixtures carry one item of each of the four kinds, in both an "unresolved"
+// (must be counted) and a "resolved" (must NOT be counted) shape, verified
+// against the real scanner formats before being repurposed for the archived
+// layout below.
+
+const UAT_GAP_UNRESOLVED = [
+  '# UAT',
+  '',
+  '## Gaps',
+  '',
+  '- truth: an unresolved UAT gap that survived milestone close',
+  '  status: open',
+  '',
+].join('\n');
+
+const UAT_GAP_RESOLVED = [
+  '---',
+  'status: resolved',
+  '---',
+  '',
+  '# UAT',
+  '',
+  '## Gaps',
+  '',
+  '- truth: a gap that was resolved',
+  '',
+].join('\n');
+
+const VERIFICATION_GAP_UNRESOLVED = [
+  '---',
+  'status: gaps_found',
+  '---',
+  '',
+  '# Verification',
+  '',
+  'Gaps found during verification.',
+  '',
+].join('\n');
+
+const VERIFICATION_GAP_RESOLVED = [
+  '---',
+  'status: passed',
+  '---',
+  '',
+  '# Verification',
+  '',
+  'All checks passed.',
+  '',
+].join('\n');
+
+const CONTEXT_QUESTION_OPEN = [
+  '# Context',
+  '',
+  '## Open Questions',
+  '',
+  '- Should this default to strict mode?',
+  '',
+].join('\n');
+
+const CONTEXT_QUESTION_RESOLVED = [
+  '# Context',
+  '',
+  '## Open Questions',
+  '',
+  'None',
+  '',
+].join('\n');
+
+const DEFERRED_ITEM_UNRESOLVED = [
+  '# Deferred Items',
+  '',
+  '- **STILL-OPEN:** an unresolved deferred item that survived milestone close',
+  '',
+].join('\n');
+
+const DEFERRED_ITEM_RESOLVED = [
+  '# Deferred Items',
+  '',
+  '- **RESOLVED-ITEM:** an item that was resolved',
+  '  status: resolved',
+  '',
+].join('\n');
+
+/**
+ * Write one phase's worth of UAT/VERIFICATION/CONTEXT/deferred-items files
+ * (one of each of the four scanner-recognized kinds) into `phaseDir`, using
+ * `phaseNumberPrefix` (e.g. '01') as the file-token so `scopeToPhase` (#3511)
+ * accepts them for a dir named `<phaseNumberPrefix>-<slug>`.
+ */
+function writePhaseArtifacts(phaseDir, phaseNumberPrefix, { uat, verification, context, deferred }) {
+  fs.mkdirSync(phaseDir, { recursive: true });
+  fs.writeFileSync(path.join(phaseDir, `${phaseNumberPrefix}-UAT.md`), uat);
+  fs.writeFileSync(path.join(phaseDir, `${phaseNumberPrefix}-VERIFICATION.md`), verification);
+  fs.writeFileSync(path.join(phaseDir, `${phaseNumberPrefix}-CONTEXT.md`), context);
+  fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferred);
+}
+
+const UNRESOLVED_ARTIFACTS = {
+  uat: UAT_GAP_UNRESOLVED,
+  verification: VERIFICATION_GAP_UNRESOLVED,
+  context: CONTEXT_QUESTION_OPEN,
+  deferred: DEFERRED_ITEM_UNRESOLVED,
+};
+
+const RESOLVED_ARTIFACTS = {
+  uat: UAT_GAP_RESOLVED,
+  verification: VERIFICATION_GAP_RESOLVED,
+  context: CONTEXT_QUESTION_RESOLVED,
+  deferred: DEFERRED_ITEM_RESOLVED,
+};
 
 describe('audit-open — output shape (#2911)', () => {
   let tmpDir;
@@ -590,6 +709,84 @@ describe('audit-open — output shape (#2911)', () => {
         `items.${key} must be an array`
       );
     }
+  });
+
+  // ── #3458: phase-scoped scanners must also see archived phases ────────────
+  //
+  // scanUatGaps, scanVerificationGaps, scanContextQuestions, and
+  // scanDeferredItems resolve ONLY the active `.planning/phases/` root. Once a
+  // milestone closes and its phase dirs move to
+  // `.planning/milestones/v<X.Y>-phases/`, items still unresolved at that
+  // moment become invisible to every later audit.
+
+  test('#3458 archived-only project: unresolved items in .planning/milestones/vX.Y-phases/ are counted', () => {
+    // The active phases root is scaffolded empty by createTempProject; the bug
+    // report's own repro has it ABSENT entirely in a fully-archived project —
+    // remove it so this fixture matches that exactly, not just "empty".
+    fs.rmdirSync(path.join(tmpDir, '.planning', 'phases'));
+
+    const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-alpha');
+    writePhaseArtifacts(archivedPhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    assert.equal(parsed.counts.uat_gaps, 1, `uat_gaps: expected 1, got ${parsed.counts.uat_gaps}`);
+    assert.equal(parsed.counts.verification_gaps, 1, `verification_gaps: expected 1, got ${parsed.counts.verification_gaps}`);
+    assert.equal(parsed.counts.context_questions, 1, `context_questions: expected 1, got ${parsed.counts.context_questions}`);
+    assert.equal(parsed.counts.deferred_items, 1, `deferred_items: expected 1, got ${parsed.counts.deferred_items}`);
+    assert.equal(parsed.has_open_items, true, 'has_open_items must be true when an archived phase carries unresolved items');
+  });
+
+  test('#3458 mixed project: active AND archived phases are both scanned and summed (not one replacing the other)', () => {
+    const activePhaseDir = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    writePhaseArtifacts(activePhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '02-beta');
+    writePhaseArtifacts(archivedPhaseDir, '02', UNRESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    assert.equal(parsed.counts.uat_gaps, 2, `uat_gaps: expected 2 (1 active + 1 archived), got ${parsed.counts.uat_gaps}`);
+    assert.equal(parsed.counts.verification_gaps, 2, `verification_gaps: expected 2, got ${parsed.counts.verification_gaps}`);
+    assert.equal(parsed.counts.context_questions, 2, `context_questions: expected 2, got ${parsed.counts.context_questions}`);
+    assert.equal(parsed.counts.deferred_items, 2, `deferred_items: expected 2, got ${parsed.counts.deferred_items}`);
+    assert.equal(parsed.has_open_items, true, 'has_open_items must be true');
+  });
+
+  test('#3458 active-only project: unchanged behavior, unresolved items still counted (guards the pre-existing path)', () => {
+    const activePhaseDir = path.join(tmpDir, '.planning', 'phases', '01-alpha');
+    writePhaseArtifacts(activePhaseDir, '01', UNRESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    assert.equal(parsed.counts.uat_gaps, 1, `uat_gaps: expected 1, got ${parsed.counts.uat_gaps}`);
+    assert.equal(parsed.counts.verification_gaps, 1, `verification_gaps: expected 1, got ${parsed.counts.verification_gaps}`);
+    assert.equal(parsed.counts.context_questions, 1, `context_questions: expected 1, got ${parsed.counts.context_questions}`);
+    assert.equal(parsed.counts.deferred_items, 1, `deferred_items: expected 1, got ${parsed.counts.deferred_items}`);
+    assert.equal(parsed.has_open_items, true, 'has_open_items must be true');
+  });
+
+  test('#3458 archived-only project with all-RESOLVED items: contributes 0 (fix must not blindly count archived files)', () => {
+    fs.rmdirSync(path.join(tmpDir, '.planning', 'phases'));
+
+    const archivedPhaseDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-alpha');
+    writePhaseArtifacts(archivedPhaseDir, '01', RESOLVED_ARTIFACTS);
+
+    const result = runGsdTools(['audit-open', '--json'], tmpDir);
+    assert.ok(result.success, `audit-open --json must not crash. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    assert.equal(parsed.counts.uat_gaps, 0, `uat_gaps: expected 0 (resolved), got ${parsed.counts.uat_gaps}`);
+    assert.equal(parsed.counts.verification_gaps, 0, `verification_gaps: expected 0 (resolved), got ${parsed.counts.verification_gaps}`);
+    assert.equal(parsed.counts.context_questions, 0, `context_questions: expected 0 (resolved), got ${parsed.counts.context_questions}`);
+    assert.equal(parsed.counts.deferred_items, 0, `deferred_items: expected 0 (resolved), got ${parsed.counts.deferred_items}`);
+    assert.equal(parsed.has_open_items, false, 'has_open_items must be false when the only archived phase is fully resolved');
   });
 });
   });
