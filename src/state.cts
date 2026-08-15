@@ -120,24 +120,14 @@ interface ReadModifyWriteOptions {
  * signatures (a Data Clump / out-param smell flagged in review and deferred
  * pending "a third consumer"; `cmdMilestoneComplete` is that third consumer).
  * Same shape as `ReadModifyWriteOptions` minus `resync` being required here
- * (every existing call site already passes it explicitly).
+ * (every existing call site already passes it explicitly) — derived below
+ * so the two interfaces cannot drift out of hand-sync.
+ *
+ * `divergedFields` (ADR-3408 §8.5 D4) stays an out-param (not a return
+ * value) deliberately: converting it ripples into every caller's control
+ * flow for no behavior change.
  */
-interface StatePreservationOptions {
-  resync: boolean;
-  /**
-   * #2736: intent-first frontmatter values forwarded to syncStateFrontmatter.
-   * See `ReadModifyWriteOptions.authoritativeFm` for the full rationale.
-   */
-  authoritativeFm?: Record<string, unknown>;
-  deriveProgressKeys?: boolean;
-  /**
-   * ADR-3408 §8.5 (D4): out-param — every frontmatter field name whose value
-   * preservation restored over a disagreeing freshly-derived one during THIS
-   * write. Stays an out-param (not a return value) deliberately: converting
-   * it ripples into every caller's control flow for no behavior change.
-   */
-  divergedFields?: string[];
-}
+type StatePreservationOptions = Omit<ReadModifyWriteOptions, 'resync'> & { resync: boolean };
 
 interface StateRecordMetricOptions {
   phase: string;
@@ -2937,8 +2927,8 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
 function assertStatePreservationOptions(options: unknown, caller: string): asserts options is StatePreservationOptions {
   if (typeof options !== 'object' || options === null || Array.isArray(options)) {
     const err = new Error(
-      `${caller}: options argument must be a StatePreservationOptions object, got ${typeof options === 'object' ? 'array/null' : typeof options} ` +
-      `(${JSON.stringify(options)}). This function takes a single options object as its final ` +
+      `${caller}: options argument must be a StatePreservationOptions object, got ${typeof options === 'object' ? 'array/null' : typeof options}. ` +
+      'This function takes a single options object as its final ' +
       'parameter, not positional resync/authoritativeFm/deriveProgressKeys/divergedFields arguments (#3471).',
     ) as Error & { code: string; receivedType: string };
     err.code = 'STATE_PRESERVATION_OPTIONS_INVALID';
