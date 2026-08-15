@@ -135,9 +135,10 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     const files = fs.readdirSync(phaseDir);
 
     // Process UAT files — scoped to THIS phase's own token (#3511) via
-    // scopeToPhase (WARNING 4 fix: never lets scoping empty out a non-empty
-    // set of candidates) so a stray, cross-phase, or ad-hoc file cannot be
-    // reported under this phase's audit-uat entry.
+    // scopeToPhase, so a stray, cross-phase, or ad-hoc file cannot be reported
+    // under this phase's audit-uat entry. A phase whose own UAT file is
+    // genuinely absent scopes to empty and contributes nothing — correct, and
+    // the reason scopeToPhase has no unfiltered fallback.
     for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');

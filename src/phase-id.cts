@@ -749,8 +749,17 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
   const rawCandidates = [literalToken, strippedToken, leadingRunMatch?.[1]].filter(
     (t): t is string => Boolean(t),
   );
+  // Each reading is compared in BOTH its padded and de-padded form: files are
+  // written padded by `normalizePhaseName` (`cmdScaffold`) while directories
+  // are often not (`1-unpadded`), and legacy trees carry the reverse pairing.
+  // De-padding is numeric-only — a token with a letter suffix or a dotted
+  // sub-phase (`03A`, `03.1`) has no meaningful de-padded form and is left
+  // alone, so this only ever ADDS a reading and can never drop one.
+  const depad = (t: string): string => (/^\d+$/.test(t) ? String(Number(t)) : t);
   const candidates = new Set(
-    rawCandidates.flatMap(t => [t, normalizePhaseName(t)]).map(t => t.toUpperCase()),
+    rawCandidates
+      .flatMap(t => [t, normalizePhaseName(t), depad(t)])
+      .map(t => t.toUpperCase()),
   );
 
   const fileUpper = fileName.toUpperCase();
@@ -769,52 +778,50 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
 }
 
 /**
- * #3511 follow-up (adversarial-review WARNING 4): scope `fileNames` to the
- * subset that passes `isPhaseArtifact(fileName, phaseDirName)` — EXCEPT when
- * that filter would remove EVERY file, in which case `fileNames` is returned
- * UNCHANGED.
+ * #3511: scope `fileNames` to the subset that passes
+ * `isPhaseArtifact(fileName, phaseDirName)`. The single seam every
+ * phase-directory scan routes through, so the membership rule has ONE owner.
  *
- * THE GAP THIS CLOSES: `isPhaseArtifact`'s own fail-safe only fires when NO
- * phase token can be derived from `phaseDirName` at all (zero
- * `tokenSegments`). It does not cover the case where a token IS derived but
- * matches none of the files actually present. Proven: a directory whose
- * basename merely happens to parse as phase-shaped —
- * `gsd-651-broad-grep-a1b2` (an `mkdtemp`-style name; `extractPhaseToken`
- * reads it as `gsd-651`) — holding a real `01-bg-VERIFICATION.md` fails
- * `isPhaseArtifact` for that one real file (it names phase `01`, not
- * `gsd-651`), so a bare `.filter(isPhaseArtifact)` silently produces an EMPTY
- * result — indistinguishable from "no report exists" — even though the
- * directory plainly has one. That false-empty cascaded into
- * `readVerificationStatus` returning `missing` for a passing phase, and from
- * there into `planning-snapshot` / `workstream-inventory` / progress
- * rollups reporting phases as unverified.
+ * AN EMPTY RESULT IS A REAL ANSWER — deliberately, and this is the hard-won
+ * part. An earlier revision of this helper carried an extra rule ("scoping
+ * must never turn a non-empty set into an empty one": if the filter removed
+ * every file, return the unfiltered input). It was added to rescue a
+ * directory whose basename merely PARSES phase-shaped —
+ * `gsd-651-broad-grep-a1b2`, an `mkdtemp`-style fixture name that
+ * `extractPhaseToken` reads as project code `gsd` + phase `651` (the capture
+ * regex is case-INSENSITIVE) — holding only `01-bg-VERIFICATION.md`, which
+ * the filter then dropped, yielding an empty set indistinguishable from "no
+ * report exists".
  *
- * THE RULE: scoping must never turn a non-empty candidate set into an empty
- * one. If filtering by `isPhaseArtifact` would silence the whole set, the
- * scoping is wrong for that directory, so the UNFILTERED set is returned
- * instead — matching pre-#3511 (unscoped) behaviour for exactly that
- * directory, never worse. This preserves the actual #3511 fix: when the
- * phase's own file IS present alongside a stray (`gsd-651-.../` holding both
- * `01-bg-VERIFICATION.md` and a genuine `04-VERIFICATION.md` stray), filtering
- * leaves a non-empty set — the stray dropped, the real file kept — so
- * cross-phase contamination is still excluded. It only degrades when scoping
- * would have silenced the surface ENTIRELY, which is worse than the
- * contamination bug #3511 exists to fix.
+ * That rescue was wrong, and no local rule can make it right: a directory
+ * whose own name says phase 651 holding only a file that says phase 01 is
+ * STRING-INDISTINGUISHABLE from `03-foo/` holding only `04-VERIFICATION.md`
+ * — the exact cross-phase stray #3511 exists to exclude. Keeping the rule
+ * meant a real phase directory holding only a MISFILED report would resolve
+ * to it and publish another phase's `passed` as its own: the reported bug, in
+ * its single most damaging form. `missing` is the correct answer when a
+ * phase's own report is genuinely absent, and every caller already has a
+ * `missing`/`null` branch for it.
+ *
+ * The over-exclusion that rule was reaching for is instead handled where it
+ * is actually determinable, inside `isPhaseArtifact`: the zero-token dir
+ * fail-safe, the `firstLetterPrefixed` bracket-ambiguity fail-safe, the
+ * token-less-filename rule, and the multi-reading candidate set (literal /
+ * project-code-stripped / leading-digit-run, each also padded AND de-padded)
+ * that covers every normalization a phase directory and its files can
+ * legitimately disagree on. A file excluded after all of those genuinely
+ * names a different phase.
  *
  * SITE DISCIPLINE: every aggregate-scan call site (`uat.cts`,
  * `uat-predicate.cts`, `phase.cts`, `audit.cts`, `state.cts`) and
  * `resolveVerificationFile`'s single-pick fallback (`verification.cts`) MUST
- * route through this helper instead of calling `isPhaseArtifact` directly in
- * a filter position — calling `isPhaseArtifact` bare in a `.filter(...)` is
- * exactly how this gap reopens. `isPhaseArtifact` itself stays exported for
- * single-item membership questions and for its own unit tests.
- *
- * Empty `fileNames` input returns `[]` unchanged (nothing to fall back to).
+ * route through this helper rather than calling `isPhaseArtifact` in a filter
+ * position directly, so the rule cannot be re-derived per site (CLAUDE.md's
+ * Generative Fix Divergence class). `isPhaseArtifact` stays exported for
+ * single-item membership questions and its own unit tests.
  */
 function scopeToPhase(fileNames: string[], phaseDirName: string): string[] {
-  if (fileNames.length === 0) return fileNames;
-  const filtered = fileNames.filter((f) => isPhaseArtifact(f, phaseDirName));
-  return filtered.length > 0 ? filtered : fileNames;
+  return fileNames.filter((f) => isPhaseArtifact(f, phaseDirName));
 }
 
 /**

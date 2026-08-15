@@ -374,18 +374,21 @@ interface ResolveVerificationFileOptions {
  * is now excluded — and excluding it is correct: returning another phase's
  * verification report as this phase's own is worse than reporting none
  * (confidently wrong beats honestly empty).
- * Preserves the fail-safe direction, TWO layers deep: (a) when phase-number
- * membership cannot be determined for `phaseDirName` at all (no reliable
- * token — `isPhaseArtifact`'s own zero-token fail-safe), it returns `true` for
- * every candidate; (b) even when a token IS derived but matches none of
- * `candidates` (the #3511 WARNING-4 gap — a directory basename that merely
- * happens to parse phase-shaped, e.g. an `mkdtemp`-style `gsd-651-…` fixture
- * dir), `scopeToPhase` itself falls back to the unfiltered `candidates` rather
- * than returning empty. Either way the fallback degrades to exactly the
- * pre-#3511 (and pre-#3357), unscoped "alphabetically first of ALL dashed
- * candidates" behavior — never a regression toward null. `options.phaseDirName`
- * omitted entirely: same degrade, by construction (the ternary below skips
- * the filter outright).
+ * The fail-safe now lives entirely inside `isPhaseArtifact`, not in
+ * `scopeToPhase` (which is a plain filter with no unfiltered fallback):
+ * (a) when phase-number membership cannot be determined for `phaseDirName` at
+ * all (no reliable token — the zero-token directory case), every candidate is
+ * treated as belonging to the phase; (b) the `firstLetterPrefixed`
+ * bracket-ambiguity case, where a letter-prefixed-decimal dir is
+ * string-indistinguishable from a bracket-dir token, also includes
+ * everything rather than guess; (c) a token-less filename (bare
+ * `VERIFICATION.md`) is accepted by directory containment alone. Outside
+ * those cases, when scoping DOES remove every dashed candidate — a real
+ * cross-phase stray, or a phase whose own report is genuinely absent — the
+ * fallback below correctly falls through to `allowBare`/`null`: reporting no
+ * report, not another phase's. `options.phaseDirName` omitted entirely skips
+ * the filter outright (the ternary below), which is unscoped, pre-#3511
+ * behavior.
  *
  * Pure — takes an already-read directory listing and does no I/O of its own,
  * so every call site keeps its existing `fsImpl` seam and no-throw contract
@@ -403,10 +406,10 @@ function resolveVerificationFile(
     }
     // #3511 reconciliation: scope the fallback to files that belong to THIS
     // phase, so a stray cross-phase file can no longer outrank a return of
-    // null. `phaseDirName` omitted, or membership undeterminable for it, or
-    // scoping would empty out a non-empty candidate set (WARNING 4 fix) →
-    // `scopeToPhase` degrades to exactly `candidates` — the pre-#3511
-    // behavior.
+    // null. `phaseDirName` omitted, or membership undeterminable for it, →
+    // unscoped `candidates` (pre-#3511 behavior); otherwise strays are
+    // filtered out, and if that leaves nothing the code falls through to
+    // `allowBare`/`null` deliberately.
     const scoped = options.phaseDirName
       ? scopeToPhase(candidates, options.phaseDirName)
       : candidates;

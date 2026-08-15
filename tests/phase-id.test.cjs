@@ -413,19 +413,16 @@ describe('isPhaseArtifact (#3511)', () => {
   });
 });
 
-// ─── scopeToPhase (#3511 follow-up — WARNING 4) ────────────────────────────────
+// ─── scopeToPhase (#3511) ───────────────────────────────────────────────────
 //
-// isPhaseArtifact's own fail-safe only fires when NO phase token can be
-// derived from the directory name at all (zero tokenSegments). It does NOT
-// cover the case where a token IS derived but matches none of the files
-// actually present — e.g. an `mkdtemp`-style directory basename that merely
-// happens to parse as phase-shaped (`gsd-651-broad-grep-a1b2` reads as token
-// `gsd-651`) holding a real, differently-numbered artifact
-// (`01-bg-VERIFICATION.md`). A bare `.filter(isPhaseArtifact)` there silently
-// produces an EMPTY result, indistinguishable from "no artifact exists".
-// scopeToPhase is the one rule that closes this: scoping must never turn a
-// non-empty candidate set into an empty one.
-describe('scopeToPhase (#3511 follow-up — WARNING 4)', () => {
+// scopeToPhase is a plain filter over isPhaseArtifact: `fileNames.filter(f =>
+// isPhaseArtifact(f, phaseDirName))`. An earlier follow-up ("WARNING 4") added
+// a rule that fell back to the unfiltered input whenever scoping would empty
+// a non-empty candidate set — but that defeated the actual #3511 fix: a phase
+// dir holding only a misfiled cross-phase report would publish that other
+// phase's status as its own. The fallback rule has been REMOVED; an empty
+// result is now the honest answer for "this phase has none of its own".
+describe('scopeToPhase (#3511)', () => {
   test('mixed set: own file kept, stray dropped', () => {
     assert.deepStrictEqual(
       phaseId.scopeToPhase(['03-VERIFICATION.md', '04-VERIFICATION.md'], '03-foo'),
@@ -433,14 +430,7 @@ describe('scopeToPhase (#3511 follow-up — WARNING 4)', () => {
     );
   });
 
-  test('all-strays: scoping would empty the set, so the input is returned UNCHANGED', () => {
-    assert.deepStrictEqual(
-      phaseId.scopeToPhase(['04-VERIFICATION.md'], '03-foo'),
-      ['04-VERIFICATION.md'],
-    );
-  });
-
-  test('empty input: returns empty (nothing to fall back to)', () => {
+  test('empty input: returns empty', () => {
     assert.deepStrictEqual(phaseId.scopeToPhase([], '03-foo'), []);
   });
 
@@ -451,35 +441,37 @@ describe('scopeToPhase (#3511 follow-up — WARNING 4)', () => {
     );
   });
 
-  test('#3511 regression: a directory basename that coincidentally parses phase-shaped ' +
-    '(mkdtemp-style "gsd-651-broad-grep-a1b2") still keeps its own real file', () => {
-    // extractPhaseToken('gsd-651-broad-grep-a1b2') === 'gsd-651', which does not
-    // match the real file's own token ('01'/'bg') — isPhaseArtifact alone would
-    // wrongly exclude it. scopeToPhase must not let that empty the result.
-    assert.strictEqual(
-      phaseId.isPhaseArtifact('01-bg-VERIFICATION.md', 'gsd-651-broad-grep-a1b2'),
-      false,
-      'precondition: isPhaseArtifact alone excludes this file (the gap scopeToPhase closes)',
-    );
+  test('#3511: a phase dir holding ONLY another phase\'s report scopes to empty — ' +
+    'an empty result is the honest answer, not a reason to fall back to the stray', () => {
+    // Removing this behavior is the whole point of #3511: returning
+    // 04-VERIFICATION.md here would publish phase 04's status as phase 03's.
     assert.deepStrictEqual(
-      phaseId.scopeToPhase(['01-bg-VERIFICATION.md'], 'gsd-651-broad-grep-a1b2'),
-      ['01-bg-VERIFICATION.md'],
+      phaseId.scopeToPhase(['04-VERIFICATION.md'], '03-foo'),
+      [],
     );
   });
 
-  test('property: scopeToPhase never returns empty for non-empty input', () => {
-    const fileNameGen = fc.stringMatching(/^[0-9A-Za-z.-]{1,20}\.md$/);
-    const dirNameGen = fc.stringMatching(/^[0-9A-Za-z.-]{1,20}$/);
+  test('property: a phase dir never scopes away its own canonically-named artifact', () => {
     fc.assert(
       fc.property(
-        fc.array(fileNameGen, { minLength: 1, maxLength: 10 }),
-        dirNameGen,
-        (fileNames, dirName) => {
-          const result = phaseId.scopeToPhase(fileNames, dirName);
-          return result.length > 0;
+        fc.integer({ min: 0, max: 999 }),
+        fc.stringMatching(/^[a-z]{1,8}$/),
+        (num, slug) => {
+          const padded = String(num).padStart(2, '0');
+          for (const dirNum of new Set([padded, String(num)])) {
+            const dirName = `${dirNum}-${slug}`;
+            for (const fileNum of new Set([padded, String(num)])) {
+              const own = `${fileNum}-VERIFICATION.md`;
+              assert.deepStrictEqual(
+                phaseId.scopeToPhase([own], dirName),
+                [own],
+                `${own} is phase ${dirNum}'s own artifact in ${dirName} and must survive scoping`,
+              );
+            }
+          }
         },
       ),
-      { numRuns: 200 },
+      { numRuns: 300 },
     );
   });
 });

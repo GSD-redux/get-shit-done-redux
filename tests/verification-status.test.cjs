@@ -58,11 +58,18 @@ const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Create a temporary phase directory under os.tmpdir().
- * Returns the absolute path; caller must clean up.
+ * Create a temporary phase directory named like a real one (`NN-slug`),
+ * inside a throwaway parent. #3511: a phase directory's own name determines
+ * which files count as ITS artifacts, so a fixture whose basename does not
+ * name the same phase as the files written into it is not a valid phase dir.
+ * @param {string} suffix       - test-distinguishing suffix for the parent
+ * @param {string} phaseDirName - basename of the phase dir (default '01-foo')
  */
-function mkPhaseDir(suffix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `gsd-651-${suffix}-`));
+function mkPhaseDir(suffix, phaseDirName = '01-foo') {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-651-${suffix}-`));
+  const phaseDir = path.join(parent, phaseDirName);
+  fs.mkdirSync(phaseDir);
+  return phaseDir;
 }
 
 /**
@@ -98,7 +105,7 @@ describe('verification-status', () => {
       assert.equal(result.next_command, '', 'next_command must be empty for passed');
       assert.ok(result.next_action.length > 0, 'next_action must be non-empty');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -128,7 +135,14 @@ describe('verification-status', () => {
 
   // ── Case 3: human_needed ──────────────────────────────────────────────────
   test('status: human_needed → status human_needed, next_command is empty', () => {
-    const dir = mkPhaseDir('human-needed');
+    // Deliberately non-numeric dir basename ("human-needed" has no digits at
+    // all) — extractPhaseToken has no derivable token, so (a) isPhaseArtifact's
+    // fail-safe still includes 01-hn-VERIFICATION.md as this "phase"'s own
+    // report, and (b) the next_command number-append check (which requires a
+    // PURELY numeric token) never fires. This is what this test is actually
+    // pinning — see the comment below — so the dir name must stay non-numeric,
+    // not the realistic 'NN-slug' default.
+    const dir = mkPhaseDir('human-needed', 'human-needed');
     try {
       writeVerificationMd(dir, '01-hn-VERIFICATION.md', 'human_needed');
       const result = readVerificationStatus(dir);
@@ -138,13 +152,16 @@ describe('verification-status', () => {
       assert.equal(result.next_command, '/gsd-verify-work');
       assert.ok(result.next_action.length > 0);
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
   // ── Case 4: no *-VERIFICATION.md → missing ────────────────────────────────
   test('no *-VERIFICATION.md file → status missing, next_command execute-phase', () => {
-    const dir = mkPhaseDir('missing');
+    // Non-numeric dir basename: next_command asserts no phase-number argument
+    // is appended, which requires extractPhaseToken(dirName) to not be purely
+    // numeric — see the human_needed test above for the same rationale.
+    const dir = mkPhaseDir('missing', 'missing');
     try {
       // write a non-matching file to confirm it is ignored
       fs.writeFileSync(path.join(dir, 'README.md'), '# phase');
@@ -157,13 +174,15 @@ describe('verification-status', () => {
         `next_action must reassure the user execute-phase will not redo work (#1762); got: ${result.next_action}`,
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
   // ── Case 5: unknown frontmatter status value ──────────────────────────────
   test("frontmatter status 'bogus' → status unknown, next_command execute-phase", () => {
-    const dir = mkPhaseDir('unknown');
+    // Non-numeric dir basename: next_command asserts no phase-number argument
+    // is appended — see the human_needed test above for the same rationale.
+    const dir = mkPhaseDir('unknown', 'unknown');
     try {
       writeVerificationMd(dir, '01-u-VERIFICATION.md', 'bogus');
       const result = readVerificationStatus(dir);
@@ -178,7 +197,7 @@ describe('verification-status', () => {
         `next_action must acknowledge an unrecognized status may be an intentional marker (#1762); got: ${result.next_action}`,
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -224,7 +243,7 @@ describe('verification-status', () => {
       );
       assert.equal(result.next_command, '', 'next_command must be empty for passed');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -297,7 +316,7 @@ describe('verification-status', () => {
       assert.equal(result.status, 'passed', 'CRLF frontmatter must parse to passed');
       assert.equal(result.next_command, '');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -315,7 +334,7 @@ describe('verification-status', () => {
         "A body-only status: line must NOT be read — result should be 'missing'",
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -332,10 +351,14 @@ describe('verification-status', () => {
   // of the #3492 phase-pinned rule, not the contract itself — see the
   // `#3357/#3492` describe block below for the primary, phase-pinned tier
   // (resolveVerificationFile unit tests are the reliable anchors there).
-  // mkPhaseDir's random-suffixed basename never matches "01"/"02", so this
-  // exercises the fallback by construction.
+  // The dir basename ('multi', no digits) has no derivable phase token, so
+  // scopeToPhase's isPhaseArtifact fail-safe passes BOTH candidates through
+  // unfiltered (#3511: scopeToPhase is a plain filter with no other
+  // fallback — a derivable token that matched neither file would empty the
+  // set and this test would read 'missing', not exercise the alphabetical
+  // tiebreak at all).
   test('multiple *-VERIFICATION.md files, none matching the phase token → alphabetically-first FALLBACK wins', () => {
-    const dir = mkPhaseDir('multi');
+    const dir = mkPhaseDir('multi', 'multi');
     try {
       // Write two files: alphabetically "01-a" comes before "02-b"
       // "01-a" has passed; "02-b" has gaps_found — first by sort must win
@@ -349,7 +372,7 @@ describe('verification-status', () => {
         'With no exact phase-token match, the first by lexicographic sort must be used',
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
