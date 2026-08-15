@@ -14,7 +14,7 @@ const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
 const { buildWorkstreamInventory, isCompletedInventory, pickRollupWinners } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
 const { inspectWorkstream } = require('../gsd-core/bin/lib/workstream-inventory.cjs');
 const { VERIFIER_STATUSES } = require('../gsd-core/bin/lib/verification.cjs');
-const { phaseKeyFromDir, phaseKeyFromProse, phaseKeyFromToken } = require('../gsd-core/bin/lib/phase-id.cjs');
+const { phaseKeyFromDir, phaseKeyFromProse, phaseKeyFromToken, normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
 const fc = require('fast-check');
 
 const STALE_STATE = 'status: executing\n';
@@ -235,7 +235,7 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
     for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
-    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+    if (verification) fs.writeFileSync(path.join(dir, `${normalizePhaseName(slug)}-VERIFICATION.md`), `---\nstatus: ${verification}\n---\n`);
   }
 
   const MS_STATE = 'milestone: v2.0\nstatus: executing\n';
@@ -361,7 +361,7 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
     for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
-    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+    if (verification) fs.writeFileSync(path.join(dir, `${normalizePhaseName(slug)}-VERIFICATION.md`), `---\nstatus: ${verification}\n---\n`);
   }
 
   function roadmapWithRows(rows) {
@@ -926,7 +926,7 @@ describe('#2562 — a shipped marker its own artifacts contradict is not asserte
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
     for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
-    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+    if (verification) fs.writeFileSync(path.join(dir, `${normalizePhaseName(slug)}-VERIFICATION.md`), `---\nstatus: ${verification}\n---\n`);
   }
 
   function writeSnapshot(wsDir) {
@@ -1054,7 +1054,7 @@ describe('#2645 — deleting a verification report must not raise completeness',
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
     for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
-    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+    if (verification) fs.writeFileSync(path.join(dir, `${normalizePhaseName(slug)}-VERIFICATION.md`), `---\nstatus: ${verification}\n---\n`);
     return dir;
   }
 

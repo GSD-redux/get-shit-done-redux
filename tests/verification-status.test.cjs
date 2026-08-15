@@ -1050,6 +1050,24 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
     );
   });
 
+  // WARNING-2/5/INFO-2 note (#3511 review): the only fallback test above uses
+  // a token-LESS dir ("03-foo" isn't token-less — this refers to the earlier
+  // `multiple *-VERIFICATION.md files, none matching the phase token` test,
+  // which passes no derivable-token distinguishing fixture and so passes
+  // identically pre-#3511-fix). This test uses a dir WITH a derivable token
+  // (`03-foo` → token "03") and TWO candidates that BOTH belong to that same
+  // phase (`03-a-…`/`03-b-…`, no exact `03-VERIFICATION.md`), so scoping
+  // excludes nothing and the alphabetical-first tie-break still decides —
+  // pinning that scoping does not disturb the ordinary same-phase-multi-file
+  // case.
+  test('#3511: alphabetical fallback when BOTH candidates are this phase\'s own (derivable token, no exact match)', () => {
+    assert.equal(
+      resolveVerificationFile(['03-a-VERIFICATION.md', '03-b-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      '03-a-VERIFICATION.md',
+      'both candidates belong to phase 03 (same as dir "03-foo"); alphabetically-first must still win',
+    );
+  });
+
   test('behavioral (readVerificationStatus): a phase dir holding only a cross-phase stray reports missing, not the stray\'s status (#3511)', () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-stray-only-'));
     const dir = path.join(baseDir, '03-foo');

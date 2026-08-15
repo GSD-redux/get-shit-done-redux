@@ -4225,6 +4225,29 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
     assertNoDriftKey(output);
   });
 
+  test('#3511 WARNING-4: an underscore-separated "03_VERIFICATION.md" (broader .includes(\'VERIFICATION\') grammar) does not fire S006 even in its own phase dir — pinning current reality', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `# Project State\n\n**Status:** Executing Phase 3\n**Current Phase:** 3\n**Total Plans in Phase:** 1\n**Current Plan:** 1\n`,
+    );
+    // state.cts's own pre-filter (`.includes('VERIFICATION')`, no dash) is
+    // deliberately broader than the `-VERIFICATION.md` grammar every other
+    // #3511 site uses, so this underscore-separated name passes it — but
+    // `scopeToPhase`/`isPhaseArtifact` require a `<token>-` PREFIX (dash),
+    // which "03_VERIFICATION.md" never satisfies, even in its own phase 03
+    // directory. Net effect: this name is now scoped OUT and S006 does not
+    // fire for it, even though the broader pre-filter alone would have
+    // admitted it. Pinning actual behavior, not asserting it is "correct".
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-foo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '03_VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const output = JSON.parse(runGsdTools('state validate', tmpDir).output);
+    const s006 = findWarning(output, 'S006');
+    assert.ok(!s006, `S006 must not fire for "03_VERIFICATION.md" under current scoping rules; got: ${JSON.stringify(output.warnings)}`);
+  });
+
   test('output never carries a drift key, across clean/warning/error shapes (breaking-change proof, test matrix row 18)', () => {
     // Clean shape.
     fs.writeFileSync(

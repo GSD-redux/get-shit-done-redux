@@ -19,6 +19,8 @@ const {
   parseMustHavesBlock,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
+const { normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
+
 // ─── extractFrontmatter ─────────────────────────────────────────────────────
 
 describe('extractFrontmatter', () => {
@@ -1236,11 +1238,15 @@ function buildRoadmap(numPhases) {
  */
 function createPhaseDirs(phasesDir, count) {
   for (let i = 1; i <= count; i++) {
-    const dir = path.join(phasesDir, String(i).padStart(2, '0'));
+    const dirName = String(i).padStart(2, '0');
+    const dir = path.join(phasesDir, dirName);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `01-PLAN.md`), `# Plan\n`);
     fs.writeFileSync(path.join(dir, `01-SUMMARY.md`), `# Summary\n`);
-    fs.writeFileSync(path.join(dir, `01-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
+    fs.writeFileSync(
+      path.join(dir, `${normalizePhaseName(dirName)}-VERIFICATION.md`),
+      '---\nstatus: passed\n---\n# Verification\n',
+    );
   }
 }
 

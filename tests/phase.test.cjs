@@ -2473,6 +2473,42 @@ describe('phase remove command', () => {
     assert.ok(roadmap.includes('Phase 2: Features'), 'phase 3 should be renumbered to 2');
   });
 
+  // WARNING-3 (#3511 review): renameIntegerPhases renames a phase directory
+  // whose leading number is UNPADDED (dir regex accepts bare `\d+`), but
+  // renamed its artifact files only against the 2-PADDED prefix, so an
+  // unpadded-numbered artifact desynced from its now-renamed directory and
+  // the phase read `missing` afterward.
+  test('#3511 WARNING-3: renames an unpadded-numbered artifact alongside its unpadded dir', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n### Phase 1: A\n**Goal:** A\n### Phase 9: B\n**Goal:** B\n`
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    const p9 = path.join(tmpDir, '.planning', 'phases', '9-slug');
+    fs.mkdirSync(p9, { recursive: true });
+    // Unpadded artifact filename, paired with the unpadded dir number.
+    fs.writeFileSync(path.join(p9, '9-VERIFICATION.md'), '---\nstatus: passed\n---\n\nVerified OK.');
+
+    const result = runGsdTools('phase remove 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const newDir = path.join(tmpDir, '.planning', 'phases', '08-slug');
+    assert.ok(fs.existsSync(newDir), 'phase 9 should be renumbered to 08-slug');
+    assert.ok(
+      fs.existsSync(path.join(newDir, '08-VERIFICATION.md')),
+      'the unpadded 9-VERIFICATION.md should be renamed to 08-VERIFICATION.md alongside the dir'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(newDir, '9-VERIFICATION.md')),
+      'the stale unpadded-prefix file should no longer exist'
+    );
+
+    const findResult = runGsdTools('find-phase 8', tmpDir);
+    assert.ok(findResult.success, `find-phase failed: ${findResult.error}`);
+    const findOutput = JSON.parse(findResult.output);
+    assert.strictEqual(findOutput.found, true, 'renumbered phase 8 should resolve');
+  });
+
   test('rejects removal of phase with summaries unless --force', () => {
     const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
     fs.mkdirSync(p1, { recursive: true });

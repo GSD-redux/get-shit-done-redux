@@ -3734,6 +3734,21 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         // Check for VERIFICATION.md — scoped to THIS phase's own token (#3511)
         // so a stray, cross-phase, or ad-hoc VERIFICATION file cannot claim
         // this phase's status has drifted.
+        //
+        // WARNING-4 (#3511 review): the pre-filter grammar here is
+        // deliberately BROADER than the `-VERIFICATION.md` suffix every
+        // other site in the codebase uses — `.includes('VERIFICATION')`
+        // admits names like `03_VERIFICATION.md` (underscore, no dash) that
+        // the dashed grammar would reject outright. That breadth predates
+        // #3511 and is intentional here (this is a best-effort drift
+        // WARNING scan, not an authoritative single-pick resolver), so it is
+        // left as-is rather than narrowed to match the dashed sites — doing
+        // so would be a separate, un-asked-for behavior change (S006/S007).
+        // What #3511 DOES change is that a name this broader grammar admits
+        // is now ALSO subject to the same `scopeToPhase` membership check as
+        // every dashed-grammar site, so a stray `04_VERIFICATION.md`-shaped
+        // file in phase 03's directory is excluded exactly like a stray
+        // `04-VERIFICATION.md` would be.
         const files = fs.readdirSync(phaseDirPath);
         const phaseDirBaseName = path.basename(phaseDirPath);
         const verificationFiles = scopeToPhase(

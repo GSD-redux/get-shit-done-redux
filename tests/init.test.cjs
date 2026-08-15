@@ -120,6 +120,81 @@ describe('init commands', () => {
     assert.strictEqual(output.uat_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'));
   });
 
+  test('#3511-class: init manager has_context/has_research ignore another phase\'s misplaced artifact', () => {
+    writePlanningDocs(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Progress',
+        '',
+        '- [ ] **Phase 1: Setup**',
+        '- [ ] **Phase 2: API**',
+        '',
+        '### Phase 1: Setup',
+        '',
+        '**Goal:** Build the foundation.',
+        '',
+        '### Phase 2: API',
+        '',
+        '**Goal:** Build the API.',
+        '',
+      ].join('\n'),
+    );
+
+    seedPhase(tmpDir, '01-setup', {});
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    seedPhase(tmpDir, '02-api', {
+      '01-RESEARCH.md': '# Research for phase 01',
+      '01-CONTEXT.md': '# Context for phase 01',
+    });
+
+    const result = runGsdTools('init manager', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const p2 = output.phases.find((p) => p.number === '2');
+    assert.strictEqual(p2.has_research, false,
+      'phase 2 must not report has_research from a file that belongs to phase 1');
+    assert.strictEqual(p2.has_context, false,
+      'phase 2 must not report has_context from a file that belongs to phase 1');
+  });
+
+  test('#3511-class: init verify-work ui_phase_active ignores another phase\'s misplaced UI-SPEC file', () => {
+    writePlanningDocs(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 1: Setup',
+        '',
+        '**Goal:** Build the foundation.',
+        '',
+        '### Phase 2: API',
+        '',
+        '**Goal:** Build the API.',
+        '',
+      ].join('\n'),
+    );
+
+    seedPhase(tmpDir, '01-setup', {});
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    seedPhase(tmpDir, '02-api', {
+      '01-UI-SPEC.md': '# UI Spec for phase 01',
+    });
+
+    const result = runGsdTools('init verify-work 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.ui_phase_active, false,
+      'phase 2 must not report ui_phase_active from a UI-SPEC file that belongs to phase 1');
+  });
+
   // #3473 F2 (companion to #3357): init plan-phase's verification_path
   // projector now resolves via the shared resolveVerificationFile resolver
   // instead of a hand-rolled `.find()` over unsorted readdir() order. The
@@ -1667,6 +1742,27 @@ describe('cmdInitProgress', () => {
     assert.strictEqual(output.completed_count, 1);
     assert.strictEqual(output.current_phase, null);
     assert.strictEqual(output.next_phase, null);
+  });
+
+  test('#3511-class: has_research ignores a misplaced RESEARCH.md that belongs to another phase', () => {
+    // Phase 01 has no artifacts of its own.
+    const phase1 = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phase1, { recursive: true });
+
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    const phase2 = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.mkdirSync(phase2, { recursive: true });
+    fs.writeFileSync(path.join(phase2, '01-RESEARCH.md'), '# Research for phase 01');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const p2 = output.phases.find(p => p.number === '02');
+    assert.strictEqual(p2.has_research, false,
+      'phase 02 must not report has_research from a file that belongs to phase 01');
+    assert.strictEqual(p2.status, 'pending');
   });
 
   test('implementation-complete phase without passed verification remains current work', () => {
@@ -3416,6 +3512,25 @@ describe('init section manifest', () => {
       assert.deepStrictEqual(body.section_manifest.read, [
         'gsd-core/workflows/execute-phase/steps/partial-wave.md',
       ]);
+    });
+
+    test('#3511-class: regression-gate (state:has-prior-phases) ignores a misplaced VERIFICATION.md that belongs to another phase', (t) => {
+      const dir = createTempProject('gsd-3511-hasprior-');
+      t.after(() => cleanup(dir));
+      // Phase 01 is the one being executed.
+      seedPhase(dir, '01-widgets', {});
+      // Phase 02's directory holds ONLY a stray artifact whose filename
+      // token ("05-") belongs to phase 05, not to this directory's own
+      // phase (02) — it must not make phase 02 look like it has its own
+      // verification report.
+      seedPhase(dir, '02-other', { '05-VERIFICATION.md': '# Verification for phase 05' });
+
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'stray-verification');
+
+      assert.ok(body.section_manifest, 'section_manifest must be present');
+      assert.ok(!body.section_manifest.included.includes('regression-gate'),
+        'regression-gate must not be included when no OTHER phase has its own verification');
+      assert.ok(body.section_manifest.excluded.includes('regression-gate'));
     });
   });
 

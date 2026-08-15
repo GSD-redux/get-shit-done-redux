@@ -339,6 +339,23 @@ describe('isPhaseArtifact (#3511)', () => {
     assert.strictEqual(phaseId.isPhaseArtifact('03a-VERIFICATION.md', '03A-foo'), true);
   });
 
+  // WARNING-2 (#3511 review): the `firstLetterPrefixed` include-everything
+  // branch (bracket-convention ambiguity fail-safe, docblock "BRACKET
+  // CONVENTION" section) was untested on its own — only the ZERO-SEGMENT
+  // fail-safe below had direct coverage. Pinned here so a later flip to
+  // `false` for this family is caught rather than silently shipped.
+  test('#3511 WARNING-2: bracket-ambiguous letter-prefixed-decimal dirs (firstLetterPrefixed) are the deliberate include-everything fail-safe', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('99-VERIFICATION.md', 'P0.3-2-slug'), true);
+    assert.strictEqual(phaseId.isPhaseArtifact('07-UAT.md', 'v2-migration'), true);
+  });
+
+  // WARNING-5 (#3511 review): pin actual behavior for a decimal sub-phase
+  // token compared against a same-leading-number-but-different-sub-phase
+  // artifact — the exact-token-match rule (not a numeric-prefix match).
+  test('#3511 WARNING-5: "35-VERIFICATION.md" (bare, no sub-phase) does not belong to decimal sub-phase dir "35.1-slug"', () => {
+    assert.strictEqual(phaseId.isPhaseArtifact('35-VERIFICATION.md', '35.1-slug'), false);
+  });
+
   test('fail-safe: a dir name with no derivable token includes EVERY file (never exclude)', () => {
     // derivePhaseTokenSegments finds zero segments for these dir names (same
     // condition extractPhaseToken treats as "return dirName unchanged" —
@@ -387,7 +404,7 @@ describe('isPhaseArtifact (#3511)', () => {
     // is NOT a genuine sub-phase — 2-3 digit words like "80", "100".
     const digitSlugSegment = fc.constantFrom(null, '80', '20', '100');
 
-    const dirNameGen = fc.record({
+    const plainDirNameGen = fc.record({
       code: projectCode,
       padded: fc.boolean(),
       num: fc.integer({ min: 1, max: 99 }),
@@ -401,6 +418,38 @@ describe('isPhaseArtifact (#3511)', () => {
       const digitTail = digitSlug ? `-${digitSlug}` : '';
       return { dirName: `${codePrefix}${token}${digitTail}-${slug}`, phase: token };
     });
+
+    // INFO-2 (#3511 review): a genuine decimal sub-phase dir (`05.3-slug`) —
+    // the exact-token-match branch, not the digit-leading-slug fallback.
+    const decimalDirNameGen = fc.record({
+      code: projectCode,
+      padded: fc.boolean(),
+      major: fc.integer({ min: 1, max: 99 }),
+      sub: fc.integer({ min: 1, max: 99 }),
+      slug: slugWord,
+    }).map(({ code, padded, major, sub, slug }) => {
+      const majorStr = padded ? String(major).padStart(2, '0') : String(major);
+      const token = `${majorStr}.${sub}`;
+      const codePrefix = code ? `${code}-` : '';
+      return { dirName: `${codePrefix}${token}-${slug}`, phase: token };
+    });
+
+    // INFO-2 (#3511 review): the letter-prefixed-decimal family (`P0.3-2-slug`)
+    // — string-indistinguishable from a bracket-dir token without an explicit
+    // convention signal, so `isPhaseArtifact` treats it as the deliberate
+    // `firstLetterPrefixed` include-everything fail-safe (see WARNING-2 test
+    // above): every candidate file belongs, by construction.
+    const letterPrefixedDecimalDirNameGen = fc.record({
+      prefix: fc.constantFrom('P0', 'M1', 'A2'),
+      major: fc.integer({ min: 1, max: 20 }),
+      sub: fc.integer({ min: 1, max: 20 }),
+      slug: slugWord,
+    }).map(({ prefix, major, sub, slug }) => ({
+      dirName: `${prefix}.${major}-${sub}-${slug}`,
+      phase: `${major}-${sub}`,
+    }));
+
+    const dirNameGen = fc.oneof(plainDirNameGen, decimalDirNameGen, letterPrefixedDecimalDirNameGen);
 
     fc.assert(
       fc.property(dirNameGen, artifactType, ({ dirName, phase }, type) => {

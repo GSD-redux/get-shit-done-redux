@@ -169,8 +169,9 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
     // #3492: pin selection to THIS phase's own token so a stray cross-phase
     // or sentinel-numbered canonically-shaped file cannot outrank this
     // phase's own (possibly non-canonical) report.
-    const phaseToken = extractPhaseToken(path.basename(phaseDir));
-    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken });
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken, phaseDirName });
     if (verificationFile) {
       const verificationFilePath = path.join(phaseDir, verificationFile);
       const content = platformReadSync(verificationFilePath) || '';

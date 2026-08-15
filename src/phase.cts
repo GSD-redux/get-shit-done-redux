@@ -1559,11 +1559,32 @@ function renameIntegerPhases(
     const oldPrefix = `${oldPadded}${letterSuffix}${decimalSuffix}`;
     const newPrefix = `${newPadded}${letterSuffix}${decimalSuffix}`;
     const newDirName = `${newPrefix}-${item.slug}`;
+    // WARNING-3 (#3511 review): the directory match above accepts an
+    // UNPADDED leading number (`\d+`), so a supported rename can pair a
+    // 2-padded dir with an unpadded-numbered artifact — dir `9-slug` holding
+    // `9-VERIFICATION.md`. Renaming files by `f.startsWith(oldPrefix)` alone
+    // (oldPrefix always 2-padded) misses that file: it becomes desynced from
+    // its now-renamed directory and the phase reads `missing`. Try the
+    // UNPADDED old-prefix form as a fallback so such an artifact renames
+    // alongside its directory. A trailing-digit boundary check keeps the
+    // unpadded form from over-matching a DIFFERENT phase's file (unpadded
+    // prefix "1" must not match "10-…").
+    const oldPrefixUnpadded = `${item.oldInt}${letterSuffix}${decimalSuffix}`;
     retryRenameSync(path.join(phasesDir, item.dir), path.join(phasesDir, newDirName));
     renamedDirs.push({ from: item.dir, to: newDirName });
     for (const f of fs.readdirSync(path.join(phasesDir, newDirName))) {
+      let matchedPrefix: string | null = null;
       if (f.startsWith(oldPrefix)) {
-        const newFileName = newPrefix + f.slice(oldPrefix.length);
+        matchedPrefix = oldPrefix;
+      } else if (
+        oldPrefixUnpadded !== oldPrefix &&
+        f.startsWith(oldPrefixUnpadded) &&
+        !/^\d/.test(f.slice(oldPrefixUnpadded.length))
+      ) {
+        matchedPrefix = oldPrefixUnpadded;
+      }
+      if (matchedPrefix) {
+        const newFileName = newPrefix + f.slice(matchedPrefix.length);
         retryRenameSync(
           path.join(phasesDir, newDirName, f),
           path.join(phasesDir, newDirName, newFileName),

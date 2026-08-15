@@ -813,12 +813,17 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
  * names a different phase.
  *
  * SITE DISCIPLINE: every aggregate-scan call site (`uat.cts`,
- * `uat-predicate.cts`, `phase.cts`, `audit.cts`, `state.cts`) and
- * `resolveVerificationFile`'s single-pick fallback (`verification.cts`) MUST
- * route through this helper rather than calling `isPhaseArtifact` in a filter
- * position directly, so the rule cannot be re-derived per site (CLAUDE.md's
- * Generative Fix Divergence class). `isPhaseArtifact` stays exported for
- * single-item membership questions and its own unit tests.
+ * `uat-predicate.cts`, `phase.cts`, `audit.cts`, `state.cts`,
+ * `core-utils.cts`'s `getPhaseFileStats` — #3511 BLOCKER-2 — and
+ * `init.cts`'s two phase-info-projection sites — #3511 BLOCKER-3, both of
+ * which scope the raw listing once up front and reuse it for every bare
+ * `.find()`/`.some()` artifact predicate: context/research/UAT/reviews/
+ * patterns) and `resolveVerificationFile`'s single-pick fallback
+ * (`verification.cts`) MUST route through this helper rather than calling
+ * `isPhaseArtifact` in a filter position directly, so the rule cannot be
+ * re-derived per site (CLAUDE.md's Generative Fix Divergence class).
+ * `isPhaseArtifact` stays exported for single-item membership questions and
+ * its own unit tests.
  */
 function scopeToPhase(fileNames: string[], phaseDirName: string): string[] {
   return fileNames.filter((f) => isPhaseArtifact(f, phaseDirName));

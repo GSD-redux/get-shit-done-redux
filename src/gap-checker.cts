@@ -30,6 +30,9 @@ import { iterateBullets } from './markdown-sectionizer.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseIdMod = require('./phase-id.cjs');
+const { scopeToPhase } = phaseIdMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -353,7 +356,13 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
     if (fs.existsSync(absPhaseDir)) phaseDirFiles = fs.readdirSync(absPhaseDir);
   } catch { /* unreadable */ }
 
-  const ctxFile = findContextMdIn(phaseDirFiles);
+  // #3511-class: scope the raw listing to this phase dir before the
+  // phase-numbered -CONTEXT.md predicate. `phaseDirFiles` itself stays raw —
+  // it is also reused below only as a `.length > 0` guard ahead of
+  // scanPhasePlans's own plan-sequence-numbered enumeration, a different
+  // grammar that must not be scoped by phase number.
+  const scopedPhaseDirFiles = scopeToPhase(phaseDirFiles, path.basename(absPhaseDir));
+  const ctxFile = findContextMdIn(scopedPhaseDirFiles);
   const ctxPath = ctxFile ? path.join(absPhaseDir, ctxFile) : null;
   const ctxMd = ctxPath ? fs.readFileSync(ctxPath, 'utf-8') : '';
 
