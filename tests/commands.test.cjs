@@ -3750,7 +3750,9 @@ describe('#3533 effort sync: inherit means the key must not exist', () => {
   test('10d: sync strips the key when inherit is configured and a value is present', () => {
     const tmpDir = makeTmpDir('effort-sync-inherit-strip-');
     const agentsDir = makeAgentsDir(tmpDir);
-    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITH_EFFORT); // effort: medium
+    // Fixture carries its own name so the survivor assertion below is
+    // satisfiable (AGENT_WITH_EFFORT names gsd-planner — wrong file).
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITH_EFFORT.replace('name: gsd-planner', 'name: gsd-executor'));
     writePlanningConfig(tmpDir, { default: 'inherit' });
 
     const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
