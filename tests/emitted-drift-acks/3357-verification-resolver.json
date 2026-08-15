@@ -1,9 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "transition.md": {
-      "reason": "#3357: verify_completion now resolves THIS phase's own verification report through the shared `verification.resolve-file` seam (src/verification.cts resolveVerificationFile) instead of a blind `*-VERIFICATION.md` glob feeding awk directly, so a stray ad-hoc worksheet (e.g. `03-CORRECTION-VERIFICATION.md`) can no longer alphabetically outrank the real report. Growth is +632 bytes (23,247 -> 23,879): the `gsd_run query verification.resolve-file` call plus its comment, and the FNR-vs-NR frontmatter re-arm fix (with rationale comment) for correctness across the resolver's single-path result. The canonical runtime-launcher preamble was relocated (not duplicated) from `update_roadmap_and_state` up to `verify_completion` since that step now needs `gsd_run` earlier in document order; net preamble count is unchanged at exactly one."
-    },
     "verify-work.md": {
       "reason": "#3357: the `03-VERIFICATION.md` staleness check now resolves the phase's own report via `gsd_run query verification.resolve-file \"$PHASE_DIR\" --raw` instead of `ls \"${PHASE_DIR}\"/*-VERIFICATION.md | head -1`, routing through the same shared resolver seam as transition.md so both call sites agree on which file is canonical. Growth is +13 bytes (38,983 -> 38,996), the delta between the old ls/head-1 pipeline and the gsd_run call."
     }
