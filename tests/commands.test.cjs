@@ -3897,7 +3897,10 @@ describe('feat-488: effort sync command', () => {
     const agentsDir = makeAgentsDir(tmpDir);
     const agentPath = path.join(agentsDir, 'gsd-executor.md');
     fs.writeFileSync(agentPath, AGENT_WITHOUT_EFFORT);
-    writePlanningConfig(tmpDir, { default: 'max' });
+    // #3531: pin every tier so the injected value is tier-independent — an
+    // effort.default alone no longer answers for a tiered agent now that the
+    // config block merges over the built-in tier ladder.
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'max', standard: 'max', heavy: 'max' }, default: 'max' });
 
     const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
     const result = captureOutput(() =>
@@ -3946,10 +3949,14 @@ describe('feat-488: effort sync command', () => {
     fs.mkdirSync(planningDir, { recursive: true });
     fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ model_profile: 'balanced' }));
 
-    // Home defaults set effort.default = low
+    // Home defaults set the heavy tier effort to low. (#3531: a bare home
+    // effort.default would no longer reach gsd-planner — the merged tier
+    // ladder answers for tiered agents — so the home fixture pins the tier,
+    // which is what this test's claim actually exercises: home-level effort
+    // applies when the project config has no effort section.)
     const gsdDir = path.join(tmpHome, '.gsd');
     fs.mkdirSync(gsdDir, { recursive: true });
-    fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ effort: { default: 'low' } }));
+    fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ effort: { routing_tier_defaults: { heavy: 'low' } } }));
 
     // Isolate HOME (and USERPROFILE for Windows parity) so
     // readGsdEffectiveEffortConfig reads our fixture, not the
@@ -3978,7 +3985,7 @@ describe('feat-488: effort sync command', () => {
       }
     }
 
-    // With home effort.default = 'low' and the agent currently at 'medium',
+    // With home heavy-tier effort 'low' and the agent currently at 'medium',
     // cmdEffortSync must sync exactly 1 agent and set it to 'low'.
     assert.equal(result.synced, 1, 'should sync 1 agent whose effort differs from home default');
     assert.equal(result.changes[0].agent, 'gsd-planner');
