@@ -1,15 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "skills/gsd-autonomous/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
-    "skills/gsd-execute-phase/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
-    "skills/gsd-next/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
     "skills/gsd-ns-manage/skills/stats/SKILL.md": {
       "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
     },
@@ -26,15 +17,6 @@
       "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
     },
     "skills/gsd-ns-workflow/skills/progress/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
-    "skills/gsd-plan-phase/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
-    "skills/gsd-progress/SKILL.md": {
-      "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
-    },
-    "skills/gsd-stats/SKILL.md": {
       "reason": "#3151: convertClaudeCommandToClaudeSkill no longer emits effort: into skill frontmatter (a static effort value invalidates the caller's prompt cache at both scope boundaries). The converter (src/runtime-artifact-conversion.cts + duplicate bin/install.js) changed, moving these emitted skill hashes without a source-command change; this ack covers that converter-driven emission drop across all runtime layouts (per ADR-2719/#3039 precedent)."
     },
     "skills/gsd/gsd-ns-manage/skills/stats/SKILL.md": {
