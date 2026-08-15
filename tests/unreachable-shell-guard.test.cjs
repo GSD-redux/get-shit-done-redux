@@ -320,13 +320,19 @@ test('#3409 G4: the milestone summary read does not hang with no summaries', (t)
   //     process holds its own write end) and redirects fd 0 there. This
   //     avoids `<(process substitution)`, which would leave a background
   //     job holding the CAPTURED STDOUT pipe open instead — a different,
-  //     confounding hang unrelated to the stdin defect under test.
+  //     confounding hang unrelated to the stdin defect under test. The FIFO
+  //     lives inside a private `mktemp -d` directory (created atomically
+  //     with mode 0700) rather than at a bare `mktemp -u` path: `-u` only
+  //     RESERVES a name without creating it, leaving a window between the
+  //     reservation and `mkfifo` in which another process on a shared /tmp
+  //     could create that same path first (a symlink-race primitive) — the
+  //     directory removes the race entirely.
   const script = [
     'shopt -s nullglob',
-    'FIFO=$(mktemp -u)',
-    'mkfifo "$FIFO"',
-    'exec 3<> "$FIFO"',
-    'rm -f "$FIFO"',
+    'FIFO_DIR=$(mktemp -d)',
+    'mkfifo "$FIFO_DIR/f"',
+    'exec 3<> "$FIFO_DIR/f"',
+    'rm -rf "$FIFO_DIR"',
     'exec 0<&3',
     snippet,
   ].join('\n');

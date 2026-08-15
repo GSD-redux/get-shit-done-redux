@@ -116,14 +116,17 @@
  *     quantifier, no nesting.
  *
  * ESCAPE MARKER. A line carrying `# gsd-scan-ignore: <reason>` is exempt
- * ONLY when `<reason>` names an issue (`#NNN`) or an `http(s)://` URL — the
- * repo's existing precedent from `tests/commit-files-pathspec.test.cjs`
+ * ONLY when `<reason>` names an issue (`#NNN`, N a positive integer) or an
+ * `http(s)://` URL with an actual host after the scheme — the repo's
+ * existing precedent from `tests/commit-files-pathspec.test.cjs`
  * (CONTRIBUTING.md, "Every `commit` invocation in shipped content must
- * declare `--files`"). `ISSUE_REF_RE` is a direct copy of that precedent's
- * predicate (`/#\d+|https?:\/\//`) rather than a hand-written near-copy —
- * the same file's own review history records a hand-copy drifting from the
- * original in exactly the details (`http://` counts; `#\d+` has no trailing
- * boundary) that matter. A marker whose reason is free text, empty, or
+ * declare `--files`"), STARTING from that precedent's predicate
+ * (`/#\d+|https?:\/\//`) but DELIBERATELY DIVERGING from it (see
+ * `ISSUE_REF_RE`'s own comment for exactly what changed and why) rather than
+ * copying it verbatim. The sibling file still carries the looser, unpatched
+ * form — this guard's escape hatch is a stricter gate than a commit-message
+ * pathspec check needs to be, since an accepted reason here silently
+ * exempts a real violation from ever being reported. A marker whose reason is free text, empty, or
  * whitespace-only is reported as a DISTINCT "malformed declaration" error —
  * never silently exempted (that would defeat the guard) and never folded
  * into the ordinary violation list (that would tell an author who already
@@ -332,12 +335,28 @@ function detectGlobOperand(line) {
 // coverage in the test matrix (P1-P4) exists to catch.
 const MARKER_RE = /#\s*gsd-scan-ignore:\s*(.*)$/;
 
-// A direct copy of tests/commit-files-pathspec.test.cjs's own
-// `ISSUE_REF_RE` — not a hand-written near-copy. That file's own review
-// history records a hand-copy drifting from the original in exactly the
-// details that matter (`http://` counts, not just `https://`; `#\d+` has no
-// trailing word-boundary requirement) — mirrored, not restated.
-const ISSUE_REF_RE = /#\d+|https?:\/\//;
+// DELIBERATE DIVERGENCE from tests/commit-files-pathspec.test.cjs's own
+// `ISSUE_REF_RE` (`/#\d+|https?:\/\//`), which this predicate started as a
+// copy of. That sibling form validates FORMAT only, and two shapes satisfy
+// it while naming nothing real:
+//   - `#0` matches `#\d+` (`\d+` allows a leading zero / an all-zero run),
+//     silently exempting a violation under a reason that names no positive
+//     issue number.
+//   - a bare `http://` / `https://` matches `https?:\/\/` with nothing
+//     after the scheme — no host, so no URL is actually named.
+// Both are closed here: an issue ref requires a POSITIVE integer
+// (`#[1-9]\d*` — no leading-zero/all-zero match), and a URL requires at
+// least one non-whitespace character after the scheme as its host
+// (`https?:\/\/[^\s]+`). This guard's escape hatch is a stricter gate than
+// the sibling's commit-message pathspec check needs to be — an accepted
+// reason here silently exempts a real violation from ever being reported —
+// so the sibling is intentionally left at its own, looser form (not edited
+// by this change) rather than tightened to match.
+// Still one bounded quantifier per alternative, no nesting: `\d*` over a
+// fixed digit class, `[^\s]+` over a fixed negated class. Non-backtracking,
+// same as every other regex in this module (see the module header's ReDoS
+// section).
+const ISSUE_REF_RE = /#[1-9]\d*|https?:\/\/[^\s]+/;
 
 // `scanTree` (scripts/lib/drift-scan.cjs) builds its repo-relative path via
 // `path.relative()`, which uses NATIVE separators: on Windows that is
@@ -443,56 +462,146 @@ function scanRepo(root) {
 }
 
 /**
+ * Frozen outcome-reason enum. CONTRIBUTING.md's "Prohibited: Raw Text
+ * Matching on Test Outputs" requires a typed structured surface wherever
+ * this module produces human-readable text — mirrors
+ * `gsd-core/bin/verify-reapply-patches.cjs`'s own `REASON` map exactly:
+ * `main()`'s `--json` mode and every `loadBaseline` per-error object carry
+ * one of these codes instead of free prose, and tests assert on the code,
+ * never on the rendered message. Adding a new reason requires updating this
+ * enum, the `--json` emission/`loadBaseline` call site that produces it, AND
+ * the test that locks `Object.keys(REASON).sort()` — three coordinated
+ * changes that keep the code surface from drifting from the test surface.
+ */
+const REASON = Object.freeze({
+  // main() top-level outcomes (non---update and --update paths).
+  OK_NO_VIOLATIONS: 'ok_no_violations',
+  OK_BASELINE_UPDATED: 'ok_baseline_updated',
+  FAIL_FRESH_VIOLATION: 'fail_fresh_violation',
+  FAIL_STALE_ENTRY: 'fail_stale_entry',
+  FAIL_MALFORMED_MARKER: 'fail_malformed_marker',
+  FAIL_BASELINE_LOAD: 'fail_baseline_load',
+  // loadBaseline per-error outcomes — each a distinct baseline-load failure
+  // class (mirrors lint-planning-prompt-drift.cjs's loadBaseline validation).
+  FAIL_BASELINE_MISSING: 'fail_baseline_missing',
+  FAIL_BASELINE_EMPTY: 'fail_baseline_empty',
+  FAIL_BASELINE_INVALID_JSON: 'fail_baseline_invalid_json',
+  FAIL_BASELINE_NOT_OBJECT: 'fail_baseline_not_object',
+  FAIL_BASELINE_ENTRIES_NOT_ARRAY: 'fail_baseline_entries_not_array',
+  FAIL_BASELINE_ENTRY_NOT_OBJECT: 'fail_baseline_entry_not_object',
+  FAIL_BASELINE_ENTRY_FIELD_INVALID: 'fail_baseline_entry_field_invalid',
+  FAIL_BASELINE_ENTRY_COUNT_INVALID: 'fail_baseline_entry_count_invalid',
+});
+
+/**
  * Read and parse the ratchet baseline. Returns `{ entries, errors }` —
- * `entries` is `[]` and `errors` names the problem when the file is
- * missing, empty, invalid JSON, or malformed. Mirrors
- * `lint-planning-prompt-drift.cjs`'s `loadBaseline` validation exactly
- * (same five failure classes: missing, empty, invalid JSON, non-object
- * JSON — including the `null`/array/scalar cases a bare `typeof === 'object'`
- * check would miss — and a non-array `entries` field; per-entry validation
- * of `file`/`text`/`count` below mirrors it too).
+ * `entries` is `[]` and `errors` is an array of STRUCTURED error objects
+ * (`{ reason: REASON.*, message, ... }`) when the file is missing, empty,
+ * invalid JSON, or malformed. Mirrors `lint-planning-prompt-drift.cjs`'s
+ * `loadBaseline` validation exactly (same failure classes: missing, empty,
+ * invalid JSON, non-object JSON — including the `null`/array/scalar cases a
+ * bare `typeof === 'object'` check would miss — a non-array `entries`
+ * field, and per-entry validation of `file`/`text`/`count`). `message` is a
+ * human-readable string for the console formatter only; callers (and
+ * tests) must key off `reason`, never parse `message`.
  */
 function loadBaseline(root) {
   const baselinePath = path.join(root, BASELINE_REL_PATH);
   if (!fs.existsSync(baselinePath)) {
-    return { entries: [], errors: [`${BASELINE_REL_PATH} is missing — run \`node scripts/lint-unreachable-guard-drift.cjs --update\` to generate it`] };
+    return {
+      entries: [],
+      errors: [{
+        reason: REASON.FAIL_BASELINE_MISSING,
+        message: `${BASELINE_REL_PATH} is missing — run \`node scripts/lint-unreachable-guard-drift.cjs --update\` to generate it`,
+      }],
+    };
   }
   const raw = fs.readFileSync(baselinePath, 'utf8');
   if (raw.trim() === '') {
-    return { entries: [], errors: [`${BASELINE_REL_PATH} is present but empty`] };
+    return {
+      entries: [],
+      errors: [{ reason: REASON.FAIL_BASELINE_EMPTY, message: `${BASELINE_REL_PATH} is present but empty` }],
+    };
   }
   let doc;
   try {
     doc = JSON.parse(raw);
   } catch (err) {
-    return { entries: [], errors: [`${BASELINE_REL_PATH} is not valid JSON: ${err.message}`] };
+    return {
+      entries: [],
+      errors: [{
+        reason: REASON.FAIL_BASELINE_INVALID_JSON,
+        message: `${BASELINE_REL_PATH} is not valid JSON: ${err.message}`,
+        parseError: err.message,
+      }],
+    };
   }
   if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
-    return { entries: [], errors: [`${BASELINE_REL_PATH} must be a JSON object, got ${Array.isArray(doc) ? 'array' : typeof doc}`] };
+    const gotType = Array.isArray(doc) ? 'array' : typeof doc;
+    return {
+      entries: [],
+      errors: [{
+        reason: REASON.FAIL_BASELINE_NOT_OBJECT,
+        message: `${BASELINE_REL_PATH} must be a JSON object, got ${gotType}`,
+        gotType,
+      }],
+    };
   }
   if (!Array.isArray(doc.entries)) {
-    return { entries: [], errors: [`${BASELINE_REL_PATH}: "entries" must be an array, got ${JSON.stringify(doc.entries)}`] };
+    return {
+      entries: [],
+      errors: [{
+        reason: REASON.FAIL_BASELINE_ENTRIES_NOT_ARRAY,
+        message: `${BASELINE_REL_PATH}: "entries" must be an array, got ${JSON.stringify(doc.entries)}`,
+        entriesValue: doc.entries,
+      }],
+    };
   }
   const errors = [];
   const entries = [];
   doc.entries.forEach((entry, i) => {
     const where = `${BASELINE_REL_PATH}.entries[${i}]`;
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      errors.push(`${where} must be an object, got ${JSON.stringify(entry)}`);
+      errors.push({
+        reason: REASON.FAIL_BASELINE_ENTRY_NOT_OBJECT,
+        message: `${where} must be an object, got ${JSON.stringify(entry)}`,
+        index: i,
+        where,
+      });
       return;
     }
     if (typeof entry.file !== 'string' || entry.file === '') {
-      errors.push(`${where}.file must be a non-empty string, got ${JSON.stringify(entry.file)}`);
+      errors.push({
+        reason: REASON.FAIL_BASELINE_ENTRY_FIELD_INVALID,
+        message: `${where}.file must be a non-empty string, got ${JSON.stringify(entry.file)}`,
+        index: i,
+        where,
+        field: 'file',
+        value: entry.file,
+      });
       return;
     }
     if (typeof entry.text !== 'string' || entry.text === '') {
-      errors.push(`${where}.text must be a non-empty string, got ${JSON.stringify(entry.text)}`);
+      errors.push({
+        reason: REASON.FAIL_BASELINE_ENTRY_FIELD_INVALID,
+        message: `${where}.text must be a non-empty string, got ${JSON.stringify(entry.text)}`,
+        index: i,
+        where,
+        field: 'text',
+        value: entry.text,
+      });
       return;
     }
     // `count` is optional on read (diffAgainstBaseline defaults an absent
     // count to 1) but when present must be a positive integer.
     if (entry.count !== undefined && !(Number.isInteger(entry.count) && entry.count >= 1)) {
-      errors.push(`${where}.count must be a positive integer when present, got ${JSON.stringify(entry.count)}`);
+      errors.push({
+        reason: REASON.FAIL_BASELINE_ENTRY_COUNT_INVALID,
+        message: `${where}.count must be a positive integer when present, got ${JSON.stringify(entry.count)}`,
+        index: i,
+        where,
+        value: entry.count,
+      });
       return;
     }
     entries.push(entry);
@@ -593,30 +702,61 @@ function writeBaseline(root, violations) {
   return entries;
 }
 
+/**
+ * `--json` mode emits ONE structured JSON object to stdout in place of the
+ * human formatter below — the typed IR CONTRIBUTING.md's "Prohibited: Raw
+ * Text Matching on Test Outputs" requires. The human formatter's wording is
+ * untouched (operator console use only); `emitJson` is the only new output
+ * surface, gated on `json` so the two never interleave on the same stream.
+ */
 function main() {
   const root = path.join(__dirname, '..');
   const update = process.argv.includes('--update');
+  const json = process.argv.includes('--json');
   const { violations, malformed } = scanRepo(root);
+
+  function emitJson(report) {
+    if (json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  }
 
   if (update) {
     if (malformed.length > 0) {
-      process.stderr.write('unreachable-guard-drift: malformed `# gsd-scan-ignore:` declaration(s) — fix these before regenerating the baseline (they are never ratchet-eligible):\n');
-      for (const m of malformed) {
-        process.stderr.write(`  ${sanitizeForReport(m.file)}:${m.line}  ${sanitizeForReport(m.text)}\n`);
+      if (!json) {
+        process.stderr.write('unreachable-guard-drift: malformed `# gsd-scan-ignore:` declaration(s) — fix these before regenerating the baseline (they are never ratchet-eligible):\n');
+        for (const m of malformed) {
+          process.stderr.write(`  ${sanitizeForReport(m.file)}:${m.line}  ${sanitizeForReport(m.text)}\n`);
+        }
+        process.stderr.write('\n  remedy: the reason after `# gsd-scan-ignore:` must name a tracking issue (#NNN) or an http(s):// URL.\n');
       }
-      process.stderr.write('\n  remedy: the reason after `# gsd-scan-ignore:` must name a tracking issue (#NNN) or an http(s):// URL.\n');
+      emitJson({ reason: REASON.FAIL_MALFORMED_MARKER, violations: [], malformed, stale: [], baselineErrors: [] });
       process.exitCode = 1;
       return;
     }
     const entries = writeBaseline(root, violations);
-    process.stdout.write(`ok unreachable-guard-drift: baseline regenerated with ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}\n`);
+    if (!json) {
+      process.stdout.write(`ok unreachable-guard-drift: baseline regenerated with ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}\n`);
+    }
+    emitJson({ reason: REASON.OK_BASELINE_UPDATED, violations: [], malformed: [], stale: [], baselineErrors: [], updatedEntryCount: entries.length });
     return;
   }
 
   const { entries: baseline, errors } = loadBaseline(root);
   if (errors.length > 0) {
-    process.stderr.write('unreachable-guard-drift: baseline load error(s):\n');
-    for (const e of errors) process.stderr.write(`  ${e}\n`);
+    if (!json) {
+      process.stderr.write('unreachable-guard-drift: baseline load error(s):\n');
+      // OUTPUT SEAM: `loadBaseline`'s `message` strings embed
+      // `JSON.stringify(entry.file)` / `JSON.stringify(entry.text)` /
+      // `JSON.stringify(entry)` verbatim, and `JSON.stringify` escapes only
+      // code points below 0x20 — it passes C1 controls (0x7F-0x9F) and the
+      // bidi/zero-width controls (U+202E RTL override, U+2066-U+2069,
+      // U+2028, U+2029) through UNESCAPED. Without `sanitizeForReport` here, a
+      // crafted `entries[].file`/`.text` value in the baseline JSON could
+      // land an active bidi override straight into CI console output — the
+      // exact report-spoofing class every violation/malformed field below is
+      // already routed through `sanitizeForReport` to prevent.
+      for (const e of errors) process.stderr.write(`  ${sanitizeForReport(e.message)}\n`);
+    }
+    emitJson({ reason: REASON.FAIL_BASELINE_LOAD, violations: [], malformed: [], stale: [], baselineErrors: errors });
     process.exitCode = 1;
     return;
   }
@@ -624,39 +764,51 @@ function main() {
   const { fresh, stale } = diffAgainstBaseline(violations, baseline);
 
   if (fresh.length === 0 && stale.length === 0 && malformed.length === 0) {
-    process.stdout.write(`ok unreachable-guard-drift: no unacknowledged unreachable shell-guard shapes in the prompt layer (${baseline.length} known)\n`);
+    if (!json) {
+      process.stdout.write(`ok unreachable-guard-drift: no unacknowledged unreachable shell-guard shapes in the prompt layer (${baseline.length} known)\n`);
+    }
+    emitJson({ reason: REASON.OK_NO_VIOLATIONS, violations: [], malformed: [], stale: [], baselineErrors: [], knownCount: baseline.length });
     return;
   }
 
-  if (fresh.length > 0) {
-    process.stderr.write('unreachable-guard-drift: NEW unreachable shell-guard shape(s) found in the prompt layer.\n');
-    process.stderr.write('Detector A (--pick + || echo): the fallback can never fire on field absence — replace with an\n');
-    process.stderr.write('explicit -z/empty-string test on the resolved value.\n');
-    process.stderr.write('Detector B (cat/ls over a glob operand): under a nullglob set elsewhere in the same shell\n');
-    process.stderr.write('session, an unmatched glob reads from stdin (cat) or lists the cwd (ls) — use an array\n');
-    process.stderr.write('expansion or an existence test instead.\n');
-    process.stderr.write(`Or, if this is a deliberate wrong-example, declare it with # gsd-scan-ignore: #NNN, or add an\n`);
-    process.stderr.write(`acknowledged entry to ${BASELINE_REL_PATH} via --update:\n`);
-    for (const v of fresh) {
-      process.stderr.write(`  ${sanitizeForReport(v.file)}:${v.line}  [${v.kind}]  ${sanitizeForReport(v.found)}  ${sanitizeForReport(v.text)}\n`);
+  if (!json) {
+    if (fresh.length > 0) {
+      process.stderr.write('unreachable-guard-drift: NEW unreachable shell-guard shape(s) found in the prompt layer.\n');
+      process.stderr.write('Detector A (--pick + || echo): the fallback can never fire on field absence — replace with an\n');
+      process.stderr.write('explicit -z/empty-string test on the resolved value.\n');
+      process.stderr.write('Detector B (cat/ls over a glob operand): under a nullglob set elsewhere in the same shell\n');
+      process.stderr.write('session, an unmatched glob reads from stdin (cat) or lists the cwd (ls) — use an array\n');
+      process.stderr.write('expansion or an existence test instead.\n');
+      process.stderr.write(`Or, if this is a deliberate wrong-example, declare it with # gsd-scan-ignore: #NNN, or add an\n`);
+      process.stderr.write(`acknowledged entry to ${BASELINE_REL_PATH} via --update:\n`);
+      for (const v of fresh) {
+        process.stderr.write(`  ${sanitizeForReport(v.file)}:${v.line}  [${v.kind}]  ${sanitizeForReport(v.found)}  ${sanitizeForReport(v.text)}\n`);
+      }
+    }
+
+    if (stale.length > 0) {
+      process.stderr.write('\nunreachable-guard-drift: STALE baseline entr' + (stale.length === 1 ? 'y' : 'ies') + " (fully migrated, or a PARTIAL migration — fewer occurrences found than acknowledged; delete or re-record the row):\n");
+      for (const e of stale) {
+        process.stderr.write(`  ${sanitizeForReport(e.file)}  ${sanitizeForReport(e.text)}  (found ${e.actualCount}/${e.count} acknowledged occurrence${e.count === 1 ? '' : 's'})\n`);
+      }
+      process.stderr.write(`\n  remedy: node scripts/lint-unreachable-guard-drift.cjs --update\n`);
+    }
+
+    if (malformed.length > 0) {
+      process.stderr.write('\nunreachable-guard-drift: malformed `# gsd-scan-ignore:` declaration(s) — never ratchet-eligible, must be fixed directly:\n');
+      for (const m of malformed) {
+        process.stderr.write(`  ${sanitizeForReport(m.file)}:${m.line}  ${sanitizeForReport(m.text)}\n`);
+      }
+      process.stderr.write('\n  remedy: the reason after `# gsd-scan-ignore:` must name a tracking issue (#NNN) or an http(s):// URL.\n');
     }
   }
 
-  if (stale.length > 0) {
-    process.stderr.write('\nunreachable-guard-drift: STALE baseline entr' + (stale.length === 1 ? 'y' : 'ies') + " (fully migrated, or a PARTIAL migration — fewer occurrences found than acknowledged; delete or re-record the row):\n");
-    for (const e of stale) {
-      process.stderr.write(`  ${sanitizeForReport(e.file)}  ${sanitizeForReport(e.text)}  (found ${e.actualCount}/${e.count} acknowledged occurrence${e.count === 1 ? '' : 's'})\n`);
-    }
-    process.stderr.write(`\n  remedy: node scripts/lint-unreachable-guard-drift.cjs --update\n`);
-  }
-
-  if (malformed.length > 0) {
-    process.stderr.write('\nunreachable-guard-drift: malformed `# gsd-scan-ignore:` declaration(s) — never ratchet-eligible, must be fixed directly:\n');
-    for (const m of malformed) {
-      process.stderr.write(`  ${sanitizeForReport(m.file)}:${m.line}  ${sanitizeForReport(m.text)}\n`);
-    }
-    process.stderr.write('\n  remedy: the reason after `# gsd-scan-ignore:` must name a tracking issue (#NNN) or an http(s):// URL.\n');
-  }
+  const reason = fresh.length > 0
+    ? REASON.FAIL_FRESH_VIOLATION
+    : stale.length > 0
+      ? REASON.FAIL_STALE_ENTRY
+      : REASON.FAIL_MALFORMED_MARKER;
+  emitJson({ reason, violations: fresh, malformed, stale, baselineErrors: [] });
 
   process.exitCode = 1;
 }
@@ -687,4 +839,5 @@ module.exports = {
   SCAN_EXT,
   BASELINE_REL_PATH,
   RATCHET_OWNER_ISSUE,
+  REASON,
 };

@@ -52,10 +52,12 @@ const {
   MARKER_RE,
   ISSUE_REF_RE,
   BASELINE_REL_PATH,
+  REASON,
 } = drift;
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { sanitizeForReport } = require('../scripts/lib/drift-scan.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const DRIFT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-unreachable-guard-drift.cjs');
@@ -413,6 +415,57 @@ describe('Escape marker — # gsd-scan-ignore:', () => {
     assert.ok(ISSUE_REF_RE.test('http://example.com/x'));
     assert.ok(!ISSUE_REF_RE.test('no issue here'));
   });
+
+  // Tightened predicate (deliberate divergence from
+  // tests/commit-files-pathspec.test.cjs's own looser ISSUE_REF_RE — see this
+  // module's ISSUE_REF_RE comment): `#0` and a bare scheme-only URL both
+  // satisfied the copied form's FORMAT-only check without naming anything
+  // real. Regex-level checks first (mirrors the existing convention just
+  // above), then the same two shapes driven through the CLI so the outcome
+  // is pinned on the structured REASON.* code, never on rendered text.
+  test('ISSUE_REF_RE rejects #0 (not a positive integer) and a bare http:// with no host', () => {
+    assert.ok(!ISSUE_REF_RE.test('#0'));
+    assert.ok(ISSUE_REF_RE.test('#123'));
+    assert.ok(!ISSUE_REF_RE.test('http://'));
+    assert.ok(!ISSUE_REF_RE.test('https://'));
+    assert.ok(ISSUE_REF_RE.test('https://example.com/x'));
+  });
+
+  function runIsolatedMarkerCase(t, reason) {
+    const root = createTempDir('gsd-3409-issueref-');
+    t.after(() => cleanup(root));
+    const isolatedScript = buildIsolatedGuard(root);
+    const wfDir = path.join(root, 'gsd-core', 'workflows');
+    fs.mkdirSync(wfDir, { recursive: true });
+    fs.writeFileSync(path.join(wfDir, 'fake.md'), `${pickEchoLine()}   ${markerComment(reason)}\n`);
+    const baselinePath = path.join(root, BASELINE_REL_PATH);
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    fs.writeFileSync(baselinePath, JSON.stringify({ entries: [] }), 'utf8');
+    const jsonResult = runNode([isolatedScript, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    return JSON.parse(jsonResult.stdout);
+  }
+
+  test('#0 as a marker reason is rejected — reported as malformed, not exempted', (t) => {
+    const report = runIsolatedMarkerCase(t, '#0');
+    assert.strictEqual(report.reason, REASON.FAIL_MALFORMED_MARKER);
+    assert.strictEqual(report.malformed.length, 1);
+  });
+
+  test('#123 as a marker reason is accepted — the line is exempted', (t) => {
+    const report = runIsolatedMarkerCase(t, '#123');
+    assert.strictEqual(report.reason, REASON.OK_NO_VIOLATIONS);
+  });
+
+  test('a bare http:// as a marker reason is rejected — reported as malformed, not exempted', (t) => {
+    const report = runIsolatedMarkerCase(t, 'http://');
+    assert.strictEqual(report.reason, REASON.FAIL_MALFORMED_MARKER);
+    assert.strictEqual(report.malformed.length, 1);
+  });
+
+  test('https://example.com/x as a marker reason is accepted — the line is exempted', (t) => {
+    const report = runIsolatedMarkerCase(t, 'https://example.com/x');
+    assert.strictEqual(report.reason, REASON.OK_NO_VIOLATIONS);
+  });
 });
 
 // ─── Ratchet baseline — diffAgainstBaseline ───────────────────────────────
@@ -519,7 +572,7 @@ describe('loadBaseline — malformed input', () => {
     const { entries, errors } = loadBaseline(root);
     assert.deepStrictEqual(entries, []);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /--update/);
+    assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_MISSING);
   });
 
   test('L2: an empty baseline errors', (t) => {
@@ -528,7 +581,7 @@ describe('loadBaseline — malformed input', () => {
     writeBaselineFile(root, '   \n');
     const { errors } = loadBaseline(root);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /empty/);
+    assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_EMPTY);
   });
 
   test('L3: invalid JSON errors, naming the parse failure', (t) => {
@@ -537,7 +590,8 @@ describe('loadBaseline — malformed input', () => {
     writeBaselineFile(root, '{ not json');
     const { errors } = loadBaseline(root);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /not valid JSON/);
+    assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_INVALID_JSON);
+    assert.strictEqual(typeof errors[0].parseError, 'string');
   });
 
   test('L4: non-object JSON scalars each error, naming the actual type', (t) => {
@@ -547,8 +601,8 @@ describe('loadBaseline — malformed input', () => {
       writeBaselineFile(root, literal);
       const { errors } = loadBaseline(root);
       assert.strictEqual(errors.length, 1, `literal=${literal}`);
-      assert.match(errors[0], /must be a JSON object/, `literal=${literal}`);
-      if (literal !== 'null') assert.match(errors[0], new RegExp(expectedType), `literal=${literal}`);
+      assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_NOT_OBJECT, `literal=${literal}`);
+      assert.strictEqual(errors[0].gotType, expectedType, `literal=${literal}`);
     }
   });
 
@@ -558,7 +612,7 @@ describe('loadBaseline — malformed input', () => {
     writeBaselineFile(root, JSON.stringify({ entries: 'nope' }));
     const { errors } = loadBaseline(root);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /"entries" must be an array/);
+    assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_ENTRIES_NOT_ARRAY);
   });
 
   test('L6: count must be a positive integer — 0, -1, 1.5, "2" each error', (t) => {
@@ -569,7 +623,7 @@ describe('loadBaseline — malformed input', () => {
       const { entries, errors } = loadBaseline(root);
       assert.strictEqual(entries.length, 0, `count=${JSON.stringify(badCount)}`);
       assert.strictEqual(errors.length, 1, `count=${JSON.stringify(badCount)}`);
-      assert.match(errors[0], /count must be a positive integer/, `count=${JSON.stringify(badCount)}`);
+      assert.strictEqual(errors[0].reason, REASON.FAIL_BASELINE_ENTRY_COUNT_INVALID, `count=${JSON.stringify(badCount)}`);
     }
   });
 
@@ -579,12 +633,14 @@ describe('loadBaseline — malformed input', () => {
     writeBaselineFile(root, JSON.stringify({ entries: [{ file: '', text: 'X' }] }));
     let result = loadBaseline(root);
     assert.strictEqual(result.errors.length, 1);
-    assert.match(result.errors[0], /\.file must be a non-empty string/);
+    assert.strictEqual(result.errors[0].reason, REASON.FAIL_BASELINE_ENTRY_FIELD_INVALID);
+    assert.strictEqual(result.errors[0].field, 'file');
 
     writeBaselineFile(root, JSON.stringify({ entries: [{ file: 'a.md', text: '' }] }));
     result = loadBaseline(root);
     assert.strictEqual(result.errors.length, 1);
-    assert.match(result.errors[0], /\.text must be a non-empty string/);
+    assert.strictEqual(result.errors[0].reason, REASON.FAIL_BASELINE_ENTRY_FIELD_INVALID);
+    assert.strictEqual(result.errors[0].field, 'text');
   });
 
   test('a valid baseline with a count field loads cleanly', (t) => {
@@ -643,7 +699,17 @@ describe('Cross-platform & encoding', () => {
 // ─── Hostile input ─────────────────────────────────────────────────────────
 
 describe('Hostile input', () => {
-  test('X1: report output is sanitized — no raw ANSI/control escape reaches stdout/stderr', (t) => {
+  test('X1: sanitizeForReport (the human console formatter\'s own typed IR) strips a raw ESC byte to a visible \\xNN escape', () => {
+    // sanitizeForReport (scripts/lib/drift-scan.cjs) is the structured surface
+    // the human formatter consumes before writing to stderr — asserted on its
+    // own return value directly, never on the CLI's rendered stderr text.
+    const esc = String.fromCharCode(0x1b);
+    const sanitized = sanitizeForReport(`${esc}[31mred${esc}[0m`);
+    assert.ok(!sanitized.includes(esc), 'sanitizeForReport must strip the raw ESC byte');
+    assert.match(sanitized, /\\x1b/);
+  });
+
+  test('X1b: a fresh violation carrying a hostile ANSI/control byte does not crash the CLI and classifies correctly', (t) => {
     const root = createTempDir('gsd-3409-hostile-');
     t.after(() => cleanup(root));
     const isolatedScript = buildIsolatedGuard(root);
@@ -654,10 +720,21 @@ describe('Hostile input', () => {
     fs.writeFileSync(path.join(wfDir, 'fake.md'), `${line}\n`);
     writeBaselineFakeEmpty(root);
 
-    const result = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
-    assert.strictEqual(result.exitCode, 1);
-    assert.ok(!result.stderr.includes(esc), 'raw ESC byte must not reach stderr');
-    assert.match(result.stderr, /\\x1b/);
+    // Human-mode run: only the structural facts (process outcome, exit code)
+    // are asserted — the rendered stderr content is never inspected.
+    const humanResult = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(humanResult.outcome, 'exited');
+    assert.strictEqual(humanResult.exitCode, 1);
+
+    // --json run: the structured report is the typed IR under test. Strict
+    // JSON forbids a literal unescaped C0 control byte inside a string, so
+    // `JSON.parse` succeeding is itself proof no raw ESC byte reached the
+    // stdout stream unescaped.
+    const jsonResult = runNode([isolatedScript, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(jsonResult.exitCode, 1);
+    const report = JSON.parse(jsonResult.stdout);
+    assert.strictEqual(report.reason, REASON.FAIL_FRESH_VIOLATION);
+    assert.strictEqual(report.violations.length, 1);
   });
 
   test('X2: a very long line does not hang the scanner', () => {
@@ -676,7 +753,14 @@ describe('Hostile input', () => {
     assert.strictEqual(violations.length, 1);
   });
 
-  test('X4: unicode / RTL-override in the violating text is handled without crashing and is sanitized in the report', (t) => {
+  test('X4a: sanitizeForReport strips a raw RTL-override codepoint to a visible \\uNNNN escape', () => {
+    const rlo = '‮';
+    const sanitized = sanitizeForReport(`dir/*.md${rlo}gnp.evil`);
+    assert.ok(!sanitized.includes(rlo), 'sanitizeForReport must strip the raw RLO codepoint');
+    assert.match(sanitized, /\\u202e/);
+  });
+
+  test('X4b: unicode / RTL-override in the violating text is handled without crashing and classifies correctly', (t) => {
     const root = createTempDir('gsd-3409-hostile-');
     t.after(() => cleanup(root));
     const isolatedScript = buildIsolatedGuard(root);
@@ -687,9 +771,15 @@ describe('Hostile input', () => {
     fs.writeFileSync(path.join(wfDir, 'fake.md'), `${line}\n`);
     writeBaselineFakeEmpty(root);
 
-    const result = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
-    assert.strictEqual(result.exitCode, 1);
-    assert.ok(!result.stderr.includes(rlo), 'raw RLO codepoint must not reach stderr');
+    const humanResult = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(humanResult.outcome, 'exited');
+    assert.strictEqual(humanResult.exitCode, 1);
+
+    const jsonResult = runNode([isolatedScript, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(jsonResult.exitCode, 1);
+    const report = JSON.parse(jsonResult.stdout);
+    assert.strictEqual(report.reason, REASON.FAIL_FRESH_VIOLATION);
+    assert.strictEqual(report.violations.length, 1);
   });
 
   test('X5: the walk stays inside the root — a symlink escaping the scan tree is not followed', (t) => {
@@ -847,10 +937,11 @@ describe('Integration — CLI end-to-end', () => {
     // mutation risk — so this is the one CLI-level test that can safely
     // target the real script directly, and is the matrix's literal claim:
     // "run against the committed repo with the committed baseline -> exit 0".
-    const result = runNode([DRIFT_SCRIPT], { timeoutMs: PROBE_TIMEOUT_MS });
+    const result = runNode([DRIFT_SCRIPT, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
     assert.strictEqual(result.outcome, 'exited');
     assert.strictEqual(result.exitCode, 0, result.stderr);
-    assert.match(result.stdout, /^ok /);
+    const report = JSON.parse(result.stdout);
+    assert.strictEqual(report.reason, REASON.OK_NO_VIOLATIONS);
   });
 
   test('C1b: scanRepo(REPO_ROOT) carries no malformed gsd-scan-ignore declarations', () => {
@@ -869,12 +960,14 @@ describe('Integration — CLI end-to-end', () => {
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
     fs.writeFileSync(baselinePath, JSON.stringify({ entries: [] }), 'utf8');
 
-    const result = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    const result = runNode([isolatedScript, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
     assert.strictEqual(result.outcome, 'exited');
     assert.strictEqual(result.exitCode, 1);
-    assert.match(result.stderr, /NEW unreachable shell-guard shape/);
-    assert.match(result.stderr, /gsd-scan-ignore/);
-    assert.match(result.stderr, /--update/);
+    const report = JSON.parse(result.stdout);
+    assert.strictEqual(report.reason, REASON.FAIL_FRESH_VIOLATION);
+    assert.strictEqual(report.violations.length, 1);
+    assert.strictEqual(report.violations[0].file, FAKE_FILE);
+    assert.strictEqual(report.violations[0].kind, 'A');
   });
 
   test('C3: --update regenerates a baseline that then passes', (t) => {
@@ -888,9 +981,10 @@ describe('Integration — CLI end-to-end', () => {
     const first = runNode([isolatedScript, '--update'], { timeoutMs: PROBE_TIMEOUT_MS });
     assert.strictEqual(first.exitCode, 0, first.stderr);
 
-    const second = runNode([isolatedScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    const second = runNode([isolatedScript, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
     assert.strictEqual(second.exitCode, 0, second.stderr);
-    assert.match(second.stdout, /^ok /);
+    const report = JSON.parse(second.stdout);
+    assert.strictEqual(report.reason, REASON.OK_NO_VIOLATIONS);
   });
 
   test('C4: --update output is deterministic across two runs', (t) => {
@@ -973,5 +1067,41 @@ describe('Regex shape sanity', () => {
     const m = MARKER_RE.exec('# gsd-scan-ignore: #3409 rationale');
     assert.ok(m);
     assert.strictEqual(m[1], '#3409 rationale');
+  });
+});
+
+// ─── REASON enum — locks the typed outcome surface ────────────────────────
+//
+// CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test Outputs": adding a
+// new reason requires updating the REASON enum, the --json emission /
+// loadBaseline call site that produces it, AND this test — three coordinated
+// changes that keep the code surface from drifting from the test surface.
+
+describe('REASON enum', () => {
+  test('the frozen enum exposes exactly the documented set of outcome codes', () => {
+    assert.deepStrictEqual(Object.keys(REASON).sort(), [
+      'FAIL_BASELINE_EMPTY',
+      'FAIL_BASELINE_ENTRIES_NOT_ARRAY',
+      'FAIL_BASELINE_ENTRY_COUNT_INVALID',
+      'FAIL_BASELINE_ENTRY_FIELD_INVALID',
+      'FAIL_BASELINE_ENTRY_NOT_OBJECT',
+      'FAIL_BASELINE_INVALID_JSON',
+      'FAIL_BASELINE_LOAD',
+      'FAIL_BASELINE_MISSING',
+      'FAIL_BASELINE_NOT_OBJECT',
+      'FAIL_FRESH_VIOLATION',
+      'FAIL_MALFORMED_MARKER',
+      'FAIL_STALE_ENTRY',
+      'OK_BASELINE_UPDATED',
+      'OK_NO_VIOLATIONS',
+    ]);
+  });
+
+  test('the enum is frozen — an attempted mutation is a no-op (non-strict) / throws (strict)', () => {
+    assert.throws(() => {
+      'use strict';
+      REASON.FAIL_FRESH_VIOLATION = 'tampered';
+    }, TypeError);
+    assert.strictEqual(REASON.FAIL_FRESH_VIOLATION, 'fail_fresh_violation');
   });
 });

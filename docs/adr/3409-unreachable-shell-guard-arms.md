@@ -36,7 +36,7 @@ Two mechanisms, one shape: **a fallback arm defeated by a legitimate success-on-
 
 ### Why the existing guards cannot see it
 
-`scripts/lint-planning-prompt-drift.cjs` (#3218, ADR-3180 Phase 8) is scoped to plan/summary **counting** re-derivation — a set glob plus `wc -l`/`grep -c` on one line — and its header explicitly excludes bare `ls`/`cat` globbing. `lint-portable-timeout.cjs` covers timeout portability only. Nothing in `scripts/` targets the guard idioms themselves, and a ninth `--pick … || echo` landed between this issue being filed (8 sites) and being worked (9).
+`scripts/lint-planning-prompt-drift.cjs` (#3218, ADR-3180 Phase 8) is scoped to plan/summary **counting** re-derivation — a set glob plus `wc -l`/`grep -c` on one line — and its header explicitly excludes bare `ls`/`cat` globbing. `lint-portable-timeout.cjs` covers timeout portability only. Nothing in `scripts/` targets the guard idioms themselves — and the count was already wrong when the issue was written: it reports 8 `--pick … || echo` sites, but `origin/next` carried **9**, each last touched between 2026-06-02 and 2026-07-26, well before the issue was filed on 2026-08-13. No new site landed mid-flight; a hand count simply missed one. That is the argument for a guard rather than a sweep, stated more plainly than the miscount-over-time story it first appeared to be.
 
 ### What discovery found
 
