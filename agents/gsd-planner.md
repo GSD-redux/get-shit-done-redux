@@ -696,7 +696,8 @@ Select top 2-4 phases. Skip phases with no relevance signal.
 
 **Step 3 — Read full SUMMARYs for selected phases:**
 ```bash
-cat .planning/phases/{selected-phase}/*-SUMMARY.md
+_SUMMARIES=( .planning/phases/{selected-phase}/*-SUMMARY.md )
+if [ -e "${_SUMMARIES[0]}" ]; then cat "${_SUMMARIES[@]}"; fi
 ```
 
 From full SUMMARYs extract:
@@ -733,9 +734,12 @@ If `features.global_learnings` is `true`: run `gsd_run query learnings.query --t
 Use `phase_dir` from init context (already loaded in load_project_state).
 
 ```bash
-cat "$phase_dir"/*-CONTEXT.md 2>/dev/null   # From /gsd:discuss-phase
-cat "$phase_dir"/*-RESEARCH.md 2>/dev/null   # Research output
-cat "$phase_dir"/*-DISCOVERY.md 2>/dev/null  # From mandatory discovery
+_CTX=( "$phase_dir"/*-CONTEXT.md )
+if [ -e "${_CTX[0]}" ]; then cat "${_CTX[@]}"; fi   # From /gsd:discuss-phase
+_RESEARCH=( "$phase_dir"/*-RESEARCH.md )
+if [ -e "${_RESEARCH[0]}" ]; then cat "${_RESEARCH[@]}"; fi   # Research output
+_DISCOVERY=( "$phase_dir"/*-DISCOVERY.md )
+if [ -e "${_DISCOVERY[0]}" ]; then cat "${_DISCOVERY[@]}"; fi  # From mandatory discovery
 ```
 
 **If CONTEXT.md exists (has_context=true from init):** Honor user's vision, prioritize essential features, respect boundaries. Locked decisions — do not revisit.

@@ -367,7 +367,7 @@ Read all phase summaries:
 
 ```bash
 _SUMMARIES=( .planning/phases/*-*/*-SUMMARY.md )
-if [ ${#_SUMMARIES[@]} -gt 0 ]; then cat "${_SUMMARIES[@]}"; fi
+if [ -e "${_SUMMARIES[0]}" ]; then cat "${_SUMMARIES[@]}"; fi
 ```
 
 **Full review checklist:**
