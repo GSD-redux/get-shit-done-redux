@@ -890,6 +890,16 @@ For a conceptual overview of how the hook and guard layers fit into the broader 
 - Advisory-only — logs detection, does not block
 - Patterns are inlined (subset of `security.cjs`) for hook independence
 
+**Read Injection Scanner** (`gsd-read-injection-scanner.js`):
+
+- Triggers on `Read` / `WebFetch` / `WebSearch` PostToolUse events
+- Advisory by default; blocks only `HIGH` severity, and only when `security.injection_blocking` is `true`
+- Severity is `LOW` for 1-2 matched patterns, `HIGH` for 3 or more
+- Skips content shorter than 20 characters, and skips excluded paths (`.planning/`, `REVIEW.md`, `CHECKPOINT*`, security/injection docs, and GSD's own staged hook bundle)
+- Rule ids: the `MD-LINK-*` markdown-link rules mirrored from `security.cjs`'s `MARKDOWN_LINK_PATTERNS`, plus `INJECTION-PATTERN`, `INVISIBLE-UNICODE`, and `UNICODE-TAG-BLOCK`
+- Patterns are shared with `gsd-prompt-guard.js` via `hooks/lib/injection-patterns.js` (#3504); the markdown-link list is inlined for hook independence
+- **Output contract:** `hookSpecificOutput` carries both `additionalContext` (the human-readable advisory sentence) and `findings` — an array of `{ ruleId, match }` records naming each rule that fired. `findings` is the structured surface; the advisory is rendered from it, so the two cannot disagree. `match` is `null` for rules with no captured text (`INVISIBLE-UNICODE`, `UNICODE-TAG-BLOCK`). Consumers should read `findings` rather than parsing the advisory text.
+
 **Workflow Guard** (`gsd-workflow-guard.js`):
 
 - Triggers on Write/Edit to non-`.planning/` files
