@@ -2786,6 +2786,45 @@ function _stampNonClaudeRuntimeDefaults(content: string, runtime: string): strin
 }
 
 /**
+ * #3544 (extending #3133's fix): restore `@$HOME/.claude/` `@`-file-reference
+ * lines back to `@~/.claude/` in Claude-emitted content whose pathPrefix is
+ * the `$HOME` form. This is a NARROW, context-sensitive correction layered on
+ * top of the blanket `~/.claude/` / `$HOME/.claude/` -> pathPrefix
+ * substitution every Claude emit path applies: that blanket substitution
+ * MUST keep emitting `$HOME` for global installs — shell commands embedded
+ * in workflow/command bodies (e.g. `node "$HOME/.claude/gsd-core/bin/
+ * gsd-tools.cjs"`) need it, since `~` does not expand inside double-quoted
+ * shell strings (#1284). But Claude Code's own `@`-import resolver does the
+ * opposite: it documents `~` expansion and does NOT expand `$HOME`
+ * (undocumented, and measured non-functional — see
+ * .gsd/bug/fix-3544-home-expansion-spec-tree/10-diagnosis.md's ADDENDUM). A
+ * single pathPrefix string cannot satisfy both consumers, so this runs as a
+ * second, `@`-anchored pass AFTER the blanket substitution.
+ *
+ * #3133 first applied this restore inline in `_applyRuntimeRewrites`'s
+ * `case 'claude'` below (the skill/command staging pipeline). #3544 found
+ * the identical defect in bin/install.js's `copyWithPathReplacement` — the
+ * `gsd-core/` spec-tree emit path, which never had the restore step, so
+ * every `@~/.claude/gsd-core/…` include in a global install's workflows/
+ * references tree silently resolved to nothing (54 includes across 22 files
+ * on a live install, per the diagnosis). Both call sites now share this one
+ * implementation instead of drifting independently (DEFECT.GENERATIVE-FIX).
+ *
+ * No-op unless `pathPrefix` is the `$HOME` form — local installs already
+ * bake an absolute, `@`-resolvable pathPrefix and are unaffected, as are
+ * every non-Claude runtime (never called for them).
+ *
+ * @private — exported as `_restoreClaudeGlobalAtRefTilde` for tests and for
+ * bin/install.js's `copyWithPathReplacement`.
+ */
+function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
+  if (typeof pathPrefix === 'string' && pathPrefix.startsWith('$HOME')) {
+    return content.replace(/@\$HOME\/\.claude\//g, '@~/.claude/');
+  }
+  return content;
+}
+
+/**
  * Apply the per-runtime rewrite table to a single content string.
  * Relocated from bin/install.js `_applyRuntimeRewrites`.
  *
@@ -2916,18 +2955,10 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = content.replace(/~\/\.claude\//g, pathPrefix);
       content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
       content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
-      // #3133: Claude Code expands `~` and absolute paths in @-file references
-      // but NOT `$HOME`. computePathPrefix returns the $HOME/.claude/ form for
-      // global installs under $HOME (correct for double-quoted shell commands —
-      // `~` does not expand inside double quotes, causing MODULE_NOT_FOUND,
-      // #1284), so the substitutions above rewrite @~/.claude/… → @$HOME/.claude/…
-      // which silently resolves to nothing and leaves skills with an empty
-      // execution_context. Restore the tilde form Claude expands (the form the
-      // shipped tarball uses). Local installs use an absolute pathPrefix (already
-      // @-resolvable) and are unaffected — the guard fires only for the $HOME form.
-      if (pathPrefix.startsWith('$HOME')) {
-        content = content.replace(/@\$HOME\/\.claude\//g, '@~/.claude/');
-      }
+      // #3133 / #3544: restore @-file-reference lines to the tilde form
+      // Claude actually expands — see restoreClaudeGlobalAtRefTilde's doc
+      // comment above for why this must be a separate, @-anchored pass.
+      content = restoreClaudeGlobalAtRefTilde(content, pathPrefix);
       content = processAttribution(content, attribution);
       break;
 
@@ -3384,6 +3415,7 @@ export = {
   applyAgentPathRewrites,
   normalizeAgentBodyForRuntime,
   _computePathPrefix: computePathPrefix,
+  _restoreClaudeGlobalAtRefTilde: restoreClaudeGlobalAtRefTilde,
   _applyRuntimeRewrites,
   _stampNonClaudeRuntimeDefaults,
   // #2652: registry-resolved dispatch isolation, mirroring routeDispatchIsolation

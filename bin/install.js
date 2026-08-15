@@ -7961,6 +7961,17 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
         content = content.replace(/~\/\.hermes\//g, pathPrefix);
         content = content.replace(/\$HOME\/\.hermes\//g, pathPrefix);
         content = content.replace(/\.\/\.hermes\//g, `./${dirName}/`);
+        // #3544: restore @-file-reference lines to the tilde form Claude Code
+        // actually expands — the SAME correction #3133 already applies to
+        // skill/command bodies via _applyRuntimeRewrites's 'claude' case (see
+        // restoreClaudeGlobalAtRefTilde's doc comment in
+        // runtime-artifact-conversion.cts). This is the gsd-core/ spec-tree
+        // emit path, which never had it: every @~/.claude/gsd-core/… include
+        // in a global install's workflows/references tree silently resolved
+        // to nothing (54 includes across 22 files on a live install).
+        if (runtime === 'claude') {
+          content = runtimeArtifactConversion._restoreClaudeGlobalAtRefTilde(content, pathPrefix);
+        }
       }
       content = processAttribution(content, getCommitAttribution(runtime));
 
