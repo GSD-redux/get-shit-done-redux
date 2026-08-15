@@ -112,10 +112,10 @@ Select the right AI framework for Phase {phase_number}: {phase_name}
 Goal: {phase_goal}
 </objective>
 
-<files_to_read>
+<required_reading>
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <phase_context>
 Phase: {phase_number} — {phase_name}
@@ -161,10 +161,10 @@ Before editing, verify the section you are about to write is still a template pl
 <objective>
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 framework: {primary_framework}
@@ -196,11 +196,11 @@ Before editing, verify the section you are about to write is still a template pl
 <objective>
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 system_type: {system_type}
@@ -227,11 +227,11 @@ Write Sections 5, 6, and 7 of AI-SPEC.md
 AI-SPEC.md now contains domain context (Section 1b) — use it as your rubric starting point.
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 system_type: {system_type}

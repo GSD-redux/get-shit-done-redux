@@ -63,14 +63,14 @@ describe('execute-phase.md context enrichment', () => {
   test('verifier prompt includes files_to_read block', () => {
     const content = fs.readFileSync(EXECUTE_WORKFLOW_PATH, 'utf-8');
     assert.ok(
-      content.includes('<files_to_read>'),
-      'execute-phase.md should contain <files_to_read> opening tag'
+      content.includes('<required_reading>'),
+      'execute-phase.md should contain <required_reading> opening tag'
     );
     assert.ok(
-      content.includes('</files_to_read>'),
-      'execute-phase.md should contain </files_to_read> closing tag'
+      content.includes('</required_reading>'),
+      'execute-phase.md should contain </required_reading> closing tag'
     );
-    const verifierSection = content.substring(content.lastIndexOf('<files_to_read>'));
+    const verifierSection = content.substring(content.lastIndexOf('<required_reading>'));
     assert.ok(
       verifierSection.includes('PLAN.md'),
       'verifier files_to_read should reference PLAN.md'

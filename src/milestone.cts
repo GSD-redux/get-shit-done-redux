@@ -14,7 +14,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- state.cjs is an export= CommonJS module
 import stateMod = require('./state.cjs');
-import { platformWriteSync, platformEnsureDir, execGit, retryRenameSync } from './shell-command-projection.cjs';
+import { platformWriteSync, platformReadSync, platformEnsureDir, execGit, retryRenameSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
@@ -50,7 +50,13 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
 const { planningPaths } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
-const { writeStateMd } = stateMod;
+// ADR-3408 §8.3 / #3469: `writeStateMd` gets sync and NO preservation — the
+// same #3374-shaped exposure the milestone-complete write used to carry (a
+// stale body value silently clobbering fresher frontmatter, with no
+// divergence signal). Routed through the single write-seam composition
+// (`syncAndPreserveStateMd`) instead, under `withStateLock` — see
+// `cmdMilestoneComplete`'s own STATE.md-update block for the full rationale.
+const { syncAndPreserveStateMd, withStateLock } = stateMod;
 
 // #2288 security: a milestone version label becomes a filesystem directory
 // component (`milestones/<label>-phases/`) into which phase directories are
@@ -531,6 +537,24 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const phasesDir = planningPaths(cwd).phases;
   const today = realClock.localToday();
   const milestoneName = options.name || version;
+  // ADR-3408 §8.5 / #3469: "liberal but visible" — when the write-seam
+  // composition's preservation stage restores a curated frontmatter value
+  // over a disagreeing freshly-derived one, that divergence is surfaced
+  // here rather than silently absorbed (the direct answer to #3374's
+  // `warnings: []`). Structured (field + reason), not prose, so a caller can
+  // assert on the value rather than regex a rendered message.
+  //
+  // Named `preservation_warnings`, NOT `warnings`: `cmdPhaseComplete` already
+  // exposes a sibling field called `warnings` typed as prose `string[]`. Reusing
+  // that name here for a structured `{field, reason}[]` shape would be the
+  // "Generative Fix Divergence" anti-pattern — two sibling state commands
+  // sharing one field name with different element types. `warnings` stays
+  // one meaning (prose) repo-wide; this is a distinct, machine-assertable
+  // signal for ADR-3408 §8.5's "preservation is visible" rule. Check
+  // `preservation_warnings.length` rather than a companion `has_warnings`
+  // flag — that flag existed only to mirror `cmdPhaseComplete`'s channel,
+  // which this field intentionally does not claim to be.
+  const preservationWarnings: Array<{ field: string; reason: string }> = [];
 
   // Scope stats and accomplishments to only the phases belonging to the
   // current milestone's ROADMAP.  Uses the shared filter from roadmap-parser.cjs
@@ -850,19 +874,86 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // reset, Operator Next Steps reset) is the pure `milestoneCompleteCore` in
   // src/state-transition.cts, backed by the field-classification table. The
   // runtime-specific next-milestone slash command is resolved here and injected
-  // via the intent so the core stays pure. writeStateMd still owns the lock and
-  // the steady-state syncStateFrontmatter post-sync.
+  // via the intent so the core stays pure.
+  //
+  // ADR-3408 §8.3 / #3469: this used to write via `writeStateMd`, which gets
+  // sync and NO preservation — the identical shape #3374 reported for
+  // `phase.complete` (a stale body value silently clobbering fresher
+  // frontmatter). Routed through the single write-seam composition
+  // (`syncAndPreserveStateMd`) instead, under the same lock discipline
+  // `cmdPhaseComplete`'s atomic-commit adapter already uses: `withStateLock`
+  // wraps read + transform + sync + preserve + write so the read this
+  // transaction bases its transform on cannot be raced by a concurrent
+  // writer (closing a pre-existing TOCTOU gap `writeStateMd`'s own internal
+  // lock never covered, since the read used to happen before any lock was
+  // taken). `resync: true` mirrors `cmdPhaseComplete`'s posture (progress
+  // recomputed from disk; only the preserve-when-unchanged deltas apply) —
+  // milestone completion is the same kind of lifecycle transition.
   if (fs.existsSync(statePath)) {
-    const result = transitionCore(
-      fs.readFileSync(statePath, 'utf-8'),
-      {
-        kind: 'milestoneComplete',
-        version,
-        nextMilestoneCommand: formatGsdSlash('new-milestone', resolveRuntime(cwd)) as string,
-      },
-      { clock: realClock, sourcePath: statePath },
-    );
-    writeStateMd(statePath, result.content, cwd);
+    withStateLock(statePath, () => {
+      const originalStateContent = platformReadSync(statePath) || '';
+      const result = transitionCore(
+        originalStateContent,
+        {
+          kind: 'milestoneComplete',
+          version,
+          nextMilestoneCommand: formatGsdSlash('new-milestone', resolveRuntime(cwd)) as string,
+        },
+        { clock: realClock, sourcePath: statePath },
+      );
+      const divergedFields: string[] = [];
+      // #2111 (found by #3471 review): `milestoneCompleteCore` never declares
+      // `current_phase`/`current_phase_name` among the fields it touches — but
+      // its ## Current Position reset REWRITES the `Phase:` prose line to a
+      // closure message ("Milestone vX.Y complete"), which is not a number.
+      // That is an unavoidable side effect of the wholesale section reset
+      // `resetSectionVerbatim` performs, not an intent to change the phase.
+      // Downstream, `current_phase`/`current_phase_name` are
+      // `preserve-when-unchanged` rows: the #1230 delta heuristic sees the
+      // body source go from a real value to unparseable and — correctly, per
+      // ADR-3408 §8.5 Row 2 — lets the derived (empty) value win, discarding
+      // the curated phase entirely. §8.5 Row 2 governs a genuine mid-write
+      // body edit (e.g. `state.patch` deleting the Phase line); milestone
+      // closure is a different shape — the transition never intended to
+      // touch these fields at all. Re-assert them via `authoritativeFm` (the
+      // same #2736 intent-first mechanism `beginPhaseCore`/`completePhaseCore`
+      // already use to freeze a field the transition resolved out-of-band),
+      // so the closure-message side effect cannot clobber the last real
+      // phase. Scoped to non-empty strings only, mirroring #2736's own guard.
+      const authoritativeFm: Record<string, unknown> = {};
+      const preFm = extractFrontmatter(originalStateContent, statePath) as Record<string, unknown>;
+      const preCurrentPhase = preFm['current_phase'];
+      const preCurrentPhaseName = preFm['current_phase_name'];
+      if (typeof preCurrentPhase === 'string' && preCurrentPhase.trim().length > 0) {
+        authoritativeFm['current_phase'] = preCurrentPhase;
+      }
+      if (typeof preCurrentPhaseName === 'string' && preCurrentPhaseName.trim().length > 0) {
+        authoritativeFm['current_phase_name'] = preCurrentPhaseName;
+      }
+      const finalContent = syncAndPreserveStateMd(
+        originalStateContent,
+        result.content,
+        statePath,
+        cwd,
+        {
+          resync: true,
+          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,
+          divergedFields,
+        },
+      );
+      platformWriteSync(statePath, finalContent);
+      for (const field of divergedFields) {
+        preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
+      }
+      // The authoritativeFm re-assert above (unlike a delta-based restore) is
+      // invisible to `divergedFields` — #2736's re-assert runs after that
+      // diff — so surface it explicitly here for "liberal but visible".
+      for (const field of Object.keys(authoritativeFm)) {
+        if (!divergedFields.includes(field)) {
+          preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
+        }
+      }
+    });
   }
 
   // Archive phase directories if requested
@@ -915,6 +1006,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
     },
     milestones_updated: true,
     state_updated: fs.existsSync(statePath),
+    preservation_warnings: preservationWarnings,
   };
 
   output(result, raw);

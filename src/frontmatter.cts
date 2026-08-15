@@ -109,6 +109,64 @@ const FULL_LINE_COMMENTS = Symbol('fullLineComments');
 type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: string[] };
 
 /**
+ * Unescape the interior of a YAML double-quoted scalar — the exact inverse of
+ * `escapeDoubleQuoted` (#3497). The writer has escaped `\`/`"`/`\n`/`\t`/`\r`/
+ * `\xHH` since #1779, but the reader only stripped the delimiters, so
+ * parse(serialize(x)) ≠ x for any quoted scalar carrying a `"` or `\`: each
+ * read-modify-write round-trip doubled the backslashes (b → 2b+1), growing a
+ * repeatedly-synced field — and its document — without bound until tooling
+ * OOMed. Recognized escapes decode per YAML double-quoted semantics; an
+ * unrecognized `\c` is kept literally (backslash + char), matching the
+ * strip-only behavior hand-authored files had before this fix.
+ */
+function unescapeDoubleQuoted(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch !== '\\' || i === s.length - 1) {
+      out += ch;
+      continue;
+    }
+    const next = s[++i];
+    if (next === '\\' || next === '"') {
+      out += next;
+    } else if (next === 'n') {
+      out += '\n';
+    } else if (next === 't') {
+      out += '\t';
+    } else if (next === 'r') {
+      out += '\r';
+    } else if (next === 'x') {
+      const hex = s.slice(i + 1, i + 3);
+      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+        out += String.fromCharCode(parseInt(hex, 16));
+        i += 2;
+      } else {
+        out += '\\x'; // not \xHH — keep literally
+      }
+    } else {
+      out += '\\' + next; // unrecognized escape — keep literally
+    }
+  }
+  return out;
+}
+
+/**
+ * Strip the quote delimiters off a parsed YAML scalar, un-escaping the interior
+ * when the scalar is double-quoted (#3497 — the parse-side complement of
+ * `escapeDoubleQuoted`). Single-quoted scalars keep the historical strip-only
+ * behavior (the writer never emits them; `''` → `'` folding is out of scope).
+ * A scalar wrapped in double quotes un-escapes; anything else keeps the exact
+ * prior delimiter-strip behavior, including a stray unpaired boundary quote.
+ */
+function parseQuotedScalar(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return unescapeDoubleQuoted(value.slice(1, -1));
+  }
+  return value.replace(/^["']|["']$/g, '');
+}
+
+/**
  * Parse one already-delimited YAML region into a Frontmatter object.
  *
  * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
@@ -173,12 +231,12 @@ function parseYamlRegion(yaml: string): Frontmatter {
         current.key = null;
       } else {
         // Simple key: value
-        (current.obj as Record<string, unknown>)[key] = value.replace(/^["']|["']$/g, '');
+        (current.obj as Record<string, unknown>)[key] = parseQuotedScalar(value);
         current.key = null;
       }
     } else if (line.trim().startsWith('- ')) {
       // Array item
-      const itemValue = line.trim().slice(2).replace(/^["']|["']$/g, '');
+      const itemValue = parseQuotedScalar(line.trim().slice(2));
 
       // If current context is an empty object, convert to array
       if (typeof current.obj === 'object' && !Array.isArray(current.obj) && Object.keys(current.obj).length === 0) {

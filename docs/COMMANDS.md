@@ -1014,6 +1014,8 @@ rather than that its contents are correct. The advisory never changes health's
 pass/fail status, and stays silent when the stamp is absent or the project isn't
 a git repo — "unknown" is reported as unknown, not as fresh.
 
+**Cross-scope install shadowing (`W028`).** When a runtime is installed at both `global` and `local` scope and the host's trigger-resolution rules make one scope's `/gsd-*` surface unreachable — the Claude Code case: personal skill always beats project command — health adds a WARNING-severity advisory naming the shadowed triggers, the winning scope, and the losing scope. It never changes health's pass/fail status and is never auto-fixable (there is no single correct scope to remove), so `--repair` never touches it. Identical to the same advisory GSD Core prints at install time. See [Interpret install-shadow warnings](how-to/interpret-install-shadow-warnings.md).
+
 **`--repair` does not apply destructive fixes.** Resetting config.json
 (`resetConfig`) and regenerating STATE.md (`regenerateState`) are destructive
 — the former loses custom settings, the latter loses session history — so

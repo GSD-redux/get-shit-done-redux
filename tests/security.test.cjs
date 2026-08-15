@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { cleanup } = require('./helpers.cjs');
 
 const {
   validatePath,
@@ -91,6 +92,156 @@ describe('validatePath', () => {
   test('allows path that resolves back into base after ..', () => {
     const result = validatePath('src/../lib/file.js', base);
     assert.ok(result.safe);
+  });
+
+  // ─── Dangling symlink + non-canonical base regression coverage ───────────
+  //
+  // Helpers scoped to this describe block. `withSymlinkGuard` matches the
+  // skip-on-unsupported-platform convention used elsewhere (see
+  // tests/commands.test.cjs "B12" for the same EPERM/EACCES/ENOTSUP pattern).
+
+  function withSymlinkGuard(t, fn) {
+    try {
+      fn();
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return false;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  function makeScratchDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-sec-validatepath-'));
+  }
+
+  // Returns a `base` string that is guaranteed non-canonical relative to
+  // `canonicalDir` — either the real tmpdir (already non-canonical on macOS,
+  // where os.tmpdir() lives under /var and realpaths to /private/var), or a
+  // freshly created symlink alias when the platform's tmpdir happens to be
+  // canonical already (e.g. Linux), so the test is meaningful everywhere.
+  function makeNonCanonicalBase(canonicalDir, t) {
+    const realCanonicalDir = fs.realpathSync(canonicalDir);
+    if (realCanonicalDir !== canonicalDir) {
+      return { base: canonicalDir, canonical: realCanonicalDir, symlinked: false, aliasParent: null };
+    }
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-sec-alias-'));
+    const alias = path.join(aliasParent, 'link');
+    let ok = withSymlinkGuard(t, () => fs.symlinkSync(canonicalDir, alias, 'dir'));
+    if (!ok) {
+      cleanup(aliasParent);
+      return null;
+    }
+    return { base: alias, canonical: canonicalDir, symlinked: true, aliasParent };
+  }
+
+  test('in-project symlink to an existing in-project target: still safe:true', (t) => {
+    const scratch = makeScratchDir();
+    try {
+      const targetPath = path.join(scratch, 'target.txt');
+      fs.writeFileSync(targetPath, 'in-project content');
+      const linkPath = path.join(scratch, 'link.txt');
+      const ok = withSymlinkGuard(t, () => fs.symlinkSync(targetPath, linkPath, 'file'));
+      if (ok) {
+        const result = validatePath('link.txt', scratch);
+        assert.ok(result.safe, `expected safe:true, got error: ${result.error}`);
+        assert.equal(result.resolved, fs.realpathSync(targetPath));
+      }
+    } finally {
+      cleanup(scratch);
+    }
+  });
+
+  test('in-project symlink to an existing OUTSIDE target: safe:false (unchanged)', (t) => {
+    const scratch = makeScratchDir();
+    const outside = makeScratchDir();
+    try {
+      const outsideTarget = path.join(outside, 'outside-target.txt');
+      fs.writeFileSync(outsideTarget, 'outside content');
+      const linkPath = path.join(scratch, 'evil-link.txt');
+      const ok = withSymlinkGuard(t, () => fs.symlinkSync(outsideTarget, linkPath, 'file'));
+      if (ok) {
+        const result = validatePath('evil-link.txt', scratch);
+        assert.ok(!result.safe);
+      }
+    } finally {
+      cleanup(scratch);
+      cleanup(outside);
+    }
+  });
+
+  test('in-project DANGLING symlink to a non-existent OUTSIDE target: safe:false (BLOCKER-1 regression)', (t) => {
+    const scratch = makeScratchDir();
+    try {
+      const nonExistentOutsideTarget = path.join(os.tmpdir(), `gsd-sec-nonexistent-${process.pid}-${Date.now()}`);
+      const linkPath = path.join(scratch, 'dangling-link.txt');
+      const ok = withSymlinkGuard(t, () => fs.symlinkSync(nonExistentOutsideTarget, linkPath, 'file'));
+      if (ok) {
+        const result = validatePath('dangling-link.txt', scratch);
+        assert.ok(!result.safe, 'a dangling symlink must not be accepted as an in-project path');
+        assert.ok(
+          result.error && result.error.includes('unresolvable symbolic link'),
+          `expected the unresolvable-symlink error, got: ${result.error}`,
+        );
+      }
+    } finally {
+      cleanup(scratch);
+    }
+  });
+
+  test('not-yet-created file in an EXISTING in-project dir, non-canonical base: safe:true', (t) => {
+    const scratch = makeScratchDir();
+    let nc = null;
+    try {
+      nc = makeNonCanonicalBase(scratch, t);
+      if (nc) {
+        fs.mkdirSync(path.join(nc.canonical, 'existingSub'));
+        const result = validatePath('existingSub/newfile.txt', nc.base);
+        assert.ok(result.safe, `expected safe:true, got error: ${result.error}`);
+        assert.equal(result.resolved, path.join(nc.canonical, 'existingSub', 'newfile.txt'));
+      }
+    } finally {
+      cleanup(scratch);
+      if (nc && nc.aliasParent) cleanup(nc.aliasParent);
+    }
+  });
+
+  test('not-yet-created file in a not-yet-created SUBDIR, non-canonical base, nested two levels deep: safe:true (BLOCKER-2 regression)', (t) => {
+    const scratch = makeScratchDir();
+    let nc = null;
+    try {
+      nc = makeNonCanonicalBase(scratch, t);
+      if (nc) {
+        // Neither 'sub1' nor 'sub1/sub2' exist — the immediate-parent-only
+        // fallback fails here, which is exactly the BLOCKER-2 scenario.
+        const result = validatePath('sub1/sub2/newfile.txt', nc.base);
+        assert.ok(result.safe, `expected safe:true, got error: ${result.error}`);
+        assert.equal(result.resolved, path.join(nc.canonical, 'sub1', 'sub2', 'newfile.txt'));
+      }
+    } finally {
+      cleanup(scratch);
+      if (nc && nc.aliasParent) cleanup(nc.aliasParent);
+    }
+  });
+
+  test('../ escape from a not-yet-created subdir, non-canonical base: still safe:false', (t) => {
+    const scratch = makeScratchDir();
+    let nc = null;
+    try {
+      nc = makeNonCanonicalBase(scratch, t);
+      if (nc) {
+        // sub1/sub2 don't exist, and the .. segments escape not just the
+        // not-yet-created subdirs but the base itself — the ancestor walk-up
+        // must not turn this into an accepted path.
+        const result = validatePath('sub1/sub2/../../../escape.txt', nc.base);
+        assert.ok(!result.safe, 'escaping via .. through not-yet-created dirs must still be rejected');
+      }
+    } finally {
+      cleanup(scratch);
+      if (nc && nc.aliasParent) cleanup(nc.aliasParent);
+    }
   });
 });
 

@@ -4,9 +4,15 @@
 // Detects when Claude attempts file edits outside a GSD workflow context
 // (no active /gsd- skill or Task subagent) and injects an advisory warning.
 //
-// This is a SOFT guard — it advises, not blocks. The edit still proceeds.
-// The warning nudges Claude to use /gsd:quick or /gsd:fast instead of
-// making direct edits that bypass state tracking.
+// This is a SOFT guard for edits — it advises, not blocks. The edit still
+// proceeds. The warning nudges Claude to use /gsd:quick or /gsd:fast instead
+// of making direct edits that bypass state tracking.
+//
+// ONE hard block lives here: `git add -f` on an agent/worktree-agent branch
+// (WORKTREE_AGENT_FORCE_ADD_FORBIDDEN) — and that block leg fails CLOSED on
+// internal error (#3504): when the guard is enabled and the blocking context
+// holds, a thrown error exits 2 (block), not 0. The advisory legs keep the
+// fail-open posture — a broken advisory must never wedge every tool call.
 //
 // Enable via config: hooks.workflow_guard: true (default: false)
 // Only triggers on Write/Edit tool calls to non-.planning/ files.
@@ -14,40 +20,46 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { tokenize } = require('./lib/git-cmd.js');
+const { tokenize, skipToSubcommand } = require('./lib/git-cmd.js');
 
 function forceGitAddCwds(command, defaultCwd) {
   const tokens = tokenize(command || '');
   const separators = new Set(['&&', '||', ';', '|']);
   const cwdList = [];
-  for (let i = 0; i < tokens.length; i++) {
-    if (path.basename(tokens[i]) !== 'git') continue;
+  // #3504: per-segment walk driven by git-cmd.js's canonical skipToSubcommand.
+  // The previous inline walk knew six global flags and silently missed the
+  // rest — `git -c core.hooksPath=/tmp/x add -f x`, `git --no-optional-locks
+  // add -f x`, `--literal-pathspecs`, `--namespace=…` and friends all fell
+  // through to a silent exit 0, a no-crash bypass the fail-closed catch is
+  // structurally blind to (it only fires on throws). Sharing the classifier
+  // makes the block's flag knowledge exactly the classifier's.
+  const segments = [];
+  let start = 0;
+  for (let i = 0; i <= tokens.length; i++) {
+    if (i === tokens.length || separators.has(tokens[i])) {
+      if (i > start) segments.push(tokens.slice(start, i));
+      start = i + 1;
+    }
+  }
+  for (const seg of segments) {
+    const subIdx = skipToSubcommand(seg);
+    if (subIdx === -1 || subIdx >= seg.length || seg[subIdx] !== 'add') continue;
 
-    let j = i + 1;
+    // Resolve a `-C <dir>` (separate-arg form) preceding the subcommand so
+    // the branch is probed at the repository the add targets.
     let gitCwd = defaultCwd;
-    while (j < tokens.length) {
-      const token = tokens[j];
-      const flagName = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-      if (token === '-C' && tokens[j + 1]) {
-        gitCwd = path.resolve(gitCwd, tokens[j + 1]);
-        j += 2;
+    for (let k = 0; k < subIdx; ) {
+      if (seg[k] === '-C' && k + 1 < subIdx) {
+        gitCwd = path.resolve(gitCwd, seg[k + 1]);
+        k += 2;
         continue;
       }
-      if (['-C', '--git-dir', '--work-tree'].includes(flagName) && !token.includes('=')) {
-        j += 2;
-        continue;
-      }
-      if (['--git-dir', '--work-tree', '--no-pager', '-p', '-P'].includes(flagName)) {
-        j++;
-        continue;
-      }
-      break;
+      k++;
     }
 
-    if (tokens[j] !== 'add') continue;
-    for (let k = j + 1; k < tokens.length && !separators.has(tokens[k]); k++) {
-      if (tokens[k] === '--') break;
-      if (tokens[k] === '--force' || tokens[k] === '-f' || /^-[A-Za-z]*f[A-Za-z]*$/.test(tokens[k])) {
+    for (let k = subIdx + 1; k < seg.length; k++) {
+      if (seg[k] === '--') break;
+      if (seg[k] === '--force' || seg[k] === '-f' || /^-[A-Za-z]*f[A-Za-z]*$/.test(seg[k])) {
         cwdList.push(gitCwd);
         break;
       }
@@ -62,9 +74,84 @@ function currentBranch(cwd) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
+    // #3504: bounded — this ran unbounded before, an indefinite hang under a
+    // wedged git would hang every PreToolUse call. Host wiring allows a 5s
+    // budget for the whole hook, so the probe gets 2s of it; a timeout
+    // returns '' (branch unknown), which both the block decision and the
+    // fail-closed re-check treat as "cannot establish agent branch".
+    timeout: 2000,
+    killSignal: 'SIGTERM',
   });
   if (result.status !== 0) return '';
   return result.stdout.trim();
+}
+
+// Agent-branch predicate, shared by the happy-path detector and the fail-closed
+// re-check so the block's scope cannot drift between the two paths (#3504).
+function isAgentBranch(branch) {
+  return /^(worktree-)?agent-/.test(branch);
+}
+
+// Typed cwd read, shared by both paths for the same reason: a non-string cwd
+// degrades to process.cwd() instead of throwing inside path.join().
+function payloadCwd(data) {
+  return typeof data?.cwd === 'string' && data.cwd ? data.cwd : process.cwd();
+}
+
+// The force-add block payload, emitted by the happy-path detector and the
+// fail-closed catch — one source so the two exits cannot drift. `origin`
+// distinguishes them structurally ('force-add-detected' vs 'fail-closed') so a
+// consumer — or the model reading Kimi's stderr feedback — is never told a
+// force-add was detected when the call was in fact blocked unanalyzed.
+function emitForceAddBlock(origin) {
+  const failClosed = origin === 'fail-closed';
+  const reason = failClosed
+    ? 'workflow guard internal error on an agent branch - failing closed. The command was NOT analyzed and was NOT confirmed to be a force-add. Retry the call or inspect the guard.'
+    : 'agent/worktree-agent branches must not run git add -f or git add --force. Respect the SDK skipped_gitignored/skipped_commit_docs_false contract and leave gitignored files untracked.';
+  const output = {
+    decision: 'block',
+    code: 'WORKTREE_AGENT_FORCE_ADD_FORBIDDEN',
+    origin: failClosed ? 'fail-closed' : 'force-add-detected',
+    reason,
+  };
+  process.stdout.write(JSON.stringify(output));
+  // Kimi CLI's exit-2 protocol feeds stderr back to the model (#2304)
+  process.stderr.write(output.reason);
+}
+
+// #3504 fail-closed context re-derivation. Runs INSIDE the outer catch, after
+// an internal error, and answers exactly one question: does the blocking
+// context of the force-add guard hold for this payload? Each stage is guarded —
+// a re-derivation that itself throws must degrade to "cannot establish" (false),
+// never take down the catch. Deliberately does NOT re-detect the force-add: the
+// error may live in the detector itself, and on an agent branch with the guard
+// enabled, a Bash call under an internal error is conservative-correct to block.
+// Anything it cannot establish (unparseable payload, non-Bash tool, guard
+// disabled, branch not determinably agent-*) fails open, preserving the
+// advisory legs' fail-open posture.
+function failClosedBlockContext(rawInput) {
+  let data;
+  try {
+    data = normalizeKimiPayload(JSON.parse(rawInput));
+  } catch {
+    return false;
+  }
+  if (data === null || typeof data !== 'object' || data.tool_name !== 'Bash') return false;
+  const cwd = payloadCwd(data);
+  let enabled;
+  try {
+    enabled = workflowGuardEnabled(cwd);
+  } catch {
+    return false;
+  }
+  if (!enabled) return false;
+  let branch;
+  try {
+    branch = currentBranch(cwd);
+  } catch {
+    return false;
+  }
+  return isAgentBranch(branch);
 }
 
 function workflowGuardEnabled(cwd) {
@@ -180,6 +267,15 @@ process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
     const data = normalizeKimiPayload(JSON.parse(input));
+    // #3504 test-only fault seam: throws right after parse so the fail-closed
+    // posture of the outer catch is exercisable — no JSON-expressible input
+    // throws in this handler today (#2547/#2595 hardened every read). Gated on
+    // GSD_TEST_MODE as well so a leaked GSD_TEST_WORKFLOW_GUARD_FAULT in a real
+    // shell cannot wedge a production session. The fault's failure direction
+    // is CLOSED: the catch below may block, never bypass a block.
+    if (process.env.GSD_TEST_MODE === '1' && process.env.GSD_TEST_WORKFLOW_GUARD_FAULT === '1') {
+      throw new Error('GSD_TEST_WORKFLOW_GUARD_FAULT: injected fault');
+    }
     const toolName = data.tool_name;
     const cwd = data.cwd || process.cwd();
     const isWorkflowGuardEnabled = workflowGuardEnabled(cwd);
@@ -192,14 +288,7 @@ process.stdin.on('end', () => {
       for (const gitCwd of forceGitAddCwds(command, cwd)) {
         const branch = currentBranch(gitCwd);
         if (/^(worktree-)?agent-/.test(branch)) {
-          const output = {
-            decision: 'block',
-            code: 'WORKTREE_AGENT_FORCE_ADD_FORBIDDEN',
-            reason: 'agent/worktree-agent branches must not run git add -f or git add --force. Respect the SDK skipped_gitignored/skipped_commit_docs_false contract and leave gitignored files untracked.',
-          };
-          process.stdout.write(JSON.stringify(output));
-          // Kimi CLI's exit-2 protocol feeds stderr back to the model (#2304)
-          process.stderr.write(output.reason);
+          emitForceAddBlock();
           process.exit(2);
         }
       }
@@ -264,8 +353,17 @@ process.stdin.on('end', () => {
     };
 
     process.stdout.write(JSON.stringify(output));
-  } catch (e) {
-    // Silent fail — never block tool execution
+  } catch {
+    // #3504: split posture on internal error. The ONE hard block in this hook
+    // (force-add on agent branches) fails CLOSED — if the blocking context can
+    // be re-derived from the payload (Bash tool + guard enabled + determinably
+    // an agent branch), exit 2 rather than silently allowing. Everything else
+    // keeps the historical fail-open posture: a broken advisory guard must
+    // never wedge the session's tool calls.
+    if (failClosedBlockContext(input)) {
+      emitForceAddBlock('fail-closed');
+      process.exit(2);
+    }
     process.exit(0);
   }
 });

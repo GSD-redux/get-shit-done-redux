@@ -19,6 +19,8 @@ const {
   parseMustHavesBlock,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
+const { normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
+
 // ─── extractFrontmatter ─────────────────────────────────────────────────────
 
 describe('extractFrontmatter', () => {
@@ -1236,11 +1238,15 @@ function buildRoadmap(numPhases) {
  */
 function createPhaseDirs(phasesDir, count) {
   for (let i = 1; i <= count; i++) {
-    const dir = path.join(phasesDir, String(i).padStart(2, '0'));
+    const dirName = String(i).padStart(2, '0');
+    const dir = path.join(phasesDir, dirName);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `01-PLAN.md`), `# Plan\n`);
     fs.writeFileSync(path.join(dir, `01-SUMMARY.md`), `# Summary\n`);
-    fs.writeFileSync(path.join(dir, `01-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
+    fs.writeFileSync(
+      path.join(dir, `${normalizePhaseName(dirName)}-VERIFICATION.md`),
+      '---\nstatus: passed\n---\n# Verification\n',
+    );
   }
 }
 
@@ -2094,6 +2100,81 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
       // The body prose the transition wrote stays as designed.
       __assert2736.match(stateContent, /Phase: 2 — Closer-ruling measurement \(D1a\)/);
     });
+
+    // ADR-3408 §8.3 Matrix A5 (#3469, regression-critical): the OTHER branch
+    // of phase.cts's #3350 pairing decision — when the body carries NO
+    // Phase:/Current Phase field at all (narrative prose), authoritativeFm
+    // pairs BOTH current_phase and current_phase_name so the two frontmatter
+    // fields never describe different phases. The #2736 re-assertion (applied
+    // after preservation, via the shared syncAndPreserveStateMd composition
+    // this phase introduced) must still win over any restore for BOTH keys.
+    __t2736('A5 (#3469): with no body Phase field, the paired authoritativeFm override wins for BOTH current_phase and current_phase_name', () => {
+      const planningDir = __path2736.join(tmpDir, '.planning');
+      const phase1Dir = __path2736.join(planningDir, 'phases', '01-foundation');
+      __fs2736.mkdirSync(phase1Dir, { recursive: true });
+
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '- [ ] Phase 1: Foundation',
+          `- [ ] Phase 2: ${PAREN_NAME_2736}`,
+          '',
+          '### Phase 1: Foundation',
+          '**Goal:** Setup',
+          '**Plans:** 1 plans',
+          '',
+          `### Phase 2: ${PAREN_NAME_2736}`,
+          '**Goal:** Measure closer rulings',
+          '',
+        ].join('\n'),
+      );
+
+      // Deliberately NO `Phase:` / `Current Phase:` line in the body.
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'current_phase: 1',
+          'current_phase_name: Foundation',
+          'status: executing',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Currently working through Phase 1 setup tasks.',
+          '',
+        ].join('\n'),
+      );
+
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-PLAN.md'), '# Plan\n');
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-SUMMARY.md'), '# Summary\n');
+      __fs2736.writeFileSync(
+        __path2736.join(phase1Dir, '01-VERIFICATION.md'),
+        ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+      );
+
+      const result = __run2736(['phase', 'complete', '1'], tmpDir);
+      __assert2736.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const stateContent = __fs2736.readFileSync(__path2736.join(planningDir, 'STATE.md'), 'utf-8');
+      const fm = extractFrontmatter(stateContent);
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `current_phase_name must be the exact next-phase display name; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+      __assert2736.strictEqual(
+        String(fm.current_phase),
+        '2',
+        '#3350: current_phase must be PAIRED with current_phase_name when the body carries no Phase field, ' +
+        `so the two frontmatter fields never describe different phases; got ${JSON.stringify(fm.current_phase)}`,
+      );
+    });
   });
 
   __d2736('#2736 sibling: state begin-phase preserves a paren-containing name (e2e)', () => {
@@ -2216,6 +2297,191 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
     });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// #3374 — `phase complete`'s adapter calls syncStateFrontmatter directly
+// (deliberately bypassing readModifyWriteStateMd for the atomic
+// ROADMAP/REQUIREMENTS/STATE commit), which also bypassed the #948/#1230
+// preservation pass every RMW write gets. A stale body `Stopped at:` line then
+// silently clobbered a fresher frontmatter `stopped_at` on every phase
+// completion. Placed beside the #2736 suite (the same defect family: the
+// adapter's post-sync policy diverging from the RMW path's). The fix is
+// two-layered: completePhaseCore now refreshes the body continuity line it
+// implies (`Phase N complete, ready to plan Phase N+1`) — session-scoped, so a
+// decoy `**Stopped at:**` line in an unrelated section cannot absorb the
+// refresh — so the harvest projects a value this very completion produced
+// (keeping #3517's refresh expectation), and the adapter runs the RMW post-sync
+// preservation pass (applyPostSyncPreservation) so a body source this write did
+// not refresh cannot beat a fresher frontmatter value.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __d3374, test: __t3374, beforeEach: __be3374, afterEach: __ae3374 } = require('node:test');
+  const __assert3374 = require('node:assert/strict');
+  const __fs3374 = require('node:fs');
+  const __path3374 = require('node:path');
+  const { runGsdTools: __run3374, createTempProject: __mk3374, cleanup: __rm3374 } = require('./helpers.cjs');
+  const { extractFrontmatter: __extractFm3374 } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const { stateExtractField: __extractField3374 } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  const FRESH_3374 = 'Phase 2 gap closure executed — FRESH frontmatter value';
+  const STALE_3374 = 'Phase 1 complete, ready to plan Phase 2';
+  const COMPLETION_LINE_3374 = 'Phase 2 complete, ready to plan Phase 3';
+
+  // Mirrors the issue's repro: a 3-phase roadmap completing phase 2 (not-last),
+  // body `## Session Continuity` holding a stale plain-label `Stopped at:` line
+  // that phase.complete's transition previously never touched.
+  function writeCompleteFixture3374(tmpDir, { fmStoppedAt = null, sessionStoppedAt = STALE_3374, decoy = false } = {}) {
+    const planningDir = __path3374.join(tmpDir, '.planning');
+    const phase2Dir = __path3374.join(planningDir, 'phases', '02-second-phase');
+    __fs3374.mkdirSync(phase2Dir, { recursive: true });
+
+    __fs3374.writeFileSync(
+      __path3374.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 1: First phase',
+        '**Plans:** 1 plans',
+        '',
+        '### Phase 2: Second phase',
+        '**Plans:** 1 plans',
+        '',
+        '### Phase 3: Third phase',
+        '**Plans:** 1 plans',
+        '',
+        '## Progress',
+        '',
+        '- [x] **Phase 1: First phase** - done',
+        '- [ ] **Phase 2: Second phase** - pending',
+        '- [ ] **Phase 3: Third phase** - pending',
+        '',
+      ].join('\n'),
+    );
+
+    const sessionLines = [
+      'Last session: 2026-08-10',
+      ...(sessionStoppedAt === null ? [] : [`Stopped at: ${sessionStoppedAt}`]),
+      'Resume file: None',
+    ];
+    __fs3374.writeFileSync(
+      __path3374.join(planningDir, 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'current_phase: 2',
+        'current_phase_name: Second phase',
+        'status: executing',
+        ...(fmStoppedAt ? [`stopped_at: "${fmStoppedAt}"`] : []),
+        '---',
+        '',
+        '# Project State',
+        ...(decoy ? ['', '## Archive notes', '', '**Stopped at:** old prose from June'] : []),
+        '',
+        '## Session Continuity',
+        '',
+        ...sessionLines,
+        '',
+      ].join('\n'),
+    );
+
+    __fs3374.writeFileSync(__path3374.join(phase2Dir, '02-01-PLAN.md'), '# Plan\n');
+    __fs3374.writeFileSync(__path3374.join(phase2Dir, '02-01-SUMMARY.md'), '# Summary\n');
+    __fs3374.writeFileSync(
+      __path3374.join(phase2Dir, '02-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
+  }
+
+  __d3374('#3374: phase complete must not harvest a stale body Stopped at over fresher frontmatter', () => {
+    let tmpDir;
+    const statePath = () => __path3374.join(tmpDir, '.planning', 'STATE.md');
+
+    __be3374(() => { tmpDir = __mk3374(); });
+    __ae3374(() => { __rm3374(tmpDir); });
+
+    __t3374('AC1: the stale body Stopped at never reaches the frontmatter — the transition refreshes the line it implies', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374 });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const stateContent = __fs3374.readFileSync(statePath(), 'utf-8');
+      const fm = __extractFm3374(stateContent);
+      __assert3374.notStrictEqual(
+        fm.stopped_at,
+        STALE_3374,
+        'phase.complete harvested the stale pre-completion body value into the frontmatter (#3374 Variant A)',
+      );
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `the frontmatter must project the continuity line this completion wrote, never the stale value; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+      __assert3374.strictEqual(
+        __extractField3374(stateContent, 'Stopped at'),
+        COMPLETION_LINE_3374,
+        'the body continuity line must be refreshed by the transition itself, not left for a later prose step',
+      );
+    });
+
+    __t3374('AC1 scoping: a decoy Stopped at in a non-session section cannot absorb the continuity refresh', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374, decoy: true });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      // The harvest reads ONLY the session scope, so the projected frontmatter
+      // value proves the session line (not the decoy) was the one refreshed.
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `the session-scoped continuity write must win over the whole-body decoy; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+
+    __t3374('AC1 preservation leg: with no session Stopped at line to refresh, the fresher frontmatter value survives', () => {
+      writeCompleteFixture3374(tmpDir, { fmStoppedAt: FRESH_3374, sessionStoppedAt: null });
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      // Replace-only continuity write missed → nothing to harvest → the
+      // pre-existing (fresher) frontmatter value must be preserved, not
+      // dropped or replaced with pre-completion prose.
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        FRESH_3374,
+        `with no body source refreshed by this write, the existing frontmatter value must survive; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+
+    __t3374('AC2 (no-regress): with no pre-existing frontmatter stopped_at, the body line populates it', () => {
+      writeCompleteFixture3374(tmpDir, {});
+
+      const result = __run3374(['phase', 'complete', '2'], tmpDir);
+      __assert3374.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const fm = __extractFm3374(__fs3374.readFileSync(statePath(), 'utf-8'));
+      __assert3374.strictEqual(
+        fm.stopped_at,
+        COMPLETION_LINE_3374,
+        `first-write population from the (refreshed) body line must keep working; got ${JSON.stringify(fm.stopped_at)}`,
+      );
+    });
+
+  });
+}
+// ADR-3408 §8.3 Matrix A4 (#3469): satisfied by the "AC1 preservation leg"
+// test above ('with no session Stopped at line to refresh, the fresher
+// frontmatter value survives') — that scenario now runs through the ONE
+// write-seam composition (`syncAndPreserveStateMd`) instead of the
+// hand-assembled sync+preserve pair `applyPostSyncPreservation`'s docstring
+// used to describe. No new test added here: duplicating an already-passing,
+// identically-shaped assertion adds no coverage.
 
 
 // ────────────────────────────────────────────────────────────────────────

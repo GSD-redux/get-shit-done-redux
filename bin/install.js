@@ -60,6 +60,10 @@ const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs'
 const { shouldCompose } = require('../gsd-core/bin/lib/mcp-catalog.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs');
+// #2873: cross-scope shadow detection — reports (never fails) when a
+// GSD-owned scope shadows another on this machine (design doc:
+// .gsd/phase/feat-2873-cross-scope-shadowing/40-design.md).
+const { buildShadowReport, renderShadowReport } = require('../gsd-core/bin/lib/install-shadow-report.cjs');
 // #2544: the CommonJS marker's single source of truth. classifyMarker() backs
 // BOTH ensureCommonJsMarker() (install) and removeCommonJsMarker() (uninstall),
 // so the write side can no longer clobber a package.json the remove side would
@@ -342,7 +346,7 @@ const GSD_WINDSURF_HOOK_SCRIPTS = [
   GSD_WINDSURF_PRE_COMMAND_HOOK_SCRIPT,
 ];
 
-// GSD-managed files under hooks/lib/ (helpers required by gsd-*.sh hooks).
+// GSD-managed files under hooks/lib/ (helpers required by gsd-*.js hooks).
 // git-cmd.js does not start with "gsd-" (shared classifier for #3129), gsd-graphify-rebuild.sh does.
 // cursor-workspace.js (#2587) is required by the Cursor lifecycle hooks. Those
 // are staged individually by writeCursorHooksJson (Cursor sets
@@ -350,7 +354,10 @@ const GSD_WINDSURF_HOOK_SCRIPTS = [
 // copy below) — that function stages this helper alongside them. Listing it
 // here keeps uninstall and the manifest managing it for every OTHER runtime
 // that does receive hooks/lib.
-const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh', 'cursor-workspace.js'];
+// injection-patterns.js (#3504) is required by gsd-prompt-guard.js and
+// gsd-read-injection-scanner.js — the shared prompt-injection pattern list the
+// two guards require so their copies cannot drift.
+const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh', 'cursor-workspace.js', 'injection-patterns.js'];
 
 /**
  * Directory name GSD stages its shared hook bundle under, inside a runtime's
@@ -4014,7 +4021,7 @@ Typed mapping (agent_type-capable schema only):
   to \`spawn_agent\` when the runtime/tool supports it. Omit missing, empty,
   inherited, or unsupported values; do not invent one-off effort literals in
   workflow prose.
-- \`fork_context: false\` by default — GSD agents load their own context via \`<files_to_read>\` blocks
+- \`fork_context: false\` by default — GSD agents load their own context via \`<required_reading>\` blocks
 - \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
 - \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
@@ -4279,8 +4286,12 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
   // follows GSD. Keep those knobs coupled unless GSD also pins the model.
   if (hasPinnedModel) {
     const _universalEffortCodex = resolveInstallTimeEffort(effortCfg, resolvedName !== agentName ? resolvedName : agentName);
-    const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
-    lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+    // #3533 (10d): 'inherit' means OMIT the pin — the agent follows the host's
+    // own effort default. Never write the literal.
+    if (_universalEffortCodex !== 'inherit') {
+      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
+      lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+    }
   }
 
   // #774 — Emit service_tier and model_verbosity for light-tier agents.
@@ -11252,8 +11263,13 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           const _effortCfg = readGsdEffectiveEffortConfig(targetDir);
           const _agentName = entry.name.replace(/\.md$/, '');
           const _universalEffort = resolveInstallTimeEffort(_effortCfg, _agentName);
-          const _renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, _universalEffort).value;
-          content = injectEffortFrontmatter(content, _renderedEffort);
+          // #3533 (10d): 'inherit' means the effort: key must NOT exist —
+          // Claude Code then follows the session effort. The canonical source
+          // agents carry no effort key, so skipping injection is the whole job.
+          if (_universalEffort !== 'inherit') {
+            const _renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, _universalEffort).value;
+            content = injectEffortFrontmatter(content, _renderedEffort);
+          }
           const _disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[_agentName];
           if (_disallowedTools) content = injectDisallowedToolsFrontmatter(content, _disallowedTools);
         }
@@ -11660,6 +11676,29 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
   // Report any backed-up local patches
   reportLocalPatches(targetDir, runtime);
+
+  // #2873: cross-scope shadow report. Fires ONCE per install (this is the
+  // only writeManifest call site that gets it — the other four sites are
+  // sub-writes within a single install, not separate installs). A shadowed
+  // install is a warning, never a failure (ADR-2866 Consequences), so this
+  // never touches `failures` or `process.exit`, and the whole block is
+  // wrapped in a try/catch that swallows everything: a report failure must
+  // never fail an otherwise-successful install (design row C5). No options
+  // are injected into buildShadowReport — this is the production call shape,
+  // resolving the real machine via os.homedir()/process.cwd() defaults
+  // inside the resolver.
+  try {
+    const shadowReport = buildShadowReport(runtime);
+    const shadowLines = renderShadowReport(shadowReport);
+    if (shadowLines.length > 0) {
+      console.warn(`\n  ${yellow}⚠${reset}  ${shadowLines[0]}`);
+      for (const line of shadowLines.slice(1)) {
+        console.warn(`  ${dim}${line}${reset}`);
+      }
+    }
+  } catch (_shadowReportErr) {
+    // Never fail an install over a reporting concern — see comment above.
+  }
 
   // Verify no leaked .claude paths in non-Claude runtimes (manifest-scoped)
   if (!_hostBehaviors(runtime).ownsClaudePaths) {

@@ -25,7 +25,7 @@ import phaseIdMod = require('./phase-id.cjs');
 // left phase-id.cts entirely and `src/pattern.cts` is its sole owner, imported
 // at the top of this file. A re-homing of one unrelated import — no #612
 // helper's provenance changes.
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -123,11 +123,17 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
   let phaseFiles: string[] = [];
   try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+  // #3511: scope the raw listing to this phase dir before the
+  // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
+  // summaryCount above stay on scanPhasePlans's own unscoped listing since a
+  // PLAN/SUMMARY leading number is a plan sequence number, not a phase
+  // number. Mirrors core-utils.cts's getPhaseFileStats.
+  const scopedFiles = scopeToPhase(phaseFiles, path.basename(phaseDir));
   return {
     planCount,
     summaryCount,
-    hasContext: findContextMdIn(phaseFiles) !== null,
-    hasResearch: phaseFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
   };
 }
 

@@ -589,6 +589,18 @@ describe('GROUP C: bundle-directory-name-agnostic hook scripts', () => {
     fs.mkdirSync(bundleDir, { recursive: true });
     const scannerPath = path.join(bundleDir, 'gsd-read-injection-scanner.js');
     fs.copyFileSync(path.join(REPO_ROOT, 'hooks', 'gsd-read-injection-scanner.js'), scannerPath);
+    // #3504: the scanner now requires hooks/lib/injection-patterns.js. Every
+    // real staging surface ships lib/ alongside the hook (installSharedHooksBundle
+    // copies dist recursively AND stages hooks/lib from the GSD_HOOK_LIB_FILES
+    // allowlist into the same shared dir), so this lone-file emulation must
+    // stage the dependency the same way — a missing lib file is a packaging
+    // bug that fails loud at hook load (#2587), which is exactly what the
+    // un-staged version of this fixture now demonstrates.
+    fs.mkdirSync(path.join(bundleDir, 'lib'), { recursive: true });
+    fs.copyFileSync(
+      path.join(REPO_ROOT, 'hooks', 'lib', 'injection-patterns.js'),
+      path.join(bundleDir, 'lib', 'injection-patterns.js'),
+    );
 
     // Node canonicalizes a module's __dirname via the REAL (symlink-resolved)
     // path, so a payload path must be built from the same realpath — on macOS

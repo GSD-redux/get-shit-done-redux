@@ -433,6 +433,78 @@ All checks passed.
     assert.strictEqual(output.summary.total_files, 0);
   });
 
+  // #3511: a cross-phase, stray, or ad-hoc UAT/VERIFICATION file sitting in
+  // this phase's directory must not surface under this phase's audit-uat
+  // entry; this phase's own UAT/VERIFICATION artifacts must keep reporting
+  // exactly as before (non-stray case unchanged).
+  test('#3511: cross-phase stray UAT/VERIFICATION files in the same dir do not surface; own artifacts still do', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-foo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    // This phase's own UAT — must still report its pending item.
+    fs.writeFileSync(path.join(phaseDir, '03-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Own Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+    // This phase's own VERIFICATION — must still report its human-needed item.
+    fs.writeFileSync(path.join(phaseDir, '03-VERIFICATION.md'), [
+      '---', 'status: human_needed', 'phase: 03-foo', '---', '',
+      '## Human Verification', '',
+      '1. Own human check',
+    ].join('\n'));
+
+    // Cross-phase strays sitting in the SAME directory — token "04", not "03".
+    fs.writeFileSync(path.join(phaseDir, '04-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Stray Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, '04-VERIFICATION.md'), [
+      '---', 'status: human_needed', 'phase: 04-bar', '---', '',
+      '## Human Verification', '',
+      '1. Stray human check',
+    ].join('\n'));
+
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.summary.total_files, 2,
+      `only this phase's own 2 files must be scanned; got: ${JSON.stringify(output.results.map(r => r.file))}`);
+    assert.strictEqual(output.summary.total_items, 2,
+      `1 own UAT item + 1 own VERIFICATION item, strays excluded; got: ${output.summary.total_items}`);
+    assert.strictEqual(output.summary.by_phase['03'], 2, 'own phase must be credited both items');
+    assert.ok(!('04' in output.summary.by_phase), 'the cross-phase stray must not appear in by_phase at all');
+    assert.ok(!result.output.includes('04-UAT.md'), 'stray UAT filename must never surface in the output');
+    assert.ok(!result.output.includes('04-VERIFICATION.md'), 'stray VERIFICATION filename must never surface in the output');
+    assert.ok(output.results.some(r => r.file === '03-UAT.md' && r.items.some(i => i.name === 'Own Test')));
+    assert.ok(output.results.some(r => r.file === '03-VERIFICATION.md' && r.items.some(i => i.name === 'Own human check')));
+  });
+
+  // #3511 follow-up: over-exclusion check on the #2528 digit-leading-slug
+  // family. "05-80-20-cleanup" tokenizes to "05-80-20" (mis-absorbed past
+  // the digit run scaffold actually writes into), so a literal token compare
+  // excluded the phase's own report — audit-uat reported total_files: 0.
+  test('#3511 follow-up: own UAT file still surfaces from the digit-leading-slug dir "05-80-20-cleanup" (over-exclusion check)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '05-80-20-cleanup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    fs.writeFileSync(path.join(phaseDir, '05-UAT.md'), [
+      '---', 'status: partial', '---', '',
+      '## Tests', '',
+      '### 1. Own Test', 'expected: Works', 'result: pending', '',
+    ].join('\n'));
+
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.summary.total_files, 1,
+      `own UAT file in a digit-leading-slug dir must still surface; got: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.summary.by_phase['05'], 1);
+  });
+
   // Regression: #2286 — parseUatItems never scanned a `## Gaps` section, so a
   // *-UAT.md file recording its only outstanding findings there returned
   // total_items: 0 (false-clean). Boundary: 0 / 1 / 2+ unresolved entries.
@@ -1971,6 +2043,205 @@ describe('#2766 parseDeferredItems: GFM table shape', () => {
 
   test('no table and no bullets → zero items, no throw', () => {
     assert.deepStrictEqual(names('# Notes\n\njust prose, nothing actionable.\n'), []);
+  });
+});
+
+// ─── #3457: heading-delimited deferred entries ────────────────────────────────
+
+describe('#3457 parseDeferredItems: heading-delimited entries', () => {
+  const items = (md) => parseDeferredItems(md);
+  const names = (md) => items(md).map(i => i.name);
+
+  test('issue minimal repro: heading + sibling field bullets = ONE item', () => {
+    const got = items([
+      '# Deferred Items',
+      '',
+      '## Deferred Items',
+      '',
+      '### Widget layout suite — 3 failing assertions',
+      '',
+      '- **What:** three assertions fail on widget alignment.',
+      '- **Cause:** a pre-existing uncommitted edit in the working tree.',
+      '- **Scope:** out of this plan\'s scope.',
+      '- **Disposition:** NOT fixed here; left for a follow-up plan.',
+    ].join('\n'));
+
+    assert.strictEqual(got.length, 1, JSON.stringify(got.map(i => i.name)));
+    assert.match(got[0].name, /Widget layout suite — 3 failing assertions/);
+    assert.match(got[0].name, /three assertions fail/);
+    assert.strictEqual(got[0].result, 'unresolved');
+    assert.strictEqual(got[0].category, 'deferred');
+  });
+
+  test('flat shape: `#` title + `##` entries — title is not an item', () => {
+    const got = names([
+      '# Deferred Items',
+      '',
+      '## DEF-01 renderer fix',
+      '',
+      '- **What:** a.',
+      '',
+      '## DEF-02 seed drift',
+      '',
+      '- **What:** b.',
+    ].join('\n'));
+
+    assert.strictEqual(got.length, 2, JSON.stringify(got));
+    assert.match(got[0], /^DEF-01 renderer fix/);
+    assert.match(got[1], /^DEF-02 seed drift/);
+  });
+
+  test('container shape: `##` group label + `###` entries — group is not an item, entries not collapsed', () => {
+    // The shape both shallow-boundary rules get wrong: "count all headings"
+    // counts the group; "shallowest level" collapses both entries into one.
+    const got = names([
+      '# Deferred Items',
+      '',
+      '## Plan 28-02 provenance',
+      '',
+      '### Entry A — flaky seed',
+      '',
+      '- **What:** a.',
+      '',
+      '### Entry B — slow build',
+      '',
+      '- **What:** b.',
+    ].join('\n'));
+
+    assert.strictEqual(got.length, 2, JSON.stringify(got));
+    assert.match(got[0], /^Entry A — flaky seed/);
+    assert.match(got[1], /^Entry B — slow build/);
+    // A following entry's heading must not be swallowed into the previous
+    // entry's name (the pre-fix bullet-split folded it in).
+    assert.ok(!got[0].includes('Entry B'), got[0]);
+  });
+
+  test('mixed shape: loose preamble bullets before a later heading group stay one-per-bullet', () => {
+    const got = names([
+      '# Deferred Items',
+      '',
+      '- loose preamble item one',
+      '- loose preamble item two',
+      '',
+      '## Group under here',
+      '',
+      '### Entry C',
+      '- **What:** c.',
+    ].join('\n'));
+
+    assert.deepStrictEqual(
+      got.map(n => n.replace(/\s+- \*\*What:\*\*.*$/, '')),
+      ['loose preamble item one', 'loose preamble item two', 'Entry C'],
+      JSON.stringify(got),
+    );
+  });
+
+  test('mixed depths: childless `##` entry alongside a `##` group with `###` children — all counted', () => {
+    // The case "deepest heading level present" rules miss: the childless ##
+    // is shallower than the deepest level in the file but is still an entry.
+    const got = names([
+      '# Deferred Items',
+      '',
+      '## Group with children',
+      '',
+      '### Entry A',
+      '- **What:** a.',
+      '',
+      '### Entry B',
+      '- **What:** b.',
+      '',
+      '## Standalone entry',
+      '',
+      '- **What:** standalone.',
+    ].join('\n'));
+
+    assert.strictEqual(got.length, 3, JSON.stringify(got));
+    assert.ok(got.some(n => /^Standalone entry/.test(n)), JSON.stringify(got));
+  });
+
+  test('no headings at all → one-bullet-per-item, unchanged names (no regression)', () => {
+    assert.deepStrictEqual(
+      names('## Deferred Items\n\n- entry one\n- entry two\n'),
+      ['entry one', 'entry two'],
+    );
+  });
+
+  test('bolded `- **Status:** resolved` under a leaf heading resolves the entry', () => {
+    const got = names([
+      '## Deferred Items',
+      '',
+      '### Item resolved inline',
+      '',
+      '- **What:** x.',
+      '- **Status:** resolved',
+    ].join('\n'));
+
+    assert.deepStrictEqual(got, [], JSON.stringify(got));
+  });
+
+  test('bolded `- **Status:** resolved` with no headings: resolves itself, never surfaces as its own item', () => {
+    // The issue's negative control: previously count = 2 with a literal
+    // `**Status:** resolved` pseudo-entry; must match the bare form's count = 1.
+    const got = names('## Deferred Items\n\n- **What:** one deferred item.\n- **Status:** resolved\n');
+
+    assert.strictEqual(got.length, 1, JSON.stringify(got));
+    assert.match(got[0], /\*\*What:\*\* one deferred item\./);
+    assert.ok(!got.some(n => /Status/.test(n)), JSON.stringify(got));
+  });
+
+  test('bare `status: resolved` controls keep working (no regression on #2287)', () => {
+    // Headless continuation form.
+    assert.strictEqual(names('## Deferred Items\n\n- a\n  status: resolved\n- b\n').length, 1);
+    // Bare status as a sibling bullet under a leaf heading.
+    assert.strictEqual(names([
+      '## Deferred Items',
+      '',
+      '### Item resolved bare',
+      '',
+      '- **What:** x.',
+      '  status: resolved',
+    ].join('\n')).length, 0);
+  });
+
+  test('leaf heading over a table-only body → table rows only, no double-count', () => {
+    // parseDeferredTableItems owns the rows; the heading must not add an item.
+    const got = names([
+      '## Discovered during 01-03',
+      '',
+      '| Test | Failing seeds |',
+      '|------|---------------|',
+      '| test_a | 0, 1 |',
+    ].join('\n'));
+
+    assert.deepStrictEqual(got, ['test_a — 0, 1'], JSON.stringify(got));
+  });
+
+  test('prose-only or bare headings contribute no items', () => {
+    // "Prose is not an item" is this parser's pre-existing contract (#2766
+    // `# Notes` case) — heading mode must not start counting prose sections.
+    assert.deepStrictEqual(names('## Deferred Items\n\n### Musings\n\njust prose here.\n'), []);
+    assert.deepStrictEqual(names('## Deferred Items\n\n### A bare heading with no body\n'), []);
+  });
+
+  test('CRLF files: heading entries still split and resolve', () => {
+    const got = names('## Deferred Items\r\n\r\n### Entry\r\n\r\n- **What:** x.\r\n- **Status:** resolved\r\n');
+
+    assert.deepStrictEqual(got, [], JSON.stringify(got));
+  });
+
+  test('mid-line `status: resolved` decoy under a heading must not resolve the entry', () => {
+    // The #2287 decoy invariant, ported to the heading shape: a status-shaped
+    // phrase inside entry prose is never a field.
+    const got = items([
+      '## Deferred Items',
+      '',
+      '### Entry with decoy prose',
+      '',
+      '- note: saw a status: resolved message in the log',
+    ].join('\n'));
+
+    assert.strictEqual(got.length, 1, JSON.stringify(got.map(i => i.name)));
+    assert.strictEqual(got[0].result, 'unresolved');
   });
 });
 

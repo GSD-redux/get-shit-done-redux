@@ -485,6 +485,22 @@ describe('getPhaseFileStats', () => {
     const stats = coreUtils.getPhaseFileStats(tmpDir);
     assert.deepEqual(stats.plans, ['plans/PLAN-01.md']);
   });
+
+  test('#3511 BLOCKER-2 regression: a cross-phase stray VERIFICATION.md is scoped out of hasVerification', () => {
+    // Dir is phase 03's own directory ("03-test" → token "03"); the only
+    // VERIFICATION.md present belongs to phase 04. scopeToPhase must exclude
+    // it, so hasVerification reads false — an unscoped implementation would
+    // wrongly report phase 03 as verified off phase 04's report.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    const phaseDir = path.join(tmpDir, '03-test');
+    fs.mkdirSync(phaseDir);
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '03-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '04-VERIFICATION.md'), '---\nstatus: passed\n---\n');
+    const stats = coreUtils.getPhaseFileStats(phaseDir);
+    assert.strictEqual(stats.hasVerification, false,
+      `hasVerification must be false — the only VERIFICATION.md belongs to phase 04, not 03; got scopedFiles-derived: ${stats.hasVerification}`);
+  });
 });
 
 // ─── extractOneLinerFromBody ──────────────────────────────────────────────────

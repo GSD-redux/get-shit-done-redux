@@ -120,6 +120,139 @@ describe('init commands', () => {
     assert.strictEqual(output.uat_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'));
   });
 
+  test('#3511-class: init manager has_context/has_research ignore another phase\'s misplaced artifact', () => {
+    writePlanningDocs(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '## Progress',
+        '',
+        '- [ ] **Phase 1: Setup**',
+        '- [ ] **Phase 2: API**',
+        '',
+        '### Phase 1: Setup',
+        '',
+        '**Goal:** Build the foundation.',
+        '',
+        '### Phase 2: API',
+        '',
+        '**Goal:** Build the API.',
+        '',
+      ].join('\n'),
+    );
+
+    seedPhase(tmpDir, '01-setup', {});
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    seedPhase(tmpDir, '02-api', {
+      '01-RESEARCH.md': '# Research for phase 01',
+      '01-CONTEXT.md': '# Context for phase 01',
+    });
+
+    const result = runGsdTools('init manager', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const p2 = output.phases.find((p) => p.number === '2');
+    assert.strictEqual(p2.has_research, false,
+      'phase 2 must not report has_research from a file that belongs to phase 1');
+    assert.strictEqual(p2.has_context, false,
+      'phase 2 must not report has_context from a file that belongs to phase 1');
+  });
+
+  test('#3511-class: init verify-work ui_phase_active ignores another phase\'s misplaced UI-SPEC file', () => {
+    writePlanningDocs(tmpDir);
+    // ui_phase_active is `hasActiveUiStep || hasUiSpecFile` (detectUiPhaseActive,
+    // src/init.cts) — the `ui` capability's `workflow.ui_phase` config key
+    // defaults to `true` (capabilities/ui/capability.json), which alone would
+    // make `hasActiveUiStep` (and therefore the whole OR) true regardless of
+    // which file the phase directory holds. Disabling it here isolates the
+    // signal this test actually exercises: the misplaced-file half of the OR.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ workflow: { ui_phase: false } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 1: Setup',
+        '',
+        '**Goal:** Build the foundation.',
+        '',
+        '### Phase 2: API',
+        '',
+        '**Goal:** Build the API.',
+        '',
+      ].join('\n'),
+    );
+
+    seedPhase(tmpDir, '01-setup', {});
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    seedPhase(tmpDir, '02-api', {
+      '01-UI-SPEC.md': '# UI Spec for phase 01',
+    });
+
+    const result = runGsdTools('init verify-work 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.ui_phase_active, false,
+      'phase 2 must not report ui_phase_active from a UI-SPEC file that belongs to phase 1');
+  });
+
+  // #3473 F2 (companion to #3357): init plan-phase's verification_path
+  // projector now resolves via the shared resolveVerificationFile resolver
+  // instead of a hand-rolled `.find()` over unsorted readdir() order. The
+  // canonical report must win over an ad-hoc -CORRECTION- worksheet
+  // deterministically, regardless of directory-listing order.
+  test('#3473 F2: init plan-phase resolves the canonical report over a -CORRECTION- worksheet', () => {
+    seedPhase(tmpDir, '03-api', {
+      '03-CORRECTION-VERIFICATION.md': '# Ad-hoc correction worksheet',
+      '03-VERIFICATION.md': '# Verification',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init plan-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.verification_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'),
+      'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet',
+    );
+  });
+
+  // #3518: init plan-phase's uat_path projector must resolve via the shared
+  // resolveUatFile resolver (phase-pinned, deterministic) instead of a
+  // hand-rolled `.find()` over unsorted readdir() order. A stray cross-phase
+  // UAT artifact must never become THIS phase's uat_path, on any filesystem.
+  // The stray is listed first in the fixture (creation-order filesystems) AND
+  // sorts before the phase's own file (lexicographic-order filesystems), so
+  // the pre-fix readdir pick loses on both ordering families.
+  test('#3518: init plan-phase uat_path is phase-pinned — a stray cross-phase -UAT.md must not win', () => {
+    seedPhase(tmpDir, '03-api', {
+      '02-UAT.md': '# Stray cross-phase UAT artifact (belongs to phase 02)',
+      '03-UAT.md': '# UAT',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init plan-phase 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.uat_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'),
+      'the phase\'s own 03-UAT.md must win over the stray cross-phase 02-UAT.md',
+    );
+  });
+
   // #2056: normalizePhaseName() strips ANY [A-Z][A-Z0-9_]*- prefix as a project
   // code, so a foreign-prefixed workstream/task id like "MEM-01" collapsed to
   // "01" and resolved to the unrelated numeric Phase 01. init plan-phase must
@@ -360,6 +493,50 @@ describe('init commands', () => {
     assert.strictEqual(output.research_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-RESEARCH.md'));
     assert.strictEqual(output.verification_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'));
     assert.strictEqual(output.uat_path, absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'));
+  });
+
+  // #3473 F2 (companion to #3357): init phase-op's verification_path projector
+  // — the second of the two now-fixed init.cts sites — same regression as
+  // the plan-phase test above.
+  test('#3473 F2: init phase-op resolves the canonical report over a -CORRECTION- worksheet', () => {
+    seedPhase(tmpDir, '03-api', {
+      '03-CORRECTION-VERIFICATION.md': '# Ad-hoc correction worksheet',
+      '03-VERIFICATION.md': '# Verification',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init phase-op 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.verification_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-VERIFICATION.md'),
+      'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet',
+    );
+  });
+
+  // #3518: init phase-op's uat_path projector — the second of the two
+  // single-pick UAT sites in src/init.cts — same phase-pinned contract as
+  // the plan-phase test above. Stray created first AND sorting first, so the
+  // pre-fix readdir-order pick deterministically chose it on both ordering
+  // families.
+  test('#3518: init phase-op uat_path is phase-pinned — a stray cross-phase -UAT.md must not win', () => {
+    seedPhase(tmpDir, '03-api', {
+      '02-UAT.md': '# Stray cross-phase UAT artifact (belongs to phase 02)',
+      '03-UAT.md': '# UAT',
+    });
+    writePlanningDocs(tmpDir);
+
+    const result = runGsdTools('init phase-op 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.uat_path,
+      absPlanningPath(tmpDir, 'phases', '03-api', '03-UAT.md'),
+      'the phase\'s own 03-UAT.md must win over the stray cross-phase 02-UAT.md',
+    );
   });
 
   test('init plan-phase detects has_reviews and reviews_path when REVIEWS.md exists', () => {
@@ -1625,6 +1802,27 @@ describe('cmdInitProgress', () => {
     assert.strictEqual(output.next_phase, null);
   });
 
+  test('#3511-class: has_research ignores a misplaced RESEARCH.md that belongs to another phase', () => {
+    // Phase 01 has no artifacts of its own.
+    const phase1 = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phase1, { recursive: true });
+
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    const phase2 = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.mkdirSync(phase2, { recursive: true });
+    fs.writeFileSync(path.join(phase2, '01-RESEARCH.md'), '# Research for phase 01');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const p2 = output.phases.find(p => p.number === '02');
+    assert.strictEqual(p2.has_research, false,
+      'phase 02 must not report has_research from a file that belongs to phase 01');
+    assert.strictEqual(p2.status, 'pending');
+  });
+
   test('implementation-complete phase without passed verification remains current work', () => {
     const phase1 = path.join(tmpDir, '.planning', 'phases', '01-setup');
     fs.mkdirSync(phase1, { recursive: true });
@@ -2878,7 +3076,7 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
 
   // allow-test-rule: source-text-is-the-product (see #2376)
   //
-  // Checks verbatim presence of the exact edited <files_to_read>/output blocks
+  // Checks verbatim presence of the exact edited <required_reading>/output blocks
   // rather than scanning the whole file for absence of the old literals: several
   // of those literals (e.g. .planning/PROJECT.md, .planning/config.json) remain
   // legitimately elsewhere in this file in orchestrator-local bash/doc-table
@@ -2889,17 +3087,17 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
     const content = fs.readFileSync(wfPath, 'utf8');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</files_to_read>'
+      '<required_reading>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</required_reading>'
     ), 'research-synthesizer spawn must read from {research_dir}, not bare .planning/research/*.md literals');
     assert.ok(content.includes('Write to: {research_dir}/SUMMARY.md'),
       'research-synthesizer spawn must write to {research_dir}/SUMMARY.md, not a bare literal');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {project_path} (Project context)\n- {requirements_path} (v1 Requirements)\n- {research_dir}/SUMMARY.md (Research findings - if exists)\n- {config_path} (Granularity and mode settings)\n</files_to_read>'
+      '<required_reading>\n- {project_path} (Project context)\n- {requirements_path} (v1 Requirements)\n- {research_dir}/SUMMARY.md (Research findings - if exists)\n- {config_path} (Granularity and mode settings)\n</required_reading>'
     ), 'roadmapper spawn must read from {project_path}/{requirements_path}/{research_dir}/{config_path}, not bare .planning literals');
 
     assert.ok(content.includes(
-      '<files_to_read>\n  - {roadmap_path} (Current roadmap to revise)\n  </files_to_read>'
+      '<required_reading>\n  - {roadmap_path} (Current roadmap to revise)\n  </required_reading>'
     ), 'roadmapper revision spawn must read {roadmap_path}, not a bare .planning/ROADMAP.md literal');
   });
 
@@ -2909,13 +3107,13 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
     const content = fs.readFileSync(wfPath, 'utf8');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</files_to_read>'
+      '<required_reading>\n- {research_dir}/STACK.md\n- {research_dir}/FEATURES.md\n- {research_dir}/ARCHITECTURE.md\n- {research_dir}/PITFALLS.md\n</required_reading>'
     ), 'research-synthesizer spawn must read from {research_dir}, not bare .planning/research/*.md literals');
     assert.ok(content.includes('Write to: {research_dir}/SUMMARY.md'),
       'research-synthesizer spawn must write to {research_dir}/SUMMARY.md, not a bare literal');
 
     assert.ok(content.includes(
-      '<files_to_read>\n- {project_path}\n- {requirements_path}\n- {research_dir}/SUMMARY.md (if exists)\n- {config_path}\n- {milestones_path}\n</files_to_read>'
+      '<required_reading>\n- {project_path}\n- {requirements_path}\n- {research_dir}/SUMMARY.md (if exists)\n- {config_path}\n- {milestones_path}\n</required_reading>'
     ), 'roadmapper spawn must read from {project_path}/{requirements_path}/{research_dir}/{config_path}/{milestones_path}, not bare .planning literals');
   });
 
@@ -3372,6 +3570,25 @@ describe('init section manifest', () => {
       assert.deepStrictEqual(body.section_manifest.read, [
         'gsd-core/workflows/execute-phase/steps/partial-wave.md',
       ]);
+    });
+
+    test('#3511-class: regression-gate (state:has-prior-phases) ignores a misplaced VERIFICATION.md that belongs to another phase', (t) => {
+      const dir = createTempProject('gsd-3511-hasprior-');
+      t.after(() => cleanup(dir));
+      // Phase 01 is the one being executed.
+      seedPhase(dir, '01-widgets', {});
+      // Phase 02's directory holds ONLY a stray artifact whose filename
+      // token ("05-") belongs to phase 05, not to this directory's own
+      // phase (02) — it must not make phase 02 look like it has its own
+      // verification report.
+      seedPhase(dir, '02-other', { '05-VERIFICATION.md': '# Verification for phase 05' });
+
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'stray-verification');
+
+      assert.ok(body.section_manifest, 'section_manifest must be present');
+      assert.ok(!body.section_manifest.included.includes('regression-gate'),
+        'regression-gate must not be included when no OTHER phase has its own verification');
+      assert.ok(body.section_manifest.excluded.includes('regression-gate'));
     });
   });
 

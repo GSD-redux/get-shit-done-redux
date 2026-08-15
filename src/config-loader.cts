@@ -317,6 +317,60 @@ function _resetRuntimeWarningCacheForTests(): void {
   _warnedConfigKeys.clear();
   _warnedUnknownConfigKeys.clear();
   _warnedUnusableConfig.clear();
+  _warnedShadowedGlobalKeys.clear();
+}
+
+// ─── #3532 (10b): shadowed global-defaults diagnostic ────────────────────────
+
+// The keys Branch D's `_globalBaseCfg` demonstrably honors from
+// ~/.gsd/defaults.json when no project config exists. Under a project
+// .planning/config.json (Branch A — every real project) the global file is
+// never opened, so each of these set globally is silently inert for resolution.
+// `effort` is in Branch D's honored set but is EXCLUDED from the shadow warning:
+// the install-time effort sync (readGsdEffectiveEffortConfig) DOES merge the
+// global file, so warning on it would be false for the channel users actually
+// control via `effort sync`. Keep this list in lockstep with `_globalBaseCfg`
+// below — the per-key canary in tests/config-loader.test.cjs fails first on
+// drift in either direction.
+const GLOBAL_DEFAULTS_RESOLUTION_KEYS = [
+  'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
+  'nyquist_validation', 'post_planning_gaps', 'parallelization', 'text_mode',
+  'resolve_model_ids', 'context_window', 'subagent_timeout', 'model_overrides',
+  'models', 'granularity', 'granularities', 'planning', 'dynamic_routing',
+  'effort', 'fast_mode', 'agent_skills', 'response_language', 'runtime',
+  'model_profile_overrides', 'model_policy',
+];
+
+// Module-level dedup keyed on the SORTED shadowed-key set: a later call with
+// the same shadowed set stays quiet, while a config that grows a new shadowed
+// key re-arms the warning. Stronger than _warnedUnknownConfigKeys (which keys
+// on insertion order) — same discipline, order-independent key.
+const _warnedShadowedGlobalKeys = new Set<string>();
+
+function _warnShadowedGlobalDefaults(globalDefaults: Record<string, unknown>, globalPath: string): void {
+  const shadowed = GLOBAL_DEFAULTS_RESOLUTION_KEYS.filter(k =>
+    k !== 'effort' && Object.prototype.hasOwnProperty.call(globalDefaults, k));
+  // Branch D also honors the nested alias workflow.post_planning_gaps (the
+  // `?? globalDefaults['workflow']?.['post_planning_gaps']` fallback in
+  // _globalBaseCfg) — a global file using only the nested form is equally
+  // shadowed, so it reports under its dotted name.
+  if (!shadowed.includes('post_planning_gaps')) {
+    const wf = globalDefaults['workflow'];
+    if (wf && typeof wf === 'object' && !Array.isArray(wf) &&
+        Object.prototype.hasOwnProperty.call(wf, 'post_planning_gaps')) {
+      shadowed.push('workflow.post_planning_gaps');
+    }
+  }
+  if (shadowed.length === 0) return;
+  const dedupKey = shadowed.slice().sort().join(',');
+  if (_warnedShadowedGlobalKeys.has(dedupKey)) return;
+  _warnedShadowedGlobalKeys.add(dedupKey);
+  try {
+    process.stderr.write(
+      `gsd-tools: warning: ${globalPath} sets ${shadowed.join(', ')} but a project config ` +
+      `takes precedence here — those global keys are ignored for model resolution. (#3532)\n`,
+    );
+  } catch { /* stderr might be closed in some test harnesses */ }
 }
 
 // ─── FIX 2: Federated overlay helpers ────────────────────────────────────────
@@ -836,6 +890,22 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     // Fix 4: empty-string ws ('') resolves the root path → source:'root'.
     const source: ConfigSource = wsRequested ? 'workstream' : 'root';
 
+    // #3532 (10b): a parsed project config means Branch D never runs, so every
+    // key ~/.gsd/defaults.json sets that Branch D would honor is silently inert
+    // here. Observation only — one deduped stderr warning; precedence is
+    // untouched. Faults in the global file stay silent in this branch (the
+    // project config governs; the nearer file is the actionable one).
+    try {
+      const shadowHome = process.env['GSD_HOME'] || os.homedir();
+      const shadowPath = path.join(shadowHome, '.gsd', 'defaults.json');
+      const shadowRead = _readConfigFile(shadowPath);
+      if (shadowRead.kind === 'ok') {
+        _warnShadowedGlobalDefaults(shadowRead.data, shadowPath);
+      }
+    } catch {
+      // Observation only — never let the diagnostic perturb resolution.
+    }
+
     // This config parsed — but a DIFFERENT file on the resolution path may not
     // have. A workstream config that loads cleanly while the root config it
     // inherits from is corrupt is still a degraded resolution: the root's
@@ -965,6 +1035,8 @@ export = {
   _getNestedConfigDefault,
   _deepMergeConfig,
   _warnedUnknownConfigKeys,
+  _warnedShadowedGlobalKeys,
+  GLOBAL_DEFAULTS_RESOLUTION_KEYS,
   _warnUnknownProfileOverrides,
   _resetRuntimeWarningCacheForTests,
   _warnedConfigKeys,

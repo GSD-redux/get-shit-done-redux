@@ -91,11 +91,11 @@ Conduct evaluation coverage audit of Phase {phase_number}: {phase_name}
 {If no AI-SPEC: "Audit against general AI eval best practices."}
 </objective>
 
-<files_to_read>
+<required_reading>
 - {summary_paths}
 - {plan_paths}
 - {ai_spec_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 ai_spec_path: {ai_spec_path or "none"}

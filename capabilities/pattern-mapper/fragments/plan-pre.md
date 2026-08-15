@@ -3,10 +3,10 @@
 **Phase directory:** {phase_dir}
 **Padded phase:** {padded_phase}
 
-<files_to_read>
+<required_reading>
 - {context_path} (USER DECISIONS from /gsd:discuss-phase)
 - {research_path} (Technical Research)
-</files_to_read>
+</required_reading>
 
 **Output file:** {phase_dir}/{padded_phase}-PATTERNS.md
 

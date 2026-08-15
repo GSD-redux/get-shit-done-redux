@@ -1,9 +1,3 @@
-// allow-test-rule: architectural-invariant
-// The finishInstall test asserts the call-site passes configDir (not a hardcoded
-// path) — a load-bearing wiring invariant. All other tests call the exported
-// configureOpencodePermissions function directly and assert on typed config state.
-// Migrated from pending-migration-to-typed-ir per #455.
-
 /**
  * Regression tests for OpenCode permission config handling.
  *
@@ -22,8 +16,9 @@ const path = require('node:path');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { configureOpencodePermissions } = require('../bin/install.js');
 const { PACKAGE_NAME } = require('../gsd-core/bin/lib/package-identity.cjs');
-
-const installSrc = fs.readFileSync(path.join(__dirname, '..', 'bin', 'install.js'), 'utf8');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { INSTALL_SCRIPT, installerEnv } = require('./helpers/install-shared.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const envKeys = ['OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG', 'XDG_CONFIG_HOME'];
 const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
@@ -107,10 +102,46 @@ describe('configureOpencodePermissions', () => {
     assert.deepEqual(config.mcp.gsd, userMcp);
   });
 
-  test('finishInstall passes the actual config dir to OpenCode permissions', () => {
+  test('finishInstall passes the REAL resolved config dir to OpenCode permissions (not a hardcoded path)', () => {
+    // Behavioral replacement for a source-grep assertion (#3466): spawns the
+    // real installer CLI end-to-end (`bin/install.js --opencode --global
+    // --config-dir <configDir>`) — the only code path that actually reaches
+    // finishInstall's `configureOpencodePermissions(isGlobal, configDir);`
+    // call site (the exported `install()` function alone does NOT call
+    // finishInstall — only the CLI/installAllRuntimes flow does, and that
+    // flow is also where the GSD_TEST_MODE gate on this writer is normally
+    // active, so a real spawn — whose env deliberately excludes
+    // GSD_TEST_MODE via installerEnv() — is required to exercise it) —
+    // then asserts the resulting opencode.json's permission paths are
+    // anchored on THAT exact config dir. A hardcoded or stale configDir at
+    // the finishInstall call site would write permission paths anchored on
+    // the wrong directory (or fail to find/produce opencode.json at all),
+    // so this can only pass if the real, per-call configDir reaches
+    // configureOpencodePermissions.
+    const result = runNode(
+      [INSTALL_SCRIPT, '--opencode', '--global', '--config-dir', configDir],
+      { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
+    );
+    assert.strictEqual(
+      result.exitCode, 0,
+      `installer must exit 0 for --opencode --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
+    );
+
+    const configPath = path.join(configDir, 'opencode.json');
     assert.ok(
-      installSrc.includes('configureOpencodePermissions(isGlobal, configDir);'),
-      'OpenCode permission config uses actual install dir'
+      fs.existsSync(configPath),
+      'finishInstall must write opencode.json into the resolved config dir'
+    );
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const gsdPath = `${configDir.replace(/\\/g, '/')}/gsd-core/*`;
+    assert.strictEqual(
+      config.permission?.read?.[gsdPath], 'allow',
+      'finishInstall must call configureOpencodePermissions with the REAL resolved configDir, ' +
+      `not a hardcoded path — expected a read permission entry for ${gsdPath}`
+    );
+    assert.strictEqual(
+      config.permission?.external_directory?.[gsdPath], 'allow',
+      `expected an external_directory permission entry for ${gsdPath}`
     );
   });
 });

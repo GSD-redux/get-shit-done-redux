@@ -6,6 +6,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
@@ -1760,6 +1761,60 @@ describe('verify key-links command', () => {
     );
   });
 
+  test('a formerly-ReDoS-shaped pattern (nested quantifiers) is evaluated normally via RE2 (#3477)', () => {
+    // Pre-RE2 this pattern was neutralized (hand-rolled screen) to avoid
+    // catastrophic backtracking in the JS regex engine. RE2 (re2js) matches
+    // in linear time by construction, so this is no longer a neutralization
+    // case at all — the pattern is compiled and evaluated for real.
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "(a+)+$"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'a'.repeat(25) + 'b\n');
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false, 'link should not be verified — subject does not end in "a"');
+    assert.strictEqual(output.all_verified, false, `Expected all_verified false: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.links[0].pattern_neutralized,
+      undefined,
+      `RE2 evaluates this pattern normally — pattern_neutralized must be absent: ${JSON.stringify(output.links[0])}`
+    );
+  });
+
+  test('a refused pattern (unsupported RE2 syntax) never reports verified: true (#3477 regression)', () => {
+    // pattern: "(?!x)a" is a negative lookahead — RE2 has no backtracking
+    // engine and does not support look-around, so this is refused outright
+    // (neutralized: 'unsupported') rather than guessed at via a literal
+    // fallback. Pre-#3477-fix, a similarly unparseable pattern neutralized to
+    // a literal-escaped match that happened to match nearly any source file,
+    // producing a false verified: true / all_verified: true.
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "(?!x)a"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'function f(x) { return x; }\n');
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false, 'a neutralized pattern must never report verified: true');
+    assert.strictEqual(output.all_verified, false, `Expected all_verified false: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.links[0].pattern_neutralized,
+      'unsupported',
+      `Expected pattern_neutralized: 'unsupported': ${JSON.stringify(output.links[0])}`
+    );
+  });
+
   test('returns error when no key_links in frontmatter', () => {
     const content = [
       '---',
@@ -1788,6 +1843,222 @@ describe('verify key-links command', () => {
     assert.ok(
       output.error.includes('No must_haves.key_links'),
       `Expected "No must_haves.key_links" in error: ${output.error}`
+    );
+  });
+
+  // ── #3493: path confinement — from:/to: are untrusted plan frontmatter and
+  // must never be readable outside the project directory. ────────────────────
+
+  test('from: traversal outside project is rejected — not read, per-link failure only (#3493)', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3493-outside-'));
+    try {
+      const outsideFile = path.join(outsideDir, 'secret.txt');
+      fs.writeFileSync(outsideFile, 'top-secret-oracle-bait\n');
+      const traversalFrom = path.relative(tmpDir, outsideFile);
+
+      writePlanWithKeyLinks(tmpDir, [
+        `- from: "${traversalFrom.split(path.sep).join('/')}"`,
+        '  to: "src/b.js"',
+      ]);
+      fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+      const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.links[0].verified, false);
+      assert.strictEqual(output.links[0].path_rejected, 'from');
+      assert.strictEqual(output.all_verified, false);
+      // Load-bearing: pins the confinement-specific detail text. This is NOT
+      // the same as asserting the secret content is absent from the JSON —
+      // that assertion is tautological here (no code path ever echoes file
+      // *content* into `detail`/output, confined or not — a no-pattern link
+      // only ever reports whether `to:` text appears in the source, never
+      // the source's own bytes), so it would pass even without the
+      // path-confinement fix. This assertion, by contrast, DOES fail
+      // pre-fix: without confinement the outside file is actually read, the
+      // no-pattern branch falls through to "Target not referenced in
+      // source", and `path_rejected` is never set at all.
+      assert.strictEqual(
+        output.links[0].detail,
+        'Source path rejected — resolves outside the project directory',
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  test('to: traversal is rejected — outside file content never read even when pattern would match it (#3493)', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3493-outside-'));
+    try {
+      const outsideFile = path.join(outsideDir, 'secret.txt');
+      fs.writeFileSync(outsideFile, 'oracleMarkerXYZ\n');
+      const traversalTo = path.relative(tmpDir, outsideFile);
+
+      writePlanWithKeyLinks(tmpDir, [
+        '- from: "src/a.js"',
+        `  to: "${traversalTo.split(path.sep).join('/')}"`,
+        '  pattern: "oracleMarkerXYZ"',
+      ]);
+      // Pattern deliberately absent from the (valid) source so the check must
+      // fall through to the target read — proving the oracle stays closed.
+      fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'const x = 1;\n');
+
+      const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(
+        output.links[0].verified,
+        false,
+        `Expected verified:false — a matching outside file must never flip this true: ${JSON.stringify(output.links[0])}`,
+      );
+      assert.strictEqual(output.links[0].path_rejected, 'to');
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  test('absolute from: path is rejected (#3493)', () => {
+    const absoluteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3493-absolute-'));
+    try {
+      const absoluteFrom = path.join(absoluteDir, 'gsd-3493-absolute-probe.txt');
+      fs.writeFileSync(absoluteFrom, 'irrelevant\n');
+
+      writePlanWithKeyLinks(tmpDir, [
+        `- from: "${absoluteFrom.split(path.sep).join('/')}"`,
+        '  to: "src/b.js"',
+      ]);
+      fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+      const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.links[0].verified, false);
+      assert.strictEqual(output.links[0].path_rejected, 'from');
+    } finally {
+      cleanup(absoluteDir);
+    }
+  });
+
+  test('a symlink inside the project pointing outside it is rejected as from: (#3493)', (t) => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3493-outside-'));
+    try {
+      const outsideFile = path.join(outsideDir, 'secret.txt');
+      fs.writeFileSync(outsideFile, 'top-secret-oracle-bait\n');
+      const symlinkPath = path.join(tmpDir, 'src', 'linked.js');
+      try {
+        fs.symlinkSync(outsideFile, symlinkPath, 'file');
+      } catch (error) {
+        if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+          t.skip('symlink creation is not available on this platform');
+          return;
+        }
+        throw error;
+      }
+
+      writePlanWithKeyLinks(tmpDir, [
+        '- from: "src/linked.js"',
+        '  to: "src/b.js"',
+      ]);
+      fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+      const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.links[0].verified, false);
+      assert.strictEqual(output.links[0].path_rejected, 'from');
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  test('normal in-project from:/to: still verifies with no path_rejected field (#3493 no-regression)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "import.*b"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), "import { x } from './b';\n");
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'exports.x = 1;\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.all_verified, true);
+    assert.strictEqual(output.links[0].verified, true);
+    assert.strictEqual(output.links[0].path_rejected, undefined);
+  });
+
+  test('a rejected first link does not abort the second, valid link (#3493 per-link failure)', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3493-outside-'));
+    const outsideFile = path.join(outsideDir, 'secret.txt');
+    fs.writeFileSync(outsideFile, 'irrelevant\n');
+    const traversalFrom = path.relative(tmpDir, outsideFile);
+
+    writePlanWithKeyLinks(tmpDir, [
+      `- from: "${traversalFrom.split(path.sep).join('/')}"`,
+      '  to: "src/b.js"',
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "import.*b"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), "import { x } from './b';\n");
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'exports.x = 1;\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links.length, 2, `Expected both links reported: ${JSON.stringify(output.links)}`);
+    assert.strictEqual(output.links[0].path_rejected, 'from');
+    assert.strictEqual(output.links[0].verified, false);
+    assert.strictEqual(output.links[1].path_rejected, undefined);
+    assert.strictEqual(output.links[1].verified, true, `Second link must still evaluate: ${JSON.stringify(output.links[1])}`);
+    assert.strictEqual(output.all_verified, false);
+
+    cleanup(outsideDir);
+  });
+
+  test('empty from: is a malformed link, not a path-confinement rejection (#3493)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: ""',
+      '  to: "src/b.js"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'module.exports = {};\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false);
+    assert.strictEqual(output.links[0].path_rejected, undefined);
+    assert.strictEqual(
+      output.links[0].detail,
+      'Source file not found (from: must be a relative file path; describe components/endpoints in via:)',
+    );
+  });
+
+  test('empty to: with a non-matching pattern is a malformed link, not a path-confinement rejection (#3493)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- from: "src/a.js"',
+      '  to: ""',
+      '  pattern: "oracleMarkerXYZ"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'const x = 1;\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.links[0].verified, false);
+    assert.strictEqual(output.links[0].path_rejected, undefined);
+    assert.strictEqual(
+      output.links[0].detail,
+      'Pattern "oracleMarkerXYZ" not found in source or target',
     );
   });
 });

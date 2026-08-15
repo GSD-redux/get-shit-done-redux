@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
-const { comparePhaseNum } = phaseIdModule;
+const { comparePhaseNum, scopeToPhase } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { findContextMdIn } = planningWorkspace;
@@ -199,6 +199,17 @@ interface PlanScanResultShape {
  * `hasResearch`/`hasContext`/`hasVerification`/`hasReviews` stay on the raw
  * `readdirSync` listing — they are not plan-scan concerns.
  *
+ * #3511 BLOCKER-2: the raw listing is scoped through `scopeToPhase` (keyed on
+ * `path.basename(phaseDir)`) before any of the four artifact predicates run,
+ * so a stray cross-phase file (e.g. `04-VERIFICATION.md` sitting inside phase
+ * 03's directory) cannot flip `hasResearch`/`hasContext`/`hasVerification`/
+ * `hasReviews` true for a phase it does not belong to — the same membership
+ * rule every other aggregate phase-directory scan (`uat.cts`, `audit.cts`,
+ * `phase.cts`, `state.cts`) already routes through. `hasContext` is scoped by
+ * passing the already-scoped array into `findContextMdIn` at this call site
+ * only — `findContextMdIn` itself is unchanged and its other 4 call sites
+ * (roadmap.cts, gap-checker.cts, init.cts) are unaffected.
+ *
  * Degrades on an unreadable directory instead of throwing: empty arrays,
  * every flag false, scope UNREADABLE (mirroring scanPhasePlans's own
  * degrade path).
@@ -223,13 +234,15 @@ function getPhaseFileStats(phaseDir: string): PhaseFileStats {
     };
   }
 
+  const scopedFiles = scopeToPhase(files, path.basename(phaseDir));
+
   return {
     plans: scan.planFiles,
     summaries: scan.summaryFiles,
-    hasResearch: files.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
-    hasContext: findContextMdIn(files) !== null,
-    hasVerification: files.some(f => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md'),
-    hasReviews: files.some(f => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md'),
+    hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasVerification: scopedFiles.some(f => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md'),
+    hasReviews: scopedFiles.some(f => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md'),
     scope: scan.scope,
   };
 }

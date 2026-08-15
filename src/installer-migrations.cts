@@ -246,7 +246,14 @@ function normalizeManifestVersion(raw: unknown): number {
 
 function readInstallManifest(configDir: string): InstallManifest {
   const manifest = readJsonIfPresent(path.join(configDir, MANIFEST_NAME), null);
-  if (!manifest || typeof manifest !== 'object') {
+  // `typeof [] === 'object'` in JS, so a bare `typeof !== 'object'` guard lets
+  // a top-level JSON array (valid JSON, but not the manifest's documented
+  // object shape) fall through to the field reads below — `m.manifestVersion`
+  // reads `undefined` off an array, which `normalizeManifestVersion` then
+  // reports as `1` (a v1 manifest), misclassifying "not an object" as
+  // "installed". `Array.isArray` closes that gap explicitly rather than
+  // relying on the object-shape checks below to catch it incidentally.
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     return {
       version: null,
       timestamp: null,

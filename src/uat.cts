@@ -31,7 +31,7 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocator;
@@ -134,8 +134,12 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     const phaseNum = phaseMatch ? phaseMatch[1] : dir;
     const files = fs.readdirSync(phaseDir);
 
-    // Process UAT files
-    for (const file of files.filter(f => f.includes('-UAT') && f.endsWith('.md'))) {
+    // Process UAT files — scoped to THIS phase's own token (#3511) via
+    // scopeToPhase, so a stray, cross-phase, or ad-hoc file cannot be reported
+    // under this phase's audit-uat entry. A phase whose own UAT file is
+    // genuinely absent scopes to empty and contributes nothing — correct, and
+    // the reason scopeToPhase has no unfiltered fallback.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
@@ -153,8 +157,9 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       }
     }
 
-    // Process VERIFICATION files
-    for (const file of files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md'))) {
+    // Process VERIFICATION files — scoped to THIS phase's own token (#3511)
+    // for the same reason as the UAT loop above.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), dir)) {
       const verificationFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(verificationFilePath, 'utf-8');
       const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';
@@ -890,6 +895,13 @@ function parseGapsTableItems(sectionBody: string): UatItem[] {
  * `.planning/todos/pending/*.md` entry required). Every other entry —
  * including one with no `status:` field at all — is UNRESOLVED and is
  * surfaced.
+ *
+ * #3457: when the section body contains headings, entries are delimited by
+ * LEAF headings (see `splitDeferredHeadingEntries`) rather than by bullets —
+ * the executor convention writes one deferred item as a heading followed by
+ * sibling `- **Field:** …` bullets, which the bullet-only split mis-counted as
+ * one item PER BULLET. A body with no headings keeps the original
+ * one-bullet-per-item split unchanged.
  */
 function parseDeferredItems(content: string): UatItem[] {
   const deferredSection = collectSection(
@@ -901,8 +913,23 @@ function parseDeferredItems(content: string): UatItem[] {
 
   const items: UatItem[] = [];
 
-  for (const entryLines of splitGapsEntries(sectionBody)) {
-    const fields = extractGapEntryFields(entryLines);
+  // #3457: heading-delimited shape — an entry's fields live in sibling bullets
+  // (`- **Status:** resolved`), so the bullet marker is stripped on EVERY line
+  // before field extraction, not just line 0 (which `extractGapEntryFields`
+  // does for the headless/Gaps shape, where a later `- ` line is a nested
+  // sub-list, not a field).
+  const headingEntries = splitDeferredHeadingEntries(sectionBody);
+  const entries = headingEntries !== null
+    ? headingEntries.map((entryLines) => ({
+      lines: entryLines,
+      fields: extractGapEntryFields(entryLines.map(stripLeadingBulletMarker)),
+    }))
+    : splitGapsEntries(sectionBody).map((entryLines) => ({
+      lines: entryLines,
+      fields: extractGapEntryFields(entryLines),
+    }));
+
+  for (const { lines: entryLines, fields } of entries) {
     const rawStatus = fields.status;
     if (rawStatus && rawStatus.toLowerCase() === 'resolved') continue;
 
@@ -922,6 +949,111 @@ function parseDeferredItems(content: string): UatItem[] {
   items.push(...parseDeferredTableItems(sectionBody));
 
   return items;
+}
+
+/**
+ * Strip one leading `- ` bullet marker (#3457). Heading-delimited deferred
+ * entries carry their fields as sibling bullets; `extractGapEntryFields` only
+ * de-bullets line 0 (Gaps-protective — there, a later `- ` line is a nested
+ * sub-list), so the deferred heading path de-bullets every line itself before
+ * field extraction. Non-bullet lines pass through untouched.
+ */
+function stripLeadingBulletMarker(line: string): string {
+  return line.replace(/^(\s*)-\s+/, '');
+}
+
+/**
+ * Split a deferred-items section body into entries delimited by LEAF headings
+ * (#3457). Returns `null` when the body contains no heading at all — the
+ * caller then falls back to `splitGapsEntries`, keeping headless
+ * one-bullet-per-item files byte-for-byte on the pre-#3457 path.
+ *
+ * A heading is a CONTAINER (group/provenance/title label, contributes no
+ * entry) iff the NEXT heading is deeper — a deeper heading lives inside its
+ * span. Otherwise it is a LEAF: an entry boundary. This handles all three
+ * corpus shapes without hardcoding a depth: flat `#` title + `##` entries
+ * (title's next heading is deeper → container; each `##` followed by a
+ * same-or-shallower heading → leaf), a `##` container with `###` entries
+ * (container's next heading is deeper), and mixed-depth files where a
+ * childless `##` entry sits alongside a `##` group with `###` children — every
+ * childless heading is a leaf at whatever depth it is written. The shallower
+ * rules the issue reports as already tried (split on every heading; shallowest
+ * level; deepest level) each mis-count one of these shapes.
+ *
+ * A leaf entry is [heading text, ...body lines up to the next heading] and is
+ * kept only when its body (minus table lines) contains at least one `- `
+ * bullet:
+ * - a prose-only or bare heading contributes nothing — "prose is not an item"
+ *   is this parser's pre-existing contract (see the `# Notes` case);
+ * - a table-only body is left entirely to `parseDeferredTableItems`, which
+ *   unions over the same section body, so the heading cannot double-count the
+ *   table's rows.
+ *
+ * Lines before the first heading, and lines directly under a container heading
+ * (before its first child), are split one-bullet-per-item by the unchanged
+ * `splitGapsEntries` — headless parity, so loose bullets before a later
+ * heading group (the mixed shape) stay one item each.
+ */
+function splitDeferredHeadingEntries(sectionBody: string): string[][] | null {
+  const headings = tokenizeHeadings(sectionBody);
+  if (headings.length === 0) return null;
+
+  const lines = sectionBody.split('\n');
+  const headingByLine = new Map<number, { text: string; isContainer: boolean }>();
+  for (let i = 0; i < headings.length; i++) {
+    // Container iff the next heading is deeper (see doc comment). An empty
+    // heading text (`##` alone) does not itself mean container — the flag is
+    // carried explicitly so a bare LEAF heading still opens an entry.
+    const isContainer = i + 1 < headings.length && headings[i + 1].level > headings[i].level;
+    headingByLine.set(headings[i].line, { text: headings[i].text, isContainer });
+  }
+
+  const entries: string[][] = [];
+  let current: string[] | null = null; // accumulating a leaf heading's entry
+  let pending: string[] = []; // preamble / container-heading body lines
+  let currentHasBullet = false;
+
+  const flushCurrent = (): void => {
+    // Keep the leaf entry only when its body carries a bullet; the heading
+    // text line itself (element 0) never counts as one.
+    if (current !== null && currentHasBullet) entries.push(current);
+    current = null;
+    currentHasBullet = false;
+  };
+  const flushPending = (): void => {
+    entries.push(...splitGapsEntries(pending.join('\n')));
+    pending = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    const heading = headingByLine.get(lineNo);
+    if (heading !== undefined) {
+      flushCurrent();
+      // Headless-shaped region (preamble / container-direct bullets) ends at
+      // ANY heading; flushing here keeps entries in document order even when
+      // a container's direct bullets precede its first child entry.
+      flushPending();
+      if (!heading.isContainer) {
+        // Leaf heading: open an entry with the heading text as line 0.
+        current = [heading.text];
+        currentHasBullet = false;
+      }
+      continue;
+    }
+    // Table lines belong to parseDeferredTableItems, never to a heading entry.
+    if (/^\s*\|/.test(lines[i].replace(/\r$/, ''))) continue;
+    if (current !== null) {
+      current.push(lines[i]);
+      if (/^\s*-\s/.test(lines[i].replace(/\r$/, ''))) currentHasBullet = true;
+    } else {
+      pending.push(lines[i]);
+    }
+  }
+  flushCurrent();
+  flushPending();
+
+  return entries;
 }
 
 /**
@@ -1021,10 +1153,22 @@ function splitGapsEntries(sectionBody: string): string[][] {
  * any nested sub-list content in the template's field ordering); later
  * `key:`-shaped nested-list content is captured, if it parses as one, but
  * never overrides an already-seen top-level field.
+ *
+ * #3457: markdown emphasis around the KEY (`**Status:** resolved` — the
+ * deferred-items convention bolds every field, and a bolded resolution marker
+ * previously failed this regex outright and surfaced as its own bogus
+ * unresolved entry) is unwrapped before the match, still anchored at the
+ * start of the line. The unwrapped key is lower-cased, because the bolded
+ * convention form is Title-cased (`**Status:**`) while the field vocabulary
+ * this module reads is lowercase (`status`) — the same normalization
+ * `mapGapsHeader` already applies to table header cells. Bare (unbolded) keys
+ * keep their literal case, and mid-line emphasis is untouched, preserving the
+ * start-anchored decoy invariant above.
  */
 function extractGapEntryFields(entryLines: string[]): Record<string, string> {
   const fields: Record<string, string> = {};
   const fieldLineRe = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/;
+  const boldedKeyRe = /^\*+([A-Za-z_][A-Za-z0-9_-]*):\*+/;
 
   entryLines.forEach((rawLine, idx) => {
     const line = rawLine.replace(/\r$/, '');
@@ -1033,7 +1177,8 @@ function extractGapEntryFields(entryLines: string[]): Record<string, string> {
     // `splitGapsEntries` already folding it in — it is not itself a field
     // line unless it independently matches `key: value` after stripping.
     const bulletStripped = line.match(/^(\s*)-\s+(.*)$/);
-    const content = idx === 0 && bulletStripped ? bulletStripped[2] : line.trim();
+    const content = (idx === 0 && bulletStripped ? bulletStripped[2] : line.trim())
+      .replace(boldedKeyRe, (_m, key: string) => `${key.toLowerCase()}:`);
 
     const m = fieldLineRe.exec(content);
     if (!m) return;

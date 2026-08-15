@@ -24,7 +24,7 @@ const assert = require('node:assert/strict');
 // other *.property.test.cjs file. seed: 42, overridable via GSD_FC_SEED.
 const fc = require('./helpers/fast-check-setup.cjs');
 
-const { escapeRegex, literalPattern } = require('../gsd-core/bin/lib/pattern.cjs');
+const { escapeRegex, literalPattern, compileUserPattern, MAX_USER_PATTERN_LEN } = require('../gsd-core/bin/lib/pattern.cjs');
 
 // ─── Section 1: escapeRegex — rows 1-10 ───────────────────────────────────
 
@@ -201,4 +201,212 @@ describe('migration equivalence (row-9 sweep)', () => {
       'deliberate fix, not an accident: the seam must not let a value form a character-class range'
     );
   });
+});
+
+// ─── Section 4: #3498 — Node-22 fallback (no RegExp.escape) ─────────────────
+
+describe('escapeRegex without RegExp.escape (#3498 Node-22 fallback)', () => {
+  // `RegExp.escape` is ES2026 (first shipped in Node 24). The gsd-test matrix
+  // runs a linux-node22 lane and the BUILD consumes this module
+  // (scripts/gen-loop-host-contract.cjs), so the seam must work when the
+  // builtin is absent. Simulated in a child process: neuter RegExp.escape
+  // BEFORE require (module-load capture must select the fallback), then assert
+  // match-behavior correctness — this file's doctrine (pattern TEXT differs
+  // between builtin and fallback; match behavior must not).
+  const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+  const path = require('node:path');
+  const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'pattern.cjs');
+
+  const PROBE = [
+    "RegExp.escape = undefined;",
+    "const { escapeRegex, literalPattern } = require(" + JSON.stringify(LIB) + ");",
+    "const corpus = ['a.b*c', '^dollar$', '(group|alt)', '[b]{1,2}', 'back\\\\slash', 'plain', 'q+x?y', 'a-b-c', ''];",
+    "for (const v of corpus) {",
+    "  if (!new RegExp(escapeRegex(v)).test(v)) { console.error('self-match fail: ' + JSON.stringify(v)); process.exit(1); }",
+    "  if (!literalPattern(v).test(v)) { console.error('literalPattern fail: ' + JSON.stringify(v)); process.exit(1); }",
+    "}",
+    "if (new RegExp(escapeRegex('a.b*c')).test('aXbZc')) { console.error('metachar reinterpreted'); process.exit(1); }",
+    "if (new RegExp(escapeRegex('(a|b)')).test('a')) { console.error('alternation reinterpreted'); process.exit(1); }",
+    "console.log('fallback-ok');",
+  ].join('\n');
+
+  test('builds and escapes correctly when RegExp.escape is absent (Node 22 semantics)', () => {
+    const r = runNode(['-e', PROBE], { timeoutMs: 30_000 });
+    assert.strictEqual(r.outcome, OUTCOME.EXITED, `probe must run: ${r.stderr}`);
+    assert.strictEqual(r.exitCode, 0, `fallback path failed: ${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /fallback-ok/);
+  });
+
+  test('neutering AFTER require must not flip the path mid-process (capture at load)', () => {
+    const PROBE2 = [
+      "const { escapeRegex } = require(" + JSON.stringify(LIB) + ");",
+      "RegExp.escape = undefined;",
+      "if (!new RegExp(escapeRegex('a.b')).test('a.b')) { console.error('post-load neuter broke escaping'); process.exit(1); }",
+      "console.log('capture-ok');",
+    ].join('\n');
+    const r = runNode(['-e', PROBE2], { timeoutMs: 30_000 });
+    assert.strictEqual(r.outcome, OUTCOME.EXITED, `probe must run: ${r.stderr}`);
+    assert.strictEqual(r.exitCode, 0, `post-load capture failed: ${r.stdout}\n${r.stderr}`);
+  });
+});
+
+// ─── Section 5: compileUserPattern — RE2 linear-time engine (#3477) ────────
+//
+// re2js guarantees match time linear in input length — there is no
+// backtracking engine to exploit, so the vulnerability class is closed by
+// the engine rather than detected by a heuristic scan of the pattern text
+// (the hand-rolled `hasRiskyBacktrackingGroup` scanner this seam used to run
+// is deleted). Assertions here are BEHAVIORAL ONLY — never against
+// `RegExp.source` or any RegExp-shaped property, because the result is no
+// longer a RegExp at all.
+
+describe('compileUserPattern', () => {
+  test('a plain safe pattern compiles and reports neutralized: null', () => {
+    const { test: matches, neutralized } = compileUserPattern('fetch.*api/feed');
+    assert.strictEqual(matches('do a fetch of the api/feed endpoint'), true);
+    assert.strictEqual(matches('completely unrelated text'), false);
+    assert.strictEqual(neutralized, null);
+  });
+
+  test('boundary: a pattern at MAX_USER_PATTERN_LEN - 1 compiles', () => {
+    const p = 'a'.repeat(MAX_USER_PATTERN_LEN - 1);
+    const { test: matches, neutralized } = compileUserPattern(p);
+    assert.strictEqual(matches(p), true);
+    assert.strictEqual(matches('b'.repeat(MAX_USER_PATTERN_LEN - 1)), false);
+    assert.strictEqual(neutralized, null);
+  });
+
+  test('boundary: a pattern at exactly MAX_USER_PATTERN_LEN compiles', () => {
+    const p = 'a'.repeat(MAX_USER_PATTERN_LEN);
+    const { test: matches, neutralized } = compileUserPattern(p);
+    assert.strictEqual(matches(p), true);
+    assert.strictEqual(matches('b'.repeat(MAX_USER_PATTERN_LEN)), false);
+    assert.strictEqual(neutralized, null);
+  });
+
+  test('boundary: a pattern at MAX_USER_PATTERN_LEN + 1 (513 chars) is refused, never matches', () => {
+    const p = 'a'.repeat(MAX_USER_PATTERN_LEN + 1);
+    assert.strictEqual(p.length, 513);
+    const { test: matches, neutralized } = compileUserPattern(p);
+    assert.strictEqual(matches(p), false);
+    assert.strictEqual(matches(p.slice(0, MAX_USER_PATTERN_LEN)), false);
+    assert.strictEqual(neutralized, 'too-long');
+  });
+
+  test('empty string input is refused, never matches', () => {
+    const { test: matches, neutralized } = compileUserPattern('');
+    assert.strictEqual(matches(''), false);
+    assert.strictEqual(matches('anything'), false);
+    assert.strictEqual(neutralized, 'empty');
+  });
+
+  test('non-string input is refused, never matches', () => {
+    for (const bad of [null, undefined, 42, {}, []]) {
+      const { test: matches, neutralized } = compileUserPattern(bad);
+      assert.strictEqual(matches(''), false);
+      assert.strictEqual(matches('anything'), false);
+      assert.strictEqual(neutralized, 'empty');
+    }
+  });
+
+  test('property: for any string input, compileUserPattern returns a well-shaped result and never throws', () => {
+    // maxLength: 600 straddles MAX_USER_PATTERN_LEN (512) so fast-check actually
+    // exercises the >512 'too-long' branch. A neutralized result must never be
+    // able to report a match against arbitrary input — the security invariant.
+    const validNeutralizations = new Set(['empty', 'too-long', 'unsupported', null]);
+    fc.assert(
+      fc.property(fc.string({ maxLength: 600 }), fc.string({ maxLength: 50 }), (s, probe) => {
+        let result;
+        assert.doesNotThrow(() => {
+          result = compileUserPattern(s);
+        });
+        assert.strictEqual(typeof result.test, 'function');
+        assert.ok(validNeutralizations.has(result.neutralized));
+        if (result.neutralized !== null) {
+          let matched;
+          assert.doesNotThrow(() => {
+            matched = result.test(probe);
+          });
+          assert.strictEqual(matched, false, `neutralized (${result.neutralized}) result must never match: s=${JSON.stringify(s)} probe=${JSON.stringify(probe)}`);
+        }
+      })
+    );
+  });
+
+  test('a known-valid regex round-trips through the >512-length property test unmangled', () => {
+    // Companion assertion for the property test above: a legitimate long-ish
+    // regex must still compile (neutralized: null), not just "didn't throw" —
+    // pins that the length straddle doesn't accidentally neutralize everything
+    // under 512 chars too.
+    const p = 'fetch\\(.*\\)\\.then\\(' + 'x'.repeat(400) + '\\)';
+    assert.ok(p.length < MAX_USER_PATTERN_LEN, 'sanity: fixture must stay under the length threshold');
+    const { test: matches, neutralized } = compileUserPattern(p);
+    assert.strictEqual(neutralized, null);
+    assert.strictEqual(matches('fetch(url).then(' + 'x'.repeat(400) + ')'), true);
+    assert.strictEqual(matches('unrelated text'), false);
+  });
+});
+
+// ─── Section 6: RE2 engine acceptance table (#3477 follow-up) ─────────────
+//
+// The prior hand-rolled screen either hung (patterns it missed, run live
+// through the JS backtracking engine) or wrongly refused (patterns it
+// flagged as risky-shaped that are actually linear) on the rows below. RE2
+// closes both failure modes: every MUST_COMPILE row below is evaluated for
+// real, in linear time, with a correct match verdict — no heuristic,
+// no false refusal.
+
+describe('compileUserPattern — RE2 engine acceptance table', () => {
+  // [pattern, subjectA, subjectB, expectedA, expectedB]. Every one of these
+  // patterns is plain JS-valid ERE syntax (no backreferences/look-around), so
+  // the expected/expectedB booleans are exactly what `new RegExp(p).test(...)`
+  // would report — computed offline rather than hand-assumed, since a
+  // `*`/`?`-quantified pattern with nothing required outside the optional
+  // part (e.g. `(a|a)*$`, `(abc)?`, `(abc)*`) trivially matches an unanchored
+  // `.test()` against ANY subject (zero-width match), which is correct
+  // JS-regex semantics, not a defect. The expectations are hardcoded rather
+  // than oracle-derived because running these patterns through the JS
+  // backtracking engine (`new RegExp(p).test(...)`) is the exact
+  // catastrophic-backtracking vulnerability this issue is about — the suite
+  // must never execute that engine against them, even with short subjects.
+  const MUST_COMPILE = [
+    ['(a+)+$', 'aaaa', 'bbbb', true, false],
+    ['(a|a)*$', 'aaaa', 'aaab', true, true],
+    ['((a+))+$', 'aaaa', 'aaab', true, false],
+    ['(a+){2,}$', 'aaaa', 'a', true, false],
+    ['(a{1,3})+$', 'aaaaaa', 'bbbbbb', true, false],
+    ['^(\\s*\\w+)+$', 'foo bar baz', 'foo, bar', true, false],
+    ['fetch.*api/feed', 'do a fetch of the api/feed endpoint', 'completely unrelated text', true, false],
+    ['prisma\\.message\\.(find|create)', 'call prisma.message.find(x)', 'call prisma.other.find(x)', true, false],
+    ['(abc)?', 'abc', '', true, true],
+    ['(abc)*', 'abcabc', 'xyz', true, true],
+    ['^\\s*export\\s+function\\s+\\w+', '  export function foo() {}', 'const foo = 1', true, false],
+  ];
+
+  const MUST_REFUSE = ['(\\w+)\\1', '(?!x)a'];
+
+  for (const [p, subjectA, subjectB, expectedA, expectedB] of MUST_COMPILE) {
+    test(`compiles and evaluates correctly: ${JSON.stringify(p)}`, () => {
+      const { test: matches, neutralized } = compileUserPattern(p);
+      assert.strictEqual(neutralized, null, `expected null for ${JSON.stringify(p)}, got ${JSON.stringify(neutralized)}`);
+      assert.strictEqual(
+        matches(subjectA),
+        expectedA,
+        `expected ${JSON.stringify(p)} against ${JSON.stringify(subjectA)} to match real regex semantics`
+      );
+      assert.strictEqual(
+        matches(subjectB),
+        expectedB,
+        `expected ${JSON.stringify(p)} against ${JSON.stringify(subjectB)} to match real regex semantics`
+      );
+    });
+  }
+
+  for (const p of MUST_REFUSE) {
+    test(`is refused (unsupported RE2 syntax): ${JSON.stringify(p)}`, () => {
+      const { test: matches, neutralized } = compileUserPattern(p);
+      assert.strictEqual(neutralized, 'unsupported', `expected 'unsupported' for ${JSON.stringify(p)}, got ${JSON.stringify(neutralized)}`);
+      assert.strictEqual(matches('anything'), false);
+    });
+  }
 });

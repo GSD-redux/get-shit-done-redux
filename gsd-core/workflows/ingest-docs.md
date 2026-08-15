@@ -62,7 +62,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 Parse `project_exists`, `planning_exists`, `has_git`, `git_worktree_root`, `in_nested_subdir`, `project_path` from INIT.
 
-**Absolute path fields (#2376):** INIT also carries `requirements_path`, `roadmap_path`, `state_path`, `intel_dir`, and `conflicts_path` — all anchored on `project_root`, not the orchestrator's own cwd. Use these (not bare `.planning/...` literals) whenever building `<files_to_read>`/output paths for a spawned subagent, since that subagent's own cwd may differ from the orchestrator's.
+**Absolute path fields (#2376):** INIT also carries `requirements_path`, `roadmap_path`, `state_path`, `intel_dir`, and `conflicts_path` — all anchored on `project_root`, not the orchestrator's own cwd. Use these (not bare `.planning/...` literals) whenever building `<required_reading>`/output paths for a spawned subagent, since that subagent's own cwd may differ from the orchestrator's.
 
 **Auto-detect MODE** if not set:
 - `planning_exists: true` → `MODE=merge`

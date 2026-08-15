@@ -3,11 +3,11 @@ Research how to implement Phase {phase_number}: {phase_name}
 Answer: "What do I need to know to PLAN this phase well?"
 </objective>
 
-<files_to_read>
+<required_reading>
 - {context_path} (USER DECISIONS from /gsd:discuss-phase)
 - {requirements_path} (Project requirements)
 - {state_path} (Project decisions and history)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_RESEARCHER}
 

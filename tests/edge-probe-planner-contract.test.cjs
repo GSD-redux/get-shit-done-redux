@@ -32,17 +32,17 @@ function extractDownstreamConsumerBlock(content) {
   return content.slice(start, end + '</downstream_consumer>'.length);
 }
 
-// Extract the planner <files_to_read> block that contains {UI_SPEC_PATH}
-// There are multiple <files_to_read> blocks in plan-phase.md; we need the one
+// Extract the planner <required_reading> block that contains {UI_SPEC_PATH}
+// There are multiple <required_reading> blocks in plan-phase.md; we need the one
 // at ~line 890-912 inside the planning_context markdown block.
 function extractPlannerFilesBlock(content) {
   let pos = 0;
   while (true) {
-    const start = content.indexOf('<files_to_read>', pos);
+    const start = content.indexOf('<required_reading>', pos);
     if (start === -1) return '';
-    const end = content.indexOf('</files_to_read>', start);
+    const end = content.indexOf('</required_reading>', start);
     if (end === -1) return '';
-    const block = content.slice(start, end + '</files_to_read>'.length);
+    const block = content.slice(start, end + '</required_reading>'.length);
     if (block.includes('{UI_SPEC_PATH}')) {
       return block;
     }
@@ -80,7 +80,7 @@ test('RR-01: plan-phase.md resolves phase *-SPEC.md (excluding AI/UI variants) i
   assert.match(
     filesBlock,
     /[{]SPEC_PATH[}]/,
-    'The planner <files_to_read> block (containing {UI_SPEC_PATH}) must also contain {SPEC_PATH}'
+    'The planner <required_reading> block (containing {UI_SPEC_PATH}) must also contain {SPEC_PATH}'
   );
 });
 

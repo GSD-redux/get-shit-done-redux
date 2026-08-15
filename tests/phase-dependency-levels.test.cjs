@@ -1,4 +1,3 @@
-// allow-test-rule: source-text-is-the-product
 // Tests for the extracted computeDependencyLevels pure function in phase.cjs.
 // Covers correctness (behavior) and edge cases. The O(V+E) complexity contract
 // is documented inline in computeDependencyLevels (phase.cjs) above the head-index

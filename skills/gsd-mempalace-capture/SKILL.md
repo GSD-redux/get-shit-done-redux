@@ -86,7 +86,7 @@ On any error or timeout, stop and let the phase continue -- capture is best-effo
    # Mine with --wing only — no --room flag; detect_room() assigns from the folder path
    mempalace mine "$STAGE" --wing <wing>
    ```
-3. **Mirror KG facts** when `config.mempalace.mirror_kg` is true: extract decision/delivery facts and `mempalace_kg_add` them with `valid_from` = the phase date (e.g. `(<project>, decided, <decision>)` from CONTEXT; `(<phase>, delivered, <capability>)` from SUMMARY). Under `augment` these are an *additive* mirror of GSD's native `.planning/graphs/`. Under `kg_backend`/`replace` the palace KG is the *authoritative* fact store — GSD still produces `.planning/graphs/` through its normal graphify, so an unreachable palace never loses a fact.
+3. **Mirror KG facts** unless `config.mempalace.mirror_kg === false` (registry default is true — an absent key means enabled): extract decision/delivery facts and `mempalace_kg_add` them with `valid_from` = the phase date (e.g. `(<project>, decided, <decision>)` from CONTEXT; `(<phase>, delivered, <capability>)` from SUMMARY). Under `augment` these are an *additive* mirror of GSD's native `.planning/graphs/`. Under `kg_backend`/`replace` the palace KG is the *authoritative* fact store — GSD still produces `.planning/graphs/` through its normal graphify, so an unreachable palace never loses a fact.
 4. Re-running a phase MUST NOT create duplicate drawers (deterministic ids + `check_duplicate`).
 
 ## Step 4 -- Report

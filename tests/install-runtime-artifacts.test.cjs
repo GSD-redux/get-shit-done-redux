@@ -19,13 +19,22 @@
 
 process.env.GSD_TEST_MODE = '1';
 
-const { test, describe } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const {
+  INSTALL_SCRIPT,
+  MANIFEST_NAME,
+  installerEnv,
+  stripAnsi,
+} = require('./helpers/install-shared.cjs');
 
 const {
   installRuntimeArtifacts,
@@ -4040,6 +4049,61 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
   });
 });
 
+// ─── describe 5d: #3533 (10d) — inherit omits the effort key at install ──────
+
+describe('#3533 inherit: install writes NO effort key when the agent resolves to inherit', () => {
+  let tmpDir;
+  let claudeHome;
+  let codexHome;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3533-inherit-');
+    const projectDir = path.join(tmpDir, 'project');
+    claudeHome = path.join(projectDir, '.claude');
+    codexHome = path.join(projectDir, '.codex');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeProjectConfig(config) {
+    const projectDir = path.dirname(claudeHome);
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config, null, 2)
+    );
+  }
+
+  test('claude .md frontmatter has no effort: key for an inherit-resolving agent', () => {
+    writeProjectConfig({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } });
+    runGlobalInstall('claude', claudeHome);
+    const fm = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-planner.md'));
+    assert.doesNotMatch(fm, /^effort:/m,
+      `an inherit-resolving agent must carry NO effort key\nActual:\n${fm}`);
+    // A non-inherit agent still gets its concrete value.
+    const fmExecutor = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-executor.md'));
+    const m = fmExecutor.match(/^effort:\s*(\S+)$/m);
+    assert.ok(m && m[1] === 'high', `gsd-executor keeps its concrete tier value, got: ${m && m[1]}`);
+  });
+
+  test('codex .toml omits model_reasoning_effort for an inherit-resolving pinned agent', () => {
+    writeProjectConfig({
+      runtime: 'codex',
+      model_overrides: { 'gsd-planner': 'gpt-5.6-sol' },
+      effort: { agent_overrides: { 'gsd-planner': 'inherit' } },
+    });
+    runGlobalInstall('codex', codexHome);
+    const toml = fs.readFileSync(path.join(codexHome, 'agents', 'gsd-planner.toml'), 'utf8');
+    assert.match(toml, /^model\s*=\s*"gpt-5.6-sol"$/m, 'the model pin stays');
+    assert.doesNotMatch(toml, /^model_reasoning_effort\s*=/m,
+      `inherit must not pin a literal effort level\nActual:\n${toml.slice(0, 400)}`);
+  });
+});
+
 // ─── describe 5: Source stays clean ──────────────────────────────────────────
 
 describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
@@ -6253,3 +6317,381 @@ describe('Gap 2: installer ships the capability registry generator scripts (#192
 });
   });
 }
+
+// ─── #2218 cross-scope shadowing — coexistence gate (C1) + 4b guard pair
+// (E13/E14, #2873, epic #2866 Phase 4a) ────────────────────────────────────
+//
+// Moved here from the now-deleted tests/install-cross-scope-shadowing.test.cjs:
+// `scripts/lint-test-file-count.allowlist.json` grandfathers the `install`
+// prefix at 8 files, and that suite's own `_doc` says adding a 9th file to a
+// capped module is a novel offender, not a fix — this gate is folded into
+// the emitted-artifact suite instead, which is already allowlisted and,
+// per #2873's acceptance criteria, is the correct home ("written against the
+// existing `runMinimalInstall` harness").
+//
+// Implements the coexistence gate (`C1`) and the 4b behavioral pair
+// (`E13`/`E14`) from
+// `.gsd/phase/feat-2873-cross-scope-shadowing/50-test-matrix.md`. Per that
+// matrix's "Red-first order": C1 must go RED against `next` (no
+// `install-shadow-report.cjs` report exists today), E14 must go RED today
+// (the global skill's spec-root include points at the global tree even when
+// a coexisting local install has its own project-local copy of that
+// workflow file), and E13 must stay GREEN both before and after — it is the
+// guard that phase 4b does not break today's global-only case.
+//
+// This section does NOT implement the 4b spec-root emission transform
+// (E1-E12, a separate matrix section) — that transform
+// (`resolveSpecRootReference`, `runtime-artifact-conversion.cts`) landed
+// separately and is exercised here only via its INSTALLED OUTPUT. #2873
+// Task 3 (2026-08-14): re-verified against a real global+local double
+// install — 4b has landed and E14 below is GREEN, not the known-RED case
+// this comment block originally described. The "Red-first order" paragraph
+// above is left as-is: it accurately records the matrix's ORIGINAL red-first
+// plan, not a live claim about E14's current state.
+
+/**
+ * Extract the `@`-include lines from an emitted markdown body — structural
+ * parsing, never substring/regex matching on the whole body (CONTRIBUTING.md
+ * "Prohibited: Raw Text Matching on Test Outputs"). Splits on newlines
+ * (CRLF-tolerant) and keeps only lines whose first character is `@`.
+ *
+ * @param {string} content
+ * @returns {string[]}
+ */
+function extractAtIncludeLines(content) {
+  return content.split(/\r?\n/).filter((line) => line.startsWith('@'));
+}
+
+describe('#2218 cross-scope shadowing', () => {
+  let root;
+  let projectDir;
+  let globalInstallResult;
+  let localInstallResult;
+
+  before(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2218-shadow-'));
+    projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Global half: cannot use runMinimalInstall here — its scope:'global'
+    // path pushes `--config-dir <root>`, which pins the install AT `<root>`
+    // itself (manifest at `<root>/gsd-file-manifest.json`), not at
+    // `<root>/.claude`. That is not the shape #2218 describes: the reporter's
+    // configuration is a HOME-resolved global install (no --config-dir)
+    // sitting alongside a project-local one. Spawn the installer directly,
+    // with HOME=root and no --config-dir, so it resolves its own config home
+    // the way a real global install does. Must run BEFORE the local half —
+    // order matters for this fixture (a separate test covers order-independence).
+    globalInstallResult = runNode([INSTALL_SCRIPT, '--claude', '--global'], {
+      cwd: root,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+    assert.strictEqual(globalInstallResult.exitCode, 0,
+      `global install exited with status ${globalInstallResult.exitCode} ` +
+      `(outcome=${globalInstallResult.outcome})\n` +
+      `stdout: ${globalInstallResult.stdout}\nstderr: ${globalInstallResult.stderr}`);
+
+    // Local half: runMinimalInstall cannot be reused for this either — for
+    // scope:'local' it sets cwd=root, which would install into
+    // `<root>/.claude` and collide with the global install above. Spawn the
+    // installer directly instead, with cwd pinned at the project dir.
+    localInstallResult = runNode([INSTALL_SCRIPT, '--claude', '--local'], {
+      cwd: projectDir,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+    assert.strictEqual(localInstallResult.exitCode, 0,
+      `local install exited with status ${localInstallResult.exitCode} ` +
+      `(outcome=${localInstallResult.outcome})\n` +
+      `stdout: ${localInstallResult.stdout}\nstderr: ${localInstallResult.stderr}`);
+  });
+
+  after(() => {
+    cleanup(root);
+  });
+
+  test('both installs land their own manifest', () => {
+    const globalManifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    const localManifestPath = path.join(projectDir, '.claude', MANIFEST_NAME);
+
+    assert.ok(fs.existsSync(globalManifestPath), 'global manifest should exist');
+    assert.ok(fs.statSync(globalManifestPath).isFile(), 'global manifest should be a file');
+    assert.ok(fs.existsSync(localManifestPath), 'local manifest should exist');
+    assert.ok(fs.statSync(localManifestPath).isFile(), 'local manifest should be a file');
+
+    const globalManifest = JSON.parse(fs.readFileSync(globalManifestPath, 'utf8'));
+    const localManifest = JSON.parse(fs.readFileSync(localManifestPath, 'utf8'));
+
+    assert.strictEqual(globalManifest.scope, 'global');
+    assert.strictEqual(localManifest.scope, 'local');
+  });
+
+  test('the local install reports the shadowing it causes', () => {
+    // #2218/#2873: install-shadow-report.cjs does not exist yet — this
+    // require is the intended RED. buildShadowReport is the pure IR builder
+    // described in .gsd/phase/feat-2873-cross-scope-shadowing/40-design.md
+    // (row 3): claude installed at both G and L reports N triggers shadowed,
+    // winner skills@global, loser commands@local.
+    const { buildShadowReport } = require('../gsd-core/bin/lib/install-shadow-report.cjs');
+    const report = buildShadowReport('claude', { home: root, cwd: projectDir });
+
+    assert.strictEqual(report.shadowed, true);
+    assert.strictEqual(report.winner.kind, 'skills');
+    assert.strictEqual(report.winner.scope, 'global');
+    assert.strictEqual(report.shadowedSide.kind, 'commands');
+    assert.strictEqual(report.shadowedSide.scope, 'local');
+    assert.ok(report.triggers.length > 0, 'expected at least one shadowed trigger');
+  });
+
+  test('global-only install resolves the same spec file it does today', () => {
+    const skillPath = path.join(root, '.claude', 'skills', 'gsd-plan-phase', 'SKILL.md');
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const atLines = extractAtIncludeLines(content);
+
+    assert.ok(
+      atLines.includes('@~/.claude/gsd-core/references/ui-brand.md'),
+      `expected the ui-brand reference @-line among: ${JSON.stringify(atLines)}`,
+    );
+  });
+
+  // #2218 / phase #2873: before 4b, the global SKILL.md's spec-root include
+  // was a static `@~/.claude/gsd-core/workflows/plan-phase.md` reference,
+  // which always resolved against the GLOBAL tree even when a coexisting
+  // local install has its own project-local copy of that workflow file.
+  // Phase 4b (`resolveSpecRootReference`, `runtime-artifact-conversion.cts`)
+  // replaces that static include with a two-step imperative form that names
+  // both candidate paths and lets the runtime prefer the local one when it
+  // exists. #2873 Task 3 (2026-08-14): re-verified GREEN against a real
+  // global+local double install — 4b landed after this test package was
+  // authored, so this is no longer the known-RED case the original comment
+  // above it described.
+  test('the winning global skill points at the project-local spec tree (E14)', () => {
+    const skillPath = path.join(root, '.claude', 'skills', 'gsd-plan-phase', 'SKILL.md');
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const atLines = extractAtIncludeLines(content);
+
+    assert.ok(
+      !atLines.includes('@~/.claude/gsd-core/workflows/plan-phase.md'),
+      `expected the static global workflow @-line to be replaced, but found it among: ${JSON.stringify(atLines)}`,
+    );
+    // The reference @-include (a DIFFERENT spec root, row E4) survives
+    // untouched — structural proof 4b did not over-fire on this file.
+    assert.ok(
+      atLines.includes('@~/.claude/gsd-core/references/ui-brand.md'),
+      `expected the ui-brand reference @-line to survive among: ${JSON.stringify(atLines)}`,
+    );
+
+    const localSpecPath = path.join(projectDir, '.claude', 'gsd-core', 'workflows', 'plan-phase.md');
+    assert.ok(fs.existsSync(localSpecPath), 'local spec-root workflow file should exist on disk');
+
+    // Positive assertion, not just absence-of-the-old-include: the emitted
+    // body must actually NAME the project-local candidate path. Exact-string
+    // presence check on the literal candidate path `resolveSpecRootReference`
+    // emits (never a substring-scan for prose wording — CONTRIBUTING →
+    // "Prohibited: Raw Text Matching on Test Outputs"; this checks for the
+    // PATH token, not sentence phrasing).
+    assert.ok(
+      content.includes('.claude/gsd-core/workflows/plan-phase.md'),
+      `expected the emitted body to name the project-local candidate path, got: ${JSON.stringify(content)}`,
+    );
+  });
+});
+
+// ─── #2873 matrix section C — install-time report (spawned installer) ─────
+//
+// Implements rows C1-C6 from
+// `.gsd/phase/feat-2873-cross-scope-shadowing/50-test-matrix.md`. The
+// `#2218 cross-scope shadowing` suite above calls `buildShadowReport`
+// DIRECTLY — real coverage of the pure IR, but it proves nothing about the
+// INSTALLER'S OWN WIRING at bin/install.js's writeManifest-adjacent
+// try/catch block (the only call site that ever prints a report). These
+// rows instead spawn the real installer and inspect its own stdout/stderr
+// and exit code — the actual product surface #2218 reported a gap in.
+
+describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)', () => {
+  const { buildShadowReport, renderShadowReport, SHADOW_REASON } = require('../gsd-core/bin/lib/install-shadow-report.cjs');
+  const SHADOW_THROWS_PRELOAD = path.join(__dirname, 'helpers', 'shadow-report-throws-preload.cjs');
+
+  function spawnInstall(args, cwd, root, nodeFlags = []) {
+    return runNode([...nodeFlags, INSTALL_SCRIPT, ...args], {
+      cwd,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+  }
+
+  /**
+   * Assert `stderr` (the installer's own `console.warn` shadow-report
+   * output) actually carries `expectedReport`'s rendered lines, verbatim.
+   * `expectedReport`/its lines are computed by CALLING the module's own
+   * pure `buildShadowReport`/`renderShadowReport` against the SAME on-disk
+   * fixture the spawned installer just produced — never a guessed/hardcoded
+   * literal. This is the typed-count-plus-content route the review brief
+   * asks for: structural comparison against a pure function's own computed
+   * output (mirrors this file's own `extractAtIncludeLines`/E14 pattern
+   * above), not prose matching.
+   */
+  function assertReportRendered(stderr, expectedReport) {
+    const lines = renderShadowReport(expectedReport);
+    assert.ok(lines.length > 0,
+      'fixture must actually be shadowed for this to be a meaningful positive assertion');
+    const stripped = stripAnsi(stderr);
+    for (const line of lines) {
+      assert.ok(stripped.includes(line),
+        `expected installer stderr to carry the typed report line ${JSON.stringify(line)}\nstderr: ${stderr}`);
+    }
+  }
+
+  /**
+   * Negative-proof counterpart to `assertReportRendered`, for fixtures where
+   * no report is expected. `expectedReport` is computed by calling the
+   * module's own pure `buildShadowReport` against the SAME on-disk fixture
+   * the spawned installer just produced. Asserts the typed IR itself is
+   * `not_shadowed`, that `renderShadowReport` therefore computes ZERO lines
+   * for it, and then — for every line it WOULD have computed had the IR been
+   * shadowed (structurally empty here) — that none of them appear in
+   * `stderr`. This replaces matching a hardcoded literal fragment
+   * (`' shadowed: the '`) with a structural comparison against
+   * `renderShadowReport`'s own (empty) output, so there is no longer a
+   * guessed string for `local/no-source-grep`/`allow-test-rule` to flag.
+   */
+  function assertReportAbsent(stderr, expectedReport) {
+    assert.strictEqual(expectedReport.shadowed, false,
+      'fixture must not be shadowed for this to be a meaningful negative assertion');
+    assert.strictEqual(expectedReport.reason, SHADOW_REASON.NOT_SHADOWED,
+      `expected reason ${SHADOW_REASON.NOT_SHADOWED}, got ${expectedReport.reason}`);
+    const lines = renderShadowReport(expectedReport);
+    assert.deepStrictEqual(lines, [],
+      'renderShadowReport must compute zero lines for a not_shadowed report');
+    const stripped = stripAnsi(stderr);
+    for (const line of lines) {
+      assert.ok(!stripped.includes(line),
+        `expected installer stderr NOT to carry the typed report line ${JSON.stringify(line)}\nstderr: ${stderr}`);
+    }
+  }
+
+  test('C1: global-then-local double install reports shadowing on the second install, exit 0', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c1-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const l = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l.exitCode, 0, `local install failed: ${l.stdout}\n${l.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(l.stderr, expectedReport);
+  });
+
+  test('C2: local-then-global double install reports shadowing symmetrically, exit 0', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c2-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const l = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l.exitCode, 0, `local install failed: ${l.stdout}\n${l.stderr}`);
+
+    // The global install's own production `buildShadowReport(runtime)` call
+    // (bin/install.js) takes no injected opts — it defaults to
+    // `process.cwd()` to detect a coexisting LOCAL scope. Run it with cwd
+    // INSIDE the already-locally-installed project (the real #2218 shape: a
+    // developer running the global install from inside an existing
+    // project), or it structurally cannot see the local scope at all —
+    // verified empirically: cwd=root (a global install's usual cwd) never
+    // reports, cwd=projectDir does.
+    const g = spawnInstall(['--claude', '--global'], projectDir, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(g.stderr, expectedReport);
+  });
+
+  test('C3: global-only install stays quiet, exit 0 (negative proof)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c3-'));
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    // Typed control: a single-scope fixture can never be shadowed by
+    // construction (buildShadowReport requires two installed scopes) —
+    // confirms this negative-proof fixture is not accidentally shadowed.
+    const controlReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stderr, controlReport);
+  });
+
+  test('C4: an install that fails before writeManifest never emits a report', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c4-'));
+    t.after(() => cleanup(root));
+
+    // Structural failure, never chmod (chmod 0o000 no-ops under root —
+    // CONTRIBUTING.md): pre-create the global config dir's OWN path as a
+    // plain file. installerMigrations' lock-acquisition mkdirSync (which
+    // runs before ANY artifact copy, long before writeManifest at
+    // bin/install.js) then throws ENOTDIR/EEXIST — verified empirically,
+    // and works identically whether or not the test runner is root.
+    fs.writeFileSync(path.join(root, '.claude'), 'blocker');
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.notStrictEqual(g.exitCode, 0,
+      `expected the structural collision to fail the install: ${g.stdout}\n${g.stderr}`);
+
+    const manifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    assert.ok(!fs.existsSync(manifestPath), 'writeManifest must never have run');
+
+    // Same fixture the failed install just left on disk: nothing was ever
+    // written, so the typed IR is not_shadowed by construction — the failure
+    // path never reaches the report call site at all (it runs strictly after
+    // writeManifest).
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stdout + g.stderr, expectedReport);
+  });
+
+  test('C5: a throwing report builder never fails the install, report suppressed', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c5-'));
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root, ['--require', SHADOW_THROWS_PRELOAD]);
+    assert.strictEqual(g.exitCode, 0,
+      `a throwing buildShadowReport must never fail the install: ${g.stdout}\n${g.stderr}`);
+
+    const manifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    assert.ok(fs.existsSync(manifestPath),
+      'writeManifest must still have run — the report call happens strictly after it');
+
+    // Same single-scope fixture as C3 (writeManifest ran, but the report
+    // builder was preloaded to throw): the typed IR built from the real
+    // installer's own scope is still not_shadowed, and — because the
+    // injected throw is caught before renderShadowReport ever runs — no
+    // report text should reach stderr either.
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stderr, expectedReport);
+  });
+
+  test('C6: re-running the same scope twice produces the same report', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c6-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const l1 = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l1.exitCode, 0, `first local install failed: ${l1.stdout}\n${l1.stderr}`);
+    const l2 = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l2.exitCode, 0, `second local install failed: ${l2.stdout}\n${l2.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(l1.stderr, expectedReport);
+    assertReportRendered(l2.stderr, expectedReport);
+  });
+});

@@ -547,6 +547,8 @@ node gsd-tools.cjs verify artifacts <plan-file>
 node gsd-tools.cjs verify key-links <plan-file>
 ```
 
+`verify key-links` confines each link's `from:`/`to:` to the project directory (#3493): a path that resolves outside the project (via `../` traversal, an absolute path, or a symlink) is never read. That link's `links[]` entry reports `path_rejected: "from"` or `path_rejected: "to"` (whichever field was rejected) alongside `verified: false`, without echoing the underlying path-confinement error (which would embed an absolute host path). A rejected link fails independently — it does not abort evaluation of the other links in the same plan, and does not set `path_rejected` on links whose paths resolve inside the project.
+
 ---
 
 ## Validation Commands

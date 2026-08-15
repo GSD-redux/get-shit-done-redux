@@ -30,12 +30,12 @@ Agent(
 **Task:** ${DESCRIPTION}
 **Output:** ${QUICK_DIR}/${quick_id}-RESEARCH.md
 
-<files_to_read>
+<required_reading>
 - ${STATE_PATH} (Project state — what's already built)
 - ${PROJECT_PATH} (Project context)
 - ./CLAUDE.md or ./.claude/CLAUDE.md (if exists — project-specific guidelines)
 ${DISCUSS_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-CONTEXT.md (User decisions — research should align with these)' : ''}
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 

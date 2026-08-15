@@ -100,7 +100,7 @@ Parse JSON for: `researcher_model`, `planner_model`, `checker_model`, `research_
 
 **If `response_language` is set:** All user-facing orchestrator output MUST be in `{response_language}`; technical terms, code, paths, and subagent prompts stay in English. Pass `response_language: {value}` into every spawned subagent prompt.
 
-**File paths (for <files_to_read> blocks):** `state_path`, `roadmap_path`, `requirements_path`, `context_path`, `research_path`, `verification_path`, `uat_path`, `reviews_path`. These are null if files don't exist.
+**File paths (for <required_reading> blocks):** `state_path`, `roadmap_path`, `requirements_path`, `context_path`, `research_path`, `verification_path`, `uat_path`, `reviews_path`. These are null if files don't exist.
 
 **If `planning_exists` is false:** Error — run `/gsd:new-project` first.
 
@@ -461,7 +461,7 @@ Read the `activeHooks` array directly from `PLAN_PRE_HOOKS_JSON` / `HOOKS_JSON` 
 - If `ref.agent` is set, dispatch with `Agent(prompt=filled_hook_fragment, subagent_type=ref.agent, model="{researcher_model}")`. Use the hook's `fragment.inline` as the prompt body and fill phase fields before spawning.
 - The `research` hook is handled by §5.1's research decision. The `pattern-mapper` hook is handled by §7.8 after `RESEARCH_PATH` is known. Future plan:pre agent hooks use the same `ref.agent` fragment contract.
 
-**AI integration capability:** If the active `ai-integration` step hook is present, `AI_SPEC_PATH` is empty, and the phase goal contains AI keywords (`agent`, `llm`, `rag`, `chatbot`, `embedding`, `langchain`, `llamaindex`, `crewai`, `langgraph`, `openai`, `anthropic`, `vector`, `eval`, `ai system`), then:
+**AI integration capability:** If the active `ai-integration` step hook is present, `AI_SPEC_PATH` is empty, and the phase goal contains AI keywords (`agent`, `llm`, `rag`, `chatbot`, `embedding`, `langchain`, `llamaindex`, `crewai`, `langgraph`, `openai`, `anthropic`, `vector`, `llm eval`), then:
 - In pipeline / `--auto` mode, invoke the hook's `ref.skill` via `Skill(skill="gsd-${ref.skill}", args="${PHASE} --auto ${GSD_WS}")`.
 - In manual mode, display the existing non-blocking `/gsd:ai-integration-phase {N}` recommendation and let the user continue planning without AI-SPEC or stop to run the capability workflow first.
 
@@ -699,7 +699,7 @@ Planner prompt:
 **Phase:** {phase_number}
 **Mode:** {standard | gap_closure | reviews}
 
-<files_to_read>
+<required_reading>
 - {state_path} (Project State)
 - {roadmap_path} (Roadmap)
 - {requirements_path} (Requirements)
@@ -723,7 +723,7 @@ ${CONTEXT_WINDOW >= 500000 ? `
 - CONTEXT.md, SUMMARY.md, and LEARNINGS.md from any phases listed in the current phase's "Depends on:" field in ROADMAP.md (regardless of recency — explicit dependencies always load, deduplicated against the 3 most recent)
 - Skip all other prior phases to stay within context budget
 ` : ''}
-</files_to_read>
+</required_reading>
 ${API_SURFACE_PATH ? `
 <intel_surface_hint>
 **API Surface (HINT — may be incomplete):** When \`intel.enabled\` is true, \`${API_SURFACE_PATH}\` lists symbols extracted from the codebase by regex/JS analysis. Prefer symbols listed there when referencing existing code. This surface is regex/JS-derived and MAY BE INCOMPLETE — a symbol's absence means *unknown*, not *nonexistent*. Never treat the surface as exhaustive. If you reference a symbol that is not in the surface and this phase creates it, list it under "Artifacts this phase produces".
@@ -978,14 +978,14 @@ Checker prompt:
 **Phase Goal:** {goal from ROADMAP}
 **Mode:** {standard | gap_closure | reviews}
 
-<files_to_read>
+<required_reading>
 - {PHASE_DIR}/*-PLAN.md (Plans to verify)
 - {roadmap_path} (Roadmap)
 - {requirements_path} (Requirements)
 - {context_path} (USER DECISIONS from /gsd:discuss-phase)
 - {research_path} (Technical Research — includes Validation Architecture)
 - {reviews_path} (Cross-AI Review Feedback - if --reviews; verify actionable findings are represented in PLAN.md)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_CHECKER}
 
@@ -1112,10 +1112,10 @@ Revision prompt:
 **Phase:** {phase_number}
 **Mode:** revision
 
-<files_to_read>
+<required_reading>
 - {PHASE_DIR}/*-PLAN.md (Existing plans)
 - {context_path} (USER DECISIONS from /gsd:discuss-phase)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 

@@ -744,7 +744,12 @@ function resolveProviderEscalation(
 // ─── #443 — Unified effort + fast_mode resolvers ─────────────────────────────
 
 const VALID_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-const EFFORT_SET = new Set(VALID_EFFORTS);
+// #3533 (10d): the VOCABULARY carries one more member than the LADDER —
+// 'inherit' is a declarable effort choice ("follow the session", expressed by
+// OMITTING the effort key at the writer) but not a level nextEffort may step
+// into. Keeping it out of VALID_EFFORTS means escalation (resolveEffortForTier)
+// never walks past an explicit inherit: nextEffort('inherit') is null.
+const EFFORT_SET = new Set([...VALID_EFFORTS, 'inherit']);
 
 /**
  * Walk one step up the effort ladder from `e`.
