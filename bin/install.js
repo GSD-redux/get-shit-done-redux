@@ -4282,8 +4282,12 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
   // follows GSD. Keep those knobs coupled unless GSD also pins the model.
   if (hasPinnedModel) {
     const _universalEffortCodex = resolveInstallTimeEffort(effortCfg, resolvedName !== agentName ? resolvedName : agentName);
-    const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
-    lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+    // #3533 (10d): 'inherit' means OMIT the pin — the agent follows the host's
+    // own effort default. Never write the literal.
+    if (_universalEffortCodex !== 'inherit') {
+      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
+      lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+    }
   }
 
   // #774 — Emit service_tier and model_verbosity for light-tier agents.
@@ -11255,8 +11259,13 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           const _effortCfg = readGsdEffectiveEffortConfig(targetDir);
           const _agentName = entry.name.replace(/\.md$/, '');
           const _universalEffort = resolveInstallTimeEffort(_effortCfg, _agentName);
-          const _renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, _universalEffort).value;
-          content = injectEffortFrontmatter(content, _renderedEffort);
+          // #3533 (10d): 'inherit' means the effort: key must NOT exist —
+          // Claude Code then follows the session effort. The canonical source
+          // agents carry no effort key, so skipping injection is the whole job.
+          if (_universalEffort !== 'inherit') {
+            const _renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, _universalEffort).value;
+            content = injectEffortFrontmatter(content, _renderedEffort);
+          }
           const _disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[_agentName];
           if (_disallowedTools) content = injectDisallowedToolsFrontmatter(content, _disallowedTools);
         }

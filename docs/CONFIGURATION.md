@@ -1414,7 +1414,14 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 | `effort.routing_tier_defaults.heavy` | enum | `"xhigh"` | Effort for heavy-tier agents (deep reasoning). |
 | `effort.agent_overrides.<agent-id>` | enum | (none) | Per-agent effort override. Beats tier defaults. |
 
-Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `inherit` ([#3533](https://github.com/open-gsd/gsd-core/issues/3533)).
+
+`inherit` means "follow the session/host default" — it is a declarable choice, not a level:
+at install time the agent's `effort:` frontmatter key (claude) or `model_reasoning_effort`
+pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort sync` treats
+an absent key as the correct in-sync state and strips a present one; no runtime ever receives
+the literal. An explicit `inherit` also never escalates on failed attempts — your choice
+outranks the automatic ladder.
 
 #### Where effort actually reaches — added in v1.8.0
 
