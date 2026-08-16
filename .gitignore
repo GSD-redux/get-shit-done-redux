@@ -218,6 +218,7 @@ build/
 /gsd-core/bin/lib/runtime-artifact-conversion.cjs
 /gsd-core/bin/lib/runtime-artifact-layout.cjs
 /gsd-core/bin/lib/install-scope.cjs
+/gsd-core/bin/lib/install-fs-adapter.cjs
 /gsd-core/bin/lib/installed-surface-resolver.cjs
 /gsd-core/bin/lib/install-shadow-report.cjs
 /gsd-core/bin/lib/runtime-config-adapter-registry.cjs
