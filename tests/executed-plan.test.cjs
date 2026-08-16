@@ -128,17 +128,84 @@ describe('installRuntimeArtifacts — E13: no runtime returns undefined', () => 
 // _snapshotDir/_restoreDir's read/write of preserved skill dirs, the
 // symlink-escape guard's lstatSync/realpathSync probes, commonjs-marker.cts's
 // lstatSync/writeFileSync/unlinkSync, and installer-migrations.cts's
-// existsSync/readFileSync (readInstallManifest, classifyArtifact,
-// sha256File). mkdtempSync/openSync/readSync/closeSync are poisoned too even
-// though nothing in the routed call tree should ever reach them anymore
-// (every former mkdtempSync site now uses mkInstallTempDir; sha256File was
-// converted off raw-fd streaming) — a tripwire, not a documented gap.
+// existsSync/readFileSync/openSync/readSync/closeSync (readInstallManifest,
+// classifyArtifact, sha256File — sha256File streams via openSync/readSync/
+// closeSync, restored after a brief round-trip through readFileSync broke
+// tests/installer-migrations.test.cjs's large-file-streaming contract; the
+// fake below implements all three against its store so a fake-adapter
+// install still never touches real fs for hashing).
+//
+// mkdtempSync stays poisoned as a genuine tripwire, not a reachable case:
+// mkInstallTempDir (install-fs-adapter.cts) only ever calls real
+// `fs.mkdtempSync` when `current === REAL_ADAPTER` (no adapter injected at
+// all) — a fake-adapter call always makes `current` a distinct merged
+// object, so it takes the synthesize-name-and-mkdirSync branch instead and
+// never reaches this poison. If this ever fires, `current`'s identity check
+// broke, not a documented gap.
+//
+// One exception this poison list does NOT cover: readGsdCommandNames
+// (command-roster.cts) reads the PACKAGE'S OWN commands/gsd/ source tree via
+// real fs.readdirSync — deliberately unrouted (see install-fs-adapter.cts's
+// module doc, "DELIBERATELY NOT ROUTED"). `poisonRealFsAgainstDestination`
+// below allows real calls scoped to that known package-source root and
+// poisons everything else, rather than poisoning every real fs call
+// wholesale regardless of path.
 const REAL_FS_WRITE_SURFACE = [
   'mkdirSync', 'existsSync', 'rmSync', 'readdirSync',
   'cpSync', 'copyFileSync', 'readFileSync', 'writeFileSync', 'lstatSync',
   'realpathSync', 'unlinkSync', 'rmdirSync',
   'mkdtempSync', 'openSync', 'readSync', 'closeSync',
 ];
+
+// Package-source roots a correct install is expected to read for real, even
+// while a fake DESTINATION adapter is injected (40-design.md "Known limits":
+// this seam makes destination IO fake-able; package-source IO stays real by
+// design). Mirrors findInstallSourceRoot's/findAgentsSourceRoot's/
+// readGsdCommandNames's own targets (commands/gsd/, agents/), all resolved
+// the same way REAL_COMMANDS_DIR is above.
+const PACKAGE_SOURCE_ROOTS = [REAL_COMMANDS_DIR, path.join(__dirname, '..', 'agents')];
+
+function isPackageSourcePath(resolvedPath) {
+  return PACKAGE_SOURCE_ROOTS.some(
+    (root) => resolvedPath === root || resolvedPath.startsWith(root + path.sep),
+  );
+}
+
+/**
+ * F2's real-fs poisoning, derived from the rule (40-design.md "Known
+ * limits"/install-fs-adapter.cts's module doc) rather than aligned with it by
+ * coincidence: a real fs call against the install DESTINATION is a failure —
+ * the seam exists precisely so a fake adapter can intercept those — but a
+ * real call against the package's OWN source tree (commands/gsd/, agents/)
+ * is expected and allowed, because that read is deliberately unrouted
+ * (readGsdCommandNames et al.). Poisoning every real fs method wholesale,
+ * regardless of path, makes a correct install fail for the wrong reason.
+ *
+ * Returns a Map<method, count> of package-source hits, so a caller can
+ * assert POSITIVELY that the expected package-source read actually happened
+ * — proving the boundary was exercised, not merely tolerated.
+ */
+function poisonRealFsAgainstDestination(t, label) {
+  const packageSourceHits = new Map();
+  for (const method of REAL_FS_WRITE_SURFACE) {
+    const original = fs[method].bind(fs);
+    t.mock.method(fs, method, (...args) => {
+      const target = args[0];
+      const resolved = (typeof target === 'string' || target instanceof URL || Buffer.isBuffer(target))
+        ? path.resolve(String(target))
+        : null;
+      if (resolved !== null && isPackageSourcePath(resolved)) {
+        packageSourceHits.set(method, (packageSourceHits.get(method) ?? 0) + 1);
+        return original(...args);
+      }
+      throw new Error(
+        `F2${label}: real fs.${method}() was reached against a non-package-source path ` +
+        `(${resolved ?? String(target)}) during an install driven by an injected fake adapter`,
+      );
+    });
+  }
+  return packageSourceHits;
+}
 
 /**
  * A genuinely functional in-memory filesystem, not a set of no-op stubs —
@@ -158,6 +225,8 @@ const REAL_FS_WRITE_SURFACE = [
 function createFakeInstallFs(seed = []) {
   const store = new Map();
   for (const [p, entry] of seed) store.set(path.normalize(String(p)), entry);
+  const fdTable = new Map();
+  let nextFd = 1;
 
   const norm = (p) => path.normalize(String(p));
   const childPrefix = (dir) => {
@@ -224,6 +293,32 @@ function createFakeInstallFs(seed = []) {
       const buf = Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content ?? '', 'utf8');
       return encoding ? buf.toString(encoding) : buf;
     },
+    // sha256File (installer-migrations.cts) streams via openSync/readSync/
+    // closeSync instead of readFileSync (large-file hashing must not buffer
+    // the whole file — tests/installer-migrations.test.cjs pins this). fdTable
+    // maps a synthetic fd to {buf, pos} so this fake never needs a real fd.
+    openSync: (p) => {
+      const e = store.get(norm(p));
+      if (!e || e.type !== 'file') throw enoent(p);
+      const buf = Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content ?? '', 'utf8');
+      const fd = nextFd++;
+      fdTable.set(fd, { buf, pos: 0 });
+      return fd;
+    },
+    readSync: (fd, buffer, offset, length, position) => {
+      const entry = fdTable.get(fd);
+      if (!entry) {
+        const err = new Error(`EBADF: bad file descriptor, read (fake fd ${fd})`);
+        err.code = 'EBADF';
+        throw err;
+      }
+      const readAt = position === null || position === undefined ? entry.pos : position;
+      const bytesToRead = Math.max(0, Math.min(length, entry.buf.length - readAt));
+      entry.buf.copy(buffer, offset, readAt, readAt + bytesToRead);
+      if (position === null || position === undefined) entry.pos += bytesToRead;
+      return bytesToRead;
+    },
+    closeSync: (fd) => { fdTable.delete(fd); },
     writeFileSync: (p, data, opts) => {
       // Emulate `{ flag: 'wx' }` (exclusive create): REAL_ADAPTER.writeFileSync
       // (install-fs-adapter.cts:138) passes `opts` straight through to real
@@ -305,18 +400,12 @@ function sha256Hex(content) {
 
 describe('installRuntimeArtifacts — F2: fake-adapter install touches no real filesystem', () => {
   test('fake-adapter install touches no real filesystem (claude, skills-only)', (t) => {
-    // Every real fs method this call tree could reach is poisoned for the
-    // duration of this test via node:test's mock tracker (auto-restored when
-    // the test ends — no try/finally in the test body, per CONTRIBUTING.md's
-    // "Never use try/finally inside test bodies").
-    for (const method of REAL_FS_WRITE_SURFACE) {
-      t.mock.method(fs, method, () => {
-        throw new Error(
-          `F2: real fs.${method}() was reached during an install driven by an injected ` +
-          'fake adapter',
-        );
-      });
-    }
+    // Every real fs method this call tree could reach is poisoned BY PATH
+    // (see poisonRealFsAgainstDestination) for the duration of this test via
+    // node:test's mock tracker (auto-restored when the test ends — no
+    // try/finally in the test body, per CONTRIBUTING.md's "Never use
+    // try/finally inside test bodies").
+    const packageSourceHits = poisonRealFsAgainstDestination(t, '');
 
     const fakeFs = createFakeInstallFs();
 
@@ -335,18 +424,20 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
       'F2: a fake-adapter install must still return an executed plan (matrix row F1/E1 shape)',
     );
     // No post-hoc fs.existsSync(configDir) check follows: fs.existsSync is
-    // one of the poisoned methods above for the duration of this test, so
-    // the proof of "zero real fs contact" IS that installRuntimeArtifacts
-    // returned at all without tripping one of the throws — not a probe that
-    // would itself have to touch the poisoned surface.
+    // one of the poisoned (non-package-source) methods above for the
+    // duration of this test, so the proof of "zero real DESTINATION fs
+    // contact" IS that installRuntimeArtifacts returned at all without
+    // tripping one of the throws — not a probe that would itself have to
+    // touch the poisoned surface.
+    assert.ok(
+      (packageSourceHits.get('readdirSync') ?? 0) > 0,
+      'F2: readGsdCommandNames must have read the real, unrouted commands/gsd/ package-source ' +
+      'tree at least once — proving the poison boundary was exercised, not merely tolerated',
+    );
   });
 
   test('fake-adapter install touches no real filesystem (opencode-family legacy command/ dir migration)', (t) => {
-    for (const method of REAL_FS_WRITE_SURFACE) {
-      t.mock.method(fs, method, () => {
-        throw new Error(`F2 (opencode legacy migration): real fs.${method}() was reached`);
-      });
-    }
+    poisonRealFsAgainstDestination(t, ' (opencode legacy migration)');
 
     const configDir = path.join(os.tmpdir(), `gsd-f2-opencode-legacy-${crypto.randomUUID()}`);
     const legacyDir = path.join(configDir, 'command');
@@ -382,11 +473,7 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
   });
 
   test('fake-adapter install touches no real filesystem (nativePlugin runtime: pi)', (t) => {
-    for (const method of REAL_FS_WRITE_SURFACE) {
-      t.mock.method(fs, method, () => {
-        throw new Error(`F2 (nativePlugin): real fs.${method}() was reached`);
-      });
-    }
+    poisonRealFsAgainstDestination(t, ' (nativePlugin)');
 
     // Resolve the SAME pluginSrc path _installNativePluginIfDeclared
     // (install-engine.cts) computes for pi's declared nativePlugin, using the
@@ -430,11 +517,7 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
   });
 
   test('fake-adapter install touches no real filesystem (retiredArtifacts runtime: cursor)', (t) => {
-    for (const method of REAL_FS_WRITE_SURFACE) {
-      t.mock.method(fs, method, () => {
-        throw new Error(`F2 (retiredArtifacts): real fs.${method}() was reached`);
-      });
-    }
+    const packageSourceHits = poisonRealFsAgainstDestination(t, ' (retiredArtifacts)');
 
     const retired = registry.runtimes.cursor.runtime.hostBehaviors.retiredArtifacts;
     assert.ok(Array.isArray(retired) && retired.length > 0, 'cursor must declare hostBehaviors.retiredArtifacts (registry drifted)');
@@ -469,6 +552,11 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
       fakeFs._store.has(path.normalize(staleFile)),
       false,
       'F2 (retiredArtifacts): the managed-pristine retired artifact must have been removed via the fake store',
+    );
+    assert.ok(
+      (packageSourceHits.get('readdirSync') ?? 0) > 0,
+      'F2 (retiredArtifacts): readGsdCommandNames must have read the real, unrouted commands/gsd/ ' +
+      'package-source tree at least once — proving the poison boundary was exercised, not merely tolerated',
     );
   });
 });

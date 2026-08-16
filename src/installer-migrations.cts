@@ -42,18 +42,32 @@ const DEFAULT_MIGRATIONS_DIR = path.join(__dirname, 'installer-migrations');
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const STRICT_JSON = Symbol('strict-json');
 
-// #2874: converted from raw-fd streaming (fs.openSync/readSync/closeSync) to
-// a single `installFs().readFileSync`, so classifyArtifact — reachable from
-// installRuntimeArtifacts — can be exercised against an injected adapter.
-// Identical digest for identical bytes regardless of chunking; the files
-// this hashes are GSD-managed install artifacts (skills/commands/config),
-// never large blobs, so buffering the whole file is a safe, scoped
-// simplification. This is the ONLY call site of sha256File in this file
-// (confirmed by inspection) — no other caller depends on the streaming
-// behavior.
+// #2874: routed through installFs()'s openSync/readSync/closeSync trio
+// instead of importing `node:fs` directly, so classifyArtifact — reachable
+// from installRuntimeArtifacts — can be exercised against an injected
+// adapter. This function was briefly converted to a single
+// `installFs().readFileSync` call (buffering the whole file); that broke
+// tests/installer-migrations.test.cjs's "classifies large files without
+// loading the whole file through readFileSync", which monkeypatches real
+// fs.readFileSync to throw for the file under test and asserts hashing still
+// succeeds — an explicit, pre-existing contract that large files must be
+// streamed, not buffered. Restored to the original raw-fd streaming shape,
+// now going through the adapter instead of `node:fs` directly. This is the
+// ONLY call site of sha256File in this file (confirmed by inspection) — no
+// other caller is affected.
 function sha256File(filePath: string): string {
   const hash = crypto.createHash('sha256');
-  hash.update(installFs().readFileSync(filePath));
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = installFs().openSync(filePath, 'r');
+  try {
+    while (true) {
+      const bytesRead = installFs().readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    installFs().closeSync(fd);
+  }
   return hash.digest('hex');
 }
 

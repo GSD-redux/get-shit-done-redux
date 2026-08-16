@@ -17,10 +17,12 @@
  * call tree actually performs are enumerated below. installer-migrations.cts
  * is ~1200 lines covering migration planning/apply/rollback/locking/journal
  * machinery unrelated to `installRuntimeArtifacts` — only its two reachable
- * entry points (and `sha256File`, their shared hashing helper, converted
- * from raw-fd streaming to `installFs().readFileSync` so it stays inside
- * this seam's method set) are routed; the rest of that file is untouched,
- * deliberately, because it is off this call tree.
+ * entry points (and `sha256File`, their shared hashing helper — still raw-fd
+ * streaming via `openSync`/`readSync`/`closeSync`, now routed through this
+ * seam instead of calling `node:fs` directly, so large-file hashing never
+ * buffers a whole file through the injected adapter either) are routed; the
+ * rest of that file is untouched, deliberately, because it is off this call
+ * tree.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * DELIVERY MECHANISM — ambient, not threaded (read this before adding a call
@@ -147,6 +149,17 @@ interface InstallFsAdapter {
   realpathSync(p: string): string;
   unlinkSync(p: string): void;
   rmdirSync(p: string): void;
+  /** Raw-fd streaming trio, added so `installer-migrations.cts`'s
+   *  `sha256File` can hash a file in fixed-size chunks through this seam
+   *  instead of buffering the whole file via `readFileSync` — see the
+   *  module doc's opening paragraph and `tests/installer-migrations.test.cjs`'s
+   *  "classifies large files without loading the whole file through
+   *  readFileSync", which pins this contract directly: it monkeypatches real
+   *  `fs.readFileSync` to throw for the file under test and asserts hashing
+   *  still succeeds, proving the hash path never calls it. */
+  openSync(p: string, flags: string): number;
+  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
+  closeSync(fd: number): void;
 }
 
 const REAL_ADAPTER: InstallFsAdapter = {
@@ -164,6 +177,9 @@ const REAL_ADAPTER: InstallFsAdapter = {
   realpathSync: (p) => nodeFs.realpathSync(p),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
   rmdirSync: (p) => nodeFs.rmdirSync(p),
+  openSync: (p, flags) => nodeFs.openSync(p, flags),
+  readSync: (fd, buffer, offset, length, position) => nodeFs.readSync(fd, buffer, offset, length, position),
+  closeSync: (fd) => nodeFs.closeSync(fd),
 };
 
 let current: InstallFsAdapter = REAL_ADAPTER;
@@ -200,15 +216,33 @@ function withInstallFs<T>(partial: Partial<InstallFsAdapter> | undefined, fn: ()
 }
 
 /**
- * Create a fresh, uniquely-named directory via `installFs().mkdirSync`
- * instead of `fs.mkdtempSync`. The injected adapter contract deliberately
- * does not require `mkdtempSync` — every staging call site that used to call
- * `fs.mkdtempSync` directly now synthesizes its own unique name and creates
- * it through the same adapter every other write in this seam goes through,
- * so a fake adapter (which only needs to implement `mkdirSync`) can still
- * drive the full staging pipeline.
+ * Create a fresh, uniquely-named temp directory.
+ *
+ * AC4 requires the no-adapter-injected path to stay byte-identical to the
+ * pre-#2874 code, which called real `fs.mkdtempSync` directly — several
+ * existing tests (e.g. tests/install-runtime-artifacts.test.cjs's "rmSync is
+ * called on the tempDir when readFileSync throws") monkeypatch real
+ * `fs.mkdtempSync` to capture the exact directory a call under test creates,
+ * and stop working if that real syscall is no longer made. So: when NO fake
+ * adapter is active (`current === REAL_ADAPTER`, the exact top-level-install
+ * default), this calls `nodeFs.mkdtempSync` directly — the same real call
+ * the old code made, still visible to a monkeypatch applied after import
+ * because it is a live property lookup on the `node:fs` module object, not a
+ * captured reference.
+ *
+ * When a fake adapter IS active (any `withInstallFs(partial, …)` call, even
+ * a partial one — see `current`'s assignment in `withInstallFs`, which
+ * always produces a NEW merged object, never `=== REAL_ADAPTER`), this falls
+ * back to synthesizing a unique name and creating it via
+ * `installFs().mkdirSync`, exactly as before: the injected adapter contract
+ * still does not require `mkdtempSync`, so a fake (which only needs to
+ * implement `mkdirSync`) can drive the full staging pipeline without ever
+ * touching real fs.
  */
 function mkInstallTempDir(prefix: string): string {
+  if (current === REAL_ADAPTER) {
+    return nodeFs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  }
   const dir = path.join(os.tmpdir(), `${prefix}${crypto.randomBytes(8).toString('hex')}`);
   installFs().mkdirSync(dir, { recursive: true });
   return dir;
