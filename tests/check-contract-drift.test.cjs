@@ -371,7 +371,9 @@ describe('contract-drift: contractViolations', () => {
 
   test('a file-shaped Consumed by entry that resolves to nothing is unknown_consumer', () => {
     const vs = run({
-      registry: [row('gsd-a', ['ALPHA COMPLETE'], 'sentinel-match', { consumed_by: '`gsd-core/workflows/missing.md`' })],
+      registry: [row('gsd-a', ['ALPHA COMPLETE'], 'sentinel-match', {
+        consumed_by: '`gsd-core/workflows/missing.md`, `gsd-core/workflows/real.md`',
+      })],
       producers: new Map([['gsd-a', ['ALPHA COMPLETE']]]),
       consumers: new Map([['gsd-core/workflows/real.md', '`## ALPHA COMPLETE`']]),
     });
@@ -479,12 +481,22 @@ describe('contract-drift: contractViolations', () => {
 
   test('an emitted-but-undeclared candidate is emitted_marker_not_declared, deduped per marker', () => {
     const vs = run({
-      registry: [row('gsd-a', [], 'artifact+query')],
+      registry: [row('gsd-a', [], 'sentinel-match')],
       producers: new Map([['gsd-a', []]]),
       candidates: new Map([['gsd-a', ['MYSTERY COMPLETE', 'MYSTERY COMPLETE']]]),
     });
     assert.equal(vs.length, 1);
     assert.equal(vs[0].kind, 'emitted_marker_not_declared');
+  });
+
+  test('an emitted marker on an artifact row is reported ONCE as vestigial, never also as undeclared', () => {
+    const vs = run({
+      registry: [row('gsd-a', [], 'artifact+query')],
+      producers: new Map([['gsd-a', ['MYSTERY COMPLETE']]]),
+      candidates: new Map([['gsd-a', ['MYSTERY COMPLETE']]]),
+    });
+    assert.equal(vs.length, 1);
+    assert.equal(vs[0].kind, 'vestigial_marker');
   });
 
   test('an unknown Kind value is unknown_kind', () => {

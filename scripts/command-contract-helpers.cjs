@@ -535,7 +535,9 @@ function contractViolations({ registry, producerMarkers, candidateMarkers, consu
       const declared = row.completion_markers || [];
       const unconsumed = row.unconsumed_markers || [];
       const declaredAll = [...declared, ...unconsumed];
-      const produced = producers.get(agent) || [];
+      // Deduped: the same marker emitted on several lines/files is one
+      // emission fact, never several violations.
+      const produced = [...new Set(producers.get(agent) || [])];
       const kind = row.kind;
       const kindProvided = kind !== undefined && kind !== null && kind !== '';
 
@@ -569,30 +571,10 @@ function contractViolations({ registry, producerMarkers, candidateMarkers, consu
       const isArtifactOrStructured =
         kindProvided && (kind === 'artifact+query' || kind === 'structured-return');
 
-      if (isArtifactOrStructured) {
-        // An `(unconsumed: …)` annotation on an artifact/structured row is a
-        // recorded decision to keep emitting a marker the completion route
-        // doesn't need (Marker Rule 2's intentional title-case markers) —
-        // exempt from vestigial_marker only; the declared/emitted and
-        // candidate checks below still run for the row, per Marker Rule 7.
-        const unconsumedSet = new Set(unconsumed);
-        for (const m of produced) {
-          if (unconsumedSet.has(m)) continue;
-          violations.push({
-            kind: 'vestigial_marker',
-            agent,
-            marker: m,
-            detail: `row kind "${kind}" expects no marker, but agent still emits "${m}" in-fence`,
-          });
-        }
-      }
-
       // declaredAll includes unconsumed entries: an `(unconsumed: …)` marker
       // must still be emitted — the exemption waives the consumer
-      // requirement only, never the declared↔emitted agreement. This runs
-      // for EVERY row kind; a marker declared on an artifact+query row
-      // without an unconsumed annotation is contradictory authoring and
-      // both this and vestigial_marker are correct to report it.
+      // requirement only, never the declared↔emitted agreement (Marker
+      // Rule 7). This runs for EVERY row kind.
       for (const m of declaredAll) {
         if (!produced.includes(m)) {
           violations.push({
@@ -603,7 +585,35 @@ function contractViolations({ registry, producerMarkers, candidateMarkers, consu
           });
         }
       }
-      const candidates = candidatesByAgent.get(agent) || [];
+
+      if (isArtifactOrStructured) {
+        // An `(unconsumed: …)` annotation on an artifact/structured row is a
+        // recorded decision to keep emitting a marker the completion route
+        // doesn't need (Marker Rule 2's intentional title-case markers) —
+        // exempt from vestigial_marker. Every OTHER emitted marker on such a
+        // row is reported ONCE, as vestigial_marker: the candidate check
+        // below is skipped for these rows because emitted_marker_not_declared
+        // on top of vestigial_marker double-reports the same fact, and the
+        // consumer contract cannot apply to a row whose completion is not
+        // detected by marker matching at all.
+        const unconsumedSet = new Set(unconsumed);
+        for (const m of produced) {
+          if (unconsumedSet.has(m)) continue;
+          violations.push({
+            kind: 'vestigial_marker',
+            agent,
+            marker: m,
+            detail: `row kind "${kind}" expects no marker, but agent still emits "${m}" in-fence`,
+          });
+        }
+        continue;
+      }
+
+      // Deduped per marker: "emitted but undeclared" is a fact about the
+      // marker, and a caller-supplied list carrying the same marker twice
+      // (two template lines, or agent file + @-included reference) is one
+      // violation, not two.
+      const candidates = [...new Set(candidatesByAgent.get(agent) || [])];
       for (const m of candidates) {
         if (!declaredAll.includes(m)) {
           violations.push({
