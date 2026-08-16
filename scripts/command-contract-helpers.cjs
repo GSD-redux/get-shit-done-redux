@@ -61,4 +61,63 @@ function executionContextRefs(content) {
   return refs;
 }
 
-module.exports = { CANONICAL_TOOLS, parseFrontmatter, executionContextRefs };
+/**
+ * workflowPathRefs(content)
+ *
+ * Locates every gsd-core-relative workflow path referenced in a markdown
+ * string, whether the reference is an eager @-include (already covered by
+ * executionContextRefs) or a *lazy* path mentioned only in prose/code — a
+ * path a command reads on demand via Read/Bash rather than an @-inclusion
+ * the harness inlines automatically. Both kinds are load-bearing: the
+ * progressive-disclosure split (#717) deliberately keeps most workflow
+ * content out of the eager path so the common case stays cheap, but that
+ * means a command naming a workflow only in prose is invisible to
+ * executionContextRefs even though the runtime still needs the file to
+ * exist. Recognizes three reference shapes:
+ *
+ *   A. Any path whose segments include `workflows/`, optionally preceded by
+ *      an eager `@`, a home-dir prefix (`~/` or `$HOME/`), `.claude/`, and/or
+ *      `gsd-core/` — e.g. `@~/.claude/gsd-core/workflows/scan.md`,
+ *      `gsd-core/workflows/x.md`, or a bare `workflows/x.md`.
+ *   B. Same as A but without the eager `@` — a lazy reference read on
+ *      demand rather than inlined at load time.
+ *   C. Parent-relative sub-file paths with no `workflows/` prefix at all —
+ *      `execute-phase/steps/post-merge-gate.md` — implicitly rooted under
+ *      `workflows/` because that's the only place `steps/`, `modes/`, and
+ *      `templates/` subdirectories live.
+ *
+ * Traversal segments (`..`) are dropped rather than surfaced: this resolver
+ * only ever reports paths under `workflows/`, never something a `..` could
+ * walk outside of it. Results are de-duplicated, first-seen order preserved.
+ */
+function workflowPathRefs(content) {
+  const refs = [];
+  const seen = new Set();
+
+  function addRef(normalized) {
+    if (normalized.split('/').includes('..')) return;
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    refs.push(normalized);
+  }
+
+  const shapeARe = /@?(?:(?:~|\$HOME)\/)?(?:\.claude\/)?(?:gsd-core\/)?workflows\/[A-Za-z0-9._/-]+\.md/g;
+  let m;
+  while ((m = shapeARe.exec(content)) !== null) {
+    const normalized = m[0]
+      .replace(/^@/, '')
+      .replace(/^(?:~|\$HOME)\//, '')
+      .replace(/^\.claude\//, '')
+      .replace(/^gsd-core\//, '');
+    addRef(normalized);
+  }
+
+  const shapeCRe = /(?:^|[\s`("'>])([A-Za-z0-9._-]+\/(?:steps|modes|templates)\/[A-Za-z0-9._-]+\.md)/gm;
+  while ((m = shapeCRe.exec(content)) !== null) {
+    addRef('workflows/' + m[1]);
+  }
+
+  return refs;
+}
+
+module.exports = { CANONICAL_TOOLS, parseFrontmatter, executionContextRefs, workflowPathRefs };
