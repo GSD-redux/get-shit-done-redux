@@ -6808,6 +6808,17 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     let __project3543;
     let __prevEnv3543;
     let __prevCwd3543;
+    // opencode/kilo global config homes resolve through an XDG descriptor whose
+    // env chain is [<RUNTIME>_CONFIG_DIR, <RUNTIME>_CONFIG, XDG_CONFIG_HOME]
+    // before falling back to <HOME>/.config/<name>. CI runners export
+    // XDG_CONFIG_HOME, which would route a "global" install into the runner's
+    // REAL config home (the live-config guard fails the job on exactly that);
+    // clearing the whole chain pins resolution to the isolated HOME fallback.
+    const __XDG_ENV_3543 = [
+      'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG',
+      'KILO_CONFIG_DIR', 'KILO_CONFIG',
+      'XDG_CONFIG_HOME',
+    ];
 
     __be3543(() => {
       __root3543 = createTempDir('gsd-3543-');
@@ -6823,11 +6834,13 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
         HOME: process.env.HOME,
         USERPROFILE: process.env.USERPROFILE,
         SKIP: process.env.GSD_SKIP_STALE_SDK_CHECK,
+        XDG: Object.fromEntries(__XDG_ENV_3543.map((k) => [k, process.env[k]])),
       };
       __prevCwd3543 = process.cwd();
       process.env.HOME = __home3543;
       process.env.USERPROFILE = __home3543;
       process.env.GSD_SKIP_STALE_SDK_CHECK = '1';
+      for (const k of __XDG_ENV_3543) delete process.env[k];
       process.chdir(__project3543);
     });
 
@@ -6839,6 +6852,10 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
       else process.env.USERPROFILE = __prevEnv3543.USERPROFILE;
       if (__prevEnv3543.SKIP === undefined) delete process.env.GSD_SKIP_STALE_SDK_CHECK;
       else process.env.GSD_SKIP_STALE_SDK_CHECK = __prevEnv3543.SKIP;
+      for (const [k, v] of Object.entries(__prevEnv3543.XDG)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
       cleanup(__root3543);
     });
 
