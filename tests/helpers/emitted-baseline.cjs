@@ -47,8 +47,14 @@ const BASELINE_ENV = 'GSD_EMITTED_BASELINE';
 /** Default on-disk cache location, relative to the repo root. */
 const DEFAULT_CACHE_PATH = '.gsd-cache/emitted-baseline.json';
 
-/** Baseline artifact schema version — pinned so a format change fails loudly. */
-const BASELINE_VERSION = 1;
+/** Baseline artifact schema version — pinned so a format change fails loudly.
+ * v2 (#3547): the harness now measures every global family in the REAL
+ * config-home shape (<root>/<globalSuffix> instead of the collapsed
+ * <root>), so manifests from a v1 baseline — built with the collapsed
+ * harness — are not comparable (HOME-level paths present, prefix bytes
+ * absent). Bumping refuses v1 caches and forces the same-schema fallback
+ * build; the push-to-next job republishes at v2 when this merges. */
+const BASELINE_VERSION = 2;
 
 /**
  * Validate a baseline artifact's shape and freshness.
