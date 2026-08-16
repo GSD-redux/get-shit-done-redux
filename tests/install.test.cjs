@@ -51,9 +51,22 @@ const {
   normalizeNodePath,
   GSD_CHANGESET_FILES,
   GSD_SCRIPTS_LIB_FILES,
+  installRuntimeArtifacts,
 } = require('../bin/install.js');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+// #2874 AC3 exemplar (see the qwen install/uninstall group below): resolves
+// the SAME 'full' profile install(false, <runtime>) resolves by default
+// (bin/install.js's _activeProfileName falls back to 'full' when no
+// --profile/marker is present), so a direct installRuntimeArtifacts() call
+// against an already-installed targetDir reproduces the same executed-plan
+// shape the production install() call just wrote, without re-deriving
+// install()'s own profile-resolution logic in this test file.
+const { loadSkillsManifest, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
+const RESOLVED_FULL = resolveProfile({
+  modes: ['full'],
+  manifest: loadSkillsManifest(path.join(__dirname, '..', 'commands', 'gsd')),
+});
 
 const {
   RUNTIME_META,
@@ -460,12 +473,47 @@ describe('install/uninstall — qwen (nested skills/gsd-<router>/skills/<stem>/ 
     assert.strictEqual(result.runtime, 'qwen');
     assert.strictEqual(result.configDir, fs.realpathSync(targetDir));
 
-    // qwen nests: skills/gsd-<router>/skills/<stem>/SKILL.md
+    // #2874 AC3 exemplar: install(false, 'qwen') above already wrote the
+    // skills/ and agents/ dirs, but its own internal installRuntimeArtifacts
+    // call (bin/install.js) discards the executed plan it returns. Calling
+    // installRuntimeArtifacts directly here — same runtime/targetDir/scope,
+    // same 'full' profile install() resolved by default — is an idempotent
+    // re-run over the already-installed tree (prune + rewrite converges to
+    // the same on-disk result) that surfaces the SAME plan value production
+    // discarded. What replaces fs.existsSync probing below is this ONE
+    // deepStrictEqual against that plan: previously each destination
+    // directory's existence was checked with a separate fs.existsSync() call
+    // (a probe of a SIDE EFFECT); now both are read off the single typed
+    // value the call contractually returns (40-design.md: "returns a plan
+    // naming every kind with its sourceDir, destDir", never undefined).
+    const plan = installRuntimeArtifacts('qwen', targetDir, 'global', RESOLVED_FULL);
+    const kindsByName = new Map(plan.kinds.map((k) => [k.kind, k]));
+    assert.deepStrictEqual(
+      {
+        skillsDestDir: kindsByName.get('skills') && kindsByName.get('skills').destDir,
+        agentsDestDir: kindsByName.get('agents') && kindsByName.get('agents').destDir,
+      },
+      {
+        skillsDestDir: path.join(targetDir, 'skills'),
+        agentsDestDir: path.join(targetDir, 'agents'),
+      },
+      'qwen executed plan must record a skills-kind write to skills/ and an agents-kind write to agents/',
+    );
+
+    // qwen nests: skills/gsd-<router>/skills/<stem>/SKILL.md. The plan above
+    // proves the skills-kind DESTINATION ROOT; which concrete stem (e.g.
+    // "help") landed under it is finer-grained than the plan's per-kind
+    // contract (one destDir per kind, not a file list), so that specific
+    // fact still needs an fs probe — nothing here is a regression from the
+    // pre-migration test, only the destDir-existence checks moved to the
+    // plan value above.
     const qwenHelpPath = nestedSkillPath(path.join(targetDir, 'skills'), 'gsd-', 'help');
     assert.ok(fs.existsSync(qwenHelpPath),
       `help SKILL.md must exist at nested path: ${path.relative(targetDir, qwenHelpPath)}`);
+    // gsd-core/VERSION is written by install()'s own gsd-core copy step, not
+    // by installRuntimeArtifacts (outside the executed-plan contract) — stays
+    // an fs probe.
     assert.ok(fs.existsSync(path.join(targetDir, 'gsd-core', 'VERSION')));
-    assert.ok(fs.existsSync(path.join(targetDir, 'agents')));
 
     const manifest = writeManifest(targetDir, 'qwen');
     assert.ok(

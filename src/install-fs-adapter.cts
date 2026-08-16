@@ -106,6 +106,12 @@
  * through it would make every fake-adapter install throw
  * "could not locate commands/gsd", not gracefully stage nothing. See the
  * comment at each function's Step 2 for the full argument.
+ *
+ * RULE (40-design.md "Known limits"): this seam makes *destination* IO
+ * fake-able; package-source IO (this section) stays real by design — the F2
+ * test's poison list should be derived FROM that rule, not the reverse, or a
+ * future "complete the poison list" edit that adds `statSync` will break a
+ * correct `findInstallSourceRoot` for the wrong reason.
  */
 
 import nodeFs from 'node:fs';

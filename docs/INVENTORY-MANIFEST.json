@@ -398,6 +398,7 @@
       "init.cjs",
       "install-effort-resolver.cjs",
       "install-engine.cjs",
+      "install-fs-adapter.cjs",
       "install-profiles.cjs",
       "install-scope.cjs",
       "install-shadow-report.cjs",

@@ -33,18 +33,24 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const fc = require('fast-check');
+
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
-const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const { installRuntimeArtifacts, hasExistingSymlinkBetween } = require('../gsd-core/bin/lib/install-engine.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { loadSkillsManifest, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const runtimeArtifactLayout = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+const runtimeArtifactInstallPlan = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
+const { withInstallFs } = require('../gsd-core/bin/lib/install-fs-adapter.cjs');
 const commandRoster = require('../gsd-core/bin/lib/command-roster.cjs');
 const slashCommandTransformer = require('../scripts/fix-slash-commands.cjs');
 
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 const MANIFEST = loadSkillsManifest(REAL_COMMANDS_DIR);
 const RESOLVED_CORE = resolveProfile({ modes: ['core'], manifest: MANIFEST });
+const RESOLVED_FULL = resolveProfile({ modes: ['full'], manifest: MANIFEST });
+const TEST_ATTRIBUTION = () => 'Co-Authored-By: Test <t@example.com>';
 
 /**
  * Sandbox HOME/USERPROFILE for the duration of a test. Some runtimes (e.g.
@@ -464,6 +470,700 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
       false,
       'F2 (retiredArtifacts): the managed-pristine retired artifact must have been removed via the fake store',
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #2874 follow-up round — 50-test-matrix.md rows E1/E2/E4-E12, F4-F6, G2,
+// H1-H5, I1-I5, K3, L1-L2. Extends the F2/E3/E13 coverage above rather than a
+// new file (install's file-count prefix is grandfathered at 8, must not grow).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── E. Executed-plan return shape (E1, E2, E4-E12) ──────────────────────────
+
+describe('installRuntimeArtifacts — E1: claude global, normal install', () => {
+  test('returns an executed plan for a normal install', (t) => {
+    const configDir = createTempDir('gsd-e1-claude-global-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    assert.ok(Array.isArray(result.kinds) && result.kinds.length > 0, 'E1: plan must name at least one kind');
+    for (const k of result.kinds) {
+      assert.strictEqual(typeof k.kind, 'string', 'E1: every kind entry must name its kind');
+      assert.strictEqual(typeof k.sourceDir, 'string', 'E1: every kind entry must name its sourceDir');
+      assert.strictEqual(typeof k.destDir, 'string', 'E1: every kind entry must name its destDir');
+    }
+  });
+});
+
+describe('installRuntimeArtifacts — E2: claude local', () => {
+  test('executed plan records the scope', (t) => {
+    const configDir = createTempDir('gsd-e2-claude-local-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'local', RESOLVED_CORE);
+
+    assert.strictEqual(result.scope, 'local', 'E2: local scope must be reflected verbatim on the returned plan');
+  });
+});
+
+describe('installRuntimeArtifacts — E4: kilo (second family member)', () => {
+  test('kilo family install still returns a plan', (t) => {
+    const configDir = createTempDir('gsd-e4-kilo-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('kilo', configDir, 'global', RESOLVED_CORE);
+
+    assert.notStrictEqual(
+      result, undefined,
+      'E4: kilo, the SECOND combined-family runtime, must ALSO return a plan — E3 is not a one-runtime special case',
+    );
+    assert.deepStrictEqual(result.kinds.map((k) => k.kind).sort(), ['commands', 'skills']);
+  });
+});
+
+describe('installRuntimeArtifacts — E5/E7: empty layout + nativePlugin post-step (pi)', () => {
+  test('empty layout returns an empty plan', (t) => {
+    const configDir = createTempDir('gsd-e5-pi-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('pi', configDir, 'global', RESOLVED_CORE);
+
+    assert.ok(Array.isArray(result.kinds), 'E5: kinds must be an array even when layout.kinds is empty');
+    assert.strictEqual(result.kinds.length, 0, 'E5: pi declares an empty artifactLayout — kinds must be [], never undefined');
+  });
+
+  test('native plugin post-step is recorded', (t) => {
+    const configDir = createTempDir('gsd-e7-pi-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('pi', configDir, 'global', RESOLVED_CORE);
+
+    assert.strictEqual(
+      result.postSteps.nativePlugin, true,
+      'E7: pi declares hostBehaviors.nativePlugin — postSteps.nativePlugin must record it as a post-step',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E6: hermes post-step is recorded', () => {
+  test('hermes post-step is recorded', (t) => {
+    const configDir = createTempDir('gsd-e6-hermes-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('hermes', configDir, 'global', RESOLVED_CORE);
+
+    assert.strictEqual(
+      result.postSteps.hermesBareStemCleanup, true,
+      'E6: hermes must record _removeHermesBareStemDirs having run as a post-step',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E8: preserved user skill dirs are recorded', () => {
+  test('preserved user skill dirs are recorded', (t) => {
+    const configDir = createTempDir('gsd-e8-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    const preservedSkillDir = path.join(configDir, 'skills', 'gsd-dev-preferences');
+    fs.mkdirSync(preservedSkillDir, { recursive: true });
+    fs.writeFileSync(path.join(preservedSkillDir, 'SKILL.md'), '# my custom prefs\n');
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    const skillsKind = result.kinds.find((k) => k.kind === 'skills');
+    assert.ok(skillsKind, 'E8 precondition: claude global must write a skills kind');
+    assert.deepStrictEqual(
+      skillsKind.preserved, ['gsd-dev-preferences'],
+      'E8: the plan must record gsd-dev-preferences as preserved',
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(preservedSkillDir, 'SKILL.md'), 'utf8'),
+      '# my custom prefs\n',
+      'E8: the preserved content must actually have been restored after the prune+copy, not just recorded on the plan',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E9: non-skills kind records its writes', () => {
+  test('non-skills kind records its writes', (t) => {
+    const configDir = createTempDir('gsd-e9-claude-local-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'local', RESOLVED_CORE);
+
+    const commandsKind = result.kinds.find((k) => k.kind === 'commands');
+    assert.ok(commandsKind, 'E9 precondition: claude local must write a commands kind');
+    assert.strictEqual(commandsKind.destDir, path.join(configDir, 'commands'));
+    assert.ok(
+      fs.existsSync(commandsKind.destDir) && fs.readdirSync(commandsKind.destDir).length > 0,
+      'E9: the destDir the plan records must actually contain the copied files',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E10: plan item naming a kind absent from layout.kinds', () => {
+  test('unknown kind still throws', (t) => {
+    const configDir = createTempDir('gsd-e10-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const original = runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan;
+    t.after(() => { runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan = original; });
+    // Module-ref monkeypatch (same pattern as
+    // tests/runtime-artifact-layout-surface.test.cjs) — install-engine.cts
+    // reads this via the module reference, not a destructured local, so
+    // reassigning the export is observed at call time.
+    runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan = (args) => {
+      const real = original(args);
+      if (!real.ok) return real;
+      return {
+        ok: true,
+        plan: {
+          items: [...real.plan.items, { kind: 'not-a-real-kind', sourceDir: configDir, destDir: configDir }],
+          cleanupDirs: real.plan.cleanupDirs,
+        },
+      };
+    };
+
+    assert.throws(
+      () => installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
+      /unknown artifact kind/i,
+      'E10: a plan item naming a kind absent from layout.kinds must still throw "unknown artifact kind"',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E11: plan is not shared across calls', () => {
+  test('plan is not shared across calls', (t) => {
+    const configDir = createTempDir('gsd-e11-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const first = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+    first.kinds.push({ kind: 'mutated-by-caller', sourceDir: 'x', destDir: 'y', preserved: [] });
+    first.postSteps.mutatedFlag = true;
+
+    const second = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    assert.notStrictEqual(second, first, 'E11: each call must return a fresh object, not the same reference');
+    assert.notStrictEqual(second.kinds, first.kinds, 'E11: kinds array must not be shared across calls');
+    assert.ok(
+      !second.kinds.some((k) => k.kind === 'mutated-by-caller'),
+      'E11: mutating the first result must not leak into the second call\'s plan',
+    );
+    assert.strictEqual(
+      second.postSteps.mutatedFlag, undefined,
+      'E11: mutating the first result\'s postSteps must not leak into the second call',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — E12: executed plan key set is locked', () => {
+  test('executed plan key set is locked', (t) => {
+    const configDir = createTempDir('gsd-e12-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    assert.deepStrictEqual(
+      Object.keys(result).sort(),
+      ['cleanup', 'kinds', 'postSteps', 'runtime', 'scope'],
+      'E12: the executed-plan top-level key set is a locked contract — an added/renamed/removed key ' +
+      'here is a breaking change to AC1/AC4 and must be a deliberate, reviewed decision, not an ' +
+      'incidental refactor',
+    );
+  });
+});
+
+// ─── F. Fs adapter seam — F4-F6 ───────────────────────────────────────────────
+
+describe('installRuntimeArtifacts — F4: adapter errors propagate, cleanup still runs', () => {
+  test('adapter errors propagate, cleanup still runs', (t) => {
+    const configDir = createTempDir('gsd-f4-augment-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    let capturedCleanupDir;
+    const fakeFs = {
+      writeFileSync: (p, data, opts) => {
+        if (String(p).includes('gsd-cmd-rewrites-') && capturedCleanupDir === undefined) {
+          capturedCleanupDir = path.dirname(p);
+        }
+        fs.writeFileSync(p, data, opts);
+      },
+      copyFileSync: (src, dest) => {
+        const err = new Error(`EACCES: permission denied, copyfile '${src}' -> '${dest}'`);
+        err.code = 'EACCES';
+        throw err;
+      },
+    };
+
+    assert.throws(
+      () => installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs }),
+      (err) => err.code === 'EACCES',
+      'F4: an EACCES from the injected adapter mid-copy must propagate to the caller unchanged, exactly as a real EACCES would today',
+    );
+    assert.ok(capturedCleanupDir, 'F4 test precondition: the commands kind rewrite must have run before the copy failure');
+    assert.strictEqual(
+      fs.existsSync(capturedCleanupDir), false,
+      'F4: cleanup must still run (the finally block) even though the copy step threw',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — F5: fake existsSync drives the same branch', () => {
+  test('fake existsSync drives the same branch', () => {
+    const configDir = path.join(os.tmpdir(), `gsd-f5-must-not-exist-${crypto.randomUUID()}`);
+    const skillsDest = path.join(configDir, 'skills');
+    // Seed ONLY the skills destDir as a pre-existing (empty) directory in the
+    // fake store — configDir is never created for real, so existsSync(dest)
+    // reports true purely because the FAKE says so, driving the exact same
+    // `kind.kind === 'skills' && installFs().existsSync(dest)` pre-existing-
+    // dest branch a real pre-existing dir would take.
+    const fakeFs = createFakeInstallFs([[skillsDest, { type: 'dir' }]]);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, undefined, { fs: fakeFs });
+
+    assert.notStrictEqual(result, undefined, 'F5: must still return a plan');
+    const skillsKind = result.kinds.find((k) => k.kind === 'skills');
+    assert.ok(skillsKind, 'F5 precondition: claude global writes a skills kind');
+    assert.strictEqual(skillsKind.destDir, skillsDest);
+    assert.deepStrictEqual(
+      skillsKind.preserved, [],
+      'F5: the branch ran off the fake\'s existsSync=true, found an empty pre-existing dir, and preserved ' +
+      'nothing — the same outcome the real existsSync-true branch produces for an empty pre-existing dir',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — F6: incomplete adapter falls back to real fs, never silently no-ops', () => {
+  test('incomplete adapter fails loudly (never silently skips the write)', (t) => {
+    // install-fs-adapter.cts's documented PARTIAL-ADAPTER TRAP: withInstallFs
+    // merges the injected partial OVER the real adapter — any method the
+    // partial omits resolves to REAL node:fs, silently. This pins the
+    // dangerous alternative it guards against: an omitted method must never
+    // degrade into a silent no-op (skipping the operation, pretending
+    // success) — it must actually execute, for real.
+    const configDir = createTempDir('gsd-f6-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    let realMkdirCalls = 0;
+    // Deliberately incomplete: only mkdirSync is overridden (to prove this
+    // partial is genuinely merged over real fs, not a full copy of it) —
+    // every other method (existsSync/readdirSync/writeFileSync/
+    // copyFileSync/cpSync/...) is omitted entirely.
+    const incompleteFs = {
+      mkdirSync: (p, opts) => { realMkdirCalls++; return fs.mkdirSync(p, opts); },
+    };
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, undefined, { fs: incompleteFs });
+
+    assert.notStrictEqual(result, undefined, 'F6: an incomplete adapter must not silently produce no result');
+    assert.ok(realMkdirCalls > 0, 'F6 test precondition: mkdirSync must have been called');
+    const skillsKind = result.kinds.find((k) => k.kind === 'skills');
+    assert.ok(skillsKind, 'F6 precondition: claude global writes a skills kind');
+    assert.ok(
+      fs.existsSync(skillsKind.destDir) && fs.readdirSync(skillsKind.destDir).length > 0,
+      'F6: every method the incomplete adapter omitted fell back to REAL fs and actually wrote real ' +
+      'content — an incomplete fake never silently no-ops the operations it does not implement',
+    );
+  });
+});
+
+// ─── G. Additive contract — G2 ────────────────────────────────────────────────
+
+describe('installRuntimeArtifacts — G2: bin/install.js production call site unchanged', () => {
+  test('installer call site unchanged', (t) => {
+    const binInstall = require('../bin/install.js');
+    const tmpDir = createTempDir('gsd-g2-');
+    const previousCwd = process.cwd();
+    process.chdir(tmpDir);
+    t.after(() => { process.chdir(previousCwd); cleanup(tmpDir); });
+
+    const result = binInstall.install(false, 'claude');
+
+    assert.strictEqual(
+      result.runtime, 'claude',
+      'G2: bin/install.js\'s production call site (6 positional args, no deps) must be unaffected by the new optional deps param',
+    );
+    // install(false, ...) is a LOCAL install — claude's local layout writes
+    // commands+agents, not skills (skills is global-only for claude).
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.claude', 'commands')),
+      'G2: the production install must still write commands/ end-to-end',
+    );
+    binInstall.uninstall(false, 'claude');
+  });
+});
+
+// ─── H. Security boundaries must NOT move behind the adapter ─────────────────
+
+describe('installRuntimeArtifacts — H1: symlink escape still refuses', () => {
+  test('symlink escape still refuses', (t) => {
+    const configDir = createTempDir('gsd-h1-');
+    const outsideDir = createTempDir('gsd-h1-outside-');
+    t.after(() => { cleanup(configDir); cleanup(outsideDir); });
+    sandboxHome(t, configDir);
+    // Pre-create the skills destDir AS a symlink pointing outside configDir —
+    // the guard must refuse before mkdirSync ever follows it.
+    fs.symlinkSync(outsideDir, path.join(configDir, 'skills'), 'dir');
+
+    assert.throws(
+      () => installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
+      /GSD_ALLOW_SYMLINKED_DEST/,
+      'H1: a destDir that is itself a symlink pointing outside the install root must be refused',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — H2: opt-in still follows', () => {
+  test('opt-in still follows', (t) => {
+    const configDir = createTempDir('gsd-h2-');
+    const outsideDir = createTempDir('gsd-h2-outside-');
+    t.after(() => { cleanup(configDir); cleanup(outsideDir); });
+    sandboxHome(t, configDir);
+    fs.symlinkSync(outsideDir, path.join(configDir, 'skills'), 'dir');
+
+    const savedOptIn = process.env.GSD_ALLOW_SYMLINKED_DEST;
+    process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+    t.after(() => {
+      if (savedOptIn === undefined) delete process.env.GSD_ALLOW_SYMLINKED_DEST;
+      else process.env.GSD_ALLOW_SYMLINKED_DEST = savedOptIn;
+    });
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    assert.notStrictEqual(result, undefined, 'H2: opt-in must still succeed and return a plan');
+    const skillsKind = result.kinds.find((k) => k.kind === 'skills');
+    assert.ok(skillsKind, 'H2 precondition: claude global writes a skills kind');
+    assert.ok(
+      fs.readdirSync(outsideDir).length > 0,
+      'H2: with the opt-in set, writes must actually follow the symlink into outsideDir',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — H3: fake adapter cannot bypass the symlink guard', () => {
+  test('fake adapter cannot bypass the symlink guard', () => {
+    // hasExistingSymlinkBetween's path-traversal refusal (install-engine.cts,
+    // part (a) of the guard: "resolvedFullPath !== resolvedRoot &&
+    // !resolvedFullPath.startsWith(resolvedRoot + path.sep)") is PURE PATH
+    // MATH — path.resolve/startsWith on strings, no fs call at all. Pin that
+    // invariant directly: even a fake adapter that lies "nothing exists,
+    // nothing is a symlink" everywhere cannot make this refusal pass for an
+    // escaping path, because this branch never asks the adapter anything.
+    const root = path.join(os.tmpdir(), 'gsd-h3-fake-root');
+    const escapingPath = path.join(root, '..', '..', 'etc', 'passwd');
+    const lyingFs = {
+      existsSync: () => false,
+      lstatSync: () => {
+        throw new Error('H3: lstatSync must never be reached — the path-traversal refusal is pure path math');
+      },
+      realpathSync: (p) => p,
+    };
+
+    const refused = withInstallFs(lyingFs, () => hasExistingSymlinkBetween(root, escapingPath));
+
+    assert.strictEqual(
+      refused, true,
+      'H3: a fake adapter reporting "nothing exists, nothing is a symlink" must not be able to certify ' +
+      'an install the real filesystem would refuse — the path-traversal decision does not consult the ' +
+      'adapter at all',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — H4: dest confinement still enforced', () => {
+  test('dest confinement still enforced', () => {
+    assert.throws(
+      () => runtimeArtifactInstallPlan.assertDestWithinConfigHome('/fake/config/home', '../../etc'),
+      /escapes configHome|strict subpath/i,
+      'H4: assertDestWithinConfigHome must still throw for a destSubpath escaping configHome',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — H5: nul byte in dest is rejected', () => {
+  test('nul byte in dest is rejected', () => {
+    assert.throws(
+      () => runtimeArtifactInstallPlan.assertDestWithinConfigHome('/fake/config/home', 'skills\0evil'),
+      /NUL/,
+      'H5: assertDestWithinConfigHome must still throw for a destSubpath containing a NUL byte',
+    );
+  });
+});
+
+// ─── I. Cleanup visibility ─────────────────────────────────────────────────
+
+describe('installRuntimeArtifacts — I1: successful cleanup is recorded', () => {
+  test('successful cleanup is recorded', (t) => {
+    const configDir = createTempDir('gsd-i1-augment-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION);
+
+    assert.ok(result.cleanup.length > 0, 'I1: augment install must produce at least one cleanupDirs entry to prove this row');
+    for (const entry of result.cleanup) {
+      assert.strictEqual(typeof entry.dir, 'string');
+      assert.strictEqual(entry.ok, true, `I1: successful cleanup entries must record ok:true (dir=${entry.dir})`);
+      assert.strictEqual(fs.existsSync(entry.dir), false, 'I1: a successfully cleaned dir must no longer exist on disk');
+    }
+  });
+});
+
+describe('installRuntimeArtifacts — I2: failed cleanup is visible, not silent', () => {
+  test('failed cleanup is visible, not silent', (t) => {
+    const configDir = createTempDir('gsd-i2-augment-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const fakeFs = {
+      rmSync: (p, opts) => {
+        if (String(p).includes('gsd-cmd-rewrites-')) {
+          throw new Error('I2: simulated cleanup failure');
+        }
+        // This is a fake fs-adapter METHOD delegating to real fs for paths
+        // it does not intentionally poison, not a test's own directory-
+        // cleanup call (which still goes through t.after(() => cleanup(...))
+        // above).
+        // eslint-disable-next-line local/no-raw-rmsync-in-tests -- delegate, not test cleanup
+        return fs.rmSync(p, opts);
+      },
+    };
+
+    const result = installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs });
+
+    assert.notStrictEqual(result, undefined, 'I2: install must still succeed (never fail) even when cleanup throws');
+    assert.ok(result.cleanup.length > 0, 'I2: augment must have at least one cleanupDirs entry to fail');
+    assert.ok(
+      result.cleanup.every((c) => c.ok === false),
+      'I2: a cleanup rmSync throw must be reported as ok:false on the returned plan, never silently dropped',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — I3: no cleanup dirs is an empty array', () => {
+  test('no cleanup dirs is an empty array', (t) => {
+    const configDir = createTempDir('gsd-i3-claude-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE);
+
+    assert.ok(Array.isArray(result.cleanup), 'I3: cleanup must be an array even when empty');
+    assert.strictEqual(
+      result.cleanup.length, 0,
+      'I3: a claude/core install with no rewritten temp dirs must report an EMPTY cleanup array, not undefined/absent',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — I4: stage failure before any item cleans up and throws', () => {
+  test('stage failure cleans up and throws', (t) => {
+    const configDir = createTempDir('gsd-i4-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    assert.throws(
+      () => installRuntimeArtifacts('claude', configDir, 'global', { skills: 123, agents: 123 }),
+      (err) => err instanceof Error,
+      'I4: a malformed resolvedProfile that fails the FIRST kind\'s stage() (before any cleanupDirs exist) ' +
+      'must still surface as a thrown Error, with the (empty) cleanupDirs still swept by the finally block',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — I5: rewrite failure mid-plan cleans up and throws', () => {
+  test('rewrite failure cleans up and throws', (t) => {
+    const configDir = createTempDir('gsd-i5-augment-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    let capturedCleanupDir;
+    const fakeFs = {
+      mkdirSync: (p, opts) => {
+        if (String(p).includes('gsd-profile-runtime-skills-')) {
+          throw new Error('I5: simulated skills-stage failure AFTER commands already rewrote+registered a cleanup dir');
+        }
+        fs.mkdirSync(p, opts);
+        return undefined;
+      },
+      writeFileSync: (p, data, opts) => {
+        if (String(p).includes('gsd-cmd-rewrites-') && capturedCleanupDir === undefined) {
+          capturedCleanupDir = path.dirname(p);
+        }
+        fs.writeFileSync(p, data, opts);
+      },
+    };
+
+    assert.throws(
+      () => installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs }),
+      /I5: simulated skills-stage failure/,
+      'I5: a failure in a LATER kind\'s stage step must still propagate as a thrown error',
+    );
+    assert.ok(capturedCleanupDir, 'I5 test precondition: the commands kind\'s rewrite dir must have been observed before the skills-stage failure');
+    assert.strictEqual(
+      fs.existsSync(capturedCleanupDir), false,
+      'I5: the EARLIER (successfully rewritten) commands cleanupDir must still be removed by the finally ' +
+      'block even though a LATER kind\'s stage step failed',
+    );
+  });
+});
+
+// ─── K. Byte-identical writes — K3 ─────────────────────────────────────────
+
+function walkFilesRecursively(root) {
+  const out = new Map();
+  const walk = (relPath, absPath) => {
+    for (const entry of fs.readdirSync(absPath, { withFileTypes: true })) {
+      const childRel = relPath ? path.join(relPath, entry.name) : entry.name;
+      const childAbs = path.join(absPath, entry.name);
+      if (entry.isDirectory()) walk(childRel, childAbs);
+      else if (entry.isFile()) out.set(childRel, fs.readFileSync(childAbs));
+    }
+  };
+  if (fs.existsSync(root)) walk('', root);
+  return out;
+}
+
+describe('installRuntimeArtifacts — K3: real install before/after, full recursive diff', () => {
+  test('writes are byte-identical', (t) => {
+    for (const runtime of ['claude', 'qwen']) {
+      const dirA = createTempDir(`gsd-k3-${runtime}-a-`);
+      const dirB = createTempDir(`gsd-k3-${runtime}-b-`);
+      t.after(() => { cleanup(dirA); cleanup(dirB); });
+
+      sandboxHome(t, dirA);
+      installRuntimeArtifacts(runtime, dirA, 'global', RESOLVED_FULL);
+      sandboxHome(t, dirB);
+      installRuntimeArtifacts(runtime, dirB, 'global', RESOLVED_FULL);
+
+      const filesA = walkFilesRecursively(dirA);
+      const filesB = walkFilesRecursively(dirB);
+      assert.deepStrictEqual(
+        [...filesA.keys()].sort(), [...filesB.keys()].sort(),
+        `K3 (${runtime}): the file sets written by two independent installs must match`,
+      );
+      for (const [relPath, contentA] of filesA) {
+        assert.ok(
+          contentA.equals(filesB.get(relPath)),
+          `K3 (${runtime}): ${relPath} content drifted between two independent installs`,
+        );
+      }
+    }
+  });
+});
+
+// ─── L. Property tests ────────────────────────────────────────────────────
+
+describe('installRuntimeArtifacts — L1: plan kinds mirror layout kinds (property)', () => {
+  test('plan kinds mirror layout kinds', (t) => {
+    const runtimes = Object.keys(registry.runtimes);
+    const RUNTIME_ARB = fc.constantFrom(...runtimes);
+    const SCOPE_ARB = fc.constantFrom('global', 'local');
+    const observedKindSets = new Set();
+    const createdDirs = [];
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    t.after(() => {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      for (const d of createdDirs) cleanup(d);
+    });
+
+    // Seeded, bounded numRuns, replay data on failure (verbose:true prints
+    // the failing/shrunk (runtime, scope) pair fast-check found).
+    fc.assert(
+      fc.property(RUNTIME_ARB, SCOPE_ARB, (runtime, scope) => {
+        const configDir = createTempDir(`gsd-l1-${runtime}-`);
+        createdDirs.push(configDir);
+        process.env.HOME = configDir;
+        process.env.USERPROFILE = configDir;
+
+        const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope);
+        const expectedKinds = [...new Set(layout.kinds.map((k) => k.kind))].sort();
+        const plan = installRuntimeArtifacts(runtime, configDir, scope, RESOLVED_CORE);
+        const actualKinds = [...new Set(plan.kinds.map((k) => k.kind))].sort();
+        observedKindSets.add(JSON.stringify(actualKinds));
+
+        assert.deepStrictEqual(
+          actualKinds, expectedKinds,
+          `L1 (${runtime}/${scope}): plan.kinds must be a bijection with layout.kinds — ` +
+          `plan=${JSON.stringify(actualKinds)} vs layout=${JSON.stringify(expectedKinds)}`,
+        );
+      }),
+      { numRuns: 30, seed: 2874, verbose: true },
+    );
+
+    // Non-vacuity: the registry has runtimes with empty, single-kind, and
+    // multi-kind layouts (verified across the whole registry — see this
+    // row's PR notes) — a generator that only ever produced ONE kind-set
+    // would be exercising nothing.
+    assert.ok(
+      observedKindSets.size > 1,
+      `L1 non-vacuity: the generator must exercise more than one distinct kind-set — observed only ` +
+      `${observedKindSets.size} (${[...observedKindSets].join(', ')})`,
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — L2: plan is deterministic (property)', () => {
+  function normalizePlanForIdempotence(plan) {
+    // mkInstallTempDir names every rewrite/staging temp dir with a random hex
+    // suffix (install-fs-adapter.cts) — expected to differ between two
+    // independent calls even when everything else about the plan is
+    // identical. Normalize those away; everything else must match exactly.
+    const stripTemp = (p) => (typeof p === 'string' && p.startsWith(os.tmpdir()) ? '<TEMP>' : p);
+    return {
+      runtime: plan.runtime,
+      scope: plan.scope,
+      kinds: plan.kinds.map((k) => ({
+        kind: k.kind, sourceDir: stripTemp(k.sourceDir), destDir: k.destDir,
+        preserved: k.preserved, written: k.written,
+      })),
+      cleanup: plan.cleanup.map((c) => ({ dir: stripTemp(c.dir), ok: c.ok })),
+      postSteps: plan.postSteps,
+    };
+  }
+
+  test('plan is deterministic', () => {
+    const runtimes = Object.keys(registry.runtimes);
+    const RUNTIME_ARB = fc.constantFrom(...runtimes);
+    const SCOPE_ARB = fc.constantFrom('global', 'local');
+    let hits = 0;
+
+    fc.assert(
+      fc.property(RUNTIME_ARB, SCOPE_ARB, (runtime, scope) => {
+        // configDir is never created for real — both calls run against fresh,
+        // independent fake adapters, so no real fs cleanup is needed here.
+        const configDir = path.join(os.tmpdir(), `gsd-l2-${runtime}-${crypto.randomUUID()}`);
+        const planA = installRuntimeArtifacts(runtime, configDir, scope, RESOLVED_CORE, undefined, undefined, { fs: createFakeInstallFs() });
+        const planB = installRuntimeArtifacts(runtime, configDir, scope, RESOLVED_CORE, undefined, undefined, { fs: createFakeInstallFs() });
+        hits++;
+
+        assert.deepStrictEqual(
+          normalizePlanForIdempotence(planA),
+          normalizePlanForIdempotence(planB),
+          `L2 (${runtime}/${scope}): two installs against fresh fake adapters with the same inputs must ` +
+          'yield structurally identical plans (temp-dir names normalized — see normalizePlanForIdempotence)',
+        );
+      }),
+      { numRuns: 30, seed: 2874, verbose: true },
+    );
+
+    assert.strictEqual(hits, 30, 'L2 non-vacuity: every generated (runtime, scope) pair must actually have exercised a comparison');
   });
 });
 

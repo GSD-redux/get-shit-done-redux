@@ -792,6 +792,17 @@ The installer (`bin/install.js`, ~10,700 lines) handles:
 8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall. The manifest also records which `runtime` and which `scope` (`global`/`local`) wrote it, under a `manifestVersion` schema field, so a reader can answer "which surfaces are installed, at which scopes" without inferring it from the directory the file sits in ([ADR 2866](adr/2866-install-surface-resolution.md), #2872). Manifests written before that carry no such fields and are read without error — no reinstall is required. See [Installer Migrations → File Manifest](installer-migrations.md#file-manifest)
 9. **Uninstall mode** — `--uninstall` removes all GSD files, hooks, and settings
 
+`installRuntimeArtifacts` (`install-engine.cjs`) returns the executed plan it ran — per kind, per
+scope, including on the combined OpenCode/Kilo family path, which previously early-returned `void` —
+rather than being observable only by re-reading disk afterward. Its destination-writing IO (copies,
+removals, snapshot/restore, best-effort cleanup) now routes through an injectable fs seam,
+`install-fs-adapter.cjs`, so a full install can be exercised against a fake adapter with zero real
+destination IO; locating this package's own source tree remains real by design (a destination-fake
+is never seeded with the repo's own paths). Writes stay byte-identical and existing `void`-ignoring
+callers are unaffected. This completes [ADR 58](adr/58-runtime-install-policy-module.md)'s
+`registry → adapter → helpers → cleanup` rollout — the `cleanup` step had not previously landed
+(#2874, epic #2866 Phase 5).
+
 Install-time file moves, stale-artifact cleanup, config rewrites, and user-data
 preservation are governed by the Installer Migration Module. See
 [Installer Migrations](installer-migrations.md) and
