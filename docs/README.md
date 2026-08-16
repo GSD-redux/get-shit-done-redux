@@ -48,6 +48,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [List your reviewer lane in the registry](how-to/list-your-reviewer-lane.md) — publish a lane you have built to the Reviewer Lane Registry so other people can find and install it
 - [Take over a capability or EoS integration](how-to/take-over-a-capability-or-eos.md) — assume maintainership of an existing third-party capability, reviewer lane, or EoS host integration through a handoff, an adoption fork, first-party absorption, or a de-listing
 - [Add or update a host's integration](how-to/add-or-update-a-host-integration.md) — set a host's documentation-sourced `runtime.hostIntegration` axes (ADR-1239 Phase A), with the `undocumented` sentinel rule
+- [Migrate an install test to the executed plan](how-to/migrate-an-install-test-to-the-executed-plan.md) — convert an `fs.existsSync`-probing install test group to a value assertion against `installRuntimeArtifacts`'s executed-plan return, and test against a fake fs adapter
 - [Turn a capability off (and keep it off)](how-to/turn-a-capability-off.md) — disable a capability via the surface, or gate individual hooks off without removing the capability
 - [Drive GSD from a tracker issue](how-to/drive-gsd-from-a-tracker-issue.md) — start a phase from a GitHub, Linear, or Jira issue
 - [Migrate from GSD 2](how-to/migrate-from-gsd-2.md) — upgrade an existing GSD 2 project to GSD Core
