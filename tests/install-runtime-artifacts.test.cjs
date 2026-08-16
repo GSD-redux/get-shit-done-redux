@@ -7014,3 +7014,108 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     });
   });
 }
+
+// ─── #2874 (epic #2866 Phase 5) — G1/G3: the additive-contract guard ────────
+// Governed by ADR-58 (docs/adr/58-runtime-install-policy-module.md).
+// Design:      .gsd/phase/feat-2874-executed-plan-return/40-design.md
+// Test matrix: .gsd/phase/feat-2874-executed-plan-return/50-test-matrix.md
+//
+// G1 and G3 must be GREEN both BEFORE and AFTER the executed-plan return
+// lands — they are the guard proving the return value is additive (AC4),
+// never a behavior change. No production code is touched by this file.
+
+/**
+ * Recursively hash a directory tree into a stable, order-independent digest.
+ * `stripDir`, if given, is textually removed from each UTF-8-decodable
+ * file's content before hashing, so two installs into DIFFERENT temp
+ * directories (whose absolute paths get baked into rewritten skill bodies)
+ * can still be compared for content-identity.
+ */
+function hashDirTree(rootDir, stripDir) {
+  const entries = [];
+  const walk = (relPath, absPath) => {
+    for (const entry of fs.readdirSync(absPath, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
+      const childAbs = path.join(absPath, entry.name);
+      if (entry.isDirectory()) {
+        walk(childRel, childAbs);
+      } else if (entry.isFile()) {
+        const buf = fs.readFileSync(childAbs);
+        const normalized = stripDir ? buf.toString('utf8').split(stripDir).join('<CONFIGDIR>') : buf;
+        entries.push(`${childRel}:${crypto.createHash('sha256').update(normalized).digest('hex')}`);
+      }
+    }
+  };
+  if (fs.existsSync(rootDir)) walk('', rootDir);
+  return entries.sort().join('\n');
+}
+
+describe('installRuntimeArtifacts — G1: void-ignoring caller is unaffected (AC4)', () => {
+  test('writes are byte-identical whether or not the caller uses the return value', (t) => {
+    const configDirIgnored = createTempDir('gsd-g1-ignored-');
+    const configDirCaptured = createTempDir('gsd-g1-captured-');
+    t.after(() => cleanup(configDirIgnored));
+    t.after(() => cleanup(configDirCaptured));
+
+    // Caller A: discards the return value entirely — today's every call site
+    // (bin/install.js, both existing adapter test doubles).
+    installRuntimeArtifacts('claude', configDirIgnored, 'global', RESOLVED_CORE);
+
+    // Caller B: captures the return value. Its shape is not asserted here —
+    // section E owns that — only that capturing it changes nothing about
+    // what gets written, and that capturing never itself throws.
+    const captured = installRuntimeArtifacts('claude', configDirCaptured, 'global', RESOLVED_CORE);
+    assert.ok(
+      captured === undefined || (captured !== null && typeof captured === 'object'),
+      'G1: the return value, whatever its shape, must be undefined (today) or a plain object ' +
+      '(after) — never something a capturing caller could not safely ignore',
+    );
+
+    assert.strictEqual(
+      hashDirTree(configDirCaptured, configDirCaptured),
+      hashDirTree(configDirIgnored, configDirIgnored),
+      'G1: writes must be byte-identical regardless of whether the caller captures the return value',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — G3: adapter calling-convention regression guard', () => {
+  // tests/adapter-declarative-equivalence.test.cjs:52 and
+  // tests/adapter-imperative.test.cjs:80 pin their OWN behavior via a
+  // module-ref monkeypatch of installRuntimeArtifacts — neither file ever
+  // invokes the real function, and neither is read or modified here. This
+  // row proves those two files' SUBJECT — the real installRuntimeArtifacts,
+  // called with the exact positional shape each adapter uses — still
+  // behaves: a real, successful, byte-on-disk install.
+
+  test('declarative-adapter call shape (5 positional args, no capabilityRegistry) still installs', (t) => {
+    const configDir = createTempDir('gsd-g3-declarative-');
+    t.after(() => cleanup(configDir));
+
+    // Matches tests/adapter-declarative-equivalence.test.cjs:62-66's
+    // captured shape: [runtime, configDir, scope, resolvedProfile, resolveAttribution].
+    const resolveAttribution = () => 'attr-claude';
+    installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, resolveAttribution);
+
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')),
+      'G3: the declarative adapter\'s calling convention must still produce a real install',
+    );
+  });
+
+  test('imperative-adapter call shape (6 positional args incl. composed capability registry) still installs', (t) => {
+    const configDir = createTempDir('gsd-g3-imperative-');
+    t.after(() => cleanup(configDir));
+
+    // Matches tests/adapter-imperative.test.cjs:88's captured shape:
+    // [runtime, configDir, scope, resolvedProfile, resolveAttribution, capabilityRegistry].
+    const capabilityRegistry = { capabilityClusters: {} };
+    installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, capabilityRegistry);
+
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')),
+      'G3: the imperative adapter\'s calling convention must still produce a real install',
+    );
+  });
+});
