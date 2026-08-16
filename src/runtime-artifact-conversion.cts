@@ -19,6 +19,15 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+// #2874 (ADR-58 cleanup phase): route this module's content-rewrite-pass fs
+// calls through the installRuntimeArtifacts call tree's injectable seam —
+// see install-fs-adapter.cts's module doc. Resolves to real `node:fs` unless
+// the top-level installRuntimeArtifacts call injected a `deps.fs`. These
+// walkers operate on already-staged temp directories (never the real GSD
+// source tree or the real install destination directly), so routing them is
+// unconditionally safe.
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, mkInstallTempDir } = installFsAdapter;
 import commandRoster = require('./command-roster.cjs');
 const { readGsdCommandNames, transformContentToHyphen } = commandRoster;
 import runtimeNamePolicy = require('./runtime-name-policy.cjs');
@@ -3088,17 +3097,17 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
  * @param attribution  Co-Authored-By value (string | null | undefined)
  */
 function applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGlobal = false, attribution = undefined) {
-  if (!fs.existsSync(stagedDir)) return;
+  if (!installFs().existsSync(stagedDir)) return;
 
   const walkAndRewrite = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walkAndRewrite(fullPath);
       } else if (entry.name.endsWith('.md')) {
-        let content = fs.readFileSync(fullPath, 'utf8');
+        let content = installFs().readFileSync(fullPath, 'utf8');
         content = _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal, attribution);
-        fs.writeFileSync(fullPath, content);
+        installFs().writeFileSync(fullPath, content);
       }
     }
   };
@@ -3124,13 +3133,13 @@ function applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGl
  * @returns {string} path to the temp dir (caller is responsible for cleanup)
  */
 function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathPrefix, isGlobal = false, attribution = undefined) {
-  if (!fs.existsSync(stagedDir)) return stagedDir;
+  if (!installFs().existsSync(stagedDir)) return stagedDir;
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cmd-rewrites-'));
+  const tempDir = mkInstallTempDir('gsd-cmd-rewrites-');
   try {
-    for (const entry of fs.readdirSync(stagedDir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(stagedDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-      let content = fs.readFileSync(path.join(stagedDir, entry.name), 'utf8');
+      let content = installFs().readFileSync(path.join(stagedDir, entry.name), 'utf8');
       content = _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal, attribution);
       // #2097 (ADR-1239): descriptor-driven — commandBodyConverter name comes
       // from runtime.hostBehaviors instead of a hardcoded runtime-name branch.
@@ -3138,10 +3147,10 @@ function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathP
       if (_cmdConv && COMMAND_BODY_CONVERTERS[_cmdConv]) {
         content = COMMAND_BODY_CONVERTERS[_cmdConv](content);
       }
-      fs.writeFileSync(path.join(tempDir, entry.name), content);
+      installFs().writeFileSync(path.join(tempDir, entry.name), content);
     }
   } catch (err) {
-    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
   return tempDir;
@@ -3163,16 +3172,16 @@ function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathP
  * pass above intact via its own `@`-guarded restore).
  */
 function applySpecRootReferenceToStagedSkills(stagedDir) {
-  if (!fs.existsSync(stagedDir)) return;
+  if (!installFs().existsSync(stagedDir)) return;
   const walk = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.name === 'SKILL.md') {
-        const content = fs.readFileSync(fullPath, 'utf8');
+        const content = installFs().readFileSync(fullPath, 'utf8');
         const rewritten = resolveSpecRootReference(content);
-        if (rewritten !== content) fs.writeFileSync(fullPath, rewritten);
+        if (rewritten !== content) installFs().writeFileSync(fullPath, rewritten);
       }
     }
   };
@@ -3202,7 +3211,7 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
     platform = process.platform,
     resolveAttribution,
   } = opts;
-  if (!fs.existsSync(stagedDir)) return;
+  if (!installFs().existsSync(stagedDir)) return;
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
@@ -3254,7 +3263,7 @@ function rewriteStagedCommandBodies(stagedDir, opts) {
     platform = process.platform,
     resolveAttribution,
   } = opts;
-  if (!fs.existsSync(stagedDir)) return stagedDir;
+  if (!installFs().existsSync(stagedDir)) return stagedDir;
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
