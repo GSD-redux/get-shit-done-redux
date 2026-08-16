@@ -6780,6 +6780,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
 {
   const { describe: __d3543, test: __t3543, beforeEach: __be3543, afterEach: __ae3543 } = require('node:test');
   const { install: __install3543, readGsdRuntimeProfileResolver: __resolver3543 } = require('../bin/install.js');
+  const { captureConsole: __capture3543 } = require('./helpers.cjs');
 
   // Installer-written shape for a non-Claude runtime (writeNonClaudeDefaults).
   const __INSTALLER_DEFAULTS_3543 = { resolve_model_ids: 'omit', runtime: 'opencode' };
@@ -6809,7 +6810,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     let __prevCwd3543;
 
     __be3543(() => {
-      __root3543 = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3543-'));
+      __root3543 = createTempDir('gsd-3543-');
       __home3543 = path.join(__root3543, 'home');
       __project3543 = path.join(__root3543, 'project');
       fs.mkdirSync(__project3543, { recursive: true });
@@ -6842,13 +6843,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     });
 
     function runInstall3543(isGlobal, runtime) {
-      const prevLog = console.log;
-      console.log = () => {};
-      try {
-        __install3543(isGlobal, runtime);
-      } finally {
-        console.log = prevLog;
-      }
+      __capture3543(() => __install3543(isGlobal, runtime));
     }
 
     // Row 1 — unit half: the resolver as a GLOBAL install invokes it.
