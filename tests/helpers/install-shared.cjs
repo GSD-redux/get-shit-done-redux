@@ -191,21 +191,22 @@ const HOOK_CONFIG_FILES = new Set(['settings.json', 'settings.local.json', 'hook
 // platform-stable `[features] hooks = true` flag — the real hook commands
 // live in Codex's separate hooks.json, already excluded above). Blanket-
 // excluding the 'config.toml' basename would silently blind Codex's fixture
-// to any future regression there. Kimi's config.toml instead lives OUTSIDE
-// its GSD configDir at runtime (resolveKimiHooksTomlDir resolves ~/.kimi, a
-// sibling of the configDir ~/.config/agents) — it appeared inside this
-// harness's walked tree only in the pre-#3547 collapsed shape, when
-// runMinimalInstall passed the sandbox HOME itself as --config-dir so the
-// walked root included the sibling ~/.kimi tree; since #3547 the harness
-// installs into the runtime's real global subdirectory and the file sits
-// outside the walked configDir entirely. The exact-relative-path entries are
-// kept for any caller that still walks a HOME-rooted tree (and as the
-// documented shape for why basename-exclusion is wrong here).
-// Both Kimi products' native config.toml embeds a platform-varying node-runner
-// command, so neither belongs in the golden-tracked emitted manifest. kimi-code
-// resolves its own root since #2755 — listing only `.kimi/config.toml` here made
-// kimi-code's config.toml newly manifest-visible and unattributable.
-const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml', '.kimi-code/config.toml']);
+// to any future regression there — and it would blind kimi-code's too: since
+// #3547 the harness installs into each runtime's REAL global subdirectory, so
+// kimi-code's hooks config.toml sits at its configDir root (rel `config.toml`)
+// and is legitimately manifest-visible. Tracking it is safe now: the
+// install-tree fixture carries paths only, and the ADR-2719 differential
+// compares base-vs-current on the same machine, so the platform-varying
+// node-runner command embedded in the TOML never crosses platforms inside a
+// gate (that was a golden-content-era hazard, and the goldens are gone).
+// Kimi CLI's config.toml (KIMI_SHARE_DIR root ~/.kimi) lives OUTSIDE its GSD
+// configDir (~/.config/agents) and never enters the walk. The pre-#3547
+// relative-path exclusions ('.kimi/config.toml', '.kimi-code/config.toml')
+// existed only for the collapsed shape — where the walked root was the HOME
+// itself and those HOME-level siblings were inside it; with no walker rooting
+// at HOME anymore they matched nothing and were removed (#3547). kimi-code
+// resolves its own root since #2755.
+const HOOK_CONFIG_RELATIVE_PATHS = new Set();
 
 // Path prefixes excluded from the parity manifest. `gsd-core/bin/lib/` holds the
 // tsc-built runtime artifacts (compiled from src/*.cts) that the install COPIES
@@ -588,9 +589,10 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
       // opencode/kilo XDG descriptors' resolution when no explicit dir wins).
       const globalMeta = RUNTIME_META[runtime];
       if (!globalMeta || !globalMeta.globalSuffix) {
-        // #3023 lesson: a silent `path.join(root, undefined)` here would
-        // install into a nonsense dir; a runtime without a known global home
-        // must fail loudly before any install spawns.
+        // #3023 lesson: a silent `path.join(root, undefined)` here throws a
+        // bare TypeError naming neither the runtime nor the map at fault; a
+        // runtime without a known global home must fail loudly before any
+        // install spawns.
         throw new Error(
           `runMinimalInstall: no RUNTIME_META.globalSuffix for runtime "${runtime}" — refusing to guess a global config dir (#3547)`,
         );
