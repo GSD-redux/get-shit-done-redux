@@ -189,7 +189,6 @@
 | `code-review.md` | gsd-code-reviewer를 통한 단계 소스 변경 검토; REVIEW.md 생성. | `/gsd-code-review` |
 | `complete-milestone.md` | 출시된 버전을 완료로 표시 — MILESTONES.md 항목, PROJECT.md 발전, 태그. | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | UAT 공백 조사 및 근본 원인 찾기를 위한 병렬 디버그 에이전트 오케스트레이션. | `/gsd-verify-work` (자동 진단) |
-| `discovery-phase.md` | 적절한 깊이 수준에서 탐색 실행. | `/gsd-new-project` (탐색 경로) |
 | `discuss-phase-assumptions.md` | 가정 모드 discuss — 코드베이스 우선 분석을 통한 구현 결정 추출. | `/gsd-discuss-phase` (`discuss_mode=assumptions`일 때) |
 | `discuss-phase-power.md` | 파워 유저 discuss — 모든 질문을 JSON 상태 파일 + HTML UI로 사전 생성. | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | 반복적인 회색 지대 토론을 통한 구현 결정 추출. | `/gsd-discuss-phase` |
@@ -261,7 +260,7 @@
 | `validate-phase.md` | 완료된 단계의 나이퀴스트 검증 공백을 소급 감사 및 채움. | `/gsd-validate-phase` |
 | `verify-work.md` | 자동 진단이 포함된 대화형 UAT — UAT.md 및 수정 계획 생성. | `/gsd-verify-work` |
 
-> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다. `discovery-phase.md`는 `/gsd-new-project`의 대체 진입점입니다.
+> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다.
 
 ---
 

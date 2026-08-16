@@ -189,7 +189,6 @@
 | `code-review.md` | 通过 gsd-code-reviewer 审查阶段源码变更；生成 REVIEW.md。 | `/gsd-code-review` |
 | `complete-milestone.md` | 将已发布版本标记为完成 — MILESTONES.md 条目、PROJECT.md 演进、标签。 | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | 编排并行调试代理以调查 UAT 差距并找出根本原因。 | `/gsd-verify-work`（自动诊断） |
-| `discovery-phase.md` | 以适当的深度级别执行发现。 | `/gsd-new-project`（发现路径） |
 | `discuss-phase-assumptions.md` | 假设模式讨论 — 通过以代码库为先的分析提取实施决策。 | `/gsd-discuss-phase`（当 `discuss_mode=assumptions` 时） |
 | `discuss-phase-power.md` | 高级用户讨论 — 将所有问题预生成到 JSON 状态文件和 HTML UI 中。 | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | 通过迭代灰色地带讨论提取实施决策。 | `/gsd-discuss-phase` |
@@ -261,7 +260,7 @@
 | `validate-phase.md` | 回溯审计并填补已完成阶段的奈奎斯特验证空缺。 | `/gsd-validate-phase` |
 | `verify-work.md` | 带自动诊断的对话式 UAT — 生成 UAT.md 和修复计划。 | `/gsd-verify-work` |
 
-> **注意：** 某些工作流没有直接面向用户的命令（例如 `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— 它们由编排器工作流在内部调用。`discovery-phase.md` 是 `/gsd-new-project` 的备用入口。
+> **注意：** 某些工作流没有直接面向用户的命令（例如 `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— 它们由编排器工作流在内部调用。
 
 ---
 

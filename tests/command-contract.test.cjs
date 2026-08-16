@@ -33,6 +33,7 @@ const {
   parseFrontmatter,
   executionContextRefs,
   workflowPathRefs,
+  unreachableWorkflows,
 } = require('../scripts/command-contract-helpers.cjs');
 
 const commandFiles = fs
@@ -283,6 +284,228 @@ describe('#3561 — every workflow path referenced by a command exists on disk',
   }
 });
 
+
+describe('#3560 — unreachableWorkflows closure', () => {
+  test('a planted orphan is reported', () => {
+    const loaderContents = ['load workflows/live.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/live.md', 'workflows/orphan.md'];
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/orphan.md'],
+    );
+  });
+
+  test('eager include reaches', () => {
+    const loaderContents = ['@~/.claude/gsd-core/workflows/a.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('lazy path reaches', () => {
+    const loaderContents = ['read `gsd-core/workflows/a.md`'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('parent-relative reaches', () => {
+    const loaderContents = ['run execute-phase/steps/s.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/execute-phase/steps/s.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('reaches transitively', () => {
+    const loaderContents = ['see workflows/a.md'];
+    const gsdFiles = new Map([['workflows/a.md', 'see workflows/b.md']]);
+    const workflowPaths = ['workflows/a.md', 'workflows/b.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('reaches at depth three', () => {
+    const loaderContents = ['see workflows/a.md'];
+    const gsdFiles = new Map([
+      ['workflows/a.md', 'see workflows/b.md'],
+      ['workflows/b.md', 'see workflows/c.md'],
+    ]);
+    const workflowPaths = ['workflows/a.md', 'workflows/b.md', 'workflows/c.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('an agent is a loader', () => {
+    // loaderContents is source-agnostic: an agent file's content works the
+    // same as a command file's — it is passed in the same flat array.
+    const loaderContents = ['@~/.claude/gsd-core/workflows/a.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('a skill is a loader', () => {
+    // Same proof as above, from the skills slot — unreachableWorkflows never
+    // distinguishes where a loaderContents entry came from.
+    const loaderContents = ['@~/.claude/gsd-core/workflows/a.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('a self-reference does not reach', () => {
+    // Nothing in loaderContents mentions self.md; the fact that self.md's
+    // own body references itself must not count as reachability.
+    const loaderContents = [];
+    const gsdFiles = new Map([['workflows/self.md', 'see workflows/self.md']]);
+    const workflowPaths = ['workflows/self.md'];
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/self.md'],
+    );
+  });
+
+  test('a mutual-reference island does not reach', () => {
+    // x and y point only at each other; no loader points at either. The
+    // island looks connected from the inside but no runtime ever opens it.
+    const loaderContents = [];
+    const gsdFiles = new Map([
+      ['workflows/x.md', 'see workflows/y.md'],
+      ['workflows/y.md', 'see workflows/x.md'],
+    ]);
+    const workflowPaths = ['workflows/x.md', 'workflows/y.md'];
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/x.md', 'workflows/y.md'],
+    );
+  });
+
+  test('terminates on a cycle', () => {
+    // a -> b -> c -> a. All three are reachable from the loader; the walk
+    // must still terminate rather than looping forever on the cycle.
+    const loaderContents = ['see workflows/a.md'];
+    const gsdFiles = new Map([
+      ['workflows/a.md', 'see workflows/b.md'],
+      ['workflows/b.md', 'see workflows/c.md'],
+      ['workflows/c.md', 'see workflows/a.md'],
+    ]);
+    const workflowPaths = ['workflows/a.md', 'workflows/b.md', 'workflows/c.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('a docs-only mention does not reach (Goodhart guard: mentioning a path is not the same as loading it)', () => {
+    // Simulates a hypothetical prose/docs file that names orphan.md — that
+    // string is simply never included in loaderContents (or gsdFiles), which
+    // is exactly what "a docs mention" looks like to this function: absent.
+    const loaderContents = [];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/orphan.md'];
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/orphan.md'],
+    );
+  });
+
+  test('a dangling reference reaches nothing', () => {
+    const loaderContents = ['see workflows/missing.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/real-orphan.md'];
+    assert.doesNotThrow(() => unreachableWorkflows(loaderContents, gsdFiles, workflowPaths));
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/real-orphan.md'],
+    );
+  });
+
+  test('empty workflow set', () => {
+    const loaderContents = ['see workflows/a.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = [];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('no loaders means nothing is reached', () => {
+    const loaderContents = [];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md'];
+    assert.deepEqual(
+      unreachableWorkflows(loaderContents, gsdFiles, workflowPaths),
+      ['workflows/a.md'],
+    );
+  });
+
+  test('CRLF-tolerant', () => {
+    const loaderContents = ['workflows/a.md\r\nworkflows/b.md'];
+    const gsdFiles = new Map();
+    const workflowPaths = ['workflows/a.md', 'workflows/b.md'];
+    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
+  });
+
+  test('reports exactly the orphan among many', () => {
+    const reachable = Array.from({ length: 152 }, (_, i) => `workflows/gen-${i}.md`);
+    const loaderContents = reachable.slice();
+    const gsdFiles = new Map();
+    const orphan = 'workflows/orphan-152.md';
+    const workflowPaths = [...reachable, orphan];
+    const result = unreachableWorkflows(loaderContents, gsdFiles, workflowPaths);
+    assert.equal(result.length, 1);
+    assert.deepEqual(result, [orphan]);
+  });
+});
+
+describe('#3560 — deleted orphan workflows do not ship', () => {
+  const deletedBasenames = ['discovery-phase.md', 'plan-milestone-gaps.md'];
+
+  for (const basename of deletedBasenames) {
+    test(`${basename}: does not exist under gsd-core/workflows/`, () => {
+      assert.ok(
+        !fs.existsSync(path.join(GSD_ROOT, 'workflows', basename)),
+        `${basename}: expected file to be deleted from gsd-core/workflows/, but it still exists`,
+      );
+    });
+  }
+
+  const fixturesDir = path.join(ROOT, 'tests', 'fixtures', 'install-tree');
+  const fixtureFiles = fs.readdirSync(fixturesDir).filter(f => f.endsWith('.json'));
+
+  for (const fixtureFile of fixtureFiles) {
+    test(`${fixtureFile}: install-tree manifest contains no entry for a deleted workflow`, () => {
+      const manifest = JSON.parse(fs.readFileSync(path.join(fixturesDir, fixtureFile), 'utf-8'));
+      for (const basename of deletedBasenames) {
+        const gsdRelative = `gsd-core/workflows/${basename}`;
+        assert.ok(
+          !manifest.includes(gsdRelative),
+          `${fixtureFile}: manifest still lists ${gsdRelative}`,
+        );
+      }
+    });
+  }
+
+  test('scan.md is untouched by this PR', () => {
+    assert.ok(
+      fs.existsSync(path.join(GSD_ROOT, 'workflows', 'scan.md')),
+      'gsd-core/workflows/scan.md is expected to still exist — this PR only deletes ' +
+      'discovery-phase.md and plan-milestone-gaps.md',
+    );
+  });
+});
+
+describe('#3560 — INVENTORY carries no row for a deleted workflow', () => {
+  const inventoryFiles = [
+    'docs/INVENTORY.md',
+    'docs/ja-JP/INVENTORY.md',
+    'docs/ko-KR/INVENTORY.md',
+    'docs/zh-CN/INVENTORY.md',
+    'docs/pt-BR/INVENTORY.md',
+  ];
+
+  for (const rel of inventoryFiles) {
+    test(`${rel}: mentions neither discovery-phase.md nor plan-milestone-gaps.md`, () => {
+      const content = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
+      assert.ok(!content.includes('discovery-phase.md'), `${rel}: still mentions discovery-phase.md`);
+      assert.ok(!content.includes('plan-milestone-gaps.md'), `${rel}: still mentions plan-milestone-gaps.md`);
+    });
+  }
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-3168-task-to-agent-rename.test.cjs — consolidation epic #1969 (B3 #1972)

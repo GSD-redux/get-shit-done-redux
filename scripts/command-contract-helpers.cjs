@@ -124,4 +124,58 @@ function workflowPathRefs(content) {
   return refs;
 }
 
-module.exports = { CANONICAL_TOOLS, parseFrontmatter, executionContextRefs, workflowPathRefs };
+/**
+ * unreachableWorkflows(loaderContents, gsdFiles, workflowPaths)
+ *
+ * Computes reachability over the gsd-core file graph and reports which
+ * `workflowPaths` are never reached, starting only from `loaderContents`
+ * (commands/agents/skills — the files a runtime actually loads) and walking
+ * `workflowPathRefs` edges transitively through `gsdFiles`.
+ *
+ * The seed set is deliberately restricted to loaders and never includes a
+ * workflow's own content. Seeding from workflows too would let two failure
+ * modes hide: a workflow that only references itself would satisfy its own
+ * reachability, and a pair of workflows that reference only each other would
+ * form an island that looks connected from the inside but that no command,
+ * agent, or skill ever actually opens. Both are orphans in every sense that
+ * matters — nothing external can reach them — and both must be reported.
+ * Requiring every path to originate at a loader is what makes "reachable"
+ * mean "a runtime can actually get here," not merely "something points to
+ * it."
+ *
+ * `gsdFiles` covers all of `gsd-core/**`, not just `workflows/`, because a
+ * `references/` or `templates/` file can itself name a workflow path and
+ * needs to be walked through to propagate reachability — restricting the map
+ * to `workflows/` would silently break any chain that passes through a
+ * non-workflow file.
+ *
+ * `visited` guards the walk against reference cycles (including the
+ * mutual/self cases above) so traversal always terminates.
+ */
+function unreachableWorkflows(loaderContents, gsdFiles, workflowPaths) {
+  const visited = new Set();
+  const queue = [];
+
+  for (const content of loaderContents) {
+    for (const ref of workflowPathRefs(content)) queue.push(ref);
+  }
+
+  while (queue.length > 0) {
+    const p = queue.pop();
+    if (visited.has(p)) continue;
+    visited.add(p);
+    if (gsdFiles.has(p)) {
+      for (const ref of workflowPathRefs(gsdFiles.get(p))) queue.push(ref);
+    }
+  }
+
+  return workflowPaths.filter(p => !visited.has(p));
+}
+
+module.exports = {
+  CANONICAL_TOOLS,
+  parseFrontmatter,
+  executionContextRefs,
+  workflowPathRefs,
+  unreachableWorkflows,
+};
