@@ -6757,3 +6757,240 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     assertReportRendered(l2.stderr, expectedReport);
   });
 });
+
+// ─── #3543: an unverifiable model_profile must bake no tier model ───
+//
+// readGsdRuntimeProfileResolver probes for the project's
+// .planning/config.json by walking up from the install's targetDir. A GLOBAL
+// OpenCode/Kilo install (targetDir ~/.config/<runtime>) can never reach the
+// consuming project, and ~/.gsd/defaults.json never carries model_profile
+// (writeNonClaudeDefaults writes only resolve_model_ids + runtime), so the
+// resolver silently fell back to 'balanced' and baked e.g.
+// anthropic/claude-opus-4-8 into the emitted agent frontmatter — defeating a
+// project's explicit model_profile:"inherit" (OpenCode subagents use the
+// static frontmatter model, which overrides the live /model selection).
+//
+// The contract under test (issue #3543, maintainer Agent Brief):
+//   - "no project config found" is NOT "profile absent": the profile is
+//     UNVERIFIABLE, and an unverifiable profile bakes no model key.
+//   - a found config keeps the documented 'balanced' default (local installs).
+//   - a profile (or model_overrides pin) declared in ~/.gsd/defaults.json is
+//     machine-level and still bakes on a global install.
+//   - Kilo mirrors OpenCode (static-frontmatter twin, #2093).
+{
+  const { describe: __d3543, test: __t3543, beforeEach: __be3543, afterEach: __ae3543 } = require('node:test');
+  const { install: __install3543, readGsdRuntimeProfileResolver: __resolver3543 } = require('../bin/install.js');
+
+  // Installer-written shape for a non-Claude runtime (writeNonClaudeDefaults).
+  const __INSTALLER_DEFAULTS_3543 = { resolve_model_ids: 'omit', runtime: 'opencode' };
+  // Tier ids from gsd-core/bin/shared/model-catalog.json runtimeTierDefaults.
+  // gsd-roadmapper distinguishes profiles: balanced → sonnet, quality → opus.
+  const __SONNET_3543 = 'anthropic/claude-sonnet-5';
+  const __OPUS_3543 = 'anthropic/claude-opus-4-8';
+
+  function __writeJson3543(p, obj) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(obj, null, 2), 'utf-8');
+  }
+
+  function __agentsDir3543(configHome, runtime) {
+    return path.join(configHome, '.config', runtime, 'agents');
+  }
+
+  function __listAgents3543(agentsDir) {
+    return fs.readdirSync(agentsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
+  }
+
+  __d3543('#3543 unverifiable model_profile bakes no tier model', () => {
+    let __root3543;
+    let __home3543;
+    let __project3543;
+    let __prevEnv3543;
+    let __prevCwd3543;
+
+    __be3543(() => {
+      __root3543 = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3543-'));
+      __home3543 = path.join(__root3543, 'home');
+      __project3543 = path.join(__root3543, 'project');
+      fs.mkdirSync(__project3543, { recursive: true });
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), __INSTALLER_DEFAULTS_3543);
+      __writeJson3543(path.join(__project3543, '.planning', 'config.json'), {
+        runtime: 'opencode',
+        model_profile: 'inherit',
+      });
+      __prevEnv3543 = {
+        HOME: process.env.HOME,
+        USERPROFILE: process.env.USERPROFILE,
+        SKIP: process.env.GSD_SKIP_STALE_SDK_CHECK,
+      };
+      __prevCwd3543 = process.cwd();
+      process.env.HOME = __home3543;
+      process.env.USERPROFILE = __home3543;
+      process.env.GSD_SKIP_STALE_SDK_CHECK = '1';
+      process.chdir(__project3543);
+    });
+
+    __ae3543(() => {
+      process.chdir(__prevCwd3543);
+      if (__prevEnv3543.HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = __prevEnv3543.HOME;
+      if (__prevEnv3543.USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = __prevEnv3543.USERPROFILE;
+      if (__prevEnv3543.SKIP === undefined) delete process.env.GSD_SKIP_STALE_SDK_CHECK;
+      else process.env.GSD_SKIP_STALE_SDK_CHECK = __prevEnv3543.SKIP;
+      cleanup(__root3543);
+    });
+
+    function runInstall3543(isGlobal, runtime) {
+      const prevLog = console.log;
+      console.log = () => {};
+      try {
+        __install3543(isGlobal, runtime);
+      } finally {
+        console.log = prevLog;
+      }
+    }
+
+    // Row 1 — unit half: the resolver as a GLOBAL install invokes it.
+    __t3543('resolver returns null when the only inherit declaration lives in a project the global probe cannot reach', () => {
+      const resolver = __resolver3543(path.join(__home3543, '.config', 'opencode'));
+      assert.equal(resolver, null,
+        'a global install cannot verify a profile — it must not resolve tier models');
+    });
+
+    // Row 1 — install half (criterion 1 + 5): the packaged defaults file
+    // containing only resolve_model_ids + runtime, project declaring inherit.
+    __t3543('global OpenCode install bakes no model line for any gsd-* agent when the profile is unverifiable', () => {
+      runInstall3543(true, 'opencode');
+
+      const agentsDir = __agentsDir3543(__home3543, 'opencode');
+      assert.ok(fs.existsSync(agentsDir), 'global install should create the agents directory');
+      const files = __listAgents3543(agentsDir);
+      assert.ok(files.includes('gsd-planner.md'), `gsd-planner.md should be emitted (found: ${files.slice(0, 5).join(', ')}…)`);
+      for (const f of files) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m,
+          `${f} must carry no baked model — the profile is unverifiable at global scope`);
+      }
+    });
+
+    // Row 2 — control: a LOCAL install's probe reaches the project's inherit.
+    __t3543('local OpenCode install keeps honoring a reachable model_profile inherit', () => {
+      runInstall3543(false, 'opencode');
+
+      const agentsDir = path.join(__project3543, '.opencode', 'agents');
+      assert.ok(fs.existsSync(agentsDir), 'local install should create the agents directory');
+      for (const f of __listAgents3543(agentsDir)) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m, `${f} must carry no baked model under inherit`);
+      }
+    });
+
+    // Row 3 — boundary: a FOUND config with an absent profile key keeps the
+    // documented 'balanced' default ("profile absent" ≠ "not found").
+    __t3543('local install with found config and absent profile key still bakes the balanced default', () => {
+      __writeJson3543(path.join(__project3543, '.planning', 'config.json'), {
+        runtime: 'opencode',
+      });
+      runInstall3543(false, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__project3543, '.opencode', 'agents', 'gsd-roadmapper.md'), 'utf-8');
+      assert.match(roadmapper, new RegExp(`^model: ${__SONNET_3543.replace(/\//g, '\\/')}$`, 'm'),
+        'gsd-roadmapper balanced → sonnet tier must still bake on a local install');
+    });
+
+    // Row 4 — a machine-declared profile is verifiable and still bakes globally.
+    __t3543('global install bakes the tier of a model_profile declared in ~/.gsd/defaults.json', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_profile: 'quality',
+      });
+      runInstall3543(true, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
+      assert.match(roadmapper, new RegExp(`^model: ${__OPUS_3543.replace(/\//g, '\\/')}$`, 'm'),
+        'gsd-roadmapper quality → opus tier must bake when the profile is machine-declared');
+    });
+
+    // Row 5 — explicit model_overrides pins keep working at any scope.
+    __t3543('global install still bakes an explicit model_overrides pin from ~/.gsd/defaults.json', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_overrides: { 'gsd-roadmapper': 'explicit-global-pin-3543' },
+      });
+      runInstall3543(true, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
+      assert.match(roadmapper, /^model: explicit-global-pin-3543$/m,
+        'explicit model_overrides pins are the highest precedence and must bake');
+    });
+
+    // Row 6 — inherit declared at machine level.
+    __t3543('global install bakes nothing when ~/.gsd/defaults.json itself declares inherit', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_profile: 'inherit',
+      });
+      runInstall3543(true, 'opencode');
+
+      for (const f of __listAgents3543(__agentsDir3543(__home3543, 'opencode'))) {
+        const content = fs.readFileSync(path.join(__agentsDir3543(__home3543, 'opencode'), f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m, `${f} must carry no baked model under inherit`);
+      }
+    });
+
+    // Row 7 — doc contract: targetDir null consults only the global defaults.
+    __t3543('null targetDir with runtime-only home defaults resolves null (unverifiable)', () => {
+      assert.equal(__resolver3543(null), null,
+        'with no project to probe and no declared profile, the resolver must be inert');
+    });
+
+    // Row 8 — falsy home model_profile values count as undeclared, matching
+    // the existing || merge semantics.
+    __t3543('falsy model_profile in ~/.gsd/defaults.json counts as undeclared', () => {
+      const defaultsPath = path.join(__home3543, '.gsd', 'defaults.json');
+      const globalDir = path.join(__home3543, '.config', 'opencode');
+      for (const falsy of ['', null]) {
+        __writeJson3543(defaultsPath, {
+          resolve_model_ids: 'omit',
+          runtime: 'opencode',
+          model_profile: falsy,
+        });
+        assert.equal(__resolver3543(globalDir), null,
+          `model_profile ${JSON.stringify(falsy)} must be treated as undeclared`);
+      }
+    });
+
+    // Row 9 — a local install into a tree with no .planning anywhere is just
+    // as unverifiable as a global one: bake nothing, crash nowhere.
+    __t3543('local install without .planning bakes no model and does not crash', () => {
+      fs.rmSync(path.join(__project3543, '.planning'), { recursive: true, force: true });
+      runInstall3543(false, 'opencode');
+
+      const agentsDir = path.join(__project3543, '.opencode', 'agents');
+      assert.ok(fs.existsSync(agentsDir), 'local install should create the agents directory');
+      const planner = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf-8');
+      assert.doesNotMatch(planner, /^model:/m,
+        'with no reachable project config the profile is unverifiable — no bake');
+    });
+
+    // Row 10 — Kilo parity (criterion 4): the static-frontmatter twin.
+    __t3543('global Kilo install bakes no model line on an unverifiable profile', () => {
+      runInstall3543(true, 'kilo');
+
+      const agentsDir = __agentsDir3543(__home3543, 'kilo');
+      assert.ok(fs.existsSync(agentsDir), 'global kilo install should create the agents directory');
+      for (const f of __listAgents3543(agentsDir)) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m,
+          `${f} must carry no baked model — Kilo shares OpenCode's static-frontmatter constraint`);
+      }
+    });
+  });
+}
