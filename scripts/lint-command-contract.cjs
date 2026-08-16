@@ -21,7 +21,17 @@
 const fs   = require('fs');
 const path = require('path');
 
-const ROOT          = path.join(__dirname, '..');
+function resolveRoot(argv) {
+  const idx = argv.indexOf('--root');
+  if (idx === -1) return path.join(__dirname, '..');
+  const value = argv[idx + 1];
+  if (!value) {
+    throw new Error('lint-command-contract: --root requires a directory argument');
+  }
+  return path.resolve(value);
+}
+
+const ROOT          = resolveRoot(process.argv.slice(2));
 const COMMANDS_DIR  = path.join(ROOT, 'commands', 'gsd');
 const GSD_ROOT      = path.join(ROOT, 'gsd-core');
 

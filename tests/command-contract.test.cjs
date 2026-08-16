@@ -36,6 +36,12 @@ const {
   unreachableWorkflows,
 } = require('../scripts/command-contract-helpers.cjs');
 
+const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { createTempDir, cleanup } = require('./helpers.cjs');
+
+const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-command-contract.cjs');
+
 const commandFiles = fs
   .readdirSync(COMMANDS_DIR)
   .filter(f => f.endsWith('.md'))
@@ -334,24 +340,6 @@ describe('#3560 — unreachableWorkflows closure', () => {
     assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
   });
 
-  test('an agent is a loader', () => {
-    // loaderContents is source-agnostic: an agent file's content works the
-    // same as a command file's — it is passed in the same flat array.
-    const loaderContents = ['@~/.claude/gsd-core/workflows/a.md'];
-    const gsdFiles = new Map();
-    const workflowPaths = ['workflows/a.md'];
-    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
-  });
-
-  test('a skill is a loader', () => {
-    // Same proof as above, from the skills slot — unreachableWorkflows never
-    // distinguishes where a loaderContents entry came from.
-    const loaderContents = ['@~/.claude/gsd-core/workflows/a.md'];
-    const gsdFiles = new Map();
-    const workflowPaths = ['workflows/a.md'];
-    assert.deepEqual(unreachableWorkflows(loaderContents, gsdFiles, workflowPaths), []);
-  });
-
   test('a self-reference does not reach', () => {
     // Nothing in loaderContents mentions self.md; the fact that self.md's
     // own body references itself must not count as reachability.
@@ -449,6 +437,113 @@ describe('#3560 — unreachableWorkflows closure', () => {
     const result = unreachableWorkflows(loaderContents, gsdFiles, workflowPaths);
     assert.equal(result.length, 1);
     assert.deepEqual(result, [orphan]);
+  });
+});
+
+describe('#3560 — rule 6 fails the build on a real orphan', () => {
+  // Builds the minimal fixture tree the lint CLI needs to satisfy rules 1-5
+  // for a single command file, plus an eagerly-loaded live.md workflow.
+  // `extra` lets each test layer on exactly the additional state it needs
+  // without coupling test execution order to shared mutable fixture state.
+  function buildBaseFixture(dir) {
+    fs.mkdirSync(path.join(dir, 'commands', 'gsd'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'gsd-core', 'workflows'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'skills'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(dir, 'commands', 'gsd', 'fixture-command.md'),
+      [
+        '---',
+        'name: gsd:fixture-command',
+        'description: Fixture command for the #3560 rule-6 regression tests.',
+        'allowed-tools:',
+        '  - Read',
+        '  - Bash',
+        '---',
+        '',
+        '<execution_context>',
+        '@~/.claude/gsd-core/workflows/live.md',
+        '</execution_context>',
+        '',
+      ].join('\n'),
+    );
+
+    fs.writeFileSync(
+      path.join(dir, 'gsd-core', 'workflows', 'live.md'),
+      '# live workflow\n\nNothing special here.\n',
+    );
+  }
+
+  function runLint(dir) {
+    return runNode([LINT_SCRIPT, '--root', dir], { timeoutMs: PROBE_TIMEOUT_MS });
+  }
+
+  test('clean fixture passes', (t) => {
+    const dir = createTempDir('gsd-3560-clean-');
+    t.after(() => cleanup(dir));
+    buildBaseFixture(dir);
+
+    const result = runLint(dir);
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.exitCode, 0);
+  });
+
+  test('a planted orphan fails the build', (t) => {
+    const dir = createTempDir('gsd-3560-orphan-');
+    t.after(() => cleanup(dir));
+    buildBaseFixture(dir);
+    fs.writeFileSync(
+      path.join(dir, 'gsd-core', 'workflows', 'orphan.md'),
+      '# orphan workflow\n\nNo loader references this file.\n',
+    );
+
+    const result = runLint(dir);
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.exitCode, 1);
+    assert.ok(
+      (result.stdout + result.stderr).includes('gsd-core/workflows/orphan.md'),
+      'diagnostic output must name the orphaned file path',
+    );
+  });
+
+  test('an orphan referenced only from docs/ still fails', (t) => {
+    const dir = createTempDir('gsd-3560-docs-only-');
+    t.after(() => cleanup(dir));
+    buildBaseFixture(dir);
+    fs.writeFileSync(
+      path.join(dir, 'gsd-core', 'workflows', 'orphan.md'),
+      '# orphan workflow\n\nNo loader references this file.\n',
+    );
+    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'docs', 'SOMETHING.md'),
+      'See gsd-core/workflows/orphan.md for details.\n',
+    );
+
+    const result = runLint(dir);
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.exitCode, 1);
+  });
+
+  test('an orphan reachable only transitively passes', (t) => {
+    const dir = createTempDir('gsd-3560-transitive-');
+    t.after(() => cleanup(dir));
+    buildBaseFixture(dir);
+    fs.writeFileSync(
+      path.join(dir, 'gsd-core', 'workflows', 'orphan.md'),
+      '# orphan workflow\n\nReachable transitively via live.md.\n',
+    );
+    // live.md itself now names orphan.md; live.md is eagerly loaded by the
+    // fixture command, so orphan.md becomes reachable one hop out.
+    fs.writeFileSync(
+      path.join(dir, 'gsd-core', 'workflows', 'live.md'),
+      '# live workflow\n\nSee workflows/orphan.md for the follow-up.\n',
+    );
+
+    const result = runLint(dir);
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.exitCode, 0);
   });
 });
 
