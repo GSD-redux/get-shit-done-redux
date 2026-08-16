@@ -218,7 +218,23 @@ function createFakeInstallFs(seed = []) {
       const buf = Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content ?? '', 'utf8');
       return encoding ? buf.toString(encoding) : buf;
     },
-    writeFileSync: (p, data) => { store.set(norm(p), { type: 'file', content: data }); },
+    writeFileSync: (p, data, opts) => {
+      // Emulate `{ flag: 'wx' }` (exclusive create): REAL_ADAPTER.writeFileSync
+      // (install-fs-adapter.cts:138) passes `opts` straight through to real
+      // `fs.writeFileSync`, which throws EEXIST for `wx` against an existing
+      // path. A fake that silently overwrote here would certify something
+      // the real implementation refuses — see commonjs-marker.cts's
+      // `ensureCommonJsMarker`, which relies on `wx` to close the
+      // classify-then-write gap.
+      const flag = typeof opts === 'object' && opts !== null ? opts.flag : undefined;
+      const n = norm(p);
+      if (flag === 'wx' && store.has(n)) {
+        const err = new Error(`EEXIST: file already exists, open '${p}'`);
+        err.code = 'EEXIST';
+        throw err;
+      }
+      store.set(n, { type: 'file', content: data });
+    },
     copyFileSync: (src, dest) => {
       const e = store.get(norm(src));
       store.set(norm(dest), { type: 'file', content: e ? e.content : Buffer.alloc(0) });
@@ -238,6 +254,42 @@ function createFakeInstallFs(seed = []) {
   fakeFs._store = store;
   return fakeFs;
 }
+
+// ─── createFakeInstallFs — wx exclusive-create emulation ────────────────────
+//
+// REAL_ADAPTER.writeFileSync (install-fs-adapter.cts:138) passes `opts`
+// through untouched to real fs.writeFileSync, so `{ flag: 'wx' }` throws
+// EEXIST against an existing target (commonjs-marker.cts's
+// ensureCommonJsMarker relies on exactly this to close the
+// classify-then-write TOCTOU gap). A fake that ignored `opts` would silently
+// overwrite where the real adapter refuses — this covers the emulation
+// itself rather than assuming it.
+describe('createFakeInstallFs — wx exclusive-create emulation', () => {
+  test('refuses an exclusive create against an existing path (EEXIST)', () => {
+    const target = path.join(os.tmpdir(), 'gsd-fake-wx-existing.txt');
+    const fakeFs = createFakeInstallFs([[target, { type: 'file', content: 'original' }]]);
+
+    assert.throws(
+      () => fakeFs.writeFileSync(target, 'clobber', { flag: 'wx' }),
+      (err) => err.code === 'EEXIST',
+      'wx write against an existing fake-store path must throw EEXIST, matching real fs.writeFileSync',
+    );
+    assert.strictEqual(
+      fakeFs.readFileSync(target, 'utf8'),
+      'original',
+      'a refused wx write must leave the existing content untouched',
+    );
+  });
+
+  test('allows an exclusive create against an absent path', () => {
+    const target = path.join(os.tmpdir(), 'gsd-fake-wx-absent.txt');
+    const fakeFs = createFakeInstallFs();
+
+    fakeFs.writeFileSync(target, 'created', { flag: 'wx' });
+
+    assert.strictEqual(fakeFs.readFileSync(target, 'utf8'), 'created');
+  });
+});
 
 /** sha256 hex digest matching installer-migrations.cts's sha256File — used to
  *  seed a manifest entry that classifies a fake file as 'managed-pristine'. */

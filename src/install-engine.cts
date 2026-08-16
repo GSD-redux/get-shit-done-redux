@@ -1307,12 +1307,15 @@ function _migrateLegacyOpencodeCommandDir(runtime: string, configDir: string, be
   // Never follow a symlinked legacy dir out of configDir.
   if (installFs().lstatSync(legacyDir).isSymbolicLink()) return;
 
-  // #2874: installerMigrations.readInstallManifest/classifyArtifact still read
-  // real fs directly (installer-migrations.cts is outside this phase's IO
-  // table) — a fake-adapter install of an opencode-family runtime with a
-  // legacy `command/` dir present would reach real fs here. Not exercised by
-  // any test today (F2 covers 'claude', which never reaches this function);
-  // flagged as a residual gap for follow-on work, not silently routed around.
+  // #2874: installerMigrations.readInstallManifest/classifyArtifact are
+  // routed through the injectable seam (installer-migrations.cts:36,54-58,
+  // 376-380 — readInstallManifest -> readJsonIfPresent -> installFs(),
+  // classifyArtifact -> sha256File -> installFs().readFileSync), so a
+  // fake-adapter install of an opencode-family runtime with a legacy
+  // `command/` dir present reaches the fake, not real fs. Exercised by
+  // tests/executed-plan.test.cjs's F2 "opencode-family legacy command/ dir
+  // migration" case, which poisons every real fs method and asserts the
+  // fake store was mutated.
   const manifest = installerMigrations.readInstallManifest(configDir);
   let entries: fs.Dirent[];
   try {

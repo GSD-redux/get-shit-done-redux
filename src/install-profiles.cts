@@ -314,16 +314,49 @@ function resolveProfile({ modes, manifest, _profilesOverride, registry }: Resolv
 const STAGED_DIRS = new Set<string>();
 let exitHandlerRegistered = false;
 
+// #2874 leak-fix: `cleanupStagedSkills` runs at process exit — AFTER
+// `withInstallFs` has already restored `current` back to the real adapter
+// (install-fs-adapter.cts's module doc, "SYNCHRONOUS-ONLY / RE-ENTRANCY
+// ASSUMPTION" — extended there to reference this map). A dir staged during a
+// fake-adapter call must be cleaned up with THAT SAME fake adapter, not with
+// whatever is ambiently active later, or an exit handler would perform real
+// filesystem IO on a path that only ever existed in the fake's in-memory
+// store. Capturing the adapter OBJECT `installFs()` returns at registration
+// time (not the ambient `current` variable, which changes) means cleanup
+// always replays the exact adapter that created the path. Dirs added to
+// STAGED_DIRS without going through `registerStagedDir` (the deprecated
+// `stageSkillsForMode`, which creates its stage dir via raw `fs.mkdtempSync`
+// and was never on the injectable seam) have no entry here and fall back to
+// real `fs.rmSync` below — the same real fs it always used to create them.
+const STAGED_DIR_ADAPTERS = new Map<string, ReturnType<typeof installFs>>();
+
+/**
+ * Register a dir just staged through the injectable seam (`installFs()`) for
+ * exit-time cleanup, capturing the adapter that staged it alongside the path.
+ * See `STAGED_DIR_ADAPTERS`'s comment for why the capture matters.
+ */
+function registerStagedDir(dir: string): void {
+  STAGED_DIRS.add(dir);
+  STAGED_DIR_ADAPTERS.set(dir, installFs());
+  ensureExitCleanup();
+}
+
 function cleanupStagedSkills(): void {
   for (const dir of STAGED_DIRS) {
+    const adapter = STAGED_DIR_ADAPTERS.get(dir);
     try {
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (adapter) {
+        adapter.rmSync(dir, { recursive: true, force: true });
+      } else {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     } catch {
       // Best-effort: missing dir or permission error shouldn't crash a
       // successful install. The OS reaps tmpdir eventually.
     }
   }
   STAGED_DIRS.clear();
+  STAGED_DIR_ADAPTERS.clear();
 }
 
 // Signals we register a cleanup handler for in addition to the natural
@@ -372,8 +405,7 @@ function stageSkillsForProfile(srcDir: string, resolvedProfile: ResolvedProfile)
     try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -422,8 +454,7 @@ function stageAgentsForProfile(srcAgentsDir: string, resolvedProfile: ResolvedPr
     try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -794,8 +825,7 @@ function stageSkillsForRuntimeAsSkills(
     try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -897,8 +927,7 @@ function stageAgentsForRuntimeWithConverter(
     try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -953,8 +982,7 @@ function stageCommandsForRuntimeFlat(
     try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 

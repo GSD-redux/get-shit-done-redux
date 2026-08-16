@@ -153,10 +153,21 @@ function findInstallSourceRoot(runtimeConfigDir?: string): string {
   // on-disk layout (an injected adapter's store starts empty and is never
   // seeded with real repo paths), and routing it through would make this
   // resolution unconditionally throw rather than gracefully staging nothing.
-  // Uses `fs.statSync` (not `.existsSync`) directly against real fs — this is
-  // a probe against this REPO's own package layout, always real regardless
-  // of what the install destination is, and `statSync` is deliberately
-  // outside the destination-adapter's enumerated surface.
+  //
+  // Uses `fs.statSync` in a try/catch rather than `fs.existsSync` — this is
+  // LOAD-BEARING, not a style choice: tests/executed-plan.test.cjs's F2 cases
+  // poison every method on the ROUTED fs surface (including `existsSync`,
+  // since installFs()'s REAL_ADAPTER also calls it) to prove nothing on the
+  // installRuntimeArtifacts call tree reaches real fs. The F2 "nativePlugin
+  // runtime: pi" test calls this function (via findInstallSourceRoot()) AFTER
+  // installing that poison, specifically to resolve the pi nativePlugin
+  // source path against this repo's own real layout — an operation this
+  // function must still be able to perform even while `existsSync` is
+  // poisoned, because this Step 2 walk is real-fs-only by design and was
+  // never meant to be covered by that poison list. `statSync` is not on the
+  // poisoned surface, so this probe survives; switching back to `existsSync`
+  // makes that F2 test throw (verified: reverting this to `existsSync` trips
+  // the poison and breaks the pi nativePlugin case).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'commands', 'gsd');
@@ -198,8 +209,9 @@ function findAgentsSourceRoot(runtimeConfigDir?: string): string {
 
   // Step 2: walk up from __dirname — locates THIS package's own agents/
   // source tree, not the install destination. See findInstallSourceRoot's
-  // Step 2 comment (#2874) for why this stays unrouted, real-fs-only, via
-  // `statSync` rather than the injected adapter's `.existsSync`.
+  // Step 2 comment (#2874) for why this stays unrouted, real-fs-only, and why
+  // it uses `statSync` rather than `existsSync` (load-bearing against F2's
+  // poison of the routed fs surface, not a style choice).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'agents');

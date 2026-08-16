@@ -52,6 +52,22 @@
  * adapter mid-flight) — neither is true today, but a future change that
  * introduces either must revisit this module before trusting it.
  *
+ * DEFERRED CLEANUP ACROSS THE RESTORE (#2874 leak-fix): staged directories
+ * outlive one `withInstallFs` call — `install-profiles.cts`'s
+ * `cleanupStagedSkills` runs later, from a `process.on('exit'/'SIGINT'/…)`
+ * handler, by which time `withInstallFs`'s `finally` has already restored
+ * `current` back to whatever was active before (real fs, in the top-level
+ * case). A cleanup handler that resolved "which adapter do I use" via
+ * `installFs()` at CLEANUP time would therefore always see the real adapter,
+ * even for a directory that was staged entirely inside a fake-adapter call —
+ * performing real filesystem IO on a path that only ever existed in the
+ * fake's in-memory store. `install-profiles.cts` avoids this by capturing
+ * the adapter OBJECT `installFs()` returns at STAGING (registration) time,
+ * keyed by path, in its own `STAGED_DIR_ADAPTERS` map, and replaying that
+ * captured object — not the ambient `current` — at cleanup time. A real
+ * install's dirs were staged with the real adapter object, so their cleanup
+ * is byte-identical to before this fix.
+ *
  * `withInstallFs` ALWAYS restores the previous adapter in a `finally`, even
  * on throw — a failed install (or a test that intentionally throws to prove
  * a guard) must never leak a fake adapter into whatever runs next in the
