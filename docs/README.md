@@ -23,6 +23,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Discuss a phase](how-to/discuss-a-phase.md) — capture implementation decisions before planning begins
 - [Resolve edge-coverage findings](how-to/resolve-edge-coverage-findings.md) — turn the spec phase's surfaced domain-boundary edges into covered, dismissed, or backstopped spec decisions
 - [Resolve prohibition findings](how-to/resolve-prohibition-findings.md) — turn the spec phase's surfaced must-NOT constraints into resolved, dismissed, or deferred spec decisions
+- [Resolve an unreachable-workflow finding](how-to/resolve-unreachable-workflow-findings.md) — wire or fully sweep a shipped workflow that no command, agent, or skill references
 - [Resolve unreachable-guard findings](how-to/resolve-unreachable-guard-findings.md) — fix shell guards whose fallback arm cannot run, and tell "nothing to report" apart from "could not look"
 - [Resolve an ESLint glob-coverage finding](how-to/resolve-eslint-coverage-findings.md) — bring a source file that matches no lint rule under coverage, or record a reasoned exemption
 - [Plan a phase](how-to/plan-a-phase.md) — run research, decompose work, and verify plan quality
