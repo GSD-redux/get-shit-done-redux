@@ -20,7 +20,8 @@ Claude/Codex instances are active on the same repo at the same time. One session
 silently repoint another session's `STATE.md`, `ROADMAP.md`, and phase paths.
 
 GSD now prefers a session-scoped pointer keyed by runtime/session identity
-(`GSD_SESSION_KEY`, `CODEX_THREAD_ID`, `CLAUDE_CODE_SSE_PORT`, terminal session IDs,
+(`GSD_SESSION_KEY`, `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_SSE_PORT`, terminal session IDs,
 or the controlling TTY). This keeps concurrent sessions isolated while preserving
 legacy compatibility for runtimes that do not expose a stable session key.
 
@@ -29,7 +30,7 @@ legacy compatibility for runtimes that do not expose a stable session key.
 When GSD resolves the session-scoped pointer in step 3 above, it uses this order:
 
 1. Explicit runtime/session env vars such as `GSD_SESSION_KEY`, `CODEX_THREAD_ID`,
-   `CLAUDE_SESSION_ID`, `CLAUDE_CODE_SSE_PORT`, `OPENCODE_SESSION_ID`,
+   `CLAUDE_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_SSE_PORT`, `OPENCODE_SESSION_ID`,
    `GEMINI_SESSION_ID`, `CURSOR_SESSION_ID`, `WINDSURF_SESSION_ID`,
    `TERM_SESSION_ID`, `WT_SESSION`, `TMUX_PANE`, and `ZELLIJ_SESSION_NAME`
 2. `TTY` or `SSH_TTY` if the shell/runtime already exposes the terminal path

@@ -1133,10 +1133,11 @@ describe('#3557 CLAUDE_CODE_SESSION_ID session key', () => {
       adapter.write('workstream-a');
 
       const resolved = resolveActiveWorkstream(tmpDir, [], {});
-      assert.deepEqual(resolved, { ws: 'workstream-a', source: 'store' },
-        'the session-scoped pointer must win over the stale shared pointer '
-        + '(adapter-backed resolution reports source "store"; the shared file '
-        + 'staying on workstream-b below is what proves the session scoping)');
+      assert.equal(resolved.ws, 'workstream-a',
+        'the session-scoped pointer must win over the stale shared pointer');
+      assert.equal(resolved.source, 'store',
+        'adapter-backed resolution reports source "store"; the shared file '
+        + 'staying on workstream-b below is what proves the session scoping');
     });
 
     assert.equal(fs.readFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'utf8').trim(),
@@ -1162,7 +1163,8 @@ describe('#3557 CLAUDE_CODE_SESSION_ID session key', () => {
     const key = withNonTtyStdin(() => getWorkstreamSessionKey());
     assert.equal(key, null);
     const resolved = resolveActiveWorkstream(tmpDir, [], {});
-    assert.deepEqual(resolved, { ws: 'workstream-b', source: 'store' });
+    assert.equal(resolved.ws, 'workstream-b');
+    assert.equal(resolved.source, 'store');
   });
 
   // Row 5 — the new key must not disturb existing precedence (criterion 6).
