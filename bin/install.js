@@ -1631,7 +1631,10 @@ const READONLY_AGENT_DISALLOWED_TOOLS = {
  * Returns null if no `runtime` is configured (preserves prior behavior — only
  * model_overrides is embedded, no tier/reasoning-effort inference). Returns
  * null when `model_profile` is `inherit` so the literal alias passes through
- * unchanged.
+ * unchanged. Returns null when no project config is reachable AND
+ * `~/.gsd/defaults.json` declares no `model_profile` (#3543): the profile is
+ * unverifiable at global scope, and baking the 'balanced' default would
+ * defeat a consuming project's explicit `inherit`.
  *
  * Returns { runtime, resolve(agentName) -> { model, reasoning_effort? } | null }
  */
@@ -1680,6 +1683,24 @@ function readGsdRuntimeProfileResolver(targetDir = null) {
   };
 
   if (!merged.runtime) return null;
+
+  // #3543 — "no project config found" is not "profile absent". The probe
+  // above starts at the install's targetDir, which for a GLOBAL install
+  // (~/.config/<runtime>) can never reach the consuming project's
+  // .planning/config.json — and writeNonClaudeDefaults never stores
+  // model_profile in ~/.gsd/defaults.json. Falling through to 'balanced'
+  // here baked a tier-default model (e.g. anthropic/claude-opus-4-8) into
+  // the static OpenCode/Kilo agent frontmatter, defeating a project's
+  // explicit `model_profile: "inherit"` — those runtimes use the frontmatter
+  // model over the live session selection. A profile is bakeable only when
+  // verifiable: declared in the found project config (local install —
+  // loadConfig reads the same file at dispatch time) or in the machine-wide
+  // defaults. Otherwise bake nothing and let the runtime's default/session
+  // model govern — the documented non-Claude posture
+  // (references/model-profiles.md, #1156).
+  if (!projectConfig && !(homeDefaults && homeDefaults.model_profile)) {
+    return null;
+  }
 
   const profile = String(merged.model_profile).toLowerCase();
   if (profile === 'inherit') return null;
