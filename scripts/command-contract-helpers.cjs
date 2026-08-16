@@ -89,6 +89,10 @@ function executionContextRefs(content) {
  * Traversal segments (`..`) are dropped rather than surfaced: this resolver
  * only ever reports paths under `workflows/`, never something a `..` could
  * walk outside of it. Results are de-duplicated, first-seen order preserved.
+ *
+ * Both regexes anchor `\.md` with a trailing `(?![A-Za-z0-9_])` negative
+ * lookahead so a longer extension (`.mdx`, `.md5`) is rejected outright
+ * rather than silently truncated into a plausible-looking `.md` path.
  */
 function workflowPathRefs(content) {
   const refs = [];
@@ -101,7 +105,7 @@ function workflowPathRefs(content) {
     refs.push(normalized);
   }
 
-  const shapeARe = /@?(?:(?:~|\$HOME)\/)?(?:\.claude\/)?(?:gsd-core\/)?workflows\/[A-Za-z0-9._/-]+\.md/g;
+  const shapeARe = /@?(?:(?:~|\$HOME)\/)?(?:\.claude\/)?(?:gsd-core\/)?workflows\/[A-Za-z0-9._/-]+\.md(?![A-Za-z0-9_])/g;
   let m;
   while ((m = shapeARe.exec(content)) !== null) {
     const normalized = m[0]
@@ -112,7 +116,7 @@ function workflowPathRefs(content) {
     addRef(normalized);
   }
 
-  const shapeCRe = /(?:^|[\s`("'>])([A-Za-z0-9._-]+\/(?:steps|modes|templates)\/[A-Za-z0-9._-]+\.md)/gm;
+  const shapeCRe = /(?:^|[\s`("'>])([A-Za-z0-9._-]+\/(?:steps|modes|templates)\/[A-Za-z0-9._-]+\.md(?![A-Za-z0-9_]))/gm;
   while ((m = shapeCRe.exec(content)) !== null) {
     addRef('workflows/' + m[1]);
   }

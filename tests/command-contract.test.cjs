@@ -208,6 +208,37 @@ describe('#3561 — workflowPathRefs resolver', () => {
     const content = 'workflows/' + 'a'.repeat(5000) + '.md';
     assert.doesNotThrow(() => workflowPathRefs(content));
   });
+
+  test('rejects a .mdx path', () => {
+    assert.deepEqual(workflowPathRefs('workflows/foobar.mdx'), []);
+  });
+
+  test('rejects a .md5 path', () => {
+    assert.deepEqual(workflowPathRefs('workflows/foo.md5'), []);
+  });
+
+  test('still accepts a .md path followed by punctuation', () => {
+    assert.deepEqual(
+      workflowPathRefs('see workflows/x.md, then stop'),
+      ['workflows/x.md'],
+    );
+  });
+
+  test('binds to the --fast line, not the whole file', () => {
+    const syntheticFile = [
+      '- If it is `--fast`: strip the flag, run the scan workflow.',
+      '<!-- see gsd-core/workflows/scan.md -->',
+    ].join('\n');
+    const fastLine = syntheticFile
+      .split(/\r?\n/)
+      .find(line => /^-\s*If it is\s*`--fast`/.test(line));
+    assert.ok(fastLine, 'setup error: synthetic fixture missing --fast routing line');
+    assert.ok(
+      !workflowPathRefs(fastLine).includes('workflows/scan.md'),
+      'regression guard: the --fast routing line itself names no resolvable path — ' +
+      'an unrelated comment elsewhere in the file must not make this test pass',
+    );
+  });
 });
 
 describe('#3561 — /gsd-map-codebase --fast routes to a loadable workflow', () => {
@@ -215,11 +246,19 @@ describe('#3561 — /gsd-map-codebase --fast routes to a loadable workflow', () 
   const mapCodebaseContent = fs.readFileSync(mapCodebasePath, 'utf-8');
 
   test('map-codebase: --fast routing names a loadable scan.md', () => {
-    const refs = workflowPathRefs(mapCodebaseContent);
+    const fastLine = mapCodebaseContent
+      .split(/\r?\n/)
+      .find(line => /^-\s*If it is\s*`--fast`/.test(line));
+    assert.ok(
+      fastLine,
+      '#3561: commands/gsd/map-codebase.md has no "--fast" routing bullet ' +
+      '(expected a line matching /^-\\s*If it is\\s*`--fast`/) — the routing logic is missing entirely',
+    );
+    const refs = workflowPathRefs(fastLine);
     assert.ok(
       refs.includes('workflows/scan.md'),
-      '#3561: --fast routes to the scan workflow but commands/gsd/map-codebase.md ' +
-      'names no resolvable "workflows/scan.md" path, so the scan workflow is never loaded',
+      '#3561: --fast routes to the scan workflow but the routing line names no path ' +
+      'the runtime can resolve, so scan.md is never loaded',
     );
   });
 
