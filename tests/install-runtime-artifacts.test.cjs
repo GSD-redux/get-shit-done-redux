@@ -6970,7 +6970,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     // Row 9 — a local install into a tree with no .planning anywhere is just
     // as unverifiable as a global one: bake nothing, crash nowhere.
     __t3543('local install without .planning bakes no model and does not crash', () => {
-      fs.rmSync(path.join(__project3543, '.planning'), { recursive: true, force: true });
+      cleanup(path.join(__project3543, '.planning'));
       runInstall3543(false, 'opencode');
 
       const agentsDir = path.join(__project3543, '.opencode', 'agents');
