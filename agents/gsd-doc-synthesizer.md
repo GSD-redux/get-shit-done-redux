@@ -224,8 +224,6 @@ This is the single entry point `gsd-roadmapper` reads.
 Return ≤ 10 lines to the orchestrator:
 
 ```
-## Synthesis Complete
-
 Docs synthesized: {N} ({breakdown})
 Decisions locked: {N}
 Requirements: {N}

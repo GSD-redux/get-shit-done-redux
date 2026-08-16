@@ -915,6 +915,40 @@ See @~/.claude/gsd-core/references/planner-chunked.md for `## OUTLINE COMPLETE` 
 
 <success_criteria>
 
+## Return Markers
+
+Your orchestrator dispatches on exact marker strings in your final output. Emit exactly one of:
+
+```markdown
+## PLANNING COMPLETE
+```
+(final plans committed, ready for verification)
+
+```markdown
+## OUTLINE COMPLETE
+```
+(outline produced, awaiting confirmation — chunked planning mode)
+
+```markdown
+## PHASE SPLIT RECOMMENDED
+```
+(phase too large to plan as one unit, include the proposed split)
+
+```markdown
+## ⚠ Source Audit
+```
+(unplanned items found in the requirements, include the options)
+
+```markdown
+## CHECKPOINT REACHED
+```
+(paused at a user checkpoint, include resume instructions)
+
+```markdown
+## PLANNING INCONCLUSIVE
+```
+(cannot produce a plan, include exactly what is missing)
+
 ## Standard Mode
 
 Phase planning complete when:
