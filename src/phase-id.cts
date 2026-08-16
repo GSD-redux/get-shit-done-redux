@@ -908,6 +908,14 @@ function bracketQualifiedKey(s: string, convention?: string | null): string | nu
  * shapes W005 reports), and legacy-shaped dirs inside a bracket repo all
  * resolve to the unchanged body below.
  *
+ * A filename carrying its own bracket-qualified stem is compared on the
+ * qualified key — see the branch body. An M-NN-stem artifact name
+ * (`02-01-VERIFICATION.md` in `GSD.02-01-one`) is excluded under the bracket
+ * convention, deliberately: that is exactly what the legacy twin does with
+ * the same file, twin-parity is this PR's contract, and migration-window
+ * artifact renaming belongs to the migrator slice per ADR-612 — the trade is
+ * pinned in tests/adr-612-bracket-phase-counting.test.cjs.
+ *
  * For those unthreaded/unparseable cases the include-everything trade
  * stands: rather than guess a reading it cannot know is active and risk
  * excluding the phase's OWN artifact (the exact defect class this rework
@@ -965,6 +973,31 @@ function isPhaseArtifact(fileName: string, phaseDirName: string, convention?: st
   if (convention === 'bracket') {
     const bracketDir = phaseDirName.match(BRACKET_DIR_TOKEN_RE);
     if (bracketDir) {
+      // The convention must gate the FILENAME reading, not just the directory
+      // reading — a milestone-qualified artifact name (the layout the
+      // read-tolerance suite models) derives zero legacy token segments, so
+      // without this it enters FIX 2's token-less containment and any bracket
+      // dir admits it. Compared on the qualified key: the phase's own
+      // qualified artifact stays included — the exact key, and the dotted
+      // sub-phase continuation (`GSD.02-05.1-…` is `GSD.02-05`'s own file,
+      // the same dash-OR-dot rule matchesPhaseTokenCandidates applies; a
+      // dash-continuation never reaches this comparison, the phase group's
+      // `(?=-|$)` boundary already stopped the key before it) — while a
+      // WELL-FORMED qualified stem naming a different phase or milestone is
+      // excluded. A qualified-SHAPED but grammar-malformed stem (letter
+      // suffix, 1-digit milestone, 2-level dot — the W005 shapes) yields a
+      // null fileKey and keeps the module's documented include-everything
+      // fail-safe via FIX 2 below, same as every other undecidable name.
+      const fileKey = bracketQualifiedKey(fileName, convention);
+      if (fileKey !== null) {
+        const dirKey = bracketQualifiedKey(phaseDirName, convention);
+        if (dirKey !== null) return fileKey === dirKey || fileKey.startsWith(`${dirKey}.`);
+      }
+      // Reached when the filename carries no well-formed qualified stem (the
+      // common case — every unqualified name), or when the DIR's own key is
+      // null despite matching the dir grammar (an unsafe-integer milestone or
+      // phase — bracketQualifiedKey refuses both rather than collide).
+      // Either way the candidate path decides, deliberately.
       return matchesPhaseTokenCandidates(fileName, [bracketDir[1]]);
     }
   }

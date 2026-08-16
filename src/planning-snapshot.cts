@@ -1220,7 +1220,12 @@ function buildPlanningSnapshot(cwd: string): PlanningSnapshot {
   // genuinely differ, and substituting one for the other would silently re-scope
   // `phaseDirs` — a change this PR does not need and no test covers. The
   // federation guarantee PR-2 exists to deliver is delivered where it is
-  // observable: in the rules that read `snapshot.phaseIdConvention`.
+  // observable: in the rules that read `snapshot.phaseIdConvention`. Per-phase
+  // completion and the research/validation scoping below deliberately use the
+  // FEDERATED `phaseIdConvention` (the same value `snapshot.phaseIdConvention`
+  // publishes), while `phaseDirs` keeps `listMilestonePhaseDirs`'s lazy
+  // PROJECT-only resolve — the divergence documented above is unchanged by
+  // this thread. No behavior change.
   const phaseDirs = listMilestonePhaseDirs(paths.phases, { cwd });
 
   const phasesValue = phaseDirs.value.map((dir) => buildPhaseSnapshot(paths.phases, dir, phaseIdConvention));

@@ -1016,7 +1016,11 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   // the same phase (ADR-3180 §7.4's headline: one predicate for the read
   // path and the write path).
   const phaseDir = path.join(cwd, phaseInfo!.directory);
-  const completionResult = isPhaseComplete(phaseDir);
+  // ADR-3180 §7.4 read/write-path symmetry with the threaded site at ~583:
+  // thread convention here too, so this write path's completion reading
+  // agrees with the read path's under the bracket convention.
+  const convention = resolvePhaseIdConvention(cwd);
+  const completionResult = isPhaseComplete(phaseDir, { convention });
   const verificationResult = completionResult.value.verification;
   // #2648 precedent, applied at this write site (ADR-3180 §7.4 / #3186):
   // `isPhaseComplete` deliberately carries NO plan-count precondition — the
