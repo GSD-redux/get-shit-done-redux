@@ -6802,6 +6802,14 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
     return fs.readdirSync(agentsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
   }
 
+  // Extract the baked model line (or null) — assertions compare it for
+  // equality against the expected literal rather than building a RegExp
+  // from the model id (CodeQL: incomplete backslash escaping).
+  function __modelLine3543(content) {
+    const m = content.match(/^model:.*$/m);
+    return m ? m[0] : null;
+  }
+
   __d3543('#3543 unverifiable model_profile bakes no tier model', () => {
     let __root3543;
     let __home3543;
@@ -6908,7 +6916,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
 
       const roadmapper = fs.readFileSync(
         path.join(__project3543, '.opencode', 'agents', 'gsd-roadmapper.md'), 'utf-8');
-      assert.match(roadmapper, new RegExp(`^model: ${__SONNET_3543.replace(/\//g, '\\/')}$`, 'm'),
+      assert.equal(__modelLine3543(roadmapper), `model: ${__SONNET_3543}`,
         'gsd-roadmapper balanced → sonnet tier must still bake on a local install');
     });
 
@@ -6923,7 +6931,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
 
       const roadmapper = fs.readFileSync(
         path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
-      assert.match(roadmapper, new RegExp(`^model: ${__OPUS_3543.replace(/\//g, '\\/')}$`, 'm'),
+      assert.equal(__modelLine3543(roadmapper), `model: ${__OPUS_3543}`,
         'gsd-roadmapper quality → opus tier must bake when the profile is machine-declared');
     });
 
@@ -6938,7 +6946,7 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
 
       const roadmapper = fs.readFileSync(
         path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
-      assert.match(roadmapper, /^model: explicit-global-pin-3543$/m,
+      assert.equal(__modelLine3543(roadmapper), 'model: explicit-global-pin-3543',
         'explicit model_overrides pins are the highest precedence and must bake');
     });
 
