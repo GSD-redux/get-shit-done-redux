@@ -285,11 +285,13 @@ test('UPGRADE 2: a corrupted/undeclared dispatch still fails closed to inline (s
 // docs/reference/host-integration-capability-matrix.md's kimi EoS-status
 // paragraph) — the installer's deliverable stops at the Agent-tool grant plus
 // the negotiated backgroundDispatch axis asserted above.
-test('UPGRADE 2 (installer-testable proxy): kimi --global install with subagents present grants kimi_cli.tools.agent:Agent on the root agent', (t) => {
-  const { root } = runMinimalInstall({ runtime: 'kimi', scope: 'global' });
-  t.after(() => cleanup(root));
+  test('UPGRADE 2 (installer-testable proxy): kimi --global install with subagents present grants kimi_cli.tools.agent:Agent on the root agent', (t) => {
+    const { configDir, root } = runMinimalInstall({ runtime: 'kimi', scope: 'global' });
+    t.after(() => cleanup(root));
 
-  const rootYamlPath = path.join(root, 'agents', 'gsd.yaml');
+    // #3547 — the root agent lives under the runtime's real global config
+    // home (<root>/.config/agents), not the sandbox HOME itself.
+    const rootYamlPath = path.join(configDir, 'agents', 'gsd.yaml');
   assert.ok(fs.existsSync(rootYamlPath), 'kimi: agents/gsd.yaml must exist');
   const rootYaml = fs.readFileSync(rootYamlPath, 'utf8');
 

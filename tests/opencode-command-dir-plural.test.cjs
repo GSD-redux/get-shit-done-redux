@@ -53,12 +53,16 @@ const EXPECTED_COMMAND_DIR = 'commands';
 /** Re-run the installer against an EXISTING configDir/root to simulate an
  *  upgrade/reapply pass (the installer runs its migration planner on every
  *  invocation — see bin/install.js installAllRuntimes -> install() ->
- *  runInstallerMigrations, unconditional, not gated on first-install). */
-function reinstallOpencode(root, scope = 'global') {
+ *  runInstallerMigrations, unconditional, not gated on first-install).
+ *  #3547 — `configDir` is the runtime's REAL global home (<root>/<globalSuffix>),
+ *  the same shape runMinimalInstall now installs into; reinstalling into the
+ *  bare <root> would target a different config home and never see the
+ *  fabricated legacy state. */
+function reinstallOpencode(root, configDir = null, scope = 'global') {
   const args = [INSTALL_SCRIPT, '--opencode'];
   let cwd = process.cwd();
   if (scope === 'global') {
-    args.push('--global', '--config-dir', root);
+    args.push('--global', '--config-dir', configDir || root);
   } else {
     args.push('--local');
     cwd = root;
@@ -305,7 +309,7 @@ describe('#2329: upgrading an install with an orphaned command/ dir migrates it 
     assert.ok(gsdMdFiles(legacyDir).length >= 60, 'sanity: legacyDir must be populated before reinstall');
     assert.ok(!fs.existsSync(pluralDir), 'sanity: pluralDir must not exist before reinstall (fabricated pre-fix state)');
 
-    const result = reinstallOpencode(root, 'global');
+    const result = reinstallOpencode(root, configDir, 'global');
     assert.strictEqual(
       result.status, 0,
       `reinstall (upgrade) must exit 0\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
@@ -341,7 +345,7 @@ describe('#2329: upgrading an install with an orphaned command/ dir migrates it 
     const userFileLegacy = path.join(legacyDir, 'my-notes.md');
     fs.writeFileSync(userFileLegacy, userContent, 'utf8');
 
-    const result = reinstallOpencode(root, 'global');
+    const result = reinstallOpencode(root, configDir, 'global');
     assert.strictEqual(
       result.status, 0,
       `reinstall (upgrade) must exit 0\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
@@ -406,7 +410,7 @@ describe('#2329: upgrading an install with an orphaned command/ dir migrates it 
       `sanity: manifest must record >=60 "command/" keys before reinstall, got ${legacyManifestKeys.length}`
     );
 
-    const result = reinstallOpencode(root, 'global');
+    const result = reinstallOpencode(root, configDir, 'global');
     assert.strictEqual(
       result.status, 0,
       `reinstall (upgrade) must exit 0\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
