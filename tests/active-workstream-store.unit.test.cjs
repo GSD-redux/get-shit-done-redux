@@ -1174,6 +1174,23 @@ describe('#3557 CLAUDE_CODE_SESSION_ID session key', () => {
     const key = withNonTtyStdin(() => getWorkstreamSessionKey());
     assert.equal(key, 'gsd-session-key-explicit-key',
       'GSD_SESSION_KEY stays ahead of runtime keys in the probe order');
+
+    // Pin the new key's position against BOTH immediate neighbors — a swap
+    // with either would silently change which signal wins when Claude Code
+    // exports more than one (review finding on #3557).
+    delete process.env.GSD_SESSION_KEY;
+    process.env.CLAUDE_SESSION_ID = 'legacy-id';
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-session-id-legacy-id',
+      'CLAUDE_SESSION_ID stays ahead of CLAUDE_CODE_SESSION_ID');
+
+    delete process.env.CLAUDE_SESSION_ID;
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    process.env.CLAUDE_CODE_SSE_PORT = '9999';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-code-session-id-sess-alpha-123',
+      'CLAUDE_CODE_SESSION_ID stays ahead of CLAUDE_CODE_SSE_PORT');
   });
 
   // Row 6 — helper scrub lists must know the new key, or the suite is
