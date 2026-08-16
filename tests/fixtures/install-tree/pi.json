@@ -1,6 +1,5 @@
 [
   ".gsd-profile",
-  ".gsd/defaults.json",
   "extensions/gsd.js",
   "extensions/package.json",
   "gsd-core/.gsd-runtime",

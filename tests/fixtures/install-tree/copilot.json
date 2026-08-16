@@ -1,6 +1,5 @@
 [
   ".gsd-profile",
-  ".gsd/defaults.json",
   "agents/gsd-advisor-researcher.agent.md",
   "agents/gsd-ai-researcher.agent.md",
   "agents/gsd-assumptions-analyzer.agent.md",

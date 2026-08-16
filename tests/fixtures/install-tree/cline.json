@@ -1,9 +1,7 @@
 [
-  ".agents/AGENTS.md",
   ".clinerules/gsd.md",
   ".clinerules/hooks/PreToolUse",
   ".gsd-profile",
-  ".gsd/defaults.json",
   "agents/gsd-advisor-researcher.md",
   "agents/gsd-ai-researcher.md",
   "agents/gsd-assumptions-analyzer.md",
