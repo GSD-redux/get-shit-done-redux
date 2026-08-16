@@ -7030,9 +7030,18 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
  * file's content before hashing, so two installs into DIFFERENT temp
  * directories (whose absolute paths get baked into rewritten skill bodies)
  * can still be compared for content-identity.
+ *
+ * Both `stripDir` and the file content are normalized to forward slashes
+ * before the strip, unconditionally (never gated on `path.sep`) — production
+ * (`posixNormalize` in shell-command-projection.cts) rewrites `\` -> `/` in
+ * the resolved configDir before baking it into skill bodies, so on Windows
+ * `stripDir` (a raw fs.mkdtempSync path, backslash-separated) would never
+ * match the posix-normalized text actually written, leaving each install's
+ * unique temp-dir suffix embedded and making every file's hash diverge.
  */
 function hashDirTree(rootDir, stripDir) {
   const entries = [];
+  const stripDirPosix = stripDir ? stripDir.replace(/\\/g, '/') : stripDir;
   const walk = (relPath, absPath) => {
     for (const entry of fs.readdirSync(absPath, { withFileTypes: true })
       .sort((a, b) => a.name.localeCompare(b.name))) {
@@ -7042,7 +7051,9 @@ function hashDirTree(rootDir, stripDir) {
         walk(childRel, childAbs);
       } else if (entry.isFile()) {
         const buf = fs.readFileSync(childAbs);
-        const normalized = stripDir ? buf.toString('utf8').split(stripDir).join('<CONFIGDIR>') : buf;
+        const normalized = stripDirPosix
+          ? buf.toString('utf8').replace(/\\/g, '/').split(stripDirPosix).join('<CONFIGDIR>')
+          : buf;
         entries.push(`${childRel}:${crypto.createHash('sha256').update(normalized).digest('hex')}`);
       }
     }
