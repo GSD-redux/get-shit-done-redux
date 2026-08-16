@@ -179,15 +179,20 @@
  *     inside it to match — not an enumeration of the phases directory at
  *     all; only shaped like one because `phasesDir` is a substring of the
  *     joined path.
- *   - `src/audit.cts` `scanUatGaps`, `scanVerificationGaps`,
- *     `scanContextQuestions`, `scanDeferredItems`: the pre-milestone-close
- *     audit gate (`gsd-tools.cjs audit-open`, called by `/gsd:complete-
- *     milestone`'s pre-close gate). Each deliberately SWEEPS EVERY phase
- *     directory on disk to report open UAT/VERIFICATION/CONTEXT/deferred-item
- *     gaps — the audit's whole purpose is catching stragglers before a
- *     milestone closes, so scoping it to the current milestone's window
- *     would hide exactly the drift (e.g. a still-open item in a phase that
- *     somehow fell outside the window) it exists to surface.
+ *   - `src/audit.cts` `listAuditPhaseTargets` (#3458): the shared active-root
+ *     enumeration for the pre-milestone-close audit gate (`gsd-tools.cjs
+ *     audit-open`, called by `/gsd:complete-milestone`'s pre-close gate).
+ *     `scanUatGaps`, `scanVerificationGaps`, `scanContextQuestions`, and
+ *     `scanDeferredItems` used to each hand-roll this same readdirSync
+ *     independently (four copies of one re-derivation — the very drift class
+ *     this guard exists to catch); #3458 consolidated all four into this one
+ *     function, so the exemption moved with the call site instead of
+ *     multiplying. It deliberately SWEEPS EVERY phase directory on disk to
+ *     report open UAT/VERIFICATION/CONTEXT/deferred-item gaps — the audit's
+ *     whole purpose is catching stragglers before a milestone closes, so
+ *     scoping it to the current milestone's window would hide exactly the
+ *     drift (e.g. a still-open item in a phase that somehow fell outside the
+ *     window) it exists to surface.
  *   - `src/roadmap-upgrade.cts` `computeMigrationPlan`: a legacy-id-to-
  *     milestone-prefixed-id MIGRATION. It must see and rename EVERY existing
  *     phase directory across every milestone in one pass (a legacy phase
@@ -287,7 +292,7 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
-  [path.join('src', 'audit.cts'), new Set(['scanUatGaps', 'scanVerificationGaps', 'scanContextQuestions', 'scanDeferredItems'])],
+  [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
   [path.join('src', 'state.cts'), new Set(['countRoadmapPhaseHeadings', 'cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],

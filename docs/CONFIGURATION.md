@@ -1384,7 +1384,10 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 **Precedence (highest → lowest):**
 1. Invocation override (e.g. `--effort` flag on `resolve-execution`)
 2. `effort.agent_overrides[<agent-id>]`
-3. `effort.routing_tier_defaults[<light|standard|heavy>]`
+3. `effort.routing_tier_defaults[<light|standard|heavy>]`, **merged per-tier over the
+   built-in tier defaults** (`light: low`, `standard: high`, `heavy: xhigh`) — a partial
+   block fills its gaps from the built-ins instead of discarding them, and an invalid
+   value falls back to that tier's built-in ([#3531](https://github.com/open-gsd/gsd-core/issues/3531))
 4. `effort.default`
 5. `"high"` (Anthropic Opus 4.8 universal default)
 
@@ -1422,6 +1425,12 @@ pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort 
 an absent key as the correct in-sync state and strips a present one; no runtime ever receives
 the literal. An explicit `inherit` also never escalates on failed attempts — your choice
 outranks the automatic ladder.
+
+Where you set `inherit` matters: every GSD agent has a routing tier, and the merged tier
+ladder (#3531) answers for tiered agents before `effort.default` is consulted — so a bare
+`effort.default: "inherit"` only affects agents **without** a catalog tier. To make tiered
+agents follow the session, set `effort.routing_tier_defaults` (per tier, or all three) or the
+agent's `agent_overrides` entry to `"inherit"`. `query resolve-execution` shows both views.
 
 `query resolve-execution --json` reports two effort views ([#3534](https://github.com/open-gsd/gsd-core/issues/3534)):
 `effort` is the **resolved** config-cascade value; `effort_effective` is what the installed

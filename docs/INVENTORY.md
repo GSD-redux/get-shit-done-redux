@@ -193,7 +193,6 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 | `code-review.md` | Review phase source changes via gsd-code-reviewer; produces REVIEW.md. | `/gsd-code-review` |
 | `complete-milestone.md` | Mark a shipped version as complete — MILESTONES.md entry, PROJECT.md evolution, tag. | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | Orchestrate parallel debug agents to investigate UAT gaps and find root causes. | `/gsd-verify-work` (auto-diagnosis) |
-| `discovery-phase.md` | Execute discovery at the appropriate depth level. | `/gsd-new-project` (discovery path) |
 | `discuss-phase-assumptions.md` | Assumptions-mode discuss — extract implementation decisions via codebase-first analysis. | `/gsd-discuss-phase` (when `discuss_mode=assumptions`) |
 | `discuss-phase-power.md` | Power-user discuss — pre-generate all questions into a JSON state file + HTML UI. | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | Extract implementation decisions through iterative gray-area discussion. | `/gsd-discuss-phase` |
@@ -266,7 +265,7 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 | `validate-phase.md` | Retroactively audit and fill Nyquist validation gaps for a completed phase. | `/gsd-validate-phase` |
 | `verify-work.md` | Conversational UAT with auto-diagnosis — produces UAT.md and fix plans. | `/gsd-verify-work` |
 
-> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`. (The former `verify-phase` workflow — goal-backward verification with no loader of its own — was deleted in #1892; its still-live gates moved to `references/verifier-phase-gates.md` behind `gsd-verifier`.)
+> **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. (The former `verify-phase` workflow — goal-backward verification with no loader of its own — was deleted in #1892; its still-live gates moved to `references/verifier-phase-gates.md` behind `gsd-verifier`.)
 
 ### Workflow Sub-Files
 
@@ -517,6 +516,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `init.cjs` | Compound context loading for each workflow type |
 | `install-effort-resolver.cjs` | Install-time effort resolution — `readGsdEffectiveEffortConfig` (merges `~/.gsd/defaults.json` + project `.planning/config.json`) + `resolveInstallTimeEffort`, extracted from `bin/install.js` (#2071) so `gsd-tools effort sync` can require it from the shipped runtime instead of the never-copied package-root installer; install.js imports them back (single source) |
 | `install-engine.cjs` | Runtime-artifact install engine — `installRuntimeArtifacts`/`uninstallRuntimeArtifacts`/`installOpencodeFamilySkills` + their helpers, extracted from `bin/install.js` (ADR-1239 Phase B, #1679); install.js imports them back and injects `getCommitAttribution` |
+| `install-fs-adapter.cjs` | Install Fs Adapter — narrow, enumerated fs seam for the `installRuntimeArtifacts` call tree (#2874, epic #2866 Phase 5, ADR-58's never-landed `cleanup` rollout step); a single ambient adapter (real fs in production, an injectable fake in tests) is swapped for the duration of one synchronous install via `withInstallFs`, extending the `deps` bag precedent already established by Runtime Artifact Install Plan Module rather than threading a new parameter through every call site; routes destination IO only — package-source lookups (`findInstallSourceRoot`, `findAgentsSourceRoot`, `readGsdCommandNames`) are deliberately unrouted, by design, not by omission |
 | `install-profiles.cjs` | Install profile allowlist + skill staging for `--minimal` install (#2762); single source of truth for which `gsd-*` skills/agents land in runtime config dirs |
 | `install-scope.cjs` | Install Scope Module — `resolveScope({id,runtime,...})` resolves the `'global'\|'local'` install-scope axis into `{id, configHome, settingsFile, consentRequired, hostPrecedenceRank}`, composing `resolveConfigHomeFromDescriptor` (`runtime-homes.cjs`) rather than modifying it (#2870, ADR-2866) |
 | `install-shadow-report.cjs` | Cross-Scope Shadow Report Module (#2873, epic #2866 Phase 4a) — read-only projection over `installed-surface-resolver.cjs`'s `resolveInstalledSurfaces`; `buildShadowReport(runtime, opts)` filters `resolveTriggerSurface`'s `shadowedBy` groups down to triggers whose underlying stem genuinely exists in BOTH scopes' own manifests (not merely the union), and `renderShadowReport` projects the typed IR into bounded, sanitized (`sanitizeForRender` strips ANSI/C0-C1/bidi overrides) operator-console lines; consumed by both the installer and the W028 health rule so install-time and `/gsd-health` report identically |

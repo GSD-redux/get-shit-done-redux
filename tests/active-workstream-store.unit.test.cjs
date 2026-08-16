@@ -1076,3 +1076,130 @@ describe('_resetControllingTtyCacheForTests: proves BOTH cache fields cleared (#
     }
   });
 });
+
+// ── #3557: Claude Code exports its session id as CLAUDE_CODE_SESSION_ID ──────
+//
+// The session-key probe listed CLAUDE_SESSION_ID / CLAUDE_CODE_SSE_PORT but not
+// CLAUDE_CODE_SESSION_ID (exported by Claude Code ≥ 2.1.132), so on Claude Code
+// the probe returned null and every concurrent session in a working tree shared
+// the single .planning/active-workstream pointer — cross-workstream STATE.md
+// writes landed silently in the wrong workstream's file.
+describe('#3557 CLAUDE_CODE_SESSION_ID session key', () => {
+  let tmpDir;
+  let saved;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3557-'));
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => {
+    restoreSessionEnv(saved);
+    cleanup(tmpDir);
+  });
+
+  // Deterministic non-TTY stdin regardless of the host terminal (pattern from
+  // the getWorkstreamSessionKey describe above, incl. the #1191 memo seam).
+  function withNonTtyStdin(fn) {
+    const origDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true, writable: true });
+    _resetControllingTtyCacheForTests();
+    try {
+      return fn();
+    } finally {
+      if (origDescriptor) Object.defineProperty(process.stdin, 'isTTY', origDescriptor);
+      else delete (process.stdin).isTTY;
+      _resetControllingTtyCacheForTests();
+    }
+  }
+
+  // Row 1 — the regression-first probe assertion (criterion 1).
+  test('session key resolves from CLAUDE_CODE_SESSION_ID alone', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, 'claude-code-session-id-sess-alpha-123',
+      'Claude Code\'s exported session id must produce a session-scoped key');
+  });
+
+  // Row 2 — end-to-end: the session adapter engages and the shared pointer is
+  // untouched; the session tmp dir is created on first write (criterion 2).
+  test('resolution writes the session-scoped pointer, never the shared file', () => {
+    makePlanningDir(tmpDir, 'workstream-a', 'workstream-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'workstream-b');
+
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    withNonTtyStdin(() => {
+      const adapter = createSessionScopedPointerAdapter(tmpDir);
+      assert.notEqual(adapter, null, 'a session key must select the session-scoped adapter');
+      adapter.write('workstream-a');
+
+      const resolved = resolveActiveWorkstream(tmpDir, [], {});
+      assert.equal(resolved.ws, 'workstream-a',
+        'the session-scoped pointer must win over the stale shared pointer');
+      assert.equal(resolved.source, 'store',
+        'adapter-backed resolution reports source "store"; the shared file '
+        + 'staying on workstream-b below is what proves the session scoping');
+    });
+
+    assert.equal(fs.readFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'utf8').trim(),
+      'workstream-b', 'the shared pointer file must be untouched');
+  });
+
+  // Row 3 — two sessions cannot observe each other's pointer (criterion 3).
+  test('distinct CLAUDE_CODE_SESSION_ID values cannot observe each other', () => {
+    makePlanningDir(tmpDir, 'workstream-a', 'workstream-b');
+
+    const alpha = createSessionScopedPointerAdapter(tmpDir, 'claude-code-session-id-sess-alpha-123');
+    const beta = createSessionScopedPointerAdapter(tmpDir, 'claude-code-session-id-sess-beta-456');
+    alpha.write('workstream-a');
+    beta.write('workstream-b');
+    assert.equal(alpha.read(), 'workstream-a');
+    assert.equal(beta.read(), 'workstream-b');
+  });
+
+  // Row 4 — no identity at all: legacy headless fallback unchanged (criterion 4).
+  test('no session identity falls back to the shared pointer', () => {
+    makePlanningDir(tmpDir, 'workstream-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'workstream-b');
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, null);
+    const resolved = resolveActiveWorkstream(tmpDir, [], {});
+    assert.equal(resolved.ws, 'workstream-b');
+    assert.equal(resolved.source, 'store');
+  });
+
+  // Row 5 — the new key must not disturb existing precedence (criterion 6).
+  test('existing key precedence unchanged by the new key', () => {
+    process.env.GSD_SESSION_KEY = 'explicit-key';
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, 'gsd-session-key-explicit-key',
+      'GSD_SESSION_KEY stays ahead of runtime keys in the probe order');
+
+    // Pin the new key's position against BOTH immediate neighbors — a swap
+    // with either would silently change which signal wins when Claude Code
+    // exports more than one (review finding on #3557).
+    delete process.env.GSD_SESSION_KEY;
+    process.env.CLAUDE_SESSION_ID = 'legacy-id';
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-session-id-legacy-id',
+      'CLAUDE_SESSION_ID stays ahead of CLAUDE_CODE_SESSION_ID');
+
+    delete process.env.CLAUDE_SESSION_ID;
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    process.env.CLAUDE_CODE_SSE_PORT = '9999';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-code-session-id-sess-alpha-123',
+      'CLAUDE_CODE_SESSION_ID stays ahead of CLAUDE_CODE_SSE_PORT');
+  });
+
+  // Row 6 — helper scrub lists must know the new key, or the suite is
+  // nondeterministic when run under Claude Code itself (criterion 5).
+  test('helpers scrub CLAUDE_CODE_SESSION_ID with the other session vars', () => {
+    const { SESSION_ENV_KEYS, SESSION_IDENTITY_ENV_KEYS } = require('./helpers.cjs');
+    assert.ok(SESSION_ENV_KEYS.includes('CLAUDE_CODE_SESSION_ID'),
+      'SESSION_ENV_KEYS must scrub CLAUDE_CODE_SESSION_ID');
+    assert.ok(SESSION_IDENTITY_ENV_KEYS.includes('CLAUDE_CODE_SESSION_ID'),
+      'SESSION_IDENTITY_ENV_KEYS must scrub CLAUDE_CODE_SESSION_ID');
+  });
+});

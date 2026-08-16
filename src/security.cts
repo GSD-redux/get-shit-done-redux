@@ -413,6 +413,66 @@ export function sanitizeForDisplay(text: unknown): string {
   return sanitized;
 }
 
+/**
+ * Sanitize a value that must render as a SINGLE LINE and is derived from a
+ * filesystem name (a phase directory's number/name token, an archived
+ * milestone label, a bare filename) — not from file/frontmatter CONTENT.
+ *
+ * Why this is NOT `sanitizeForDisplay`: that helper's job is multi-line
+ * prose — it strips whole protocol-leak LINES while deliberately preserving
+ * `\n` between legitimate ones (see its docstring and
+ * `tests/security.test.cjs`'s neighbouring describe). A filesystem name is
+ * the opposite shape: it is supposed to be one line, so a `\n`/`\r` inside
+ * one is never legitimate content to preserve — it is an attacker (or a
+ * doctored checkout) using the directory NAME itself as the injection
+ * vector. #3458's reproduction: a phase directory literally named
+ *   `zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED`
+ * flows verbatim into `audit-open`'s human report (the phase-number
+ * fallback taken when the name doesn't match `PHASE_NUMBER_TOKEN_SOURCE`).
+ * `sanitizeForDisplay` would pass every one of those bytes straight through
+ * — by design, since it never touches control characters — so the embedded
+ * `\n` becomes a real newline in the report, printing a forged
+ * "0 open items require decisions." as its own line, and the raw ESC bytes
+ * reach the terminal.
+ *
+ * This helper closes that hole by ESCAPING (never silently stripping) the
+ * C0 control range (0x00–0x1F, including ESC 0x1B, CR, LF), DEL (0x7F), and
+ * the C1 range (0x80–0x9F) into a visible representation (`\n`, `\x1b`,
+ * ...). Escaping rather than stripping is deliberate: a reviewer reading the
+ * report should be able to SEE that a name was doctored, not have it quietly
+ * normalized away as if nothing happened. Every other character — including
+ * all ordinary printable and non-ASCII text — passes through byte-identical.
+ */
+export function sanitizeLabel(text: unknown): string {
+  if (!text || typeof text !== 'string') return text as string;
+
+  const NAMED_ESCAPES: Record<number, string> = {
+    0x00: '\\0',
+    0x07: '\\a',
+    0x08: '\\b',
+    0x09: '\\t',
+    0x0a: '\\n',
+    0x0b: '\\v',
+    0x0c: '\\f',
+    0x0d: '\\r',
+    0x1b: '\\x1b',
+  };
+
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0) as number;
+    const isC0 = code <= 0x1f;
+    const isDel = code === 0x7f;
+    const isC1 = code >= 0x80 && code <= 0x9f;
+    if (isC0 || isDel || isC1) {
+      out += NAMED_ESCAPES[code] ?? `\\x${code.toString(16).padStart(2, '0')}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 // ─── Shell Safety ───────────────────────────────────────────────────────────────────────
 
 /**

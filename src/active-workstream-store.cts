@@ -20,6 +20,15 @@ const WORKSTREAM_SESSION_ENV_KEYS: ReadonlyArray<string> = [
   'GSD_SESSION_KEY',
   'CODEX_THREAD_ID',
   'CLAUDE_SESSION_ID',
+  // #3557 — Claude Code (≥ 2.1.132) exports its session id to Bash-tool
+  // subprocesses as CLAUDE_CODE_SESSION_ID. Without it the probe returned
+  // null on Claude Code, so every concurrent session in a working tree
+  // shared the single .planning/active-workstream pointer and cross-
+  // workstream STATE.md writes landed silently in the wrong file. Inserted
+  // beside the other runtime keys without reordering any existing entry;
+  // ahead of CLAUDE_CODE_SSE_PORT so the canonical id wins when both are
+  // present (runtime identity outranks terminal identity in this list).
+  'CLAUDE_CODE_SESSION_ID',
   'CLAUDE_CODE_SSE_PORT',
   'OPENCODE_SESSION_ID',
   'GEMINI_SESSION_ID',

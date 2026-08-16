@@ -642,7 +642,8 @@ Check for auto-advance trigger:
    ```
 3. Read consolidated auto-mode (`active` = chain flag OR user preference):
    ```bash
-   AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null || echo "false")
+   AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null)
+   AUTO_MODE="${AUTO_MODE:-false}"
    ```
 
 **If `--auto` flag present AND `AUTO_MODE` is not true:**

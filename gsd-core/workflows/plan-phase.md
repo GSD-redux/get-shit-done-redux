@@ -159,7 +159,7 @@ Defer the `phase.mvp-mode` query until `PHASE` is finalized (after explicit argu
 ```bash
 WALKING_SKELETON=false
 if [ "$MVP_MODE" = "true" ] && [ "$padded_phase" = "01" ]; then
-  PRIOR_SUMMARIES=$(gsd_run query phases.list --pick summaries_total 2>/dev/null || echo "0")
+  PRIOR_SUMMARIES=$(gsd_run query phases.list --type summaries --pick count 2>/dev/null)
   if [ "$PRIOR_SUMMARIES" = "0" ]; then WALKING_SKELETON=true; fi
 fi
 ```
@@ -491,7 +491,8 @@ Display: `Using UI design contract: ${UI_SPEC_PATH}`. Continue to step 6.
 Read the ephemeral auto-chain flag:
 
 ```bash
-AUTO_CHAIN=$(gsd_run query check auto-mode --pick auto_chain_active 2>/dev/null || echo "false")
+AUTO_CHAIN=$(gsd_run query check auto-mode --pick auto_chain_active 2>/dev/null)
+AUTO_CHAIN="${AUTO_CHAIN:-false}"
 ```
 
 **Branch 5 — `AUTO_CHAIN` is `true` (pipeline / `--auto`):** Fire each active UI **step** hook — runs independently of whether a gate is active (covers `{ui_phase:true,ui_safety_gate:false}`). For each entry in `activeHooks` (in array order) where `kind == "step"` and `ref.skill` is set:
@@ -1376,7 +1377,8 @@ Proactive, non-blocking coverage report gated on `workflow.post_planning_gaps`
 
 ```bash
 PLAN_POST_HOOKS_JSON=$(gsd_run loop render-hooks plan:post --raw)
-PHASE_REQ_IDS=$(gsd_run query init.plan-phase "$PHASE" --pick phase_req_ids 2>/dev/null || echo TBD)
+PHASE_REQ_IDS=$(gsd_run query init.plan-phase "$PHASE" --pick phase_req_ids 2>/dev/null)
+PHASE_REQ_IDS="${PHASE_REQ_IDS:-TBD}"
 ```
 
 Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If the

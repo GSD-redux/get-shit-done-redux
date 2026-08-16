@@ -468,7 +468,29 @@ Archive milestone, tag release.
 | CONTEXT questions | `*-CONTEXT.md` | questions left open |
 | **Deferred items** | `deferred-items.md` | entry lacks `status: resolved` |
 
-If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowledge all` / `[C] Cancel`. `[A]` records the items to `STATE.md` under its own `## Deferred Items` heading and closes as `override_closeout`; an all-clear closes as `verified_closeout`.
+The four phase-scoped categories above (UAT gaps, Verification gaps, CONTEXT questions, Deferred items) read phase directories from **both** the active `.planning/phases/` root and every archived `.planning/milestones/vX.Y-phases/` root (#3458) — an item still unresolved when its milestone closed and its phase directory archived stays visible in every later audit instead of silently disappearing. In `--json` output, an item sourced from an archived milestone carries an `archived_milestone` field (e.g. `"v1.0"`); active items omit the field entirely. The human-readable report labels an archived item's line with `(archived vX.Y)` so a phase number that repeats across milestones (numbering restarts at `01` after each archive) is not misread as one duplicate line.
+
+If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowledge all` / `[C] Cancel`. `[A]` calls `gsd-tools audit-open acknowledge` once per open item — the CLI writer that actually suppresses each item starting at the next `audit-open` scan — then records the same items to `STATE.md` under its own `## Deferred Items` heading (a disclosure record, not the suppression mechanism) and closes as `override_closeout`; an all-clear closes as `verified_closeout`.
+
+**`audit-open acknowledge` (#3458 follow-up).** Suppresses one open item by writing (or refreshing) a verdict-preserving `audit_acknowledged` marker in the artifact's own frontmatter:
+
+```bash
+gsd-tools audit-open acknowledge --category <category> --milestone <version> [--at <YYYY-MM-DD>] <identifier flags…>
+```
+
+`--category` and `--milestone` are always required; `--at` defaults to today. The identifier flags depend on `--category`:
+
+| `--category` | Identifier flags |
+|---------------|-------------------|
+| `debug_sessions` | `--slug <slug>` |
+| `threads` | `--slug <slug>` |
+| `seeds` | `--seed-id <id>` |
+| `todos` | `--filename <file>` |
+| `quick_tasks` | `--dir <dir>` (the `.planning/quick/<dir>/` directory name — note this is the ORIGINAL directory name, not the date-stripped `slug` the audit JSON displays) |
+| `uat_gaps`, `verification_gaps`, `context_questions` | `--phase <phase> --file <file>` [`--archived-milestone <version>`] |
+| `deferred_items` | `--phase <phase> --file <file> --text <exact bullet text>` [`--archived-milestone <version>`] |
+
+The marker never overwrites the artifact's own `status:` field for the eight frontmatter-marker categories — only `deferred_items` is the deliberate exception, where the marker IS the entry's `status:` field (there is no other meaning for that field on a `deferred-items.md` bullet). The marker also self-invalidates: it snapshots the artifact's current observed state at acknowledgment time — its `status:` for most categories, a composite of `status:` plus its open-scenario count for `uat_gaps` (a status can stay the same while more scenarios go pending), and a content digest of the full question set (not just a count) for `context_questions` (so replacing every question's text while holding the count steady still invalidates the snapshot) — and the item resurfaces on its own the moment that snapshot no longer matches — an edited, reopened, or otherwise-changed artifact is never silently suppressed forever. `--json` output on `audit-open` (the `run` subcommand, default) now reports an `acknowledged` count per category alongside `counts`, plus an `acknowledged.total`, so a clean audit (`counts.total === 0`) can be told apart from one that is clean only because earlier items are still being suppressed (`acknowledged.total > 0`).
 
 > **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
 

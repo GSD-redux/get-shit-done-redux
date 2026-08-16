@@ -1133,7 +1133,7 @@ Plans with `autonomous: false` require user interaction.
 **Auto-mode checkpoint handling:**
 Read auto-advance config (chain flag OR user preference — same boolean as `check.auto-mode`):
 ```bash
-AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null || echo "false")
+AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null)
 ```
 
 When executor returns a checkpoint AND `AUTO_MODE` is `true`:

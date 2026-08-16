@@ -6069,7 +6069,6 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
 // ─────────────────────────────────────────────────────────────────────────────
 
 {
-  const PMG_WF = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-milestone-gaps.md');
   const IMPORT_WF = path.join(__dirname, '..', 'gsd-core', 'workflows', 'import.md');
   const BACKLOG_WF = path.join(__dirname, '..', 'gsd-core', 'workflows', 'add-backlog.md');
 
@@ -6090,29 +6089,9 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       || /mkdir[^`\r\n]*\.planning\/phases\/\$\{(?:NEXT|NN|PHASE)[^}]*\}-/.test(content);
   }
 
-  describe('bug-3298 — plan-milestone-gaps.md must not construct bare {NN}-{name} phase dirs', () => {
-    test('workflow file exists', () => {
-      assert.ok(fs.existsSync(PMG_WF), `plan-milestone-gaps.md must exist at ${PMG_WF}`);
-    });
-
-    test('step 8 must not use bare {NN}-{name} mkdir pattern', () => {
-      const content = readWorkflow(PMG_WF);
-      assert.ok(
-        !containsBareTemplateMkdir(content),
-        'plan-milestone-gaps.md must not contain bare mkdir .planning/phases/{NN}-{name} pattern — use phase.add or expected_phase_dir',
-      );
-    });
-
-    test('step 8 must use expected_phase_dir or phase.add for directory creation', () => {
-      const content = readWorkflow(PMG_WF);
-      const usesExpectedPhaseDir = content.includes('expected_phase_dir');
-      const usesPhaseAdd = content.includes('phase.add');
-      assert.ok(
-        usesExpectedPhaseDir || usesPhaseAdd,
-        'plan-milestone-gaps.md must use expected_phase_dir (from init.phase-op) or phase.add to create phase directories with project_code prefix',
-      );
-    });
-  });
+  // The plan-milestone-gaps arm was removed along with that workflow file in
+  // #3560 (its command was deleted by #2790). The import.md and
+  // add-backlog.md arms below still guard the same phase-dir prefix drift.
 
   describe('bug-3298 — import.md must not construct bare {NN}-{slug} phase dirs', () => {
     test('workflow file exists', () => {

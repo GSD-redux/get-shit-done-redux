@@ -85,6 +85,16 @@ const ALL_PATTERNS = [...INJECTION_PATTERNS, ...SUMMARISATION_PATTERNS];
 // construction. Normalized to forward slashes to match `p` below.
 const OWN_BUNDLE_PREFIX = __dirname.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
 
+// Synthetic rule ids for the finding classes that have no entry in
+// MARKDOWN_LINK_PATTERNS. Frozen and referenced from BOTH the push sites and
+// renderFinding so the two can never drift — a bare literal repeated at each
+// site is how a rename silently falls through to the generic render branch.
+const RULE_IDS = Object.freeze({
+  INJECTION_PATTERN: 'INJECTION-PATTERN',
+  INVISIBLE_UNICODE: 'INVISIBLE-UNICODE',
+  UNICODE_TAG_BLOCK: 'UNICODE-TAG-BLOCK',
+});
+
 function isExcludedPath(filePath) {
   const p = filePath.replace(/\\/g, '/');
   return (
@@ -254,12 +264,19 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // Typed findings IR — single source of truth for both the machine-readable
+    // `findings` array and the rendered advisory prose. Never build these as two
+    // parallel arrays: that invites the generative-fix-divergence defect class
+    // where the rendered text and the structured data silently drift apart.
     const findings = [];
 
     for (const pattern of ALL_PATTERNS) {
       if (pattern.test(content)) {
         // Trim pattern source for readable output
-        findings.push(pattern.source.replace(/\\s\+/g, '-').replace(/[()\\]/g, '').substring(0, 50));
+        findings.push({
+          ruleId: RULE_IDS.INJECTION_PATTERN,
+          match: pattern.source.replace(/\\s\+/g, '-').replace(/[()\\]/g, '').substring(0, 50),
+        });
       }
     }
 
@@ -271,19 +288,19 @@ process.stdin.on('end', () => {
         const m = line.match(entry.pattern);
         if (!m) continue;
         if (entry.safePredicate && entry.safePredicate(line)) continue;
-        findings.push(`${entry.ruleId}:${m[0].substring(0, 40)}`);
+        findings.push({ ruleId: entry.ruleId, match: m[0].substring(0, 40) });
       }
     }
 
     // Invisible Unicode (zero-width, RTL override, soft hyphen, BOM)
     if (/[\u200B-\u200F\u2028-\u202F\uFEFF\u00AD\u2060-\u2069]/.test(content)) {
-      findings.push('invisible-unicode');
+      findings.push({ ruleId: RULE_IDS.INVISIBLE_UNICODE, match: null });
     }
 
     // Unicode tag block U+E0000–E007F (invisible instruction injection vector)
     try {
       if (/[\u{E0000}-\u{E007F}]/u.test(content)) {
-        findings.push('unicode-tag-block');
+        findings.push({ ruleId: RULE_IDS.UNICODE_TAG_BLOCK, match: null });
       }
     } catch {
       // Engine does not support Unicode property escapes — skip this check
@@ -293,6 +310,16 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // Renders one finding back into the exact prose fragment the advisory has
+    // always embedded. Kept as the ONLY place that maps IR -> text, so the
+    // `additionalContext` string and the `findings` array can never diverge.
+    function renderFinding(f) {
+      if (f.ruleId === RULE_IDS.INVISIBLE_UNICODE) return 'invisible-unicode';
+      if (f.ruleId === RULE_IDS.UNICODE_TAG_BLOCK) return 'unicode-tag-block';
+      if (f.ruleId === RULE_IDS.INJECTION_PATTERN) return f.match;
+      return `${f.ruleId}:${f.match}`;
+    }
+
     const severity = findings.length >= 3 ? 'HIGH' : 'LOW';
     const label = toolName === 'Read' ? path.basename(source) : source;
     const detail = severity === 'HIGH'
@@ -300,7 +327,7 @@ process.stdin.on('end', () => {
       : 'Single pattern match may be a false positive (e.g., documentation). Proceed with awareness.';
     const advisory =
       `\u26a0\ufe0f INJECTION SCAN [${severity}] (${toolName}): "${label}" triggered ` +
-      `${findings.length} pattern(s): ${findings.join(', ')}. ` +
+      `${findings.length} pattern(s): ${findings.map(renderFinding).join(', ')}. ` +
       `This content is now in your conversation context. ${detail} Source: ${source}`;
 
     // Opt-in blocking: only when configured AND high-confidence
@@ -317,8 +344,8 @@ process.stdin.on('end', () => {
     const output = blocking
       ? { decision: 'block',
           reason: `Prompt-injection blocked (${toolName}). ${advisory}`,
-          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory } }
-      : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory } };
+          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings } }
+      : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings } };
 
     process.stdout.write(JSON.stringify(output));
   } catch {

@@ -10,6 +10,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+// #2874 (ADR-58 cleanup phase): route the staging functions' fs calls
+// through the installRuntimeArtifacts call tree's injectable seam — see
+// install-fs-adapter.cts's module doc. Resolves to real `node:fs` unless the
+// top-level installRuntimeArtifacts call injected a `deps.fs`. Only the
+// staging functions reachable FROM that call tree are routed
+// (stageSkillsForProfile / stageAgentsForProfile /
+// stageAgentsForRuntimeWithConverter / stageSkillsForRuntimeAsSkills /
+// stageCommandsForRuntimeFlat / buildNamespaceBundleMap) — the profile-marker
+// and manifest-loading helpers below are not on that call tree and keep
+// using real `fs` directly.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, mkInstallTempDir } = installFsAdapter;
 import { platformWriteSync } from './shell-command-projection.cjs';
 // #2322: reuse the existing pure path-containment seam (ADR-1239 Phase C-2)
 // instead of hand-rolling a new traversal check for capability skill stems.
@@ -301,16 +314,49 @@ function resolveProfile({ modes, manifest, _profilesOverride, registry }: Resolv
 const STAGED_DIRS = new Set<string>();
 let exitHandlerRegistered = false;
 
+// #2874 leak-fix: `cleanupStagedSkills` runs at process exit — AFTER
+// `withInstallFs` has already restored `current` back to the real adapter
+// (install-fs-adapter.cts's module doc, "SYNCHRONOUS-ONLY / RE-ENTRANCY
+// ASSUMPTION" — extended there to reference this map). A dir staged during a
+// fake-adapter call must be cleaned up with THAT SAME fake adapter, not with
+// whatever is ambiently active later, or an exit handler would perform real
+// filesystem IO on a path that only ever existed in the fake's in-memory
+// store. Capturing the adapter OBJECT `installFs()` returns at registration
+// time (not the ambient `current` variable, which changes) means cleanup
+// always replays the exact adapter that created the path. Dirs added to
+// STAGED_DIRS without going through `registerStagedDir` (the deprecated
+// `stageSkillsForMode`, which creates its stage dir via raw `fs.mkdtempSync`
+// and was never on the injectable seam) have no entry here and fall back to
+// real `fs.rmSync` below — the same real fs it always used to create them.
+const STAGED_DIR_ADAPTERS = new Map<string, ReturnType<typeof installFs>>();
+
+/**
+ * Register a dir just staged through the injectable seam (`installFs()`) for
+ * exit-time cleanup, capturing the adapter that staged it alongside the path.
+ * See `STAGED_DIR_ADAPTERS`'s comment for why the capture matters.
+ */
+function registerStagedDir(dir: string): void {
+  STAGED_DIRS.add(dir);
+  STAGED_DIR_ADAPTERS.set(dir, installFs());
+  ensureExitCleanup();
+}
+
 function cleanupStagedSkills(): void {
   for (const dir of STAGED_DIRS) {
+    const adapter = STAGED_DIR_ADAPTERS.get(dir);
     try {
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (adapter) {
+        adapter.rmSync(dir, { recursive: true, force: true });
+      } else {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     } catch {
       // Best-effort: missing dir or permission error shouldn't crash a
       // successful install. The OS reaps tmpdir eventually.
     }
   }
   STAGED_DIRS.clear();
+  STAGED_DIR_ADAPTERS.clear();
 }
 
 // Signals we register a cleanup handler for in addition to the natural
@@ -340,27 +386,26 @@ function ensureExitCleanup(): void {
  */
 function stageSkillsForProfile(srcDir: string, resolvedProfile: ResolvedProfile): string {
   if (resolvedProfile.skills === '*') return srcDir;
-  if (!fs.existsSync(srcDir)) return srcDir;
+  if (!installFs().existsSync(srcDir)) return srcDir;
 
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-profile-skills-'));
+  const stageDir = mkInstallTempDir('gsd-profile-skills-');
   try {
-    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+    const entries = installFs().readdirSync(srcDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;
       const stem = entry.name.slice(0, -3);
       if (!(resolvedProfile.skills).has(stem)) continue;
-      fs.copyFileSync(
+      installFs().copyFileSync(
         path.join(srcDir, entry.name),
         path.join(stageDir, entry.name),
       );
     }
   } catch (err) {
-    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -386,19 +431,19 @@ function stageSkillsForProfile(srcDir: string, resolvedProfile: ResolvedProfile)
  */
 function stageAgentsForProfile(srcAgentsDir: string, resolvedProfile: ResolvedProfile): string {
   if (resolvedProfile.skills === '*') return srcAgentsDir;
-  if (!fs.existsSync(srcAgentsDir)) return srcAgentsDir;
+  if (!installFs().existsSync(srcAgentsDir)) return srcAgentsDir;
 
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-profile-agents-'));
+  const stageDir = mkInstallTempDir('gsd-profile-agents-');
   try {
     if (resolvedProfile.agents instanceof Set && resolvedProfile.agents.size > 0) {
-      const entries = fs.readdirSync(srcAgentsDir, { withFileTypes: true });
+      const entries = installFs().readdirSync(srcAgentsDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isFile()) continue;
         if (!entry.name.endsWith('.md')) continue;
         // Agent stem is the full filename without extension, e.g. "gsd-planner"
         const stem = entry.name.slice(0, -3);
         if (!resolvedProfile.agents.has(stem)) continue;
-        fs.copyFileSync(
+        installFs().copyFileSync(
           path.join(srcAgentsDir, entry.name),
           path.join(stageDir, entry.name),
         );
@@ -406,11 +451,10 @@ function stageAgentsForProfile(srcAgentsDir: string, resolvedProfile: ResolvedPr
     }
     // If agents is empty Set, we produce an empty stageDir (no agents for this profile)
   } catch (err) {
-    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -434,16 +478,16 @@ function buildNamespaceBundleMap(srcCommandsDir: string): NamespaceBundleMap {
   const routerStems = new Set<string>();
   const routerChildren = new Map<string, string[]>();
   const childToRouters = new Map<string, string[]>();
-  if (!fs.existsSync(srcCommandsDir)) {
+  if (!installFs().existsSync(srcCommandsDir)) {
     return { routerStems, routerChildren, childToRouters };
   }
-  for (const entry of fs.readdirSync(srcCommandsDir, { withFileTypes: true })) {
+  for (const entry of installFs().readdirSync(srcCommandsDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
     if (!entry.name.startsWith('ns-')) continue;
     const stem = entry.name.slice(0, -3);
     let children: string[] = [];
     try {
-      children = parseRequires(fs.readFileSync(path.join(srcCommandsDir, entry.name), 'utf8'));
+      children = parseRequires(installFs().readFileSync(path.join(srcCommandsDir, entry.name), 'utf8'));
     } catch { children = []; }
     routerStems.add(stem);
     routerChildren.set(stem, children);
@@ -665,7 +709,7 @@ function stageSkillsForRuntimeAsSkills(
   nested = false,
   registry?: CapabilityRegistry,
 ): string {
-  if (!fs.existsSync(srcCommandsDir)) return srcCommandsDir;
+  if (!installFs().existsSync(srcCommandsDir)) return srcCommandsDir;
 
   // Nesting applies to the `full` install AND to any surface whose skill set
   // still contains every namespace router (a full/reset surface). It must NOT
@@ -689,16 +733,16 @@ function stageSkillsForRuntimeAsSkills(
   // ALWAYS wins on collision" without re-deriving membership.
   const firstPartyStems = new Set<string>();
 
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-profile-runtime-skills-'));
+  const stageDir = mkInstallTempDir('gsd-profile-runtime-skills-');
   try {
-    const entries = fs.readdirSync(srcCommandsDir, { withFileTypes: true });
+    const entries = installFs().readdirSync(srcCommandsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;
       const stem = entry.name.slice(0, -3);
       if (resolvedProfile.skills !== '*' && !(resolvedProfile.skills).has(stem)) continue;
       firstPartyStems.add(stem);
-      const content = fs.readFileSync(path.join(srcCommandsDir, entry.name), 'utf8');
+      const content = installFs().readFileSync(path.join(srcCommandsDir, entry.name), 'utf8');
       const skillName = `${prefix}${stem}`;
       const converted = converter(content, skillName);
 
@@ -706,8 +750,8 @@ function stageSkillsForRuntimeAsSkills(
         // Router skill: rewrite its routing table to the nested Read pattern and
         // emit it as the single top-level bundle entry.
         const destDir = path.join(stageDir, skillName);
-        fs.mkdirSync(destDir, { recursive: true });
-        fs.writeFileSync(path.join(destDir, 'SKILL.md'), transformRouterBodyToNested(converted));
+        installFs().mkdirSync(destDir, { recursive: true });
+        installFs().writeFileSync(path.join(destDir, 'SKILL.md'), transformRouterBodyToNested(converted));
         continue;
       }
 
@@ -717,8 +761,8 @@ function stageSkillsForRuntimeAsSkills(
         // top-level eager listing while staying readable by file path (#69).
         for (const routerStem of bundles!.childToRouters.get(stem)!) {
           const destDir = path.join(stageDir, `${prefix}${routerStem}`, 'skills', stem);
-          fs.mkdirSync(destDir, { recursive: true });
-          fs.writeFileSync(path.join(destDir, 'SKILL.md'), converted);
+          installFs().mkdirSync(destDir, { recursive: true });
+          installFs().writeFileSync(path.join(destDir, 'SKILL.md'), converted);
         }
         continue;
       }
@@ -726,8 +770,8 @@ function stageSkillsForRuntimeAsSkills(
       // Flat top-level skill (default behaviour; also the unrouted fallback when
       // nesting is active).
       const destDir = path.join(stageDir, skillName);
-      fs.mkdirSync(destDir, { recursive: true });
-      fs.writeFileSync(path.join(destDir, 'SKILL.md'), converted);
+      installFs().mkdirSync(destDir, { recursive: true });
+      installFs().writeFileSync(path.join(destDir, 'SKILL.md'), converted);
     }
 
     // #2322: materialize installed THIRD-PARTY capability skills, bound to
@@ -768,21 +812,20 @@ function stageSkillsForRuntimeAsSkills(
         const skillName = `${prefix}${stem}`;
         if (!isPathConfined(skillName, stageDir)) continue; // defense-in-depth
         const destDir = path.join(stageDir, skillName);
-        fs.mkdirSync(destDir, { recursive: true });
-        fs.writeFileSync(path.join(destDir, 'SKILL.md'), found.content);
+        installFs().mkdirSync(destDir, { recursive: true });
+        installFs().writeFileSync(path.join(destDir, 'SKILL.md'), found.content);
         // #2322 HIGH-3: persist the capability-owned marker so a later prune
         // pass (surface.cts pruneSkillDirs) can identify — and remove — this
         // directory even once the owning capability is uninstalled/unsurfaced
         // and no longer appears in any registry view.
-        fs.writeFileSync(path.join(destDir, CAPABILITY_SKILL_MARKER), found.capId + '\n', 'utf8');
+        installFs().writeFileSync(path.join(destDir, CAPABILITY_SKILL_MARKER), found.capId + '\n', 'utf8');
       }
     }
   } catch (err) {
-    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -840,11 +883,11 @@ function stageAgentsForRuntimeWithConverter(
   isGlobal = false,
   agentCtx?: AgentCtx,
 ): string {
-  if (!fs.existsSync(srcAgentsDir)) return srcAgentsDir;
+  if (!installFs().existsSync(srcAgentsDir)) return srcAgentsDir;
 
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-profile-runtime-agents-'));
+  const stageDir = mkInstallTempDir('gsd-profile-runtime-agents-');
   try {
-    const entries = fs.readdirSync(srcAgentsDir, { withFileTypes: true });
+    const entries = installFs().readdirSync(srcAgentsDir, { withFileTypes: true });
     // Resolve cmdNames once per staging call (not per file) for performance.
     const cmdNames = agentCtx ? _readGsdCommandNames() : [];
     for (const entry of entries) {
@@ -858,7 +901,7 @@ function stageAgentsForRuntimeWithConverter(
         }
       }
       const agentSourcePath = path.join(srcAgentsDir, entry.name);
-      let content = fs.readFileSync(agentSourcePath, 'utf8');
+      let content = installFs().readFileSync(agentSourcePath, 'utf8');
       // #2995: strip gsd:section markers FIRST — before path rewrites, attribution,
       // and the per-runtime converter. Byte-identical (no-op) for an unmarked agent;
       // throws loudly naming the file for a malformed marker, never emitting a
@@ -878,14 +921,13 @@ function stageAgentsForRuntimeWithConverter(
         // Backward-compat: only apply the converter (no cross-cutting)
         content = converter(content, isGlobal);
       }
-      fs.writeFileSync(path.join(stageDir, entry.name), content, 'utf8');
+      installFs().writeFileSync(path.join(stageDir, entry.name), content, 'utf8');
     }
   } catch (err) {
-    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 
@@ -918,30 +960,29 @@ function stageCommandsForRuntimeFlat(
   converter: (content: string, commandName: string) => string,
   prefix: string,
 ): string {
-  if (!fs.existsSync(srcCommandsDir)) return srcCommandsDir;
+  if (!installFs().existsSync(srcCommandsDir)) return srcCommandsDir;
 
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-profile-runtime-commands-'));
+  const stageDir = mkInstallTempDir('gsd-profile-runtime-commands-');
   try {
-    const entries = fs.readdirSync(srcCommandsDir, { withFileTypes: true });
+    const entries = installFs().readdirSync(srcCommandsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;
       const stem = entry.name.slice(0, -3);
       if (resolvedProfile.skills !== '*' && !(resolvedProfile.skills).has(stem)) continue;
-      const content = fs.readFileSync(path.join(srcCommandsDir, entry.name), 'utf8');
+      const content = installFs().readFileSync(path.join(srcCommandsDir, entry.name), 'utf8');
       // Pass the full command name (with prefix) to the converter so it can
       // reference the installed command name in the body (e.g. for descriptions).
       // The staged file itself is named without the prefix; _copyStaged adds it.
       const commandName = `${prefix}${stem}`;
       const converted = converter(content, commandName);
-      fs.writeFileSync(path.join(stageDir, `${stem}.md`), converted);
+      installFs().writeFileSync(path.join(stageDir, `${stem}.md`), converted);
     }
   } catch (err) {
-    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
-  STAGED_DIRS.add(stageDir);
-  ensureExitCleanup();
+  registerStagedDir(stageDir);
   return stageDir;
 }
 

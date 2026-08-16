@@ -15,7 +15,6 @@
   "tests/autonomous-to-flag.test.cjs :: source-text-is-the-product",
   "tests/chain-flag-plan-phase.test.cjs :: source-text-is-the-product",
   "tests/changeset-cli.test.cjs :: source-text-is-the-product",
-  "tests/check-update-config-dir.test.cjs :: structural-regression-guard",
   "tests/claude-md.test.cjs :: source-text-is-the-product",
   "tests/cleanup-branch-pruning.test.cjs :: source-text-is-the-product",
   "tests/cline-install.test.cjs :: source-text-is-the-product",

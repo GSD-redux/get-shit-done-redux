@@ -121,9 +121,27 @@ interface ArchiveVersionDir {
  * exactly the shape that let the original #2855 bug (hardcoded root path)
  * exist in one copy and not the other. Sharing this seam means a future
  * change to how the archive tree is located only needs to happen once.
- * Most-recent-milestone-first order (reverse-sorted directory names).
+ * Most-recent-milestone-first order, compared numerically segment-by-segment
+ * on the version (e.g. `v1.10` before `v1.9`) — NOT lexicographically. A
+ * lexicographic `.sort().reverse()` (the prior implementation) ranks `v1.9`
+ * ahead of `v1.10` because the string `"1.9"` sorts after `"1.10"`; that is
+ * deterministic but wrong for every double-digit-or-higher minor/patch
+ * version, and #3458 is what first surfaces archived phases in audit output
+ * where the misordering becomes user-visible.
  * Never throws: an absent/unreadable milestones/ dir yields [].
  */
+function compareArchiveVersionDesc(aName: string, bName: string): number {
+  const aParts = (aName.match(/^v([\d.]+)-phases$/)?.[1] ?? '').split('.').map(Number);
+  const bParts = (bName.match(/^v([\d.]+)-phases$/)?.[1] ?? '').split('.').map(Number);
+  const len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    const a = aParts[i] ?? 0;
+    const b = bParts[i] ?? 0;
+    if (a !== b) return b - a; // descending: newest (numerically largest) first
+  }
+  return 0;
+}
+
 function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
   const milestonesDir = path.join(planningDir(cwd), 'milestones');
   if (!fs.existsSync(milestonesDir)) return [];
@@ -133,8 +151,7 @@ function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
     return milestoneEntries
       .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
       .map(e => e.name)
-      .sort()
-      .reverse()
+      .sort(compareArchiveVersionDesc)
       .map(archiveName => ({
         version: archiveName.match(/^(v[\d.]+)-phases$/)![1],
         archivePath: path.join(milestonesDir, archiveName),

@@ -792,6 +792,17 @@ The installer (`bin/install.js`, ~10,700 lines) handles:
 8. **Manifest tracking** — Writes `gsd-file-manifest.json` for clean uninstall. The manifest also records which `runtime` and which `scope` (`global`/`local`) wrote it, under a `manifestVersion` schema field, so a reader can answer "which surfaces are installed, at which scopes" without inferring it from the directory the file sits in ([ADR 2866](adr/2866-install-surface-resolution.md), #2872). Manifests written before that carry no such fields and are read without error — no reinstall is required. See [Installer Migrations → File Manifest](installer-migrations.md#file-manifest)
 9. **Uninstall mode** — `--uninstall` removes all GSD files, hooks, and settings
 
+`installRuntimeArtifacts` (`install-engine.cjs`) returns the executed plan it ran — per kind, per
+scope, including on the combined OpenCode/Kilo family path, which previously early-returned `void` —
+rather than being observable only by re-reading disk afterward. Its destination-writing IO (copies,
+removals, snapshot/restore, best-effort cleanup) now routes through an injectable fs seam,
+`install-fs-adapter.cjs`, so a full install can be exercised against a fake adapter with zero real
+destination IO; locating this package's own source tree remains real by design (a destination-fake
+is never seeded with the repo's own paths). Writes stay byte-identical and existing `void`-ignoring
+callers are unaffected. This completes [ADR 58](adr/58-runtime-install-policy-module.md)'s
+`registry → adapter → helpers → cleanup` rollout — the `cleanup` step had not previously landed
+(#2874, epic #2866 Phase 5).
+
 Install-time file moves, stale-artifact cleanup, config rewrites, and user-data
 preservation are governed by the Installer Migration Module. See
 [Installer Migrations](installer-migrations.md) and
@@ -889,6 +900,16 @@ For a conceptual overview of how the hook and guard layers fit into the broader 
 - Scans content for prompt injection patterns (role override, instruction bypass, system tag injection)
 - Advisory-only — logs detection, does not block
 - Patterns are inlined (subset of `security.cjs`) for hook independence
+
+**Read Injection Scanner** (`gsd-read-injection-scanner.js`):
+
+- Triggers on `Read` / `WebFetch` / `WebSearch` PostToolUse events
+- Advisory by default; blocks only `HIGH` severity, and only when `security.injection_blocking` is `true`
+- Severity is `LOW` for 1-2 matched patterns, `HIGH` for 3 or more
+- Skips content shorter than 20 characters, and skips excluded paths (`.planning/`, `REVIEW.md`, `CHECKPOINT*`, security/injection docs, and GSD's own staged hook bundle)
+- Rule ids: the `MD-LINK-*` markdown-link rules mirrored from `security.cjs`'s `MARKDOWN_LINK_PATTERNS`, plus `INJECTION-PATTERN`, `INVISIBLE-UNICODE`, and `UNICODE-TAG-BLOCK`
+- Patterns are shared with `gsd-prompt-guard.js` via `hooks/lib/injection-patterns.js` (#3504); the markdown-link list is inlined for hook independence
+- **Output contract:** `hookSpecificOutput` carries both `additionalContext` (the human-readable advisory sentence) and `findings` — an array of `{ ruleId, match }` records naming each rule that fired. `findings` is the structured surface; the advisory is rendered from it, so the two cannot disagree. `match` is `null` for rules with no captured text (`INVISIBLE-UNICODE`, `UNICODE-TAG-BLOCK`). Consumers should read `findings` rather than parsing the advisory text.
 
 **Workflow Guard** (`gsd-workflow-guard.js`):
 

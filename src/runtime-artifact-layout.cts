@@ -16,6 +16,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+// #2874 (ADR-58 cleanup phase): route this module's fs calls through the
+// installRuntimeArtifacts call tree's injectable seam — see
+// install-fs-adapter.cts's module doc. Resolves to real `node:fs` (the
+// `fs` import above stays for type-only references, e.g. `fs.Dirent`)
+// unless the top-level installRuntimeArtifacts call injected a `deps.fs`.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, mkInstallTempDir } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installProfiles = require('./install-profiles.cjs');
 const {
@@ -124,22 +132,49 @@ interface Layout {
  * 3. Throw a descriptive error if neither succeeds.
  */
 function findInstallSourceRoot(runtimeConfigDir?: string): string {
-  // Step 1: marker check
+  // Step 1: marker check — reads `<runtimeConfigDir>/.gsd-source`, a path
+  // under the INSTALL DESTINATION, so this probe goes through the injected
+  // adapter (installFs()).
   if (runtimeConfigDir) {
     const markerPath = path.join(runtimeConfigDir, '.gsd-source');
-    if (fs.existsSync(markerPath)) {
+    if (installFs().existsSync(markerPath)) {
       try {
-        const src = fs.readFileSync(markerPath, 'utf8').trim();
-        if (src && fs.existsSync(src)) return src;
+        const src = installFs().readFileSync(markerPath, 'utf8').trim();
+        if (src && installFs().existsSync(src)) return src;
       } catch { /* fall through */ }
     }
   }
 
-  // Step 2: walk up from __dirname
+  // Step 2: walk up from __dirname to locate the GSD PACKAGE'S OWN source
+  // tree (commands/gsd/) — this resolves where the installer's own code is
+  // running FROM, not anything under the install destination, so it is
+  // deliberately NOT routed through the injected fs adapter (#2874): a fake
+  // "destination" adapter has no reason to know about the real package's own
+  // on-disk layout (an injected adapter's store starts empty and is never
+  // seeded with real repo paths), and routing it through would make this
+  // resolution unconditionally throw rather than gracefully staging nothing.
+  //
+  // Uses `fs.statSync` in a try/catch rather than `fs.existsSync` — this is
+  // LOAD-BEARING, not a style choice: tests/executed-plan.test.cjs's F2 cases
+  // poison every method on the ROUTED fs surface (including `existsSync`,
+  // since installFs()'s REAL_ADAPTER also calls it) to prove nothing on the
+  // installRuntimeArtifacts call tree reaches real fs. The F2 "nativePlugin
+  // runtime: pi" test calls this function (via findInstallSourceRoot()) AFTER
+  // installing that poison, specifically to resolve the pi nativePlugin
+  // source path against this repo's own real layout — an operation this
+  // function must still be able to perform even while `existsSync` is
+  // poisoned, because this Step 2 walk is real-fs-only by design and was
+  // never meant to be covered by that poison list. `statSync` is not on the
+  // poisoned surface, so this probe survives; switching back to `existsSync`
+  // makes that F2 test throw (verified: reverting this to `existsSync` trips
+  // the poison and breaks the pi nativePlugin case).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'commands', 'gsd');
-    if (fs.existsSync(candidate)) return candidate;
+    try {
+      fs.statSync(candidate);
+      return candidate;
+    } catch { /* not here — keep walking up */ }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -157,26 +192,33 @@ function findInstallSourceRoot(runtimeConfigDir?: string): string {
  * 3. Throw a descriptive error if neither succeeds.
  */
 function findAgentsSourceRoot(runtimeConfigDir?: string): string {
-  // Step 1: marker check
+  // Step 1: marker check (destination-relative — routed through installFs()).
   if (runtimeConfigDir) {
     const markerPath = path.join(runtimeConfigDir, '.gsd-source');
-    if (fs.existsSync(markerPath)) {
+    if (installFs().existsSync(markerPath)) {
       try {
-        const src = fs.readFileSync(markerPath, 'utf8').trim();
-        if (src && fs.existsSync(src)) {
+        const src = installFs().readFileSync(markerPath, 'utf8').trim();
+        if (src && installFs().existsSync(src)) {
           // Marker points to commands/gsd; agents/ is a sibling of commands/
           const agentsCandidate = path.resolve(path.dirname(src), '..', 'agents');
-          if (fs.existsSync(agentsCandidate)) return agentsCandidate;
+          if (installFs().existsSync(agentsCandidate)) return agentsCandidate;
         }
       } catch { /* fall through */ }
     }
   }
 
-  // Step 2: walk up from __dirname
+  // Step 2: walk up from __dirname — locates THIS package's own agents/
+  // source tree, not the install destination. See findInstallSourceRoot's
+  // Step 2 comment (#2874) for why this stays unrouted, real-fs-only, and why
+  // it uses `statSync` rather than `existsSync` (load-bearing against F2's
+  // poison of the routed fs surface, not a style choice).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'agents');
-    if (fs.existsSync(candidate)) return candidate;
+    try {
+      fs.statSync(candidate);
+      return candidate;
+    } catch { /* not here — keep walking up */ }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -318,28 +360,28 @@ function kimiAgentsKind(destSubpath: string, prefix: string, configDir: string):
         (content: string) => content,
       );
       const subagents: Array<{ path: string; content: string }> = [];
-      if (fs.existsSync(stagedAgents)) {
-        for (const entry of fs.readdirSync(stagedAgents, { withFileTypes: true })) {
+      if (installFs().existsSync(stagedAgents)) {
+        for (const entry of installFs().readdirSync(stagedAgents, { withFileTypes: true })) {
           if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
           const agentPath = path.join(stagedAgents, entry.name);
           subagents.push({
             path: posixNormalize(path.join('agents', entry.name)),
-            content: fs.readFileSync(agentPath, 'utf8'),
+            content: installFs().readFileSync(agentPath, 'utf8'),
           });
         }
       }
 
       const rootAgent = `---\nname: gsd\ndescription: Run GSD workflows in Kimi CLI.\ntools: Agent\n---\n\n# GSD for Kimi CLI\n\nCoordinate installed /skill:gsd-* workflows and route work to generated GSD subagents when a workflow requires an agent handoff.\n`;
       const artifacts = buildKimiAgentArtifacts({ rootAgent, subagents });
-      const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-agents-'));
+      const stageDir = mkInstallTempDir('gsd-kimi-agents-');
       installProfiles.STAGED_DIRS.add(stageDir);
-      fs.writeFileSync(path.join(stageDir, 'gsd.yaml'), artifacts.root.yaml);
-      fs.writeFileSync(path.join(stageDir, 'gsd.md'), artifacts.root.prompt);
+      installFs().writeFileSync(path.join(stageDir, 'gsd.yaml'), artifacts.root.yaml);
+      installFs().writeFileSync(path.join(stageDir, 'gsd.md'), artifacts.root.prompt);
       const subagentsDir = path.join(stageDir, 'subagents');
-      fs.mkdirSync(subagentsDir, { recursive: true });
+      installFs().mkdirSync(subagentsDir, { recursive: true });
       for (const artifact of artifacts.subagents) {
-        fs.writeFileSync(path.join(subagentsDir, `${artifact.name}.yaml`), artifact.yaml);
-        fs.writeFileSync(path.join(subagentsDir, `${artifact.name}.md`), artifact.prompt);
+        installFs().writeFileSync(path.join(subagentsDir, `${artifact.name}.yaml`), artifact.yaml);
+        installFs().writeFileSync(path.join(subagentsDir, `${artifact.name}.md`), artifact.prompt);
       }
       return stageDir;
     },

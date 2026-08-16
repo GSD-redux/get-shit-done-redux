@@ -23,6 +23,9 @@ import os from 'node:os';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 import modelResolver = require('./model-resolver.cjs');
 const { EFFORT_SET: GSD_EFFORT_SET } = modelResolver as { EFFORT_SET: Set<string> };
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- model-catalog.cjs is an export= CommonJS module
+import modelCatalog = require('./model-catalog.cjs');
+const { mergeEffortTierDefaults } = modelCatalog as { mergeEffortTierDefaults: typeof import('./model-catalog.cjs').mergeEffortTierDefaults };
 
 interface EffortConfig {
   agent_overrides?: Record<string, unknown>;
@@ -161,6 +164,11 @@ function readGsdEffectiveEffortConfig(targetDir: string | null = null): EffortCo
   // Per-project wins on conflict within each sub-field. Merge field-by-field so
   // a project config that only sets agent_overrides still inherits global
   // routing_tier_defaults and default.
+  // #3531 (10c): routing_tier_defaults is deep-merged per-tier like
+  // agent_overrides — a project block naming only `heavy` must not discard the
+  // home block's `light`/`standard` entries (the top-level spread would
+  // otherwise replace the whole block, the same defect class as the
+  // manifest-replacement this change fixes).
   return {
     ...(homeEffort || {}),
     ...(projectEffort || {}),
@@ -168,6 +176,11 @@ function readGsdEffectiveEffortConfig(targetDir: string | null = null): EffortCo
     agent_overrides: {
       ...((homeEffort && homeEffort.agent_overrides) || {}),
       ...((projectEffort && projectEffort.agent_overrides) || {}),
+    },
+    // Deep-merge routing_tier_defaults (project wins per-tier)
+    routing_tier_defaults: {
+      ...((homeEffort && homeEffort.routing_tier_defaults) || {}),
+      ...((projectEffort && projectEffort.routing_tier_defaults) || {}),
     },
   };
 }
@@ -179,8 +192,10 @@ function readGsdEffectiveEffortConfig(targetDir: string | null = null): EffortCo
  *
  * Precedence (mirrors resolveEffortInternal):
  *   1. effortCfg.agent_overrides[agentName]
- *   2. effortCfg.routing_tier_defaults[agentTier]  (if effortCfg present)
- *      — OR manifest tier defaults when effortCfg is null
+ *   2. routing_tier_defaults merged over the manifest tier defaults
+ *      (#3531/10c: a config block — present or partial — no longer disables
+ *      the built-in tier ladder; invalid config values are dropped by the
+ *      merge so the manifest value for the tier surfaces)
  *   3. effortCfg.default
  *   4. 'high' (hardcoded fallback)
  *
@@ -207,17 +222,14 @@ function resolveInstallTimeEffort(effortCfg: EffortConfig | null, agentName: str
   const { AGENT_DEFAULT_TIERS, EFFORT_MANIFEST_TIER_DEFAULTS, EFFORT_MANIFEST_DEFAULT } = _getGsdEffortCatalog();
   const agentTier = AGENT_DEFAULT_TIERS[agentName];
   if (agentTier) {
-    if (effortCfg && effortCfg.routing_tier_defaults &&
-        typeof effortCfg.routing_tier_defaults === 'object' &&
-        !Array.isArray(effortCfg.routing_tier_defaults)) {
-      const v = effortCfg.routing_tier_defaults[agentTier];
-      if (typeof v === 'string' && GSD_EFFORT_SET.has(v)) return v;
-    } else if (!effortCfg) {
-      // No effort config — use manifest tier defaults
-      const v = EFFORT_MANIFEST_TIER_DEFAULTS[agentTier];
-      if (typeof v === 'string' && GSD_EFFORT_SET.has(v)) return v;
-    }
-    // effortCfg exists but has no routing_tier_defaults — fall through
+    const isValidEffort = (v: unknown): v is string => typeof v === 'string' && GSD_EFFORT_SET.has(v);
+    const merged = mergeEffortTierDefaults(
+      EFFORT_MANIFEST_TIER_DEFAULTS,
+      effortCfg ? effortCfg.routing_tier_defaults : undefined,
+      isValidEffort,
+    );
+    const v = merged[agentTier];
+    if (isValidEffort(v)) return v;
   }
 
   // Step 3: effort.default

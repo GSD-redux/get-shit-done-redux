@@ -82,7 +82,8 @@ At verification decision points, reference calibration examples:
 ## Step 0: Check for Previous Verification
 
 ```bash
-cat "$PHASE_DIR"/*-VERIFICATION.md 2>/dev/null
+_VERIF=( "$PHASE_DIR"/*-VERIFICATION.md )
+if [ -e "${_VERIF[0]}" ]; then cat "${_VERIF[@]}"; fi
 ```
 
 **If previous verification exists with `gaps:` section → RE-VERIFICATION MODE:**

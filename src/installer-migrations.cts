@@ -19,6 +19,21 @@ import {
 import { platformWriteSync, retryRenameSync, posixNormalize } from './shell-command-projection.cjs';
 import { realClock, type Clock } from './clock.cjs';
 import { isInstallScopeId, type InstallScope } from './install-scope.cjs';
+// #2874 (ADR-58 cleanup phase): this file is the ~1200-line migration
+// plan/apply/rollback/lock/journal engine — almost none of it is on the
+// installRuntimeArtifacts call tree. Only `readInstallManifest` and
+// `classifyArtifact` are reached (via install-engine.cts's
+// _migrateLegacyOpencodeCommandDir and retired-artifact-cleanup.cts's
+// pruneRetiredRuntimeArtifacts), so only those two entry points — plus their
+// shared `readJsonIfPresent` helper and `classifyArtifact`'s `sha256File`
+// hashing helper — are routed through the injectable seam. Everything else
+// in this file (locking, journal, apply/rollback, migration discovery)
+// keeps using real `fs` directly: it is not reachable from
+// installRuntimeArtifacts, so routing it would grow this seam past what
+// AC2 actually requires. See install-fs-adapter.cts's module doc.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs } = installFsAdapter;
 
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const INSTALL_STATE_NAME = 'gsd-install-state.json';
@@ -27,18 +42,31 @@ const DEFAULT_MIGRATIONS_DIR = path.join(__dirname, 'installer-migrations');
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const STRICT_JSON = Symbol('strict-json');
 
+// #2874: routed through installFs()'s openSync/readSync/closeSync trio
+// instead of importing `node:fs` directly, so classifyArtifact — reachable
+// from installRuntimeArtifacts — can be exercised against an injected
+// adapter. This function was briefly converted to a single
+// `installFs().readFileSync` call (buffering the whole file); that broke
+// tests/installer-migrations.test.cjs's "classifies large files without
+// loading the whole file through readFileSync", which monkeypatches real
+// fs.readFileSync to throw for the file under test and asserts hashing still
+// succeeds — an explicit, pre-existing contract that large files must be
+// streamed, not buffered. Restored to the original raw-fd streaming shape,
+// now going through the adapter instead of `node:fs` directly. This is the
+// ONLY call site of sha256File in this file (confirmed by inspection) — no
+// other caller is affected.
 function sha256File(filePath: string): string {
   const hash = crypto.createHash('sha256');
   const buffer = Buffer.allocUnsafe(1024 * 1024);
-  const fd = fs.openSync(filePath, 'r');
+  const fd = installFs().openSync(filePath, 'r');
   try {
     while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      const bytesRead = installFs().readSync(fd, buffer, 0, buffer.length, null);
       if (bytesRead === 0) break;
       hash.update(buffer.subarray(0, bytesRead));
     }
   } finally {
-    fs.closeSync(fd);
+    installFs().closeSync(fd);
   }
   return hash.digest('hex');
 }
@@ -148,10 +176,14 @@ function copyPreservingSymlink(srcPath: string, destPath: string): void {
   fs.copyFileSync(srcPath, destPath);
 }
 
+// Shared by readInstallManifest (on the installRuntimeArtifacts call tree —
+// routed) and readInstallState/readJson (not on that call tree — the
+// ambient default resolves to real fs for those, unchanged). Routing once
+// here is safe for all three callers.
 function readJsonIfPresent(filePath: string, fallback: unknown): unknown {
-  if (!fs.existsSync(filePath)) return fallback;
+  if (!installFs().existsSync(filePath)) return fallback;
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return JSON.parse(installFs().readFileSync(filePath, 'utf8'));
   } catch (error) {
     if (fallback === STRICT_JSON) {
       throw new Error(`invalid installer migration state JSON: ${filePath}: ${(error as Error).message}`);
@@ -358,7 +390,7 @@ function classifyArtifact(configDir: string, relPath: string, manifest: InstallM
   const normalized = normalizeRelPath(relPath);
   const originalHash = manifest.files[normalized] || null;
   const fullPath = path.join(configDir, normalized);
-  if (!fs.existsSync(fullPath)) {
+  if (!installFs().existsSync(fullPath)) {
     return { classification: originalHash ? 'managed-missing' : 'missing', originalHash, currentHash: null };
   }
   const currentHash = sha256File(fullPath);

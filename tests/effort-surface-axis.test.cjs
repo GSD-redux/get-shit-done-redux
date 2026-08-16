@@ -149,7 +149,9 @@ describe('#3534 resolve-execution reports resolved AND effective effort', () => 
     t.after(() => cleanup(dir));
     fs.writeFileSync(
       path.join(dir, '.planning', 'config.json'),
-      JSON.stringify({ runtime: 'codex', effort: { default: 'medium' } }, null, 2),
+      // #3531+#3534 combined: pin the AGENT — a bare effort.default no longer
+      // reaches a tiered agent under the merged tier ladder.
+      JSON.stringify({ runtime: 'codex', effort: { agent_overrides: { 'gsd-executor': 'medium' } } }, null, 2),
     );
     const out = resolveExecution(dir);
     assert.equal(out.effort, 'medium');
@@ -440,7 +442,10 @@ describe('#2481 — the escalation surface renders argv (CLI-level, not a workfl
     fs.writeFileSync(
       path.join(dir, '.planning', 'config.json'),
       JSON.stringify({
-        effort: { default: 'low' },
+        // #3531: pin the heavy tier rather than effort.default — a bare default
+        // no longer answers for gsd-planner (heavy) now that the config block
+        // merges over the built-in tier ladder.
+        effort: { routing_tier_defaults: { heavy: 'low' } },
         dynamic_routing: { enabled: true, escalate_on_failure: true, max_escalations: 3 },
       }, null, 2),
     );
@@ -578,7 +583,9 @@ describe('#2481 review workflow resolves effort per reviewer', () => {
       fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
       fs.writeFileSync(
         path.join(projectDir, '.planning', 'config.json'),
-        JSON.stringify({ effort: { default: 'xhigh' } }, null, 2),
+        // #3531: pin every tier so the expected value is agent-independent —
+        // the reviewer lane's tier decides, not effort.default.
+        JSON.stringify({ effort: { routing_tier_defaults: { light: 'xhigh', standard: 'xhigh', heavy: 'xhigh' } } }, null, 2),
       );
 
       const r = cp.spawnSync(

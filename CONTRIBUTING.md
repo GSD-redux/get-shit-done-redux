@@ -795,19 +795,49 @@ Some tests legitimately read source files. There are six recognized categories:
 | `structural-implementation-guard` | A feature's interception or wiring point is not reachable end-to-end via `runGsdTools`. Used temporarily until a behavioral path exists. |
 | `pending-migration-to-typed-ir` | **Tracked for correction, not exempted.** Test was identified by the lint as carrying a raw-text-matching pattern that contradicts the rule above. Each annotated file MUST cite the open migration issue (e.g. `// allow-test-rule: pending-migration-to-typed-ir [#NNNN]`) so the tracking is auditable. New tests cannot use this category — they must refactor production to expose typed IR. The annotation is removed when the test is corrected. |
 
-Annotate with a standalone `//` comment before the file's opening block comment:
+**Suppression is site-scoped, not file-wide.** A marker suppresses only the violation it sits next
+to. Put it immediately above the flagged line — or trailing on that line — with nothing but blank
+lines and other comment lines in between, and no more than **8 lines** above it
+(`MAX_MARKER_LOOKAHEAD_LINES` in `eslint-rules/no-source-grep.cjs`). A single line of real code
+between the marker and the call ends the window, even when the two are physically close.
 
 ```javascript
-// allow-test-rule: architectural-invariant
-// state.cjs locking must use Atomics.wait(), not a spin-loop. Behavioral tests
-// cannot observe which sleep primitive was chosen — only source inspection can.
-
-/**
- * Regression tests for locking bugs #1909...
- */
+test('locking uses Atomics.wait, not a spin-loop', () => {
+  // allow-test-rule: architectural-invariant (#1909)
+  // state.cjs locking must use Atomics.wait(). Behavioral tests cannot observe
+  // which sleep primitive was chosen — only source inspection can.
+  const src = fs.readFileSync(STATE_PATH, 'utf8');
+  assert.ok(src.includes('Atomics.wait'));
+});
 ```
 
-The annotation **must** be a standalone `// allow-test-rule:` line, not inside a `/** */` block comment — the CI linter scans for the pattern `// allow-test-rule:`.
+A violation is a **read + search pair**, and a marker adjacent to *either* half suppresses it — so
+annotating the `readFileSync` directly (the intuitive placement) works just as well as annotating
+the `.includes()`.
+
+> **A marker parked at the top of the file no longer suppresses anything below it.** Before #3508
+> suppression was file-wide, so one justified exemption silently absolved every other source-grep
+> in that file — including ones added later by someone else. If you are copying the old
+> file-header placement from an existing test, it is almost certainly inert: the file's `require`
+> block sits between it and the code, and real code closes the window.
+
+The annotation **must** be a standalone `// allow-test-rule:` line — the marker text must be the
+first thing on its comment line (a leading JSDoc `*` is fine), not buried mid-sentence in prose.
+The reason **must** cite a tracking issue (`#NNN`) or an `https://` URL, per
+[ADR-456](docs/adr/456-test-rigor-architecture.md); `scripts/lint-allow-test-rule-refs.cjs` fails
+the build on an uncited one.
+
+That gate reports two separate numbers, and they mean different things:
+
+| Number | Meaning | Gated? |
+|---|---|---|
+| **Effective exemptions** | markers that actually suppress a violation the rule detects | tightly ratcheted — it may only go down |
+| **Unverified markers** | marker-bearing files where the rule detects nothing to suppress | tracked with a loose ceiling; growth fails, shrinkage never does |
+
+A marker landing in the *unverified* bucket does **not** mean it is vestigial and safe to delete —
+it usually means the rule cannot yet see the read (identifier indirection, a dynamic path, a `.sh`
+file). Shrinking that pool is a rule-coverage job backed by measurement, not a delete-the-markers
+job.
 
 ### Prohibited: Raw Text Matching on Test Outputs (file content, stdout, stderr)
 

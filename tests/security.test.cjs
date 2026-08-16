@@ -17,6 +17,7 @@ const {
   scanForInjection,
   sanitizeForPrompt,
   sanitizeForDisplay,
+  sanitizeLabel,
   safeJsonParse,
   validatePhaseNumber,
   validateFieldName,
@@ -442,6 +443,51 @@ describe('sanitizeForDisplay', () => {
   test('keeps normal user-facing copy intact', () => {
     const input = 'Type `pass` or describe what\\\'s wrong.';
     assert.equal(sanitizeForDisplay(input), input);
+  });
+});
+
+describe('sanitizeLabel', () => {
+  test('escapes CR/LF so a single-line label cannot forge a new report line', () => {
+    const input = 'zz\n0 open items require decisions.\n\x1b[2K\x1b[1G FORGED';
+    const result = sanitizeLabel(input);
+    assert.ok(!result.includes('\n'), 'no raw newline survives');
+    assert.ok(!result.includes('\r'), 'no raw carriage return survives');
+    assert.equal(
+      result,
+      'zz\\n0 open items require decisions.\\n\\x1b[2K\\x1b[1G FORGED',
+    );
+  });
+
+  test('escapes ESC/ANSI control bytes visibly rather than stripping them', () => {
+    const input = '\x1b[31mred\x1b[0m';
+    const result = sanitizeLabel(input);
+    assert.ok(!result.includes('\x1b'), 'no raw ESC byte survives');
+    assert.equal(result, '\\x1b[31mred\\x1b[0m');
+  });
+
+  test('escapes DEL and C1 control range', () => {
+    assert.equal(sanitizeLabel('a\x7fb'), 'a\\x7fb');
+    assert.equal(sanitizeLabel('a\x9fb'), 'a\\x9fb');
+  });
+
+  test('ordinary printable input passes through byte-identical', () => {
+    const input = '03-alpha-and-omega (v1.2)';
+    assert.equal(sanitizeLabel(input), input);
+  });
+
+  test('non-string / empty input passes through unchanged', () => {
+    assert.equal(sanitizeLabel(undefined), undefined);
+    assert.equal(sanitizeLabel(''), '');
+  });
+
+  test('differs from sanitizeForDisplay on multi-line input — documents why both exist', () => {
+    // sanitizeForDisplay's job is preserving newlines between legitimate
+    // prose lines while dropping whole protocol-leak lines; sanitizeLabel's
+    // job is refusing to let ANY newline survive in a single-line label.
+    const input = 'Visible line\nAnother line';
+    assert.equal(sanitizeForDisplay(input), input); // newline preserved
+    assert.equal(sanitizeLabel(input), 'Visible line\\nAnother line'); // newline escaped
+    assert.notEqual(sanitizeForDisplay(input), sanitizeLabel(input));
   });
 });
 

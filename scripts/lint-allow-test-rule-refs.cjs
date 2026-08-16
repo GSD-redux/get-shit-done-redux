@@ -109,11 +109,18 @@
  * back to its literal), dynamic paths, non-`.js`-family extensions (`.sh`),
  * and array/object round-trips are documented, accepted blind spots of the
  * rule (see its own "Known limits" in 40-design.md) and remain invisible to
- * BOTH numbers here. Two such sites are known and tracked separately:
+ * BOTH numbers here. This is stated explicitly in this script's own `ok`
+ * output so the effective count can never be read as "all exemptions are
+ * accounted for."
+ *
+ * The two identifier-indirection sites this paragraph used to name --
  * tests/security-prompt-injection.security.test.cjs and
- * tests/check-update-config-dir.test.cjs. This is stated explicitly in this
- * script's own `ok` output so the effective count can never be read as "all
- * exemptions are accounted for."
+ * tests/check-update-config-dir.test.cjs -- were rewritten behaviorally in
+ * #3523 and no longer read source at all, so there is currently no KNOWN
+ * site sitting in the blind spot. That is emphatically not the same as the
+ * blind spot being closed: the rule still cannot see a read behind a path
+ * identifier, so a new one can be added tomorrow and neither number here
+ * would move. Closing it is a separate, measured phase of epic #3464.
  *
  * ## Linter scope: marker-bearing files only (#3464 perf follow-up)
  *

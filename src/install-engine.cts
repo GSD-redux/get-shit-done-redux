@@ -32,6 +32,14 @@ import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
 import { ensureCommonJsMarker } from './commonjs-marker.cjs';
+// #2874 (ADR-58 cleanup phase): the injectable fs seam for the
+// installRuntimeArtifacts call tree. `installFs()` resolves to real
+// `node:fs` unless a call is wrapped in `withInstallFs(deps.fs, ...)` —
+// every fs call below in this file that installRuntimeArtifacts's own call
+// tree reaches goes through it. See install-fs-adapter.cts's module doc for
+// why this is an ambient swap rather than a threaded `deps` parameter.
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, withInstallFs } = installFsAdapter;
 // #2870: InstallScope is owned by install-scope.cts, not re-declared here.
 // `isGlobalScope` centralizes the `scope === 'global'` boolean projection
 // this module's two remaining re-derivation sites need (see the
@@ -161,9 +169,9 @@ function preserveUserArtifacts(destDir: string, fileNames: string[]): Map<string
   const saved = new Map<string, string>();
   for (const name of fileNames) {
     const fullPath = path.join(destDir, name);
-    if (fs.existsSync(fullPath)) {
+    if (installFs().existsSync(fullPath)) {
       try {
-        saved.set(name, fs.readFileSync(fullPath, 'utf8'));
+        saved.set(name, installFs().readFileSync(fullPath, 'utf8'));
       } catch { /* skip unreadable files */ }
     }
   }
@@ -180,8 +188,8 @@ function restoreUserArtifacts(destDir: string, saved: Map<string, string>): void
   for (const [name, content] of saved) {
     const fullPath = path.join(destDir, name);
     try {
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.writeFileSync(fullPath, content, 'utf8');
+      installFs().mkdirSync(path.dirname(fullPath), { recursive: true });
+      installFs().writeFileSync(fullPath, content, 'utf8');
     } catch { /* skip unwritable paths */ }
   }
 }
@@ -257,7 +265,7 @@ function hasExistingSymlinkBetween(
   // — threat (a) above still confines regardless.
   let realRoot: string;
   try {
-    realRoot = fs.existsSync(resolvedRoot) ? fs.realpathSync(resolvedRoot) : resolvedRoot;
+    realRoot = installFs().existsSync(resolvedRoot) ? installFs().realpathSync(resolvedRoot) : resolvedRoot;
   } catch {
     realRoot = resolvedRoot;
   }
@@ -273,10 +281,10 @@ function hasExistingSymlinkBetween(
   // root. So under opt-in, just follow the root symlink and continue the walk.
   // Default behavior (no opt-in) preserves the pre-#2393 refuse.
   let cursor = resolvedRoot;
-  if (fs.existsSync(cursor) && fs.lstatSync(cursor).isSymbolicLink()) {
+  if (installFs().existsSync(cursor) && installFs().lstatSync(cursor).isSymbolicLink()) {
     if (!allowFollow) return true;
     try {
-      cursor = fs.realpathSync(cursor);
+      cursor = installFs().realpathSync(cursor);
     } catch {
       // realpathSync failed (broken symlink, permission denied, exotic FS) — refuse,
       // matching fail-closed posture.
@@ -288,8 +296,8 @@ function hasExistingSymlinkBetween(
   for (const segment of relative.split(path.sep)) {
     if (!segment) continue;
     cursor = path.join(cursor, segment);
-    if (!fs.existsSync(cursor)) return false;
-    if (fs.lstatSync(cursor).isSymbolicLink()) {
+    if (!installFs().existsSync(cursor)) return false;
+    if (installFs().lstatSync(cursor).isSymbolicLink()) {
       if (!allowFollow) return true;
       // Opt-in active: follow the symlink. Refuse if the resolved target is the
       // install root itself (threat (b) — would let _removeGsdEntries wipe the
@@ -310,7 +318,7 @@ function hasExistingSymlinkBetween(
       // documented opt-in semantics; do not add a "follow one symlink only"
       // expectation here without revisiting the threat model.
       try {
-        const realTarget = fs.realpathSync(cursor);
+        const realTarget = installFs().realpathSync(cursor);
         if (realTarget === realRoot || realTarget === resolvedRoot) return true; // (b)
         cursor = realTarget;
       } catch {
@@ -372,7 +380,7 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
     skillDir = path.join(runtimeArtifactInstallPlan.assertDestWithinConfigHome(targetDir, 'skills'), 'gsd-dev-preferences');
   }
   const skillFile = path.join(skillDir, 'SKILL.md');
-  if (fs.existsSync(skillFile)) return false;
+  if (installFs().existsSync(skillFile)) return false;
   // Symlink-escape guard: reject if any path component between installRoot and
   // skillDir is a symlink that would redirect writes outside the install root.
   // #2393: honor GSD_ALLOW_SYMLINKED_DEST for intentional user-owned symlink layouts.
@@ -382,8 +390,8 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
     );
   }
   try {
-    fs.mkdirSync(skillDir, { recursive: true });
-    fs.writeFileSync(skillFile, saved.get('dev-preferences.md')!, 'utf8');
+    installFs().mkdirSync(skillDir, { recursive: true });
+    installFs().writeFileSync(skillFile, saved.get('dev-preferences.md')!, 'utf8');
     return true;
   } catch {
     return false;
@@ -438,27 +446,27 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
   }
   // Use the validated absolute path for the actual writes below.
   destDir = resolvedDest;
-  if (!fs.existsSync(stagedDir)) return;
-  fs.mkdirSync(destDir, { recursive: true });
+  if (!installFs().existsSync(stagedDir)) return;
+  installFs().mkdirSync(destDir, { recursive: true });
 
   if (kind.kind === 'skills') {
     // Each child of stagedDir is a prefixed skill directory: gsd-help/, etc.
-    for (const entry of fs.readdirSync(stagedDir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(stagedDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const src = path.join(stagedDir, entry.name);
       const dest = path.join(destDir, entry.name);
-      fs.cpSync(src, dest, { recursive: true });
+      installFs().cpSync(src, dest, { recursive: true });
     }
     return;
   }
 
   if (kind.kind === 'kimi-agents') {
-    fs.cpSync(stagedDir, destDir, { recursive: true });
+    installFs().cpSync(stagedDir, destDir, { recursive: true });
     return;
   }
 
   // commands or agents
-  const entries = fs.readdirSync(stagedDir, { withFileTypes: true });
+  const entries = installFs().readdirSync(stagedDir, { withFileTypes: true });
   // For commands: apply prefix unless the destSubpath's last segment already
   // represents the GSD namespace (e.g. 'commands/gsd' → last segment 'gsd').
   // Single source of truth: runtimeArtifactLayout.isNamespacedByDir (#2871
@@ -492,7 +500,7 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
       destName = runtimeArtifactLayout.composeCommandFilename(namespacedByDir, kind.prefix, stem);
     }
 
-    fs.copyFileSync(path.join(stagedDir, entry.name), path.join(destDir, destName));
+    installFs().copyFileSync(path.join(stagedDir, entry.name), path.join(destDir, destName));
   }
 }
 
@@ -507,18 +515,18 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
  * as a defensive guard for future runtimes.)
  */
 function _removeGsdEntries(destDir: string, kind: any): void {
-  if (!fs.existsSync(destDir)) return;
+  if (!installFs().existsSync(destDir)) return;
   if (kind.kind === 'kimi-agents') {
     for (const fileName of ['gsd.yaml', 'gsd.md']) {
-      fs.rmSync(path.join(destDir, fileName), { force: true });
+      installFs().rmSync(path.join(destDir, fileName), { force: true });
     }
     const subagentsDir = path.join(destDir, 'subagents');
-    if (fs.existsSync(subagentsDir)) {
-      for (const entry of fs.readdirSync(subagentsDir, { withFileTypes: true })) {
+    if (installFs().existsSync(subagentsDir)) {
+      for (const entry of installFs().readdirSync(subagentsDir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
         if (!entry.name.startsWith('gsd-')) continue;
         if (!entry.name.endsWith('.yaml') && !entry.name.endsWith('.md')) continue;
-        fs.rmSync(path.join(subagentsDir, entry.name), { force: true });
+        installFs().rmSync(path.join(subagentsDir, entry.name), { force: true });
       }
     }
     return;
@@ -526,12 +534,12 @@ function _removeGsdEntries(destDir: string, kind: any): void {
   if (kind.prefix === '') {
     // Whole-namespace removal (Hermes nested case — destSubpath is skills/gsd)
     // The directory itself is the GSD namespace, so remove it entirely.
-    fs.rmSync(destDir, { recursive: true, force: true });
+    installFs().rmSync(destDir, { recursive: true, force: true });
     return;
   }
-  for (const entry of fs.readdirSync(destDir, { withFileTypes: true })) {
+  for (const entry of installFs().readdirSync(destDir, { withFileTypes: true })) {
     if (!entry.name.startsWith(kind.prefix)) continue;
-    fs.rmSync(path.join(destDir, entry.name), { recursive: true, force: true });
+    installFs().rmSync(path.join(destDir, entry.name), { recursive: true, force: true });
   }
 }
 
@@ -545,13 +553,13 @@ function _removeGsdEntries(destDir: string, kind: any): void {
  */
 function _snapshotDir(dir: string): Map<string, Buffer> {
   const files = new Map<string, Buffer>();
-  if (!fs.existsSync(dir)) return files;
+  if (!installFs().existsSync(dir)) return files;
   const walk = (relPath: string, absPath: string) => {
-    for (const e of fs.readdirSync(absPath, { withFileTypes: true })) {
+    for (const e of installFs().readdirSync(absPath, { withFileTypes: true })) {
       const childRel = relPath ? path.join(relPath, e.name) : e.name;
       const childAbs = path.join(absPath, e.name);
       if (e.isDirectory()) walk(childRel, childAbs);
-      else if (e.isFile()) files.set(childRel, fs.readFileSync(childAbs));
+      else if (e.isFile()) files.set(childRel, installFs().readFileSync(childAbs));
     }
   };
   walk('', dir);
@@ -564,8 +572,8 @@ function _snapshotDir(dir: string): Map<string, Buffer> {
 function _restoreDir(dir: string, snapshot: Map<string, Buffer>): void {
   for (const [relPath, buf] of snapshot) {
     const absPath = path.join(dir, relPath);
-    fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(absPath, buf);
+    installFs().mkdirSync(path.dirname(absPath), { recursive: true });
+    installFs().writeFileSync(absPath, buf);
   }
 }
 
@@ -581,8 +589,8 @@ function _restoreDir(dir: string, snapshot: Map<string, Buffer>): void {
  * @param nestedGsdDir  absolute path to skills/gsd/ category dir
  */
 function _removeHermesBareStemDirs(nestedGsdDir: string): void {
-  if (!fs.existsSync(nestedGsdDir)) return;
-  const entries = fs.readdirSync(nestedGsdDir, { withFileTypes: true });
+  if (!installFs().existsSync(nestedGsdDir)) return;
+  const entries = installFs().readdirSync(nestedGsdDir, { withFileTypes: true });
 
   // Collect the set of stems that were installed as gsd-<stem>/ this run.
   const installedStems = new Set<string>();
@@ -595,7 +603,7 @@ function _removeHermesBareStemDirs(nestedGsdDir: string): void {
   // Remove any bare <stem>/ dir for which gsd-<stem>/ was just installed.
   for (const entry of entries) {
     if (entry.isDirectory() && !entry.name.startsWith('gsd-') && installedStems.has(entry.name)) {
-      fs.rmSync(path.join(nestedGsdDir, entry.name), { recursive: true });
+      installFs().rmSync(path.join(nestedGsdDir, entry.name), { recursive: true });
     }
   }
 }
@@ -621,9 +629,9 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
   // created skills/gsd-dev-preferences/ skill dir.
   let savedLegacyArtifacts: Map<string, string> | null = null;
   if (_hostBehaviors(runtime).legacyCommandsGsdInstallMigration) {
-    if (fs.existsSync(legacyCommandsGsd)) {
+    if (installFs().existsSync(legacyCommandsGsd)) {
       savedLegacyArtifacts = preserveUserArtifacts(legacyCommandsGsd, ['dev-preferences.md']);
-      fs.rmSync(legacyCommandsGsd, { recursive: true });
+      installFs().rmSync(legacyCommandsGsd, { recursive: true });
     }
   }
 
@@ -631,10 +639,10 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
   // the new skills/gsd/ nested layout.
   if (runtime === 'hermes') {
     const flatSkillsDir = path.join(configDir, 'skills');
-    if (fs.existsSync(flatSkillsDir)) {
-      for (const entry of fs.readdirSync(flatSkillsDir, { withFileTypes: true })) {
+    if (installFs().existsSync(flatSkillsDir)) {
+      for (const entry of installFs().readdirSync(flatSkillsDir, { withFileTypes: true })) {
         if (entry.isDirectory() && entry.name.startsWith('gsd-')) {
-          fs.rmSync(path.join(flatSkillsDir, entry.name), { recursive: true });
+          installFs().rmSync(path.join(flatSkillsDir, entry.name), { recursive: true });
         }
       }
     }
@@ -746,6 +754,18 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
  *   the skills kind can materialize installed third-party capability skills
  *   bound to their declaring capId. Absent -> no third-party skills staged
  *   (fail closed), matching the layout resolver's own optional-registry contract.
+ * @param deps  #2874 (ADR-58 cleanup phase): optional injection bag, additive
+ *   over the 6-positional-arg call shape every existing caller (bin/install.js,
+ *   G1/G3 test doubles) already uses — an omitted/`{}` `deps` is byte-identical
+ *   to before (AC4). `deps.fs` — a PARTIAL InstallFsAdapter
+ *   (install-fs-adapter.cts) — is merged over the real fs adapter for the
+ *   duration of this call (and everything it calls: layout source-root
+ *   resolution, profile staging, content-rewrite passes) via `withInstallFs`.
+ * @returns an executed-plan value describing what this call wrote, never
+ *   `undefined` (40-design.md: "Legitimate undefined returns: none after this
+ *   phase"). Throws, rather than returning an `ok:false` shape, on stage/
+ *   rewrite failure — the return type describes what executed; failure stays
+ *   an exception (design doc "Rejected" #3 / AC4).
  */
 function installRuntimeArtifacts(
   runtime: string,
@@ -754,140 +774,187 @@ function installRuntimeArtifacts(
   resolvedProfile: any,
   resolveAttribution: ResolveAttribution = () => undefined,
   capabilityRegistry?: any,
-): void {
-  // A removed descriptor kind is no longer visited by the layout loop, so it
-  // cannot prune its own previous output. Clean manifest-proven retired files
-  // before materializing the current layout (#2644).
-  retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(runtime, configDir);
+  deps: { fs?: any } = {},
+): any {
+  return withInstallFs(deps.fs, (): any => {
+    // A removed descriptor kind is no longer visited by the layout loop, so it
+    // cannot prune its own previous output. Clean manifest-proven retired files
+    // before materializing the current layout (#2644).
+    retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(runtime, configDir);
 
-  // Combined-family runtimes (OpenCode/Kilo, ADR-1239 / #2087): route through
-  // the dedicated combined commands+skills+plugin orchestrator instead of the
-  // generic layout-driven loop below, mirroring the bespoke install path that
-  // previously lived inline in bin/install.js.
-  const behaviors = _hostBehaviors(runtime);
-  if (behaviors.combinedFamilyInstall) {
-    // #2329: combined-family runtimes (OpenCode/Kilo) bypass
-    // _runLegacyInstallMigrations below entirely (early return), so their
-    // legacy-directory cleanup needs its own pre-materialization hook here.
-    _migrateLegacyOpencodeCommandDir(runtime, configDir, behaviors);
-    installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry);
-    return;
-  }
-
-  // Legacy cleanup before layout-driven writes
-  _runLegacyInstallMigrations(runtime, configDir, scope);
-
-  const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope as 'global' | 'local', capabilityRegistry);
-  const planResult = runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan({
-    // `Layout` is structurally identical across the layout/install-plan .cjs
-    // modules but nominally distinct to tsc (untyped .cjs boundary) — bridge it.
-    layout: layout as any,
-    resolvedProfile,
-    homedir: () => os.homedir(),
-    platform: process.platform,
-    resolveAttribution,
-  });
-
-  const cleanupDirs = planResult.ok ? planResult.plan.cleanupDirs : planResult.cleanupDirs;
-  try {
-    if (!planResult.ok) {
-      throw new Error(planResult.message);
+    // Combined-family runtimes (OpenCode/Kilo, ADR-1239 / #2087): route through
+    // the dedicated combined commands+skills+plugin orchestrator instead of the
+    // generic layout-driven loop below, mirroring the bespoke install path that
+    // previously lived inline in bin/install.js.
+    const behaviors = _hostBehaviors(runtime);
+    if (behaviors.combinedFamilyInstall) {
+      // #2329: combined-family runtimes (OpenCode/Kilo) bypass
+      // _runLegacyInstallMigrations below entirely (early return), so their
+      // legacy-directory cleanup needs its own pre-materialization hook here.
+      _migrateLegacyOpencodeCommandDir(runtime, configDir, behaviors);
+      // #2874 design row 2: this early return must ALSO return an executed
+      // plan — installOpencodeFamilyArtifacts reports what it wrote, so a
+      // whole runtime family returning undefined is no longer a hole.
+      return installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry);
     }
 
-    const kindsByName = new Map<string, any>(layout.kinds.map((kind: any) => [kind.kind as string, kind]));
-    for (const item of planResult.plan.items) {
-      const kind: any = kindsByName.get(item.kind);
-      if (!kind) throw new Error(`Install plan returned unknown artifact kind: ${item.kind}`);
-      const dest = item.destDir;
-      // Symlink-escape guard: reject before mkdir if dest (or any component
-      // between the install root and dest) is a symlink pointing outside that
-      // root. mkdirSync follows symlinks, so this must run BEFORE the mkdir
-      // call. The install root is normally configDir, but a kind may declare
-      // an alternate `home` (ADR-1239 upgrade 3 / #2088, e.g. Codex skills ->
-      // $HOME/.agents) — in that case the guard must check against the
-      // resolved alternate root instead, matching assertDestWithinConfigHome's
-      // own root selection in createRuntimeArtifactInstallPlan.
-      const installRoot = (kind && typeof kind.home === 'string' && kind.home !== '') ? kind.home : configDir;
-      // #2393: honor GSD_ALLOW_SYMLINKED_DEST for intentional user-owned symlink layouts.
-      // Threat model from #1704 / ADR-1239 Phase B preserved: path-traversal and
-      // resolved-target-equals-root still refuse regardless of opt-in.
-      if (hasExistingSymlinkBetween(path.resolve(installRoot), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
-        throw new Error(
-          `installRuntimeArtifacts: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to create. If this is an intentional user-owned symlink layout (e.g. externalized skills/hooks dir, multi-account configHome, or a dotfiles-managed configHome), re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
-        );
+    // Legacy cleanup before layout-driven writes
+    _runLegacyInstallMigrations(runtime, configDir, scope);
+
+    const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope as 'global' | 'local', capabilityRegistry);
+    const planResult = runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan({
+      // `Layout` is structurally identical across the layout/install-plan .cjs
+      // modules but nominally distinct to tsc (untyped .cjs boundary) — bridge it.
+      layout: layout as any,
+      resolvedProfile,
+      homedir: () => os.homedir(),
+      platform: process.platform,
+      resolveAttribution,
+    });
+
+    const cleanupDirs = planResult.ok ? planResult.plan.cleanupDirs : planResult.cleanupDirs;
+    // #2874 row 1/4/5: per-kind executed-plan entries, appended only as the
+    // loop below actually finishes writing each kind — a kind that throws
+    // mid-copy is never reported as executed.
+    const executedKinds: any[] = [];
+    // #2874 rows 10/11: { dir, ok } per cleanupDirs entry — built in the
+    // `finally` below regardless of whether the try block throws, so a
+    // caught failure that still throws (row 3) leaves this populated even
+    // though it is never returned on that path.
+    const cleanupResults: { dir: string; ok: boolean }[] = [];
+    try {
+      if (!planResult.ok) {
+        throw new Error(planResult.message);
       }
-      fs.mkdirSync(dest, { recursive: true });
-      if (kind.kind === 'skills' && fs.existsSync(dest)) {
-        // Pre-prune: snapshot user-owned content before _removeGsdEntries wipes it,
-        // then restore after. This preserves user dirs across a wipe-and-replace
-        // install (#2973 / #3664).
+
+      const kindsByName = new Map<string, any>(layout.kinds.map((kind: any) => [kind.kind as string, kind]));
+      for (const item of planResult.plan.items) {
+        const kind: any = kindsByName.get(item.kind);
+        if (!kind) throw new Error(`Install plan returned unknown artifact kind: ${item.kind}`);
+        const dest = item.destDir;
+        // Symlink-escape guard: reject before mkdir if dest (or any component
+        // between the install root and dest) is a symlink pointing outside that
+        // root. mkdirSync follows symlinks, so this must run BEFORE the mkdir
+        // call. The install root is normally configDir, but a kind may declare
+        // an alternate `home` (ADR-1239 upgrade 3 / #2088, e.g. Codex skills ->
+        // $HOME/.agents) — in that case the guard must check against the
+        // resolved alternate root instead, matching assertDestWithinConfigHome's
+        // own root selection in createRuntimeArtifactInstallPlan.
         //
-        // All runtimes (incl. Hermes after #947) use prefix='gsd-'.
-        // _removeGsdEntries removes only gsd-* entries; non-gsd-* user dirs are
-        // untouched. Preserve the explicit user-owned GSD-prefixed skill
-        // gsd-dev-preferences, which GSD does not reinstall from source but must
-        // survive the prune (#2973).
-        const toPreserve = new Map<string, Map<string, Buffer>>(); // dirName -> Map<relPath, Buffer>
+        // #2874: this REFUSAL DECISION stays outside the injected fs adapter —
+        // only hasExistingSymlinkBetween's own existsSync/lstatSync/realpathSync
+        // PROBES are routed through it (install-fs-adapter.cts's module doc).
+        // A fake adapter can change what those probes observe for paths that
+        // were never real to begin with; it cannot make this `if` pass for a
+        // path the real filesystem would refuse.
+        const installRoot = (kind && typeof kind.home === 'string' && kind.home !== '') ? kind.home : configDir;
+        // #2393: honor GSD_ALLOW_SYMLINKED_DEST for intentional user-owned symlink layouts.
+        // Threat model from #1704 / ADR-1239 Phase B preserved: path-traversal and
+        // resolved-target-equals-root still refuse regardless of opt-in.
+        if (hasExistingSymlinkBetween(path.resolve(installRoot), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+          throw new Error(
+            `installRuntimeArtifacts: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to create. If this is an intentional user-owned symlink layout (e.g. externalized skills/hooks dir, multi-account configHome, or a dotfiles-managed configHome), re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
+          );
+        }
+        installFs().mkdirSync(dest, { recursive: true });
+        const preserved: string[] = [];
+        if (kind.kind === 'skills' && installFs().existsSync(dest)) {
+          // Pre-prune: snapshot user-owned content before _removeGsdEntries wipes it,
+          // then restore after. This preserves user dirs across a wipe-and-replace
+          // install (#2973 / #3664).
+          //
+          // All runtimes (incl. Hermes after #947) use prefix='gsd-'.
+          // _removeGsdEntries removes only gsd-* entries; non-gsd-* user dirs are
+          // untouched. Preserve the explicit user-owned GSD-prefixed skill
+          // gsd-dev-preferences, which GSD does not reinstall from source but must
+          // survive the prune (#2973).
+          const toPreserve = new Map<string, Map<string, Buffer>>(); // dirName -> Map<relPath, Buffer>
 
-        {
-          // Preserve explicitly user-owned GSD-prefixed skill dirs.
-          // gsd-dev-preferences is the sole user-customisable skill in this category.
-          const USER_OWNED_SKILL_DIRS = ['gsd-dev-preferences'];
-          for (const dirName of USER_OWNED_SKILL_DIRS) {
-            const skillDir = path.join(dest, dirName);
-            if (!fs.existsSync(skillDir)) continue;
-            const snap = _snapshotDir(skillDir);
-            if (snap.size > 0) toPreserve.set(dirName, snap);
+          {
+            // Preserve explicitly user-owned GSD-prefixed skill dirs.
+            // gsd-dev-preferences is the sole user-customisable skill in this category.
+            const USER_OWNED_SKILL_DIRS = ['gsd-dev-preferences'];
+            for (const dirName of USER_OWNED_SKILL_DIRS) {
+              const skillDir = path.join(dest, dirName);
+              if (!installFs().existsSync(skillDir)) continue;
+              const snap = _snapshotDir(skillDir);
+              if (snap.size > 0) toPreserve.set(dirName, snap);
+            }
           }
-        }
 
-        _removeGsdEntries(dest, kind);
-        _copyStaged(item.sourceDir, dest, kind, configDir, runtime);
+          _removeGsdEntries(dest, kind);
+          _copyStaged(item.sourceDir, dest, kind, configDir, runtime);
 
-        // Restore user-owned dirs after the prune+copy
-        for (const [dirName, snap] of toPreserve) {
-          _restoreDir(path.join(dest, dirName), snap);
+          // Restore user-owned dirs after the prune+copy
+          for (const [dirName, snap] of toPreserve) {
+            _restoreDir(path.join(dest, dirName), snap);
+            preserved.push(dirName);
+          }
+        } else {
+          // For non-skills kinds (commands, agents): no user content to preserve;
+          // just prune stale gsd-* entries and copy new ones.
+          _removeGsdEntries(dest, kind);
+          _copyStaged(item.sourceDir, dest, kind, configDir, runtime);
         }
-      } else {
-        // For non-skills kinds (commands, agents): no user content to preserve;
-        // just prune stale gsd-* entries and copy new ones.
-        _removeGsdEntries(dest, kind);
-        _copyStaged(item.sourceDir, dest, kind, configDir, runtime);
+        executedKinds.push({ kind: item.kind, sourceDir: item.sourceDir, destDir: dest, preserved });
+      }
+    } finally {
+      // #2874 rows 10/11: cleanup stays best-effort (an install must never
+      // fail on cleanup) but a failed rmSync is now VISIBLE in `cleanup`
+      // rather than silently swallowed — silently absent is worse than the
+      // `void` return this replaces (40-design.md negative-space section).
+      for (const dir of cleanupDirs) {
+        try {
+          installFs().rmSync(dir, { recursive: true, force: true });
+          cleanupResults.push({ dir, ok: true });
+        } catch {
+          cleanupResults.push({ dir, ok: false });
+        }
       }
     }
-  } finally {
-    for (const dir of cleanupDirs) {
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+
+    // Hermes: after the install loop has written all gsd-<stem>/ dirs to
+    // skills/gsd/, remove any stale bare-stem dirs (skills/gsd/<stem>/) that
+    // correspond to the newly installed gsd-<stem> entries. This is the robust
+    // replacement for the readGsdCommandNames()-based pre-install cleanup that
+    // missed skills like 'dev-preferences' (#947 adversarial review).
+    //
+    // We run this AFTER the install loop so the installed set is authoritative:
+    // every gsd-<stem>/ present now was written this run (or was there before
+    // with the same prefix). User-owned bare dirs with no gsd-<stem> counterpart
+    // are untouched.
+    let hermesBareStemCleanup = false;
+    if (runtime === 'hermes') {
+      const nestedGsdDirForCleanup = path.join(configDir, 'skills', 'gsd');
+      _removeHermesBareStemDirs(nestedGsdDirForCleanup);
+      hermesBareStemCleanup = true;
     }
-  }
 
-  // Hermes: after the install loop has written all gsd-<stem>/ dirs to
-  // skills/gsd/, remove any stale bare-stem dirs (skills/gsd/<stem>/) that
-  // correspond to the newly installed gsd-<stem> entries. This is the robust
-  // replacement for the readGsdCommandNames()-based pre-install cleanup that
-  // missed skills like 'dev-preferences' (#947 adversarial review).
-  //
-  // We run this AFTER the install loop so the installed set is authoritative:
-  // every gsd-<stem>/ present now was written this run (or was there before
-  // with the same prefix). User-owned bare dirs with no gsd-<stem> counterpart
-  // are untouched.
-  if (runtime === 'hermes') {
-    const nestedGsdDirForCleanup = path.join(configDir, 'skills', 'gsd');
-    _removeHermesBareStemDirs(nestedGsdDirForCleanup);
-  }
+    // Generic-branch nativePlugin staging (ADR-1239 / #2102 Stage 1): runtimes
+    // outside the OpenCode/Kilo combined-family install (e.g. pi, whose
+    // artifactLayout is empty and which never sets combinedFamilyInstall) still
+    // need their declared hostBehaviors.nativePlugin file copied into configDir.
+    // findInstallSourceRoot resolves the repo/package root independent of
+    // configDir contents (marker check, then a walk-up from __dirname), so this
+    // is safe even when configDir has no .gsd-source marker (artifactLayout: []).
+    let nativePluginInstalled = false;
+    if (behaviors.nativePlugin) {
+      const commandsGsdDir = runtimeArtifactLayout.findInstallSourceRoot(configDir);
+      const src = path.dirname(path.dirname(commandsGsdDir));
+      _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
+      nativePluginInstalled = true;
+    }
 
-  // Generic-branch nativePlugin staging (ADR-1239 / #2102 Stage 1): runtimes
-  // outside the OpenCode/Kilo combined-family install (e.g. pi, whose
-  // artifactLayout is empty and which never sets combinedFamilyInstall) still
-  // need their declared hostBehaviors.nativePlugin file copied into configDir.
-  // findInstallSourceRoot resolves the repo/package root independent of
-  // configDir contents (marker check, then a walk-up from __dirname), so this
-  // is safe even when configDir has no .gsd-source marker (artifactLayout: []).
-  if (behaviors.nativePlugin) {
-    const commandsGsdDir = runtimeArtifactLayout.findInstallSourceRoot(configDir);
-    const src = path.dirname(path.dirname(commandsGsdDir));
-    _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
-  }
+    // #2874 row 14: an empty `layout.kinds` still returns `kinds: []` here
+    // (executedKinds was never mutated), never `undefined`.
+    return {
+      runtime,
+      scope,
+      kinds: executedKinds,
+      cleanup: cleanupResults,
+      postSteps: { hermesBareStemCleanup, nativePlugin: nativePluginInstalled },
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -934,7 +1001,7 @@ function installOpencodeFamilySkills(
   const skillsKindEntry = layout.kinds.find((k: any) => k.kind === 'skills');
   if (!skillsKindEntry) return 0;
   const rawDir = rawCommandsDir;
-  if (!rawDir || !fs.existsSync(rawDir)) return 0;
+  if (!rawDir || !installFs().existsSync(rawDir)) return 0;
 
   // #2093: descriptor-driven — dispatch off the skills-kind entry's `converter`
   // string (capabilities/<runtime>/capability.json artifactLayout) via the
@@ -965,7 +1032,7 @@ function installOpencodeFamilySkills(
       `installOpencodeFamilySkills: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to write. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
     );
   }
-  fs.mkdirSync(dest, { recursive: true });
+  installFs().mkdirSync(dest, { recursive: true });
 
   // Preserve user-owned GSD-prefixed skill dirs across the gsd-* prune.
   // gsd-dev-preferences is generated by the user (via generate-dev-preferences)
@@ -976,7 +1043,7 @@ function installOpencodeFamilySkills(
   const toPreserve = new Map<string, Map<string, Buffer>>(); // dirName -> Map<relPath, Buffer>
   for (const dirName of USER_OWNED_SKILL_DIRS) {
     const skillDir = path.join(dest, dirName);
-    if (!fs.existsSync(skillDir)) continue;
+    if (!installFs().existsSync(skillDir)) continue;
     const snap = _snapshotDir(skillDir);
     if (snap.size > 0) toPreserve.set(dirName, snap);
   }
@@ -985,18 +1052,18 @@ function installOpencodeFamilySkills(
 
   let count = 0;
   const firstPartyStems = new Set<string>();
-  for (const entry of fs.readdirSync(rawDir, { withFileTypes: true })) {
+  for (const entry of installFs().readdirSync(rawDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
     const stem = entry.name.slice(0, -3);
     firstPartyStems.add(stem);
     const skillName = `${skillsKindEntry.prefix}${stem}`;
-    let content = fs.readFileSync(path.join(rawDir, entry.name), 'utf8');
+    let content = installFs().readFileSync(path.join(rawDir, entry.name), 'utf8');
     content = applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix);
     content = processAttribution(content, resolveAttribution(runtime));
     content = converter(content, skillName);
     const skillDir = path.join(dest, skillName);
-    fs.mkdirSync(skillDir, { recursive: true });
-    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content);
+    installFs().mkdirSync(skillDir, { recursive: true });
+    installFs().writeFileSync(path.join(skillDir, 'SKILL.md'), content);
     count++;
   }
 
@@ -1033,13 +1100,13 @@ function installOpencodeFamilySkills(
       content = applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix);
       content = processAttribution(content, resolveAttribution(runtime));
       const skillDir = path.join(dest, skillName);
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content);
+      installFs().mkdirSync(skillDir, { recursive: true });
+      installFs().writeFileSync(path.join(skillDir, 'SKILL.md'), content);
       // #2322 HIGH-3 parity: persist the capability-owned marker so a later
       // prune pass can identify this directory even once the owning
       // capability is uninstalled/unsurfaced and no longer appears in any
       // registry view.
-      fs.writeFileSync(path.join(skillDir, installProfiles.CAPABILITY_SKILL_MARKER), found.capId + '\n', 'utf8');
+      installFs().writeFileSync(path.join(skillDir, installProfiles.CAPABILITY_SKILL_MARKER), found.capId + '\n', 'utf8');
       count++;
     }
   }
@@ -1080,25 +1147,25 @@ function installOpencodeFamilyCommands(
   resolveAttribution: ResolveAttribution = () => undefined,
   prefix: string = 'gsd',
 ): void {
-  if (!fs.existsSync(srcDir)) return;
+  if (!installFs().existsSync(srcDir)) return;
 
   // Remove old gsd-*.md files before copying new ones
-  if (fs.existsSync(destDir)) {
-    for (const file of fs.readdirSync(destDir)) {
-      if (file.startsWith(`${prefix}-`) && file.endsWith('.md')) fs.unlinkSync(path.join(destDir, file));
+  if (installFs().existsSync(destDir)) {
+    for (const file of installFs().readdirSync(destDir)) {
+      if (file.startsWith(`${prefix}-`) && file.endsWith('.md')) installFs().unlinkSync(path.join(destDir, file));
     }
   } else {
-    fs.mkdirSync(destDir, { recursive: true });
+    installFs().mkdirSync(destDir, { recursive: true });
   }
 
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+  for (const entry of installFs().readdirSync(srcDir, { withFileTypes: true })) {
     const srcPath = path.join(srcDir, entry.name);
     if (entry.isDirectory()) {
       installOpencodeFamilyCommands(runtime, destDir, srcPath, pathPrefix, resolveAttribution, `${prefix}-${entry.name}`);
     } else if (entry.name.endsWith('.md')) {
       const baseName = entry.name.replace('.md', '');
       const destName = `${prefix}-${baseName}.md`;
-      let content = fs.readFileSync(srcPath, 'utf8');
+      let content = installFs().readFileSync(srcPath, 'utf8');
       content = applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix);
       content = processAttribution(content, resolveAttribution(runtime));
       // #2093: this commands-kind entry's descriptor `converter` field is
@@ -1114,7 +1181,7 @@ function installOpencodeFamilyCommands(
       content = _hostBehaviors(runtime).frontmatterDialect === 'kilo'
         ? (runtimeArtifactConversion as any).convertClaudeToKiloFrontmatter(content)
         : (runtimeArtifactConversion as any).convertClaudeToOpencodeFrontmatter(content);
-      fs.writeFileSync(path.join(destDir, destName), content);
+      installFs().writeFileSync(path.join(destDir, destName), content);
     }
   }
 }
@@ -1149,7 +1216,7 @@ function _installNativePluginIfDeclared(
   const np = behaviors.nativePlugin;
   if (np && np.source) {
     const pluginSrc = path.join(src, np.source);
-    if (fs.existsSync(pluginSrc)) {
+    if (installFs().existsSync(pluginSrc)) {
       // Confine the FULL dest path (dir + file), not just the dir. Previously
       // only `np.dir` was validated and `np.file` was joined on unchecked, so a
       // descriptor whose `file` carried `..`, an absolute path, or a NUL byte
@@ -1162,8 +1229,8 @@ function _installNativePluginIfDeclared(
         configDir,
         path.join(np.dir, np.file),
       );
-      fs.mkdirSync(path.dirname(destPath), { recursive: true });
-      fs.copyFileSync(pluginSrc, destPath);
+      installFs().mkdirSync(path.dirname(destPath), { recursive: true });
+      installFs().copyFileSync(pluginSrc, destPath);
       // #2544: the staged adapter is a `.js` file, so Node decides its module
       // type by walking up for the nearest package.json. It used to find the
       // marker the installer wrote at the config root — the write that
@@ -1236,14 +1303,23 @@ function _migrateLegacyOpencodeCommandDir(runtime: string, configDir: string, be
   const currentName = behaviors.flatCommandDir || LEGACY_NAME;
   if (currentName === LEGACY_NAME) return; // e.g. Kilo — legacy IS the current location; nothing to migrate
   const legacyDir = path.join(configDir, LEGACY_NAME);
-  if (!fs.existsSync(legacyDir)) return;
+  if (!installFs().existsSync(legacyDir)) return;
   // Never follow a symlinked legacy dir out of configDir.
-  if (fs.lstatSync(legacyDir).isSymbolicLink()) return;
+  if (installFs().lstatSync(legacyDir).isSymbolicLink()) return;
 
+  // #2874: installerMigrations.readInstallManifest/classifyArtifact are
+  // routed through the injectable seam (installer-migrations.cts:36,54-58,
+  // 376-380 — readInstallManifest -> readJsonIfPresent -> installFs(),
+  // classifyArtifact -> sha256File -> installFs().readFileSync), so a
+  // fake-adapter install of an opencode-family runtime with a legacy
+  // `command/` dir present reaches the fake, not real fs. Exercised by
+  // tests/executed-plan.test.cjs's F2 "opencode-family legacy command/ dir
+  // migration" case, which poisons every real fs method and asserts the
+  // fake store was mutated.
   const manifest = installerMigrations.readInstallManifest(configDir);
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(legacyDir, { withFileTypes: true });
+    entries = installFs().readdirSync(legacyDir, { withFileTypes: true });
   } catch {
     return;
   }
@@ -1254,14 +1330,14 @@ function _migrateLegacyOpencodeCommandDir(runtime: string, configDir: string, be
     const relPath = `${LEGACY_NAME}/${entry.name}`;
     const { classification } = installerMigrations.classifyArtifact(configDir, relPath, manifest);
     if (classification === 'managed-pristine' || classification === 'managed-modified') {
-      try { fs.unlinkSync(path.join(legacyDir, entry.name)); } catch { /* best-effort */ }
+      try { installFs().unlinkSync(path.join(legacyDir, entry.name)); } catch { /* best-effort */ }
     }
     // 'unknown' (not manifest-tracked) is left untouched — GSD cannot prove
     // ownership, so it must never be deleted as collateral damage.
   }
 
   try {
-    if (fs.readdirSync(legacyDir).length === 0) fs.rmdirSync(legacyDir);
+    if (installFs().readdirSync(legacyDir).length === 0) installFs().rmdirSync(legacyDir);
   } catch { /* best-effort — a non-empty or otherwise-busy dir is left in place */ }
 }
 
@@ -1287,6 +1363,10 @@ function _migrateLegacyOpencodeCommandDir(runtime: string, configDir: string, be
  *   installOpencodeFamilySkills so an installed third-party capability skill
  *   materializes for this combined-family (OpenCode/Kilo) install path too.
  *   Absent -> no third-party skills staged (fail closed).
+ * @returns #2874 design row 2: an executed-plan value, same top-level shape
+ *   (`runtime`/`scope`/`kinds`/`cleanup`/`postSteps`) as the generic
+ *   `installRuntimeArtifacts` branch — this was the one early return a
+ *   `void`-shaped hole survived unnoticed in.
  */
 function installOpencodeFamilyArtifacts(
   runtime: string,
@@ -1296,7 +1376,7 @@ function installOpencodeFamilyArtifacts(
   resolveAttribution: ResolveAttribution = () => undefined,
   behaviors: any = {},
   capabilityRegistry?: any,
-): void {
+): any {
   // #2870: `scope` keeps its exported required `string` signature (no
   // signature change). It is always the `installRuntimeArtifacts`-forwarded
   // 'global' | 'local' literal produced by bin/install.js's scope-resolution
@@ -1332,9 +1412,25 @@ function installOpencodeFamilyArtifacts(
     behaviors.flatCommandDir || 'command',
   );
   installOpencodeFamilyCommands(runtime, commandDir, rawCommandsDir, pathPrefix, resolveAttribution);
-  installOpencodeFamilySkills(runtime, configDir, rawCommandsDir, pathPrefix, resolveAttribution, resolvedProfile, capabilityRegistry);
+  const skillsWritten = installOpencodeFamilySkills(runtime, configDir, rawCommandsDir, pathPrefix, resolveAttribution, resolvedProfile, capabilityRegistry);
 
   _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
+
+  // #2874 design row 2: report what this combined-family install wrote,
+  // mirroring the generic branch's top-level shape. `cleanup` is `[]` — this
+  // path stages via install-profiles.cts's STAGED_DIRS (process-exit
+  // cleanup), not the per-call cleanupDirs mechanism createRuntimeArtifactInstallPlan
+  // uses, so there is nothing this call itself attempted to clean up.
+  return {
+    runtime,
+    scope,
+    kinds: [
+      { kind: 'commands', sourceDir: rawCommandsDir, destDir: commandDir },
+      { kind: 'skills', sourceDir: rawCommandsDir, destDir: configDir, written: skillsWritten },
+    ],
+    cleanup: [],
+    postSteps: { hermesBareStemCleanup: false, nativePlugin: Boolean(behaviors.nativePlugin) },
+  };
 }
 
 // ---------------------------------------------------------------------------
