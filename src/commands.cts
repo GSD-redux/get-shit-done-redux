@@ -2183,6 +2183,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // collectAnalyzePhases uses. The former `([\w][\w.-]*)` matched ANY word, so
     // prose mentioning `### Phase N:` inside an inline code span produced a phantom
     // Not-Started row and made phases_total disagree with roadmap analyze.
+    // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
     const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {

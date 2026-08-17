@@ -95,8 +95,8 @@ describe('bug #3569: stats phantom phase from ### Phase N: inside inline code', 
     const output = statsJson(tmpDir);
     assert.deepEqual(
       output.phases.map((p) => p.number).sort(),
-      ['2-01', 'B7'],
-      'canonical id shapes (milestone-prefixed, letter-prefixed #3036) must survive the digit requirement',
+      ['02-01', 'B7'],
+      'canonical id shapes (milestone-prefixed — normalizePhaseName zero-pads the segment — and letter-prefixed #3036) must survive the digit requirement',
     );
   });
 });
