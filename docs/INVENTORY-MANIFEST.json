@@ -509,6 +509,7 @@
       "ui-safety-gate.cjs",
       "unusable-input.cjs",
       "update-context.cjs",
+      "user-artifact-staging.cjs",
       "validate-command-router.cjs",
       "validate.cjs",
       "vendor/re2js.cjs",

@@ -23,7 +23,21 @@ const {
   copyWithPathReplacement,
   installCodexConfig,
   _copyStaged,
+  _resolveUserArtifactStagingRoot: _installJsResolveUserArtifactStagingRoot,
 } = require('../bin/install.js');
+
+// #2875 (epic #2866 Phase 6): user-artifact-staging confinement rows (E1-E5).
+// Top-level (not inside any of the folded `__foldDescribe` sections below,
+// which each scope their own requires to their own closure).
+const {
+  assertDestWithinConfigHome: _uasAssertDestWithinConfigHome,
+} = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
+const {
+  _resolveUserArtifactStagingRoot,
+} = require('../gsd-core/bin/lib/install-engine.cjs');
+const {
+  recoverOrphanedUserArtifacts,
+} = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
 // ---------------------------------------------------------------------------
 // copyWithPathReplacement
@@ -2496,6 +2510,182 @@ describe('_installNativePluginIfDeclared write-confinement', () => {
     } finally {
       cleanup(configDir);
       cleanup(src);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 (epic #2866 Phase 6): User Artifact Staging confinement — E1-E5
+// (.gsd/phase/feat-2875-materialization-primitives/50-test-matrix.md
+// "E. Confinement"). Every row reuses assertDestWithinConfigHome /
+// hasExistingSymlinkBetween rather than a bespoke check — see
+// _resolveUserArtifactStagingRoot's own doc comment (install-engine.cts) and
+// user-artifact-staging.cts's module doc "Confinement".
+// ---------------------------------------------------------------------------
+
+describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
+  test('E1: the staging root resolves through assertDestWithinConfigHome — an escaping subpath is refused by the SAME guard _resolveUserArtifactStagingRoot uses', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e1-'));
+    try {
+      // The real staging subpath ('.gsd-staging/user-artifacts') is a fixed
+      // literal that can never escape — so this asserts the PROPERTY the
+      // call site depends on directly against the same primitive, rather
+      // than trying to force an unreachable escape through the real API.
+      assert.throws(
+        () => _uasAssertDestWithinConfigHome(configDir, path.join('..', '..', 'etc', 'staging')),
+        /escap|strict subpath|configHome/i,
+      );
+      // The real call resolves cleanly and stays confined.
+      const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
+      assert.ok(path.resolve(stagingRoot).startsWith(path.resolve(configDir) + path.sep));
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('E2: recovery refuses a record naming a destDir outside confinement — never writes outside it', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e2-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e2-outside-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'attackerentry0000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'pwned.md'), 'attacker-controlled content');
+      // The record is attacker-influenced data — it names a destDir OUTSIDE
+      // configDir entirely.
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: outside, names: ['pwned.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0);
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
+      assert.ok(!fs.existsSync(path.join(outside, 'pwned.md')), 'must never write outside confinement');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  test('E3: ..-traversal in a staged file name is rejected', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e3-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const entryDir = path.join(stagingRoot, 'traversalentry000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['../../../etc/passwd'], timestamp: new Date().toISOString() }),
+      );
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'traversal name must never be restored');
+      assert.ok(!fs.existsSync(path.join(configDir, '..', '..', '..', 'etc', 'passwd')));
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('E4: a symlinked staging root is refused — same refusal as the existing dest guard', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e4-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e4-elsewhere-'));
+    try {
+      // Pre-create .gsd-staging as a symlink pointing outside configDir —
+      // exactly the threat hasExistingSymlinkBetween's root-symlink refusal
+      // (install-engine.cts) already covers for every other write on this
+      // call tree.
+      fs.symlinkSync(elsewhere, path.join(configDir, '.gsd-staging'));
+      assert.throws(
+        () => _resolveUserArtifactStagingRoot(configDir),
+        /symlink/i,
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(elsewhere);
+    }
+  });
+
+  test('E5: a NUL byte in a staged file name is rejected', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e5-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const entryDir = path.join(stagingRoot, 'nulbyteentry00000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['USER-PROFILE\u0000.md'], timestamp: new Date().toISOString() }),
+      );
+      let result;
+      assert.doesNotThrow(() => { result = recoverOrphanedUserArtifacts(stagingRoot, configDir); });
+      assert.equal(result.recovered.length, 0, 'NUL-byte name must never be restored');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Parity: install-engine.cts's `_resolveUserArtifactStagingRoot` is
+  // deliberately duplicated (not shared) into bin/install.js, to avoid a
+  // circular `require` between the two (see that function's own doc comment
+  // in both files). This codebase names unguarded duplication across
+  // parallel surfaces "Generative Fix Divergence" and requires a parity
+  // assertion that fails the moment the two copies diverge — same inputs,
+  // same resolved root, same refusal behavior.
+  // -------------------------------------------------------------------------
+
+  test('parity: install-engine.cts and bin/install.js copies of _resolveUserArtifactStagingRoot resolve the SAME root for the same configDir', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-happy-'));
+    try {
+      const fromEngine = _resolveUserArtifactStagingRoot(configDir);
+      const fromInstallJs = _installJsResolveUserArtifactStagingRoot(configDir);
+      assert.equal(fromInstallJs, fromEngine, 'both copies must resolve to the identical staging root');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('parity: both copies refuse a symlinked staging root identically', () => {
+    const configDirEngine = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-engine-'));
+    const configDirInstallJs = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-installjs-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-elsewhere-'));
+    try {
+      fs.symlinkSync(elsewhere, path.join(configDirEngine, '.gsd-staging'));
+      fs.symlinkSync(elsewhere, path.join(configDirInstallJs, '.gsd-staging'));
+
+      let engineThrew = false;
+      let engineMessage = '';
+      try {
+        _resolveUserArtifactStagingRoot(configDirEngine);
+      } catch (err) {
+        engineThrew = true;
+        engineMessage = err.message;
+      }
+      let installJsThrew = false;
+      let installJsMessage = '';
+      try {
+        _installJsResolveUserArtifactStagingRoot(configDirInstallJs);
+      } catch (err) {
+        installJsThrew = true;
+        installJsMessage = err.message;
+      }
+
+      assert.ok(engineThrew, 'install-engine.cts copy must refuse a symlinked staging root');
+      assert.ok(installJsThrew, 'bin/install.js copy must refuse a symlinked staging root');
+      // Both messages must carry the same refusal shape (symlink refusal),
+      // even though configDir differs between the two (each needs its own
+      // sandbox — the throw itself, not the literal path, is what parity
+      // checks here).
+      assert.match(engineMessage, /symlink/i);
+      assert.match(installJsMessage, /symlink/i);
+    } finally {
+      cleanup(configDirEngine);
+      cleanup(configDirInstallJs);
+      cleanup(elsewhere);
     }
   });
 });

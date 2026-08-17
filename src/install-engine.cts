@@ -40,6 +40,10 @@ import { ensureCommonJsMarker } from './commonjs-marker.cjs';
 // why this is an ambient swap rather than a threaded `deps` parameter.
 import installFsAdapter = require('./install-fs-adapter.cjs');
 const { installFs, withInstallFs } = installFsAdapter;
+// #2875 (epic #2866 Phase 6): durable on-disk staging for USER_OWNED_ARTIFACTS
+// across the preserve -> wipe -> restore window (#1874-F19). See
+// user-artifact-staging.cts's module doc.
+import userArtifactStaging = require('./user-artifact-staging.cjs');
 // #2870: InstallScope is owned by install-scope.cts, not re-declared here.
 // `isGlobalScope` centralizes the `scope === 'global'` boolean projection
 // this module's two remaining re-derivation sites need (see the
@@ -78,8 +82,9 @@ type ResolveAttribution = (runtime: string) => any;
  *
  * Invariant: a file is either distribution (manifest-tracked, diff'd against
  * manifest) or user artifact (preserved across installs, never diff'd). Never
- * both. Both preserveUserArtifacts call sites and writeManifest must agree on
- * this list, which is why it lives here as a single constant.
+ * both. Both the user-artifact-staging.cts call sites (#2875) and
+ * writeManifest must agree on this list, which is why it lives here as a
+ * single constant.
  *
  * Paths are relative to the gsd-core/ directory.
  */
@@ -153,46 +158,6 @@ const SKILLS_CONVERTER_REGISTRY: Record<string, (content: string, skillName: str
   convertClaudeCommandToKiloSkill,
   convertClaudeCommandToKimiCodeSkill: runtimeArtifactConversion.convertClaudeCommandToKimiCodeSkill,
 };
-
-// ---------------------------------------------------------------------------
-// User-artifact preservation helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Save user-generated files from destDir to an in-memory map before a wipe.
- *
- * @param destDir - Directory that is about to be wiped
- * @param fileNames - Relative file names (e.g. ['USER-PROFILE.md']) to preserve
- * @returns Map of fileName → file content (only entries that existed)
- */
-function preserveUserArtifacts(destDir: string, fileNames: string[]): Map<string, string> {
-  const saved = new Map<string, string>();
-  for (const name of fileNames) {
-    const fullPath = path.join(destDir, name);
-    if (installFs().existsSync(fullPath)) {
-      try {
-        saved.set(name, installFs().readFileSync(fullPath, 'utf8'));
-      } catch { /* skip unreadable files */ }
-    }
-  }
-  return saved;
-}
-
-/**
- * Restore user-generated files saved by preserveUserArtifacts after a wipe.
- *
- * @param destDir - Directory that was wiped and recreated
- * @param saved - Map returned by preserveUserArtifacts
- */
-function restoreUserArtifacts(destDir: string, saved: Map<string, string>): void {
-  for (const [name, content] of saved) {
-    const fullPath = path.join(destDir, name);
-    try {
-      installFs().mkdirSync(path.dirname(fullPath), { recursive: true });
-      installFs().writeFileSync(fullPath, content, 'utf8');
-    } catch { /* skip unwritable paths */ }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Symlink-escape guard
@@ -331,6 +296,36 @@ function hasExistingSymlinkBetween(
 }
 
 // ---------------------------------------------------------------------------
+// User-artifact staging root
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the durable staging root for `configDir` (#2875 / user-artifact-
+ * staging.cts), confined via the SAME `assertDestWithinConfigHome` gate every
+ * other write on this call tree uses, and refused via the SAME
+ * `hasExistingSymlinkBetween` guard `_copyStaged`/
+ * `migrateLegacyDevPreferencesToSkill` already apply to their own writes
+ * (test-matrix E1/E4) — this module never reimplements either decision, only
+ * reuses them (user-artifact-staging.cts's own module doc, "Confinement").
+ *
+ * Fixed location: `<configDir>/.gsd-staging/user-artifacts/` — a sibling of
+ * every directory this phase's four call sites wipe, so staging survives all
+ * of them while staying inside configDir (40-design.md "Staging location").
+ */
+function _resolveUserArtifactStagingRoot(configDir: string): string {
+  const stagingRoot = runtimeArtifactInstallPlan.assertDestWithinConfigHome(
+    configDir,
+    path.posix.join('.gsd-staging', 'user-artifacts'),
+  );
+  if (hasExistingSymlinkBetween(path.resolve(configDir), stagingRoot, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+    throw new Error(
+      `_resolveUserArtifactStagingRoot: staging root "${stagingRoot}" contains a symlink the install root "${configDir}" does not trust — refusing to stage. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
+    );
+  }
+  return stagingRoot;
+}
+
+// ---------------------------------------------------------------------------
 // migrateLegacyDevPreferencesToSkill
 // ---------------------------------------------------------------------------
 
@@ -349,7 +344,10 @@ function hasExistingSymlinkBetween(
  * migration so callers can log a one-line confirmation.
  *
  * @param targetDir - Resolved runtime config directory (e.g. ~/.claude)
- * @param saved - Map returned by preserveUserArtifacts
+ * @param saved - Map of fileName -> content, built by the caller from a
+ *   user-artifact-staging.cts staged batch's disk contents (#2875) — every
+ *   call site reads this back AFTER its own wipe, never held in memory
+ *   across it.
  * @param runtime - canonical runtime ID (e.g. 'hermes', 'qwen', 'claude')
  * @param scope - install scope
  * @returns true if a file was migrated, false otherwise
@@ -622,15 +620,22 @@ function _removeHermesBareStemDirs(nestedGsdDir: string): void {
  */
 function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: string = 'global'): void {
   const legacyCommandsGsd = path.join(configDir, 'commands', 'gsd');
+  // #2875: staging root resolved once — reused below and by every other
+  // call site sharing this configDir.
+  const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
 
   // Claude / Qwen / Hermes: clean up legacy commands/gsd/ and preserve dev-preferences
   // for migration. The actual migration call is deferred to after all layout cleanup so
   // that for Hermes the flat skills/gsd-*/ removal (below) does not delete the freshly
   // created skills/gsd-dev-preferences/ skill dir.
-  let savedLegacyArtifacts: Map<string, string> | null = null;
+  let stagedLegacyArtifacts: ReturnType<typeof userArtifactStaging.stageUserArtifacts> | null = null;
   if (_hostBehaviors(runtime).legacyCommandsGsdInstallMigration) {
     if (installFs().existsSync(legacyCommandsGsd)) {
-      savedLegacyArtifacts = preserveUserArtifacts(legacyCommandsGsd, ['dev-preferences.md']);
+      // #2875 (#1874-F19): staged DURABLY to disk before the wipe below, so a
+      // crash anywhere in this function — including the Hermes flat-skills
+      // wipe further down, previously inside the same in-memory-only window
+      // — survives via recoverOrphanedUserArtifacts on the next run.
+      stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
       installFs().rmSync(legacyCommandsGsd, { recursive: true });
     }
   }
@@ -657,8 +662,19 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
   // Migrate dev-preferences.md content → runtime-aware SKILL.md location (#2973).
   // Done after all layout cleanup so Hermes flat-dir removal does not delete the
   // newly created skill dir. No-op if skill file already exists.
-  if (savedLegacyArtifacts) {
+  if (stagedLegacyArtifacts) {
+    // #2875: read the content back from the DISK-staged copy (fresh, after
+    // every wipe above has already run) rather than an in-memory value held
+    // across them — migrateLegacyDevPreferencesToSkill's Map<string,string>
+    // signature is unchanged so this call site's control flow (including
+    // never restoring on migration failure, unlike bin/install.js's
+    // uninstall call site 3) is byte-identical to before.
+    const savedLegacyArtifacts = new Map<string, string>();
+    for (const name of stagedLegacyArtifacts.names) {
+      savedLegacyArtifacts.set(name, installFs().readFileSync(path.join(stagedLegacyArtifacts.filesDir, name), 'utf8'));
+    }
     migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    userArtifactStaging.discardStagedUserArtifacts(stagedLegacyArtifacts);
   }
 }
 
@@ -669,9 +685,9 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
  * @param runtime
  * @param configDir  resolved runtime config directory
  * @param scope
- * @returns saved legacy artifacts for post-removal migration, or null
+ * @returns staged legacy artifacts for post-removal migration, or null
  */
-function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: string = 'global'): Map<string, string> | null {
+function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: string = 'global'): ReturnType<typeof userArtifactStaging.stageUserArtifacts> | null {
   // commands/gsd/ is a legacy location for Qwen, Hermes, and all Claude installs.
   // Prior to #1367 fix, Claude-local used commands/gsd/<cmd>.md (colon-namespaced).
   // After #1367, Claude-local uses flat commands/gsd-<cmd>.md. The inline uninstall
@@ -683,7 +699,14 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
   // is deferred and returned so the caller can apply it AFTER layout-driven
   // removal — this prevents the layout's gsd-* prefix removal from wiping the
   // freshly created skill dir (same pattern as _runLegacyInstallMigrations).
-  let savedLegacyArtifacts: Map<string, string> | null = null;
+  // #2875 (#1874-F19): staged DURABLY to disk (userArtifactStaging), not just
+  // an in-memory Map — this function's own wipe below is raw `fs`, left
+  // unrouted by design (Phase 5 deliberately left the uninstall tree off the
+  // installFs() seam; 40-design.md "Explicitly out of scope"), but the
+  // staging call itself still routes through installFs() because the shared
+  // module does (ambient default: real fs here, since this call is never
+  // wrapped in withInstallFs).
+  let stagedLegacyArtifacts: ReturnType<typeof userArtifactStaging.stageUserArtifacts> | null = null;
   // commands/gsd/ is a legacy location for Qwen, Hermes, and Claude global.
   // Claude local is intentionally excluded: the inline uninstall block (1c) handles
   // commands/gsd/ for claude local, preserving dev-preferences.md by restoring it
@@ -702,7 +725,8 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
   if (isLegacyCommandsGsd) {
     const legacyCommandsGsd = path.join(configDir, 'commands', 'gsd');
     if (fs.existsSync(legacyCommandsGsd)) {
-      savedLegacyArtifacts = preserveUserArtifacts(legacyCommandsGsd, ['dev-preferences.md']);
+      const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
+      stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
       fs.rmSync(legacyCommandsGsd, { recursive: true });
     }
   }
@@ -731,8 +755,8 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
     }
   }
 
-  // Return saved artifacts so the caller can migrate after layout-driven removal.
-  return savedLegacyArtifacts;
+  // Return staged artifacts so the caller can migrate after layout-driven removal.
+  return stagedLegacyArtifacts;
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,9 +1479,9 @@ function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: st
 
   // Legacy cleanup before layout-driven removal (scope-aware to avoid
   // removing Claude local commands/gsd/ which is the primary install dir).
-  // Returns saved user artifacts so we can migrate AFTER layout removal
+  // Returns staged user artifacts so we can migrate AFTER layout removal
   // (the layout's gsd-* prefix pass would wipe a skill dir created here).
-  const savedLegacyArtifacts = _runLegacyUninstallCleanup(runtime, configDir, scope);
+  const stagedLegacyArtifacts = _runLegacyUninstallCleanup(runtime, configDir, scope);
 
   const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope as any);
   const plan: any = runtimeArtifactInstallPlan.createRuntimeArtifactUninstallPlan(layout);
@@ -1490,8 +1514,16 @@ function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: st
   // #2973 / Codex review (bd1f06c9): migrate dev-preferences.md to the
   // runtime-aware SKILL.md location after all layout-driven removal is
   // complete. Do NOT restore to commands/gsd/ — the user is uninstalling.
-  if (savedLegacyArtifacts) {
+  if (stagedLegacyArtifacts) {
+    // #2875: read the content back from the DISK-staged copy, matching
+    // _runLegacyInstallMigrations's call site — never restored on failure
+    // here either (the user is uninstalling; there is nothing to restore to).
+    const savedLegacyArtifacts = new Map<string, string>();
+    for (const name of stagedLegacyArtifacts.names) {
+      savedLegacyArtifacts.set(name, installFs().readFileSync(path.join(stagedLegacyArtifacts.filesDir, name), 'utf8'));
+    }
     migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    userArtifactStaging.discardStagedUserArtifacts(stagedLegacyArtifacts);
   }
 }
 
@@ -1510,8 +1542,7 @@ export = {
   _copyStaged,
   hasExistingSymlinkBetween,
   isSymlinkedDestOptIn,
-  preserveUserArtifacts,
-  restoreUserArtifacts,
+  _resolveUserArtifactStagingRoot,
   migrateLegacyDevPreferencesToSkill,
   applyOpencodeFamilyPathPrefix,
   convertClaudeCommandToOpencodeSkill,

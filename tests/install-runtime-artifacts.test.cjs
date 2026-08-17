@@ -34,12 +34,18 @@ const {
   MANIFEST_NAME,
   installerEnv,
   stripAnsi,
+  runMinimalInstall,
 } = require('./helpers/install-shared.cjs');
 
 const {
   installRuntimeArtifacts,
   installOpencodeFamilySkills,
+  _resolveUserArtifactStagingRoot,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+const {
+  stageUserArtifacts,
+} = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
 const {
   parseRuntimeInput,
@@ -7128,5 +7134,59 @@ describe('installRuntimeArtifacts — G3: adapter calling-convention regression 
       fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')),
       'G3: the imperative adapter\'s calling convention must still produce a real install',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 (epic #2866 Phase 6): User Artifact Staging — call-site integration.
+// (.gsd/phase/feat-2875-materialization-primitives/50-test-matrix.md)
+//
+// C7 (anti-inertness): recovery must be reachable from a REAL `bin/install.js`
+// run, not merely callable — the #1879-F15 failure mode this whole phase
+// exists to avoid. This spawns the real installer twice against the SAME
+// sandbox HOME, with an orphaned staged artifact manually planted between the
+// two runs (simulating a prior run that died between the wipe and its own
+// restore/discard), and asserts the SECOND real installer invocation recovers
+// it — proving the wiring in bin/install.js's `install()`, not just that the
+// module's own function works when called directly.
+// ---------------------------------------------------------------------------
+
+describe('#2875: user-artifact-staging — call-site integration (C7 anti-inertness)', () => {
+  test('an orphaned USER-PROFILE.md staged under the real gsd-core destDir is recovered by a subsequent real install() run', (t) => {
+    const first = runMinimalInstall({ runtime: 'claude', scope: 'global' });
+    t.after(() => cleanup(first.root));
+
+    const gsdCoreDir = path.join(first.configDir, 'gsd-core');
+    const profilePath = path.join(gsdCoreDir, 'USER-PROFILE.md');
+    const customContent = '# My Profile\n\nOrphaned content from a crashed install run.\n';
+    fs.writeFileSync(profilePath, customContent, 'utf8');
+
+    // Manually plant the orphan: stage USER-PROFILE.md durably (the commit
+    // point — record.json — lands), then simulate the crash by deleting the
+    // file WITHOUT restoring or discarding. This is exactly the state a
+    // process death between the wipe and the restore leaves behind.
+    const stagingRoot = _resolveUserArtifactStagingRoot(first.configDir);
+    const staged = stageUserArtifacts(gsdCoreDir, ['USER-PROFILE.md'], stagingRoot);
+    assert.deepEqual(staged.names, ['USER-PROFILE.md'], 'precondition: the orphan really did stage');
+    fs.unlinkSync(profilePath);
+    assert.ok(!fs.existsSync(profilePath), 'precondition: the file is genuinely gone before the second run');
+
+    // Second REAL install, same HOME. If recovery is wired at a reachable
+    // production entry point, USER-PROFILE.md is repopulated with the
+    // orphaned content BEFORE the ordinary preserve/wipe/restore cycle runs
+    // (which has nothing to preserve on its own — the file was deleted, not
+    // merely staged, before this run started).
+    runMinimalInstall({ runtime: 'claude', scope: 'global', root: first.root });
+
+    assert.ok(fs.existsSync(profilePath), 'C7: USER-PROFILE.md must be recovered by the second real install run');
+    assert.equal(
+      fs.readFileSync(profilePath, 'utf8'),
+      customContent,
+      'recovered content must be byte-identical to the orphaned staged copy',
+    );
+
+    // The staging entry is consumed by the recovery step itself.
+    const entries = fs.existsSync(stagingRoot) ? fs.readdirSync(stagingRoot) : [];
+    assert.equal(entries.length, 0, 'the orphan is discarded once recovered — not left for a third run to find again');
   });
 });

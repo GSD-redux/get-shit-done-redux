@@ -149,6 +149,13 @@ interface InstallFsAdapter {
   realpathSync(p: string): string;
   unlinkSync(p: string): void;
   rmdirSync(p: string): void;
+  /** #2875 (epic #2866 Phase 6 / user-artifact-staging.cts): added so
+   *  installer-migrations.cts's `copyPreservingSymlink` — reused by the
+   *  staging module to copy a user-owned artifact without ever dereferencing
+   *  a symlink (test-matrix A4) — can route ALL FIVE of its fs calls through
+   *  this seam instead of punching a hole through it for just these two. */
+  symlinkSync(target: string, p: string): void;
+  readlinkSync(p: string): string;
   /** Raw-fd streaming trio, added so `installer-migrations.cts`'s
    *  `sha256File` can hash a file in fixed-size chunks through this seam
    *  instead of buffering the whole file via `readFileSync` — see the
@@ -177,6 +184,8 @@ const REAL_ADAPTER: InstallFsAdapter = {
   realpathSync: (p) => nodeFs.realpathSync(p),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
   rmdirSync: (p) => nodeFs.rmdirSync(p),
+  symlinkSync: (target, p) => nodeFs.symlinkSync(target, p),
+  readlinkSync: (p) => nodeFs.readlinkSync(p),
   openSync: (p, flags) => nodeFs.openSync(p, flags),
   readSync: (fd, buffer, offset, length, position) => nodeFs.readSync(fd, buffer, offset, length, position),
   closeSync: (fd) => nodeFs.closeSync(fd),

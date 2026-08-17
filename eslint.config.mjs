@@ -80,6 +80,9 @@ export default tseslint.config(
       // #2874 (epic #2866 Phase 5): tsc-generated runtime artifact — lint the
       // src/install-fs-adapter.cts source, not this.
       'gsd-core/bin/lib/install-fs-adapter.cjs',
+      // #2875 (epic #2866 Phase 6): tsc-generated runtime artifact — lint the
+      // src/user-artifact-staging.cts source, not this.
+      'gsd-core/bin/lib/user-artifact-staging.cjs',
       'gsd-core/bin/lib/commonjs-marker.cjs',
       'gsd-core/bin/lib/capability-loader.cjs',
       'gsd-core/bin/lib/capability-source.cjs',

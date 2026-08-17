@@ -3558,16 +3558,17 @@ describe('uninstall — manifest cleanup (#1908)', () => {
  * Regression tests for bug #2771: USER-PROFILE.md tracked in install manifest
  *
  * USER-PROFILE.md is a user-owned artifact created/refreshed by /gsd-profile-user.
- * preserveUserArtifacts() correctly preserves it across reinstalls. But writeManifest()
- * also records it under "gsd-core/USER-PROFILE.md" with a SHA-256 of whatever was
- * on disk at install time. On the next install, saveLocalPatches() compares the on-disk
- * (refreshed) hash to the manifest hash, finds them different, and emits the spurious
- * "Found N locally modified GSD file(s) — backed up to gsd-local-patches/" warning.
+ * The user-artifact-staging.cts durable staging path (#2875) correctly preserves it
+ * across reinstalls. But writeManifest() also records it under
+ * "gsd-core/USER-PROFILE.md" with a SHA-256 of whatever was on disk at install time.
+ * On the next install, saveLocalPatches() compares the on-disk (refreshed) hash to
+ * the manifest hash, finds them different, and emits the spurious "Found N locally
+ * modified GSD file(s) — backed up to gsd-local-patches/" warning.
  *
  * Invariant: a file is either distribution (manifest-tracked, diff'd against manifest)
  * or user artifact (preserved across installs, never diff'd). It cannot be both. The
  * shared truth source must be a single USER_OWNED_ARTIFACTS list referenced by both
- * preserveUserArtifacts callers and writeManifest.
+ * the staging call sites and writeManifest.
  *
  * Closes: #2771
  */
@@ -3639,7 +3640,7 @@ describe('#2771: USER-PROFILE.md is excluded from gsd-file-manifest.json', () =>
   });
 });
 
-// ─── Test 2: preserveUserArtifacts still preserves USER-PROFILE.md ────────────
+// ─── Test 2: USER-PROFILE.md is still preserved (via durable staging, #2875) ──
 
 describe('#2771: USER-PROFILE.md is still preserved across reinstall', () => {
   let tmpDir;

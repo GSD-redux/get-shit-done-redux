@@ -1330,10 +1330,21 @@ describe('#1924: profile-user.md backup path must be outside gsd-core/', () => {
   });
 });
 
-// ─── Test 4: preserveUserArtifacts helper exported from install.js ────────────
+// ─── Test 4: user artifacts survive a wipe via the durable staging path ──────
+//
+// preserveUserArtifacts/restoreUserArtifacts (an in-memory Map, the #1924
+// fix's original mechanism) were retired by #2875 — nothing calls them any
+// more, so a `typeof preserveUserArtifacts === 'function'` assertion would
+// guard a function that never runs: vacuous. #1924's actual point was never
+// "this specific helper is exported" — it was "user artifacts survive a
+// reinstall wipe". This asserts that SAME property through the durable
+// on-disk staging path that replaced the in-memory one, including surviving
+// a crash BETWEEN the wipe and the restore (#1874-F19) — a stronger
+// guarantee than the retired helper ever gave, and one a plain in-process
+// round-trip would not prove.
 
-describe('#1924: preserveUserArtifacts helper exists in install.js', () => {
-  test('install.js exports preserveUserArtifacts function', () => {
+describe('#1924: user artifacts survive a wipe via the durable staging path (install.js exports)', () => {
+  test('install.js exports the staging primitives, and content staged through them survives a destDir wipe + crash', () => {
     // Set GSD_TEST_MODE so require() reaches the module.exports block
     const origMode = process.env.GSD_TEST_MODE;
     process.env.GSD_TEST_MODE = '1';
@@ -1348,11 +1359,41 @@ describe('#1924: preserveUserArtifacts helper exists in install.js', () => {
       }
     }
 
-    assert.strictEqual(
-      typeof mod.preserveUserArtifacts,
-      'function',
-      'install.js must export preserveUserArtifacts helper for testability'
-    );
+    for (const name of ['stageUserArtifacts', 'restoreStagedUserArtifacts', 'discardStagedUserArtifacts', 'recoverOrphanedUserArtifacts']) {
+      assert.strictEqual(
+        typeof mod[name],
+        'function',
+        `install.js must export ${name} — the mechanism that now makes the #1924 durability property testable`,
+      );
+    }
+
+    const destDir = createTempDir('gsd-1924-staging-dest-');
+    const configDir = createTempDir('gsd-1924-staging-cfg-');
+    try {
+      const content = '# My Profile\n\nSurvives via durable staging (#2875).\n';
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), content);
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      mod.stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+
+      // Simulate the #1874-F19 crash window: the wipe ran, the process died
+      // before any restore.
+      cleanup(destDir);
+      assert.ok(!fs.existsSync(path.join(destDir, 'USER-PROFILE.md')));
+
+      // Recovery — not an ordinary restore call — is what must bring it
+      // back, proving the property survives a crash, not merely an
+      // in-process round-trip.
+      const result = mod.recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.strictEqual(result.recovered.length, 1);
+      assert.strictEqual(
+        fs.readFileSync(path.join(destDir, 'USER-PROFILE.md'), 'utf8'),
+        content,
+        'user artifact content must survive the wipe, byte-identical, via the durable staging path',
+      );
+    } finally {
+      cleanup(destDir);
+      cleanup(configDir);
+    }
   });
 });
   });
