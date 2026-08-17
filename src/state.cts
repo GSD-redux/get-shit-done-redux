@@ -3535,7 +3535,12 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   // when SUMMARY files were added after the last STATE.md write (#1589).
   // #3354: pass the stored total so the milestoned-but-unbounded withhold can
   // report the preserved value instead of omitting the key.
-  const built = buildStateFrontmatter(body, cwd, undefined, readStoredTotalPhases(existingFm));
+  // #3573: pass the STORED MILESTONE too (same parity reasoning) — otherwise the
+  // roadmap-absent withhold never fires on this read surface and `state json`
+  // reports the phase-directory count while the persisted file preserves the
+  // stored total, exactly the write/read divergence #3354 closed for its shape.
+  const storedMilestoneJson = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm));
 
   // ADR-3408 §8.5 / D3: route stopped_at / paused_at / status / current_phase /
   // current_phase_name / current_plan through the SAME `preserve-when-unchanged`

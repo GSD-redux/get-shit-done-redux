@@ -1518,10 +1518,12 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
   test('#3573: no milestone asserted + roadmap absent keeps the directory count (fresh-project doctrine)', () => {
     // The #3354 doctrine: with nothing declared anywhere else, the disk count is
     // the only source and stays authoritative. A milestone-less STATE must keep
-    // deriving total_phases from the directories.
+    // deriving total_phases from the directories — stored 5, dirs 2, expect 2,
+    // so the row DISCRIMINATES: a withhold that fires without the milestone
+    // gate would leave 5 and fail here (mutation-kill guard).
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      buildStateMd({ milestone: 'none', totalPhases: 2 }).replace(/^milestone: none$/m, ''),
+      buildStateMd({ milestone: 'none', totalPhases: 5 }).replace(/^milestone: none$/m, ''),
     );
     seedPhaseDirs(tmpDir, [1, 2]);
 
@@ -1530,7 +1532,46 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
     assert.strictEqual(
       persistedTotalPhases(tmpDir),
       2,
-      `without an asserted milestone, the directory count (2) remains the source`,
+      `without an asserted milestone, the directory count (2) remains the source — not the stored 5`,
+    );
+  });
+
+  test('#3573: state json read surface agrees with the persisted file (write/read parity)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5 }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    const out = JSON.parse(jsonResult.output);
+    assert.strictEqual(
+      Number(out.progress && out.progress.total_phases),
+      5,
+      `#3573 read parity: state json must report the preserved stored 5, not the dir count of 1. Got ${out.progress && out.progress.total_phases}`,
+    );
+  });
+
+  test('#3573: planned-phase write keeps the stored total_phases (third issue-named verb)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5, currentPhase: '02' }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'planned-phase', '2', '--name', 'Core'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state planned-phase failed: ${rec.stderr}`);
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      5,
+      `total_phases must stay at the stored 5 across planned-phase's frontmatter resync`,
     );
   });
 
