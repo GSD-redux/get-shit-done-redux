@@ -478,14 +478,13 @@ const pkg = require('../package.json');
 // of cwd, but keeping the require at the top makes the dependency explicit and
 // surfaces resolution failures at process start instead of at first install call.
 const _gsdLibDir = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
-const { MODEL_PROFILES: GSD_MODEL_PROFILES } = require(path.join(_gsdLibDir, 'model-profiles.cjs'));
 const {
   RUNTIME_PROFILE_MAP: GSD_RUNTIME_PROFILE_MAP,
   isAnthropicFlavoredModel: gsdIsAnthropicFlavoredModel,
 } = require(path.join(_gsdLibDir, 'model-catalog.cjs'));
-const {
-  resolveTierEntry: gsdResolveTierEntry,
-} = require(path.join(_gsdLibDir, 'model-resolver.cjs'));
+// #2875 Part 2: MODEL_PROFILES + resolveTierEntry are now consumed only by
+// install-model-override-resolver.cjs's readGsdRuntimeProfileResolver
+// (required below) — this installer no longer needs its own bindings.
 
 // #2071 — install-time effort resolution (readGsdEffectiveEffortConfig /
 // resolveInstallTimeEffort, plus their _getGsdEffortCatalog + _readGsdConfigFile
@@ -1092,6 +1091,15 @@ const removeKimiHooksToml = hooksSurface.removeKimiHooksToml;
 // callers continue to work and there is a single implementation. (All call
 // sites are below this line, so the const binding has no TDZ hazard.)
 const processAttribution = runtimeArtifactConversion.processAttribution;
+// #2875 Part 2: descriptor-driven agent cross-cutting pieces, single-sourced
+// in runtimeArtifactConversion so the inline agent loop below and the
+// descriptor pipeline (stageAgentsForRuntimeWithConverter) resolve through
+// the SAME code — no drift between the two byte-parity-gated pipelines.
+const {
+  deriveAgentName,
+  applyAgentFrontmatterExtensions,
+  applyAgentBrandingRewrites,
+} = runtimeArtifactConversion;
 // computePathPrefix / applyRuntimeContentRewritesInPlace / applyRuntimeContentRewritesForCommandsInPlace:
 // Single implementations now live in runtimeArtifactConversion (ADR-1508 / #1511 Phase 2).
 // Re-bound here so install.js call sites and exports continue to work unchanged.
@@ -1456,296 +1464,30 @@ function writeSettings(settingsPath, settings) {
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
-/**
- * Read model_overrides from ~/.gsd/defaults.json at install time.
- * Returns an object mapping agent names to model IDs, or null if the file
- * doesn't exist or has no model_overrides entry.
- * Used by Codex TOML and OpenCode agent file generators to embed per-agent
- * model assignments so that model_overrides is respected on non-Claude runtimes (#2256).
- */
-function readGsdGlobalModelOverrides(options = {}) {
-  try {
-    const home = options.homedir ? options.homedir() : os.homedir();
-    const defaultsPath = path.join(home, '.gsd', 'defaults.json');
-    if (!fs.existsSync(defaultsPath)) return null;
-    const raw = fs.readFileSync(defaultsPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const overrides = parsed.model_overrides;
-    if (!overrides || typeof overrides !== 'object') return null;
-    return overrides;
-  } catch {
-    return null;
-  }
-}
+// #2875 Part 2 (J8): model-override resolution (readGsdGlobalModelOverrides /
+// readGsdEffectiveModelOverrides / readGsdRuntimeProfileResolver, plus the
+// shared resolveAgentModelOverride precedence chain) was extracted into the
+// shipped gsd-core/bin/lib/install-model-override-resolver.cjs, mirroring
+// install-effort-resolver.cjs's existing #2071 precedent, so the descriptor-
+// driven agents pipeline (runtime-artifact-layout.cts's convertedAgentsKind)
+// and this installer resolve model_overrides / model_profile_overrides
+// through the SAME code — a single source of truth for the precedence chain
+// the inline agent loop below used to duplicate across ~24 lines per runtime
+// (kilo, opencode). See install-model-override-resolver.cts's module doc.
+const {
+  readGsdEffectiveModelOverrides,
+  readGsdRuntimeProfileResolver,
+  resolveAgentModelOverride,
+} = require(path.join(_gsdLibDir, 'install-model-override-resolver.cjs'));
 
-/**
- * Effective per-agent model_overrides for the Codex / OpenCode install paths.
- *
- * Merges `~/.gsd/defaults.json` (global) with per-project
- * `<project>/.planning/config.json`. Per-project keys win on conflict so a
- * user can tune a single agent's model in one repo without re-setting the
- * global defaults for every other repo. Non-conflicting keys from both
- * sources are preserved.
- *
- * This is the fix for #2256: both adapters previously read only the global
- * file, so a per-project `model_overrides` (the common case the reporter
- * described — a per-project override for `gsd-codebase-mapper` in
- * `.planning/config.json`) was silently dropped and child agents inherited
- * the session default.
- *
- * `targetDir` is the consuming runtime's install root (e.g. `~/.codex` for
- * a global install, or `<project>/.codex` for a local install). We walk up
- * from there looking for `.planning/` so both cases resolve the correct
- * project root. When `targetDir` is null/undefined only the global file is
- * consulted (matches prior behavior for code paths that have no project
- * context).
- *
- * Returns a plain `{ agentName: modelId }` object, or `null` when neither
- * source defines `model_overrides`.
- */
-function readGsdEffectiveModelOverrides(targetDir = null, options = {}) {
-  const global = readGsdGlobalModelOverrides(options);
-
-  let projectOverrides = null;
-  if (targetDir) {
-    let probeDir = path.resolve(targetDir);
-    for (let depth = 0; depth < 8; depth += 1) {
-      const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (fs.existsSync(candidate)) {
-        try {
-          const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
-          if (parsed && typeof parsed === 'object' && parsed.model_overrides
-              && typeof parsed.model_overrides === 'object') {
-            projectOverrides = parsed.model_overrides;
-          }
-        } catch {
-          // Malformed config.json — fall back to global; readGsdRuntimeProfileResolver
-          // surfaces a parse warning via _readGsdConfigFile already.
-        }
-        break;
-      }
-      const parent = path.dirname(probeDir);
-      if (parent === probeDir) break;
-      probeDir = parent;
-    }
-  }
-
-  if (!global && !projectOverrides) return null;
-  // Per-project wins on conflict; preserve non-conflicting global keys.
-  return { ...(global || {}), ...(projectOverrides || {}) };
-}
-
-/**
- * #443 — Inject `effort: <value>` into YAML frontmatter of a Claude .md agent
- * file in a newline-agnostic way (LF and CRLF source files are both handled).
- *
- * The function:
- *   - Detects the file's EOL (CRLF if the first `---` line ends with \r\n,
- *     otherwise LF).
- *   - Skips injection if an `effort:` key already exists in the frontmatter
- *     (idempotent).
- *   - Inserts `effort: <value>` immediately before the closing `---` delimiter,
- *     using the same EOL as the surrounding frontmatter so the output file
- *     stays EOL-consistent.
- *   - Returns the original content unchanged when no YAML frontmatter is found.
- *
- * @param {string} content      Raw file content (may have LF or CRLF endings).
- * @param {string} effortValue  Rendered effort string, e.g. "xhigh".
- * @returns {string}            Updated content with `effort:` injected, or the
- *                              original content when no frontmatter is found.
- */
-function injectEffortFrontmatter(content, effortValue) {
-  // Detect the dominant EOL from the first line (the opening `---`).
-  // If the very first `---` is followed by \r\n, treat the whole file as CRLF.
-  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
-
-  // Build a frontmatter-matching regex that tolerates an optional \r before
-  // each \n, so we handle both LF and CRLF files without needing to normalise
-  // the whole content.
-  //
-  // Breakdown:
-  //   ^---\r?\n        — opening delimiter (with optional \r)
-  //   ([\s\S]*?)       — frontmatter body (non-greedy)
-  //   ^---\r?$         — closing delimiter line (optional \r, $ before \n in
-  //                       multiline mode)
-  //   (\r?\n|$)        — newline after closing --- (or end of string)
-  //
-  // The `m` flag makes ^ / $ match at every line boundary.
-  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
-  const match = fmRe.exec(content);
-  if (!match) return content; // no YAML frontmatter — leave unchanged
-
-  // Idempotency guard: don't insert a second effort: line.
-  const fmBody = match[1]; // content between the two `---` lines
-  if (/^effort:/m.test(fmBody)) return content;
-
-  // Locate the exact position of the closing `---` line so we can insert
-  // before it using a simple string splice (avoids re-running the regex and
-  // avoids any edge-cases with $ matching \r differently per engine).
-  const closeIdx = match.index + 4 + fmBody.length; // 4 = len("---\n") (opening)
-  // Actually compute based on the full match start + captured group length:
-  // match[0] = full frontmatter block; match.index = start of that block.
-  // The closing `---` starts at: match.index + ("---" + eol).length + fmBody.length
-  const openLen = 3 + eol.length; // "---" + eol
-  const closingStart = match.index + openLen + fmBody.length;
-
-  const before = content.slice(0, closingStart);
-  const after = content.slice(closingStart);
-  return `${before}effort: ${effortValue}${eol}${after}`;
-}
-
-/**
- * #767 — Inject `disallowedTools: <value>` into the YAML frontmatter of a Claude .md agent.
- * Mirrors injectEffortFrontmatter: idempotent (skips if disallowedTools: already present),
- * inserts immediately before the closing `---`. Claude-only — never call for other runtimes,
- * which break on unknown frontmatter keys.
- */
-function injectDisallowedToolsFrontmatter(content, disallowedValue) {
-  // Detect the dominant EOL from the first line (the opening `---`).
-  // If the very first `---` is followed by \r\n, treat the whole file as CRLF.
-  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
-
-  // Build a frontmatter-matching regex that tolerates an optional \r before
-  // each \n, so we handle both LF and CRLF files without needing to normalise
-  // the whole content.
-  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
-  const match = fmRe.exec(content);
-  if (!match) return content; // no YAML frontmatter — leave unchanged
-
-  // Idempotency guard: don't insert a second disallowedTools: line.
-  const fmBody = match[1]; // content between the two `---` lines
-  if (/^disallowedTools:/m.test(fmBody)) return content;
-
-  // Locate the exact position of the closing `---` line so we can insert
-  // before it using a simple string splice.
-  const openLen = 3 + eol.length; // "---" + eol
-  const closingStart = match.index + openLen + fmBody.length;
-
-  const before = content.slice(0, closingStart);
-  const after = content.slice(closingStart);
-  return `${before}disallowedTools: ${disallowedValue}${eol}${after}`;
-}
-
-// #767 — Read-only verifier/auditor agents get a Claude-Code disallowedTools deny-list.
-// Group A (pure read-only) deny Write,Edit,MultiEdit. Group B report-writers Write one
-// output file so they deny only Edit,MultiEdit. gsd-nyquist-auditor is intentionally
-// excluded (it legitimately uses Write AND Edit to create/patch test files).
-const READONLY_AGENT_DISALLOWED_TOOLS = {
-  'gsd-plan-checker': 'Write, Edit, MultiEdit',
-  'gsd-integration-checker': 'Write, Edit, MultiEdit',
-  'gsd-ui-checker': 'Write, Edit, MultiEdit',
-  'gsd-verifier': 'Edit, MultiEdit',
-  'gsd-doc-verifier': 'Edit, MultiEdit',
-  'gsd-eval-auditor': 'Edit, MultiEdit',
-  'gsd-ui-auditor': 'Edit, MultiEdit',
-};
-
-/**
- * #2517 — Build a runtime-aware tier resolver for the install path.
- *
- * Probes BOTH per-project `<targetDir>/.planning/config.json` AND
- * `~/.gsd/defaults.json`, with per-project keys winning over global. This
- * matches `loadConfig`'s precedence and is the only way the PR's headline claim
- * — "set runtime in .planning/config.json and the Codex TOML emit picks it up"
- * — actually holds end-to-end (review finding #1).
- *
- * `targetDir` should be the consuming runtime's install root — install code
- * passes `path.dirname(<runtime root>)` so `.planning/config.json` resolves
- * relative to the user's project. When `targetDir` is null/undefined, only the
- * global defaults are consulted.
- *
- * Returns null if no `runtime` is configured (preserves prior behavior — only
- * model_overrides is embedded, no tier/reasoning-effort inference). Returns
- * null when `model_profile` is `inherit` so the literal alias passes through
- * unchanged. Returns null when no project config is reachable AND
- * `~/.gsd/defaults.json` declares no `model_profile` (#3543): the profile is
- * unverifiable at global scope, and baking the 'balanced' default would
- * defeat a consuming project's explicit `inherit`.
- *
- * Returns { runtime, resolve(agentName) -> { model, reasoning_effort? } | null }
- */
-function readGsdRuntimeProfileResolver(targetDir = null) {
-  const homeDefaults = _readGsdConfigFile(
-    path.join(os.homedir(), '.gsd', 'defaults.json'),
-    '~/.gsd/defaults.json'
-  );
-
-  // Per-project config probe. Resolve the project root by walking up from
-  // targetDir until we hit a `.planning/` directory; this covers both the
-  // common case (caller passes the project root) and the case where caller
-  // passes a nested install dir like `<root>/.codex/`.
-  let projectConfig = null;
-  if (targetDir) {
-    let probeDir = path.resolve(targetDir);
-    for (let depth = 0; depth < 8; depth += 1) {
-      const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (fs.existsSync(candidate)) {
-        projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
-        break;
-      }
-      const parent = path.dirname(probeDir);
-      if (parent === probeDir) break;
-      probeDir = parent;
-    }
-  }
-
-  // Per-project wins. Only fall back to ~/.gsd/defaults.json when the project
-  // didn't set the field. Field-level merge (not whole-object replace) so a
-  // user can keep `runtime` global while overriding only `model_profile` per
-  // project, and vice versa.
-  const merged = {
-    runtime:
-      (projectConfig && projectConfig.runtime) ||
-      (homeDefaults && homeDefaults.runtime) ||
-      null,
-    model_profile:
-      (projectConfig && projectConfig.model_profile) ||
-      (homeDefaults && homeDefaults.model_profile) ||
-      'balanced',
-    model_profile_overrides:
-      (projectConfig && projectConfig.model_profile_overrides) ||
-      (homeDefaults && homeDefaults.model_profile_overrides) ||
-      null,
-  };
-
-  if (!merged.runtime) return null;
-
-  // #3543 — "no project config found" is not "profile absent". The probe
-  // above starts at the install's targetDir, which for a GLOBAL install
-  // (~/.config/<runtime>) can never reach the consuming project's
-  // .planning/config.json — and writeNonClaudeDefaults never stores
-  // model_profile in ~/.gsd/defaults.json. Falling through to 'balanced'
-  // here baked a tier-default model (e.g. anthropic/claude-opus-4-8) into
-  // the static OpenCode/Kilo agent frontmatter, defeating a project's
-  // explicit `model_profile: "inherit"` — those runtimes use the frontmatter
-  // model over the live session selection. A profile is bakeable only when
-  // verifiable: declared in the found project config (local install —
-  // loadConfig reads the same file at dispatch time) or in the machine-wide
-  // defaults. Otherwise bake nothing and let the runtime's default/session
-  // model govern — the documented non-Claude posture
-  // (references/model-profiles.md, #1156).
-  if (!projectConfig && !(homeDefaults && homeDefaults.model_profile)) {
-    return null;
-  }
-
-  const profile = String(merged.model_profile).toLowerCase();
-  if (profile === 'inherit') return null;
-
-  return {
-    runtime: merged.runtime,
-    resolve(agentName) {
-      const agentModels = GSD_MODEL_PROFILES[agentName];
-      if (!agentModels) return null;
-      const tier = agentModels[profile] || agentModels.balanced;
-      if (!tier) return null;
-      return gsdResolveTierEntry({
-        runtime: merged.runtime,
-        tier,
-        overrides: merged.model_profile_overrides,
-      });
-    },
-  };
-}
+// #2875 Part 2: effort frontmatter injection moved to runtimeArtifactConversion
+// (single source of truth with the descriptor pipeline's
+// applyAgentFrontmatterExtensions step, which now also owns disallowedTools
+// injection + the read-only agent deny-list internally — see its module doc
+// in src/runtime-artifact-conversion.cts). injectEffortFrontmatter is kept
+// bound here only because it is still part of this module's export surface
+// (tests reach it via require('../bin/install.js')).
+const { injectEffortFrontmatter } = runtimeArtifactConversion;
 
 // Cache for attribution settings (populated once per runtime during install)
 const attributionCache = new Map();
@@ -11326,44 +11068,29 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
         content = content.replace(bareHomeDirRegex, normalizedPathPrefix);
         content = processAttribution(content, getCommitAttribution(runtime));
         // Convert frontmatter for runtime compatibility (agents need different handling)
+        // #2875 Part 2 (J8): agentName + model-override precedence now
+        // single-sourced via install-model-override-resolver.cjs's
+        // resolveAgentModelOverride, so the descriptor pipeline
+        // (runtime-artifact-layout.cts's convertedAgentsKind) can never
+        // diverge from this branch — both resolve through the SAME function.
+        const _agentNameForLoop = deriveAgentName(entry.name);
         if (_hostBehaviors(runtime).frontmatterDialect === 'opencode') {
-          // Resolve per-agent model for OpenCode agents.
           // Precedence: model_overrides[agent] > model_profile_overrides.opencode.<tier> > omit.
-          // model_overrides (#2256): explicit per-agent override, highest precedence.
-          // model_profile_overrides (#2794): tier-based runtime resolver, same parity as Codex.
-          const _ocAgentName = entry.name.replace(/\.md$/, '');
-          const _ocModelOverrides = readGsdEffectiveModelOverrides(targetDir);
-          let _ocModelOverride = _ocModelOverrides?.[_ocAgentName] || null;
-          if (!_ocModelOverride) {
-            // Fall back to tier-based resolution via model_profile_overrides.opencode.<tier>.
-            const _ocRuntimeResolver = readGsdRuntimeProfileResolver(targetDir);
-            if (_ocRuntimeResolver) {
-              const _ocEntry = _ocRuntimeResolver.resolve(_ocAgentName);
-              if (_ocEntry?.model) {
-                _ocModelOverride = _ocEntry.model;
-              }
-            }
-          }
+          const _ocModelOverride = resolveAgentModelOverride(
+            _agentNameForLoop,
+            readGsdEffectiveModelOverrides(targetDir),
+            readGsdRuntimeProfileResolver(targetDir),
+          );
           content = convertClaudeToOpencodeFrontmatter(content, { isAgent: true, modelOverride: _ocModelOverride });
         } else if (_hostBehaviors(runtime).frontmatterDialect === 'kilo') {
-          // Resolve per-agent model for Kilo agents (#2093 UPGRADE 2; Kilo is an
-          // OpenCode fork with the same static-frontmatter model constraint).
           // Precedence: model_overrides[agent] > model_profile_overrides.kilo.<tier> > omit.
-          // model_overrides (#2256): explicit per-agent override, highest precedence.
-          // model_profile_overrides (#2794): tier-based runtime resolver, same parity as OpenCode.
-          const _kiloAgentName = entry.name.replace(/\.md$/, '');
-          const _kiloModelOverrides = readGsdEffectiveModelOverrides(targetDir);
-          let _kiloModelOverride = _kiloModelOverrides?.[_kiloAgentName] || null;
-          if (!_kiloModelOverride) {
-            // Fall back to tier-based resolution via model_profile_overrides.kilo.<tier>.
-            const _kiloRuntimeResolver = readGsdRuntimeProfileResolver(targetDir);
-            if (_kiloRuntimeResolver) {
-              const _kiloEntry = _kiloRuntimeResolver.resolve(_kiloAgentName);
-              if (_kiloEntry?.model) {
-                _kiloModelOverride = _kiloEntry.model;
-              }
-            }
-          }
+          // (#2093 UPGRADE 2; Kilo is an OpenCode fork with the same static-frontmatter
+          // model constraint — same resolver, same precedence, single source of truth.)
+          const _kiloModelOverride = resolveAgentModelOverride(
+            _agentNameForLoop,
+            readGsdEffectiveModelOverrides(targetDir),
+            readGsdRuntimeProfileResolver(targetDir),
+          );
           content = convertClaudeToKiloFrontmatter(content, { isAgent: true, modelOverride: _kiloModelOverride });
         } else if (_hostBehaviors(runtime).frontmatterDialect === 'codex') {
           content = convertClaudeAgentToCodexAgent(content);
@@ -11384,36 +11111,25 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           // hostBehaviors.frontmatterDialect === 'cline'.
           content = convertClaudeAgentToClineAgent(content);
         } else if (_hostBehaviors(runtime).brandingRewrites) {
-          // Descriptor-driven (ADR-1239 / #2092): folded from separate
-          // `isQwen` / hermes-hardcoded branches into a single read of
-          // runtime.hostBehaviors.brandingRewrites (qwen -> QWEN.md/Qwen
-          // Code/.qwen/, hermes -> HERMES.md/Hermes Agent/.hermes/).
-          const _b = _hostBehaviors(runtime).brandingRewrites;
-          content = content.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
-          content = content.replace(/\bClaude Code\b/g, _b['Claude Code']);
-          content = content.replace(/\.claude\//g, _b['.claude/']);
+          // Descriptor-driven (ADR-1239 / #2092, #2875 Part 2 / J10): folded
+          // from separate `isQwen` / hermes-hardcoded branches into a single
+          // read of runtime.hostBehaviors.brandingRewrites (qwen ->
+          // QWEN.md/Qwen Code/.qwen/, hermes -> HERMES.md/Hermes Agent/.hermes/),
+          // now via the single-sourced applyAgentBrandingRewrites (also used
+          // by the descriptor pipeline's convertClaudeAgentToHermesAgent).
+          content = applyAgentBrandingRewrites(content, runtime);
         }
-        // #443 — Inject `effort:` into the Claude .md frontmatter ONLY.
-        // OpenCode/Qwen/Hermes also produce .md files but break on
-        // unknown frontmatter keys (the repo bans skills:/permissionMode: for
-        // the same reason — see tests/agent-frontmatter.test.cjs).
-        // Claude Code reads per-subagent `effort:` frontmatter (anthropics/claude-code #31536).
-        // Injection is per-runtime at install time because the canonical source
-        // agents/*.md must stay runtime-safe (no effort: key in source).
-        if ((_hostBehaviors(runtime).agentFrontmatterExtensions || []).includes('effort')) {
-          const _effortCfg = readGsdEffectiveEffortConfig(targetDir);
-          const _agentName = entry.name.replace(/\.md$/, '');
-          const _universalEffort = resolveInstallTimeEffort(_effortCfg, _agentName);
-          // #3533 (10d): 'inherit' means the effort: key must NOT exist —
-          // Claude Code then follows the session effort. The canonical source
-          // agents carry no effort key, so skipping injection is the whole job.
-          if (_universalEffort !== 'inherit') {
-            const _renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, _universalEffort).value;
-            content = injectEffortFrontmatter(content, _renderedEffort);
-          }
-          const _disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[_agentName];
-          if (_disallowedTools) content = injectDisallowedToolsFrontmatter(content, _disallowedTools);
-        }
+        // #443 / #2875 Part 2 — Inject `effort:` (+ #767 disallowedTools) into
+        // the Claude .md frontmatter ONLY, via the single-sourced
+        // applyAgentFrontmatterExtensions (runtime-artifact-conversion.cts) —
+        // driven by hostBehaviors.agentFrontmatterExtensions, the SAME gate
+        // the descriptor pipeline's post-converter step reads. OpenCode/Qwen/
+        // Hermes also produce .md files but break on unknown frontmatter keys
+        // (the repo bans skills:/permissionMode: for the same reason — see
+        // tests/agent-frontmatter.test.cjs). Injection is per-runtime at
+        // install time because the canonical source agents/*.md must stay
+        // runtime-safe (no effort: key in source).
+        content = applyAgentFrontmatterExtensions(content, { runtime, agentName: _agentNameForLoop, targetDir });
         // #3677 — normalize retired `/gsd:<cmd>` colon refs in the agent body
         // to the canonical hyphen form `/gsd-<cmd>` for hyphen-`name:`
         // runtimes (claude / qwen / hermes). Self-converting and

@@ -195,6 +195,23 @@ function isSymlinkedDestOptIn(): boolean {
 }
 
 /**
+ * `lstatSync`, never following a symlink, returning `null` instead of
+ * throwing when `p` does not exist AT ALL (not even as a dangling symlink).
+ * Unlike `existsSync` (which follows symlinks and reports `false` for a
+ * dangling one), this correctly distinguishes "nothing here" from "a
+ * symlink is here, even if its target is missing" — see
+ * `hasExistingSymlinkBetween`'s own doc comment for why that distinction is
+ * security-load-bearing.
+ */
+function tryLstat(p: string): { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean } | null {
+  try {
+    return installFs().lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Returns true if any path component between `root` and `fullPath` is a
  * symbolic link that would redirect writes outside the install root in a way
  * the caller must refuse.
@@ -245,8 +262,24 @@ function hasExistingSymlinkBetween(
   // circular back-reference to root from a path that descends from a resolved
   // root. So under opt-in, just follow the root symlink and continue the walk.
   // Default behavior (no opt-in) preserves the pre-#2393 refuse.
+  // #2875 defect fix: `existsSync` FOLLOWS symlinks and returns `false` for a
+  // DANGLING symlink (one whose target does not exist) — so the pre-fix
+  // `existsSync(cursor) && lstatSync(cursor).isSymbolicLink()` ordering used
+  // below (both here for `root` and in the per-segment loop) silently
+  // treated a dangling symlink as "nothing here", never even reaching the
+  // `lstatSync` symlink check. That let a dangling symlink planted AT a
+  // write destination — e.g. `<configDir>/USER-PROFILE.md ->
+  // <outside>/authorized_keys` — sail through this guard, after which the
+  // actual write (`copyFileSync` et al., which DOES follow symlinks) created
+  // attacker-controlled content outside the install root. `lstatSync` itself
+  // never follows a symlink and succeeds for a dangling one, so probing with
+  // it FIRST (falling back to "does not exist at all" only on ENOENT/similar)
+  // detects the dangling case correctly while preserving the exact same
+  // "cursor does not exist, stop walking" behavior for a path that truly has
+  // nothing there.
   let cursor = resolvedRoot;
-  if (installFs().existsSync(cursor) && installFs().lstatSync(cursor).isSymbolicLink()) {
+  const cursorLstat = tryLstat(cursor);
+  if (cursorLstat && cursorLstat.isSymbolicLink()) {
     if (!allowFollow) return true;
     try {
       cursor = installFs().realpathSync(cursor);
@@ -261,8 +294,9 @@ function hasExistingSymlinkBetween(
   for (const segment of relative.split(path.sep)) {
     if (!segment) continue;
     cursor = path.join(cursor, segment);
-    if (!installFs().existsSync(cursor)) return false;
-    if (installFs().lstatSync(cursor).isSymbolicLink()) {
+    const segmentLstat = tryLstat(cursor);
+    if (!segmentLstat) return false;
+    if (segmentLstat.isSymbolicLink()) {
       if (!allowFollow) return true;
       // Opt-in active: follow the symlink. Refuse if the resolved target is the
       // install root itself (threat (b) — would let _removeGsdEntries wipe the
@@ -352,8 +386,28 @@ function _resolveUserArtifactStagingRoot(configDir: string): string {
  * @param scope - install scope
  * @returns true if a file was migrated, false otherwise
  */
-function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string, string>, runtime?: string, scope: string = 'global'): boolean {
-  if (!saved || !saved.has('dev-preferences.md')) return false;
+/**
+ * Resolve the `{ skillFile, installRoot }` `migrateLegacyDevPreferencesToSkill`
+ * would target for `(targetDir, runtime, scope)`, WITHOUT performing any
+ * write. Extracted (#2875 defect fix) purely as a resolution helper so a
+ * caller can determine whether migration is even POSSIBLE for this
+ * runtime/scope, and whether it is already SATISFIED (a skill file already
+ * present), BEFORE deciding whether discarding a staged legacy copy would
+ * lose the user's file — `migrateLegacyDevPreferencesToSkill`'s own boolean
+ * return conflates "no skills layout for this runtime" with "the write
+ * failed" with "already migrated": all three return `false` today, and
+ * changing that return SHAPE would also change bin/install.js's own
+ * `if (migrateLegacyDevPreferencesToSkill(...))` call site, which this
+ * module does not own. This helper changes nothing about
+ * `migrateLegacyDevPreferencesToSkill`'s own signature or behavior — it is
+ * now IMPLEMENTED in terms of this helper, so there is exactly one copy of
+ * the resolution logic, never two that could drift.
+ *
+ * @returns `{ skillFile, installRoot }`, or `null` if this runtime/scope has
+ *   no skills layout to migrate into (mirrors `migrateLegacyDevPreferencesToSkill`'s
+ *   own early return for that case).
+ */
+function _resolveDevPreferencesSkillTarget(targetDir: string, runtime?: string, scope: string = 'global'): { skillFile: string; installRoot: string } | null {
   let skillDir: string;
   // #2911: the actual install root the skill dir resolves under — defaults to
   // targetDir, but a skills-kind `home` override (e.g. Codex -> $HOME/.agents)
@@ -364,7 +418,7 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
   if (runtime) {
     const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as any);
     const skillsKindEntry = layout.kinds.find((k: any) => k.kind === 'skills');
-    if (!skillsKindEntry) return false; // runtime has no skills layout at this scope (e.g. cline local)
+    if (!skillsKindEntry) return null; // runtime has no skills layout at this scope (e.g. cline local)
     const stemName = skillsKindEntry.prefix === '' ? 'dev-preferences' : 'gsd-dev-preferences';
     // #2911: same destination-root defect as _copyStaged/applySurface — honor
     // skillsKindEntry.home as a FALLBACK-preferred override (e.g. Codex skills
@@ -377,7 +431,15 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
     // Legacy fallback for callers that have not yet been updated to pass runtime
     skillDir = path.join(runtimeArtifactInstallPlan.assertDestWithinConfigHome(targetDir, 'skills'), 'gsd-dev-preferences');
   }
-  const skillFile = path.join(skillDir, 'SKILL.md');
+  return { skillFile: path.join(skillDir, 'SKILL.md'), installRoot };
+}
+
+function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string, string>, runtime?: string, scope: string = 'global'): boolean {
+  if (!saved || !saved.has('dev-preferences.md')) return false;
+  const target = _resolveDevPreferencesSkillTarget(targetDir, runtime, scope);
+  if (!target) return false; // runtime has no skills layout at this scope (e.g. cline local)
+  const { skillFile, installRoot } = target;
+  const skillDir = path.dirname(skillFile);
   if (installFs().existsSync(skillFile)) return false;
   // Symlink-escape guard: reject if any path component between installRoot and
   // skillDir is a symlink that would redirect writes outside the install root.
@@ -665,15 +727,45 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
   if (stagedLegacyArtifacts) {
     // #2875: read the content back from the DISK-staged copy (fresh, after
     // every wipe above has already run) rather than an in-memory value held
-    // across them — migrateLegacyDevPreferencesToSkill's Map<string,string>
-    // signature is unchanged so this call site's control flow (including
-    // never restoring on migration failure, unlike bin/install.js's
-    // uninstall call site 3) is byte-identical to before.
+    // across them.
+    //
+    // #2875 defect fix (readFileSync following a staged symlink):
+    // readFileSync ALWAYS follows a symlink — a staged artifact that is
+    // itself a symlink (module doc "Symlink safety", A4: staging never
+    // dereferences a symlink; a symlinked USER-artifact is recreated AS a
+    // symlink in the staging tree, not copied by content) would have its
+    // REFERENT's bytes read here and land in SKILL.md, violating this
+    // module's own "referent bytes never read" contract. A symlinked staged
+    // name is excluded from migration below and restored to its original
+    // location instead — migrating a symlink AS skill-file text content is
+    // not a coherent operation to begin with.
     const savedLegacyArtifacts = new Map<string, string>();
+    const migratableNames: string[] = [];
     for (const name of stagedLegacyArtifacts.names) {
-      savedLegacyArtifacts.set(name, installFs().readFileSync(path.join(stagedLegacyArtifacts.filesDir, name), 'utf8'));
+      const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
+      if (installFs().lstatSync(stagedPath).isSymbolicLink()) continue;
+      savedLegacyArtifacts.set(name, installFs().readFileSync(stagedPath, 'utf8'));
+      migratableNames.push(name);
     }
-    migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    const migrated = migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    // #2875 defect fix (call site 1 was a loss site): migrateLegacyDevPreferencesToSkill's
+    // boolean return conflates "migrated", "already satisfied" (skill file
+    // already present — safe to discard either way), and "cannot migrate"
+    // (no skills layout for this runtime, or the write itself failed —
+    // discarding here would silently lose the user's file, the exact loss
+    // this whole module exists to prevent). Distinguish via the resolved
+    // target's actual presence rather than trusting the boolean alone; a
+    // symlinked staged name (excluded from migration above) is treated the
+    // same way — never migrated, so it must not be silently discarded.
+    const skillTarget = _resolveDevPreferencesSkillTarget(configDir, runtime, scope);
+    const migrationSatisfied = migrated || (skillTarget !== null && installFs().existsSync(skillTarget.skillFile));
+    const nothingLeftUnmigrated = migrationSatisfied && migratableNames.length === stagedLegacyArtifacts.names.length;
+    if (!nothingLeftUnmigrated && stagedLegacyArtifacts.names.length > 0) {
+      // Put the whole batch back where it came from rather than losing
+      // whatever migration did not (or could not) account for.
+      installFs().mkdirSync(legacyCommandsGsd, { recursive: true });
+      userArtifactStaging.restoreStagedUserArtifacts(legacyCommandsGsd, stagedLegacyArtifacts);
+    }
     userArtifactStaging.discardStagedUserArtifacts(stagedLegacyArtifacts);
   }
 }

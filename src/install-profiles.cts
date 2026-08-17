@@ -34,11 +34,18 @@ const {
   processAttribution: _processAttribution,
   normalizeAgentBodyForRuntime: _normalizeAgentBodyForRuntime,
   readGsdCommandNames: _readGsdCommandNames,
+  deriveAgentName: _deriveAgentName,
+  applyAgentFrontmatterExtensions: _applyAgentFrontmatterExtensions,
 } = conversionModule as {
   applyAgentPathRewrites: (content: string, runtime: string, pathPrefix: string) => string;
   processAttribution: (content: string, attribution: string | null | undefined) => string;
   normalizeAgentBodyForRuntime: (content: string, runtime: string, cmdNames: string[]) => string;
   readGsdCommandNames: () => string[];
+  // #2875 Part 2: single-sourced agent-name derivation + the frontmatter-
+  // extensions step (effort/disallowedTools injection), driven by the
+  // runtime descriptor's hostBehaviors.agentFrontmatterExtensions.
+  deriveAgentName: (fileName: string) => string;
+  applyAgentFrontmatterExtensions: (content: string, opts: { runtime: string; agentName: string; targetDir?: string | null }) => string;
 };
 
 // #2995 (epic #1671 Phase 6.4): agent bodies join the fragment model. Markers are
@@ -832,13 +839,25 @@ function stageSkillsForRuntimeAsSkills(
 /**
  * Cross-cutting context for descriptor-driven agent staging (ADR-1235 §1).
  * When present, stageAgentsForRuntimeWithConverter applies the full inline-loop
- * sequence per agent: pathRewrites → attribution → converter → normalize.
- * The field names mirror the inline loop's available identifiers.
+ * sequence per agent: pathRewrites → attribution → converter → frontmatter
+ * extensions → normalize. The field names mirror the inline loop's available
+ * identifiers.
+ *
+ * `targetDir` (#2875 Part 2 / row I1-I3 — the one real per-agent resolution
+ * gap the agents-bypass closure needed): the install root, threaded through
+ * so the frontmatter-extensions step and (via the converter's own closure in
+ * `convertedAgentsKind`) model-override resolution can read
+ * `.planning/config.json` / `~/.gsd/defaults.json` exactly as the inline loop
+ * did with its own `targetDir` variable. Optional — a caller with no
+ * `targetDir` in scope (e.g. the feat-1173 synthetic-descriptor seam tests)
+ * degrades to `null`, matching `readGsdEffectiveEffortConfig(null)`'s own
+ * global-only-config contract.
  */
 interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
+  targetDir?: string | null;
 }
 
 /**
@@ -862,16 +881,25 @@ interface AgentCtx {
  *   1. applyAgentPathRewrites   (4 base ~/.claude/ regexes; skipped for copilot/antigravity)
  *   2. processAttribution       (Co-Authored-By policy)
  *   3. converter                (runtime-specific frontmatter/body transform)
- *   4. normalizeAgentBodyForRuntime (colon→hyphen refs; no-op for trivial group)
+ *   4. applyAgentFrontmatterExtensions (#2875 Part 2: effort/disallowedTools,
+ *      gated by hostBehaviors.agentFrontmatterExtensions — no-op for a runtime
+ *      that declares nothing, e.g. every non-Claude runtime today)
+ *   5. normalizeAgentBodyForRuntime (colon→hyphen refs; no-op for trivial group)
  * When `agentCtx` is absent, only the converter is applied (backward-compat for
  * the feat-1173 synthetic-descriptor tests and the copilot/antigravity paths
  * that handle cross-cutting inside their converters).
  *
  * @param srcAgentsDir    source agents directory (e.g. agents/)
  * @param resolvedProfile profile filter from resolveProfile()
- * @param converter       (content: string, isGlobal?: boolean) → string per-file
- *                        converter; scope-aware converters (copilot/antigravity)
- *                        read isGlobal, single-arg converters ignore it (#1173)
+ * @param converter       (content: string, isGlobal?: boolean, meta?: {agentName: string}) → string
+ *                        per-file converter; scope-aware converters (copilot/antigravity)
+ *                        read isGlobal, single-arg converters ignore both extra args (#1173).
+ *                        `meta.agentName` (#2875 Part 2) is passed ONLY when `agentCtx` is
+ *                        present, letting a converter close over per-agent config
+ *                        (e.g. kilo/opencode model-override resolution in
+ *                        runtime-artifact-layout.cts's convertedAgentsKind) without widening
+ *                        every OTHER converter's contract — converters that don't declare a
+ *                        3rd parameter simply never read it.
  * @param isGlobal        install scope passed through to the converter
  * @param agentCtx        optional cross-cutting context (ADR-1235 §1); when absent,
  *                        only the converter is applied (backward compat)
@@ -879,7 +907,7 @@ interface AgentCtx {
 function stageAgentsForRuntimeWithConverter(
   srcAgentsDir: string,
   resolvedProfile: ResolvedProfile,
-  converter: (content: string, isGlobal?: boolean) => string,
+  converter: (content: string, isGlobal?: boolean, meta?: { agentName: string }) => string,
   isGlobal = false,
   agentCtx?: AgentCtx,
 ): string {
@@ -908,14 +936,20 @@ function stageAgentsForRuntimeWithConverter(
       // half-composed agent.
       content = _composeWorkflow(content, { sourcePath: agentSourcePath });
       if (agentCtx) {
+        // #2875 Part 2 / row I3: derived exactly as the inline loop does —
+        // single-sourced via deriveAgentName (runtime-artifact-conversion.cts).
+        const agentName = _deriveAgentName(entry.name);
         // ADR-1235 §1: pre-converter cross-cutting (matches inline loop order exactly)
         // Step 1: path rewrites (4 base ~/.claude/ regexes; skipped for copilot/antigravity)
         content = _applyAgentPathRewrites(content, agentCtx.runtime, agentCtx.pathPrefix);
         // Step 2: attribution
         content = _processAttribution(content, agentCtx.attribution);
         // Step 3: converter (runtime-specific frontmatter/body transform)
-        content = converter(content, isGlobal);
-        // Step 4: normalize colon→hyphen refs (no-op for trivial group)
+        content = converter(content, isGlobal, { agentName });
+        // Step 4: frontmatter extensions (effort/disallowedTools; no-op unless
+        // the runtime declares hostBehaviors.agentFrontmatterExtensions)
+        content = _applyAgentFrontmatterExtensions(content, { runtime: agentCtx.runtime, agentName, targetDir: agentCtx.targetDir });
+        // Step 5: normalize colon→hyphen refs (no-op for trivial group)
         content = _normalizeAgentBodyForRuntime(content, agentCtx.runtime, cmdNames);
       } else {
         // Backward-compat: only apply the converter (no cross-cutting)

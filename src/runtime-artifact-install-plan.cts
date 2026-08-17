@@ -31,6 +31,11 @@ interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
+  /** #2875 Part 2 (row I1): install root, threaded through so the
+   *  descriptor pipeline's frontmatter-extensions step and model-override
+   *  resolution can read config exactly as the inline agent loop's own
+   *  `targetDir` variable did. */
+  targetDir?: string | null;
 }
 
 interface ArtifactKind {
@@ -196,7 +201,9 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
   const isWindowsHost = (platform ?? process.platform) === 'win32';
   const pathPrefix = conversionExports._computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir });
   const attribution = resolveAttribution ? resolveAttribution(layout.runtime) : undefined;
-  const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix, attribution };
+  // #2875 Part 2 (row I1): layout.configDir IS the install root the inline
+  // agent loop called `targetDir` — same value, same resolution.
+  const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix, attribution, targetDir: layout.configDir };
 
   for (const kind of layout.kinds) {
     let stagedDir: string;

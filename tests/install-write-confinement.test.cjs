@@ -37,6 +37,8 @@ const {
 } = require('../gsd-core/bin/lib/install-engine.cjs');
 const {
   recoverOrphanedUserArtifacts,
+  stageUserArtifacts,
+  restoreStagedUserArtifacts,
 } = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
 // ---------------------------------------------------------------------------
@@ -2583,7 +2585,16 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       );
       const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
       assert.equal(result.recovered.length, 0, 'traversal name must never be restored');
-      assert.ok(!fs.existsSync(path.join(configDir, '..', '..', '..', 'etc', 'passwd')));
+      // #2875 defect fix: the write this guard refuses would target
+      // `resolve(destDir, '../../../etc/passwd')` — the actual join the
+      // production code performs (`assertDestWithinConfigHome(confinedDestDir,
+      // name)`, confinedDestDir === destDir here) — NOT
+      // `path.join(configDir, '..', '..', '..', 'etc', 'passwd')`, which is
+      // one directory level further up (destDir is one level BELOW
+      // configDir) and can therefore never be created by this code path
+      // regardless of whether the guard works. The previous assertion
+      // checked the wrong path and could never fail.
+      assert.ok(!fs.existsSync(path.resolve(destDir, '../../../etc/passwd')));
     } finally {
       cleanup(configDir);
     }
@@ -2623,6 +2634,137 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       let result;
       assert.doesNotThrow(() => { result = recoverOrphanedUserArtifacts(stagingRoot, configDir); });
       assert.equal(result.recovered.length, 0, 'NUL-byte name must never be restored');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  // #2875 defect fix: C2's "never overwrite" guard was `existsSync`-based,
+  // which FOLLOWS symlinks and reports `false` for a DANGLING one — invisible
+  // to the guard, so it never refused. A dangling symlink AT the recovered
+  // destination let `copyFileSync`/`symlinkSync` (which DO follow it) write
+  // outside `configDir`.
+  test('E6: a dangling symlink at the recovered destination is treated as already-present, never written through', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e6-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e6-outside-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'orphaned-content');
+      stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+      cleanup(path.join(destDir, 'USER-PROFILE.md'));
+
+      const outsideTarget = path.join(outside, 'authorized_keys');
+      fs.symlinkSync(outsideTarget, path.join(destDir, 'USER-PROFILE.md'));
+      assert.ok(!fs.existsSync(outsideTarget), 'the symlink target must not exist — this is the DANGLING case');
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — the dangling symlink counts as already-present');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'dest-already-present');
+      assert.ok(!fs.existsSync(outsideTarget), 'must never write through the dangling symlink to outsideTarget');
+      assert.ok(fs.lstatSync(path.join(destDir, 'USER-PROFILE.md')).isSymbolicLink(), 'the dangling symlink itself is left untouched');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: restoreStagedUserArtifacts had no guard at all against
+  // a dangling symlink at the destination — the identical hole as E6.
+  test('E7: restoreStagedUserArtifacts refuses a dangling symlink at the destination', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e7-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e7-outside-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'current-content');
+      const staged = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+      cleanup(path.join(destDir, 'USER-PROFILE.md'));
+
+      const outsideTarget = path.join(outside, 'authorized_keys');
+      fs.symlinkSync(outsideTarget, path.join(destDir, 'USER-PROFILE.md'));
+
+      restoreStagedUserArtifacts(destDir, staged);
+
+      assert.ok(!fs.existsSync(outsideTarget), 'must never write through the dangling symlink to outsideTarget');
+      assert.ok(
+        fs.lstatSync(path.join(destDir, 'USER-PROFILE.md')).isSymbolicLink(),
+        'the dangling symlink itself is left untouched, not overwritten',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: assertDestWithinConfigHome is pure lexical path math
+  // and cannot see a symlinked ANCESTOR directory between configDir and a
+  // recorded destDir — only hasExistingSymlinkBetween's component-by-
+  // component walk can. Recovery previously never applied it to the
+  // recorded destDir at all — this is E2 STRENGTHENED: E2 above only covers
+  // a destDir that is lexically outside configDir entirely, which
+  // assertDestWithinConfigHome alone already refused; this row covers the
+  // case that actually failed before this fix.
+  test('E8: recovery refuses a destDir reached only through a symlinked ANCESTOR directory', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e8-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e8-outside-'));
+    try {
+      fs.symlinkSync(outside, path.join(configDir, 'linkdir'));
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e8entry00000000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'attacker-controlled content');
+      // The record names a destDir that is LEXICALLY inside configDir
+      // (assertDestWithinConfigHome alone would accept it) but only
+      // reachable by walking through the `linkdir` symlink to `outside`.
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({
+          destDir: path.join(configDir, 'linkdir', 'sub'),
+          names: ['USER-PROFILE.md'],
+          timestamp: new Date().toISOString(),
+        }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — destDir is reached only through a symlinked ancestor');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'destDir-symlink-escape');
+      assert.ok(
+        !fs.existsSync(path.join(outside, 'sub', 'USER-PROFILE.md')),
+        'must never write outside configDir via the symlinked ancestor',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: `names` accepted any non-escaping subpath, including
+  // one containing a path separator, contrary to this module's flat-name
+  // contract (every real caller stages exactly one flat filename) — the
+  // module doc previously claimed separator names were already rejected;
+  // they were not.
+  test('E9: a staged/recorded name containing a path separator is rejected, never nested under destDir', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e9-cfg-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e9entry000000000');
+      fs.mkdirSync(path.join(entryDir, 'files', 'nested'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'nested', 'x.md'), 'should never land');
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['nested/x.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'a separator-containing name must never be restored');
+      assert.ok(!fs.existsSync(path.join(destDir, 'nested', 'x.md')), 'must never create a nested subpath under destDir');
     } finally {
       cleanup(configDir);
     }

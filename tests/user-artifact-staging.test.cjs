@@ -138,18 +138,40 @@ describe('user-artifact-staging: A. staging contract', () => {
     fs.writeFileSync(path.join(destDir, 'dev-preferences.md'), 'stale-from-first-batch');
     const first = stageUserArtifacts(destDir, ['USER-PROFILE.md', 'dev-preferences.md'], stagingRootFor(configDir));
     assert.deepEqual(first.names.sort(), ['USER-PROFILE.md', 'dev-preferences.md']);
-    assert.equal(first.entryDir, stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRootFor(configDir)).entryDir,
-      'same destDir maps to the same staging entry (deterministic key)');
 
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'v2');
     // Second call only asks for USER-PROFILE.md — dev-preferences.md is no
-    // longer part of this batch.
+    // longer part of this batch. Deterministic key reuse is asserted
+    // directly against `first`, captured BEFORE this call — #2875 defect
+    // fix: previously this equality check was performed by folding a SECOND
+    // `stageUserArtifacts` call directly into the assertion, which
+    // overwrote `first`'s own on-disk state (record.json + files/) before it
+    // was ever re-examined, so the test's own "does not corrupt the first
+    // record" claim was never actually checked.
     const second = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRootFor(configDir));
+    assert.equal(second.entryDir, first.entryDir, 'same destDir maps to the same staging entry (deterministic key)');
+
     const content = fs.readFileSync(path.join(second.filesDir, 'USER-PROFILE.md'), 'utf8');
     assert.equal(content, 'v2', 'second stage call overwrites the first cleanly, no corruption');
     assert.ok(
       !fs.existsSync(path.join(second.filesDir, 'dev-preferences.md')),
       'the entry dir is cleared FIRST — a file from a prior batch must not linger alongside the new one',
+    );
+
+    // #2875 defect fix: re-examine `first`'s OWN captured paths (identical to
+    // `second`'s, by construction — same destDir, same deterministic key)
+    // AFTER the second stage call, proving the record was cleanly REPLACED,
+    // not merged or corrupted. A bug that failed to clear the entry dir
+    // before rewriting record.json (e.g. names from both batches surviving)
+    // would fail this and did not fail the old assertions.
+    const recordAfterSecondStage = JSON.parse(fs.readFileSync(first.recordPath, 'utf8'));
+    assert.deepEqual(
+      recordAfterSecondStage.names, ['USER-PROFILE.md'],
+      'the record at the path `first` originally wrote must now reflect ONLY the second batch',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(first.filesDir, 'dev-preferences.md')),
+      'dev-preferences.md staged by the FIRST batch must be gone from the (shared) files dir after the second call',
     );
   });
 
@@ -261,9 +283,26 @@ describe('user-artifact-staging: B. the crash window (F19)', () => {
 
     cleanup(destDir); // the crash: process dies right here, map is gone
 
+    // #2875 defect fix: mirror B1's own post-crash sequence EXACTLY (recover,
+    // THEN recreate destDir, THEN check for the specific file) — the only
+    // difference from B1 is that stageUserArtifacts was never called. The
+    // previous version asserted `!fs.existsSync(destDir)` immediately after
+    // `cleanup(destDir)` deleted it on the line above, which is trivially
+    // true regardless of anything recovery does and never actually exercised
+    // recovery's behavior; it was also structurally identical to C5 (no
+    // staging root at all), so it could not distinguish "recovery correctly
+    // finds nothing" from "recovery is broken in a way that never finds
+    // anything, ever". This version recreates destDir (as a real
+    // preserve/wipe cycle would) and checks the recovered destination
+    // directly — proving negatively that recovery does not (and cannot)
+    // resurrect content nothing ever staged to disk.
     const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
     assert.deepEqual(result.recovered, [], 'nothing was ever staged to disk — recovery correctly finds nothing');
-    assert.ok(!fs.existsSync(destDir), 'the file is genuinely lost under the pre-#2875 shape');
+    fs.mkdirSync(destDir, { recursive: true });
+    assert.ok(
+      !fs.existsSync(path.join(destDir, 'USER-PROFILE.md')),
+      'the file is genuinely lost under the pre-#2875 shape — recovery cannot resurrect content that was never staged',
+    );
   });
 
   test('B4: crash before the record is written — nothing restored, half-staged dir left alone', (t) => {
@@ -442,6 +481,49 @@ describe('user-artifact-staging: C. recovery semantics', () => {
       'must never write to the recorded destDir when it escapes the explicit configDir',
     );
   });
+
+  // Confinement/symlink rows (dangling-symlink destination, symlinked
+  // ancestor, separator-in-name) live in tests/install-write-confinement.test.cjs
+  // as E6-E9, alongside E1-E5 — this suite's own file-count ratchet keeps
+  // confinement rows there (see this file's own header doc comment).
+
+  // #2875 defect fix: recoverOrphanedUserArtifacts's "never throws" contract
+  // was false — mkdirSync/stagedCopy/the final rmSync were all unguarded, so
+  // one unrecoverable entry (e.g. a `files/<name>` that is unexpectedly a
+  // directory, causing the symlink-safe copy to throw) propagated out of the
+  // whole function, and — because it threw BEFORE that entry was ever
+  // cleaned up — permanently bricked install/uninstall on every future run.
+  test('C13: an entry that cannot be recovered (a directory staged where a file is expected) never throws, and other entries still recover', (t) => {
+    const configDir = mktemp('gsd-uas-c13-cfg-');
+    t.after(() => cleanup(configDir));
+    const stagingRoot = stagingRootFor(configDir);
+
+    // Entry 1: genuinely broken — files/BROKEN.md is a DIRECTORY, not a file,
+    // which the symlink-safe copy cannot handle.
+    const brokenDestDir = path.join(configDir, 'broken-dest');
+    fs.mkdirSync(brokenDestDir, { recursive: true });
+    const brokenEntryDir = path.join(stagingRoot, 'c13brokenentry00');
+    fs.mkdirSync(path.join(brokenEntryDir, 'files', 'BROKEN.md'), { recursive: true }); // a DIR, not a file
+    fs.writeFileSync(
+      path.join(brokenEntryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(brokenDestDir), names: ['BROKEN.md'], timestamp: new Date().toISOString() }),
+    );
+
+    // Entry 2: a perfectly ordinary, recoverable batch.
+    const goodDestDir = path.join(configDir, 'good-dest');
+    fs.mkdirSync(goodDestDir, { recursive: true });
+    fs.writeFileSync(path.join(goodDestDir, 'USER-PROFILE.md'), 'good content');
+    stageUserArtifacts(goodDestDir, ['USER-PROFILE.md'], stagingRoot);
+    cleanup(path.join(goodDestDir, 'USER-PROFILE.md'));
+
+    let result;
+    assert.doesNotThrow(() => { result = recoverOrphanedUserArtifacts(stagingRoot, configDir); });
+    assert.ok(
+      result.recovered.some((r) => r.name === 'USER-PROFILE.md' && r.destDir === path.resolve(goodDestDir)),
+      'the OTHER (good) batch must still be recovered even though a sibling batch is broken',
+    );
+    assert.ok(fs.existsSync(brokenEntryDir), 'the broken entry must be LEFT IN PLACE, not silently swept, since it was never actually recovered');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -459,9 +541,24 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     const norm = (p) => path.normalize(String(p));
     store.set(norm(destDir), { type: 'dir' });
     store.set(norm(path.join(destDir, 'USER-PROFILE.md')), { type: 'file', content: 'fake-fs-content' });
+    let fakeRmSyncCalls = 0;
     const fake = {
       existsSync: (p) => store.has(norm(p)),
       mkdirSync: (p) => { store.set(norm(p), { type: 'dir' }); },
+      // #2875 defect fix: stageUserArtifacts's entryDir-clearing step calls
+      // installFs().rmSync unconditionally — a partial fake omitting it
+      // previously fell through to REAL fs.rmSync silently (install-fs-
+      // adapter.cts's PARTIAL-ADAPTER TRAP), which this test's own negative
+      // assertion below could not detect (it only checked `stagingRoot`,
+      // which real rmSync on a non-existent real path no-ops against
+      // harmlessly with `force: true` — vacuously true either way).
+      rmSync: (p) => {
+        fakeRmSyncCalls++;
+        const n = norm(p);
+        store.delete(n);
+        const prefix = n.endsWith(path.sep) ? n : n + path.sep;
+        for (const k of [...store.keys()]) if (k.startsWith(prefix)) store.delete(k);
+      },
       writeFileSync: (p, data) => { store.set(norm(p), { type: 'file', content: data }); },
       lstatSync: (p) => {
         const e = store.get(norm(p));
@@ -477,6 +574,7 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     const staged = withInstallFs(fake, () => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot));
     assert.deepEqual(staged.names, ['USER-PROFILE.md']);
     assert.ok(store.has(norm(path.join(staged.filesDir, 'USER-PROFILE.md'))), 'landed in the fake store');
+    assert.ok(fakeRmSyncCalls > 0, 'the entryDir-clearing step must route through the FAKE rmSync, proving this is a real negative check');
     assert.ok(!fs.existsSync(stagingRoot), 'no real filesystem path was ever created');
   });
 
@@ -493,6 +591,18 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     const fake = {
       existsSync: (p) => store.has(norm(p)),
       mkdirSync: (p) => { store.set(norm(p), { type: 'dir' }); },
+      // #2875 defect fix: this fake previously omitted rmSync, so
+      // stageUserArtifacts's entryDir-clearing step (installFs().rmSync)
+      // fell through to REAL fs.rmSync (install-fs-adapter.cts's
+      // PARTIAL-ADAPTER TRAP) — which is exactly what this test's own
+      // poisoning below is supposed to catch, and did: `real fs.rmSync
+      // touched under a fake adapter`. Implementing it here is the fix.
+      rmSync: (p) => {
+        const n = norm(p);
+        store.delete(n);
+        const prefix = n.endsWith(path.sep) ? n : n + path.sep;
+        for (const k of [...store.keys()]) if (k.startsWith(prefix)) store.delete(k);
+      },
       writeFileSync: (p, data) => { store.set(norm(p), { type: 'file', content: data }); },
       lstatSync: (p) => {
         const e = store.get(norm(p));
