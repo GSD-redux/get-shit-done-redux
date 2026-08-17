@@ -119,6 +119,10 @@
  *     read the physical set. Its ENUMERATION path routes through the owner.
  *   - `src/roadmap-parser.cts` `getMilestonePhaseFilter` and its #3262-extracted
  *     set-building owner `scanMilestonePhaseIds` (the same two heading/
+ *     #3577 `collectTablePhaseRows` — the table-scan sibling feeding the same
+ *     membership set; its local 999-only exclusion mirrors the owner's
+ *     deliberate NOT-isSentinelPhaseId choice (a leading 0 is a real decimal
+ *     phase, #2554), so it cannot route through the sentinel owner either).
  *     bullet scans, lifted verbatim so the `roadmap milestone-scope` probe
  *     reads the identical derivation): both deliberately use the local
  *     `999`-only literal, NOT `isSentinelPhaseId`. That canonical predicate
@@ -286,7 +290,7 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
-  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIds'])],
+  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIds', 'collectTablePhaseRows'])],
   [path.join('src', 'planning-snapshot.cts'), new Set(['buildAllPhaseDirNamesField'])],
 ]);
 
