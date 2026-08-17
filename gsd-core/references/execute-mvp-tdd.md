@@ -4,7 +4,7 @@
 
 ## When this gate fires
 
-- `MVP_MODE` is `true` (resolved from CLI flag → ROADMAP `**Mode:**` field → config; see `references/planner-mvp-mode.md`).
+- `MVP_MODE` is `true` (resolved from CLI flag → ROADMAP `**Mode:**` field → config; see `gsd-core/references/planner-mvp-mode.md`).
 - `TDD_MODE` is `true` (resolved from `--tdd` flag → `workflow.tdd_mode` config).
 - The current task being executed has `tdd="true"` in its `<task>` frontmatter (set by the planner per Phase 1).
 - The task's `<behavior>` block lists at least one expected behavior.
@@ -71,11 +71,11 @@ The `--force-mvp-gate` flag is documented but not introduced by this plan — it
 
 ## What this gate does NOT do
 
-- It does not enforce REFACTOR commits. REFACTOR remains optional (per `references/tdd.md`).
+- It does not enforce REFACTOR commits. REFACTOR remains optional (per `gsd-core/references/tdd.md`).
 - It does not check test quality (the test could be trivially passing). That's the planner's job.
 - It does not run tests. The executor only inspects git log + file system. Running tests is the implementation step's job.
 - It does not gate config-only or doc-only tasks (see "behavior-adding task" definition).
 
 ## Compatibility with existing TDD discipline
 
-This gate is additive to `references/tdd.md`. Tasks not under MVP+TDD continue to use the existing advisory TDD discipline (RED/GREEN/REFACTOR commits with end-of-phase review checkpoint). Only the runtime gate and the blocking escalation are new.
+This gate is additive to `gsd-core/references/tdd.md`. Tasks not under MVP+TDD continue to use the existing advisory TDD discipline (RED/GREEN/REFACTOR commits with end-of-phase review checkpoint). Only the runtime gate and the blocking escalation are new.

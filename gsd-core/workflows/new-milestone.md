@@ -48,7 +48,7 @@ INIT_EARLY=$(gsd_run query init.new-milestone)
 if [[ "$INIT_EARLY" == @file:* ]]; then INIT_EARLY=$(cat "${INIT_EARLY#@file:}"); fi
 ```
 
-`GSD_WS` must chain to every downstream routing suggestion in this workflow (Step 4's shared-file guard, and the `/gsd:discuss-phase`/`/gsd:plan-phase` routing hints below) per the routing-propagation contract in `references/workstream-flag.md` — never let it silently drop.
+`GSD_WS` must chain to every downstream routing suggestion in this workflow (Step 4's shared-file guard, and the `/gsd:discuss-phase`/`/gsd:plan-phase` routing hints below) per the routing-propagation contract in `gsd-core/references/workstream-flag.md` — never let it silently drop.
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow (including the "What do you want to build next?" prompt and seed-selection questions below) MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
@@ -160,7 +160,7 @@ AskUserQuestion:
 
 ## 4. Update PROJECT.md
 
-PROJECT.md is shared across workstreams (`references/workstream-flag.md` marks it `# Shared` in the directory diagram). This step has two independently-scoped parts — only Part A is workstream-guarded.
+PROJECT.md is shared across workstreams (`gsd-core/references/workstream-flag.md` marks it `# Shared` in the directory diagram). This step has two independently-scoped parts — only Part A is workstream-guarded.
 
 <!-- gsd:section id="project-md-milestone-write" when="state:flat-mode" -->
 If `section_manifest` (from `INIT_EARLY`) is `null` or `"project-md-milestone-write"` is in its `included` list: read and execute `gsd-core/workflows/new-milestone/steps/project-md-milestone-write.md`. Otherwise (a workstream is active) skip — do not read the file; Part B below still runs regardless of `GSD_WS`.

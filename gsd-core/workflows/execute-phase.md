@@ -709,7 +709,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
        <worktree_branch_check>
        ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read `gsd-core/references/worktree-branch-check.md`, substitute `{EXPECTED_BASE}` with the base SHA captured above ({EXPECTED_BASE}), and replace this note with that fragment's `<worktree_branch_check>` block so the dispatched prompt carries the runnable guard verbatim — do not pass this instruction through in its place.
-       Per-commit HEAD/cwd-drift/path-guard: `agents/gsd-executor.md` steps 0/0a/0b + `references/worktree-path-safety.md` (in <execution_context>).
+       Per-commit HEAD/cwd-drift/path-guard: `agents/gsd-executor.md` steps 0/0a/0b + `gsd-core/references/worktree-path-safety.md` (in <execution_context>).
        </worktree_branch_check>
 
        <parallel_execution>
