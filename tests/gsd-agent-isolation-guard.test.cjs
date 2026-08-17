@@ -803,7 +803,7 @@ describe('gsd-agent-isolation-guard.js: #3566 — per-install .gsd-runtime marke
         writeConfig(proj, cfgOn ? JSON.stringify({ runtime: cfgV }) : JSON.stringify({}));
         guardModule._setInstallRuntimeMarkerForTests(mkOn ? mkV : null);
         if (defOn) fs.writeFileSync(defaultsPath, JSON.stringify({ runtime: defV }));
-        else fs.rmSync(defaultsPath, { force: true });
+        else fs.writeFileSync(defaultsPath, JSON.stringify({})); // no `runtime` key = no signal from the rung
 
         const expected = envOn ? envV : cfgOn ? cfgV : mkOn ? mkV : defOn ? defV : null;
         const id = guardModule.resolveRuntimeIdentity(proj, configPath, resolveRuntimeNameFromCandidates);

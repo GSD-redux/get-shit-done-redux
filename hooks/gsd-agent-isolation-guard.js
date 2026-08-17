@@ -43,8 +43,9 @@
 // authoritative — `none`/`orchestrator-worktree` ALLOW immediately
 // (sequential/orchestrator-managed dispatch is legitimate, not a bug); an
 // absent/stale sentinel falls back to a conservative registry+config check
-// (GSD_RUNTIME env > .planning/config.json `runtime` — no confident signal
-// degrades to inert rather than guessing 'claude', see resolveRegistryIsolation)
+// (GSD_RUNTIME env > .planning/config.json `runtime` > the per-install
+// `.gsd-runtime` marker, #3566 — no confident signal degrades to inert rather
+// than guessing 'claude', see resolveRegistryIsolation)
 // gated additionally by `workflow.use_worktrees` — read directly, in-process,
 // no subprocess spawn.
 //
@@ -85,6 +86,42 @@ function parseHarnessFlag(flag) {
   return { param: m[1], value: m[2] };
 }
 
+// ─── #3566: per-install runtime marker ────────────────────────────────────────
+// bin/install.js writes `<install>/gsd-core/.gsd-runtime` for EVERY runtime
+// install (#2297), co-located with VERSION. Unlike `~/.gsd/defaults.json` —
+// which is host-wide and names whichever runtime's install ran LAST, the exact
+// leakage #2840's config.cjs change exists to prevent — the marker describes
+// THIS install, which is the property runtime identity needs on a machine
+// with 2+ runtimes. Mirrors readInstallRuntimeMarker in src/model-resolver.cts
+// (same cache + test-seam shape); this hook cannot import that module without
+// dragging the whole model-resolution stack into a PreToolUse hot path, so the
+// 5-line read lives here against the same sibling-layout assumption the hook's
+// own require('../gsd-core/bin/lib/…') already makes. Epic #3473 B3 owns
+// consolidating every marker reader into one shared seam.
+let _installMarkerCache; // undefined = unread; null = known absent; string = value
+
+function readInstallRuntimeMarker() {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', 'gsd-core', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf-8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297 — "no signal
+    // from this rung", never a resolution failure. Falls through to the
+    // defaults rung below.
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seam for the marker rung (the dev/source tree has no marker file, so
+// the read always bottoms out at null there — same seam contract as
+// model-resolver.cts's _setInstallRuntimeMarkerForTests, #2297).
+function _setInstallRuntimeMarkerForTests(value) {
+  _installMarkerCache = value;
+}
+
 /**
  * Resolve this project's declared `runtime` identity WITHOUT defaulting to
  * 'claude' when no explicit signal exists (#3045 MAJOR 2).
@@ -100,9 +137,10 @@ function parseHarnessFlag(flag) {
  *
  * Returns `{ runtimeId, confident }`. `confident` is true only when an
  * explicit signal exists (GSD_RUNTIME env override, a `runtime` key literally
- * present in config.json, or a `runtime` persisted to `~/.gsd/defaults.json`
- * by the installer — see below); false means "cannot determine" and callers
- * must NOT silently substitute 'claude' — see resolveRegistryIsolation.
+ * present in config.json, the per-install `.gsd-runtime` marker, or a
+ * `runtime` persisted to `~/.gsd/defaults.json` by the installer — see
+ * below); false means "cannot determine" and callers must NOT silently
+ * substitute 'claude' — see resolveRegistryIsolation.
  *
  * #3045 BLOCKER 2 fix: precedence is GSD_RUNTIME env > config.json `runtime`
  * key > `~/.gsd/defaults.json` `runtime`. The first two are unchanged; the
@@ -117,6 +155,17 @@ function parseHarnessFlag(flag) {
  * (`nativeModelAliases` short-circuits it) and therefore correctly still rely
  * on config.json/env. Reading the installer's own persisted signal makes
  * "confident" the common case instead.
+ *
+ * #3566: the per-install `.gsd-runtime` marker now sits BETWEEN config.json
+ * and defaults.json. defaults.json is host-wide and names whichever runtime
+ * installed LAST — on a 2-runtime machine that confidently resolves the WRONG
+ * runtime (a Codex install's `runtime:"codex"` leaking into Claude projects),
+ * and when the wrong runtime declares no harnessIsolationFlag the guard goes
+ * silently inert. The marker describes THIS install (written for every
+ * runtime since #2297), which is the source #2840's config.cjs change names
+ * as correct. defaults.json stays as the final rung so single-runtime default
+ * installs and pre-#2297 installs (no marker on disk) keep the #3045
+ * BLOCKER 2 behavior.
  */
 function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates) {
   const envRuntime = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
@@ -131,6 +180,13 @@ function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidate
     const configRuntime = resolveRuntimeNameFromCandidates(parsed.runtime);
     if (configRuntime) return { runtimeId: configRuntime, confident: true };
   }
+
+  // #3566: the per-install marker, above the host-wide defaults — see the
+  // block comment on readInstallRuntimeMarker. An empty/whitespace-only file
+  // or an unknown value degrades exactly like the other rungs (no signal /
+  // future-runtime tolerance via resolveRuntimeNameFromCandidates).
+  const markerRuntime = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
+  if (markerRuntime) return { runtimeId: markerRuntime, confident: true };
 
   // #3045 BLOCKER 2: fall back to the installer-persisted default. Read
   // defensively — an absent/corrupt/non-object defaults.json is "no signal",
@@ -425,4 +481,5 @@ module.exports = {
   resolveHarnessFlag,
   resolveRegistryIsolation,
   parseHarnessFlag,
+  _setInstallRuntimeMarkerForTests,
 };
