@@ -1099,6 +1099,20 @@ function installRuntimeArtifacts(
           const stagedAgentFiles = installFs().existsSync(item.sourceDir)
             ? installFs().readdirSync(item.sourceDir).filter((f: string) => f.endsWith('.md'))
             : [];
+          // #2875 defect fix, corrected: the ORIGINAL fix (see the comment
+          // above `installAgentsKindStandalone`) skipped this kind's stale-
+          // agent prune along with the write whenever a restricted profile
+          // (e.g. --minimal) staged zero agents — that also skipped
+          // `_removeGsdEntries`, so a full -> minimal downgrade left every
+          // previously-installed gsd-*.md/.toml agent file in place. The
+          // deleted pre-#2875 inline loop never did that: its stale-cleanup
+          // pre-pass ran UNCONDITIONALLY, and only the *write* of new agent
+          // files was gated on minimal mode. Restore that split here: prune
+          // first (no-ops via `_removeGsdEntries`'s own existsSync check when
+          // `dest` was never created, so a fresh install with nothing staged
+          // still never creates it below), then skip mkdir/copy when there is
+          // nothing to write.
+          _removeGsdEntries(dest, kind);
           if (stagedAgentFiles.length === 0) {
             continue;
           }
@@ -1432,34 +1446,38 @@ function installAgentsKindStandalone(
   const agentCtx = { runtime, pathPrefix, attribution, targetDir };
   const stagedDir: string = agentsKindEntry.stage(resolvedProfile, agentCtx);
 
-  // #2875 defect fix (--minimal regression closed): a restricted profile
-  // (e.g. --minimal) can legitimately stage ZERO agents — no skill in the
-  // profile's closure references a gsd-* role. The pre-#2875-Part-2 inline
-  // agent-staging loop this call site replaces never created `agents/` at
-  // all under a minimal install (the deleted `isMinimalMode` branch skipped
-  // the whole step); this function's own unconditional `mkdirSync` below
-  // regressed that, breaking `.changeset/zesty-rams-march.md`'s "installed
-  // output is byte-identical to before for every runtime" claim. Restore the
-  // old behavior exactly: treat an empty staged batch the same as "this
-  // runtime declares no agents kind" (`null`, matching the doc comment above)
-  // — no directory is created, mirroring the sibling fix in the generic
-  // layout loop (installRuntimeArtifacts) for the exact same kind.
   const stagedAgentFiles: string[] = installFs().existsSync(stagedDir)
     ? installFs().readdirSync(stagedDir).filter((f: string) => f.endsWith('.md'))
     : [];
-  if (stagedAgentFiles.length === 0) return null;
 
   const installRoot: string = (typeof agentsKindEntry.home === 'string' && agentsKindEntry.home !== '') ? agentsKindEntry.home : targetDir;
   const dest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(installRoot, agentsKindEntry.destSubpath);
   // Symlink-escape guard — same gate _copyStaged/installOpencodeFamilySkills apply
-  // to their own writes (#2393 GSD_ALLOW_SYMLINKED_DEST opt-in preserved).
+  // to their own writes (#2393 GSD_ALLOW_SYMLINKED_DEST opt-in preserved). Runs
+  // even when nothing will be written this call — the stale-agent prune below
+  // (`_removeGsdEntries`) still touches `dest` whenever it already exists.
   if (hasExistingSymlinkBetween(path.resolve(installRoot), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
     throw new Error(
       `installAgentsKindStandalone: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to write. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
     );
   }
-  installFs().mkdirSync(dest, { recursive: true });
+
+  // #2875 defect fix, corrected: the ORIGINAL fix returned `null` (no-op)
+  // whenever a restricted profile (e.g. --minimal) staged ZERO agents,
+  // which — because that early return sat ABOVE the prune call — also
+  // skipped `_removeGsdEntries`, leaving every previously-installed
+  // gsd-*.md/.toml agent file in place on a full -> minimal downgrade. The
+  // deleted pre-#2875 inline loop never did that: its stale-cleanup pre-pass
+  // ran UNCONDITIONALLY (removing gsd-*.md, plus .toml for codex), and only
+  // the *write* of new agent files was gated on minimal mode. Restore that
+  // split: prune first — a no-op via `_removeGsdEntries`'s own existsSync
+  // check when `dest` was never created, so a fresh install with nothing
+  // staged still never creates it below — then skip mkdir/copy (and return
+  // `null`, matching the doc comment above) when there is nothing to write.
   _removeGsdEntries(dest, agentsKindEntry);
+  if (stagedAgentFiles.length === 0) return null;
+
+  installFs().mkdirSync(dest, { recursive: true });
   _copyStaged(stagedDir, dest, agentsKindEntry, targetDir, runtime);
 
   return { sourceDir: stagedDir, destDir: dest };
