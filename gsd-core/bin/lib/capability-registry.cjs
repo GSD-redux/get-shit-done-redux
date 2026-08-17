@@ -771,7 +771,16 @@ const capabilities = {
             "converter": "convertClaudeAgentToClineAgent"
           }
         ],
-        "local": []
+        "local": [
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToClineAgent"
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",
@@ -5490,7 +5499,16 @@ const runtimes = {
             "converter": "convertClaudeAgentToClineAgent"
           }
         ],
-        "local": []
+        "local": [
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToClineAgent"
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",

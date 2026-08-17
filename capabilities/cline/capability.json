@@ -38,7 +38,16 @@
           "converter": "convertClaudeAgentToClineAgent"
         }
       ],
-      "local": []
+      "local": [
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToClineAgent"
+        }
+      ]
     },
     "triggerPrecedence": ["skills", "commands"],
     "commandStyle": "slash-hyphen",

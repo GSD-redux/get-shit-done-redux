@@ -2231,14 +2231,28 @@ describe('convertClaudeCommandToClineSkill — code-point-aware truncation (Fix 
 
 // ─── Fix 2 regression: cline local scope emits no skills ─────────────────────
 //
-// resolveRuntimeArtifactLayout('cline', dir, 'local') must return 0 kinds.
+// resolveRuntimeArtifactLayout('cline', dir, 'local') must return no SKILLS
+// kind (local commands are embedded in .clinerules, never materialized as
+// skill files — hostBehaviors.localCommandsViaRules).
 // installRuntimeArtifacts('cline', dir, 'local') must not write any skills.
+//
+// #2875 Part 2 defect fix (cline-local agents-drop regression): local now
+// ALSO declares an `agents` kind (capabilities/cline/capability.json) — the
+// deleted inline agent-staging loop used to serve cline-local's agents/
+// unconditionally; closing it without this local descriptor entry silently
+// dropped them. `kinds.length === 0` was true only by coincidence of the
+// separate skills gap this describe block's title names; it is no longer
+// true now that the actual (agents) regression is fixed. See
+// tests/agent-descriptor-parity.test.cjs's cline (local) H row for the
+// byte-parity proof and tests/cline-install.test.cjs's local-install
+// regression test for the end-to-end proof.
 
 describe('resolveRuntimeArtifactLayout — cline scope-aware (Fix 2)', () => {
-  test('cline local: kinds.length === 0 (no skills for local scope)', () => {
+  test('cline local: no skills kind (skills for local scope are embedded in .clinerules, never materialized)', () => {
     const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
     const layout = resolveRuntimeArtifactLayout('cline', '/tmp/x', 'local');
-    assert.strictEqual(layout.kinds.length, 0, 'cline local must have 0 kinds');
+    const kindNames = layout.kinds.map((k) => k.kind).sort();
+    assert.deepStrictEqual(kindNames, ['agents'], 'cline local must declare only the agents kind — no skills kind');
   });
 
   test('cline global: kinds.length === 2 (skills + agents kind, #2875 Part 2)', () => {

@@ -293,6 +293,7 @@ interface SkippedEntry {
   reason:
     | 'destDir-outside-confinement'
     | 'destDir-symlink-escape'
+    | 'files-symlink-escape'
     | 'dest-already-present'
     | 'recover-error'
     | 'entry-recovery-error'
@@ -666,6 +667,46 @@ function recoverOrphanedUserArtifacts(stagingRoot: string, configDir: string, op
       }
 
       const filesDir = path.join(entryDir, 'files');
+      // #2875 defect fix (security — source-side symlink escape): every write
+      // below reads FROM filesDir via a plain srcPath = filesDir/name join
+      // (E3/E5 guard it against traversal/NUL, never against the `files`
+      // PATH COMPONENT ITSELF being a symlink). record.json is data an
+      // entryDir owner controls (module doc "Confinement" — same
+      // attacker-influenceable-on-a-shared-machine threat E2 already treats
+      // destDir against); a real `entryDir` whose `files` child is a symlink
+      // to e.g. `/etc` or `/root/.ssh` would have its referent's bytes
+      // dereferenced by the per-file `existsSync`/`stagedCopy` reads below,
+      // landing victim-readable content at an attacker-named path inside
+      // configDir. Reuse the SAME `hasExistingSymlinkBetween` guard the
+      // dest side (E2) and every other write on this call tree already
+      // applies, walked from entryDir (a real, non-symlinked directory —
+      // `entry.isDirectory()` above already excludes a symlinked entryDir on
+      // POSIX) to filesDir, BEFORE any name in `record.names` is read.
+      // Per-file symlinks INSIDE files/ are untouched by this check and
+      // remain legitimate (module doc "Symlink safety" — a symlinked staged
+      // user artifact is expected and copied via copyPreservingSymlink,
+      // never dereferenced).
+      if (symlinkGuard.hasExistingSymlinkBetween(entryDir, filesDir, { allowOptInFollow: symlinkGuard.isSymlinkedDestOptIn() })) {
+        result.skipped.push({ entryDir, reason: 'files-symlink-escape' });
+        continue;
+      }
+      // #2875 defect fix (security — cwd-dependent confinement): a relative
+      // `record.destDir` makes `path.relative(configHome, record.destDir)`
+      // resolve the SECOND (relative) argument against `process.cwd()`
+      // internally, not against `configHome` — the CLI's cwd at the moment
+      // recovery runs, which an attacker who can plant a record.json does
+      // not need to know or control to exploit (module doc "Confinement").
+      // `stageUserArtifacts` (this module's own writer) always records an
+      // ALREADY-`path.resolve`d, absolute `destDir` — a relative value here
+      // only ever comes from a forged or hand-edited record, exactly the
+      // untrusted-data case this function's confinement re-resolution
+      // exists for. Refuse it the same way a lexically-escaping absolute
+      // destDir is refused below, rather than let `path.relative` silently
+      // reinterpret it against the wrong root.
+      if (!path.isAbsolute(record.destDir)) {
+        result.skipped.push({ entryDir, reason: 'destDir-outside-confinement' });
+        continue;
+      }
       let confinedDestDir: string;
       try {
         const relDest = path.relative(configHome, record.destDir);

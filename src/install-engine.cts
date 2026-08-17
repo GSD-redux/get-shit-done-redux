@@ -359,6 +359,35 @@ function _resolveUserArtifactStagingRoot(configDir: string): string {
   return stagingRoot;
 }
 
+/**
+ * Degrade-not-abort wrapper over `_resolveUserArtifactStagingRoot` (defect
+ * fix — a hostile/broken `.gsd-staging` path, or a symlinked configDir
+ * itself, e.g. nix-darwin/dotfiles-managed `~/.claude`, GSD_ALLOW_SYMLINKED_DEST's
+ * own population) must never brick the command it is called from. Before
+ * this fix `_resolveUserArtifactStagingRoot` was called UNGUARDED as the
+ * first statement of both `install()` and `uninstall()` (bin/install.js) —
+ * `ln -s /nonexistent ~/.claude/.gsd-staging` killed both commands,
+ * including uninstall, the remedy for the first problem.
+ *
+ * Returns `null` (never throws) when staging is unavailable, logging ONE
+ * warning naming the underlying cause. Every call site MUST treat `null` as
+ * "skip the staging-dependent step for this run" — the same "degrade,
+ * never throw" posture user-artifact-staging.cts's own recovery/restore
+ * functions already document (module doc "Failure posture"), extended to
+ * cover staging-ROOT resolution itself, not just the copy/restore that
+ * follows it.
+ */
+function _tryResolveUserArtifactStagingRoot(configDir: string): string | null {
+  try {
+    return _resolveUserArtifactStagingRoot(configDir);
+  } catch (err) {
+    console.warn(
+      `  [gsd] user-artifact staging unavailable for "${configDir}" (${(err as Error).message}) — proceeding without durable staging for this step.`,
+    );
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // migrateLegacyDevPreferencesToSkill
 // ---------------------------------------------------------------------------
@@ -440,7 +469,27 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
   if (!target) return false; // runtime has no skills layout at this scope (e.g. cline local)
   const { skillFile, installRoot } = target;
   const skillDir = path.dirname(skillFile);
-  if (installFs().existsSync(skillFile)) return false;
+  // Security fix: `existsSync` FOLLOWS symlinks and reports `false` for a
+  // DANGLING one, so the prior `existsSync(skillFile)` check never even saw a
+  // dangling symlink planted AT the leaf (e.g.
+  // `<installRoot>/skills/gsd-dev-preferences/SKILL.md ->
+  // ~/.ssh/authorized_keys`) — it fell through past this "already migrated"
+  // bail, past the symlink-escape guard below (which only walks to `skillDir`,
+  // the parent DIRECTORY, and never lstats the leaf FILE itself), and into
+  // `writeFileSync`, which DOES follow symlinks and would have written
+  // attacker-chosen `saved` content to the symlink's target. `tryLstat` never
+  // follows a symlink and distinguishes "a real file is already here" (skip,
+  // same as before) from "a symlink (dangling or not) is planted here"
+  // (refuse — this is never a legitimate prior-migration state).
+  const skillFileLstat = tryLstat(skillFile);
+  if (skillFileLstat) {
+    if (skillFileLstat.isSymbolicLink()) {
+      throw new Error(
+        `migrateLegacyDevPreferencesToSkill: skillFile "${skillFile}" is a symlink — refusing to write dev-preferences.md content through it (would follow the link and write to its target).`,
+      );
+    }
+    return false; // a real file is already there — already migrated, skip
+  }
   // Symlink-escape guard: reject if any path component between installRoot and
   // skillDir is a symlink that would redirect writes outside the install root.
   // #2393: honor GSD_ALLOW_SYMLINKED_DEST for intentional user-owned symlink layouts.
@@ -682,9 +731,6 @@ function _removeHermesBareStemDirs(nestedGsdDir: string): void {
  */
 function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: string = 'global'): void {
   const legacyCommandsGsd = path.join(configDir, 'commands', 'gsd');
-  // #2875: staging root resolved once — reused below and by every other
-  // call site sharing this configDir.
-  const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
 
   // Claude / Qwen / Hermes: clean up legacy commands/gsd/ and preserve dev-preferences
   // for migration. The actual migration call is deferred to after all layout cleanup so
@@ -693,12 +739,25 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
   let stagedLegacyArtifacts: ReturnType<typeof userArtifactStaging.stageUserArtifacts> | null = null;
   if (_hostBehaviors(runtime).legacyCommandsGsdInstallMigration) {
     if (installFs().existsSync(legacyCommandsGsd)) {
-      // #2875 (#1874-F19): staged DURABLY to disk before the wipe below, so a
-      // crash anywhere in this function — including the Hermes flat-skills
-      // wipe further down, previously inside the same in-memory-only window
-      // — survives via recoverOrphanedUserArtifacts on the next run.
-      stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
-      installFs().rmSync(legacyCommandsGsd, { recursive: true });
+      // #2875: staging root resolved lazily, only when there is actually
+      // something to stage — reused below by every other call site sharing
+      // this configDir.
+      // #2875 defect fix: DEGRADE, never abort the whole install, when the
+      // staging root itself cannot be resolved (e.g. a hostile/broken
+      // `.gsd-staging` symlink) — skip this legacy-migration block entirely
+      // rather than wipe legacyCommandsGsd without a durable backup (module
+      // doc "Failure posture": a wipe having staged nothing is worse than no
+      // staging at all). The stale legacy dir is simply left in place for a
+      // future successful run.
+      const stagingRoot = _tryResolveUserArtifactStagingRoot(configDir);
+      if (stagingRoot !== null) {
+        // #2875 (#1874-F19): staged DURABLY to disk before the wipe below, so a
+        // crash anywhere in this function — including the Hermes flat-skills
+        // wipe further down, previously inside the same in-memory-only window
+        // — survives via recoverOrphanedUserArtifacts on the next run.
+        stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
+        installFs().rmSync(legacyCommandsGsd, { recursive: true });
+      }
     }
   }
 
@@ -817,9 +876,16 @@ function _runLegacyUninstallCleanup(runtime: string, configDir: string, scope: s
   if (isLegacyCommandsGsd) {
     const legacyCommandsGsd = path.join(configDir, 'commands', 'gsd');
     if (fs.existsSync(legacyCommandsGsd)) {
-      const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
-      stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
-      fs.rmSync(legacyCommandsGsd, { recursive: true });
+      // #2875 defect fix: DEGRADE, never abort uninstall, when the staging
+      // root cannot be resolved — skip this legacy-cleanup block (leave the
+      // stale dir in place) rather than wipe without a durable backup.
+      // Uninstall in particular must always be able to proceed past this
+      // point regardless of a hostile/broken `.gsd-staging` path.
+      const stagingRoot = _tryResolveUserArtifactStagingRoot(configDir);
+      if (stagingRoot !== null) {
+        stagedLegacyArtifacts = userArtifactStaging.stageUserArtifacts(legacyCommandsGsd, ['dev-preferences.md'], stagingRoot);
+        fs.rmSync(legacyCommandsGsd, { recursive: true });
+      }
     }
   }
 
@@ -1698,9 +1764,26 @@ function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: st
     // #2875: read the content back from the DISK-staged copy, matching
     // _runLegacyInstallMigrations's call site — never restored on failure
     // here either (the user is uninstalling; there is nothing to restore to).
+    //
+    // Security fix (parity with _runLegacyInstallMigrations's own guard,
+    // src/install-engine.cts / bin/install.js:8478): `readFileSync` ALWAYS
+    // follows a symlink. A staged `dev-preferences.md` that is itself a
+    // symlink (user-artifact-staging.cts's "Symlink safety" contract: a
+    // symlinked user artifact is recreated AS a symlink in the staging tree,
+    // never copied by content) would previously have its REFERENT's bytes
+    // read here and land in SKILL.md verbatim — e.g. a symlink to
+    // `~/.ssh/id_rsa` gets its private key content written into a file GSD
+    // loads into agent context. A symlink to a DIRECTORY instead throws
+    // EISDIR uncaught out of this function, which the caller never expected
+    // and which left the staged entry undiscarded (re-materializing on the
+    // next recovery pass and failing uninstall every time thereafter).
+    // lstatSync never follows a symlink; skip a symlinked name entirely
+    // (never migrated) rather than dereferencing it.
     const savedLegacyArtifacts = new Map<string, string>();
     for (const name of stagedLegacyArtifacts.names) {
-      savedLegacyArtifacts.set(name, installFs().readFileSync(path.join(stagedLegacyArtifacts.filesDir, name), 'utf8'));
+      const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
+      if (installFs().lstatSync(stagedPath).isSymbolicLink()) continue;
+      savedLegacyArtifacts.set(name, installFs().readFileSync(stagedPath, 'utf8'));
     }
     migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
     userArtifactStaging.discardStagedUserArtifacts(stagedLegacyArtifacts);
@@ -1724,6 +1807,7 @@ export = {
   hasExistingSymlinkBetween,
   isSymlinkedDestOptIn,
   _resolveUserArtifactStagingRoot,
+  _tryResolveUserArtifactStagingRoot,
   migrateLegacyDevPreferencesToSkill,
   applyOpencodeFamilyPathPrefix,
   convertClaudeCommandToOpencodeSkill,

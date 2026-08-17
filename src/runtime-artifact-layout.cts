@@ -284,6 +284,44 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
 }
 
 /**
+ * Runtime allowlist check for a descriptor-declared `converter` name, applied
+ * at DISPATCH time (security fix). `VALID_CONVERTER_NAMES` (capability-
+ * validator.cjs) is otherwise enforced ONLY at lint/build time
+ * (`check:contract-drift`) — every `conversionExports[converterName]`
+ * dynamic-property read below trusted that a `capability.json` reaching this
+ * far had already passed that check. It had not, in general: a hand-edited
+ * or malformed descriptor naming an Object-prototype member (`"constructor"`,
+ * `"toString"`, `"hasOwnProperty"`, ...) resolves to that member instead of
+ * throwing, producing garbage staged content rather than a loud failure —
+ * pre-existing, but promoted from the `/gsd-surface`-only path to the real
+ * install path for seven runtimes by #2875 Part 2's agents-bypass closure.
+ * Required lazily (call-time, not module-top) to avoid a load-time circular
+ * require, the same pattern install-engine.cts's `_hostBehaviors` already
+ * uses for `capability-registry.cjs`. Fails CLOSED: any error loading the
+ * allowlist itself (missing module, exotic bundling) is treated as "nothing
+ * is allowed", never as "skip the check".
+ */
+function _resolveNamedConverter(converterName: string, kindLabel: string): (...args: unknown[]) => unknown {
+  let validNames: Set<string> | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    validNames = (require('./capability-validator.cjs') as { VALID_CONVERTER_NAMES: Set<string> }).VALID_CONVERTER_NAMES;
+  } catch {
+    validNames = undefined;
+  }
+  if (!validNames || !validNames.has(converterName)) {
+    throw new Error(
+      `Unknown converter "${converterName}" declared for a ${kindLabel} kind — refusing to dispatch (not in capability-validator.cjs's VALID_CONVERTER_NAMES allowlist).`,
+    );
+  }
+  const fn = conversionExports[converterName];
+  if (typeof fn !== 'function') {
+    throw new Error(`Converter "${converterName}" is allowlisted but is not an exported function of runtime-artifact-conversion.cjs.`);
+  }
+  return fn as (...args: unknown[]) => unknown;
+}
+
+/**
  * Build a converted-agents kind descriptor for runtimes whose agent `.md` files
  * need runtime-specific frontmatter/body conversion (e.g. Copilot, Cursor, Codex).
  *
@@ -393,7 +431,7 @@ function convertedAgentsKind(
       // Scope Module's resolved id. `isGlobalScope` projects it to the
       // boolean `stageAgentsForRuntimeWithConverter`'s positional API
       // requires — see its doc comment in install-scope.cts.
-      const rawConverter = conversionExports[converterName] as
+      const rawConverter = _resolveNamedConverter(converterName, 'agents') as
         (content: string, arg2?: boolean | { isAgent?: boolean; modelOverride?: string | null }) => string;
 
       // #2875 Part 2 (J5-J8): kilo/opencode agent converters take an options
@@ -521,7 +559,7 @@ function skillsKind(
     prefix,
     converter: converterName,
     stage: (resolved) => {
-      const realConverter = conversionExports[converterName] as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
+      const realConverter = _resolveNamedConverter(converterName, 'skills') as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
       // Compute cmdNames once per stage call for performance (#3583).
       // Extra trailing args are ignored by converters that don't need them. The
       // isGlobal flag is the 5th positional (NOT the 3rd): the 3rd positional is
@@ -580,7 +618,7 @@ function convertedCommandsKind(
     destSubpath,
     prefix,
     stage: (resolved) => {
-      const converter = conversionExports[converterName] as (content: string, commandName: string) => string;
+      const converter = _resolveNamedConverter(converterName, 'commands') as (content: string, commandName: string) => string;
       return stageCommandsForRuntimeFlat(findInstallSourceRoot(configDir), resolved, converter, prefix);
     },
   };

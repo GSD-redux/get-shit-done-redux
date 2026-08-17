@@ -4,32 +4,60 @@
  * agent-descriptor-parity.test.cjs — #2875 Part 2 (the agents-bypass
  * closure), 50-test-matrix.md sections H, I, J (rows H1-H8, I1-I3, J1-J10).
  *
- * THE GATE (section H): every failure mode in Part 2 is a SILENT byte drop —
- * wrong output, nothing thrown. This suite feeds identical agent sources
- * through bin/install.js's inline agent-staging loop and the descriptor-driven
- * pipeline (stageAgentsForRuntimeWithConverter via a SYNTHETIC registry
- * override — resolveRuntimeArtifactLayoutFromRegistry's own supported seam,
- * so no capability.json needs to be touched to prove this) and asserts the
- * written bytes AND filenames are byte-identical for all six runtimes that
- * still used the inline loop before this change (claude, cline, codex,
- * hermes, kilo, opencode).
+ * HONEST BASELINE (rewritten — a prior revision of this file was found to
+ * test the wrong thing on every axis; see the fixed defects below):
+ *
+ * bin/install.js's inline agent-staging loop is GONE (deleted in the same
+ * commit that made every runtime descriptor-driven for agents). There is no
+ * second, independently-maintained agent-staging pipeline left in this
+ * codebase to diff against — an "old pipeline vs new pipeline" comparison is
+ * therefore IMPOSSIBLE post-deletion, and a prior revision of this file's
+ * header claiming to compare against "bin/install.js's inline agent-staging
+ * loop" was false the moment that loop was deleted.
+ *
+ * What THIS revision actually proves instead, and how:
+ *
+ *   1. The REAL production entry point (`installAgentsKindStandalone`,
+ *      `install-engine.cjs`) is driven directly, against the REAL, BUILT
+ *      `capability-registry.cjs` — no synthetic registry override. Every H
+ *      row therefore byte-compares actual output written by a real
+ *      `capabilities/<runtime>/capability.json` edit, not a hand-rolled
+ *      stand-in for one. A wrong-but-syntactically-valid `converter` name
+ *      landing in a real descriptor changes the ACTUAL side's output and is
+ *      caught (see H8's red-proof, which demonstrates this directly).
+ *
+ *   2. `computeExpectedOutput` (the "oracle") independently assembles the
+ *      EXPECTED bytes by calling the individual conversion PRIMITIVES
+ *      directly: `composeWorkflow`, `applyAgentPathRewrites`,
+ *      `processAttribution`, the runtime's converter function (dispatched
+ *      off `EXPECTED_CONVERTER_NAME_BY_RUNTIME` — a hand-verified,
+ *      independent map, NOT read from the descriptor under test),
+ *      `applyAgentFrontmatterExtensions`, `normalizeAgentBodyForRuntime`.
+ *      These primitives are — by construction, not accident —
+ *      single-sourced: there is no live duplicate of `composeWorkflow` or
+ *      `applyAgentPathRewrites` to diff against either, because #2875 Part 2
+ *      collapsed the duplication into these shared functions. Reusing them
+ *      here does not defeat the test: the property under test in every H row
+ *      is "does capability.json's declared `converter` name resolve to the
+ *      CORRECT converter and get invoked in the correct position of the
+ *      pipeline" — which the independent `EXPECTED_CONVERTER_NAME_BY_RUNTIME`
+ *      map exists specifically to keep decoupled from the descriptor.
+ *
+ *   3. Both scopes are exercised for every runtime that declares a
+ *      per-scope `agents` kind (claude, cline, codex, hermes, kilo, opencode
+ *      × global+local; kimi-code × global only — its capability.json
+ *      declares no local `agents` kind). The prior revision was global-only,
+ *      which is exactly the class of gap that let the cline-local
+ *      agents-drop regression (a separate defect, fixed alongside this
+ *      rewrite — capabilities/cline/capability.json's `local` artifactLayout
+ *      now declares an `agents` kind) reach `next` undetected.
  *
  * H8 is mandatory, not optional: a parity harness never demonstrated failing
- * is decoration. The last test in section H feeds a deliberately-divergent
- * converter into the SAME comparison and asserts it goes red.
- *
- * The "inline loop replica" below calls bin/install.js's OWN exported
- * converter functions (convertClaudeAgentToClineAgent,
- * convertClaudeAgentToCodexAgent, convertClaudeToOpencodeFrontmatter,
- * convertClaudeToKiloFrontmatter) — NOT the runtime-artifact-conversion.cjs
- * copies the descriptor path uses — so a real divergence between the two
- * historically-duplicated copies (CLAUDE.md "Generative Fix Divergence") is
- * caught, not hidden behind a shared helper. The three NEW contract pieces
- * (frontmatter extensions, model-override resolution, hermes branding) have
- * NO duplicate at all after this change — bin/install.js's inline loop and
- * the descriptor pipeline both call the SAME exported functions — so parity
- * for those three is structural, and this suite still exercises the call
- * shape end-to-end.
+ * is decoration. It feeds the oracle a DELIBERATELY WRONG (but real,
+ * allowlisted) converter name and asserts the comparison goes red against
+ * the REAL (correctly-configured) production output — proving that if
+ * capability.json's declared converter ever regressed, this exact harness
+ * would catch it.
  */
 
 const { test } = require('node:test');
@@ -42,9 +70,10 @@ const { cleanup } = require('./helpers.cjs');
 const REPO_ROOT = path.join(__dirname, '..');
 const LIB_DIR = path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib');
 
-const runtimeArtifactLayout = require(path.join(LIB_DIR, 'runtime-artifact-layout.cjs'));
 const runtimeArtifactConversion = require(path.join(LIB_DIR, 'runtime-artifact-conversion.cjs'));
 const installModelOverrideResolver = require(path.join(LIB_DIR, 'install-model-override-resolver.cjs'));
+const installEngine = require(path.join(LIB_DIR, 'install-engine.cjs'));
+const capabilityRegistry = require(path.join(LIB_DIR, 'capability-registry.cjs'));
 const { composeWorkflow } = require(path.join(LIB_DIR, 'workflow-fragments.cjs'));
 const installBin = require(path.join(REPO_ROOT, 'bin', 'install.js'));
 
@@ -105,23 +134,47 @@ function buildTargetDir(commandsGsd) {
 }
 
 // ---------------------------------------------------------------------------
-// Inline-loop replica (bin/install.js's own exported functions)
+// Oracle — independently-assembled EXPECTED output (see header doc)
 // ---------------------------------------------------------------------------
 
-function inlinePathRewrite(content, pathPrefix) {
-  const normalizedPathPrefix = pathPrefix.replace(/\/$/, '');
-  let out = content;
-  out = out.replace(/~\/\.claude\//g, pathPrefix);
-  out = out.replace(/\$HOME\/\.claude\//g, pathPrefix);
-  out = out.replace(/~\/\.claude\b/g, normalizedPathPrefix);
-  out = out.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
-  return out;
-}
+/** Hand-verified, independent of any capability.json — this is the thing
+ *  every H row's ACTUAL side (a real capability.json) is checked against.
+ *  `null` means converter:null (identity — claude, kimi-code). */
+const EXPECTED_CONVERTER_NAME_BY_RUNTIME = {
+  claude: null,
+  'kimi-code': null,
+  cline: 'convertClaudeAgentToClineAgent',
+  codex: 'convertClaudeAgentToCodexAgent',
+  hermes: 'convertClaudeAgentToHermesAgent',
+  kilo: 'convertClaudeToKiloFrontmatter',
+  opencode: 'convertClaudeToOpencodeFrontmatter',
+};
 
-/** Per-file order mirrors bin/install.js's inline agent loop exactly:
- *  composeWorkflow -> path-rewrite -> processAttribution -> dialect branch
- *  -> applyAgentFrontmatterExtensions -> normalizeAgentBodyForRuntime. */
-function simulateInlineAgentLoop(runtime, agentsDir, ctx) {
+/** Converter functions callable by name — bin/install.js still owns
+ *  cline/codex/kilo/opencode's (never migrated to runtime-artifact-conversion.cjs);
+ *  hermes's is descriptor-native (#2875 Part 2 / J9-J10). */
+const NAMED_CONVERTERS = {
+  convertClaudeAgentToClineAgent: installBin.convertClaudeAgentToClineAgent,
+  convertClaudeAgentToCodexAgent: installBin.convertClaudeAgentToCodexAgent,
+  convertClaudeAgentToHermesAgent: runtimeArtifactConversion.convertClaudeAgentToHermesAgent,
+  convertClaudeToKiloFrontmatter: installBin.convertClaudeToKiloFrontmatter,
+  convertClaudeToOpencodeFrontmatter: installBin.convertClaudeToOpencodeFrontmatter,
+};
+
+/** kilo/opencode take an options bag (`{isAgent, modelOverride}`), resolved
+ *  ONCE per call via the single shared precedence resolver (J5-J8) — every
+ *  other converter here takes only `content`. */
+const MODEL_OVERRIDE_CONVERTER_NAMES = new Set(['convertClaudeToKiloFrontmatter', 'convertClaudeToOpencodeFrontmatter']);
+
+/**
+ * Assemble the EXPECTED per-file output for `runtime` from `agentsDir`,
+ * calling the shared conversion primitives directly (see header doc for why
+ * this is not circular). `converterNameOverride`, when passed, replaces
+ * `EXPECTED_CONVERTER_NAME_BY_RUNTIME[runtime]` — used ONLY by H8's
+ * red-proof to inject a deliberately wrong converter.
+ */
+function computeExpectedOutput(runtime, agentsDir, ctx, converterNameOverride) {
+  const converterName = converterNameOverride !== undefined ? converterNameOverride : EXPECTED_CONVERTER_NAME_BY_RUNTIME[runtime];
   const { pathPrefix, attribution, targetDir } = ctx;
   const out = new Map();
   const entries = fs.readdirSync(agentsDir, { withFileTypes: true });
@@ -129,33 +182,34 @@ function simulateInlineAgentLoop(runtime, agentsDir, ctx) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
     const agentSourcePath = path.join(agentsDir, entry.name);
     let content = fs.readFileSync(agentSourcePath, 'utf8');
+    // Step 0 (#2995): strip gsd:section markers — same order the real
+    // pipeline uses (stageAgentsForRuntimeWithConverter, install-profiles.cts).
     content = composeWorkflow(content, { sourcePath: agentSourcePath });
-    content = inlinePathRewrite(content, pathPrefix);
+    const agentName = runtimeArtifactConversion.deriveAgentName(entry.name);
+    // Step 1: path rewrites
+    content = runtimeArtifactConversion.applyAgentPathRewrites(content, runtime, pathPrefix);
+    // Step 2: attribution
     content = runtimeArtifactConversion.processAttribution(content, attribution);
-    const agentName = entry.name.replace(/\.md$/, '');
-    if (runtime === 'opencode') {
-      const modelOverride = installModelOverrideResolver.resolveAgentModelOverride(
-        agentName,
-        installModelOverrideResolver.readGsdEffectiveModelOverrides(targetDir),
-        installModelOverrideResolver.readGsdRuntimeProfileResolver(targetDir),
-      );
-      content = installBin.convertClaudeToOpencodeFrontmatter(content, { isAgent: true, modelOverride });
-    } else if (runtime === 'kilo') {
-      const modelOverride = installModelOverrideResolver.resolveAgentModelOverride(
-        agentName,
-        installModelOverrideResolver.readGsdEffectiveModelOverrides(targetDir),
-        installModelOverrideResolver.readGsdRuntimeProfileResolver(targetDir),
-      );
-      content = installBin.convertClaudeToKiloFrontmatter(content, { isAgent: true, modelOverride });
-    } else if (runtime === 'codex') {
-      content = installBin.convertClaudeAgentToCodexAgent(content);
-    } else if (runtime === 'cline') {
-      content = installBin.convertClaudeAgentToClineAgent(content);
-    } else if (runtime === 'hermes') {
-      content = runtimeArtifactConversion.applyAgentBrandingRewrites(content, runtime);
+    // Step 3: converter — dispatched off the INDEPENDENT expected-name map,
+    // never off the descriptor under test.
+    if (converterName) {
+      const fn = NAMED_CONVERTERS[converterName];
+      assert.ok(typeof fn === 'function', `oracle: no converter function registered for "${converterName}"`);
+      if (MODEL_OVERRIDE_CONVERTER_NAMES.has(converterName)) {
+        const modelOverride = installModelOverrideResolver.resolveAgentModelOverride(
+          agentName,
+          installModelOverrideResolver.readGsdEffectiveModelOverrides(targetDir),
+          installModelOverrideResolver.readGsdRuntimeProfileResolver(targetDir),
+        );
+        content = fn(content, { isAgent: true, modelOverride });
+      } else {
+        content = fn(content);
+      }
     }
-    // claude: converter:null (identity) — content unchanged by this step.
+    // converter:null (claude, kimi-code) — content unchanged by this step.
+    // Step 4: frontmatter extensions (effort/disallowedTools)
     content = runtimeArtifactConversion.applyAgentFrontmatterExtensions(content, { runtime, agentName, targetDir });
+    // Step 5: normalize colon->hyphen refs
     content = runtimeArtifactConversion.normalizeAgentBodyForRuntime(
       content,
       runtime,
@@ -167,49 +221,33 @@ function simulateInlineAgentLoop(runtime, agentsDir, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Descriptor path (synthetic registry override — no capability.json touched)
+// Real descriptor path — the REAL production entry point, REAL registry
 // ---------------------------------------------------------------------------
 
-/** converter:null (claude, identity copy) vs a named converter (the other five). */
-const CONVERTER_NAME_BY_RUNTIME = {
-  claude: null,
-  cline: 'convertClaudeAgentToClineAgent',
-  codex: 'convertClaudeAgentToCodexAgent',
-  hermes: 'convertClaudeAgentToHermesAgent',
-  kilo: 'convertClaudeToKiloFrontmatter',
-  opencode: 'convertClaudeToOpencodeFrontmatter',
-};
-
-function syntheticRegistryFor(runtime, converterName) {
-  return {
-    runtimes: {
-      [runtime]: {
-        runtime: {
-          artifactLayout: {
-            global: [
-              { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-', nesting: 'flat', recursive: false, converter: converterName },
-            ],
-            local: [],
-          },
-        },
-      },
-    },
-  };
-}
-
-function runDescriptorPath(runtime, targetDir, ctx, registryOverride) {
-  const converterName = CONVERTER_NAME_BY_RUNTIME[runtime];
-  const registry = registryOverride ?? syntheticRegistryFor(runtime, converterName);
-  const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayoutFromRegistry(registry, runtime, targetDir, 'global');
-  const agentsKind = layout.kinds.find((k) => k.kind === 'agents');
-  assert.ok(agentsKind, `synthetic registry did not resolve an agents kind for ${runtime}`);
-  const agentCtx = { runtime, pathPrefix: ctx.pathPrefix, attribution: ctx.attribution, targetDir };
-  const stagedDir = agentsKind.stage({ name: 'full', skills: '*', agents: new Set() }, agentCtx);
+/**
+ * Drive the ACTUAL production entry point (`installAgentsKindStandalone`)
+ * against the REAL, built `capability-registry.cjs` — no override. This is
+ * exactly what `bin/install.js`'s `install()` calls for every runtime whose
+ * layout is not otherwise reached by the generic `installRuntimeArtifacts`
+ * loop (and, for the runtimes reached by that loop, produces identical
+ * output to it — both route through the SAME `convertedAgentsKind` /
+ * `_resolveNamedConverter` dispatch in runtime-artifact-layout.cts).
+ */
+function runRealDescriptorPath(runtime, scope, targetDir, ctx) {
+  const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
+  const result = installEngine.installAgentsKindStandalone(
+    runtime,
+    targetDir,
+    scope,
+    resolvedProfile,
+    ctx.pathPrefix,
+    () => ctx.attribution,
+  );
   const out = new Map();
-  for (const entry of fs.readdirSync(stagedDir, { withFileTypes: true })) {
-    if (entry.isFile()) out.set(entry.name, fs.readFileSync(path.join(stagedDir, entry.name), 'utf8'));
+  if (!result) return out;
+  for (const entry of fs.readdirSync(result.destDir, { withFileTypes: true })) {
+    if (entry.isFile()) out.set(entry.name, fs.readFileSync(path.join(result.destDir, entry.name), 'utf8'));
   }
-  cleanup(stagedDir);
   return out;
 }
 
@@ -217,16 +255,28 @@ function runDescriptorPath(runtime, targetDir, ctx, registryOverride) {
 // Comparison helper
 // ---------------------------------------------------------------------------
 
-const RUNTIMES = ['claude', 'cline', 'codex', 'hermes', 'kilo', 'opencode'];
+/** Every (runtime, scope) pair the REAL capabilities/<runtime>/capability.json
+ *  today declares an `agents` kind for (measured 2026-08-17). K1 below is the
+ *  machine-checked guarantee that this list cannot silently go stale — it
+ *  sweeps the real registry and fails if a declarant is missing here. */
+const RUNTIME_SCOPE_PAIRS = [
+  ['claude', 'global'], ['claude', 'local'],
+  ['cline', 'global'], ['cline', 'local'],
+  ['codex', 'global'], ['codex', 'local'],
+  ['hermes', 'global'], ['hermes', 'local'],
+  ['kilo', 'global'], ['kilo', 'local'],
+  ['opencode', 'global'], ['opencode', 'local'],
+  ['kimi-code', 'global'],
+];
 
-function comparePipelines(runtime, registryOverride) {
+function comparePipelines(runtime, scope, converterNameOverride) {
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
   const targetDir = buildTargetDir(commandsGsd);
   try {
     const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-    const inline = simulateInlineAgentLoop(runtime, agentsDir, ctx);
-    const descriptor = runDescriptorPath(runtime, targetDir, ctx, registryOverride);
-    return { inline, descriptor };
+    const expected = computeExpectedOutput(runtime, agentsDir, ctx, converterNameOverride);
+    const actual = runRealDescriptorPath(runtime, scope, targetDir, ctx);
+    return { expected, actual };
   } finally {
     cleanup(root);
     cleanup(targetDir);
@@ -235,30 +285,30 @@ function comparePipelines(runtime, registryOverride) {
 
 /** Asserts H1-H6 + H7 in one shot: same filenames (Set equality, order-free)
  *  AND byte-identical content per filename. */
-function assertMapsIdentical(t, inline, descriptor) {
+function assertMapsIdentical(expected, actual) {
   assert.deepEqual(
-    [...inline.keys()].sort(),
-    [...descriptor.keys()].sort(),
-    'filenames diverged between the inline loop and the descriptor path (row H7)',
+    [...expected.keys()].sort(),
+    [...actual.keys()].sort(),
+    'filenames diverged between the oracle and the real descriptor path (row H7)',
   );
-  for (const [name, inlineContent] of inline) {
+  for (const [name, expectedContent] of expected) {
     assert.equal(
-      descriptor.get(name),
-      inlineContent,
-      `content diverged for ${name} between the inline loop and the descriptor path`,
+      actual.get(name),
+      expectedContent,
+      `content diverged for ${name} between the oracle and the real descriptor path`,
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// H1-H6 — the parity gate, one row per runtime
+// H rows — the parity gate, one row per (runtime, scope)
 // ---------------------------------------------------------------------------
 
-for (const runtime of RUNTIMES) {
-  test(`agent-descriptor-parity: H row — ${runtime} inline loop and descriptor path are byte-identical`, (t) => {
-    const { inline, descriptor } = comparePipelines(runtime);
-    assert.ok(inline.size > 0, 'fixture produced no inline output — test is vacuous');
-    assertMapsIdentical(t, inline, descriptor);
+for (const [runtime, scope] of RUNTIME_SCOPE_PAIRS) {
+  test(`agent-descriptor-parity: H row — ${runtime} (${scope}) real descriptor output matches the independent oracle`, () => {
+    const { expected, actual } = comparePipelines(runtime, scope);
+    assert.ok(expected.size > 0, 'fixture produced no oracle output — test is vacuous');
+    assertMapsIdentical(expected, actual);
   });
 }
 
@@ -271,14 +321,14 @@ test('agent-descriptor-parity: H7 — a filename-only divergence fails the harne
   const targetDir = buildTargetDir(commandsGsd);
   try {
     const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-    const inline = simulateInlineAgentLoop('claude', agentsDir, ctx);
-    const descriptor = runDescriptorPath('claude', targetDir, ctx);
-    // Deliberately rename one descriptor-side entry — same bytes, different name.
-    const [firstName, firstContent] = [...descriptor.entries()][0];
-    descriptor.delete(firstName);
-    descriptor.set(`RENAMED-${firstName}`, firstContent);
+    const expected = computeExpectedOutput('claude', agentsDir, ctx);
+    const actual = runRealDescriptorPath('claude', 'global', targetDir, ctx);
+    // Deliberately rename one actual-side entry — same bytes, different name.
+    const [firstName, firstContent] = [...actual.entries()][0];
+    actual.delete(firstName);
+    actual.set(`RENAMED-${firstName}`, firstContent);
     assert.throws(
-      () => assertMapsIdentical({}, inline, descriptor),
+      () => assertMapsIdentical(expected, actual),
       /filenames diverged/,
       'a renamed output file must fail the harness',
     );
@@ -292,55 +342,36 @@ test('agent-descriptor-parity: H7 — a filename-only divergence fails the harne
 // H8 — the harness can actually FAIL (mandatory, not optional)
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: H8 — a deliberately-divergent converter turns the harness RED', () => {
-  // Feed hermes through a registry that dispatches to a converter which does
-  // NOT match what the inline-loop replica calls (applyAgentBrandingRewrites)
-  // — a bare identity pass-through, i.e. the branding rewrite silently
-  // missing. This is exactly the failure mode section H exists to catch: the
-  // wrong bytes reach disk and nothing throws on the descriptor side.
-  const badRegistry = {
-    runtimes: {
-      hermes: {
-        runtime: {
-          artifactLayout: {
-            global: [
-              { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-', nesting: 'flat', recursive: false, converter: '__gsd_test_identity_converter__' },
-            ],
-            local: [],
-          },
-        },
-      },
-    },
-  };
-  // Install a deliberately-wrong converter under a throwaway export name —
-  // never overwrites a real converter, so no other test can be poisoned by
-  // this mutation even without a restore step.
-  runtimeArtifactConversion.__gsd_test_identity_converter__ = (content) => content;
+test('agent-descriptor-parity: H8 — a deliberately-wrong (but real, allowlisted) expected converter turns the harness RED', () => {
+  // Hermes's REAL capability.json declares convertClaudeAgentToHermesAgent.
+  // Feed the ORACLE a different, real, allowlisted converter name
+  // (convertClaudeAgentToCodexAgent) instead — simulating exactly the failure
+  // mode row H exists to catch: capability.json's declared converter silently
+  // diverging from the correct one. The REAL descriptor path is untouched and
+  // still uses hermes's real (correct) converter, so this proves: IF
+  // capability.json ever regressed to the wrong name, THIS harness's H row
+  // for hermes would go red exactly like this.
+  const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
+  const targetDir = buildTargetDir(commandsGsd);
   try {
-    const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
-    const targetDir = buildTargetDir(commandsGsd);
+    const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
+    const wrongExpected = computeExpectedOutput('hermes', agentsDir, ctx, 'convertClaudeAgentToCodexAgent');
+    const realActual = runRealDescriptorPath('hermes', 'global', targetDir, ctx);
+    let threw = false;
+    let observedDiff = null;
     try {
-      const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-      const inline = simulateInlineAgentLoop('hermes', agentsDir, ctx);
-      const descriptor = runDescriptorPath('hermes', targetDir, ctx, badRegistry);
-      let threw = false;
-      let observedDiff = null;
-      try {
-        assertMapsIdentical({}, inline, descriptor);
-      } catch (err) {
-        threw = true;
-        observedDiff = err.message;
-      }
-      assert.equal(threw, true, 'H8 FAILED: the harness did not go red for a deliberately-divergent converter');
-      assert.match(observedDiff, /content diverged for gsd-planner\.md/, 'expected the content-diverged assertion to name the mismatched file');
-      // Verbatim red-proof output for the record (see CHANGES report):
-      console.log(`H8 red-proof observed: ${observedDiff}`);
-    } finally {
-      cleanup(root);
-      cleanup(targetDir);
+      assertMapsIdentical(wrongExpected, realActual);
+    } catch (err) {
+      threw = true;
+      observedDiff = err.message;
     }
+    assert.equal(threw, true, 'H8 FAILED: the harness did not go red for a deliberately-wrong expected converter');
+    assert.match(observedDiff, /content diverged for gsd-(planner|plan-checker)\.md/, 'expected the content-diverged assertion to name the mismatched file');
+    // Verbatim red-proof output for the record (see CHANGES report):
+    console.log(`H8 red-proof observed: ${observedDiff}`);
   } finally {
-    delete runtimeArtifactConversion.__gsd_test_identity_converter__;
+    cleanup(root);
+    cleanup(targetDir);
   }
 });
 
@@ -348,7 +379,7 @@ test('agent-descriptor-parity: H8 — a deliberately-divergent converter turns t
 // I1-I3 — per-agent resolution context
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: I3 — deriveAgentName matches the loop exactly, including a no-.md-suffix boundary', () => {
+test('agent-descriptor-parity: I3 — deriveAgentName matches the pipeline exactly, including a no-.md-suffix boundary', () => {
   assert.equal(runtimeArtifactConversion.deriveAgentName('gsd-planner.md'), 'gsd-planner');
   // Boundary: a filename with no trailing .md is returned unchanged (the
   // regex has nothing to match) — matches `entry.name.replace(/\.md$/, '')`.
@@ -356,14 +387,14 @@ test('agent-descriptor-parity: I3 — deriveAgentName matches the loop exactly, 
   assert.equal(runtimeArtifactConversion.deriveAgentName('gsd-planner.MD'), 'gsd-planner.MD');
 });
 
-test('agent-descriptor-parity: I2 — descriptor path with no agentCtx is unaffected (converter-only)', () => {
+test('agent-descriptor-parity: I2 — real descriptor path with no agentCtx is unaffected (converter-only)', () => {
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
   const targetDir = buildTargetDir(commandsGsd);
   try {
-    const registry = syntheticRegistryFor('claude', null);
-    const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayoutFromRegistry(registry, 'claude', targetDir, 'global');
-    const agentsKind = layout.kinds.find((k) => k.kind === 'agents');
-    const stagedDir = agentsKind.stage({ name: 'full', skills: '*', agents: new Set() }); // no agentCtx
+    const runtimeArtifactLayout = require(path.join(LIB_DIR, 'runtime-artifact-layout.cjs'));
+    const realLayout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('claude', targetDir, 'global');
+    const agentsKindEntry = realLayout.kinds.find((k) => k.kind === 'agents');
+    const stagedDir = agentsKindEntry.stage({ name: 'full', skills: '*', agents: new Set() }); // no agentCtx
     const planner = fs.readFileSync(path.join(stagedDir, 'gsd-planner.md'), 'utf8');
     const original = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf8');
     assert.equal(planner, original, 'no agentCtx must leave content byte-identical to source (converter:null == identity)');
@@ -378,27 +409,40 @@ test('agent-descriptor-parity: I2 — descriptor path with no agentCtx is unaffe
 // J1-J4 — frontmatter extensions
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: J1 — claude effort is injected and byte-identical to the loop-equivalent call', () => {
+test('agent-descriptor-parity: J1 — claude effort is injected via applyAgentFrontmatterExtensions', () => {
   const content = '---\nname: gsd-planner\ndescription: x\n---\n\nBody.\n';
   const viaShared = runtimeArtifactConversion.applyAgentFrontmatterExtensions(content, { runtime: 'claude', agentName: 'gsd-planner', targetDir: null });
   assert.match(viaShared, /^effort: /m, 'expected an effort: key to be injected for claude');
 });
 
-test('agent-descriptor-parity: J2 — effort resolving to inherit writes NO effort: key at all (#3533 trap row)', () => {
-  const content = '---\nname: gsd-inherit-agent\ndescription: x\n---\n\nBody.\n';
-  const inheritCfg = { agent_overrides: { 'gsd-inherit-agent': 'inherit' } };
-  // Exercise the pure half directly (resolveInstallTimeEffort / injectEffortFrontmatter)
-  // — the trap this row guards against is injectEffortFrontmatter EVER being
-  // called with the literal string 'inherit'.
-  const installEffortResolver = require(path.join(LIB_DIR, 'install-effort-resolver.cjs'));
-  const resolved = installEffortResolver.resolveInstallTimeEffort(inheritCfg, 'gsd-inherit-agent');
-  assert.equal(resolved, 'inherit');
-  // applyAgentFrontmatterExtensions must therefore never call injectEffortFrontmatter
-  // for this agent when its config resolves to 'inherit'. We cannot inject a
-  // custom effortCfg through the public seam (it reads ~/.gsd/defaults.json /
-  // .planning/config.json), so assert the CONTRACT directly instead:
-  const injected = runtimeArtifactConversion.injectEffortFrontmatter(content, 'inherit');
-  assert.match(injected, /^effort: inherit$/m, 'sanity: injectEffortFrontmatter itself is dumb and WOULD write the literal — the guard is in applyAgentFrontmatterExtensions never calling it for "inherit"');
+test('agent-descriptor-parity: J2 — effort resolving to inherit writes NO effort: key at all, exercised via the REAL guard in applyAgentFrontmatterExtensions (#3533 trap row)', () => {
+  // #2875 Part 2 defect fix: a prior revision of this row asserted the DUMB
+  // half (injectEffortFrontmatter DOES emit the literal 'inherit' if called
+  // with it) and never called applyAgentFrontmatterExtensions at all — so
+  // deleting the `universalEffort !== 'inherit'` guard at
+  // runtime-artifact-conversion.cts:3504 left this row green. This revision
+  // writes a REAL .planning/config.json under targetDir (readGsdEffectiveEffortConfig
+  // walks up from targetDir looking for it — install-effort-resolver.cts)
+  // and calls the REAL applyAgentFrontmatterExtensions end to end, so removing
+  // that guard makes THIS assertion fail (verified: red with the guard
+  // removed, green with it restored — see CHANGES report).
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-parity-j2-'));
+  try {
+    fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDir, '.planning', 'config.json'),
+      JSON.stringify({ effort: { agent_overrides: { 'gsd-inherit-agent': 'inherit' } } }),
+    );
+    const content = '---\nname: gsd-inherit-agent\ndescription: x\n---\n\nBody.\n';
+    const out = runtimeArtifactConversion.applyAgentFrontmatterExtensions(content, { runtime: 'claude', agentName: 'gsd-inherit-agent', targetDir });
+    assert.doesNotMatch(out, /^effort:/m, 'an agent resolving to "inherit" must get no effort: key at all — not even effort: inherit');
+    // Sanity: injectEffortFrontmatter itself is dumb and WOULD write the
+    // literal if called with it — the guard is applyAgentFrontmatterExtensions
+    // never calling it for 'inherit', which is exactly what the assertion above proves.
+    assert.match(runtimeArtifactConversion.injectEffortFrontmatter(content, 'inherit'), /^effort: inherit$/m);
+  } finally {
+    cleanup(targetDir);
+  }
 });
 
 test('agent-descriptor-parity: J3 — a runtime NOT declaring agentFrontmatterExtensions gets nothing injected', () => {
@@ -445,23 +489,47 @@ test('agent-descriptor-parity: J7 — neither configured resolves to null (omit)
   assert.doesNotMatch(contentWithoutModelOverride, /^model:/m, 'an omitted override must not appear as a model: key at all');
 });
 
-test('agent-descriptor-parity: J8 — kilo and opencode resolve model overrides through the SAME shared function', () => {
-  // A regression test that fails if the two ever diverge: assert both runtime
-  // branches in the inline-loop replica (and, by construction, convertedAgentsKind
-  // in runtime-artifact-layout.cts) call installModelOverrideResolver.resolveAgentModelOverride
-  // — not two independently-maintained copies of the precedence chain.
-  const modelOverrides = { 'gsd-planner': 'shared/explicit' };
-  const forKilo = installModelOverrideResolver.resolveAgentModelOverride('gsd-planner', modelOverrides, null);
-  const forOpencode = installModelOverrideResolver.resolveAgentModelOverride('gsd-planner', modelOverrides, null);
-  assert.equal(forKilo, forOpencode);
-  assert.equal(forKilo, 'shared/explicit');
+test('agent-descriptor-parity: J8 — kilo and opencode both resolve model overrides through the REAL descriptor path (installAgentsKindStandalone), proving ONE shared resolution path, not a tautology', () => {
+  // #2875 Part 2 defect fix: a prior revision of this row called
+  // resolveAgentModelOverride TWICE with identical arguments and asserted
+  // equality — true of ANY pure function regardless of whether kilo/opencode
+  // are actually wired to it. This revision drives BOTH runtimes through the
+  // REAL production entry point with a REAL .planning/config.json
+  // model_overrides block and asserts BOTH staged outputs carry the SAME
+  // resolved model — which only happens if both are genuinely wired to the
+  // one shared installModelOverrideResolver.resolveAgentModelOverride.
+  const overrideModel = 'shared/explicit-model';
+  const agentFiles = { 'gsd-planner.md': SAMPLE_AGENTS['gsd-planner.md'] };
+
+  function stageWithOverride(runtime) {
+    const { commandsGsd, root } = buildSourceTree(agentFiles);
+    const targetDir = buildTargetDir(commandsGsd);
+    fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDir, '.planning', 'config.json'),
+      JSON.stringify({ model_overrides: { 'gsd-planner': overrideModel } }),
+    );
+    try {
+      const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
+      return runRealDescriptorPath(runtime, 'global', targetDir, ctx);
+    } finally {
+      cleanup(root);
+      cleanup(targetDir);
+    }
+  }
+
+  const kiloOut = stageWithOverride('kilo');
+  const opencodeOut = stageWithOverride('opencode');
+  const overrideRe = new RegExp(`^model:\\s*${overrideModel.replace(/\//g, '\\/')}$`, 'm');
+  assert.match(kiloOut.get('gsd-planner.md'), overrideRe, 'kilo must apply the shared model override via the real descriptor path');
+  assert.match(opencodeOut.get('gsd-planner.md'), overrideRe, 'opencode must apply the SAME shared model override via the real descriptor path');
 });
 
 // ---------------------------------------------------------------------------
 // J9-J10 — hermes branding converter
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: J9 — hermes branding converter is byte-identical to the loop\'s inline replaces, including \\bClaude Code\\b word-boundary semantics', () => {
+test('agent-descriptor-parity: J9 — hermes branding converter is byte-identical to the shared generic branding-rewrite function, including \\bClaude Code\\b word-boundary semantics', () => {
   const content = 'Claude Code and ClaudeCodeExtra and CLAUDE.md and .claude/foo and reClaude Code.\n';
   const viaSharedFn = runtimeArtifactConversion.applyAgentBrandingRewrites(content, 'hermes');
   const viaNamedConverter = runtimeArtifactConversion.convertClaudeAgentToHermesAgent(content);
@@ -506,13 +574,10 @@ test('agent-descriptor-parity: J10 — the branding converter is descriptor-data
  * Part 2 Task A) actually materializes agents/ on disk. If any runtime were
  * still silently depending on the deleted inline loop, this call would write
  * nothing to agents/ for it (the deleted code was the ONLY thing that used to
- * write it for the six runtimes migrated in this change) and the assertion
+ * write it for the seven runtimes migrated in this change) and the assertion
  * below would fail.
  */
 test('agent-descriptor-parity: K1 — every registry runtime declaring an agents kind is reachable from installRuntimeArtifacts (the inline loop is gone)', () => {
-  const capabilityRegistry = require(path.join(LIB_DIR, 'capability-registry.cjs'));
-  const installEngine = require(path.join(LIB_DIR, 'install-engine.cjs'));
-
   const runtimesWithAgentsKind = Object.entries(capabilityRegistry.runtimes || {})
     .filter(([, cap]) => {
       const layout = cap.runtime && cap.runtime.artifactLayout;
@@ -522,7 +587,9 @@ test('agent-descriptor-parity: K1 — every registry runtime declaring an agents
     })
     .map(([id]) => id);
 
-  assert.ok(runtimesWithAgentsKind.length >= 6, 'sanity: expected at least the six #2875 Part 2 runtimes to declare an agents kind');
+  assert.ok(runtimesWithAgentsKind.length >= 7, 'sanity: expected at least the seven #2875 Part 2 runtimes to declare an agents kind');
+  assert.ok(runtimesWithAgentsKind.includes('kimi-code'), 'kimi-code (found via golden fixture, not analysis) must be covered here');
+  assert.ok(runtimesWithAgentsKind.includes('cline'), 'cline must be covered here');
 
   for (const runtime of runtimesWithAgentsKind) {
     const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);

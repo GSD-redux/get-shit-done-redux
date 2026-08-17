@@ -914,8 +914,28 @@ function stageAgentsForRuntimeWithConverter(
   if (!installFs().existsSync(srcAgentsDir)) return srcAgentsDir;
 
   const stageDir = mkInstallTempDir('gsd-profile-runtime-agents-');
+  let entries: fs.Dirent[];
   try {
-    const entries = installFs().readdirSync(srcAgentsDir, { withFileTypes: true });
+    // #2284/#2875: readdirSync-ing the shipped agents/ source is isolated in
+    // its own try/catch so an unreadable source directory (permissions, a
+    // corrupted install, or — as the #2284 test suite demonstrates — the
+    // fail-closed injection harness) produces the SAME "refusing to install"
+    // fail-closed wording every other agents-dir-unreadable path in this
+    // codebase uses (bin/install.js's `_resolveAvailableGsdRoles` /
+    // `_assertRoleResolvable`), instead of an unrelated raw fs error message
+    // escaping uncaught. Hermes's role-dispatch validation depends on the
+    // SAME shipped agents/ directory being readable; before this runtime also
+    // declared an `agents` kind, this function was never reached on a Hermes
+    // install, so an unreadable source here silently surfaced as a raw error
+    // rather than the deliberate fail-closed contract #2284 established.
+    entries = installFs().readdirSync(srcAgentsDir, { withFileTypes: true });
+  } catch (err) {
+    try { installFs().rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    throw new Error(
+      `stageAgentsForRuntimeWithConverter: could not resolve the shipped agents/ directory "${srcAgentsDir}" to stage — refusing to install (fail-closed, #2284/#2875): ${(err as Error).message}`,
+    );
+  }
+  try {
     // Resolve cmdNames once per staging call (not per file) for performance.
     const cmdNames = agentCtx ? _readGsdCommandNames() : [];
     for (const entry of entries) {

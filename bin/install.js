@@ -758,6 +758,28 @@ function _resolveUserArtifactStagingRoot(configDir) {
   return stagingRoot;
 }
 
+/**
+ * Degrade-not-abort wrapper over `_resolveUserArtifactStagingRoot` — mirrors
+ * install-engine.cts's own `_tryResolveUserArtifactStagingRoot` (kept local
+ * here for the same reason the throwing version above is: bin/install.js's
+ * own call sites are not inside that module). A hostile/broken
+ * `.gsd-staging` path (or a symlinked configDir itself) must never brick
+ * `install()` or `uninstall()` — before this fix, `_resolveUserArtifactStagingRoot`
+ * was called UNGUARDED as the first statement of both, so
+ * `ln -s /nonexistent ~/.claude/.gsd-staging` killed both commands, including
+ * uninstall, the remedy for the first problem. Returns `null` (never throws),
+ * logging one warning; every call site MUST treat `null` as "skip the
+ * staging-dependent step for this run".
+ */
+function _tryResolveUserArtifactStagingRoot(configDir) {
+  try {
+    return _resolveUserArtifactStagingRoot(configDir);
+  } catch (err) {
+    console.warn(`  ${yellow}!${reset} user-artifact staging unavailable for "${configDir}" (${err.message}) — proceeding without durable staging for this step.`);
+    return null;
+  }
+}
+
 // Parse args
 const args = process.argv.slice(2);
 const hasGlobal = args.includes('--global') || args.includes('-g');
@@ -8058,7 +8080,15 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // legacy-commands cleanup are exactly as crash-exposed as install's —
   // without this, an orphan from a crashed uninstall is recoverable only if
   // the user later re-installs.
-  recoverOrphanedUserArtifacts(_resolveUserArtifactStagingRoot(targetDir), targetDir);
+  // #2875 defect fix: DEGRADE, never abort uninstall, when the staging root
+  // itself cannot be resolved — skip this recovery pass rather than throw
+  // out of uninstall() before it does anything.
+  {
+    const _uninstallEntryStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+    if (_uninstallEntryStagingRoot !== null) {
+      recoverOrphanedUserArtifacts(_uninstallEntryStagingRoot, targetDir);
+    }
+  }
 
   // Remove profile marker so a clean reinstall defaults to full surface.
   try {
@@ -8407,33 +8437,39 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       // #1874-F19 "site 7" — found by sweeping bin/install.js for the
       // read-then-wipe-then-write PATTERN, not for preserveUserArtifacts'
       // callers; this uninstall-path block open-coded the same round-trip).
-      const _legacyGsdCommandsStagingRoot = _resolveUserArtifactStagingRoot(targetDir);
-      const stagedDevPrefs = stageUserArtifacts(legacyGsdCommandsDir, ['dev-preferences.md'], _legacyGsdCommandsStagingRoot);
-      // Preserve the ORIGINAL truthy-content check exactly: an existing but
-      // EMPTY dev-preferences.md was (and still is) silently not restored.
-      const savedDevPrefs = stagedDevPrefs.names.includes('dev-preferences.md')
-        ? fs.readFileSync(path.join(stagedDevPrefs.filesDir, 'dev-preferences.md'), 'utf8')
-        : null;
-      fs.rmSync(legacyGsdCommandsDir, { recursive: true });
-      removedCount++;
-      console.log(`  ${green}✓${reset} Removed legacy commands/gsd/`);
-      if (savedDevPrefs) {
-        try {
-          restoreStagedUserArtifacts(legacyGsdCommandsDir, stagedDevPrefs);
+      // #2875 defect fix: DEGRADE, never abort uninstall, when the staging
+      // root cannot be resolved — skip this legacy-cleanup block entirely
+      // (leave the stale dir in place) rather than wipe without a durable
+      // backup for dev-preferences.md.
+      const _legacyGsdCommandsStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+      if (_legacyGsdCommandsStagingRoot !== null) {
+        const stagedDevPrefs = stageUserArtifacts(legacyGsdCommandsDir, ['dev-preferences.md'], _legacyGsdCommandsStagingRoot);
+        // Preserve the ORIGINAL truthy-content check exactly: an existing but
+        // EMPTY dev-preferences.md was (and still is) silently not restored.
+        const savedDevPrefs = stagedDevPrefs.names.includes('dev-preferences.md')
+          ? fs.readFileSync(path.join(stagedDevPrefs.filesDir, 'dev-preferences.md'), 'utf8')
+          : null;
+        fs.rmSync(legacyGsdCommandsDir, { recursive: true });
+        removedCount++;
+        console.log(`  ${green}✓${reset} Removed legacy commands/gsd/`);
+        if (savedDevPrefs) {
+          try {
+            restoreStagedUserArtifacts(legacyGsdCommandsDir, stagedDevPrefs);
+            discardStagedUserArtifacts(stagedDevPrefs);
+            console.log(`  ${green}✓${reset} Preserved commands/gsd/dev-preferences.md`);
+          } catch (err) {
+            console.error(`  ${red}✗${reset} Failed to restore dev-preferences.md: ${err.message}`);
+          }
+        } else {
+          // #2875 defect fix: an existing-but-EMPTY dev-preferences.md was (and
+          // still is) never restored — the original truthy-content check is
+          // preserved byte-for-byte above — but the staged batch was never
+          // discarded either, leaking a <configDir>/.gsd-staging/ record
+          // forever and re-materializing the just-deleted file on a future
+          // install's orphan-recovery pass. Discard unconditionally when there
+          // is nothing to restore.
           discardStagedUserArtifacts(stagedDevPrefs);
-          console.log(`  ${green}✓${reset} Preserved commands/gsd/dev-preferences.md`);
-        } catch (err) {
-          console.error(`  ${red}✗${reset} Failed to restore dev-preferences.md: ${err.message}`);
         }
-      } else {
-        // #2875 defect fix: an existing-but-EMPTY dev-preferences.md was (and
-        // still is) never restored — the original truthy-content check is
-        // preserved byte-for-byte above — but the staged batch was never
-        // discarded either, leaking a <configDir>/.gsd-staging/ record
-        // forever and re-materializing the just-deleted file on a future
-        // install's orphan-recovery pass. Discard unconditionally when there
-        // is nothing to restore.
-        discardStagedUserArtifacts(stagedDevPrefs);
       }
     }
   }
@@ -8454,47 +8490,53 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       // instead of an in-memory Map only — a crash between the wipe and the
       // restore-on-failure branch below now survives via
       // recoverOrphanedUserArtifacts on the next run.
-      const stagingRoot = _resolveUserArtifactStagingRoot(targetDir);
-      const stagedLegacyArtifacts = stageUserArtifacts(legacyDir, ['dev-preferences.md'], stagingRoot);
-      fs.rmSync(legacyDir, { recursive: true });
-      removedCount++;
-      console.log(`  ${green}✓${reset} Removed legacy commands/gsd/`);
-      const _uninstallScope = scope;
-      // migrateLegacyDevPreferencesToSkill's Map<string,string> contract is
-      // unchanged — read the staged content back from disk (not an in-memory
-      // value held across the wipe above).
-      //
-      // #2875 defect fix (readFileSync following a staged symlink) — matches
-      // install-engine.cts's _runLegacyInstallMigrations call site 1 exactly:
-      // readFileSync ALWAYS follows a symlink, so a staged artifact that is
-      // itself a symlink (user-artifact-staging.cts's "Symlink safety": a
-      // symlinked user artifact is recreated AS a symlink in the staging
-      // tree, never copied by content) would have its REFERENT's bytes read
-      // here and land in SKILL.md. Excluded from migration below and
-      // restored to its original location unchanged instead.
-      const savedLegacyArtifacts = new Map();
-      const migratableLegacyNames = [];
-      for (const name of stagedLegacyArtifacts.names) {
-        const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
-        if (fs.lstatSync(stagedPath).isSymbolicLink()) continue;
-        savedLegacyArtifacts.set(name, fs.readFileSync(stagedPath, 'utf8'));
-        migratableLegacyNames.push(name);
-      }
-      const _legacyMigrated = migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope);
-      if (_legacyMigrated && migratableLegacyNames.length === stagedLegacyArtifacts.names.length) {
-        // Compute the actual path written so the log line is accurate per-runtime
-        const _layout = resolveRuntimeArtifactLayout(runtime, targetDir, _uninstallScope);
-        const _sk = _layout.kinds.find((k) => k.kind === 'skills');
-        const _stem = _sk && _sk.prefix === '' ? 'dev-preferences' : 'gsd-dev-preferences';
-        const _skillRelPath = _sk ? `${_sk.destSubpath}/${_stem}/SKILL.md` : 'skills/gsd-dev-preferences/SKILL.md';
-        console.log(`  ${green}✓${reset} Migrated dev-preferences.md → ${_skillRelPath} (#2973)`);
-        discardStagedUserArtifacts(stagedLegacyArtifacts);
-      } else {
-        // Migration failed, already exists, or a symlinked name was excluded
-        // above — restore the WHOLE batch to the legacy location so no user
-        // content is silently lost.
-        restoreStagedUserArtifacts(legacyDir, stagedLegacyArtifacts);
-        discardStagedUserArtifacts(stagedLegacyArtifacts);
+      // #2875 defect fix: DEGRADE, never abort uninstall, when the staging
+      // root cannot be resolved — skip this legacy-migration block entirely
+      // (leave the stale dir in place) rather than wipe without a durable
+      // backup.
+      const stagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+      if (stagingRoot !== null) {
+        const stagedLegacyArtifacts = stageUserArtifacts(legacyDir, ['dev-preferences.md'], stagingRoot);
+        fs.rmSync(legacyDir, { recursive: true });
+        removedCount++;
+        console.log(`  ${green}✓${reset} Removed legacy commands/gsd/`);
+        const _uninstallScope = scope;
+        // migrateLegacyDevPreferencesToSkill's Map<string,string> contract is
+        // unchanged — read the staged content back from disk (not an in-memory
+        // value held across the wipe above).
+        //
+        // #2875 defect fix (readFileSync following a staged symlink) — matches
+        // install-engine.cts's _runLegacyInstallMigrations call site 1 exactly:
+        // readFileSync ALWAYS follows a symlink, so a staged artifact that is
+        // itself a symlink (user-artifact-staging.cts's "Symlink safety": a
+        // symlinked user artifact is recreated AS a symlink in the staging
+        // tree, never copied by content) would have its REFERENT's bytes read
+        // here and land in SKILL.md. Excluded from migration below and
+        // restored to its original location unchanged instead.
+        const savedLegacyArtifacts = new Map();
+        const migratableLegacyNames = [];
+        for (const name of stagedLegacyArtifacts.names) {
+          const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
+          if (fs.lstatSync(stagedPath).isSymbolicLink()) continue;
+          savedLegacyArtifacts.set(name, fs.readFileSync(stagedPath, 'utf8'));
+          migratableLegacyNames.push(name);
+        }
+        const _legacyMigrated = migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope);
+        if (_legacyMigrated && migratableLegacyNames.length === stagedLegacyArtifacts.names.length) {
+          // Compute the actual path written so the log line is accurate per-runtime
+          const _layout = resolveRuntimeArtifactLayout(runtime, targetDir, _uninstallScope);
+          const _sk = _layout.kinds.find((k) => k.kind === 'skills');
+          const _stem = _sk && _sk.prefix === '' ? 'dev-preferences' : 'gsd-dev-preferences';
+          const _skillRelPath = _sk ? `${_sk.destSubpath}/${_stem}/SKILL.md` : 'skills/gsd-dev-preferences/SKILL.md';
+          console.log(`  ${green}✓${reset} Migrated dev-preferences.md → ${_skillRelPath} (#2973)`);
+          discardStagedUserArtifacts(stagedLegacyArtifacts);
+        } else {
+          // Migration failed, already exists, or a symlinked name was excluded
+          // above — restore the WHOLE batch to the legacy location so no user
+          // content is silently lost.
+          restoreStagedUserArtifacts(legacyDir, stagedLegacyArtifacts);
+          discardStagedUserArtifacts(stagedLegacyArtifacts);
+        }
       }
     }
   }
@@ -8506,33 +8548,46 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
     // #1874-F19 "site 5" — this block open-coded its own preserve/restore
     // instead of calling preserveUserArtifacts, which is why it was missed
     // by the original symbol-search measurement).
-    const _gsdDirStagingRoot = _resolveUserArtifactStagingRoot(targetDir);
-    const stagedProfile = stageUserArtifacts(gsdDir, USER_OWNED_ARTIFACTS, _gsdDirStagingRoot);
-    // Preserve the ORIGINAL truthy-content check exactly: an existing but
-    // EMPTY USER-PROFILE.md was (and still is) silently not restored —
-    // matching prior behavior byte-for-byte rather than widening scope.
-    const preservedProfile = stagedProfile.names.includes('USER-PROFILE.md')
-      ? fs.readFileSync(path.join(stagedProfile.filesDir, 'USER-PROFILE.md'), 'utf8')
-      : null;
-
-    fs.rmSync(gsdDir, { recursive: true });
-    removedCount++;
-    console.log(`  ${green}✓${reset} Removed gsd-core/`);
-
-    // Restore user-generated files
-    if (preservedProfile) {
-      try {
-        restoreStagedUserArtifacts(gsdDir, stagedProfile);
-        discardStagedUserArtifacts(stagedProfile);
-        console.log(`  ${green}✓${reset} Preserved gsd-core/USER-PROFILE.md`);
-      } catch (err) {
-        console.error(`  ${red}✗${reset} Failed to restore USER-PROFILE.md: ${err.message}`);
-      }
+    // #2875 defect fix: this IS the core uninstall step (removing gsd-core/)
+    // — unlike the optional legacy-cleanup blocks above, uninstall must
+    // still be able to proceed and actually remove gsd-core/ even when the
+    // staging root cannot be resolved. Degrade by skipping ONLY the
+    // USER-PROFILE.md preserve/restore wrapper (warn), never the removal
+    // itself.
+    const _gsdDirStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+    if (_gsdDirStagingRoot === null) {
+      console.warn(`  ${yellow}!${reset} Skipping gsd-core/USER-PROFILE.md preservation (staging unavailable) — it will be lost if present.`);
+      fs.rmSync(gsdDir, { recursive: true });
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed gsd-core/`);
     } else {
-      // #2875 defect fix: same empty-file orphan leak as the legacy
-      // commands/gsd/ site above — discard the staging batch regardless of
-      // whether the staged content was truthy.
-      discardStagedUserArtifacts(stagedProfile);
+      const stagedProfile = stageUserArtifacts(gsdDir, USER_OWNED_ARTIFACTS, _gsdDirStagingRoot);
+      // Preserve the ORIGINAL truthy-content check exactly: an existing but
+      // EMPTY USER-PROFILE.md was (and still is) silently not restored —
+      // matching prior behavior byte-for-byte rather than widening scope.
+      const preservedProfile = stagedProfile.names.includes('USER-PROFILE.md')
+        ? fs.readFileSync(path.join(stagedProfile.filesDir, 'USER-PROFILE.md'), 'utf8')
+        : null;
+
+      fs.rmSync(gsdDir, { recursive: true });
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed gsd-core/`);
+
+      // Restore user-generated files
+      if (preservedProfile) {
+        try {
+          restoreStagedUserArtifacts(gsdDir, stagedProfile);
+          discardStagedUserArtifacts(stagedProfile);
+          console.log(`  ${green}✓${reset} Preserved gsd-core/USER-PROFILE.md`);
+        } catch (err) {
+          console.error(`  ${red}✗${reset} Failed to restore USER-PROFILE.md: ${err.message}`);
+        }
+      } else {
+        // #2875 defect fix: same empty-file orphan leak as the legacy
+        // commands/gsd/ site above — discard the staging batch regardless of
+        // whether the staged content was truthy.
+        discardStagedUserArtifacts(stagedProfile);
+      }
     }
   }
 
@@ -10188,7 +10243,15 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // layout-driven path's _runLegacyInstallMigrations (site 1, inside
   // installRuntimeArtifacts) and this function's own mainline gsd-core copy
   // (site 4, below).
-  recoverOrphanedUserArtifacts(_resolveUserArtifactStagingRoot(targetDir), targetDir);
+  // #2875 defect fix: DEGRADE, never abort install, when the staging root
+  // itself cannot be resolved — skip this recovery pass rather than throw
+  // out of install() before it does anything.
+  {
+    const _installEntryStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+    if (_installEntryStagingRoot !== null) {
+      recoverOrphanedUserArtifacts(_installEntryStagingRoot, targetDir);
+    }
+  }
 
   const locationLabel = isGlobal
     ? targetDir.replace(os.homedir(), '~')
@@ -10581,6 +10644,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // (copyWithPathReplacement + stale-skills cleanup).
   const _isSkillsRuntime = (() => {
     if (_hostBehaviors(runtime).localInstallStyle === 'legacy-flat' && !isGlobal) return false;  // legacy flat local path (descriptor-driven; #2086)
+    // #2875 Part 2 defect fix: a runtime whose LOCAL commands are embedded in a
+    // rules file rather than materialized as files (hostBehaviors.localCommandsViaRules
+    // — cline is the only declarant, capabilities/cline/capability.json) must not
+    // flip into this skills/commands-reporting branch merely because its local
+    // artifactLayout now also declares an `agents` kind (#2875 Part 2 cline-local
+    // agents regression fix). That branch's own verification reporting expects a
+    // skills/ or commands/ directory this runtime never writes locally and would
+    // spuriously fail; the `localCommandsViaRules` branch below (unchanged
+    // messaging) and the unconditional agents-materialization block further down
+    // (installAgentsKindStandalone) already cover this runtime/scope correctly.
+    if (!isGlobal && _hostBehaviors(runtime).localCommandsViaRules) return false;
     const cap = _capabilityRegistry && _capabilityRegistry.runtimes && _capabilityRegistry.runtimes[runtime];
     const layout = cap && cap.runtime && cap.runtime.artifactLayout;
     if (!layout) return false;
@@ -10870,24 +10944,30 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // its own preserve/restore instead of calling preserveUserArtifacts,
       // found by sweeping for the read-then-wipe-then-write PATTERN rather
       // than for that helper's callers).
-      const _legacyGsdStagingRoot = _resolveUserArtifactStagingRoot(targetDir);
-      const stagedDevPrefs = stageUserArtifacts(legacyGsdDir, ['dev-preferences.md'], _legacyGsdStagingRoot);
-      // Preserve the ORIGINAL truthy-content check exactly: an existing but
-      // EMPTY dev-preferences.md was (and still is) silently not migrated —
-      // matching prior behavior byte-for-byte rather than widening scope.
-      const preservedDevPrefs = stagedDevPrefs.names.includes('dev-preferences.md')
-        ? fs.readFileSync(path.join(stagedDevPrefs.filesDir, 'dev-preferences.md'), 'utf8')
-        : null;
-      fs.rmSync(legacyGsdDir, { recursive: true });
-      console.log(`  ${green}✓${reset} Removed legacy commands/gsd/ (migrated to flat gsd-<cmd>.md layout)`);
-      if (preservedDevPrefs) {
-        // Migrate dev-preferences to the new flat form — a RENAME on
-        // restore (staged as 'dev-preferences.md', restored as
-        // 'gsd-dev-preferences.md'), not a round-trip.
-        restoreStagedUserArtifacts(commandsDir, stagedDevPrefs, { rename: { 'dev-preferences.md': 'gsd-dev-preferences.md' } });
-        console.log(`  ${green}✓${reset} Migrated dev-preferences.md to commands/gsd-dev-preferences.md`);
+      // #2875 defect fix: DEGRADE, never abort install, when the staging
+      // root cannot be resolved — skip this legacy-migration block entirely
+      // (leave the stale dir in place) rather than wipe without a durable
+      // backup.
+      const _legacyGsdStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+      if (_legacyGsdStagingRoot !== null) {
+        const stagedDevPrefs = stageUserArtifacts(legacyGsdDir, ['dev-preferences.md'], _legacyGsdStagingRoot);
+        // Preserve the ORIGINAL truthy-content check exactly: an existing but
+        // EMPTY dev-preferences.md was (and still is) silently not migrated —
+        // matching prior behavior byte-for-byte rather than widening scope.
+        const preservedDevPrefs = stagedDevPrefs.names.includes('dev-preferences.md')
+          ? fs.readFileSync(path.join(stagedDevPrefs.filesDir, 'dev-preferences.md'), 'utf8')
+          : null;
+        fs.rmSync(legacyGsdDir, { recursive: true });
+        console.log(`  ${green}✓${reset} Removed legacy commands/gsd/ (migrated to flat gsd-<cmd>.md layout)`);
+        if (preservedDevPrefs) {
+          // Migrate dev-preferences to the new flat form — a RENAME on
+          // restore (staged as 'dev-preferences.md', restored as
+          // 'gsd-dev-preferences.md'), not a round-trip.
+          restoreStagedUserArtifacts(commandsDir, stagedDevPrefs, { rename: { 'dev-preferences.md': 'gsd-dev-preferences.md' } });
+          console.log(`  ${green}✓${reset} Migrated dev-preferences.md to commands/gsd-dev-preferences.md`);
+        }
+        discardStagedUserArtifacts(stagedDevPrefs);
       }
-      discardStagedUserArtifacts(stagedDevPrefs);
     }
 
     // Clean up any stale skills/ from a previous local install
@@ -10924,11 +11004,22 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // the path every user takes (40-design.md "Site 4 is far worse...").
   const skillSrc = path.join(src, 'gsd-core');
   const skillDest = path.join(targetDir, 'gsd-core');
-  const _gsdArtifactsStagingRoot = _resolveUserArtifactStagingRoot(targetDir);
-  const stagedGsdArtifacts = stageUserArtifacts(skillDest, USER_OWNED_ARTIFACTS, _gsdArtifactsStagingRoot);
-  copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
-  restoreStagedUserArtifacts(skillDest, stagedGsdArtifacts);
-  discardStagedUserArtifacts(stagedGsdArtifacts);
+  // #2875 defect fix: this IS the mainline install step (installing
+  // gsd-core/ itself) — unlike the optional legacy-cleanup blocks above,
+  // install must still be able to proceed and actually write gsd-core/ even
+  // when the staging root cannot be resolved. Degrade by skipping ONLY the
+  // USER_OWNED_ARTIFACTS preserve/restore wrapper around the copy (warn),
+  // never the copy itself.
+  const _gsdArtifactsStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+  if (_gsdArtifactsStagingRoot === null) {
+    console.warn(`  ${yellow}!${reset} Skipping gsd-core/${USER_OWNED_ARTIFACTS.join(', gsd-core/')} preservation (staging unavailable) — it will be lost if present.`);
+    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
+  } else {
+    const stagedGsdArtifacts = stageUserArtifacts(skillDest, USER_OWNED_ARTIFACTS, _gsdArtifactsStagingRoot);
+    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
+    restoreStagedUserArtifacts(skillDest, stagedGsdArtifacts);
+    discardStagedUserArtifacts(stagedGsdArtifacts);
+  }
   if (verifyInstalled(skillDest, 'gsd-core')) {
     console.log(`  ${green}✓${reset} Installed workflow assets`);
   } else {
@@ -11024,7 +11115,23 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   } else {
     const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry);
     if (_standaloneAgentsResult) {
-      if (verifyInstalled(_standaloneAgentsResult.destDir, 'agents')) {
+      // #2875 defect fix: a restricted (non-'*') resolvedProfile — --minimal
+      // being the common case — can legitimately stage ZERO agents (no skill
+      // in the profile's closure references a gsd-* role). The prior inline
+      // loop this replaced never even created agentsDest under --minimal (see
+      // the deleted `isMinimalMode` branch); the descriptor-driven
+      // installAgentsKindStandalone above always mkdir's destDir, so an
+      // intentionally-empty result must NOT be reported as a failure —
+      // verifyInstalled's "directory is empty" case is checked FIRST and
+      // treated as success here whenever the profile is restricted, so a
+      // real staging failure under the DEFAULT full profile (where an empty
+      // agents/ would mean the shipped agents/ source itself came up empty)
+      // still fails loudly.
+      const _agentsDirEmpty = fs.existsSync(_standaloneAgentsResult.destDir)
+        && fs.readdirSync(_standaloneAgentsResult.destDir).length === 0;
+      if (_agentsDirEmpty && _resolvedProfile.skills !== '*') {
+        console.log(`  ${dim}↳${reset} Skipping agents (${_resolvedProfile.name} profile excludes all agents — run \`gsd update\` with a broader profile to add them)`);
+      } else if (verifyInstalled(_standaloneAgentsResult.destDir, 'agents')) {
         console.log(`  ${green}✓${reset} Installed agents`);
       } else {
         failures.push('agents');
@@ -13587,6 +13694,7 @@ module.exports = {
     discardStagedUserArtifacts,
     recoverOrphanedUserArtifacts,
     _resolveUserArtifactStagingRoot,
+    _tryResolveUserArtifactStagingRoot,
     finishInstall,
     homePathCoveredByRc,
     homePathCoveredByFishConfig,

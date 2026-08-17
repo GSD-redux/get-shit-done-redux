@@ -24,6 +24,8 @@ const {
   installCodexConfig,
   _copyStaged,
   _resolveUserArtifactStagingRoot: _installJsResolveUserArtifactStagingRoot,
+  install,
+  uninstall,
 } = require('../bin/install.js');
 
 // #2875 (epic #2866 Phase 6): user-artifact-staging confinement rows (E1-E5).
@@ -2807,6 +2809,83 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
     }
   });
 
+  // #2875 defect fix (security — source-side symlink escape): the ancestor-
+  // symlink guard (E8) covered only `destDir`. A real `entryDir` whose
+  // `files` CHILD is a symlink to an unrelated victim directory (e.g.
+  // `/etc`, `~/.ssh`) was dereferenced by every per-file `existsSync`/
+  // `stagedCopy` read below `filesDir`, copying victim-readable content into
+  // an attacker-named path inside `configDir`.
+  test('E10: recovery refuses an entryDir whose `files` child is a symlink — never dereferences the source side', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e10-cfg-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e10-victim-'));
+    try {
+      fs.writeFileSync(path.join(victim, 'attacker-chosen-name.md'), 'VICTIM SECRET CONTENT');
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e10entry0000000');
+      fs.mkdirSync(entryDir, { recursive: true });
+      fs.symlinkSync(victim, path.join(entryDir, 'files'));
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['attacker-chosen-name.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — the files/ child is a symlink to an untrusted directory');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'files-symlink-escape');
+      assert.ok(
+        !fs.existsSync(path.join(destDir, 'attacker-chosen-name.md')),
+        'the victim directory\'s content must never be copied into destDir',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(victim);
+    }
+  });
+
+  // #2875 defect fix (security/correctness — cwd-dependent confinement): a
+  // RELATIVE `record.destDir` made `path.relative(configHome, record.destDir)`
+  // resolve the relative argument against `process.cwd()` internally, not
+  // against `configHome` — so recovery's behavior for a forged or malformed
+  // record depended on whatever directory the CLI happened to be invoked
+  // from, rather than being a deterministic function of `configDir`.
+  // `stageUserArtifacts` (this module's own writer) always records an
+  // ALREADY-resolved absolute `destDir`; a relative one only ever reaches
+  // recovery via a forged/hand-edited record.
+  test('E11: recovery refuses a RELATIVE record.destDir — confinement never depends on process.cwd()', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e11-cfg-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e11entry0000000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'x.md'), 'x');
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: 'gsd-core', names: ['x.md'], timestamp: new Date().toISOString() }),
+      );
+
+      // Run from a cwd that resolves the relative destDir straight back to
+      // configDir (mirrors the real cline-local call shape, where targetDir
+      // === process.cwd()) — the exact case that must NOT be treated as
+      // "correctly resolved" just because the coincidence lines up.
+      const previousCwd = process.cwd();
+      process.chdir(configDir);
+      let result;
+      try {
+        result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      } finally {
+        process.chdir(previousCwd);
+      }
+      assert.equal(result.recovered.length, 0, 'a relative destDir must never be accepted, regardless of cwd');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Parity: install-engine.cts's `_resolveUserArtifactStagingRoot` is
   // deliberately duplicated (not shared) into bin/install.js, to avoid a
@@ -2866,5 +2945,147 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       cleanup(configDirInstallJs);
       cleanup(elsewhere);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyDevPreferencesToSkill — dangling-symlink leaf write (security
+// review finding, found while closing the #2875 agents-descriptor migration
+// gap): existsSync(skillFile) follows symlinks and reports false for a
+// dangling one, and the symlink-escape guard only walked to the PARENT
+// directory, never lstat-checking the leaf file itself — so a dangling
+// symlink planted exactly at the skill-file destination sailed through both
+// checks and writeFileSync (which DOES follow symlinks) wrote attacker
+// content to the symlink's target.
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyDevPreferencesToSkill — dangling-symlink leaf write', () => {
+  const { migrateLegacyDevPreferencesToSkill } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+  test('refuses to write through a dangling symlink planted at the skill-file leaf', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-sym-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-sym-outside-'));
+    const attackerTarget = path.join(outside, 'authorized_keys');
+    try {
+      const skillDir = path.join(configDir, 'skills', 'gsd-dev-preferences');
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.symlinkSync(attackerTarget, skillFile); // dangling — target does not exist
+
+      const saved = new Map([['dev-preferences.md', 'attacker-controlled content\n']]);
+
+      assert.throws(
+        () => migrateLegacyDevPreferencesToSkill(configDir, saved, 'claude', 'global'),
+        /symlink/i,
+        'must refuse to write through a symlinked skill-file leaf',
+      );
+      assert.ok(!fs.existsSync(attackerTarget), 'attacker target must never be created/written');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  test('a real, already-migrated skill file (not a symlink) still short-circuits as before', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-real-'));
+    try {
+      const skillDir = path.join(configDir, 'skills', 'gsd-dev-preferences');
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.writeFileSync(skillFile, 'already migrated\n', 'utf8');
+
+      const saved = new Map([['dev-preferences.md', 'new content\n']]);
+      const migrated = migrateLegacyDevPreferencesToSkill(configDir, saved, 'claude', 'global');
+
+      assert.strictEqual(migrated, false, 'must not clobber an existing real skill file');
+      assert.strictEqual(fs.readFileSync(skillFile, 'utf8'), 'already migrated\n');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uninstallRuntimeArtifacts — staged legacy dev-preferences.md symlink
+// dereference (security review finding). Sibling call sites
+// (_runLegacyInstallMigrations, bin/install.js's own uninstall()) already
+// lstat-guard a staged name before readFileSync; this uninstall call site did
+// not, so a symlinked staged dev-preferences.md had its referent's bytes read
+// into SKILL.md, and a symlink to a directory threw EISDIR uncaught.
+// ---------------------------------------------------------------------------
+
+describe('uninstallRuntimeArtifacts — staged dev-preferences.md symlink dereference', () => {
+  const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+  test('a symlinked staged dev-preferences.md is skipped (never dereferenced) and uninstall does not throw', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uninstall-sym-'));
+    const secretFile = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uninstall-sym-secret-'));
+    const secretPath = path.join(secretFile, 'id_rsa');
+    fs.writeFileSync(secretPath, 'PRIVATE KEY MATERIAL\n', 'utf8');
+    try {
+      // Claude global uses the legacy commands/gsd/ location.
+      const legacyDir = path.join(configDir, 'commands', 'gsd');
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.symlinkSync(secretPath, path.join(legacyDir, 'dev-preferences.md'));
+
+      // Must not throw (no EISDIR/unhandled error) and must never migrate the
+      // symlink's referent content into any installed skill file.
+      assert.doesNotThrow(() => uninstallRuntimeArtifacts('claude', configDir, 'global'));
+
+      const skillFile = path.join(configDir, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+      if (fs.existsSync(skillFile)) {
+        const content = fs.readFileSync(skillFile, 'utf8');
+        assert.ok(!content.includes('PRIVATE KEY MATERIAL'), 'the symlink referent must never be migrated into SKILL.md');
+      }
+    } finally {
+      cleanup(configDir);
+      cleanup(secretFile);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 defect fix (security/regression): a staging-root resolution failure
+// (e.g. `.gsd-staging/user-artifacts` is/contains a symlink) must DEGRADE —
+// skip staging for that step, warn — rather than abort install()/uninstall()
+// entirely. Before this fix, `_resolveUserArtifactStagingRoot` was called
+// UNGUARDED as the first statement of both, so a hostile/broken
+// `.gsd-staging` path bricked BOTH commands, including uninstall — the
+// remedy for the first problem.
+// ---------------------------------------------------------------------------
+
+describe('install()/uninstall() degrade (never abort) on a staging-root resolution failure', () => {
+  function withHostileStagingSymlink(runFn) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-staging-degrade-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-staging-degrade-elsewhere-'));
+    const previousCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      fs.mkdirSync(path.join(tmp, '.gsd-staging'));
+      fs.symlinkSync(elsewhere, path.join(tmp, '.gsd-staging', 'user-artifacts'));
+      runFn(tmp);
+    } finally {
+      process.chdir(previousCwd);
+      cleanup(tmp);
+      cleanup(elsewhere);
+    }
+  }
+
+  test('install() proceeds and still writes gsd-core/ when the staging root is a hostile symlink', () => {
+    withHostileStagingSymlink((tmp) => {
+      assert.doesNotThrow(() => install(false, 'cline'), 'install() must degrade, never throw, on a staging-root failure');
+      assert.ok(fs.existsSync(path.join(tmp, 'gsd-core')), 'gsd-core/ must still be installed despite the staging-root failure');
+    });
+  });
+
+  test('uninstall() proceeds and still removes gsd-core/ when the staging root is a hostile symlink', () => {
+    withHostileStagingSymlink((tmp) => {
+      // Bypass the (also-degrading) install() path to set up a realistic
+      // pre-existing gsd-core/ without depending on install() itself.
+      fs.mkdirSync(path.join(tmp, 'gsd-core'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'gsd-core', 'USER-PROFILE.md'), 'user content');
+      assert.doesNotThrow(() => uninstall(false, 'cline'), 'uninstall() must degrade, never throw, on a staging-root failure');
+      assert.ok(!fs.existsSync(path.join(tmp, 'gsd-core')), 'gsd-core/ must still be removed despite the staging-root failure');
+    });
   });
 });
