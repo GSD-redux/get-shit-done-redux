@@ -24,6 +24,7 @@ const {
   installCodexConfig,
   _copyStaged,
   _resolveUserArtifactStagingRoot: _installJsResolveUserArtifactStagingRoot,
+  _tryResolveUserArtifactStagingRoot: _installJsTryResolveUserArtifactStagingRoot,
   install,
   uninstall,
 } = require('../bin/install.js');
@@ -36,6 +37,7 @@ const {
 } = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
 const {
   _resolveUserArtifactStagingRoot,
+  _tryResolveUserArtifactStagingRoot,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
 const {
   recoverOrphanedUserArtifacts,
@@ -2854,36 +2856,73 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
   // `stageUserArtifacts` (this module's own writer) always records an
   // ALREADY-resolved absolute `destDir`; a relative one only ever reaches
   // recovery via a forged/hand-edited record.
-  test('E11: recovery refuses a RELATIVE record.destDir — confinement never depends on process.cwd()', () => {
+  test('E11: recovery refuses a RELATIVE record.destDir — confinement never depends on process.cwd()', (t) => {
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e11-cfg-'));
-    try {
-      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
-      const entryDir = path.join(stagingRoot, 'e11entry0000000');
-      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
-      fs.writeFileSync(path.join(entryDir, 'files', 'x.md'), 'x');
-      fs.writeFileSync(
-        path.join(entryDir, 'record.json'),
-        JSON.stringify({ destDir: 'gsd-core', names: ['x.md'], timestamp: new Date().toISOString() }),
-      );
+    t.after(() => cleanup(configDir));
+    const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+    const entryDir = path.join(stagingRoot, 'e11entry0000000');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'x.md'), 'x');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: 'gsd-core', names: ['x.md'], timestamp: new Date().toISOString() }),
+    );
 
-      // Run from a cwd that resolves the relative destDir straight back to
-      // configDir (mirrors the real cline-local call shape, where targetDir
-      // === process.cwd()) — the exact case that must NOT be treated as
-      // "correctly resolved" just because the coincidence lines up.
-      const previousCwd = process.cwd();
-      process.chdir(configDir);
-      let result;
-      try {
-        result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
-      } finally {
-        process.chdir(previousCwd);
-      }
-      assert.equal(result.recovered.length, 0, 'a relative destDir must never be accepted, regardless of cwd');
-      assert.equal(result.skipped.length, 1);
-      assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
-    } finally {
+    // Run from a cwd that resolves the relative destDir straight back to
+    // configDir (mirrors the real cline-local call shape, where targetDir
+    // === process.cwd()) — the exact case that must NOT be treated as
+    // "correctly resolved" just because the coincidence lines up.
+    const previousCwd = process.cwd();
+    t.after(() => process.chdir(previousCwd));
+    process.chdir(configDir);
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+    assert.equal(result.recovered.length, 0, 'a relative destDir must never be accepted, regardless of cwd');
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
+  });
+
+  // #2875 security-review finding: E10 covers the default (no opt-in) case.
+  // `GSD_ALLOW_SYMLINKED_DEST` is documented (install-engine.cts
+  // `isSymlinkedDestOptIn`) as relaxing only the DESTINATION-side
+  // pre-existing-symlink refusal — the user asserting they own/trust a
+  // symlinked WRITE destination. `entryDir`/`filesDir` here is the staging
+  // SOURCE, GSD-owned internal state this module creates itself, never a
+  // user-authored layout — the opt-in must NOT relax this read-side check.
+  test('E12: recovery refuses the source-side `files/` symlink even with GSD_ALLOW_SYMLINKED_DEST=1 — the dest opt-in never relaxes the source-side read', (t) => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e12-cfg-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e12-victim-'));
+    t.after(() => {
       cleanup(configDir);
+      cleanup(victim);
+    });
+    fs.writeFileSync(path.join(victim, 'attacker-chosen-name.md'), 'VICTIM SECRET CONTENT');
+    const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+    const entryDir = path.join(stagingRoot, 'e12entry0000000');
+    fs.mkdirSync(entryDir, { recursive: true });
+    try {
+      fs.symlinkSync(victim, path.join(entryDir, 'files'));
+    } catch (_e) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
     }
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(destDir), names: ['attacker-chosen-name.md'], timestamp: new Date().toISOString() }),
+    );
+
+    process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+    t.after(() => delete process.env.GSD_ALLOW_SYMLINKED_DEST);
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+
+    assert.equal(result.recovered.length, 0, 'must refuse — the source-side files/ symlink is never relaxed by the dest opt-in');
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].reason, 'files-symlink-escape');
+    assert.ok(
+      !fs.existsSync(path.join(destDir, 'attacker-chosen-name.md')),
+      'the victim directory\'s content must never be copied into destDir, even with the opt-in set',
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -2945,6 +2984,58 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       cleanup(configDirInstallJs);
       cleanup(elsewhere);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Parity: the DEGRADE-not-abort wrapper (`_tryResolveUserArtifactStagingRoot`)
+  // is ALSO duplicated verbatim into bin/install.js (same doc-comment
+  // rationale as the throwing version above). "Same inputs, same resolved
+  // root, same refusal" above does not cover "same degrade": a caller-facing
+  // regression where one copy started throwing again (bricking the command)
+  // while the other correctly degraded to `null` would slip past the tests
+  // above, since neither calls the wrapper.
+  // -------------------------------------------------------------------------
+
+  test('parity: install-engine.cts and bin/install.js copies of _tryResolveUserArtifactStagingRoot resolve the SAME root for the same configDir (happy path)', (t) => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-happy-'));
+    t.after(() => cleanup(configDir));
+    const fromEngine = _tryResolveUserArtifactStagingRoot(configDir);
+    const fromInstallJs = _installJsTryResolveUserArtifactStagingRoot(configDir);
+    assert.notEqual(fromEngine, null, 'the engine copy must resolve (not degrade) on a clean configDir');
+    assert.equal(fromInstallJs, fromEngine, 'both copies must resolve to the identical staging root');
+  });
+
+  test('parity: both copies of _tryResolveUserArtifactStagingRoot degrade to null (never throw) for the SAME symlinked staging root', (t) => {
+    const configDirEngine = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-engine-'));
+    const configDirInstallJs = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-installjs-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-elsewhere-'));
+    t.after(() => {
+      cleanup(configDirEngine);
+      cleanup(configDirInstallJs);
+      cleanup(elsewhere);
+    });
+    fs.symlinkSync(elsewhere, path.join(configDirEngine, '.gsd-staging'));
+    fs.symlinkSync(elsewhere, path.join(configDirInstallJs, '.gsd-staging'));
+
+    let engineThrew = false;
+    let engineResult;
+    try {
+      engineResult = _tryResolveUserArtifactStagingRoot(configDirEngine);
+    } catch {
+      engineThrew = true;
+    }
+    let installJsThrew = false;
+    let installJsResult;
+    try {
+      installJsResult = _installJsTryResolveUserArtifactStagingRoot(configDirInstallJs);
+    } catch {
+      installJsThrew = true;
+    }
+
+    assert.equal(engineThrew, false, 'the engine copy\'s try-wrapper must never throw — this is the whole point of the wrapper');
+    assert.equal(installJsThrew, false, 'the bin/install.js copy\'s try-wrapper must never throw either');
+    assert.equal(engineResult, null, 'the engine copy must degrade to null for a refused staging root');
+    assert.equal(installJsResult, null, 'the bin/install.js copy must degrade to null identically');
   });
 });
 

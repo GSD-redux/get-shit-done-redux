@@ -36,7 +36,10 @@ import installFsAdapter = require('./install-fs-adapter.cjs');
 const { installFs } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- install-effort-resolver.cjs is an export= CommonJS module
 import installEffortResolver = require('./install-effort-resolver.cjs');
-const { _readGsdConfigFile } = installEffortResolver as { _readGsdConfigFile: (absPath: string, label: string) => Record<string, unknown> | null };
+const { _readGsdConfigFile, _findAncestorGsdConfigPath } = installEffortResolver as {
+  _readGsdConfigFile: (absPath: string, label: string) => Record<string, unknown> | null;
+  _findAncestorGsdConfigPath: (targetDir: string) => string | null;
+};
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-catalog.cjs is an export= CommonJS module
 import modelCatalog = require('./model-catalog.cjs');
 const { MODEL_PROFILES: GSD_MODEL_PROFILES } = modelCatalog as unknown as { MODEL_PROFILES: Record<string, Record<string, string>> };
@@ -98,24 +101,22 @@ function readGsdEffectiveModelOverrides(targetDir: string | null = null, options
 
   let projectOverrides: Record<string, string> | null = null;
   if (targetDir) {
-    let probeDir = path.resolve(targetDir);
-    for (let depth = 0; depth < 8; depth += 1) {
-      const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (installFs().existsSync(candidate)) {
-        try {
-          const parsed = JSON.parse(installFs().readFileSync(candidate, 'utf-8')) as { model_overrides?: unknown };
-          if (parsed && typeof parsed === 'object' && parsed.model_overrides && typeof parsed.model_overrides === 'object') {
-            projectOverrides = parsed.model_overrides as Record<string, string>;
-          }
-        } catch {
-          // Malformed config.json — fall back to global; readGsdRuntimeProfileResolver
-          // surfaces a parse warning via _readGsdConfigFile already.
+    // #2875 defect fix (Generative Fix Divergence): the 8-deep upward walk to
+    // `.planning/config.json` is single-sourced in install-effort-resolver.cts
+    // (`_findAncestorGsdConfigPath`) — this module was itself extracted FROM
+    // that one to stop duplicating shared install-time config logic, so a
+    // second hand-rolled copy of the walk here defeated the point.
+    const candidate = _findAncestorGsdConfigPath(targetDir);
+    if (candidate) {
+      try {
+        const parsed = JSON.parse(installFs().readFileSync(candidate, 'utf-8')) as { model_overrides?: unknown };
+        if (parsed && typeof parsed === 'object' && parsed.model_overrides && typeof parsed.model_overrides === 'object') {
+          projectOverrides = parsed.model_overrides as Record<string, string>;
         }
-        break;
+      } catch {
+        // Malformed config.json — fall back to global; readGsdRuntimeProfileResolver
+        // surfaces a parse warning via _readGsdConfigFile already.
       }
-      const parent = path.dirname(probeDir);
-      if (parent === probeDir) break;
-      probeDir = parent;
     }
   }
 
@@ -147,19 +148,12 @@ function readGsdRuntimeProfileResolver(targetDir: string | null = null): Runtime
     '~/.gsd/defaults.json',
   );
 
+  // #2875 defect fix (Generative Fix Divergence): same shared walk as
+  // readGsdEffectiveModelOverrides above — see that call site's comment.
   let projectConfig: Record<string, unknown> | null = null;
   if (targetDir) {
-    let probeDir = path.resolve(targetDir);
-    for (let depth = 0; depth < 8; depth += 1) {
-      const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (installFs().existsSync(candidate)) {
-        projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
-        break;
-      }
-      const parent = path.dirname(probeDir);
-      if (parent === probeDir) break;
-      probeDir = parent;
-    }
+    const candidate = _findAncestorGsdConfigPath(targetDir);
+    if (candidate) projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
   }
 
   const merged: RuntimeProfileMergedConfig = {

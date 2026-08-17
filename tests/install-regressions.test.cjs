@@ -1344,7 +1344,7 @@ describe('#1924: profile-user.md backup path must be outside gsd-core/', () => {
 // round-trip would not prove.
 
 describe('#1924: user artifacts survive a wipe via the durable staging path (install.js exports)', () => {
-  test('install.js exports the staging primitives, and content staged through them survives a destDir wipe + crash', () => {
+  test('install.js exports the staging primitives, and content staged through them survives a destDir wipe + crash', (t) => {
     // Set GSD_TEST_MODE so require() reaches the module.exports block
     const origMode = process.env.GSD_TEST_MODE;
     process.env.GSD_TEST_MODE = '1';
@@ -1397,7 +1397,22 @@ describe('#1924: user artifacts survive a wipe via the durable staging path (ins
       mod.stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: deadPid });
 
       // Simulate the #1874-F19 crash window: the wipe ran, the process died
-      // before any restore.
+      // before any restore. #2875 AC: inject via genuine `fs`-method
+      // monkeypatching (CLAUDE.md §4 / the established idiom in
+      // planning-lock-mkdir-failure-1884.test.cjs) rather than deleting
+      // destDir out-of-band — `t.mock.method` auto-restores the original
+      // after this test (no manual try/finally; CONTRIBUTING.md bans
+      // try/finally in test bodies), and the mock delegates to the captured
+      // original so destDir genuinely vanishes exactly as production's own
+      // `fs.rmSync(destDir, {recursive:true})` would — the injected crash
+      // boundary is "execution never proceeds past this call to any
+      // restore", not a thrown error from the wipe itself. The actual
+      // removal is driven through `helpers.cleanup()` (never a raw
+      // `fs.rmSync` in a test body — `local/no-raw-rmsync-in-tests`), which
+      // reads the SAME mutated `fs.rmSync` property (module singleton), so
+      // the mock still observes and performs the wipe.
+      const realRmSync = fs.rmSync;
+      t.mock.method(fs, 'rmSync', (targetPath, opts) => realRmSync.call(fs, targetPath, opts));
       cleanup(destDir);
       assert.ok(!fs.existsSync(path.join(destDir, 'USER-PROFILE.md')));
 

@@ -686,7 +686,21 @@ function recoverOrphanedUserArtifacts(stagingRoot: string, configDir: string, op
       // remain legitimate (module doc "Symlink safety" — a symlinked staged
       // user artifact is expected and copied via copyPreservingSymlink,
       // never dereferenced).
-      if (symlinkGuard.hasExistingSymlinkBetween(entryDir, filesDir, { allowOptInFollow: symlinkGuard.isSymlinkedDestOptIn() })) {
+      //
+      // `allowOptInFollow` is hardcoded `false` here, NOT
+      // `symlinkGuard.isSymlinkedDestOptIn()` — `GSD_ALLOW_SYMLINKED_DEST` is
+      // documented (install-engine.cts `isSymlinkedDestOptIn`) as relaxing
+      // only the destination-side "pre-existing symlink that points outside
+      // configHome" refusal (the user asserting they own/trust a symlinked
+      // WRITE destination, e.g. nix-darwin's `~/.claude` symlink). This is a
+      // SOURCE read path — `entryDir`/`filesDir` is GSD-owned internal
+      // staging state this module itself creates, never a user-authored
+      // layout, so there is no legitimate opt-in case here. Honoring the
+      // dest opt-in on this read would re-open exactly the escape this
+      // guard exists to close: a `files` component symlinked to e.g.
+      // `/root/.ssh` would be followed, and the per-file reads below would
+      // dereference and copy the referent's bytes into configDir.
+      if (symlinkGuard.hasExistingSymlinkBetween(entryDir, filesDir, { allowOptInFollow: false })) {
         result.skipped.push({ entryDir, reason: 'files-symlink-escape' });
         continue;
       }
@@ -791,4 +805,8 @@ export = {
   restoreStagedUserArtifacts,
   discardStagedUserArtifacts,
   recoverOrphanedUserArtifacts,
+  // #2875 defect fix: exported for a fast-check property test (CLAUDE.md
+  // "Property-Based Testing" — parsers must carry at least one) — additive,
+  // byte-identical for every existing caller of this module.
+  parseOwnerPid,
 };

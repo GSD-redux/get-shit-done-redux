@@ -11,12 +11,15 @@
  * the mainline gsd-core copy, and C7 production-reachability) lives in
  * tests/install-runtime-artifacts.test.cjs.
  *
- * Crash-window injection is by monkeypatching a real `node:fs` method and
- * restoring it in a `finally` — never chmod/permission tricks (root bypasses
- * mode bits in CI). This works because install-fs-adapter.cts's REAL_ADAPTER
- * calls `nodeFs.<method>(...)` as a live property lookup on the `node:fs`
- * module object at call time, not a captured reference (see that module's
- * own doc comment).
+ * Crash-window injection is by monkeypatching a real `node:fs` method via
+ * `t.mock.method` (auto-restoring, or explicitly `.mock.restore()`d where a
+ * later `t.after` teardown needs the real method back before the mock
+ * tracker's own end-of-test restore runs) — never chmod/permission tricks
+ * (root bypasses mode bits in CI), and never a manual try/finally
+ * (CONTRIBUTING.md bans try/finally in test bodies). This works because
+ * install-fs-adapter.cts's REAL_ADAPTER calls `nodeFs.<method>(...)` as a
+ * live property lookup on the `node:fs` module object at call time, not a
+ * captured reference (see that module's own doc comment).
  */
 
 process.env.GSD_TEST_MODE = '1';
@@ -26,6 +29,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const { cleanup } = require('./helpers.cjs');
 
@@ -34,6 +38,7 @@ const {
   restoreStagedUserArtifacts,
   discardStagedUserArtifacts,
   recoverOrphanedUserArtifacts,
+  parseOwnerPid,
 } = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 const { withInstallFs } = require('../gsd-core/bin/lib/install-fs-adapter.cjs');
 const { copyPreservingSymlink } = require('../gsd-core/bin/lib/installer-migrations.cjs');
@@ -100,16 +105,13 @@ describe('user-artifact-staging: A. staging contract', () => {
 
     const originalReadFileSync = fs.readFileSync;
     let readFileSyncCalledOnTarget = false;
-    fs.readFileSync = function patched(p, ...rest) {
+    // t.mock.method auto-restores the original after this test — no manual
+    // try/finally (CONTRIBUTING.md bans try/finally in test bodies).
+    t.mock.method(fs, 'readFileSync', (p, ...rest) => {
       if (String(p) === targetFile) readFileSyncCalledOnTarget = true;
       return originalReadFileSync.call(fs, p, ...rest);
-    };
-    let staged;
-    try {
-      staged = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRootFor(configDir));
-    } finally {
-      fs.readFileSync = originalReadFileSync;
-    }
+    });
+    const staged = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRootFor(configDir));
 
     assert.equal(readFileSyncCalledOnTarget, false, 'referent bytes must never be read');
     const stagedPath = path.join(staged.filesDir, 'USER-PROFILE.md');
@@ -184,17 +186,15 @@ describe('user-artifact-staging: A. staging contract', () => {
     const stagingRoot = stagingRootFor(configDir);
 
     const originalWriteFileSync = fs.writeFileSync;
-    fs.writeFileSync = function patched(p, ...rest) {
+    // t.mock.method auto-restores the original after this test — no manual
+    // try/finally (CONTRIBUTING.md bans try/finally in test bodies).
+    t.mock.method(fs, 'writeFileSync', (p, ...rest) => {
       if (String(p).endsWith('record.json')) {
         throw Object.assign(new Error('simulated crash before record commit'), { code: 'EIO' });
       }
       return originalWriteFileSync.call(fs, p, ...rest);
-    };
-    try {
-      assert.throws(() => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot), /simulated crash/);
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    });
+    assert.throws(() => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot), /simulated crash/);
 
     // The copy landed (files/ populated) but no record.json — recovery must
     // ignore this half-staged entry entirely (B4).
@@ -366,15 +366,13 @@ describe('user-artifact-staging: B. the crash window (F19)', () => {
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'x');
 
     const originalWriteFileSync = fs.writeFileSync;
-    fs.writeFileSync = function patched(p, ...rest) {
+    // t.mock.method auto-restores the original after this test — no manual
+    // try/finally (CONTRIBUTING.md bans try/finally in test bodies).
+    t.mock.method(fs, 'writeFileSync', (p, ...rest) => {
       if (String(p).endsWith('record.json')) throw Object.assign(new Error('crash'), { code: 'EIO' });
       return originalWriteFileSync.call(fs, p, ...rest);
-    };
-    try {
-      assert.throws(() => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot));
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    });
+    assert.throws(() => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot));
 
     const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
     assert.deepEqual(result.recovered, []);
@@ -734,6 +732,57 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     assert.deepEqual(result.skipped, [{ entryDir, reason: 'owner-still-live' }]);
     assert.ok(fs.existsSync(entryDir), 'must not be swept while apparently live and fresh');
   });
+
+  // CLAUDE.md boundary coverage: OWNER_LIVENESS_GRACE_MS (5 * 60 * 1000 =
+  // 300000ms) is a budget limit — exercised at limit-1, limit, and limit+1,
+  // not merely "somewhere inside" (C18's 4-minute probe) or "somewhere
+  // outside" (C17's 1-hour probe). The guard's own predicate is strict-less-
+  // than (`clock.now() - recordMs < OWNER_LIVENESS_GRACE_MS`), so the
+  // boundary itself (limit, exactly 300000ms elapsed) flips to "no longer
+  // protected" — these three rows pin that exact flip.
+  function ownerLivenessAtElapsed(t, elapsedMs) {
+    const configDir = mktemp(`gsd-uas-c19-${elapsedMs}-cfg-`);
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    const entryDir = path.join(stagingRoot, `c19b${elapsedMs}livepid0`.slice(0, 16));
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'boundary content');
+    const recordTimestamp = Date.parse('2001-01-01T00:00:00.000Z');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({
+        destDir: path.resolve(destDir),
+        names: ['USER-PROFILE.md'],
+        timestamp: new Date(recordTimestamp).toISOString(),
+        runId: String(process.pid),
+      }),
+    );
+
+    const fakeClock = { now: () => recordTimestamp + elapsedMs };
+    return { entryDir, result: recoverOrphanedUserArtifacts(stagingRoot, configDir, { clock: fakeClock }) };
+  }
+
+  test('C19: OWNER_LIVENESS_GRACE_MS boundary — limit-1 (299999ms elapsed) is still protected', (t) => {
+    const { entryDir, result } = ownerLivenessAtElapsed(t, 5 * 60 * 1000 - 1);
+    assert.equal(result.recovered.length, 0, 'one ms inside the grace window must still protect the live owner\'s claim');
+    assert.deepEqual(result.skipped, [{ entryDir, reason: 'owner-still-live' }]);
+    assert.ok(fs.existsSync(entryDir));
+  });
+
+  test('C20: OWNER_LIVENESS_GRACE_MS boundary — limit (300000ms elapsed exactly) flips to orphaned', (t) => {
+    const { entryDir, result } = ownerLivenessAtElapsed(t, 5 * 60 * 1000);
+    assert.equal(result.recovered.length, 1, 'exactly at the grace window boundary the guard\'s strict `<` no longer protects — must recover');
+    assert.ok(!fs.existsSync(entryDir));
+  });
+
+  test('C21: OWNER_LIVENESS_GRACE_MS boundary — limit+1 (300001ms elapsed) is orphaned', (t) => {
+    const { entryDir, result } = ownerLivenessAtElapsed(t, 5 * 60 * 1000 + 1);
+    assert.equal(result.recovered.length, 1, 'one ms past the grace window must recover — same side of the boundary as limit');
+    assert.ok(!fs.existsSync(entryDir));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -828,19 +877,19 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     // Poison every real fs method this call tree could touch — a gap here
     // fires as the poisoned method throwing, never a silent pass (Phase 5's
     // F2 pattern, install-fs-adapter.cts's own doc comment).
+    // t.mock.method (no manual try/finally — CONTRIBUTING.md bans try/finally
+    // in test bodies). Restored EXPLICITLY right after use, rather than left
+    // to the mock tracker's own end-of-test auto-restore: this suite's
+    // `t.after(() => cleanup(configDir))` above runs its real `fs.rmSync`
+    // during teardown, and `t.after` hooks fire BEFORE the mock tracker's
+    // auto-restore — an un-restored poisoned `rmSync` would make that
+    // cleanup itself throw.
     const realFs = require('node:fs');
     const poisoned = ['existsSync', 'mkdirSync', 'writeFileSync', 'lstatSync', 'copyFileSync', 'symlinkSync', 'readlinkSync', 'rmSync'];
-    const originals = {};
-    for (const m of poisoned) {
-      originals[m] = realFs[m];
-      realFs[m] = () => { throw new Error(`real fs.${m} touched under a fake adapter`); };
-    }
-    try {
-      const staged = withInstallFs(fake, () => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot));
-      assert.deepEqual(staged.names, ['USER-PROFILE.md']);
-    } finally {
-      for (const m of poisoned) realFs[m] = originals[m];
-    }
+    const mocks = poisoned.map((m) => t.mock.method(realFs, m, () => { throw new Error(`real fs.${m} touched under a fake adapter`); }));
+    const staged = withInstallFs(fake, () => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot));
+    for (const mockFn of mocks) mockFn.mock.restore();
+    assert.deepEqual(staged.names, ['USER-PROFILE.md']);
   });
 
   test('D4 (correctness, not error-handling): adapter throws mid-stage — the failure propagates', (t) => {
@@ -852,21 +901,21 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     const stagingRoot = stagingRootFor(configDir);
 
     const originalMkdirSync = fs.mkdirSync;
-    fs.mkdirSync = function patched(p, ...rest) {
+    // t.mock.method (no manual try/finally — CONTRIBUTING.md bans try/finally
+    // in test bodies); restored explicitly right after use rather than left
+    // to end-of-test auto-restore, matching D3's rationale above.
+    const mkdirMock = t.mock.method(fs, 'mkdirSync', (p, ...rest) => {
       if (String(p).includes('.gsd-staging')) {
         throw Object.assign(new Error('simulated EACCES creating staging dir'), { code: 'EACCES' });
       }
       return originalMkdirSync.call(fs, p, ...rest);
-    };
-    try {
-      assert.throws(
-        () => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot),
-        /EACCES|simulated/,
-        'staging failure must propagate — a caller cannot proceed to wipe having staged nothing',
-      );
-    } finally {
-      fs.mkdirSync = originalMkdirSync;
-    }
+    });
+    assert.throws(
+      () => stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot),
+      /EACCES|simulated/,
+      'staging failure must propagate — a caller cannot proceed to wipe having staged nothing',
+    );
+    mkdirMock.mock.restore();
     // The source file is untouched — nothing wiped, because the throw
     // happened before any caller-side wipe could run.
     assert.equal(fs.readFileSync(path.join(destDir, 'USER-PROFILE.md'), 'utf8'), 'must-survive');
@@ -890,5 +939,47 @@ describe('user-artifact-staging: D. fs seam completeness', () => {
     const linkDest = path.join(destDir, 'link.txt');
     copyPreservingSymlink(linkSrc, linkDest);
     assert.ok(fs.lstatSync(linkDest).isSymbolicLink());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E. parseOwnerPid — property-based (CLAUDE.md "Property-Based Testing":
+// parsers must carry at least one fast-check property test)
+// ---------------------------------------------------------------------------
+
+describe('user-artifact-staging: E. parseOwnerPid (property-based)', () => {
+  test('E-P1: for any string, parseOwnerPid agrees with the documented contract — /^[1-9][0-9]*$/ AND Number.isSafeInteger, else null', () => {
+    fc.assert(
+      fc.property(fc.string({ maxLength: 40 }), (s) => {
+        const isPlainPositiveIntegerLiteral = /^[1-9][0-9]*$/.test(s);
+        const n = Number(s);
+        const expected = isPlainPositiveIntegerLiteral && Number.isSafeInteger(n) ? n : null;
+        assert.equal(parseOwnerPid(s), expected);
+      }),
+    );
+  });
+
+  test('E-P2: every valid positive-integer pid string round-trips to the SAME number, never a string, never NaN', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }), (n) => {
+        const s = String(n);
+        assert.equal(parseOwnerPid(s), n);
+      }),
+    );
+  });
+
+  test('E-P3: "0", any negative-integer string, and any non-string value always resolve to null (never a live-forever claim)', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.constant('0'),
+          fc.integer({ min: Number.MIN_SAFE_INTEGER, max: -1 }).map(String),
+          fc.anything().filter((v) => typeof v !== 'string'),
+        ),
+        (input) => {
+          assert.equal(parseOwnerPid(input), null);
+        },
+      ),
+    );
   });
 });

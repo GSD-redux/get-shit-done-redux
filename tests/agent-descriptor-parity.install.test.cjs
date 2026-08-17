@@ -1,7 +1,15 @@
 'use strict';
 
+// allow-test-rule: source-text-is-the-product #2875 — the J-row assertions
+// pattern-match rendered agent-.md frontmatter (`effort:`, `model:`,
+// disallowedTools, branding text). That frontmatter IS the deployed artifact
+// each runtime loads at dispatch time (no typed IR exists between
+// applyAgentFrontmatterExtensions/injectEffortFrontmatter and the file a
+// runtime reads) — matching CONTRIBUTING.md's `source-text-is-the-product`
+// exemption, not a workaroundable "hide the grep in a parser" case.
+
 /**
- * agent-descriptor-parity.test.cjs — #2875 Part 2 (the agents-bypass
+ * agent-descriptor-parity.install.test.cjs — #2875 Part 2 (the agents-bypass
  * closure), 50-test-matrix.md sections H, I, J (rows H1-H8, I1-I3, J1-J10).
  *
  * HONEST BASELINE (rewritten — a prior revision of this file was found to
@@ -44,13 +52,16 @@
  *      map exists specifically to keep decoupled from the descriptor.
  *
  *   3. Both scopes are exercised for every runtime that declares a
- *      per-scope `agents` kind (claude, cline, codex, hermes, kilo, opencode
- *      × global+local; kimi-code × global only — its capability.json
- *      declares no local `agents` kind). The prior revision was global-only,
- *      which is exactly the class of gap that let the cline-local
- *      agents-drop regression (a separate defect, fixed alongside this
- *      rewrite — capabilities/cline/capability.json's `local` artifactLayout
- *      now declares an `agents` kind) reach `next` undetected.
+ *      per-scope `agents` kind (claude, cline, codex, hermes, kilo, opencode,
+ *      kimi-code × global+local). The prior revision was global-only, which
+ *      is exactly the class of gap that let two separate agents-drop
+ *      regressions reach `next` undetected: cline-local (fixed alongside
+ *      this rewrite — capabilities/cline/capability.json's `local`
+ *      artifactLayout now declares an `agents` kind) and kimi-code-local
+ *      (fixed the same way — its `local` artifactLayout previously declared
+ *      no `agents` kind at all, so the deleted inline loop's implicit
+ *      scope-gate was silently replaced with NO gate, dropping every
+ *      kimi-code local install's agents/gsd-*.md entirely).
  *
  * H8 is mandatory, not optional: a parity harness never demonstrated failing
  * is decoration. It feeds the oracle a DELIBERATELY WRONG (but real,
@@ -58,6 +69,22 @@
  * the REAL (correctly-configured) production output — proving that if
  * capability.json's declared converter ever regressed, this exact harness
  * would catch it.
+ *
+ * WHAT THIS FILE DOES NOT PROVE: H8's red-proof demonstrates exactly one
+ * failure class — the oracle and the real descriptor path resolving to a
+ * DIFFERENT converter for the same runtime. It says nothing about a bug
+ * INSIDE a shared primitive (`composeWorkflow`, `applyAgentPathRewrites`,
+ * `processAttribution`, `applyAgentFrontmatterExtensions`,
+ * `normalizeAgentBodyForRuntime`, or a named converter itself): both the
+ * oracle (point 2 above) and the real descriptor path call the identical
+ * function, so a regression inside one of those functions changes BOTH
+ * sides identically and every H row stays green. That is a deliberate,
+ * unavoidable consequence of point 2's single-sourcing (there is no second,
+ * independently-implemented copy of those primitives left to diff against
+ * post-#2875-Part-2) — this file is a converter-WIRING parity gate, not a
+ * substitute for direct unit coverage of the primitives themselves (which
+ * live in their own owning test files, e.g. `runtime-artifact-conversion`'s
+ * suite).
  */
 
 const { test } = require('node:test');
@@ -266,8 +293,35 @@ const RUNTIME_SCOPE_PAIRS = [
   ['hermes', 'global'], ['hermes', 'local'],
   ['kilo', 'global'], ['kilo', 'local'],
   ['opencode', 'global'], ['opencode', 'local'],
-  ['kimi-code', 'global'],
+  ['kimi-code', 'global'], ['kimi-code', 'local'],
 ];
+
+/** Model override literal shared by J8's two `_stageWithModelOverride` calls. */
+const J8_OVERRIDE_MODEL = 'shared/explicit-model';
+
+/**
+ * Standalone helper (module scope, no test-context access — the
+ * CONTRIBUTING.md "Never use try/finally inside test bodies" exemption) for
+ * J8: stage a single-agent source tree with a real `.planning/config.json`
+ * model_overrides block for `runtime` through the real descriptor path.
+ */
+function _stageWithModelOverride(runtime, overrideModel) {
+  const agentFiles = { 'gsd-planner.md': SAMPLE_AGENTS['gsd-planner.md'] };
+  const { commandsGsd, root } = buildSourceTree(agentFiles);
+  const targetDir = buildTargetDir(commandsGsd);
+  fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
+  fs.writeFileSync(
+    path.join(targetDir, '.planning', 'config.json'),
+    JSON.stringify({ model_overrides: { 'gsd-planner': overrideModel } }),
+  );
+  try {
+    const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
+    return runRealDescriptorPath(runtime, 'global', targetDir, ctx);
+  } finally {
+    cleanup(root);
+    cleanup(targetDir);
+  }
+}
 
 function comparePipelines(runtime, scope, converterNameOverride) {
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
@@ -316,33 +370,32 @@ for (const [runtime, scope] of RUNTIME_SCOPE_PAIRS) {
 // H7 — the harness compares filenames, not only content (meta)
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: H7 — a filename-only divergence fails the harness', () => {
+test('agent-descriptor-parity: H7 — a filename-only divergence fails the harness', (t) => {
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
   const targetDir = buildTargetDir(commandsGsd);
-  try {
-    const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-    const expected = computeExpectedOutput('claude', agentsDir, ctx);
-    const actual = runRealDescriptorPath('claude', 'global', targetDir, ctx);
-    // Deliberately rename one actual-side entry — same bytes, different name.
-    const [firstName, firstContent] = [...actual.entries()][0];
-    actual.delete(firstName);
-    actual.set(`RENAMED-${firstName}`, firstContent);
-    assert.throws(
-      () => assertMapsIdentical(expected, actual),
-      /filenames diverged/,
-      'a renamed output file must fail the harness',
-    );
-  } finally {
+  t.after(() => {
     cleanup(root);
     cleanup(targetDir);
-  }
+  });
+  const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
+  const expected = computeExpectedOutput('claude', agentsDir, ctx);
+  const actual = runRealDescriptorPath('claude', 'global', targetDir, ctx);
+  // Deliberately rename one actual-side entry — same bytes, different name.
+  const [firstName, firstContent] = [...actual.entries()][0];
+  actual.delete(firstName);
+  actual.set(`RENAMED-${firstName}`, firstContent);
+  assert.throws(
+    () => assertMapsIdentical(expected, actual),
+    /filenames diverged/,
+    'a renamed output file must fail the harness',
+  );
 });
 
 // ---------------------------------------------------------------------------
 // H8 — the harness can actually FAIL (mandatory, not optional)
 // ---------------------------------------------------------------------------
 
-test('agent-descriptor-parity: H8 — a deliberately-wrong (but real, allowlisted) expected converter turns the harness RED', () => {
+test('agent-descriptor-parity: H8 — a deliberately-wrong (but real, allowlisted) expected converter turns the harness RED', (t) => {
   // Hermes's REAL capability.json declares convertClaudeAgentToHermesAgent.
   // Feed the ORACLE a different, real, allowlisted converter name
   // (convertClaudeAgentToCodexAgent) instead — simulating exactly the failure
@@ -353,26 +406,25 @@ test('agent-descriptor-parity: H8 — a deliberately-wrong (but real, allowliste
   // for hermes would go red exactly like this.
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
   const targetDir = buildTargetDir(commandsGsd);
-  try {
-    const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-    const wrongExpected = computeExpectedOutput('hermes', agentsDir, ctx, 'convertClaudeAgentToCodexAgent');
-    const realActual = runRealDescriptorPath('hermes', 'global', targetDir, ctx);
-    let threw = false;
-    let observedDiff = null;
-    try {
-      assertMapsIdentical(wrongExpected, realActual);
-    } catch (err) {
-      threw = true;
-      observedDiff = err.message;
-    }
-    assert.equal(threw, true, 'H8 FAILED: the harness did not go red for a deliberately-wrong expected converter');
-    assert.match(observedDiff, /content diverged for gsd-(planner|plan-checker)\.md/, 'expected the content-diverged assertion to name the mismatched file');
-    // Verbatim red-proof output for the record (see CHANGES report):
-    console.log(`H8 red-proof observed: ${observedDiff}`);
-  } finally {
+  t.after(() => {
     cleanup(root);
     cleanup(targetDir);
+  });
+  const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
+  const wrongExpected = computeExpectedOutput('hermes', agentsDir, ctx, 'convertClaudeAgentToCodexAgent');
+  const realActual = runRealDescriptorPath('hermes', 'global', targetDir, ctx);
+  let threw = false;
+  let observedDiff = null;
+  try {
+    assertMapsIdentical(wrongExpected, realActual);
+  } catch (err) {
+    threw = true;
+    observedDiff = err.message;
   }
+  assert.equal(threw, true, 'H8 FAILED: the harness did not go red for a deliberately-wrong expected converter');
+  assert.match(observedDiff, /content diverged for gsd-(planner|plan-checker)\.md/, 'expected the content-diverged assertion to name the mismatched file');
+  // Verbatim red-proof output for the record (see CHANGES report):
+  console.log(`H8 red-proof observed: ${observedDiff}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -387,22 +439,21 @@ test('agent-descriptor-parity: I3 — deriveAgentName matches the pipeline exact
   assert.equal(runtimeArtifactConversion.deriveAgentName('gsd-planner.MD'), 'gsd-planner.MD');
 });
 
-test('agent-descriptor-parity: I2 — real descriptor path with no agentCtx is unaffected (converter-only)', () => {
+test('agent-descriptor-parity: I2 — real descriptor path with no agentCtx is unaffected (converter-only)', (t) => {
   const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
   const targetDir = buildTargetDir(commandsGsd);
-  try {
-    const runtimeArtifactLayout = require(path.join(LIB_DIR, 'runtime-artifact-layout.cjs'));
-    const realLayout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('claude', targetDir, 'global');
-    const agentsKindEntry = realLayout.kinds.find((k) => k.kind === 'agents');
-    const stagedDir = agentsKindEntry.stage({ name: 'full', skills: '*', agents: new Set() }); // no agentCtx
-    const planner = fs.readFileSync(path.join(stagedDir, 'gsd-planner.md'), 'utf8');
-    const original = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf8');
-    assert.equal(planner, original, 'no agentCtx must leave content byte-identical to source (converter:null == identity)');
-    cleanup(stagedDir);
-  } finally {
+  t.after(() => {
     cleanup(root);
     cleanup(targetDir);
-  }
+  });
+  const runtimeArtifactLayout = require(path.join(LIB_DIR, 'runtime-artifact-layout.cjs'));
+  const realLayout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('claude', targetDir, 'global');
+  const agentsKindEntry = realLayout.kinds.find((k) => k.kind === 'agents');
+  const stagedDir = agentsKindEntry.stage({ name: 'full', skills: '*', agents: new Set() }); // no agentCtx
+  t.after(() => cleanup(stagedDir));
+  const planner = fs.readFileSync(path.join(stagedDir, 'gsd-planner.md'), 'utf8');
+  const original = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf8');
+  assert.equal(planner, original, 'no agentCtx must leave content byte-identical to source (converter:null == identity)');
 });
 
 // ---------------------------------------------------------------------------
@@ -415,7 +466,7 @@ test('agent-descriptor-parity: J1 — claude effort is injected via applyAgentFr
   assert.match(viaShared, /^effort: /m, 'expected an effort: key to be injected for claude');
 });
 
-test('agent-descriptor-parity: J2 — effort resolving to inherit writes NO effort: key at all, exercised via the REAL guard in applyAgentFrontmatterExtensions (#3533 trap row)', () => {
+test('agent-descriptor-parity: J2 — effort resolving to inherit writes NO effort: key at all, exercised via the REAL guard in applyAgentFrontmatterExtensions (#3533 trap row)', (t) => {
   // #2875 Part 2 defect fix: a prior revision of this row asserted the DUMB
   // half (injectEffortFrontmatter DOES emit the literal 'inherit' if called
   // with it) and never called applyAgentFrontmatterExtensions at all — so
@@ -427,22 +478,19 @@ test('agent-descriptor-parity: J2 — effort resolving to inherit writes NO effo
   // that guard makes THIS assertion fail (verified: red with the guard
   // removed, green with it restored — see CHANGES report).
   const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-parity-j2-'));
-  try {
-    fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
-    fs.writeFileSync(
-      path.join(targetDir, '.planning', 'config.json'),
-      JSON.stringify({ effort: { agent_overrides: { 'gsd-inherit-agent': 'inherit' } } }),
-    );
-    const content = '---\nname: gsd-inherit-agent\ndescription: x\n---\n\nBody.\n';
-    const out = runtimeArtifactConversion.applyAgentFrontmatterExtensions(content, { runtime: 'claude', agentName: 'gsd-inherit-agent', targetDir });
-    assert.doesNotMatch(out, /^effort:/m, 'an agent resolving to "inherit" must get no effort: key at all — not even effort: inherit');
-    // Sanity: injectEffortFrontmatter itself is dumb and WOULD write the
-    // literal if called with it — the guard is applyAgentFrontmatterExtensions
-    // never calling it for 'inherit', which is exactly what the assertion above proves.
-    assert.match(runtimeArtifactConversion.injectEffortFrontmatter(content, 'inherit'), /^effort: inherit$/m);
-  } finally {
-    cleanup(targetDir);
-  }
+  t.after(() => cleanup(targetDir));
+  fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
+  fs.writeFileSync(
+    path.join(targetDir, '.planning', 'config.json'),
+    JSON.stringify({ effort: { agent_overrides: { 'gsd-inherit-agent': 'inherit' } } }),
+  );
+  const content = '---\nname: gsd-inherit-agent\ndescription: x\n---\n\nBody.\n';
+  const out = runtimeArtifactConversion.applyAgentFrontmatterExtensions(content, { runtime: 'claude', agentName: 'gsd-inherit-agent', targetDir });
+  assert.doesNotMatch(out, /^effort:/m, 'an agent resolving to "inherit" must get no effort: key at all — not even effort: inherit');
+  // Sanity: injectEffortFrontmatter itself is dumb and WOULD write the
+  // literal if called with it — the guard is applyAgentFrontmatterExtensions
+  // never calling it for 'inherit', which is exactly what the assertion above proves.
+  assert.match(runtimeArtifactConversion.injectEffortFrontmatter(content, 'inherit'), /^effort: inherit$/m);
 });
 
 test('agent-descriptor-parity: J3 — a runtime NOT declaring agentFrontmatterExtensions gets nothing injected', () => {
@@ -498,29 +546,9 @@ test('agent-descriptor-parity: J8 — kilo and opencode both resolve model overr
   // model_overrides block and asserts BOTH staged outputs carry the SAME
   // resolved model — which only happens if both are genuinely wired to the
   // one shared installModelOverrideResolver.resolveAgentModelOverride.
-  const overrideModel = 'shared/explicit-model';
-  const agentFiles = { 'gsd-planner.md': SAMPLE_AGENTS['gsd-planner.md'] };
-
-  function stageWithOverride(runtime) {
-    const { commandsGsd, root } = buildSourceTree(agentFiles);
-    const targetDir = buildTargetDir(commandsGsd);
-    fs.mkdirSync(path.join(targetDir, '.planning'), { recursive: true });
-    fs.writeFileSync(
-      path.join(targetDir, '.planning', 'config.json'),
-      JSON.stringify({ model_overrides: { 'gsd-planner': overrideModel } }),
-    );
-    try {
-      const ctx = { pathPrefix: `${targetDir}/`, attribution: undefined, targetDir };
-      return runRealDescriptorPath(runtime, 'global', targetDir, ctx);
-    } finally {
-      cleanup(root);
-      cleanup(targetDir);
-    }
-  }
-
-  const kiloOut = stageWithOverride('kilo');
-  const opencodeOut = stageWithOverride('opencode');
-  const overrideRe = new RegExp(`^model:\\s*${overrideModel.replace(/\//g, '\\/')}$`, 'm');
+  const kiloOut = _stageWithModelOverride('kilo', J8_OVERRIDE_MODEL);
+  const opencodeOut = _stageWithModelOverride('opencode', J8_OVERRIDE_MODEL);
+  const overrideRe = new RegExp(`^model:\\s*${J8_OVERRIDE_MODEL.replace(/\//g, '\\/')}$`, 'm');
   assert.match(kiloOut.get('gsd-planner.md'), overrideRe, 'kilo must apply the shared model override via the real descriptor path');
   assert.match(opencodeOut.get('gsd-planner.md'), overrideRe, 'opencode must apply the SAME shared model override via the real descriptor path');
 });
@@ -577,7 +605,7 @@ test('agent-descriptor-parity: J10 — the branding converter is descriptor-data
  * write it for the seven runtimes migrated in this change) and the assertion
  * below would fail.
  */
-test('agent-descriptor-parity: K1 — every registry runtime declaring an agents kind is reachable from installRuntimeArtifacts (the inline loop is gone)', () => {
+test('agent-descriptor-parity: K1 — every registry runtime declaring an agents kind is reachable from installRuntimeArtifacts (the inline loop is gone)', (t) => {
   const runtimesWithAgentsKind = Object.entries(capabilityRegistry.runtimes || {})
     .filter(([, cap]) => {
       const layout = cap.runtime && cap.runtime.artifactLayout;
@@ -592,19 +620,17 @@ test('agent-descriptor-parity: K1 — every registry runtime declaring an agents
   assert.ok(runtimesWithAgentsKind.includes('cline'), 'cline must be covered here');
 
   for (const runtime of runtimesWithAgentsKind) {
-    const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
+    const { commandsGsd, root } = buildSourceTree(SAMPLE_AGENTS);
     const targetDir = buildTargetDir(commandsGsd);
-    try {
-      const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
-      const result = installEngine.installRuntimeArtifacts(runtime, targetDir, 'global', resolvedProfile, () => undefined, undefined);
-      const agentsKindEntry = result.kinds.find((k) => k.kind === 'agents');
-      assert.ok(agentsKindEntry, `${runtime}: installRuntimeArtifacts reported no agents kind in the executed plan — it did not go through the descriptor path`);
-      const writtenFiles = fs.readdirSync(agentsKindEntry.destDir).filter((f) => f.endsWith('.md'));
-      assert.ok(writtenFiles.length > 0, `${runtime}: agents kind reported but nothing was actually written to ${agentsKindEntry.destDir}`);
-    } finally {
+    t.after(() => {
       cleanup(root);
       cleanup(targetDir);
-      void agentsDir;
-    }
+    });
+    const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
+    const result = installEngine.installRuntimeArtifacts(runtime, targetDir, 'global', resolvedProfile, () => undefined, undefined);
+    const agentsKindEntry = result.kinds.find((k) => k.kind === 'agents');
+    assert.ok(agentsKindEntry, `${runtime}: installRuntimeArtifacts reported no agents kind in the executed plan — it did not go through the descriptor path`);
+    const writtenFiles = fs.readdirSync(agentsKindEntry.destDir).filter((f) => f.endsWith('.md'));
+    assert.ok(writtenFiles.length > 0, `${runtime}: agents kind reported but nothing was actually written to ${agentsKindEntry.destDir}`);
   }
 });

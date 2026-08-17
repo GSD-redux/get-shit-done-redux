@@ -2181,7 +2181,16 @@ const capabilities = {
             "converter": null
           }
         ],
-        "local": []
+        "local": [
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",
@@ -6461,7 +6470,16 @@ const runtimes = {
             "converter": null
           }
         ],
-        "local": []
+        "local": [
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",

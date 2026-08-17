@@ -802,11 +802,44 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
     const migratableNames: string[] = [];
     for (const name of stagedLegacyArtifacts.names) {
       const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
-      if (installFs().lstatSync(stagedPath).isSymbolicLink()) continue;
+      // #2875 defect fix (crash resilience — TOCTOU): a raw `lstatSync` throws
+      // if `stagedPath` has vanished between staging (above) and this read —
+      // e.g. a co-resident attacker on a shared machine racing the staging
+      // dir, the exact threat class this module's own "Confinement" doc
+      // already treats as live. Every sibling probe in this file (`tryLstat`
+      // itself, and its use at `skillFileLstat` above) already degrades
+      // rather than throws; do the same here — a vanished staged file is
+      // simply not migratable, matching A2's "absent, not staged, no throw"
+      // precedent in user-artifact-staging.cts.
+      const stagedLstat = tryLstat(stagedPath);
+      if (!stagedLstat || stagedLstat.isSymbolicLink()) continue;
       savedLegacyArtifacts.set(name, installFs().readFileSync(stagedPath, 'utf8'));
       migratableNames.push(name);
     }
-    const migrated = migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    // #2875 defect fix (regression closed — was previously unguarded and
+    // BRICKED the command): migrateLegacyDevPreferencesToSkill correctly
+    // THROWS when it finds a planted/dangling symlink at the skill-file leaf
+    // (security fix — refusing to write through it is correct) but by this
+    // point legacyCommandsGsd has ALREADY been wiped (rmSync above) and
+    // stagedLegacyArtifacts is the only surviving copy. An unguarded throw
+    // here propagated straight out of installRuntimeArtifacts, aborting the
+    // whole install/uninstall WITHOUT ever reaching the restore-or-discard
+    // logic below — the staged batch was orphaned on disk and every retry
+    // hit the same throw again (same brick-the-command failure mode this
+    // module's "DEGRADE, never abort" posture, see
+    // _tryResolveUserArtifactStagingRoot above, already closed for a broken
+    // `.gsd-staging` path). Degrade identically: catch, warn once, and treat
+    // the batch as unmigrated so the restore branch below fires.
+    let migrated = false;
+    let migrationRefused = false;
+    try {
+      migrated = migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);
+    } catch (err) {
+      console.warn(
+        `  [gsd] dev-preferences.md migration skipped for "${configDir}" (${(err as Error).message}) — restoring the legacy copy instead.`,
+      );
+      migrationRefused = true;
+    }
     // #2875 defect fix (call site 1 was a loss site): migrateLegacyDevPreferencesToSkill's
     // boolean return conflates "migrated", "already satisfied" (skill file
     // already present — safe to discard either way), and "cannot migrate"
@@ -816,8 +849,16 @@ function _runLegacyInstallMigrations(runtime: string, configDir: string, scope: 
     // target's actual presence rather than trusting the boolean alone; a
     // symlinked staged name (excluded from migration above) is treated the
     // same way — never migrated, so it must not be silently discarded.
-    const skillTarget = _resolveDevPreferencesSkillTarget(configDir, runtime, scope);
-    const migrationSatisfied = migrated || (skillTarget !== null && installFs().existsSync(skillTarget.skillFile));
+    //
+    // #2875 defect fix (migrationRefused must short-circuit this to `false`,
+    // never fall through to the existsSync probe below): when
+    // migrateLegacyDevPreferencesToSkill refused because skillTarget.skillFile
+    // is a symlink, `existsSync` FOLLOWS it — a symlink pointing at some
+    // OTHER real file (not dangling) would read back `true` here and mark
+    // the batch "satisfied", discarding it without ever restoring it. Refusal
+    // is never satisfaction.
+    const skillTarget = migrationRefused ? null : _resolveDevPreferencesSkillTarget(configDir, runtime, scope);
+    const migrationSatisfied = !migrationRefused && (migrated || (skillTarget !== null && installFs().existsSync(skillTarget.skillFile)));
     const nothingLeftUnmigrated = migrationSatisfied && migratableNames.length === stagedLegacyArtifacts.names.length;
     if (!nothingLeftUnmigrated && stagedLegacyArtifacts.names.length > 0) {
       // Put the whole batch back where it came from rather than losing
@@ -1037,6 +1078,30 @@ function installRuntimeArtifacts(
           throw new Error(
             `installRuntimeArtifacts: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to create. If this is an intentional user-owned symlink layout (e.g. externalized skills/hooks dir, multi-account configHome, or a dotfiles-managed configHome), re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
           );
+        }
+        // #2875 defect fix (--minimal regression closed): a restricted profile
+        // (e.g. --minimal) can legitimately stage ZERO agents — no skill in
+        // the profile's closure references a gsd-* role. The pre-#2875-Part-2
+        // inline agent-staging loop this generic layout loop's agents handling
+        // replaced never created `agents/` at all under a minimal install (the
+        // now-deleted `isMinimalMode` branch skipped the whole step); this
+        // loop's own unconditional `mkdirSync` above regressed that — every
+        // profile, restricted or not, now gets an `agents/` dir materialized
+        // even when nothing will ever be written into it, breaking
+        // `.changeset/zesty-rams-march.md`'s "installed output is
+        // byte-identical to before for every runtime" claim. Restore the old
+        // behavior exactly for the `agents` kind specifically (skills/commands
+        // are unaffected — they are never legitimately empty): skip creating
+        // `dest` (and pruning/copying into it) entirely when this kind's
+        // already-staged `item.sourceDir` (built by createRuntimeArtifactInstallPlan
+        // BEFORE this loop) has nothing in it.
+        if (kind.kind === 'agents') {
+          const stagedAgentFiles = installFs().existsSync(item.sourceDir)
+            ? installFs().readdirSync(item.sourceDir).filter((f: string) => f.endsWith('.md'))
+            : [];
+          if (stagedAgentFiles.length === 0) {
+            continue;
+          }
         }
         installFs().mkdirSync(dest, { recursive: true });
         const preserved: string[] = [];
@@ -1366,6 +1431,23 @@ function installAgentsKindStandalone(
   const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
   const agentCtx = { runtime, pathPrefix, attribution, targetDir };
   const stagedDir: string = agentsKindEntry.stage(resolvedProfile, agentCtx);
+
+  // #2875 defect fix (--minimal regression closed): a restricted profile
+  // (e.g. --minimal) can legitimately stage ZERO agents — no skill in the
+  // profile's closure references a gsd-* role. The pre-#2875-Part-2 inline
+  // agent-staging loop this call site replaces never created `agents/` at
+  // all under a minimal install (the deleted `isMinimalMode` branch skipped
+  // the whole step); this function's own unconditional `mkdirSync` below
+  // regressed that, breaking `.changeset/zesty-rams-march.md`'s "installed
+  // output is byte-identical to before for every runtime" claim. Restore the
+  // old behavior exactly: treat an empty staged batch the same as "this
+  // runtime declares no agents kind" (`null`, matching the doc comment above)
+  // — no directory is created, mirroring the sibling fix in the generic
+  // layout loop (installRuntimeArtifacts) for the exact same kind.
+  const stagedAgentFiles: string[] = installFs().existsSync(stagedDir)
+    ? installFs().readdirSync(stagedDir).filter((f: string) => f.endsWith('.md'))
+    : [];
+  if (stagedAgentFiles.length === 0) return null;
 
   const installRoot: string = (typeof agentsKindEntry.home === 'string' && agentsKindEntry.home !== '') ? agentsKindEntry.home : targetDir;
   const dest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(installRoot, agentsKindEntry.destSubpath);
@@ -1782,7 +1864,12 @@ function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: st
     const savedLegacyArtifacts = new Map<string, string>();
     for (const name of stagedLegacyArtifacts.names) {
       const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
-      if (installFs().lstatSync(stagedPath).isSymbolicLink()) continue;
+      // #2875 defect fix (crash resilience — TOCTOU, parity with
+      // _runLegacyInstallMigrations's own fix above): a raw `lstatSync`
+      // throws if `stagedPath` has vanished between staging and this read;
+      // degrade via `tryLstat` instead of crashing uninstall.
+      const stagedLstat = tryLstat(stagedPath);
+      if (!stagedLstat || stagedLstat.isSymbolicLink()) continue;
       savedLegacyArtifacts.set(name, installFs().readFileSync(stagedPath, 'utf8'));
     }
     migrateLegacyDevPreferencesToSkill(configDir, savedLegacyArtifacts, runtime, scope);

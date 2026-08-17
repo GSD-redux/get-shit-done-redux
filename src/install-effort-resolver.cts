@@ -136,6 +136,34 @@ function _getGsdEffortCatalog(): EffortCatalog {
 }
 
 /**
+ * #2875 defect fix (Generative Fix Divergence — the exact class this module
+ * exists to remove): the upward walk from a runtime install root looking for
+ * `.planning/config.json`, capped at 8 ancestor levels, was duplicated
+ * verbatim three times — once here, and twice more in
+ * `install-model-override-resolver.cts` (`readGsdEffectiveModelOverrides`,
+ * `readGsdRuntimeProfileResolver`) after that module was extracted FROM this
+ * one specifically to stop duplicating shared install-time config logic.
+ * Single-sourced here so the cap and the walk semantics (depth 0 = targetDir
+ * itself, depth 7 = the last checked ancestor, 8 levels up is never reached)
+ * can only diverge if this function changes.
+ *
+ * @param targetDir  Runtime install root to start the walk from.
+ * @returns the first `.planning/config.json` found walking upward from
+ *   `targetDir` (inclusive) through up to 8 ancestor levels, or `null`.
+ */
+function _findAncestorGsdConfigPath(targetDir: string): string | null {
+  let probeDir = path.resolve(targetDir);
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = path.join(probeDir, '.planning', 'config.json');
+    if (installFs().existsSync(candidate)) return candidate;
+    const parent = path.dirname(probeDir);
+    if (parent === probeDir) break;
+    probeDir = parent;
+  }
+  return null;
+}
+
+/**
  * #443 — Read the merged `effort` config block for install-time effort resolution.
  *
  * Probes the same config sources as readGsdRuntimeProfileResolver (per-project
@@ -156,17 +184,8 @@ function readGsdEffectiveEffortConfig(targetDir: string | null = null): EffortCo
 
   let projectConfig: Record<string, unknown> | null = null;
   if (targetDir) {
-    let probeDir = path.resolve(targetDir);
-    for (let depth = 0; depth < 8; depth += 1) {
-      const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (installFs().existsSync(candidate)) {
-        projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
-        break;
-      }
-      const parent = path.dirname(probeDir);
-      if (parent === probeDir) break;
-      probeDir = parent;
-    }
+    const candidate = _findAncestorGsdConfigPath(targetDir);
+    if (candidate) projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
   }
 
   const homeEffort = (homeDefaults && homeDefaults.effort && typeof homeDefaults.effort === 'object' && !Array.isArray(homeDefaults.effort))
@@ -268,4 +287,5 @@ export = {
   resolveInstallTimeEffort,
   _getGsdEffortCatalog,
   _readGsdConfigFile,
+  _findAncestorGsdConfigPath,
 };

@@ -8513,15 +8513,35 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         // tree, never copied by content) would have its REFERENT's bytes read
         // here and land in SKILL.md. Excluded from migration below and
         // restored to its original location unchanged instead.
-        const savedLegacyArtifacts = new Map();
-        const migratableLegacyNames = [];
-        for (const name of stagedLegacyArtifacts.names) {
-          const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
-          if (fs.lstatSync(stagedPath).isSymbolicLink()) continue;
-          savedLegacyArtifacts.set(name, fs.readFileSync(stagedPath, 'utf8'));
-          migratableLegacyNames.push(name);
+        // #2875 defect fix (regression closed — was previously unguarded and
+        // BRICKED uninstall, the very command that should recover from this):
+        // legacyDir was already removed above, so stagedLegacyArtifacts is
+        // the only surviving copy. migrateLegacyDevPreferencesToSkill
+        // correctly THROWS when it finds a planted/dangling symlink at the
+        // skill-file leaf (security fix); a raw `fs.lstatSync` in the loop
+        // below can also throw on a TOCTOU-vanished staged file. Either one,
+        // left unguarded, propagated straight out of uninstall, aborting it
+        // WITHOUT ever reaching the restore-or-discard branch below — the
+        // staged batch was orphaned on disk and every retry hit the same
+        // throw again. Degrade identically to every other #2875 staging step
+        // in this function: catch, warn once, and treat the batch as
+        // unmigrated so the restore branch below always fires.
+        let _legacyMigrated = false;
+        let migratableLegacyNames = [];
+        try {
+          const savedLegacyArtifacts = new Map();
+          for (const name of stagedLegacyArtifacts.names) {
+            const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
+            if (fs.lstatSync(stagedPath).isSymbolicLink()) continue;
+            savedLegacyArtifacts.set(name, fs.readFileSync(stagedPath, 'utf8'));
+            migratableLegacyNames.push(name);
+          }
+          _legacyMigrated = migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope);
+        } catch (err) {
+          console.warn(`  ${yellow}!${reset} dev-preferences.md migration skipped (${err.message}) — restoring the legacy copy instead.`);
+          _legacyMigrated = false;
+          migratableLegacyNames = [];
         }
-        const _legacyMigrated = migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope);
         if (_legacyMigrated && migratableLegacyNames.length === stagedLegacyArtifacts.names.length) {
           // Compute the actual path written so the log line is accurate per-runtime
           const _layout = resolveRuntimeArtifactLayout(runtime, targetDir, _uninstallScope);
@@ -11115,27 +11135,21 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   } else {
     const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry);
     if (_standaloneAgentsResult) {
-      // #2875 defect fix: a restricted (non-'*') resolvedProfile — --minimal
-      // being the common case — can legitimately stage ZERO agents (no skill
-      // in the profile's closure references a gsd-* role). The prior inline
-      // loop this replaced never even created agentsDest under --minimal (see
-      // the deleted `isMinimalMode` branch); the descriptor-driven
-      // installAgentsKindStandalone above always mkdir's destDir, so an
-      // intentionally-empty result must NOT be reported as a failure —
-      // verifyInstalled's "directory is empty" case is checked FIRST and
-      // treated as success here whenever the profile is restricted, so a
-      // real staging failure under the DEFAULT full profile (where an empty
-      // agents/ would mean the shipped agents/ source itself came up empty)
-      // still fails loudly.
-      const _agentsDirEmpty = fs.existsSync(_standaloneAgentsResult.destDir)
-        && fs.readdirSync(_standaloneAgentsResult.destDir).length === 0;
-      if (_agentsDirEmpty && _resolvedProfile.skills !== '*') {
-        console.log(`  ${dim}↳${reset} Skipping agents (${_resolvedProfile.name} profile excludes all agents — run \`gsd update\` with a broader profile to add them)`);
-      } else if (verifyInstalled(_standaloneAgentsResult.destDir, 'agents')) {
+      // #2875 defect fix: installAgentsKindStandalone now returns `null`
+      // (rather than a truthy result pointing at an empty destDir) whenever a
+      // restricted (non-'*') resolvedProfile — --minimal being the common
+      // case — legitimately stages ZERO agents, matching the pre-#2875-Part-2
+      // inline loop's behavior of never creating agentsDest under --minimal
+      // at all (see the deleted `isMinimalMode` branch). `destDir` is
+      // therefore guaranteed non-empty whenever we reach this branch, so a
+      // real staging failure still fails loudly via verifyInstalled below.
+      if (verifyInstalled(_standaloneAgentsResult.destDir, 'agents')) {
         console.log(`  ${green}✓${reset} Installed agents`);
       } else {
         failures.push('agents');
       }
+    } else if (_resolvedProfile.skills !== '*') {
+      console.log(`  ${dim}↳${reset} Skipping agents (${_resolvedProfile.name} profile excludes all agents — run \`gsd update\` with a broader profile to add them)`);
     } else {
       console.log(`  ${dim}↳${reset} No agents kind declared for ${runtime} at this scope`);
     }
