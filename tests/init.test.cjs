@@ -4498,12 +4498,14 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
       fs.writeFileSync(path.join(nine, 'UAT.md'), '# UAT evidence\n');
     }
     if (completeAll) {
-      // both phases complete on disk + roadmap checkboxes
+      // both phases complete on disk (plans, summaries, PASSING verification —
+      // the #3168 disk-strict bar) + roadmap checkboxes
       for (const dir of ['08-payments', '09-compatibility']) {
         const d = path.join(tmpDirOf(t), '.planning', 'phases', dir);
         fs.mkdirSync(d, { recursive: true });
         fs.writeFileSync(path.join(d, 'PLAN.md'), '# p\n');
         fs.writeFileSync(path.join(d, 'SUMMARY.md'), '# s\n');
+        fs.writeFileSync(path.join(d, `${dir.split('-')[0]}-VERIFICATION.md`), '---\nstatus: passed\n---\n\n# V\n');
       }
     }
   }
@@ -4524,12 +4526,11 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.equal(eight.directory, null, 'Phase 8 has no directory (corroborating the stray-only-disk shape)');
   });
 
-  test('#3581 (control): aligned tree derives the same frontier', (t) => {
+  test('#3581 (control): a pending roadmap-only phase outranks a later pending directory', (t) => {
     writeProgressFixture(t, { strayNine: false });
-    // aligned: give BOTH 8 and 9 directories with a plan in 8 (pending)
-    const eight = path.join(tmpDirOf(t), '.planning', 'phases', '08-payments');
-    fs.mkdirSync(eight, { recursive: true });
-    fs.writeFileSync(path.join(eight, 'PLAN.md'), '# p\n');
+    // pure ordering property, no stray artifacts: roadmap-only pending 8 vs a
+    // pending 9 DIRECTORY (empty). The pinned mixed-statuses contract (an
+    // in-progress phase is currentPhase's lane, not nextPhase's) is untouched.
     const nine = path.join(tmpDirOf(t), '.planning', 'phases', '09-compatibility');
     fs.mkdirSync(nine, { recursive: true });
     t.after(() => cleanup(tmpDirOf(t)));
@@ -4537,7 +4538,7 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.ok(result.success, `init progress failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.equal(String(out.next_phase.number).replace(/^0+/, ''), '8',
-      'aligned tree: the in-progress (plan-bearing, unsummarized) Phase 8 remains the frontier');
+      'the unscaffolded roadmap Phase 8 is the frontier even against a legitimately-pending 9 directory');
   });
 
   test('#3581 (boundary): completed milestone yields no frontier', (t) => {
