@@ -35,6 +35,10 @@
  *     contract) is a completely different thing and is NEVER acknowledgeable
  *     through this mechanism: it always fails, baseline or no baseline. This
  *     script's whole ratchet apparatus applies to smells alone.
+ *   - A scenario EXPECTATION FAILURE (a step's declared `expect` did not
+ *     hold — `step.expectFailures`) is, like a VIOLATION, NEVER
+ *     acknowledgeable through this ratchet: it has no fingerprint and no
+ *     baseline/fragment path, and it always fails the build.
  *
  * WHY A BASELINE FILE *AND* A FRAGMENTS DIRECTORY (not just one)
  * ──────────────────────────────────────────────────────────────
@@ -56,8 +60,9 @@
  *                                                        # (real repro commands; see
  *                                                        # `report.cjs`'s buildRepro)
  *
- * Exit code 0 only when: zero violations, zero NEW smells, zero STALE
- * baseline/fragment entries. Exit code 1 otherwise.
+ * Exit code 0 only when: zero violations, zero scenario expectation
+ * failures, zero NEW smells, zero STALE baseline/fragment entries. Exit
+ * code 1 otherwise.
  */
 
 const fs = require('node:fs');
@@ -323,25 +328,48 @@ function mergeKnown(baselineEntries, fragmentEntries) {
 }
 
 /**
- * Walk `reportObject.scenarios[].steps[]` and split every finding into
- * `smells` (fingerprinted) and `violations` (never acknowledgeable — see
- * this file's header). Both carry the step's `repro` command for later use
- * in failure messages / the GitHub step summary.
+ * Walk `reportObject.scenarios[].steps[]` and split every finding into three
+ * buckets: `smells` (fingerprinted, ratcheted against the baseline),
+ * `violations` (never acknowledgeable — see this file's header), and
+ * `expectationFailures` (a step's declared `expect` did not hold; also never
+ * acknowledgeable — see this file's header). All three carry the step's
+ * `repro` command for later use in failure messages / the GitHub step
+ * summary.
+ *
+ * `expectationFailures` entries deliberately carry NO `key` field and are
+ * never passed through `fingerprint()`: unlike a smell, an expectation
+ * failure has no baseline/fragment acknowledgment path at all, so giving it
+ * a fingerprint would invite exactly the laundering this ratchet exists to
+ * prevent (#3597).
+ *
+ * INVARIANT: `violations.length + expectationFailures.length` must always
+ * equal `reportObject.totals.violations` — see `tests/qa/report.cjs`'s
+ * `buildReport()`, which computes that total the same way. This is the
+ * parity that broke in #3597: this function used to read only
+ * `step.violations`, so a scenario whose `expect` failed produced
+ * `totals.violations: 1` while this script counted (and printed) 0.
  *
  * @param {ReturnType<import('../tests/qa/report.cjs').buildReport>} reportObject
  * @returns {{
  *   smells: Array<{key:string,id:string,scenario:string,argv:string[],detail:string,at:string,repro:string}>,
  *   violations: Array<{id:string,scenario:string,argv:string[],detail:string,at:string,repro:string}>,
+ *   expectationFailures: Array<{scenario:string,argv:string[],detail:string,at:string,repro:string}>,
  * }}
  */
 function collectFindings(reportObject) {
   const smells = [];
   const violations = [];
+  const expectationFailures = [];
   for (const scenario of reportObject.scenarios) {
     for (const step of scenario.steps) {
       for (const v of step.violations || []) {
         violations.push({
           id: v.id, scenario: scenario.name, argv: step.argv, detail: v.detail, at: step.at, repro: step.repro,
+        });
+      }
+      for (const detail of step.expectFailures || []) {
+        expectationFailures.push({
+          scenario: scenario.name, argv: step.argv, detail, at: step.at, repro: step.repro,
         });
       }
       for (const smell of step.smells || []) {
@@ -358,7 +386,7 @@ function collectFindings(reportObject) {
       }
     }
   }
-  return { smells, violations };
+  return { smells, violations, expectationFailures };
 }
 
 /** Lowercase, hyphenate, and strip anything that isn't `[a-z0-9-]`, for a fragment-filename skeleton. */
@@ -395,19 +423,20 @@ function fragmentSkeleton(finding) {
  * @param {{
  *   smells: ReturnType<typeof collectFindings>['smells'],
  *   violations: ReturnType<typeof collectFindings>['violations'],
+ *   expectationFailures: ReturnType<typeof collectFindings>['expectationFailures'],
  *   newKeys: string[],
  *   staleEntries: Array<{key:string,id:string,scenario:string,source:string}>,
  *   smellSummary: Array<{id:string,count:number,examples:string[]}>,
  * }} data
  * @returns {string}
  */
-function buildStepSummaryMarkdown({ smells, violations, newKeys, staleEntries, smellSummary }) {
+function buildStepSummaryMarkdown({ smells, violations, expectationFailures, newKeys, staleEntries, smellSummary }) {
   const lines = [];
   lines.push('## QA smell ratchet');
   lines.push('');
   lines.push(
     `**${smells.length} smells** (${newKeys.length} new, ${staleEntries.length} stale) · `
-      + `**${violations.length} violations**`,
+      + `**${violations.length} violations** · **${expectationFailures.length} expectation failures**`,
   );
   lines.push('');
 
@@ -417,6 +446,15 @@ function buildStepSummaryMarkdown({ smells, violations, newKeys, staleEntries, s
     for (const key of newKeys) {
       const f = smells.find((s) => s.key === key);
       lines.push(`- \`${f.id}\` in **${f.scenario}** — ${f.detail}`);
+    }
+    lines.push('');
+  }
+
+  if (expectationFailures.length) {
+    lines.push('### ❌ Scenario expectation failures');
+    lines.push('');
+    for (const f of expectationFailures) {
+      lines.push(`- \`${f.scenario}\` at **${f.at}** — ${f.detail}`);
     }
     lines.push('');
   }
@@ -442,6 +480,7 @@ function buildStepSummaryMarkdown({ smells, violations, newKeys, staleEntries, s
   }
 
   const firstFailingRepro = (violations[0] && violations[0].repro)
+    || (expectationFailures[0] && expectationFailures[0].repro)
     || (newKeys.length && smells.find((s) => s.key === newKeys[0]).repro);
   if (firstFailingRepro) {
     lines.push('### Repro (first failing step)');
@@ -475,7 +514,7 @@ function main() {
     fs.writeFileSync(jsonOut, `${JSON.stringify(reportObject, null, 2)}\n`, 'utf8');
   }
 
-  const { smells, violations } = collectFindings(reportObject);
+  const { smells, violations, expectationFailures } = collectFindings(reportObject);
   const runKeys = new Set(smells.map((s) => s.key));
 
   const baseline = readBaseline({ allowMissing: update });
@@ -555,6 +594,7 @@ function main() {
       const md = buildStepSummaryMarkdown({
         smells,
         violations,
+        expectationFailures,
         newKeys: added,
         staleEntries: removed.map((key) => ({ key, id: '(pruned)', scenario: '(pruned)', source: BASELINE_REL_PATH })),
         smellSummary: reportObject.smellSummary,
@@ -564,12 +604,17 @@ function main() {
 
     console.log(
       `\nqa-smell-ratchet: ${smells.length} smells (${added.length} new, ${removed.length} stale), `
-        + `${violations.length} violations`,
+        + `${violations.length} violations, ${expectationFailures.length} expectation failures`,
     );
 
-    if (violations.length) {
-      printViolations(violations);
-      throw new ExitError(1, 'qa-smell-ratchet --update: baseline regenerated, but VIOLATIONS remain (never acknowledgeable — see above)');
+    if (violations.length || expectationFailures.length) {
+      if (violations.length) printViolations(violations);
+      if (expectationFailures.length) printExpectationFailures(expectationFailures);
+      throw new ExitError(
+        1,
+        'qa-smell-ratchet --update: baseline regenerated, but VIOLATIONS and/or SCENARIO EXPECTATION FAILURES remain '
+          + '(neither is ever acknowledgeable — see above)',
+      );
     }
     return;
   }
@@ -587,6 +632,10 @@ function main() {
 
   if (violations.length) {
     printViolations(violations);
+  }
+
+  if (expectationFailures.length) {
+    printExpectationFailures(expectationFailures);
   }
 
   if (newKeys.length) {
@@ -628,6 +677,7 @@ function main() {
     const md = buildStepSummaryMarkdown({
       smells,
       violations,
+      expectationFailures,
       newKeys,
       staleEntries,
       smellSummary: reportObject.smellSummary,
@@ -637,10 +687,10 @@ function main() {
 
   console.log(
     `\nqa-smell-ratchet: ${smells.length} smells (${newKeys.length} new, ${staleKeys.length} stale), `
-      + `${violations.length} violations`,
+      + `${violations.length} violations, ${expectationFailures.length} expectation failures`,
   );
 
-  if (sourceErrors.length || violations.length || newKeys.length || staleKeys.length) {
+  if (sourceErrors.length || violations.length || expectationFailures.length || newKeys.length || staleKeys.length) {
     throw new ExitError(1);
   }
 }
@@ -659,7 +709,28 @@ function printViolations(violations) {
   }
 }
 
-runMain(main);
+/**
+ * @param {ReturnType<typeof collectFindings>['expectationFailures']} expectationFailures
+ */
+function printExpectationFailures(expectationFailures) {
+  console.error(`qa-smell-ratchet: ${expectationFailures.length} SCENARIO EXPECTATION FAILURE(S) — never acknowledgeable, always fail:\n`);
+  for (const f of expectationFailures) {
+    console.error('EXPECTATION FAILURE:');
+    console.error(`  scenario: ${f.scenario}`);
+    console.error(`  at:       ${f.at}`);
+    console.error(`  argv:     ${f.argv.join(' ')}`);
+    console.error(`  detail:   ${f.detail}`);
+    console.error(`  repro:    ${f.repro}`);
+  }
+}
+
+// `require()`ing this module (from `tests/loop-walk.qa.test.cjs`) must not
+// trigger a real 20-scenario walk as a side effect — that's what made
+// `collectFindings` untestable before #3597. Guard `runMain` so it only
+// fires when this file is executed directly (`node scripts/qa-smell-ratchet.cjs`).
+if (require.main === module) {
+  runMain(main);
+}
 
 module.exports = {
   parseArgs,

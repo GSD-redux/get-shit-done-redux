@@ -1084,7 +1084,7 @@ describe('scenario discovery (mutations wired for real)', () => {
     assert.strictEqual(names.includes('_selftest-must-fail.json'), false);
   });
 
-  test('every discovered perturbation scenario applies its mutation and runs to completion without a harness crash', () => {
+  test('every discovered perturbation scenario applies its mutation, holds its own expectations, and runs to completion', () => {
     const liveCommands = [...getLiveCommandTokens()];
     const perturbationFiles = discoverScenarioFiles().filter((p) => path.basename(p).startsWith('perturbation-'));
     assert.ok(perturbationFiles.length >= 3, 'expected at least the crlf, truncated-frontmatter, and delete-artifact scenarios');
@@ -1111,6 +1111,26 @@ describe('scenario discovery (mutations wired for real)', () => {
           `${scenario.name}: step at "${step.at}" crashed the harness: ${JSON.stringify(step.oracleFailures)}`,
         );
       }
+
+      // A scenario reporting `ok: false` used to be invisible here — this
+      // loop only ever checked that the harness did not CRASH, never that
+      // the scenario's own declared expectations held (#3597, the test-side
+      // half; the gate-side half is `collectFindings` collecting
+      // `expectFailures` in `scripts/qa-smell-ratchet.cjs`). That blind spot
+      // is exactly what let `multi-workstream` fail on every CI run since
+      // 2026-08-10 without reddening anything. The `expectFailures`
+      // assertion comes first deliberately because it names WHICH
+      // expectation broke, whereas `report.ok` alone only says something did.
+      assert.deepStrictEqual(
+        report.steps.flatMap((s) => s.expectFailures),
+        [],
+        `${scenario.name}: a declared expectation failed — the scenario's own contract is broken`,
+      );
+      assert.strictEqual(
+        report.ok,
+        true,
+        `${scenario.name}: scenario reported ok:false`,
+      );
 
       const mutatedStep = report.steps.find((s) => s.mutation);
       assert.ok(mutatedStep, `${scenario.name}: no step recorded a mutation — mutations remain unwired`);
@@ -1332,5 +1352,140 @@ describe('worktree-concurrency (dedicated — trajectory 9 is not expressible as
     // the other walk's concurrent writes to a different temp directory.
     assert.strictEqual(jsonA.project_exists, true);
     assert.strictEqual(jsonB.project_exists, true);
+  });
+});
+
+describe('qa-smell-ratchet gate (#3597)', () => {
+  /**
+   * Build a one-scenario, one-step report object that mirrors the shape
+   * `tests/qa/report.cjs`'s `buildReport()` produces, so `collectFindings`
+   * (from `scripts/qa-smell-ratchet.cjs`) can be exercised directly without
+   * running a real 20-scenario walk against the CLI. Every field present on
+   * a real report is present here — including `totals.violations`, which
+   * `buildReport` computes as `violations.length + expectFailures.length`
+   * per step, not `violations.length` alone.
+   *
+   * @param {{expectFailures?: string[], violations?: Array<{id:string,detail:string}>, smells?: Array<{id:string,subject?:string,detail:string}>}} params
+   * @returns {object} a synthetic report object
+   */
+  function reportWithStep({ expectFailures = [], violations = [], smells = [] }) {
+    const step = {
+      at: 'execute:post',
+      argv: ['--ws', 'alpha', 'progress'],
+      kind: 'json',
+      expectFailures,
+      violations,
+      smells,
+      mutation: null,
+      mutationNoop: false,
+      mutationObserved: false,
+      repro: 'cd /tmp/x && node gsd-core/bin/gsd-tools.cjs --ws alpha progress',
+    };
+    return {
+      reportVersion: 1,
+      meta: { nodeVersion: 'v24.0.0', platform: 'linux', generatedAt: '2026-01-01T00:00:00.000Z' },
+      totals: {
+        scenarios: 1,
+        steps: 1,
+        violations: expectFailures.length + violations.length,
+        smells: smells.length,
+        mutationsApplied: 0,
+        mutationsObserved: 0,
+      },
+      scenarios: [
+        {
+          name: 'synthetic-scenario',
+          ok: (expectFailures.length + violations.length) === 0,
+          fixture: 'greenfield',
+          steps: [step],
+        },
+      ],
+      smellSummary: [],
+    };
+  }
+
+  test('requiring the ratchet does NOT run a full walk — its exports are reachable from a test', () => {
+    // `scripts/qa-smell-ratchet.cjs` used to call `runMain(main)` unconditionally
+    // at module load, so merely `require()`ing it (as a test would have to, to
+    // reach `collectFindings`) drove a full 20-scenario walk against the real
+    // CLI. That made `collectFindings` — an export that exists purely to be
+    // testable in isolation — untestable in practice, and is exactly why the
+    // `expectFailures` hole below shipped with zero test coverage.
+    const startedAtMs = Date.now();
+    const ratchet = require('../scripts/qa-smell-ratchet.cjs');
+    const elapsedMs = Date.now() - startedAtMs;
+    assert.strictEqual(typeof ratchet.collectFindings, 'function');
+    assert.ok(
+      elapsedMs < 3000,
+      `require() of qa-smell-ratchet.cjs took ${elapsedMs}ms — a load this slow suggests it ran a real walk instead of just defining exports`,
+    );
+  });
+
+  test('collectFindings surfaces a scenario expectation failure — a failing scenario must reach the gate', () => {
+    const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
+    // This is the #3597 defect: `multi-workstream` failed this exact way on
+    // every CI run from 2026-08-10 onward while the ratchet printed
+    // "0 violations" and exited 0 — because `collectFindings` never read
+    // `step.expectFailures` at all.
+    const report = reportWithStep({ expectFailures: ['path "percent": expected 100, got null'] });
+    const found = collectFindings(report);
+    assert.strictEqual(found.expectationFailures.length, 1);
+    const [entry] = found.expectationFailures;
+    assert.strictEqual(entry.scenario, 'synthetic-scenario');
+    assert.strictEqual(entry.at, 'execute:post');
+    assert.strictEqual(entry.detail, 'path "percent": expected 100, got null');
+    assert.deepStrictEqual(entry.argv, ['--ws', 'alpha', 'progress']);
+    assert.ok(entry.repro);
+  });
+
+  test('an expectation failure is NOT reported as an oracle violation (the two stay distinguishable)', () => {
+    const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
+    const report = reportWithStep({ expectFailures: ['path "percent": expected 100, got null'] });
+    const found = collectFindings(report);
+    assert.deepStrictEqual(found.violations, []);
+    assert.deepStrictEqual(found.smells, []);
+  });
+
+  test('an expectation failure is never fingerprinted, so it can never be baselined or acked away', () => {
+    const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
+    const report = reportWithStep({ expectFailures: ['path "percent": expected 100, got null'] });
+    const found = collectFindings(report);
+    for (const failure of found.expectationFailures) {
+      assert.strictEqual(
+        failure.key,
+        undefined,
+        'an expectation failure must not carry a fingerprint `key` — a key would make it acknowledgeable via smell-baseline.json / smell-acks/, letting a real scenario failure be silenced like a smell',
+      );
+    }
+  });
+
+  test('PARITY: the gate counts exactly what report.totals.violations counts', () => {
+    // The #3597 root cause was a silent disagreement between these two
+    // counters: `report.totals.violations` (built by `buildReport`) already
+    // counted `expectFailures`, but `collectFindings` (consumed by the gate)
+    // did not — so the gate under-counted relative to the report it was
+    // reading.
+    const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
+    const cases = [
+      reportWithStep({}),
+      reportWithStep({ expectFailures: ['a'] }),
+      reportWithStep({ violations: [{ id: 'exit-contract', detail: 'boom' }] }),
+      reportWithStep({ expectFailures: ['a', 'b'], violations: [{ id: 'exit-contract', detail: 'boom' }] }),
+    ];
+    for (const report of cases) {
+      const found = collectFindings(report);
+      assert.strictEqual(
+        found.violations.length + found.expectationFailures.length,
+        report.totals.violations,
+      );
+    }
+  });
+
+  test('a clean report yields no findings at all (anti-vacuity: the assertions above can pass honestly)', () => {
+    const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
+    const found = collectFindings(reportWithStep({}));
+    assert.deepStrictEqual(found.violations, []);
+    assert.deepStrictEqual(found.expectationFailures, []);
+    assert.deepStrictEqual(found.smells, []);
   });
 });
