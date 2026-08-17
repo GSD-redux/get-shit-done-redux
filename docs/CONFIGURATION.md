@@ -548,7 +548,7 @@ The prompt injection guard hook (`gsd-prompt-guard.js`) is always active and can
 
 ### Private Planning Setup
 
-When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artefacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Configure private planning](how-to/configure-model-profiles.md) for setup steps.
+When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artifacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md) for the full setup, including untracking files git is already tracking.
 
 ---
 
