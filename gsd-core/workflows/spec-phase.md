@@ -480,7 +480,7 @@ Write to: `{phase_dir}/{padded_phase}-SPEC.md`
 gsd_run query commit "spec(phase-${phase_number}): add SPEC.md for ${phase_name} — ${requirement_count} requirements (#2213)" --files "${phase_dir}/${padded_phase}-SPEC.md"
 ```
 
-If `commit_docs` is false, the CLI returns a `skipped` envelope with a reason instead of committing — SPEC.md remains written but uncommitted.
+If `commit_docs` is false the CLI returns `skipped`; SPEC.md is written, not committed.
 
 ## Step 8: Wrap Up
 

@@ -6,9 +6,6 @@
     },
     "new-milestone.md": {
       "reason": "#3585: `git add .planning/milestones/ .planning/phases/` was ungated, and the correctly-gated `query commit` that follows it skips under commit_docs:false — leaving those paths in the index for the next commit to absorb. Growth is the executable commit_docs guard wrapping the stage, plus one sentence recording that the unstaged archive move is deliberate rather than a bug."
-    },
-    "spec-phase.md": {
-      "reason": "#3585: the commit step's guard was markdown prose sitting outside the bash block, so the block ran unconditionally. Replaced the raw `git add` + `git commit` pair with a single `gsd_run query commit --files` call, which performs the commit_docs and gitignore checks internally. The code shrank; the 21-byte growth is the reworded prose, which now describes the `skipped` envelope the CLI returns instead of instructing the reader to skip manually."
     }
   }
 }
