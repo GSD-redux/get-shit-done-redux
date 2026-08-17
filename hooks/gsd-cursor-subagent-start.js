@@ -333,6 +333,37 @@ function resolveIsolationDecision(data, { clock = Date, realpath = fs.realpathSy
   return { action: 'allow' };
 }
 
+// ─── #3566: per-install runtime marker ────────────────────────────────────────
+// Same contract as hooks/gsd-agent-isolation-guard.js's readInstallRuntimeMarker
+// (mirroring src/model-resolver.cts #2297): bin/install.js writes
+// `<install>/gsd-core/.gsd-runtime` beside VERSION for every runtime install;
+// this hook ships at `<install>/hooks/`, so the marker is the `gsd-core` sibling
+// of this file's own directory — the same sibling-layout assumption the
+// require('../gsd-core/bin/lib/…') calls below already make. Epic #3473 B3 owns
+// consolidating every marker reader into one shared seam.
+let _installMarkerCache; // undefined = unread; null = known absent; string = value
+
+function readInstallRuntimeMarker() {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', 'gsd-core', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf-8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297 — "no signal
+    // from this rung", never a resolution failure.
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seam — same contract as model-resolver.cts's #2297 seam; the dev/source
+// tree has no marker file, so spawned-hook tests (fresh process, no marker)
+// are unaffected.
+function _setInstallRuntimeMarkerForTests(value) {
+  _installMarkerCache = value;
+}
+
 /**
  * Conservative fallback resolution used when the #3045 sentinel is absent or
  * stale for `root`: re-derive isolation from the registry CAPABILITY, gated
@@ -355,7 +386,8 @@ function resolveIsolationDecision(data, { clock = Date, realpath = fs.realpathSy
  * otherwise legitimate dispatches, unlike `hooks/gsd-agent-isolation-guard.js`,
  * which degrades an undeterminable runtime to inert (#3045 MAJOR 2). Aligned
  * here: an explicit signal is now required — `GSD_RUNTIME` > config.json
- * `runtime` key > `~/.gsd/defaults.json` `runtime` (mirrors the Claude hook's
+ * `runtime` key > the per-install `.gsd-runtime` marker (#3566) >
+ * `~/.gsd/defaults.json` `runtime` (mirrors the Claude hook's
  * `resolveRuntimeIdentity`; `bin/install.js`'s `writeNonClaudeDefaults`
  * persists the installed runtime there for every non-Claude install,
  * including Cursor, so a REAL Cursor+GSD install still resolves confidently
@@ -371,6 +403,13 @@ function resolveFallbackIsolation(root, configPath) {
   const parsedConfig = JSON.parse(rawConfig);
   if (!runtimeId && parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
     runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || null;
+  }
+  if (!runtimeId) {
+    // #3566: the per-install marker, above the host-wide defaults — same fix as
+    // hooks/gsd-agent-isolation-guard.js's resolveRuntimeIdentity. defaults.json
+    // is host-wide and names whichever runtime installed LAST (#2840's poison);
+    // the marker describes THIS install (written for every runtime since #2297).
+    runtimeId = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker()) || null;
   }
   if (!runtimeId) {
     try {
@@ -557,4 +596,5 @@ module.exports = {
   resolveFallbackIsolation,
   resolveIsolationEvidence,
   getWorkspaceRoots,
+  _setInstallRuntimeMarkerForTests,
 };

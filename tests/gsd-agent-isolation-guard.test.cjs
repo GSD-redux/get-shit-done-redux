@@ -700,7 +700,9 @@ describe('gsd-agent-isolation-guard.js: #3566 — per-install .gsd-runtime marke
       { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: markerProject },
     );
     assert.equal(decision.action, 'block', 'must resolve claude → harness-worktree and demand the isolation param');
-    assert.match(decision.reason, /isolation="worktree"/, 'block reason must name the exact parameter to add');
+    // (The block REASON's "names the exact parameter to add" property is already
+    // pinned by the pre-existing #3045 row 'reason names the exact parameter to
+    // add' — no new raw-text matching here, per CONTRIBUTING's test-output rule.)
   });
 
   test('#3566: marker rung returns confident claude above codex defaults (identity contract)', (t) => {

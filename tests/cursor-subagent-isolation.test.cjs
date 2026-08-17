@@ -914,3 +914,86 @@ describe('gsd-cursor-subagent-start.js: #3045 MAJOR — clock seam boundary cove
     }
   });
 });
+
+describe('gsd-cursor-subagent-start.js: #3566 — per-install .gsd-runtime marker rung (in-process)', () => {
+  // Same seam contract as the agent guard's #3566 block in
+  // tests/gsd-agent-isolation-guard.test.cjs: the marker is __dirname-relative
+  // in production, so a spawned hook in this dev tree (no marker) can never
+  // exercise the rung — require the module and drive the seam directly.
+  const cursorHookModule = require('../hooks/gsd-cursor-subagent-start.js');
+
+  let savedHome;
+  let savedUserProfile;
+  let savedGsdRuntime;
+  let project; // scaffold-shaped config ({}), per #2840's no-runtime-key template
+
+  before(() => {
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+    savedGsdRuntime = process.env.GSD_RUNTIME;
+    project = createTempDir('gsd-cs-3566-');
+    fs.mkdirSync(path.join(project, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.planning', 'config.json'), JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(project);
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    if (savedGsdRuntime === undefined) delete process.env.GSD_RUNTIME;
+    else process.env.GSD_RUNTIME = savedGsdRuntime;
+    cursorHookModule._setInstallRuntimeMarkerForTests(null);
+  });
+
+  // Redirects HOME (mirrored onto USERPROFILE for Windows) at a fake home with
+  // an optional defaults.json naming `defaultsRuntime`.
+  function pinHome(t, defaultsRuntime) {
+    const home = createTempDir('gsd-cs-3566-home-');
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: defaultsRuntime }));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    t.after(() => cleanup(home));
+  }
+
+  function fallback() {
+    return cursorHookModule.resolveFallbackIsolation(project, path.join(project, '.planning', 'config.json'));
+  }
+
+  test('#3566: per-install marker outranks host-wide defaults — two-runtime machine resolves the marker runtime', (t) => {
+    // defaults.json says codex (a Codex install ran last); the install's own
+    // marker says claude. Pre-#3566 the fallback resolved codex confidently
+    // (here: orchestrator-worktree — not harness-worktree); post-fix it must
+    // resolve claude → harness-worktree.
+    pinHome(t, 'codex');
+    delete process.env.GSD_RUNTIME;
+    cursorHookModule._setInstallRuntimeMarkerForTests('claude');
+    t.after(() => cursorHookModule._setInstallRuntimeMarkerForTests(null));
+    assert.equal(fallback(), 'harness-worktree');
+  });
+
+  test('#3566 (negative control): absent marker still falls through to the defaults rung', (t) => {
+    pinHome(t, 'codex');
+    delete process.env.GSD_RUNTIME;
+    cursorHookModule._setInstallRuntimeMarkerForTests(null);
+    assert.equal(fallback(), 'orchestrator-worktree', 'defaults.json remains the final rung (#3045 behavior intact)');
+  });
+
+  test('#3566 (negative control): explicit config.json runtime still outranks the marker', (t) => {
+    const cfgProject = createTempDir('gsd-cs-3566-cfg-');
+    fs.mkdirSync(path.join(cfgProject, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cfgProject, '.planning', 'config.json'), JSON.stringify({ runtime: 'codex' }));
+    t.after(() => cleanup(cfgProject));
+    pinHome(t, 'codex');
+    delete process.env.GSD_RUNTIME;
+    cursorHookModule._setInstallRuntimeMarkerForTests('claude');
+    t.after(() => cursorHookModule._setInstallRuntimeMarkerForTests(null));
+    assert.equal(
+      cursorHookModule.resolveFallbackIsolation(cfgProject, path.join(cfgProject, '.planning', 'config.json')),
+      'orchestrator-worktree',
+      'the explicit config override wins over both marker and defaults',
+    );
+  });
+});
