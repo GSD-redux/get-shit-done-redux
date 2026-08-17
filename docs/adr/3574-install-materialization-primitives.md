@@ -193,9 +193,18 @@ should treat §3 as already-satisfied, not as outstanding work.
 The ADR states the inline dispatch "survives only for codex, cline, hermes and generic runtimes",
 and calls closing it "the part of Phase 6 whose evidence survived scrutiny intact".
 
-Both are wrong. `_DESCRIPTOR_AGENTS_RUNTIMES` (`bin/install.js`) holds ten runtimes; every other
-runtime reaches the inline loop — including **claude**, the flagship, plus kilo and opencode.
-(`pi` is excluded separately by its `pluginOnlyInstall` branch.)
+Both are wrong. `_DESCRIPTOR_AGENTS_RUNTIMES` (`bin/install.js`) held ten runtimes; every other
+runtime reached the inline loop — **seven** of them: claude (the flagship), cline, codex, hermes,
+kilo, opencode and kimi-code. (`pi` is excluded separately by its `pluginOnlyInstall` branch.)
+
+> **Even this correction undercounted.** It originally said six. `kimi-code` was found only when a
+> golden install-tree fixture went red mid-implementation — not by any amount of reading. That is
+> the third time this phase's enumeration was short (four call sites → seven; six runtimes →
+> seven), and every miss shares one cause: counting by *symbol* or *set membership* when the thing
+> that matters is a *behavior*. Fixtures and executed tests found what inspection did not.
+
+The set and the loop are both **gone** as of this phase; the descriptor is authoritative for
+`agents` on every runtime, so there is no longer an allow-list to join.
 
 Worse, closing the bypass could not be done "on its own terms". It required **three new pieces of
 descriptor contract**, because the descriptor pipeline had no per-agent resolution context:
