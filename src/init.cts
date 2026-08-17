@@ -3082,8 +3082,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   // completion flow.
   {
     const frontier = phases.find((p) => {
-      const st = p['status'];
-      return (st === 'pending' || st === 'not_started') && p['roadmap_complete'] !== true;
+      return p['status'] !== 'complete' && p['roadmap_complete'] !== true;
     });
     if (frontier) nextPhase = frontier;
   }
