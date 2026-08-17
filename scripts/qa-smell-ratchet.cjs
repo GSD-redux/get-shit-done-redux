@@ -671,10 +671,10 @@ function main() {
     console.error(`\nqa-smell-ratchet: ${newKeys.length} NEW (unacknowledged) smell(s):\n`);
     for (const key of newKeys) {
       const f = smells.find((s) => s.key === key);
-      console.error(`NEW smell: ${f.key}`);
-      console.error(`  oracle:   ${f.id}`);
-      console.error(`  scenario: ${f.scenario}`);
-      console.error(`  detail:   ${f.detail}`);
+      console.error(`NEW smell: ${flattenUntrusted(f.key)}`);
+      console.error(`  oracle:   ${flattenUntrusted(f.id)}`);
+      console.error(`  scenario: ${flattenUntrusted(f.scenario)}`);
+      console.error(`  detail:   ${flattenUntrusted(f.detail)}`);
       console.error('  remedy:   exactly two options — no third "accepted with an explanation" state:');
       console.error('              1. fix the detector if this is a FALSE POSITIVE (the oracle is wrong; make it stop firing);');
       console.error('              2. file a defect and add an entry citing its issue number (REAL) — a fragment:\n');
@@ -685,12 +685,12 @@ function main() {
   if (staleKeys.length) {
     console.error(`\nqa-smell-ratchet: ${staleKeys.length} STALE baseline/fragment entr${staleKeys.length === 1 ? 'y' : 'ies'} (no longer produced by the run):\n`);
     for (const e of staleEntries) {
-      console.error(`STALE entry: ${e.key}`);
-      console.error(`  source:   ${e.source}`);
-      console.error(`  oracle:   ${e.id}`);
-      console.error(`  scenario: ${e.scenario}`);
-      console.error(`  issue:    ${e.issue}`);
-      if (e.reason !== undefined) console.error(`  reason:   ${e.reason}`);
+      console.error(`STALE entry: ${flattenUntrusted(e.key)}`);
+      console.error(`  source:   ${flattenUntrusted(e.source)}`);
+      console.error(`  oracle:   ${flattenUntrusted(e.id)}`);
+      console.error(`  scenario: ${flattenUntrusted(e.scenario)}`);
+      console.error(`  issue:    ${flattenUntrusted(e.issue)}`);
+      if (e.reason !== undefined) console.error(`  reason:   ${flattenUntrusted(e.reason)}`);
     }
     console.error('\n  remedy: node scripts/qa-smell-ratchet.cjs --update');
   }
@@ -734,7 +734,7 @@ function printViolations(violations) {
     console.error(`  scenario: ${flattenUntrusted(v.scenario)}`);
     console.error(`  argv:     ${flattenUntrusted(v.argv.join(' '))}`);
     console.error(`  detail:   ${flattenUntrusted(v.detail)}`);
-    console.error(`  repro:    ${v.repro}`);
+    console.error(`  repro:    ${flattenUntrusted(v.repro)}`);
   }
 }
 
@@ -749,7 +749,7 @@ function printExpectationFailures(expectationFailures) {
     console.error(`  at:       ${flattenUntrusted(f.at)}`);
     console.error(`  argv:     ${flattenUntrusted(f.argv.join(' '))}`);
     console.error(`  detail:   ${flattenUntrusted(f.detail)}`);
-    console.error(`  repro:    ${f.repro}`);
+    console.error(`  repro:    ${flattenUntrusted(f.repro)}`);
   }
 }
 
