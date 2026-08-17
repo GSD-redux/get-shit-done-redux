@@ -2178,7 +2178,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // Matches both plain numeric (Phase 1:) and milestone-prefixed (Phase 2-01:) headings.
     // Also tolerates optional [bracket-token] scope prefix on phase headings.
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
+    // #3569: the id capture is the canonical #3036 shape (digit REQUIRED — incl.
+    // letter-prefixed B7, decimals, milestone 2-01), the same group roadmap.cts's
+    // collectAnalyzePhases uses. The former `([\w][\w.-]*)` matched ANY word, so
+    // prose mentioning `### Phase N:` inside an inline code span produced a phantom
+    // Not-Started row and made phases_total disagree with roadmap analyze.
+    const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {
       // #3185: the heading seed carried no sentinel filter, so a
