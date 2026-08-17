@@ -1940,8 +1940,14 @@ interface PhaseRemoveOptions {
  * former behavior for that shape.
  */
 function insertStateBodyFieldAtTop(content: string, fieldLine: string): string {
-  const eol = content.includes('\r\n') ? '\r\n' : '\n';
-  const lines = content.split(eol);
+  // #3572 review: detect EOL from the FIRST line ending — an LF-dominant file
+  // with one stray \r\n later must not be split on \r\n (the blobs would defeat
+  // the fence check and fall through to the raw prepend this helper exists to
+  // replace). split('\n') keeps any stray \r in place on its own line, where
+  // the trimmed fence compare still matches.
+  const firstNl = /\r?\n/.exec(content);
+  const eol = firstNl ? firstNl[0] : '\n';
+  const lines = content.split('\n');
   if ((lines[0] ?? '').trim() === '---') {
     const closeIdx = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === '---');
     if (closeIdx !== -1) {
@@ -2067,15 +2073,21 @@ function cmdPhaseRemove(
         let modified = stateContent;
         const totalRaw = stateExtractField(modified, 'Total Phases');
         if (totalRaw) {
+          // #3572 review: clamp at 0 — a stale 'Total Phases: 0' (e.g. written by
+          // an earlier remove whose dir-count was 0) must not decrement to -1 on
+          // the next removal.
           modified =
-            stateReplaceField(modified, 'Total Phases', String(parseInt(totalRaw, 10) - 1)) ||
-            modified;
+            stateReplaceField(
+              modified,
+              'Total Phases',
+              String(Math.max(0, parseInt(totalRaw, 10) - 1)),
+            ) || modified;
         }
         const ofMatch = modified.match(/(\bof\s+)(\d+)(\s*(?:\(|phases?))/i);
         if (ofMatch) {
           modified = modified.replace(
             /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i,
-            `$1${parseInt(ofMatch[2], 10) - 1}$3`,
+            `$1${Math.max(0, parseInt(ofMatch[2], 10) - 1)}$3`,
           );
         }
         // #2640: if neither body field was found, the transform is a no-op.
@@ -2099,7 +2111,11 @@ function cmdPhaseRemove(
           // just-deleted directory as still present and write a `Total Phases`
           // one too high. Identity is also what the comment above already
           // claims this filter does, and the block is gated on targetDir.
-          const remainingPhases = subdirs.filter((d) => d !== targetDir).length;
+          // (#3572 note: this body field counts DIRECTORIES on disk; the
+          // frontmatter progress.* block is rebuilt by syncStateFrontmatter
+          // from the post-removal ROADMAP — the two counts legitimately differ
+          // when phases exist in ROADMAP without directories.)
+          const remainingPhases = Math.max(0, subdirs.filter((d) => d !== targetDir).length);
           if (totalRaw) {
             modified =
               stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;

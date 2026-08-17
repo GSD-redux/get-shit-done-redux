@@ -11681,6 +11681,10 @@ describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter
     assert.strictEqual((after.match(/gsd_state_version/g) || []).length, 1, 'exactly one gsd_state_version — no second derived block');
     assert.ok(after.includes('Some prose here that must survive.'), 'body prose must survive verbatim');
     assert.match(after, /^Total Phases:\s*\d+$/m, 'the inserted count field must live in the BODY (line-start), not before the first fence');
+    // Pinned value: the body field counts DIRECTORIES on disk (0 after removing
+    // the only directory); the frontmatter progress block derives from ROADMAP
+    // (2 below) — the two counters have different provenance by design (#2640/#2528).
+    assert.match(after, /^Total Phases:\s*0$/m, 'body field = remaining on-disk phase directories');
     const fm = after.match(/total_phases:\s*(\d+)/);
     assert.ok(fm, 'frontmatter progress.total_phases present');
     assert.strictEqual(fm[1], '2', `total_phases must resync to the 2 remaining roadmap phases; got ${fm[1]}`);
@@ -11742,5 +11746,44 @@ describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter
     assert.ok(r.success, `phase remove failed: ${r.error}`);
     const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     assert.strictEqual(after, before, 'issue control: removal without a directory must not touch STATE.md');
+  });
+});
+
+describe('bug #3572 controls and clamps', () => {
+  test('#3572 control: phase insert alone leaves STATE.md untouched (issue control #2)', (t) => {
+    const tmpDir = createTempProject('gsd-3572-ctl-');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '---\ngsd_state_version: 1.0\nprogress:\n  total_phases: 2\n---\n\n# Project State\n\nBody.\n',
+    );
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const r = runGsdTools('phase insert 1 "Probe"', tmpDir);
+    assert.ok(r.success, `phase insert failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'issue control: insert alone must not touch STATE.md');
+    t.after(() => cleanup(tmpDir));
+  });
+
+  test('#3572 clamp: a stale Total Phases: 0 never decrements to -1 on the next removal', (t) => {
+    const tmpDir = createTempProject('gsd-3572-clamp-');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '---\ngsd_state_version: 1.0\nprogress:\n  total_phases: 2\n---\n\n# Project State\n\nTotal Phases: 0\n',
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), { recursive: true });
+    const r = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.doesNotMatch(after, /Total Phases:\s*-\d+/, 'count must never go negative');
+    assert.match(after, /^Total Phases:\s*0$/m, 'stale zero stays clamped at 0');
+    t.after(() => cleanup(tmpDir));
   });
 });
