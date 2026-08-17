@@ -452,12 +452,17 @@ function collectTablePhaseRows(window: string): Array<{ id: string; name: string
     if (matchTableSchema(headerCells) !== null) continue; // canonical non-listing schema
     if (!isDelimiterRow(splitTableRow(lines[i + 1]))) continue;
     for (let j = i + 2; j < lines.length; j++) {
+      // GFM semantics: the table ENDS at the first line that is not a table
+      // row. Review finding: breaking only on blank lines let subsequent prose
+      // (e.g. a bare `2026-01-01` date line) be harvested as a phase id.
+      if (!/^\s*\|/.test(lines[j])) break;
       const cells = splitTableRow(lines[j]);
-      if (cells.length === 0 || cells.every((c) => c === '')) break; // table ended
+      if (cells.length === 0 || cells.every((c) => c === '')) break; // defensive: blank row
       const first = cells[0] ?? '';
       if (!TABLE_PHASE_ID_RE.test(first)) continue;
-      if (/^999/.test(first)) continue; // icebox exclusion, mirroring the heading scan
-      rows.push({ id: first, name: cells[1] && cells[1] !== '' ? cells[1] : null, row: lines[j] });
+      if (!/^999\b/.test(first)) {
+        rows.push({ id: first, name: cells[1] && cells[1] !== '' ? cells[1] : null, row: lines[j] });
+      }
     }
   }
   return rows;
