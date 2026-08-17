@@ -573,6 +573,9 @@ When tier 1 suppresses a commit, the skip envelope's `reason` is
 `skipped_commit_docs_phase_false` — distinct from the project-wide `skipped_commit_docs_false` —
 so a caller is never told "commit_docs is false" when the project setting is actually `true`.
 
+A commit spanning multiple phases resolves the override against the first phase in the `--files`
+list, so scope `--files` to one phase when using the override.
+
 See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md#per-phase-override)
 for a worked example.
 

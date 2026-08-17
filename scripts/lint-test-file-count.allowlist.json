@@ -47,14 +47,13 @@
     },
     "phase": {
       "files": [
-        "phase-commit-docs.test.cjs",
         "phase-completion-single-owner.test.cjs",
         "phase-dependency-levels.test.cjs",
         "phase-resolution-parity.test.cjs",
         "phase-structure.test.cjs",
         "phase.test.cjs"
       ],
-      "issue": "3587 (grandfathered set from #3186)"
+      "issue": "3186"
     },
     "roadmap": {
       "files": [
