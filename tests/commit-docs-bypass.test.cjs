@@ -421,8 +421,13 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const EXECUTOR_AGENT = path.join(REPO_ROOT, 'agents', 'gsd-executor.md');
 
-// Frozen reason enum mirrors the SDK source — keep in sync with
-// `cmdCommit` in gsd-core/bin/lib/commands.cjs.
+// Frozen reason enum mirrors the SDK source. Both members are now
+// behaviorally pinned against the live envelope returned by `cmdCommit` in
+// gsd-core/bin/lib/commands.cjs, not kept in sync by hand-reading the
+// source: SKIPPED_COMMIT_DOCS_FALSE by describe block B (B1-B3, explicit
+// `commit_docs: false`) and SKIPPED_GITIGNORED by describe block G (G1-G3,
+// gitignore auto-detect). A production rename of either string now fails
+// these tests instead of drifting silently behind the comment (#3585).
 const COMMIT_REASON = Object.freeze({
   SKIPPED_COMMIT_DOCS_FALSE: 'skipped_commit_docs_false',
   SKIPPED_GITIGNORED: 'skipped_gitignored',
@@ -543,6 +548,87 @@ describe('bug #3678 — executor must respect commit_docs:false', () => {
         headAfter,
         headBefore,
         'HEAD must not advance when commit_docs is false',
+      );
+    });
+  });
+
+  describe('G — gitignore auto-detect pins the other COMMIT_REASON member', () => {
+    // Parity anchor for #3585's Generative Fix Divergence finding: describe
+    // block B above behaviorally pins SKIPPED_COMMIT_DOCS_FALSE (an explicit
+    // `commit_docs: false` in config.json), but SKIPPED_GITIGNORED was pinned
+    // by nothing except the "keep in sync" comment on COMMIT_REASON above —
+    // production could rename that string and every existing test here would
+    // still pass. This block drives the OTHER path: `.planning/config.json`
+    // is left absent entirely (not present-with-key-unset — a present,
+    // even-empty config.json routes through loadConfigResolved's own
+    // gitignore auto-detect override, which resolves `commit_docs` to
+    // `false` and returns SKIPPED_COMMIT_DOCS_FALSE first, never reaching
+    // the gitignored reason), so `commit_docs` is never set anywhere and the
+    // skip is driven purely by `.gitignore` containing `.planning/`.
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = createTempGitProject();
+      // .planning/ already exists from createTempGitProject's setup, and no
+      // config.json is written — commit_docs is left completely absent.
+      const gitignorePath = path.join(tmpDir, '.gitignore');
+      fs.writeFileSync(gitignorePath, '.planning/\n');
+      git(['add', gitignorePath], tmpDir);
+      git(['commit', '-m', 'chore: add gitignore'], tmpDir);
+
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+      if (!fs.existsSync(statePath)) {
+        fs.writeFileSync(statePath, '---\nproject: test\n---\n# State\n');
+      }
+      fs.appendFileSync(statePath, '\n<!-- token edit for #3585 gitignore-auto-detect parity anchor -->\n');
+    });
+
+    afterEach(() => cleanup(tmpDir));
+
+    test('G1: commit returns skipped:true with reason SKIPPED_GITIGNORED (parity anchor for the enum member the comment claims is kept in sync)', () => {
+      const result = runGsdTools(
+        'commit "docs(test): noop" --files .planning/STATE.md',
+        tmpDir,
+      );
+      assert.ok(result.success, `gsd-tools commit should exit 0 even when skipped: ${result.error || ''}`);
+      const envelope = JSON.parse(result.output);
+      assert.strictEqual(envelope.skipped, true, 'envelope must carry skipped:true for the gitignore auto-detect path');
+      assert.strictEqual(
+        envelope.reason,
+        COMMIT_REASON.SKIPPED_GITIGNORED,
+        'reason must be the canonical skipped_gitignored code (frozen enum) — this is the '
+        + 'behavioral pin for the member describe block B never exercises',
+      );
+    });
+
+    test('G2: gitignore auto-detect skip leaves the git index empty (no .planning/ staged)', () => {
+      runGsdTools(
+        'commit "docs(test): noop" --files .planning/STATE.md',
+        tmpDir,
+      );
+      const stagedAll = git(['diff', '--cached', '--name-only'], tmpDir);
+      const stagedPlanning = stagedAll
+        .split(/\r?\n/)
+        .map(s => s.trim())
+        .filter(s => s.startsWith('.planning/'));
+      assert.deepStrictEqual(
+        stagedPlanning,
+        [],
+        'no .planning/ files should be staged when .planning/ is gitignored',
+      );
+    });
+
+    test('G3: gitignore auto-detect skip produces no new commits', () => {
+      const headBefore = git(['rev-parse', 'HEAD'], tmpDir).trim();
+      runGsdTools(
+        'commit "docs(test): noop" --files .planning/STATE.md',
+        tmpDir,
+      );
+      const headAfter = git(['rev-parse', 'HEAD'], tmpDir).trim();
+      assert.strictEqual(
+        headAfter,
+        headBefore,
+        'HEAD must not advance when .planning/ is gitignored',
       );
     });
   });
