@@ -3069,6 +3069,25 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     (a, b) => parseInt(a['number'] as string, 10) - parseInt(b['number'] as string, 10),
   );
 
+  // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
+  // above could claim nextPhase from a stray out-of-order artifact directory
+  // (a phase-9 UAT evidence dir while roadmap phase 8 was pending and
+  // unscaffolded), silently skipping 8 — and init.progress then disagreed with
+  // roadmap.analyze on the same tree. Re-derive from the sorted union: the
+  // first phase that has not begun ('pending' | 'not_started') and is not
+  // roadmap-complete wins; artifacts still feed each entry's status and
+  // completion (corroborating evidence) but no longer outrank the ordering.
+  // Aligned trees derive the identical frontier as the loops above; an
+  // all-complete milestone finds none and keeps nextPhase null for the
+  // completion flow.
+  {
+    const frontier = phases.find((p) => {
+      const st = p['status'];
+      return (st === 'pending' || st === 'not_started') && p['roadmap_complete'] !== true;
+    });
+    if (frontier) nextPhase = frontier;
+  }
+
   let pausedAt: string | null = null;
   const state = platformReadSync(path.join(planningDir(cwd), 'STATE.md'));
   if (state !== null) {
