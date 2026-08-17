@@ -1724,6 +1724,14 @@ function updateRoadmapAfterPhaseRemoval(
   withPlanningLock(cwd, () => {
     let content = fs.readFileSync(roadmapPath, 'utf-8');
     const escaped = escapeRegex(targetPhase);
+    // #3572: ROADMAP headings and rows carry the normalized (zero-padded) form
+    // of a decimal id — `phase insert 1` writes `### Phase 01.1:` while the
+    // user's remove query is usually unpadded (`1.1`) — and integer headings
+    // legitimately appear both padded (`02`) and unpadded (`2`). A `0*` prefix
+    // makes the token padding-insensitive in both directions without widening
+    // to other ids: the token stays anchored between `Phase\s+`/line-start and
+    // `:`/whitespace/end, so `0*2` still never matches `Phase 12:`.
+    const padTolerant = `0*${escaped}`;
 
     // SECTION-DELETION (not a section-body edit) — removes the phase's ENTIRE
     // detail section INCLUDING its own heading line. Migrated onto deleteSection
@@ -1737,7 +1745,7 @@ function updateRoadmapAfterPhaseRemoval(
     // away everything after it — including a trailing `## Progress` heading and
     // its tracking table.
     const phaseHeadingRe = new RegExp(
-      `^Phase\\s+${escaped}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
+      `^Phase\\s+${padTolerant}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
       'i',
     );
     content = deleteSection(
@@ -1745,7 +1753,7 @@ function updateRoadmapAfterPhaseRemoval(
       (h) => h.level >= 2 && h.level <= 4 && phaseHeadingRe.test(h.text),
     );
     content = content.replace(
-      new RegExp(`\\n?-\\s*\\[[ x]\\]\\s*.*Phase\\s+${escaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*`, 'gi'),
+      new RegExp(`\\n?-\\s*\\[[ x]\\]\\s*.*Phase\\s+${padTolerant}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*`, 'gi'),
       '',
     );
     // ROW-DELETION (not a cell update) — removes the WHOLE Progress-table row
@@ -1776,7 +1784,7 @@ function updateRoadmapAfterPhaseRemoval(
       const matchRemovedProgressRow = (row: Record<string, string>): boolean => {
         const firstCellRaw = (Object.values(row)[0] ?? '').trim();
         if (isDecimal) {
-          return new RegExp(`^${escaped}\\.?(?:\\s|$)`, 'i').test(firstCellRaw);
+          return new RegExp(`^${padTolerant}\\.?(?:\\s|$)`, 'i').test(firstCellRaw);
         }
         const leadingMatch = firstCellRaw.match(/^0*(\d+)(\.\d+)?/);
         if (!leadingMatch || leadingMatch[2]) return false;
@@ -1917,6 +1925,31 @@ function updateRoadmapAfterPhaseRemoval(
 
 interface PhaseRemoveOptions {
   force?: boolean;
+}
+
+/**
+ * #3572: insert `fieldLine` at the start of STATE.md's BODY — immediately after
+ * the leading frontmatter block's closing `---` fence — so a body field never
+ * lands before the opening fence. The former whole-content prepend
+ * (`field + content`) put the line ABOVE the opening `---`, and
+ * syncStateFrontmatter then treated the scrambled fence structure as TWO
+ * frontmatter blocks, rebuilding a derived one on top of the original
+ * (milestone_name from a ROADMAP heading, total_phases counting the removed
+ * phase, a stray 'Total Phases: 0' between fences). A file with no leading
+ * frontmatter is all body: the field goes to content start, preserving the
+ * former behavior for that shape.
+ */
+function insertStateBodyFieldAtTop(content: string, fieldLine: string): string {
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content.split(eol);
+  if ((lines[0] ?? '').trim() === '---') {
+    const closeIdx = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === '---');
+    if (closeIdx !== -1) {
+      lines.splice(closeIdx + 1, 0, '', fieldLine);
+      return lines.join(eol);
+    }
+  }
+  return fieldLine + eol + content;
 }
 
 function cmdPhaseRemove(
@@ -2071,10 +2104,13 @@ function cmdPhaseRemove(
             modified =
               stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;
           } else {
-            // No 'Total Phases:' field in the body — append one so the no-op
-            // guard sees a diff. syncStateFrontmatter will then rebuild the
-            // frontmatter progress.* block from the real disk/ROADMAP count.
-            modified = `Total Phases: ${remainingPhases}\n` + modified;
+            // No 'Total Phases:' field in the body — insert one at the start of
+            // the BODY so the no-op guard sees a diff. #3572: the former
+            // whole-content prepend landed the line BEFORE the opening '---'
+            // fence and corrupted STATE.md into two frontmatter blocks.
+            // syncStateFrontmatter will still rebuild the frontmatter
+            // progress.* block from the real disk/ROADMAP count.
+            modified = insertStateBodyFieldAtTop(modified, `Total Phases: ${remainingPhases}`);
           }
         }
         return modified;
