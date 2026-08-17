@@ -759,7 +759,19 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const index = buildQuickArchiveIndex(archiveDir);
     const entry = index.entries.find((e) => e.name === name);
     assert.ok(entry, 'index entries must list the task directory');
-    assert.strictEqual(entry.summary, `${name}-SUMMARY.md`, 'index entry must link the per-task summary file');
+    assert.strictEqual(
+      entry.summary,
+      `${name}/${name}-SUMMARY.md`,
+      'index entry must link the per-task summary file via its archive-dir-relative path (name/name-SUMMARY.md), not a bare filename',
+    );
+    const rendered = index.render();
+    const linkMatch = rendered.match(new RegExp(`\\[${name}\\]\\(([^)]+)\\)`));
+    assert.ok(linkMatch, 'rendered index must contain a markdown link for the task');
+    assert.strictEqual(
+      linkMatch[1],
+      `${name}/${name}-SUMMARY.md`,
+      'rendered link target must resolve into the task subdirectory, not the archive root',
+    );
   });
 
   test('indexLinksLegacyBareSummaryFile', () => {
@@ -774,7 +786,11 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const index = buildQuickArchiveIndex(archiveDir);
     const entry = index.entries.find((e) => e.name === name);
     assert.ok(entry, 'index entries must list the task directory');
-    assert.strictEqual(entry.summary, 'SUMMARY.md', 'index entry must link the legacy bare summary file');
+    assert.strictEqual(
+      entry.summary,
+      `${name}/SUMMARY.md`,
+      'index entry must link the legacy bare summary file via its archive-dir-relative path (name/SUMMARY.md), not a bare filename',
+    );
   });
 
   test('indexListsTaskWithoutSummaryWithoutLink', () => {
