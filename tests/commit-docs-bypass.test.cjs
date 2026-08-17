@@ -24,6 +24,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
+const fc = require('fast-check');
 const {
   hasReachingGitAdd, scanText, scanRepo, SCAN_ROOTS,
 } = require('./helpers/planning-add-guard.cjs');
@@ -72,6 +73,46 @@ describe('commit_docs bypass guard (#1783, repo-wide per #3585)', () => {
 
     test("A10: git add -A -- ':!.planning' does NOT reach (exclude pathspec overrides -A)", () => {
       assert.strictEqual(hasReachingGitAdd("git add -A -- ':!.planning'"), false);
+    });
+
+    test('A11: V=$(git add -A) reaches (substitution-glued assignment prefix, #3585)', () => {
+      assert.strictEqual(hasReachingGitAdd('V=$(git add -A)'), true);
+    });
+
+    test('A12: FOO=1 git add -A still reaches (plain assignment prefix, not a substitution)', () => {
+      assert.strictEqual(hasReachingGitAdd('FOO=1 git add -A'), true);
+    });
+
+    test('A13: git -C /tmp/x add -A reaches (git-level -C flag consumes its value, #3585)', () => {
+      assert.strictEqual(hasReachingGitAdd('git -C /tmp/x add -A'), true);
+    });
+
+    test('A14: git --no-pager add -A reaches (a value-less flag must not swallow "add")', () => {
+      assert.strictEqual(hasReachingGitAdd('git --no-pager add -A'), true);
+    });
+
+    test('A15: git -c foo.bar=1 add -A reaches (git-level -c flag consumes its value)', () => {
+      assert.strictEqual(hasReachingGitAdd('git -c foo.bar=1 add -A'), true);
+    });
+
+    test('A16: git add "$(cat list.txt)" reaches (command substitution, #3585 F2)', () => {
+      assert.strictEqual(hasReachingGitAdd('git add "$(cat list.txt)"'), true);
+    });
+
+    test('A17: git add --pathspec-from-file=paths.txt reaches (#3585 F2)', () => {
+      assert.strictEqual(hasReachingGitAdd('git add --pathspec-from-file=paths.txt'), true);
+    });
+
+    test('A18: git commit -a -m "x" reaches (#3585 F3)', () => {
+      assert.strictEqual(hasReachingGitAdd('git commit -a -m "x"'), true);
+    });
+
+    test('A19: git commit -am "x" reaches (combined short cluster, #3585 F3)', () => {
+      assert.strictEqual(hasReachingGitAdd('git commit -am "x"'), true);
+    });
+
+    test('A20: git commit -m "x" does NOT reach (no -a/--all flag, #3585 F3)', () => {
+      assert.strictEqual(hasReachingGitAdd('git commit -m "x"'), false);
     });
   });
 
@@ -210,6 +251,28 @@ describe('commit_docs bypass guard (#1783, repo-wide per #3585)', () => {
       ]));
       assert.deepStrictEqual(offenders, []);
     });
+
+    // PIN, not a failing-first regression test (#3585 F6): this assertion
+    // does not distinguish the unclamped-ifDepth code from the clamped
+    // fix — a 200k-case differential fuzz over `if`/`fi` nestings found zero
+    // divergence between them, and this exact fixture passes identically on
+    // pre-fix code. That is because guardOpenDepth is only ever SET from a
+    // commit_docs/tracked-var-mentioning `if`, and that guard's own `fi`
+    // always closes it via a RELATIVE depth comparison regardless of the
+    // (possibly negative, pre-clamp) baseline. The `Math.max(0, ...)` clamp
+    // is kept anyway as DEFENSIVELY correct — no input was found, in 200k
+    // fuzzed cases, that makes the unclamped code diverge from the clamped
+    // one. This test PINS the malformed-shell ("stray fi") behavior for
+    // both versions; it does not demonstrate a fix for a reproduced defect.
+    test('C10: pins malformed-shell behavior — a stray fi before an unrelated if does not manufacture a guard (fails closed)', () => {
+      const { offenders } = scanText('fixture.md', fenced([
+        'fi',
+        'if [ "$X" = "1" ]; then',
+        '  git add -A',
+        'fi',
+      ]));
+      assert.strictEqual(offenders.length, 1, 'git add -A must still be reported as unguarded');
+    });
   });
 
   describe('D: gsd-scan-ignore declaration handling', () => {
@@ -249,6 +312,47 @@ describe('commit_docs bypass guard (#1783, repo-wide per #3585)', () => {
       );
       assert.strictEqual(offenders.length, 1, 'plain unguarded offender');
       assert.deepStrictEqual(untracked, [], 'the marker never reached comment position, so no declaration was attempted');
+    });
+  });
+
+  // ── Property test (#3585 F5): a parser needs a property test, per
+  // CLAUDE.md, mirroring the fast-check coverage already carried by the
+  // sibling classifier in tests/commit-files-pathspec.test.cjs. ───────────
+
+  describe('P: property — hasReachingGitAdd', () => {
+    // Bounded alphabet, deliberately small and non-overlapping with the
+    // trigger set below so a filler token never accidentally reaches on its
+    // own — every failure the property can find is attributable to the
+    // trigger token, not to generator noise.
+    const fillerToken = fc.constantFrom('src/a.ts', 'docs/readme.md', 'foo', 'bar123', 'lib/x.js');
+    const blanketFlag = fc.constantFrom('-A', '--all', '.', '-u');
+    const planningPath = fc.constantFrom(
+      '.planning/STATE.md',
+      '.planning/todos/pending/x.md',
+      '.planning/ROADMAP.md',
+    );
+    const triggerToken = fc.oneof(blanketFlag, planningPath);
+
+    test('P1: a line with a blanket flag or a .planning-rooted path, and no exclude pathspec, always reaches', () => {
+      fc.assert(
+        fc.property(
+          fc.array(fillerToken, { maxLength: 4 }),
+          triggerToken,
+          fc.array(fillerToken, { maxLength: 4 }),
+          (before, trigger, after) => {
+            const line = ['git', 'add', ...before, trigger, ...after].join(' ');
+            assert.strictEqual(
+              hasReachingGitAdd(line),
+              true,
+              `a git add line carrying a blanket flag or a .planning-rooted path, with no `
+                + `exclude pathspec, must reach .planning/: ${line}`,
+            );
+          },
+        ),
+        // Pinned seed + bounded numRuns per CONTRIBUTING.md/CLAUDE.md
+        // determinism rule — deterministic, replayable failures.
+        { seed: 3585, numRuns: 200 },
+      );
     });
   });
 

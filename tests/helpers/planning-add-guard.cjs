@@ -12,16 +12,49 @@
  * the whole index including `.planning/`), and it never looked at any file
  * outside its two-item allowlist.
  *
- * This module classifies `git add` invocations INSIDE fenced code blocks
- * across the repo's live workflow/agent/command/skill/reference surface and
- * decides, per invocation, whether it can reach `.planning/` at all —
- * covering the wildcard/blanket forms, `.planning`-qualified paths (either
- * path-separator convention), and any argument carrying an unresolved shell
- * variable (fail-closed: a `$VAR` we cannot evaluate statically might expand
- * to something planning-rooted). An invocation that reaches is a violation
- * UNLESS it sits inside an open `commit_docs` conditional in the SAME fenced
- * block, or the line carries a tracked `# gsd-scan-ignore: #NNN` declaration
- * (shared machinery — see tests/helpers/shipped-command-scan.cjs).
+ * This module classifies `git add` (and `git commit -a`/`--all`) invocations
+ * INSIDE fenced code blocks across the repo's live
+ * workflow/agent/command/skill/reference surface and decides, per
+ * invocation, whether it can reach `.planning/` at all — covering the
+ * wildcard/blanket forms, `.planning`-qualified paths (either path-separator
+ * convention), any argument carrying an unresolved shell variable, a
+ * command/backtick substitution, or a `--pathspec-from-file` argument
+ * (fail-closed in all four cases: none of them is statically resolvable, and
+ * any one might expand to something planning-rooted). A `git commit -a`
+ * (including a combined short cluster like `-am`) is classified the same way
+ * `git add -A` is, because `-a` stages every tracked modification —
+ * including tracked `.planning/` files — before the commit runs (#3585 F3).
+ * An invocation that reaches is a violation UNLESS it sits inside an open
+ * `commit_docs` conditional in the SAME fenced block, carries an exclude
+ * pathspec naming `.planning`, or the line carries a tracked
+ * `# gsd-scan-ignore: #NNN` declaration (shared machinery — see
+ * tests/helpers/shipped-command-scan.cjs).
+ *
+ * ## Known limits
+ *
+ * This guard is a lightweight, line/token-oriented scan, not a shell
+ * interpreter — it targets ACCIDENTAL reintroduction of an unguarded
+ * `.planning/`-reaching stage by a contributor editing shipped content, not
+ * a determined attempt to defeat it. An isolated security review (#3585)
+ * empirically confirmed the following shapes stage `.planning/` at runtime
+ * while scoring ZERO offenders here, and none of them is a shape GSD
+ * workflow content actually uses — chasing them means writing a shell
+ * interpreter:
+ *   - `eval "git add -A"` — the invocation lives inside a string literal
+ *     `eval` re-parses at runtime, not inside argv this scan can see.
+ *   - `find .planning -type f | xargs git add` — the reaching argument
+ *     arrives via a pipeline at runtime, never appearing as a literal
+ *     `git add` argument in the source text.
+ *   - `f() { git add -A; }` — a one-line shell function body; this scan has
+ *     no notion of function definitions or of a later, unseen call site.
+ *   - a backslash line-continuation splitting one logical command across two
+ *     physical lines — this scan is line-based and never rejoins them.
+ * Separately, and independently of the above, this module models only
+ * `git add` and `git commit -a`/`--all` as staging commands. It does NOT
+ * model `git stash`, `git rm --cached`, `git restore --staged`, or
+ * `git update-index --add` — each of these can also move `.planning/` files
+ * into a state a subsequent commit picks up, and none of them is recognized
+ * by this scan.
  */
 
 const fs = require('fs');
@@ -45,8 +78,15 @@ const FENCE_RE = /^(`{3,}|~{3,})/;
 // spec's literal list.
 const NON_COMMAND_PREFIX = new Set(['then', 'else', 'do', 'time', 'exec', 'nohup', 'env', 'command', '$', '-', '*']);
 
+// AN ASSIGNMENT IS A SKIPPABLE PREFIX ONLY WHEN IT IS NOT A SUBSTITUTION —
+// deliberately the same rule as shellDashCPayloads's `skippable` in
+// shipped-command-scan.cjs (see its comment for the `V=$(git add -A)` vs
+// `FOO=1 git add -A` distinction). This divergence is precisely what the
+// shared-helper extraction (#3585) was meant to prevent; kept duplicated
+// here only because this file's domain (git-add reach) is narrower than
+// that file's invoker search, per the NON_COMMAND_PREFIX comment above.
 const isSkippable = (t) => t.redir
-  || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.value)
+  || (/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/.test(t.value) && !t.value.includes('$('))
   || NON_COMMAND_PREFIX.has(t.value);
 
 // One line, split into shell segments (top-level `;`/`&`/`&&`/`||`
@@ -95,9 +135,14 @@ const rawSlice = (src, t) => src.slice(t.start, t.end);
 // EXCEPT `.planning/`, so an exclude pathspec naming `.planning` neutralizes
 // the wildcard/blanket forms too, not only a literal `.planning` path
 // argument. Checked first, over every arg, before any reach rule fires.
+// Shared with the `git commit -a` check below (#3585 F3) — the same
+// pathspec override applies to a commit invocation carrying an exclude arg.
+const hasPlanningExcludePathspec = (argTokens, src) => argTokens.some(
+  (t) => /:!.*\.planning/.test(rawSlice(src, t)),
+);
+
 const reachesPlanning = (argTokens, src) => {
-  const hasPlanningExclude = argTokens.some((t) => /:!.*\.planning/.test(rawSlice(src, t)));
-  if (hasPlanningExclude) return false;
+  if (hasPlanningExcludePathspec(argTokens, src)) return false;
   for (const t of argTokens) {
     if (t.value === '-A' || t.value === '--all' || t.value === '.' || t.value === '-u') return true;
   }
@@ -110,6 +155,15 @@ const reachesPlanning = (argTokens, src) => {
     // `$` is doc notation, not a shell variable, and must NOT trigger this —
     // the regex requires the `$` explicitly so it never does.
     if (/\$\{?[A-Za-z_]/.test(raw)) return true;
+    // Command substitution ($( or backtick) — equally opaque to static
+    // analysis as $VAR/${VAR} above, and for the same reason: whatever it
+    // expands to might be planning-rooted, and this scan cannot run the
+    // shell to find out. Fail closed (#3585 F2).
+    if (raw.includes('$(') || raw.includes('`')) return true;
+    // --pathspec-from-file names an external file listing the paths to
+    // stage; the file's contents are exactly as unknowable statically as an
+    // unresolved shell variable, so this also fails closed (#3585 F2).
+    if (/^--pathspec-from-file(?:=|$)/.test(raw)) return true;
   }
   return false;
 };
@@ -129,16 +183,63 @@ const classifySegment = ({ tokens, src }) => {
   const bare = bareCommandName(tokens[ci]);
   if (bare !== 'git' && !/\/git$/.test(bare)) return null;
 
+  // A flag's VALUE is not itself a flag. `git -C <dir> add -A` must still
+  // reach `add` — `-C`, `--git-dir`, `--work-tree`, `--namespace`, and `-c`
+  // (in their SEPARATE-value spellings) all consume the next token as their
+  // argument. The glued forms (`--git-dir=<p>`, `-C<dir>`) already carry
+  // their value in the same token and need no extra consumption; an explicit
+  // set (rather than "consume the token after every flag") is what keeps
+  // `git --no-pager add -A` from swallowing `add` as `--no-pager`'s value.
+  const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
   let addIdx = -1;
   for (let i = ci + 1; i < tokens.length; i += 1) {
     if (tokens[i].redir) continue;
-    if (tokens[i].value.startsWith('-')) continue; // a flag on git itself; keep looking
+    if (tokens[i].value.startsWith('-')) {
+      if (GIT_VALUE_FLAGS.has(tokens[i].value)) i += 1; // consume the flag's separate value
+      continue; // a flag on git itself; keep looking
+    }
     addIdx = i;
     break;
   }
-  if (addIdx === -1 || tokens[addIdx].value !== 'add') return null;
+  if (addIdx === -1) return null;
+  const subcommand = tokens[addIdx].value;
+  if (subcommand !== 'add' && subcommand !== 'commit') return null;
 
   const argTokens = tokens.slice(addIdx + 1).filter((t) => !t.redir);
+
+  // tokenize() has no notion of subshell structure: `V=$(git add -A)`'s
+  // closing `)` is not consumed as syntax, it is just another character
+  // glued onto whatever token happens to be last (`-A)`). That is invisible
+  // to the substring-based reach rules (`.planning`, `$VAR`) but breaks the
+  // EXACT-flag comparisons (`t.value === '-A'`) reachesPlanning also relies
+  // on. Only strip it when the command itself was resolved via a `$(` glue
+  // (tokens[ci] carrying `$(` is how bareCommandName found "git" at all —
+  // see the comment above), and only the one trailing, unquoted `)` that
+  // substitution's own opener is owed.
+  if (tokens[ci].value.includes('$(') && argTokens.length) {
+    const last = argTokens[argTokens.length - 1];
+    const mask = last.qmask || '0'.repeat(last.value.length);
+    if (last.value.endsWith(')') && mask[mask.length - 1] === '0') {
+      argTokens[argTokens.length - 1] = { ...last, value: last.value.slice(0, -1) };
+    }
+  }
+
+  if (subcommand === 'commit') {
+    // `git commit -a`/`--all` (including a combined short cluster like
+    // `-am`) stages every tracked modification, which includes tracked
+    // `.planning/` files, so it bypasses the gate exactly as `git add -A`
+    // does (#3585 F3). A short cluster is any single-dash, letters-only
+    // flag that carries `a` among its letters (`-am`, `-ma`); `--amend` is
+    // a distinct double-dash flag and is never matched by this pattern.
+    const hasCommitAllFlag = argTokens.some((t) => {
+      if (t.value === '--all') return true;
+      return /^-[a-zA-Z]+$/.test(t.value) && t.value.includes('a');
+    });
+    if (!hasCommitAllFlag) return { reaches: false };
+    if (hasPlanningExcludePathspec(argTokens, src)) return { reaches: false };
+    return { reaches: true };
+  }
+
   return { reaches: reachesPlanning(argTokens, src) };
 };
 
@@ -240,7 +341,12 @@ const scanText = (file, text) => {
         guardOpenDepth = ifDepth;
       }
     } else if (firstToken === 'fi') {
-      ifDepth -= 1;
+      // Clamped, not raw decrement. A stray/unbalanced `fi` must fail CLOSED
+      // (report), never open: an unclamped negative ifDepth lets a LATER
+      // `if` set guardOpenDepth = 0, and the guard test `guardOpenDepth !==
+      // null` reads zero as an OPEN guard — silently guarding an unrelated
+      // `git add -A` that follows.
+      ifDepth = Math.max(0, ifDepth - 1);
       if (guardOpenDepth !== null && ifDepth < guardOpenDepth) guardOpenDepth = null;
     }
 

@@ -1176,6 +1176,17 @@ tracking issue or URL. Both guards share one tokenizer and one marker implementa
 (`tests/helpers/shipped-command-scan.cjs`) so the two conventions can never drift into two rules
 wearing one name.
 
+**Known limits.** The scan (`tests/helpers/planning-add-guard.cjs`) is a token-oriented text scan,
+not a shell interpreter, and it targets accidental reintroduction of an unguarded stage by a
+contributor editing shipped content — not a determined bypass. Four shapes are confirmed (#3585)
+to stage `.planning/` at runtime while scoring zero offenders, and none is a shape GSD content
+actually uses: `eval "git add -A"`, `find .planning -type f | xargs git add`, a one-line shell
+function body (`f() { git add -A; }`), and a backslash line-continuation split across two physical
+lines. The scan also only models `git add` and `git commit -a`/`--all` as staging commands — it
+does not recognize `git stash`, `git rm --cached`, `git restore --staged`, or
+`git update-index --add`, any of which can also move `.planning/` content into a state a later
+commit picks up.
+
 ### CI Test Quality Checks
 
 The following checks run on every PR in addition to the test suite:
