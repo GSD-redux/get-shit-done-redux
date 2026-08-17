@@ -332,34 +332,40 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
  * six runtimes the inline loop still served: claude, cline, codex, hermes,
  * kilo, opencode.
  *
- * What is STILL genuinely deferred, and why — two findings from wiring the
- * six runtimes' REAL `capability.json` entries and deleting the inline loop
- * (`_DESCRIPTOR_AGENTS_RUNTIMES`), rather than argued from this module alone:
+ * Both findings the prior revision of this comment named as STILL deferred
+ * are now CLOSED (#2875 Part 2 Task A/B/C), measured against the real
+ * `capability.json` entries and the real production entry points, not
+ * argued from this module alone:
  *
- * 1. **kilo/opencode never reach `layout.kinds` at all.** Both declare
- *    `hostBehaviors.combinedFamilyInstall`, which routes the real install
- *    through `installOpencodeFamilyArtifacts` (install-engine.cts) — a
- *    bespoke orchestrator that stages ONLY `commands` + `skills` and never
- *    calls `resolveRuntimeArtifactLayout` at all. Declaring an `agents` entry
- *    in their `capability.json` without ALSO teaching
- *    `installOpencodeFamilyArtifacts` to stage it would be inert on the real
- *    install path — the exact #1879-F15 failure mode (a green, merged, dead
- *    fix) — while still being live on the `/gsd:surface` path (next finding).
- * 2. **A `capability.json` `agents` entry activates `/gsd:surface` /
- *    `applySurface` immediately, independent of `bin/install.js`.**
- *    `applySurface` iterates `layout.kinds` unconditionally — there is no
- *    `_DESCRIPTOR_AGENTS_RUNTIMES`-equivalent gate on that path. So adding a
- *    descriptor `agents` entry for a runtime that has never had one (cline,
- *    codex, hermes today) changes `/gsd:surface`'s real behavior for that
- *    runtime the moment the registry is regenerated, even before
- *    `bin/install.js`'s inline loop is touched at all. That is a live
- *    production behavior change on a path this module's own tests don't
- *    cover with golden fixtures the way `install` is — it needs its own
- *    verification, not a side effect of closing the install-path gap.
+ * 1. **kilo/opencode reaching `layout.kinds`.** `installEngine.
+ *    installAgentsKindStandalone` (install-engine.cts) is called from inside
+ *    `installOpencodeFamilyArtifacts` and resolves the agents kind through
+ *    THIS SAME `resolveRuntimeArtifactLayout`/`convertedAgentsKind` path —
+ *    `installOpencodeFamilyArtifacts` no longer stages only `commands` +
+ *    `skills`. `bin/install.js`'s legacy-flat local path (claude-local,
+ *    `hostBehaviors.localInstallStyle === 'legacy-flat'`) reaches the SAME
+ *    generic loop only via `installRuntimeArtifacts`'s conditional
+ *    `_isSkillsRuntime` branch; a call to `installAgentsKindStandalone` was
+ *    added at claude-local's own call site to cover that scope too — the
+ *    install-tree golden fixture (`tests/fixtures/install-tree/claude-local.json`)
+ *    is what caught the gap when it was first missed.
+ * 2. **`/gsd:surface` / `applySurface` activation.** Confirmed convergent,
+ *    not merely non-broken: for all six runtimes (claude, cline, codex,
+ *    hermes, kilo, opencode), staging via `applySurface` into a freshly
+ *    wiped `agents/` directory produces byte-identical output (including
+ *    filenames) to `installRuntimeArtifacts`'s own write — verified directly
+ *    against the built registry, not inferred.
+ *
+ * The inline loop (`_DESCRIPTOR_AGENTS_RUNTIMES` and the `bin/install.js`
+ * agent-staging block it gated) is DELETED — every runtime the registry
+ * declares an `agents` kind for is descriptor-driven now, including a
+ * seventh runtime (`kimi-code`) this comment's own prior measurement missed
+ * (it fell through the inline loop's generic `else if` branch, same as
+ * claude, with no dedicated dialect arm — caught by the same golden fixture).
  *
  * Codex's `config.toml [agents.gsd-*]` strip (`bin/install.js`, under
- * `isMinimalMode` + `hostBehaviors.tomlConfigInstall`) is DELIBERATELY not
- * addressed by any of the above: it mutates a host config file, not the
+ * `isMinimalMode` + `hostBehaviors.tomlConfigInstall`) remains the one
+ * genuinely out-of-scope constraint: it mutates a host config file, not the
  * agents directory, and no descriptor kind models host-config mutation. It
  * stays exactly where it is.
  *

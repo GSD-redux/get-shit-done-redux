@@ -1236,6 +1236,88 @@ function installOpencodeFamilySkills(
 }
 
 // ---------------------------------------------------------------------------
+// installAgentsKindStandalone
+// ---------------------------------------------------------------------------
+
+/**
+ * Install the descriptor-driven `agents` kind for a runtime OUTSIDE the
+ * generic `installRuntimeArtifacts` layout loop — i.e. any runtime/scope
+ * combination that never reaches that loop's own `layout.kinds` iteration.
+ * Two such call sites exist (#2875 Part 2):
+ *
+ * 1. **OpenCode-family runtimes** (OpenCode/Kilo, Task A) — `hostBehaviors.
+ *    combinedFamilyInstall` makes `installRuntimeArtifacts` early-return into
+ *    `installOpencodeFamilyArtifacts` instead, which stages commands+skills
+ *    via its OWN bespoke writers and never called `resolveRuntimeArtifactLayout`
+ *    for agents at all before this function existed. Declaring a
+ *    `capability.json` `agents` entry for them without this would be inert
+ *    on the real install path while live on `/gsd:surface` (#1879-F15).
+ * 2. **Claude local** (`bin/install.js`'s `install()`, `_isSkillsRuntime ===
+ *    false` branch) — `hostBehaviors.localInstallStyle === 'legacy-flat'`
+ *    routes claude-local's commands/skills through `copyWithPathReplacement`
+ *    instead of the layout loop, so it never reached `installRuntimeArtifacts`
+ *    either. Its agents were previously written ONLY by the now-deleted
+ *    inline agent-staging loop (Task C) — deleting that loop without this
+ *    call site regressed claude-local's agents/ to empty (caught by the
+ *    install-tree golden fixture, `tests/fixtures/install-tree/claude-local.json`).
+ *
+ * Reuses the SAME descriptor path every runtime inside the generic loop uses
+ * (`layout.kinds` → `agentsKindEntry.stage(resolvedProfile, agentCtx)` →
+ * `_copyStaged`), rather than forking a second agent-staging pipeline. A
+ * runtime/scope whose resolved layout declares no `agents` kind at all
+ * (e.g. pi, whose `artifactLayout` is empty for both scopes) is a no-op
+ * (`null`) — mirrors `installOpencodeFamilySkills`'s own
+ * `if (!skillsKindEntry) return 0` contract.
+ *
+ * @param runtime - canonical runtime id
+ * @param targetDir - resolved runtime config directory
+ * @param scope - install scope ('global' | 'local')
+ * @param resolvedProfile - from resolveProfile() / resolveEffectiveProfile()
+ * @param pathPrefix - computed config-path prefix for body rewrites (ADR-1235 §1 agentCtx)
+ * @param resolveAttribution - injection: (runtime) => attribution string | undefined
+ * @param capabilityRegistry - #2362: optional composed capability registry, threaded
+ *   straight through to resolveRuntimeArtifactLayout (unused by the agents kind today,
+ *   but kept for signature parity with the skills/commands siblings on this call tree)
+ * @returns `{ sourceDir, destDir }` describing what was written, or `null` when the
+ *   runtime's layout declares no `agents` kind.
+ */
+function installAgentsKindStandalone(
+  runtime: string,
+  targetDir: string,
+  scope: string,
+  resolvedProfile: any,
+  pathPrefix: string,
+  resolveAttribution: ResolveAttribution = () => undefined,
+  capabilityRegistry?: any,
+): { sourceDir: string; destDir: string } | null {
+  const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as 'global' | 'local', capabilityRegistry);
+  const agentsKindEntry = layout.kinds.find((k: any) => k.kind === 'agents');
+  if (!agentsKindEntry) return null;
+
+  // ADR-1235 §1: same agentCtx shape createRuntimeArtifactInstallPlan builds
+  // for the generic layout-driven loop (runtime-artifact-install-plan.cts) —
+  // targetDir IS the install root the inline agent loop called `targetDir`.
+  const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
+  const agentCtx = { runtime, pathPrefix, attribution, targetDir };
+  const stagedDir: string = agentsKindEntry.stage(resolvedProfile, agentCtx);
+
+  const installRoot: string = (typeof agentsKindEntry.home === 'string' && agentsKindEntry.home !== '') ? agentsKindEntry.home : targetDir;
+  const dest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(installRoot, agentsKindEntry.destSubpath);
+  // Symlink-escape guard — same gate _copyStaged/installOpencodeFamilySkills apply
+  // to their own writes (#2393 GSD_ALLOW_SYMLINKED_DEST opt-in preserved).
+  if (hasExistingSymlinkBetween(path.resolve(installRoot), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+    throw new Error(
+      `installAgentsKindStandalone: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to write. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
+    );
+  }
+  installFs().mkdirSync(dest, { recursive: true });
+  _removeGsdEntries(dest, agentsKindEntry);
+  _copyStaged(stagedDir, dest, agentsKindEntry, targetDir, runtime);
+
+  return { sourceDir: stagedDir, destDir: dest };
+}
+
+// ---------------------------------------------------------------------------
 // installOpencodeFamilyCommands
 // ---------------------------------------------------------------------------
 
@@ -1529,6 +1611,11 @@ function installOpencodeFamilyArtifacts(
   );
   installOpencodeFamilyCommands(runtime, commandDir, rawCommandsDir, pathPrefix, resolveAttribution);
   const skillsWritten = installOpencodeFamilySkills(runtime, configDir, rawCommandsDir, pathPrefix, resolveAttribution, resolvedProfile, capabilityRegistry);
+  // #2875 Part 2 Task A: agents kind, reusing the SAME descriptor path the
+  // generic layout-driven loop uses (see installAgentsKindStandalone's own
+  // doc). A `null` result means this runtime's layout declares no `agents`
+  // kind — nothing written, nothing reported (no #1879-F15 inert claim).
+  const agentsResult = installAgentsKindStandalone(runtime, configDir, scope, resolvedProfile, pathPrefix, resolveAttribution, capabilityRegistry);
 
   _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
 
@@ -1543,6 +1630,7 @@ function installOpencodeFamilyArtifacts(
     kinds: [
       { kind: 'commands', sourceDir: rawCommandsDir, destDir: commandDir },
       { kind: 'skills', sourceDir: rawCommandsDir, destDir: configDir, written: skillsWritten },
+      ...(agentsResult ? [{ kind: 'agents', sourceDir: agentsResult.sourceDir, destDir: agentsResult.destDir }] : []),
     ],
     cleanup: [],
     postSteps: { hermesBareStemCleanup: false, nativePlugin: Boolean(behaviors.nativePlugin) },
@@ -1628,6 +1716,7 @@ export = {
   uninstallRuntimeArtifacts,
   installOpencodeFamilySkills,
   installOpencodeFamilyCommands,
+  installAgentsKindStandalone,
   installOpencodeFamilyArtifacts,
   _installNativePluginIfDeclared,
   _hostBehaviors,

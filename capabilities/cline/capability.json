@@ -28,6 +28,14 @@
           "nesting": "nested",
           "recursive": false,
           "converter": "convertClaudeCommandToClineSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToClineAgent"
         }
       ],
       "local": []

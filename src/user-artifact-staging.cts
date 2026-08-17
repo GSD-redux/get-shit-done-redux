@@ -24,12 +24,18 @@
  * target this phase's call sites wipe, so staging survives all of them,
  * while still resolving inside `configDir`):
  *
- *   <stagingRoot>/<sha256(destDir)-16>/record.json   — the commit point
- *   <stagingRoot>/<sha256(destDir)-16>/files/<name>  — copied, symlink-safe
+ *   <stagingRoot>/<sha256(destDir)-16>-<sha256(runId)-8>/record.json  — the commit point
+ *   <stagingRoot>/<sha256(destDir)-16>-<sha256(runId)-8>/files/<name> — copied, symlink-safe
  *
- * The sha256-of-destDir key (not a raw path) keeps the entry-dir name
- * filesystem-safe and makes staging the SAME destDir twice reuse/overwrite
- * the same entry rather than accumulating orphans (test-matrix A6).
+ * The sha256-of-destDir component (not a raw path) keeps the entry-dir name
+ * filesystem-safe; the sha256-of-runId component (`opts.runId`, default
+ * `String(process.pid)`) discriminates concurrent RUNS targeting the same
+ * destDir (module doc "Concurrency" below) while still making repeat calls
+ * from the SAME run (the same process, the default case) reuse/overwrite the
+ * same entry rather than accumulating orphans (test-matrix A6) — hashing
+ * `runId` rather than using it raw keeps the same filesystem-safety/bounded-
+ * length guarantee the destDir hash already provides, regardless of what a
+ * caller passes.
  *
  * `record.json` (`{ destDir, names, timestamp }`) is written AFTER every
  * file copy lands, never before — a half-written staging directory (a crash
@@ -130,21 +136,66 @@
  * inspection, matching this module's existing "malformed record left alone"
  * precedent (C6).
  *
- * KNOWN LIMITATION — concurrent installs targeting the SAME `destDir` are
- * NOT safe against each other (test-matrix row F1, documented rather than
- * closed — see that row's own comment for the full reasoning): the staging
- * key is `sha256(destDir)`, and both `stageUserArtifacts`'s entryDir-clearing
- * step and `recoverOrphanedUserArtifacts`'s end-of-batch cleanup
- * unconditionally `rmSync` an `entryDir` they did not necessarily create —
- * two processes racing the same `destDir` can have one wipe the other's
- * in-flight or just-committed batch. Closing this fully requires either a
- * cross-process lock (itself a design surface: a lock file that outlives its
- * holder needs staleness detection, adding its own crash-safety questions no
- * smaller than the one it would close) or a guarantee that GSD installs
- * never run concurrently against the same `configDir` — neither is a call
- * this module can make unilaterally, so it is documented, not silently
- * patched over with a partial mitigation that would not actually close the
- * race and could introduce new ordering bugs of its own.
+ * CONCURRENCY (#2875 defect fix, test-matrix row F1 — previously documented
+ * as an open limitation requiring a cross-process lock; that reasoning was
+ * revisited and found unnecessarily strong): two RUNS (processes) racing the
+ * same `destDir` no longer share an entry directory. The staging key is
+ * `sha256(destDir)` COMBINED with `sha256(runId)` (`opts.runId`, default
+ * `String(process.pid)`) — the OS guarantees PID uniqueness among
+ * SIMULTANEOUSLY RUNNING processes, so two concurrently-live installs always
+ * key to different entry directories, and `stageUserArtifacts`'s
+ * entryDir-clearing step / `recoverOrphanedUserArtifacts`'s end-of-batch
+ * `rmSync` can therefore never destroy a DIFFERENT live run's in-flight or
+ * just-committed batch — the destructive clear is safe by construction, no
+ * lock needed. A crashed run's orphaned entry is not lost either: it is
+ * swept the ordinary way, by a LATER run's `recoverOrphanedUserArtifacts`
+ * pass (module doc "Failure posture" / C1-C4) — recovery iterates every
+ * entry under `stagingRoot` regardless of which run's key produced it, and
+ * the C2 never-overwrite guard means a stale orphan from an earlier crashed
+ * run can never clobber a newer, already-restored file.
+ *
+ * OWNER-LIVENESS GUARD (#2875 defect fix, closes the F1 residual above — a
+ * SECOND run's recovery pass executing WHILE a first, still-live run is
+ * between `stageUserArtifacts`'s commit and its own
+ * `restoreStagedUserArtifacts`/`discardStagedUserArtifacts` call is not an
+ * exotic interleaving: `recoverOrphanedUserArtifacts` runs as the FIRST
+ * statement of both `install()` and `uninstall()`, so it is exactly what
+ * happens whenever a second install starts while a first is still inside its
+ * wipe): `record.json` now carries `runId` RAW (unhashed — `stagingKeyFor`
+ * still only ever sees the hash) alongside `timestamp`, and
+ * `recoverOrphanedUserArtifacts` treats an entry as belonging to a STILL-LIVE
+ * run — leaving it COMPLETELY untouched, neither recovered nor swept, never
+ * even attempting `assertDestWithinConfigHome` against it — when ALL of:
+ * (1) `runId` parses as a valid positive-integer pid (`parseOwnerPid` —
+ * `"0"` and negative values are excluded because POSIX treats those as a
+ * process-GROUP signal, never a single pid); (2) `process.kill(pid, 0)`
+ * does not report `ESRCH` (`isProcessAlive` — cross-platform pid-existence
+ * probe that sends no actual signal; any outcome OTHER than "provably dead"
+ * is treated as "alive", including `EPERM`); (3) the record's `timestamp` is
+ * within `OWNER_LIVENESS_GRACE_MS` (5 minutes — a generous multiple of this
+ * codebase's own 60s npm-subprocess timeout convention, chosen because the
+ * failure direction is asymmetric: skipping a genuine orphan for up to 5
+ * minutes merely delays recovery, the bytes stay on disk, whereas sweeping a
+ * live run's entry destroys data outright) of `clock.now()` — the pid-reuse
+ * guard: an OS pid recycled onto an unrelated, currently-alive later process
+ * cannot mask a genuine orphan past this window regardless of what
+ * `process.kill` reports. `recoverOrphanedUserArtifacts` now accepts the
+ * SAME `{clock}` seam `stageUserArtifacts` already does (default the real
+ * `Date`) — never reads the wall clock directly. Every one of these checks
+ * degrades toward NOT protecting (i.e. toward the pre-this-fix, always-
+ * eligible-for-recovery behavior) rather than toward protecting forever: a
+ * missing/non-numeric `runId` (an old record, or a hand-edited one) is never
+ * treated as live, and an unparsable `timestamp` never grants indefinite
+ * protection — see `parseOwnerPid`/`ownerStillLive`'s own doc comments.
+ *
+ * This closes the F1 residual as previously documented: recovery no longer
+ * has any interleaving with a live peer run that can destroy that peer's
+ * data. What remains, and is inherent to any liveness probe rather than a
+ * gap in this specific check: a false "alive" reading (an unrelated process
+ * reusing the crashed run's exact pid, itself started within the same
+ * `OWNER_LIVENESS_GRACE_MS` window) delays that one orphan's recovery by up
+ * to 5 minutes — never data loss, only a bounded delay, and exactly the
+ * direction this guard is biased toward.
  *
  * Explicitly out of scope (40-design.md "Explicitly out of scope"): fsync
  * durability (crash-safe against process death only, not power loss);
@@ -183,6 +234,13 @@ interface ClockLike {
 
 interface StageOptions {
   clock?: ClockLike;
+  /** Discriminates concurrent RUNS staging the same `destDir` (module doc
+   *  "Concurrency") — defaults to `String(process.pid)`, real-process
+   *  identity, never faked by production code. Tests inject a distinct
+   *  string here to simulate two concurrent runs without forking a real OS
+   *  process, the same role `clock` plays for simulating time. Hashed, not
+   *  used raw, when building the staging key — see `stagingKeyFor`. */
+  runId?: string;
 }
 
 /** Maps a staged file name to a DIFFERENT destination file name on restore —
@@ -216,6 +274,13 @@ interface StagingRecord {
   destDir: string;
   names: string[];
   timestamp: string;
+  /** The staging `runId` (module doc "Concurrency"), carried RAW (not
+   *  hashed) so `recoverOrphanedUserArtifacts` can tell a still-live owner
+   *  from a genuine orphan (module doc "Owner-liveness guard"). Optional —
+   *  a record written before this field existed, or hand-edited, omits or
+   *  malforms it; that case is NEVER treated as "live forever" (see
+   *  `parseOwnerPid`). */
+  runId?: string;
 }
 
 interface RecoveredEntry {
@@ -230,7 +295,8 @@ interface SkippedEntry {
     | 'destDir-symlink-escape'
     | 'dest-already-present'
     | 'recover-error'
-    | 'entry-recovery-error';
+    | 'entry-recovery-error'
+    | 'owner-still-live';
   /** File name this row is about, when the failure is per-file rather than
    *  per-entry (`recover-error`). Absent for entry-level rows. */
   name?: string;
@@ -244,8 +310,95 @@ interface RecoveryResult {
   skipped: SkippedEntry[];
 }
 
-function stagingKeyFor(destDir: string): string {
-  return crypto.createHash('sha256').update(path.resolve(destDir)).digest('hex').slice(0, 16);
+interface RecoveryOptions {
+  clock?: ClockLike;
+}
+
+function stagingKeyFor(destDir: string, runId: string): string {
+  const destHash = crypto.createHash('sha256').update(path.resolve(destDir)).digest('hex').slice(0, 16);
+  // #2875 defect fix (test-matrix F1): hashed, not used raw — bounds the
+  // discriminator's contribution to the entry-dir name and keeps it
+  // filesystem-safe regardless of what a caller passes as `runId`, matching
+  // the same treatment `destDir` already gets.
+  const runHash = crypto.createHash('sha256').update(runId).digest('hex').slice(0, 8);
+  return `${destHash}-${runHash}`;
+}
+
+// #2875 defect fix (test-matrix F1 residual — owner-liveness guard): the
+// grace window past which a record is treated as orphaned REGARDLESS of
+// whether `process.kill(pid, 0)` still reports the pid as alive — closes the
+// pid-reuse gap (a crashed run's pid reassigned to an unrelated later
+// process must not mask a genuine orphan forever). 5 minutes is a generous
+// multiple of the codebase's own bound on a single install-tree operation
+// (`npm` subprocess timeout convention is 60s — see this module's own
+// "KNOWN DEFECTS" precedent in CLAUDE.md's "Unbounded Subprocesses" row);
+// staging's own copy loop is a handful of small, flat, user-owned files, far
+// cheaper than an `npm` call. The FAILURE DIRECTION is asymmetric by design
+// (module doc "Owner-liveness guard"): skipping a real orphan for up to this
+// long merely delays recovery — the bytes stay on disk — whereas sweeping a
+// live run's entry destroys data outright, so this constant is deliberately
+// generous rather than tight.
+const OWNER_LIVENESS_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Parses `runId` (raw, from an on-disk `record.json` — attacker/hand-edit
+ * influenceable, same threat model as every other on-disk field this module
+ * reads, module doc "Confinement") into a pid `process.kill` can safely take.
+ * Returns `null` — never throws — for anything that is not a plain positive
+ * integer string: absent (pre-this-fix record), the wrong type (a
+ * hand-edited record could put a number, an object, anything), `"0"`
+ * (`process.kill(0, ...)` signals the WHOLE process group, never a single
+ * pid — deliberately excluded by the `[1-9]` leading-digit requirement), or
+ * a negative/non-integer value (POSIX also treats a negative pid as a
+ * process-GROUP signal). `null` here means "no liveness claim to evaluate"
+ * — the caller falls back to unconditional recovery eligibility, the exact
+ * pre-this-fix behavior, so an old or malformed record is never treated as
+ * "live forever" (module doc "Owner-liveness guard").
+ */
+function parseOwnerPid(runId: unknown): number | null {
+  if (typeof runId !== 'string' || !/^[1-9][0-9]*$/.test(runId)) return null;
+  const pid = Number(runId);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
+/**
+ * True when a process with this pid currently exists. `process.kill(pid, 0)`
+ * sends no signal, only probes existence — throws `ESRCH` ("no such
+ * process") when it is provably dead. Any OTHER outcome (`EPERM` — the
+ * process exists but this process lacks permission to signal it; any other
+ * platform quirk) is treated as "still alive" — the same NOT-sweeping bias
+ * `parseOwnerPid`/`OWNER_LIVENESS_GRACE_MS` apply: an ambiguous liveness
+ * result must never be read as license to sweep.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * True when `record` still belongs to a run recovery must leave entirely
+ * alone (module doc "Owner-liveness guard") — a valid pid (`parseOwnerPid`),
+ * that pid currently exists (`isProcessAlive`), AND the record is within
+ * `OWNER_LIVENESS_GRACE_MS` of `clock.now()`. All three degrade toward
+ * "not protected" (eligible for ordinary recovery, this function's existing
+ * pre-this-fix behavior) rather than toward "protected forever": a missing
+ * pid, a dead pid, or an unparsable/missing `timestamp` (already required
+ * and validated elsewhere in this module, but re-checked here defensively)
+ * all return `false`. The grace check is unconditional once a pid IS deemed
+ * alive — a stale-but-apparently-live claim past the grace window is treated
+ * as orphaned regardless (the pid-reuse guard).
+ */
+function ownerStillLive(record: StagingRecord, clock: ClockLike): boolean {
+  const pid = parseOwnerPid(record.runId);
+  if (pid === null) return false;
+  if (!isProcessAlive(pid)) return false;
+  const recordMs = Date.parse(record.timestamp);
+  if (!Number.isFinite(recordMs)) return false;
+  return clock.now() - recordMs < OWNER_LIVENESS_GRACE_MS;
 }
 
 /**
@@ -308,14 +461,17 @@ function stagedCopy(srcPath: string, destPath: string): void {
  * doc "Confinement").
  *
  * The staging entry dir is cleared FIRST (removed, then recreated) so a
- * repeat call for the same `destDir` (A6) never leaves files from a PRIOR
- * batch lingering alongside the new one — recovery and restore both iterate
+ * repeat call for the same `destDir` FROM THE SAME RUN (same `runId`, the
+ * default `process.pid` case — A6) never leaves files from a PRIOR batch
+ * lingering alongside the new one — recovery and restore both iterate
  * `record.names` so stale leftovers were already inert, but a stale-free
- * staging tree is what an operator inspecting it on disk expects to see.
+ * staging tree is what an operator inspecting it on disk expects to see. A
+ * DIFFERENT run's entry for the same `destDir` keys differently (module doc
+ * "Concurrency") and is never touched by this clearing step.
  */
 function stageUserArtifacts(destDir: string, fileNames: string[], stagingRoot: string, opts: StageOptions = {}): StagedUserArtifacts {
-  const { clock = Date } = opts;
-  const key = stagingKeyFor(destDir);
+  const { clock = Date, runId = String(process.pid) } = opts;
+  const key = stagingKeyFor(destDir, runId);
   const entryDir = path.join(stagingRoot, key);
   const filesDir = path.join(entryDir, 'files');
   const recordPath = path.join(entryDir, 'record.json');
@@ -347,6 +503,10 @@ function stageUserArtifacts(destDir: string, fileNames: string[], stagingRoot: s
     destDir: path.resolve(destDir),
     names: stagedNames,
     timestamp: new Date(clock.now()).toISOString(),
+    // #2875 defect fix (F1 residual — owner-liveness guard): carried RAW so
+    // a later recovery pass can tell a still-live owner from a genuine
+    // orphan (module doc "Owner-liveness guard") — see `ownerStillLive`.
+    runId,
   };
   installFs().writeFileSync(recordPath, JSON.stringify(record), 'utf8');
 
@@ -450,7 +610,8 @@ function discardStagedUserArtifacts(staged: StagedUserArtifacts): void {
  * the #1879-F15 inert-fix failure mode this module exists to avoid; see
  * bin/install.js's `install()`/`uninstall()` for the wiring.
  */
-function recoverOrphanedUserArtifacts(stagingRoot: string, configDir: string): RecoveryResult {
+function recoverOrphanedUserArtifacts(stagingRoot: string, configDir: string, opts: RecoveryOptions = {}): RecoveryResult {
+  const { clock = Date } = opts;
   const result: RecoveryResult = { recovered: [], skipped: [] };
   if (!installFs().existsSync(stagingRoot)) return result; // C5: no-op, no throw, no dir created
 
@@ -491,6 +652,17 @@ function recoverOrphanedUserArtifacts(stagingRoot: string, configDir: string): R
         record = parsed as StagingRecord;
       } catch {
         continue; // C6: corrupt/truncated JSON, ignored — never a crash
+      }
+
+      // #2875 defect fix (F1 residual — owner-liveness guard): checked
+      // BEFORE any confinement resolution or write attempt — a still-live
+      // owner's entry is left completely untouched, not merely un-swept
+      // (module doc "Owner-liveness guard"): this run does not restore the
+      // file to destDir on the live owner's behalf either, which would race
+      // that owner's own still-in-progress wipe/restore cycle.
+      if (ownerStillLive(record, clock)) {
+        result.skipped.push({ entryDir, reason: 'owner-still-live' });
+        continue;
       }
 
       const filesDir = path.join(entryDir, 'files');

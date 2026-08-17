@@ -2300,14 +2300,28 @@ describe('#2393: GSD_ALLOW_SYMLINKED_DEST opt-in for intentional symlinked-dest 
     }
   });
 
-  // Documented edge case: a broken symlink (target missing) is silently passed by
-  // both the default and opt-in paths. fs.existsSync follows the link and returns
-  // false, so the component loop terminates before the symlink check fires. This is
-  // pre-existing behavior — the fix preserves it. Subsequent mkdir may then fail or
-  // create the path through the resolved target; that's the caller's responsibility,
-  // not the symlink-escape guard's. Test pins the current behavior so any future
-  // change (e.g. switching to lstatSync for existence) is intentional.
-  test('broken symlink: silently passed (current behavior, preserved by fix)', (t) => {
+  // #2875 defect fix — REVERSES the previously-pinned "silently passed" contract
+  // this test used to name. The old reasoning ("existsSync(cursor) follows the
+  // link -> false -> loop terminates before the symlink check ever fires; the
+  // caller's subsequent mkdir/write is responsible for whatever happens next")
+  // no longer holds: an adversarial reviewer showed the "caller's responsibility"
+  // it rested on is unenforceable in practice — user-artifact-staging.cts's
+  // recovery path reads a staged file NAME out of an attacker-influenceable
+  // on-disk record (`record.json`) and writes through it without a human in the
+  // loop to notice a bad write; a dangling symlink planted at that destination
+  // (e.g. `<configDir>/USER-PROFILE.md -> <outside>/authorized_keys`) let the
+  // actual copy/write follow it and land attacker-chosen content OUTSIDE the
+  // install root, reproduced end-to-end. hasExistingSymlinkBetween now probes
+  // each path segment with `lstatSync` FIRST (see install-engine.cts's own doc
+  // comment on this change), which — unlike `existsSync` — never follows a
+  // symlink and succeeds for a dangling one, so a dangling symlink is now
+  // correctly seen AS a symlink component instead of "nothing here". The guard's
+  // promise is now: a dangling symlink anywhere on the path between root and
+  // destDir is refused exactly like a live one — default refuses outright,
+  // opt-in attempts to follow it (`realpathSync`) and, finding no target,
+  // refuses too (fail-closed on a broken symlink, same posture used elsewhere in
+  // this function for a `realpathSync` failure).
+  test('broken symlink: now refused by both the default and opt-in paths (#2875 fix)', (t) => {
     const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2393-broken-'));
     try {
       const danglingLink = path.join(configHome, 'skills');
@@ -2320,18 +2334,19 @@ describe('#2393: GSD_ALLOW_SYMLINKED_DEST opt-in for intentional symlinked-dest 
       }
       const destDir = path.join(danglingLink, 'gsd-foo');
 
-      // existsSync(danglingLink) follows the link → false → loop returns false early.
-      // Same behavior with and without opt-in. Test documents this so a future
-      // refactor (e.g. lstatSync-based existence) is a deliberate behavior change.
+      // lstatSync(danglingLink) succeeds (it IS a symlink, just a dangling one) —
+      // the segment loop now sees it as a symlink component and refuses.
       assert.strictEqual(
         hasExistingSymlinkBetween(configHome, destDir),
-        false,
-        'broken symlink: component loop terminates early (existsSync follows link → false)',
+        true,
+        'broken symlink: default path now refuses — lstatSync sees the dangling symlink as a symlink component',
       );
+      // Opt-in attempts to follow it via realpathSync, which throws ENOENT for a
+      // missing target — refused (fail-closed), not silently passed through.
       assert.strictEqual(
         hasExistingSymlinkBetween(configHome, destDir, { allowOptInFollow: true }),
-        false,
-        'broken symlink with opt-in: same early-termination behavior',
+        true,
+        'broken symlink with opt-in: realpathSync on a dangling target fails, so this refuses too (fail-closed)',
       );
     } finally {
       try { fs.unlinkSync(path.join(configHome, 'skills')); } catch { /* already gone */ }
@@ -2585,16 +2600,27 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       );
       const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
       assert.equal(result.recovered.length, 0, 'traversal name must never be restored');
-      // #2875 defect fix: the write this guard refuses would target
-      // `resolve(destDir, '../../../etc/passwd')` — the actual join the
-      // production code performs (`assertDestWithinConfigHome(confinedDestDir,
-      // name)`, confinedDestDir === destDir here) — NOT
-      // `path.join(configDir, '..', '..', '..', 'etc', 'passwd')`, which is
-      // one directory level further up (destDir is one level BELOW
-      // configDir) and can therefore never be created by this code path
-      // regardless of whether the guard works. The previous assertion
-      // checked the wrong path and could never fail.
-      assert.ok(!fs.existsSync(path.resolve(destDir, '../../../etc/passwd')));
+      // Neither the previous assertion (checked a path one level further up
+      // than production ever resolves, so it could never fail) nor a naive
+      // `resolve(destDir, name)` check (which, on a Linux runner, resolves to
+      // the REAL /etc/passwd — a file that pre-exists on disk regardless of
+      // whether this guard works, so `!existsSync(...)` fails unconditionally
+      // and proves nothing) exercises what the guard actually does. Trace the
+      // real call order in recoverOrphanedUserArtifacts: `srcPath =
+      // assertDestWithinConfigHome(filesDir, name)` is computed and throws
+      // FIRST — filesDir (`<stagingRoot>/<entry>/files`) is nested several
+      // levels below configDir, and `../../../etc/passwd` resolved against it
+      // still escapes filesDir's own root, so this throw fires before
+      // `destPath` (against confinedDestDir) is ever computed and before any
+      // read/write is attempted. The observable, platform-independent proof
+      // that the traversal was rejected — not merely that some unrelated
+      // system file didn't get overwritten — is that destDir's own directory
+      // listing stays exactly as this test left it: no file materialized
+      // there via the traversal name.
+      assert.deepStrictEqual(
+        fs.readdirSync(destDir), [],
+        'a rejected traversal name must never result in any file being written into destDir',
+      );
     } finally {
       cleanup(configDir);
     }
@@ -2652,7 +2678,18 @@ describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
       fs.mkdirSync(destDir, { recursive: true });
       const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
       fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'orphaned-content');
-      stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+      // user-artifact-staging.cts's owner-liveness guard (recoverOrphanedUserArtifacts)
+      // treats a record whose `runId` belongs to a currently-live process as
+      // "not an orphan yet" and skips the ENTIRE entry with reason
+      // 'owner-still-live' — before ever reaching the per-name
+      // dest-already-present check this test pins. `stageUserArtifacts`
+      // defaults `runId` to `String(process.pid)`, i.e. THIS test process,
+      // which is trivially alive for the whole duration of this in-process
+      // test. A real crashed run has a genuinely DEAD pid, so simulating one
+      // here requires an explicit dead `runId` — same convention
+      // tests/user-artifact-staging.test.cjs's C15 already establishes.
+      const deadPid = '999999';
+      stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: deadPid });
       cleanup(path.join(destDir, 'USER-PROFILE.md'));
 
       const outsideTarget = path.join(outside, 'authorized_keys');

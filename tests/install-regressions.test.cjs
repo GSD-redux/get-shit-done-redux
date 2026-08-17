@@ -1367,13 +1367,34 @@ describe('#1924: user artifacts survive a wipe via the durable staging path (ins
       );
     }
 
-    const destDir = createTempDir('gsd-1924-staging-dest-');
+    // user-artifact-staging.cts's recoverOrphanedUserArtifacts re-confines the
+    // record's destDir against configDir (module doc "Confinement"/E2) before
+    // recovering anything: `path.relative(configHome, record.destDir)` must
+    // resolve to a path that never leaves configHome, exactly matching every
+    // real call site (bin/install.js always stages/recovers a destDir that is
+    // a SUBDIRECTORY of configDir). destDir must therefore live under
+    // configDir here too — two unrelated sibling temp dirs (the smoke script's
+    // shortcut) trip E2's outside-confinement refusal and recovered stays
+    // empty, which is what silently diverged the smoke check from this suite.
+    //
+    // Second, separate divergence: the owner-liveness guard
+    // (recoverOrphanedUserArtifacts) skips an entry entirely, reason
+    // 'owner-still-live', whenever the record's `runId` names a currently-
+    // alive process — and `stageUserArtifacts` defaults `runId` to
+    // `String(process.pid)`, i.e. THIS test process, which is alive for the
+    // whole in-process round trip. A real crashed run has a genuinely DEAD
+    // pid; simulate that explicitly (same convention
+    // tests/user-artifact-staging.test.cjs's C15 uses) or recovery always
+    // reports this as "not an orphan yet" and never restores anything.
     const configDir = createTempDir('gsd-1924-staging-cfg-');
+    const destDir = path.join(configDir, 'skills');
     try {
+      fs.mkdirSync(destDir, { recursive: true });
       const content = '# My Profile\n\nSurvives via durable staging (#2875).\n';
       fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), content);
       const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
-      mod.stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+      const deadPid = '999999';
+      mod.stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: deadPid });
 
       // Simulate the #1874-F19 crash window: the wipe ran, the process died
       // before any restore.

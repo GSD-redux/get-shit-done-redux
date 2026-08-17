@@ -2241,11 +2241,16 @@ describe('resolveRuntimeArtifactLayout — cline scope-aware (Fix 2)', () => {
     assert.strictEqual(layout.kinds.length, 0, 'cline local must have 0 kinds');
   });
 
-  test('cline global: kinds.length === 1 (skills kind)', () => {
+  test('cline global: kinds.length === 2 (skills + agents kind, #2875 Part 2)', () => {
     const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
     const layout = resolveRuntimeArtifactLayout('cline', '/tmp/x', 'global');
-    assert.strictEqual(layout.kinds.length, 1, 'cline global must have 1 skills kind');
-    assert.strictEqual(layout.kinds[0].kind, 'skills');
+    // #2875 Part 2 (the agents-bypass closure): cline gained a descriptor-driven
+    // `agents` kind entry (capabilities/cline/capability.json), closing the
+    // inline-agent-loop bypass that used to serve it — see
+    // tests/agent-descriptor-parity.test.cjs's H2 row for the byte-parity proof.
+    assert.strictEqual(layout.kinds.length, 2, 'cline global must have 2 kinds (skills + agents)');
+    const kindNames = layout.kinds.map((k) => k.kind).sort();
+    assert.deepStrictEqual(kindNames, ['agents', 'skills']);
   });
 
   test('installRuntimeArtifacts cline local: no skills/ dir created', (t) => {
@@ -7166,7 +7171,7 @@ describe('#2875: user-artifact-staging — call-site integration (C7 anti-inertn
     // file WITHOUT restoring or discarding. This is exactly the state a
     // process death between the wipe and the restore leaves behind.
     const stagingRoot = _resolveUserArtifactStagingRoot(first.configDir);
-    const staged = stageUserArtifacts(gsdCoreDir, ['USER-PROFILE.md'], stagingRoot);
+    const staged = stageUserArtifacts(gsdCoreDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
     assert.deepEqual(staged.names, ['USER-PROFILE.md'], 'precondition: the orphan really did stage');
     fs.unlinkSync(profilePath);
     assert.ok(!fs.existsSync(profilePath), 'precondition: the file is genuinely gone before the second run');

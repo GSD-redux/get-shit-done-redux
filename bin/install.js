@@ -712,6 +712,7 @@ const {
   installRuntimeArtifacts,
   uninstallRuntimeArtifacts,
   installOpencodeFamilySkills,
+  installAgentsKindStandalone,
   _installNativePluginIfDeclared,
   _copyStaged,
   hasExistingSymlinkBetween,
@@ -8424,6 +8425,15 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         } catch (err) {
           console.error(`  ${red}✗${reset} Failed to restore dev-preferences.md: ${err.message}`);
         }
+      } else {
+        // #2875 defect fix: an existing-but-EMPTY dev-preferences.md was (and
+        // still is) never restored — the original truthy-content check is
+        // preserved byte-for-byte above — but the staged batch was never
+        // discarded either, leaking a <configDir>/.gsd-staging/ record
+        // forever and re-materializing the just-deleted file on a future
+        // install's orphan-recovery pass. Discard unconditionally when there
+        // is nothing to restore.
+        discardStagedUserArtifacts(stagedDevPrefs);
       }
     }
   }
@@ -8453,11 +8463,25 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       // migrateLegacyDevPreferencesToSkill's Map<string,string> contract is
       // unchanged — read the staged content back from disk (not an in-memory
       // value held across the wipe above).
+      //
+      // #2875 defect fix (readFileSync following a staged symlink) — matches
+      // install-engine.cts's _runLegacyInstallMigrations call site 1 exactly:
+      // readFileSync ALWAYS follows a symlink, so a staged artifact that is
+      // itself a symlink (user-artifact-staging.cts's "Symlink safety": a
+      // symlinked user artifact is recreated AS a symlink in the staging
+      // tree, never copied by content) would have its REFERENT's bytes read
+      // here and land in SKILL.md. Excluded from migration below and
+      // restored to its original location unchanged instead.
       const savedLegacyArtifacts = new Map();
+      const migratableLegacyNames = [];
       for (const name of stagedLegacyArtifacts.names) {
-        savedLegacyArtifacts.set(name, fs.readFileSync(path.join(stagedLegacyArtifacts.filesDir, name), 'utf8'));
+        const stagedPath = path.join(stagedLegacyArtifacts.filesDir, name);
+        if (fs.lstatSync(stagedPath).isSymbolicLink()) continue;
+        savedLegacyArtifacts.set(name, fs.readFileSync(stagedPath, 'utf8'));
+        migratableLegacyNames.push(name);
       }
-      if (migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope)) {
+      const _legacyMigrated = migrateLegacyDevPreferencesToSkill(targetDir, savedLegacyArtifacts, runtime, _uninstallScope);
+      if (_legacyMigrated && migratableLegacyNames.length === stagedLegacyArtifacts.names.length) {
         // Compute the actual path written so the log line is accurate per-runtime
         const _layout = resolveRuntimeArtifactLayout(runtime, targetDir, _uninstallScope);
         const _sk = _layout.kinds.find((k) => k.kind === 'skills');
@@ -8466,7 +8490,9 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         console.log(`  ${green}✓${reset} Migrated dev-preferences.md → ${_skillRelPath} (#2973)`);
         discardStagedUserArtifacts(stagedLegacyArtifacts);
       } else {
-        // Migration failed or already exists — restore to legacy location so user content is not lost
+        // Migration failed, already exists, or a symlinked name was excluded
+        // above — restore the WHOLE batch to the legacy location so no user
+        // content is silently lost.
         restoreStagedUserArtifacts(legacyDir, stagedLegacyArtifacts);
         discardStagedUserArtifacts(stagedLegacyArtifacts);
       }
@@ -8502,6 +8528,11 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       } catch (err) {
         console.error(`  ${red}✗${reset} Failed to restore USER-PROFILE.md: ${err.message}`);
       }
+    } else {
+      // #2875 defect fix: same empty-file orphan leak as the legacy
+      // commands/gsd/ site above — discard the staging batch regardless of
+      // whether the staged content was truthy.
+      discardStagedUserArtifacts(stagedProfile);
     }
   }
 
@@ -10033,21 +10064,24 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // below were removed, leaving isKimi unused in this function (the kimi
   // local-install-deferred branch above already reads
   // _hostBehaviors(runtime).localInstallDeferred instead of this flag).
-  // #2096: isAntigravity dropped — antigravity is in
-  // _DESCRIPTOR_AGENTS_RUNTIMES below, so its two legacy-agent-loop branches
-  // (the path-rewrite skip and the converter dispatch) were unreachable dead
-  // code; both were removed rather than re-gated on hostBehaviors.
-  // #2098: isCodebuddy dropped — codebuddy is also in
-  // _DESCRIPTOR_AGENTS_RUNTIMES below, so its legacy converter-dispatch branch
-  // (the `isCodebuddy` arm calling convertClaudeAgentToCodebuddyAgent) was
+  // #2096: isAntigravity dropped — antigravity's agents were already
+  // descriptor-driven (installRuntimeArtifacts), so its two legacy-agent-loop
+  // branches (the path-rewrite skip and the converter dispatch) were
+  // unreachable dead code; both were removed rather than re-gated on
+  // hostBehaviors. (#2875 Part 2 later deleted that legacy loop and its
+  // `_DESCRIPTOR_AGENTS_RUNTIMES` gate entirely — EVERY runtime is now
+  // descriptor-driven for agents, not just this subset.)
+  // #2098: isCodebuddy dropped — codebuddy's agents were likewise already
+  // descriptor-driven, so its legacy converter-dispatch branch (the
+  // `isCodebuddy` arm calling convertClaudeAgentToCodebuddyAgent) was
   // unreachable dead code and was removed rather than re-gated.
-  // #2099: isCopilot dropped — copilot is also in _DESCRIPTOR_AGENTS_RUNTIMES
-  // below, so its three legacy-agent-loop branches (the path-rewrite skip,
-  // the converter dispatch, and the .agent.md destName ternary) were
-  // unreachable dead code and were removed rather than re-gated; the
-  // .agent.md suffix now lives on hostBehaviors.agentFileExtension in
-  // src/install-engine.cts, and the skipSharedHooksInstall check above no
-  // longer needs `&& !isCopilot`.
+  // #2099: isCopilot dropped — copilot's agents were likewise already
+  // descriptor-driven, so its three legacy-agent-loop branches (the
+  // path-rewrite skip, the converter dispatch, and the .agent.md destName
+  // ternary) were unreachable dead code and were removed rather than
+  // re-gated; the .agent.md suffix now lives on
+  // hostBehaviors.agentFileExtension in src/install-engine.cts, and the
+  // skipSharedHooksInstall check above no longer needs `&& !isCopilot`.
   // #2100: isWindsurf dropped — its four former isWindsurf-gated branches
   // (legacy .devin/skills/gsd-* cleanup, the #1629 command-bodies copy, the
   // workflow-verification report, and the shared-hooks-install exclusion) are
@@ -10055,8 +10089,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // hostBehaviors.installsCommandBodiesForWorkflowDelegation,
   // hostBehaviors.verificationStyle === 'windsurf-workflows', and
   // hostBehaviors.skipSharedHooksInstall respectively; its legacy-agent-loop
-  // converter arm was likewise unreachable dead code (windsurf is in
-  // _DESCRIPTOR_AGENTS_RUNTIMES) and was removed above.
+  // converter arm was likewise unreachable dead code (windsurf's agents were
+  // already descriptor-driven) and was removed above.
   // #2101: isZcode dropped — folded onto hostBehaviors.skipSharedHooksInstall.
   const { isOpencode, isCodex, isCursor, isAugment, isTrae, isQwen, isHermes, isCline } = runtimeFlags(runtime);
   const plan = resolveInstallPlan(runtime);
@@ -10956,202 +10990,78 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     }
   }
 
-  // Copy agents to agents directory.
-  // Skipped under --minimal: gsd-* subagent descriptions are eagerly loaded
-  // into the runtime's Agent tool schema, costing ~6k tokens per turn even
-  // when no GSD workflow is active. See open-gsd/gsd-core#2762.
-  // Note: agentsSrc is declared as let before the enclosing try block so it
-  // is accessible by installCodexConfig() in the Codex config section below.
-  agentsSrc = _stageAgents(path.join(src, 'agents'));
-  const agentsDest = path.join(targetDir, 'agents');
-
-  // ADR-1235 §1: runtimes that have been migrated to the descriptor-driven agent
-  // path (installRuntimeArtifacts → convertedAgentsKind). The descriptor path
-  // applies path-rewrite + attribution + converter + normalize via
-  // stageAgentsForRuntimeWithConverter (with agentCtx pre-converter threading) in
-  // createRuntimeArtifactInstallPlan. Their agents are already written ABOVE
-  // (by installRuntimeArtifacts at line 8912), which also performs its own
-  // stale-file prune pass. The inline stale-removal + inline loop both skip them.
-  // Trivial group (cursor/windsurf/augment/trae/codebuddy) cut over together.
-  // #1575: copilot and antigravity cut over — copilot gets .agent.md filename
-  // rename via _copyStaged(runtime); antigravity uses scope-aware converter.
-  // #2092 Phase B Upgrade 1: qwen cut over — native .qwen/agents/*.md subagent
-  // projection via convertClaudeAgentToQwenAgent. Without this exclusion the
-  // legacy inline loop below deletes+re-copies qwen's agents RAW (bypassing the
-  // new converter entirely, since qwen has no dedicated branch in the inline
-  // loop's if/else-if chain — it would silently fall through to the generic
-  // brandingRewrites-only branch).
-  // cline remains excluded: rules-only local branch + local/global complication
-  // that the descriptor-driven path does not handle correctly.
-  // #3384: zcode cut over — its agents kind now declares
-  // convertClaudeAgentToZcodeAgent (strips mcp__* grants ZCode's dispatcher
-  // treats as required MCP servers). Without this exclusion the legacy inline
-  // loop below deletes+re-copies zcode's agents RAW, bypassing the converter
-  // (the same hazard the qwen comment above documents).
-  const _DESCRIPTOR_AGENTS_RUNTIMES = new Set(['cursor', 'windsurf', 'augment', 'trae', 'codebuddy', 'copilot', 'antigravity', 'qwen', 'kimi', 'zcode']);
-
-  // Always remove stale gsd-* agents first so re-installing with
-  // `--minimal` actually shrinks a previously-full install.
-  // For Codex this also covers per-agent `.toml` files alongside the `.md`
-  // sources so a full → minimal switch doesn't leave stale registrations.
-  // Skipped for descriptor-agent runtimes (installRuntimeArtifacts prunes) and
-  // for pluginOnlyInstall runtimes (pi, ADR-1239 / #2102 Stage 1 — no agents/
-  // dir is ever written for them, see the leading branch below).
-  if (!_DESCRIPTOR_AGENTS_RUNTIMES.has(runtime) && !_hostBehaviors(runtime).pluginOnlyInstall && fs.existsSync(agentsDest)) {
-    for (const file of fs.readdirSync(agentsDest)) {
-      if (
-        file.startsWith('gsd-') &&
-        (file.endsWith('.md') || (_hostBehaviors(runtime).agentTomlFiles && file.endsWith('.toml')))
-      ) {
-        fs.unlinkSync(path.join(agentsDest, file));
-      }
-    }
-  }
-
+  // Agents directory materialization.
+  // #2875 Part 2 (the agents-bypass closure): EVERY runtime is now
+  // descriptor-driven for agents — installRuntimeArtifacts (called earlier in
+  // this function, the `_isSkillsRuntime` branch above) already wrote
+  // agents/ for any runtime whose capability.json declares an `agents` kind,
+  // via convertedAgentsKind/agentsKind (generic layout loop) or
+  // installAgentsKindStandalone (OpenCode/Kilo's combinedFamilyInstall
+  // branch, called from within installOpencodeFamilyArtifacts) — both reuse
+  // the SAME stageAgentsForRuntimeWithConverter pipeline (path-rewrite →
+  // attribution → converter → frontmatter extensions → normalize) the
+  // inline loop this replaces used to hand-roll, and both prune stale gsd-*
+  // entries via their own _removeGsdEntries pass BEFORE copying (broader
+  // than this loop's old extension-gated stale check — see
+  // runtime-artifact-layout.cts's convertedAgentsKind doc comment).
+  // Minimal-mode agent filtering is handled the SAME way it already was for
+  // the ten runtimes cut over before this change: via resolvedProfile.agents
+  // at staging time, not a separate branch here.
+  //
+  // `!_isSkillsRuntime` runtimes (claude-local's legacy-flat local path, and
+  // pi) never reach that loop at all — installAgentsKindStandalone is called
+  // here explicitly to cover them (install-engine.cts's own doc comment
+  // explains why; a regression here was caught by the install-tree golden
+  // fixture, tests/fixtures/install-tree/claude-local.json). It is a no-op
+  // for pi: its capability.json declares an EMPTY artifactLayout for both
+  // scopes (programmatic dispatch, no named-dispatch subagent toolkit, no
+  // host-read markdown surface), so the resolved layout has no `agents` kind
+  // to stage and the function returns `null` without writing anything.
   if (_hostBehaviors(runtime).pluginOnlyInstall) {
-    // pi (ADR-1239 / #2102 Stage 1): programmatic dispatch has no named-dispatch
-    // subagent toolkit (dispatch.subagentToolkit: "undocumented", no Agent-tool
-    // equivalent) and no host-read markdown surface — skip writing agents/ entirely.
     console.log(`  ${green}✓${reset} pi: no subagent files (programmatic dispatch, no named-dispatch toolkit)`);
-  } else if (_DESCRIPTOR_AGENTS_RUNTIMES.has(runtime)) {
-    // installRuntimeArtifacts already wrote agents + handles stale-file cleanup
-    // via its own prune pass. No further action needed.
+  } else if (_isSkillsRuntime) {
     console.log(`  ${dim}↳${reset} Agents installed via descriptor-driven layout (${runtime})`);
-  } else if (isMinimalMode(_effectiveInstallMode)) {
-    // Codex registers agents in `config.toml` via `[agents.gsd-*]` sections.
-    // Without stripping them here, a full → minimal reinstall would leave the
-    // runtime advertising the old full agent surface even though the agent
-    // files are gone. Reuse the same helper that powers `--uninstall`.
-    if (_hostBehaviors(runtime).tomlConfigInstall) {
-      const codexConfigPath = path.join(targetDir, 'config.toml');
-      if (fs.existsSync(codexConfigPath)) {
-        const existing = fs.readFileSync(codexConfigPath, 'utf8');
-        const cleaned = stripGsdFromCodexConfig(existing);
-        if (cleaned === null) {
-          fs.unlinkSync(codexConfigPath);
-        } else if (cleaned !== existing) {
-          fs.writeFileSync(codexConfigPath, cleaned);
-        }
+  } else {
+    const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry);
+    if (_standaloneAgentsResult) {
+      if (verifyInstalled(_standaloneAgentsResult.destDir, 'agents')) {
+        console.log(`  ${green}✓${reset} Installed agents`);
+      } else {
+        failures.push('agents');
       }
-    }
-    console.log(`  ${dim}↳${reset} Skipping agents (minimal install — run \`gsd update\` without \`--minimal\` to add full surface)`);
-  } else if (fs.existsSync(agentsSrc)) {
-    fs.mkdirSync(agentsDest, { recursive: true });
-
-    // Copy new agents
-    const agentEntries = fs.readdirSync(agentsSrc, { withFileTypes: true });
-    for (const entry of agentEntries) {
-      if (entry.isFile() && entry.name.endsWith('.md')) {
-        const agentSourcePath = path.join(agentsSrc, entry.name);
-        let content = fs.readFileSync(agentSourcePath, 'utf8');
-        // #2995 (epic #1671 Phase 6.4): strip `<!-- gsd:section -->` markers BEFORE
-        // the path-rewrite regexes below, so a rewrite can never reach inside a
-        // marker attribute. No-op (byte-identical) for an unmarked agent.
-        content = composeWorkflow(content, { sourcePath: agentSourcePath });
-        // Replace ~/.claude/ and $HOME/.claude/ as they are the source of truth in the repo
-        const dirRegex = /~\/\.claude\//g;
-        const homeDirRegex = /\$HOME\/\.claude\//g;
-        const bareDirRegex = /~\/\.claude\b/g;
-        const bareHomeDirRegex = /\$HOME\/\.claude\b/g;
-        const normalizedPathPrefix = pathPrefix.replace(/\/$/, '');
-        // #2096: `&& !isAntigravity` dropped — antigravity is in
-        // _DESCRIPTOR_AGENTS_RUNTIMES above, so this whole branch is already
-        // unreachable for it; the path-rewrite skip for antigravity now lives
-        // in the descriptor-driven `applyAgentPathRewrites` (hostBehaviors.noPathRewrite).
-        // #2099: `if (!isCopilot)` guard dropped — copilot is ALSO in
-        // _DESCRIPTOR_AGENTS_RUNTIMES (line ~9564 above), so this whole
-        // `else if (fs.existsSync(agentsSrc))` branch is unreachable for it;
-        // isCopilot was therefore always false here, making the guard a no-op.
-        content = content.replace(dirRegex, pathPrefix);
-        content = content.replace(homeDirRegex, pathPrefix);
-        content = content.replace(bareDirRegex, normalizedPathPrefix);
-        content = content.replace(bareHomeDirRegex, normalizedPathPrefix);
-        content = processAttribution(content, getCommitAttribution(runtime));
-        // Convert frontmatter for runtime compatibility (agents need different handling)
-        // #2875 Part 2 (J8): agentName + model-override precedence now
-        // single-sourced via install-model-override-resolver.cjs's
-        // resolveAgentModelOverride, so the descriptor pipeline
-        // (runtime-artifact-layout.cts's convertedAgentsKind) can never
-        // diverge from this branch — both resolve through the SAME function.
-        const _agentNameForLoop = deriveAgentName(entry.name);
-        if (_hostBehaviors(runtime).frontmatterDialect === 'opencode') {
-          // Precedence: model_overrides[agent] > model_profile_overrides.opencode.<tier> > omit.
-          const _ocModelOverride = resolveAgentModelOverride(
-            _agentNameForLoop,
-            readGsdEffectiveModelOverrides(targetDir),
-            readGsdRuntimeProfileResolver(targetDir),
-          );
-          content = convertClaudeToOpencodeFrontmatter(content, { isAgent: true, modelOverride: _ocModelOverride });
-        } else if (_hostBehaviors(runtime).frontmatterDialect === 'kilo') {
-          // Precedence: model_overrides[agent] > model_profile_overrides.kilo.<tier> > omit.
-          // (#2093 UPGRADE 2; Kilo is an OpenCode fork with the same static-frontmatter
-          // model constraint — same resolver, same precedence, single source of truth.)
-          const _kiloModelOverride = resolveAgentModelOverride(
-            _agentNameForLoop,
-            readGsdEffectiveModelOverrides(targetDir),
-            readGsdRuntimeProfileResolver(targetDir),
-          );
-          content = convertClaudeToKiloFrontmatter(content, { isAgent: true, modelOverride: _kiloModelOverride });
-        } else if (_hostBehaviors(runtime).frontmatterDialect === 'codex') {
-          content = convertClaudeAgentToCodexAgent(content);
-        // #2099: `else if (isCopilot)` arm dropped — copilot is unreachable
-        // here (see the isCopilot-guard-drop comment above); its content
-        // conversion is applied pre-staging via the descriptor's
-        // artifactLayout.converter (runtime-artifact-layout.cts), independent
-        // of this legacy loop.
-        // #2100: `else if (isWindsurf)` arm dropped — windsurf is ALSO in
-        // _DESCRIPTOR_AGENTS_RUNTIMES (line ~9575 above), so this whole
-        // `else if (fs.existsSync(agentsSrc))` branch is unreachable for it;
-        // isWindsurf was therefore always false here, making the arm dead.
-        // Its content conversion is applied pre-staging via the descriptor's
-        // artifactLayout.converter (convertClaudeAgentToWindsurfAgent),
-        // independent of this legacy loop.
-        } else if (_hostBehaviors(runtime).frontmatterDialect === 'cline') {
-          // Descriptor-driven (ADR-1239 / #2090): folded from `isCline` into
-          // hostBehaviors.frontmatterDialect === 'cline'.
-          content = convertClaudeAgentToClineAgent(content);
-        } else if (_hostBehaviors(runtime).brandingRewrites) {
-          // Descriptor-driven (ADR-1239 / #2092, #2875 Part 2 / J10): folded
-          // from separate `isQwen` / hermes-hardcoded branches into a single
-          // read of runtime.hostBehaviors.brandingRewrites (qwen ->
-          // QWEN.md/Qwen Code/.qwen/, hermes -> HERMES.md/Hermes Agent/.hermes/),
-          // now via the single-sourced applyAgentBrandingRewrites (also used
-          // by the descriptor pipeline's convertClaudeAgentToHermesAgent).
-          content = applyAgentBrandingRewrites(content, runtime);
-        }
-        // #443 / #2875 Part 2 — Inject `effort:` (+ #767 disallowedTools) into
-        // the Claude .md frontmatter ONLY, via the single-sourced
-        // applyAgentFrontmatterExtensions (runtime-artifact-conversion.cts) —
-        // driven by hostBehaviors.agentFrontmatterExtensions, the SAME gate
-        // the descriptor pipeline's post-converter step reads. OpenCode/Qwen/
-        // Hermes also produce .md files but break on unknown frontmatter keys
-        // (the repo bans skills:/permissionMode: for the same reason — see
-        // tests/agent-frontmatter.test.cjs). Injection is per-runtime at
-        // install time because the canonical source agents/*.md must stay
-        // runtime-safe (no effort: key in source).
-        content = applyAgentFrontmatterExtensions(content, { runtime, agentName: _agentNameForLoop, targetDir });
-        // #3677 — normalize retired `/gsd:<cmd>` colon refs in the agent body
-        // to the canonical hyphen form `/gsd-<cmd>` for hyphen-`name:`
-        // runtimes (claude / qwen / hermes). Self-converting and
-        // colon-canonical runtimes are skipped by the predicate — see
-        // shouldNormalizeHyphenNamespaceInAgentBody above. Mirrors the
-        // SKILL.md-body fix shipped via #3629.
-        content = normalizeAgentBodyForRuntime(content, runtime, readGsdCommandNames());
-        // #2099: `isCopilot ? ... : entry.name` ternary dropped — copilot is
-        // unreachable here (see the isCopilot-guard-drop comment above), so
-        // the ternary always evaluated to entry.name in practice; its
-        // .agent.md suffix is applied by the descriptor-driven fold in
-        // src/install-engine.cts (hostBehaviors.agentFileExtension).
-        const destName = entry.name;
-        fs.writeFileSync(path.join(agentsDest, destName), content);
-      }
-    }
-    if (verifyInstalled(agentsDest, 'agents')) {
-      console.log(`  ${green}✓${reset} Installed agents`);
     } else {
-      failures.push('agents');
+      console.log(`  ${dim}↳${reset} No agents kind declared for ${runtime} at this scope`);
     }
   }
+
+  // Codex registers agents in `config.toml` via `[agents.gsd-*]` sections —
+  // NOT agents-directory materialization (design doc "Deliberately not in
+  // scope"), so this stays independent of the agents/ write above. Without
+  // stripping these on a full → minimal reinstall, the runtime would keep
+  // advertising the old full agent surface even though the descriptor-driven
+  // write above already skipped writing the .md files for a minimal-tier
+  // resolvedProfile. Reuse the same helper that powers `--uninstall`.
+  if (isMinimalMode(_effectiveInstallMode) && _hostBehaviors(runtime).tomlConfigInstall) {
+    const codexConfigPath = path.join(targetDir, 'config.toml');
+    if (fs.existsSync(codexConfigPath)) {
+      const existing = fs.readFileSync(codexConfigPath, 'utf8');
+      const cleaned = stripGsdFromCodexConfig(existing);
+      if (cleaned === null) {
+        fs.unlinkSync(codexConfigPath);
+      } else if (cleaned !== existing) {
+        fs.writeFileSync(codexConfigPath, cleaned);
+      }
+    }
+  }
+
+  // agentsSrc is declared as `let` before the enclosing try block (not const)
+  // so it is accessible by installCodexConfig() in the Codex config section
+  // below — that function reads RAW source agents/*.md (not the
+  // descriptor-staged output above) to build Codex's per-agent config.toml
+  // sidecar files, a separate writer this migration deliberately does not
+  // touch (design doc: "Codex's config.toml [agents.gsd-*] strip... is not
+  // agents-directory materialization").
+  agentsSrc = _stageAgents(path.join(src, 'agents'));
 
   // Copy CHANGELOG.md
   const changelogSrc = path.join(src, 'CHANGELOG.md');

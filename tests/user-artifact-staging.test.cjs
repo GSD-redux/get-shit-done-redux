@@ -234,6 +234,51 @@ describe('user-artifact-staging: A. staging contract', () => {
       'content lands under the renamed destination',
     );
   });
+
+  test('A10 (#2875 F1 concurrency defect): two concurrent RUNS staging the SAME destDir do not clobber each other', (t) => {
+    // Reproduces the actual race: the staging key was `sha256(destDir)`
+    // alone, so a SECOND run's stageUserArtifacts call — its entryDir-
+    // clearing rmSync — destroyed a FIRST, already-committed run's batch for
+    // the same destDir. `runId` (default `process.pid`, here overridden to
+    // simulate two DIFFERENT concurrent processes without forking a real
+    // one) discriminates the two runs' staging keys. Passing `runId` against
+    // the PRE-FIX module is a silent no-op (the option did not exist; the
+    // key ignored it and both calls still collided on sha256(destDir) alone)
+    // — so this exact test body is the red-then-green proof: FAILS against
+    // the code before the fix, PASSES after.
+    const destDir = mktemp('gsd-uas-a10-dest-');
+    const configDir = mktemp('gsd-uas-a10-cfg-');
+    t.after(() => { cleanup(destDir); cleanup(configDir); });
+    const stagingRoot = stagingRootFor(configDir);
+
+    // Run A stages and commits first.
+    fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'run-A content');
+    const runA = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: 'process-A-pid-100' });
+    assert.ok(fs.existsSync(runA.recordPath), 'run A committed its record');
+    assert.equal(fs.readFileSync(path.join(runA.filesDir, 'USER-PROFILE.md'), 'utf8'), 'run-A content');
+
+    // Run B — a SEPARATE concurrent run (different runId) racing the SAME
+    // destDir, starting its own stage call before run A has restored or
+    // discarded its batch. This is the exact interleaving the F1 race
+    // describes: two processes' preserve/wipe/restore cycles overlapping.
+    fs.writeFileSync(path.join(destDir, 'dev-preferences.md'), 'run-B content');
+    const runB = stageUserArtifacts(destDir, ['dev-preferences.md'], stagingRoot, { runId: 'process-B-pid-200' });
+
+    // Run A's committed batch must survive run B's entryDir-clearing step —
+    // under the pre-fix shared key, run B's initial rmSync(entryDir) wiped
+    // run A's record.json and files/ before this assertion ever runs.
+    assert.ok(fs.existsSync(runA.recordPath), 'run A record must survive a concurrent run B stage call');
+    assert.equal(
+      fs.readFileSync(path.join(runA.filesDir, 'USER-PROFILE.md'), 'utf8'),
+      'run-A content',
+      'run A staged content must survive — this is the exact clobber the F1 race causes',
+    );
+    assert.notEqual(runA.entryDir, runB.entryDir, 'two concurrent runs must key to DIFFERENT entry directories');
+
+    // Both runs' data is independently recoverable — proves the fix does not
+    // just avoid a crash, it keeps both batches genuinely intact.
+    assert.equal(fs.readFileSync(path.join(runB.filesDir, 'dev-preferences.md'), 'utf8'), 'run-B content');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -249,7 +294,14 @@ describe('user-artifact-staging: B. the crash window (F19)', () => {
     const stagingRoot = stagingRootFor(configDir);
 
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'my profile content\n');
-    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): a dead runId
+    // is required here — this test's OWN process is alive for the whole
+    // test, so the default runId (process.pid) would make
+    // recoverOrphanedUserArtifacts's ownerStillLive guard treat this batch
+    // as belonging to a still-live peer and refuse to recover it, which
+    // would make this "the F19 regression row" test inert (it would pass
+    // for the wrong reason — a skip, not a genuine recovery).
+    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
 
     // Simulate the crash: the wipe ran, the process died before restore.
     cleanup(destDir);
@@ -365,7 +417,10 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     fs.mkdirSync(destDir, { recursive: true });
     const stagingRoot = stagingRootFor(configDir);
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'c1');
-    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): dead runId —
+    // see B1's comment for why the default (this process's own live pid)
+    // would make this test inert.
+    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
     cleanup(destDir);
 
     const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
@@ -380,7 +435,9 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     fs.mkdirSync(destDir, { recursive: true });
     const stagingRoot = stagingRootFor(configDir);
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'orphaned-content');
-    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): dead runId —
+    // see B1's comment.
+    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
     // The destDir file was NOT wiped this time — a fresh, different file is present.
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'current-user-content');
 
@@ -398,7 +455,9 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     fs.mkdirSync(destDir, { recursive: true });
     const stagingRoot = stagingRootFor(configDir);
     fs.writeFileSync(path.join(destDir, 'dev-preferences.md'), 'c3');
-    stageUserArtifacts(destDir, ['dev-preferences.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): dead runId —
+    // see B1's comment.
+    stageUserArtifacts(destDir, ['dev-preferences.md'], stagingRoot, { runId: '999999' });
     // Remove the WHOLE parent tree, not just destDir.
     cleanup(path.join(configDir, 'legacy'));
     assert.ok(!fs.existsSync(destDir));
@@ -415,7 +474,12 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     fs.mkdirSync(destDir, { recursive: true });
     const stagingRoot = stagingRootFor(configDir);
     fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'c4');
-    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): dead runId —
+    // see B1's comment. The SECOND stageUserArtifacts call below (the
+    // "ordinary preserve step") deliberately keeps the default live runId —
+    // it is not exercising recovery, only proving the recovered file is
+    // re-stageable afterward.
+    stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
     cleanup(destDir);
 
     recoverOrphanedUserArtifacts(stagingRoot, configDir);
@@ -513,7 +577,9 @@ describe('user-artifact-staging: C. recovery semantics', () => {
     const goodDestDir = path.join(configDir, 'good-dest');
     fs.mkdirSync(goodDestDir, { recursive: true });
     fs.writeFileSync(path.join(goodDestDir, 'USER-PROFILE.md'), 'good content');
-    stageUserArtifacts(goodDestDir, ['USER-PROFILE.md'], stagingRoot);
+    // #2875 defect fix (owner-liveness guard, C14/C15 pattern): dead runId —
+    // see B1's comment.
+    stageUserArtifacts(goodDestDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
     cleanup(path.join(goodDestDir, 'USER-PROFILE.md'));
 
     let result;
@@ -523,6 +589,150 @@ describe('user-artifact-staging: C. recovery semantics', () => {
       'the OTHER (good) batch must still be recovered even though a sibling batch is broken',
     );
     assert.ok(fs.existsSync(brokenEntryDir), 'the broken entry must be LEFT IN PLACE, not silently swept, since it was never actually recovered');
+  });
+
+  test('C14 (#2875 F1 residual defect): a peer recovery pass must not sweep an entry whose owning process is still alive', (t) => {
+    // recoverOrphanedUserArtifacts runs as the FIRST statement of both
+    // install() and uninstall() — a second run's recovery pass executing
+    // while a first run is still between stageUserArtifacts's commit and its
+    // own restore/discard is the ordinary case, not an exotic interleaving.
+    // Reproduces it directly: run A stages with the DEFAULT runId (this test
+    // process's OWN real pid — genuinely alive for the whole test, standing
+    // in for "run A still in flight"), then a peer recovery pass runs while
+    // A's destDir is mid-wipe (removed, not yet restored).
+    const configDir = mktemp('gsd-uas-c14-cfg-');
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'run-A content, still in flight');
+    const runA = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+    assert.ok(fs.existsSync(runA.recordPath), 'run A committed its record');
+
+    // Run A's own wipe, in progress — destDir is gone, restore has not
+    // happened yet. A PEER run's recovery pass runs here.
+    cleanup(destDir);
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+
+    // A live owner's entry must be left COMPLETELY alone — not recovered
+    // (which would race run A's own in-progress cycle) and not swept.
+    assert.ok(fs.existsSync(runA.recordPath), 'run A entry must survive a peer recovery pass while run A is still alive');
+    assert.equal(result.recovered.length, 0, 'a live owner\'s file must not be recovered on its behalf either');
+    assert.deepEqual(result.skipped, [{ entryDir: runA.entryDir, reason: 'owner-still-live' }]);
+
+    // Run A can still complete its OWN cycle normally afterward — the guard
+    // only protects against a PEER touching it, never blocks the owner.
+    fs.mkdirSync(destDir, { recursive: true });
+    restoreStagedUserArtifacts(destDir, runA);
+    discardStagedUserArtifacts(runA);
+    assert.equal(fs.readFileSync(path.join(destDir, 'USER-PROFILE.md'), 'utf8'), 'run-A content, still in flight');
+  });
+
+  test('C15: a dead pid (ESRCH) is recovered normally — the liveness guard never blocks a genuine orphan', (t) => {
+    const configDir = mktemp('gsd-uas-c15-cfg-');
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    // A pid that is essentially guaranteed not to exist right now.
+    const deadPid = '999999';
+    const entryDir = path.join(stagingRoot, 'c15deadpidentry0');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'orphaned content');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(destDir), names: ['USER-PROFILE.md'], timestamp: new Date().toISOString(), runId: deadPid }),
+    );
+
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+    assert.equal(result.recovered.length, 1, 'a dead pid must never be treated as a live owner');
+    assert.equal(fs.readFileSync(path.join(destDir, 'USER-PROFILE.md'), 'utf8'), 'orphaned content');
+    assert.ok(!fs.existsSync(entryDir), 'fully recovered — swept as before this fix');
+  });
+
+  test('C16: a missing/non-numeric runId (a legacy or hand-edited record) is never treated as live forever', (t) => {
+    const configDir = mktemp('gsd-uas-c16-cfg-');
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    // A pre-this-fix record: no runId field at all.
+    const entryDir = path.join(stagingRoot, 'c16legacyentry00');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'legacy orphaned content');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(destDir), names: ['USER-PROFILE.md'], timestamp: new Date().toISOString() }),
+    );
+
+    // #2875 defect fix: the previous version called recoverOrphanedUserArtifacts
+    // TWICE and checked the SECOND call's result — but a successful recovery
+    // sweeps the entry (rmSync) once it is fully accounted for, so the first
+    // (assert.doesNotThrow) call already recovered and removed it, leaving
+    // the second call's result empty regardless of whether recovery itself
+    // works. Capture the FIRST call's result instead — the same pattern C13
+    // already uses.
+    let result;
+    assert.doesNotThrow(() => { result = recoverOrphanedUserArtifacts(stagingRoot, configDir); });
+    assert.equal(result.recovered.length, 1, 'a record with no runId must recover normally, never blocked as "live forever"');
+    assert.ok(!fs.existsSync(entryDir));
+  });
+
+  test('C17: an apparently-live pid past OWNER_LIVENESS_GRACE_MS is treated as orphaned regardless (the pid-reuse guard)', (t) => {
+    const configDir = mktemp('gsd-uas-c17-cfg-');
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    // runId is THIS test process's own real (genuinely alive) pid, but the
+    // record's timestamp is far in the past — simulates a crashed run whose
+    // pid an unrelated, currently-alive process now happens to occupy.
+    const entryDir = path.join(stagingRoot, 'c17stalelivepid0');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'stale orphaned content');
+    const staleTimestamp = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1 hour ago
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(destDir), names: ['USER-PROFILE.md'], timestamp: staleTimestamp, runId: String(process.pid) }),
+    );
+
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+    assert.equal(result.recovered.length, 1, 'a stale claim past the grace window must recover regardless of apparent liveness');
+    assert.ok(!fs.existsSync(entryDir));
+  });
+
+  test('C18: a fresh, apparently-live claim just inside the clock-seam-injected grace window is protected', (t) => {
+    const configDir = mktemp('gsd-uas-c18-cfg-');
+    t.after(() => cleanup(configDir));
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    const stagingRoot = stagingRootFor(configDir);
+
+    const entryDir = path.join(stagingRoot, 'c18freshlivepid0');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'fresh live content');
+    const recordTimestamp = Date.parse('2001-01-01T00:00:00.000Z');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({
+        destDir: path.resolve(destDir),
+        names: ['USER-PROFILE.md'],
+        timestamp: new Date(recordTimestamp).toISOString(),
+        runId: String(process.pid),
+      }),
+    );
+
+    // Injected clock — never the real wall clock — pinned to 4 minutes after
+    // the record's own timestamp, inside the 5-minute grace window.
+    const fakeClock = { now: () => recordTimestamp + 4 * 60 * 1000 };
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir, { clock: fakeClock });
+    assert.equal(result.recovered.length, 0, 'still within the grace window — must not recover on the live owner\'s behalf');
+    assert.deepEqual(result.skipped, [{ entryDir, reason: 'owner-still-live' }]);
+    assert.ok(fs.existsSync(entryDir), 'must not be swept while apparently live and fresh');
   });
 });
 

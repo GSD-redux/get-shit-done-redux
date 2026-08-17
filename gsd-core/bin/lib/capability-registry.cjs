@@ -511,6 +511,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
           }
         ],
         "local": [
@@ -753,6 +761,14 @@ const capabilities = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClineSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToClineAgent"
           }
         ],
         "local": []
@@ -1049,6 +1065,14 @@ const capabilities = {
             "recursive": false,
             "converter": "convertClaudeCommandToCodexSkill",
             "home": ".agents"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToCodexAgent"
           }
         ],
         "local": [
@@ -1059,6 +1083,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToCodexSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToCodexAgent"
           }
         ]
       },
@@ -1732,6 +1764,14 @@ const capabilities = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToHermesAgent"
           }
         ],
         "local": [
@@ -1742,6 +1782,14 @@ const capabilities = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToHermesAgent"
           }
         ]
       },
@@ -1894,6 +1942,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToKiloSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToKiloFrontmatter"
           }
         ],
         "local": [
@@ -1912,6 +1968,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToKiloSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToKiloFrontmatter"
           }
         ]
       },
@@ -2098,6 +2162,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToKimiCodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
           }
         ],
         "local": []
@@ -2638,6 +2710,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToOpencodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToOpencodeFrontmatter"
           }
         ],
         "local": [
@@ -2656,6 +2736,14 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToOpencodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToOpencodeFrontmatter"
           }
         ]
       },
@@ -5230,6 +5318,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
           }
         ],
         "local": [
@@ -5384,6 +5480,14 @@ const runtimes = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClineSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToClineAgent"
           }
         ],
         "local": []
@@ -5577,6 +5681,14 @@ const runtimes = {
             "recursive": false,
             "converter": "convertClaudeCommandToCodexSkill",
             "home": ".agents"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToCodexAgent"
           }
         ],
         "local": [
@@ -5587,6 +5699,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToCodexSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToCodexAgent"
           }
         ]
       },
@@ -5967,6 +6087,14 @@ const runtimes = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToHermesAgent"
           }
         ],
         "local": [
@@ -5977,6 +6105,14 @@ const runtimes = {
             "nesting": "nested",
             "recursive": false,
             "converter": "convertClaudeCommandToClaudeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToHermesAgent"
           }
         ]
       },
@@ -6077,6 +6213,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToKiloSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToKiloFrontmatter"
           }
         ],
         "local": [
@@ -6095,6 +6239,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToKiloSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToKiloFrontmatter"
           }
         ]
       },
@@ -6281,6 +6433,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": false,
             "converter": "convertClaudeCommandToKimiCodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": null
           }
         ],
         "local": []
@@ -6423,6 +6583,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToOpencodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToOpencodeFrontmatter"
           }
         ],
         "local": [
@@ -6441,6 +6609,14 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToOpencodeSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeToOpencodeFrontmatter"
           }
         ]
       },

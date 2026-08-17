@@ -15,10 +15,27 @@
  *
  * Pure with respect to config: `readGsdEffectiveEffortConfig` performs the config
  * reads; `resolveInstallTimeEffort` is pure given a pre-merged effort object.
+ *
+ * #2875 defect fix: this module sits on the `installRuntimeArtifacts` call
+ * tree (reached both directly from `runtime-artifact-conversion.cts`'s
+ * effort-injection rewrite pass, and transitively via
+ * `install-model-override-resolver.cts`'s `_readGsdConfigFile` reuse) — every
+ * DESTINATION/config fs touch below routes through `installFs()`
+ * (install-fs-adapter.cts), matching `retired-artifact-cleanup.cts` /
+ * `user-artifact-staging.cts`'s existing precedent. `config-defaults.manifest.json`
+ * (`_getGsdEffortCatalog`) stays on raw `node:fs`, deliberately: it is
+ * PACKAGE-SOURCE (ships under `gsd-core/bin/shared/`, resolved from
+ * `__dirname`, never the install destination), the same class of read
+ * `install-fs-adapter.cts`'s module doc documents as "DELIBERATELY NOT
+ * ROUTED" for `findInstallSourceRoot`/`readGsdCommandNames`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- install-fs-adapter.cjs is an export= CommonJS module
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs } = installFsAdapter;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 import modelResolver = require('./model-resolver.cjs');
@@ -41,10 +58,10 @@ interface EffortConfig {
  * mask broken configs (review finding #5).
  */
 function _readGsdConfigFile(absPath: string, label: string): Record<string, unknown> | null {
-  if (!fs.existsSync(absPath)) return null;
+  if (!installFs().existsSync(absPath)) return null;
   let raw: string;
   try {
-    raw = fs.readFileSync(absPath, 'utf-8');
+    raw = installFs().readFileSync(absPath, 'utf-8');
   } catch (err) {
     process.stderr.write(`gsd: warning — could not read ${label} (${absPath}): ${(err as Error).message}\n`);
     return null;
@@ -142,7 +159,7 @@ function readGsdEffectiveEffortConfig(targetDir: string | null = null): EffortCo
     let probeDir = path.resolve(targetDir);
     for (let depth = 0; depth < 8; depth += 1) {
       const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (fs.existsSync(candidate)) {
+      if (installFs().existsSync(candidate)) {
         projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
         break;
       }

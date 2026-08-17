@@ -18,11 +18,22 @@
  * `readGsdGlobalModelOverrides` / `readGsdEffectiveModelOverrides` /
  * `readGsdRuntimeProfileResolver` are impure (config-file reads);
  * `resolveAgentModelOverride` is pure given their pre-resolved outputs.
+ *
+ * #2875 defect fix: this module is on the `installRuntimeArtifacts` call tree
+ * (reached from `runtime-artifact-layout.cts`'s agents-kind `stage()` for the
+ * opencode/kilo converters) — every fs touch below routes through
+ * `installFs()` (install-fs-adapter.cts), matching `retired-artifact-cleanup.cts`
+ * / `user-artifact-staging.cts`'s existing precedent, instead of calling
+ * `node:fs` directly. A raw `fs` call here silently bypassed a fake adapter
+ * injected via `withInstallFs`/`installRuntimeArtifacts(..., { fs })`,
+ * exactly the class of bug those two modules were fixed for.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- install-fs-adapter.cjs is an export= CommonJS module
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- install-effort-resolver.cjs is an export= CommonJS module
 import installEffortResolver = require('./install-effort-resolver.cjs');
 const { _readGsdConfigFile } = installEffortResolver as { _readGsdConfigFile: (absPath: string, label: string) => Record<string, unknown> | null };
@@ -57,8 +68,8 @@ function readGsdGlobalModelOverrides(options: ReadOptions = {}): Record<string, 
   try {
     const home = options.homedir ? options.homedir() : os.homedir();
     const defaultsPath = path.join(home, '.gsd', 'defaults.json');
-    if (!fs.existsSync(defaultsPath)) return null;
-    const raw = fs.readFileSync(defaultsPath, 'utf-8');
+    if (!installFs().existsSync(defaultsPath)) return null;
+    const raw = installFs().readFileSync(defaultsPath, 'utf-8');
     const parsed = JSON.parse(raw) as { model_overrides?: unknown };
     const overrides = parsed.model_overrides;
     if (!overrides || typeof overrides !== 'object') return null;
@@ -90,9 +101,9 @@ function readGsdEffectiveModelOverrides(targetDir: string | null = null, options
     let probeDir = path.resolve(targetDir);
     for (let depth = 0; depth < 8; depth += 1) {
       const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (fs.existsSync(candidate)) {
+      if (installFs().existsSync(candidate)) {
         try {
-          const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as { model_overrides?: unknown };
+          const parsed = JSON.parse(installFs().readFileSync(candidate, 'utf-8')) as { model_overrides?: unknown };
           if (parsed && typeof parsed === 'object' && parsed.model_overrides && typeof parsed.model_overrides === 'object') {
             projectOverrides = parsed.model_overrides as Record<string, string>;
           }
@@ -141,7 +152,7 @@ function readGsdRuntimeProfileResolver(targetDir: string | null = null): Runtime
     let probeDir = path.resolve(targetDir);
     for (let depth = 0; depth < 8; depth += 1) {
       const candidate = path.join(probeDir, '.planning', 'config.json');
-      if (fs.existsSync(candidate)) {
+      if (installFs().existsSync(candidate)) {
         projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
         break;
       }

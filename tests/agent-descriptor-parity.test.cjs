@@ -485,3 +485,59 @@ test('agent-descriptor-parity: J10 — the branding converter is descriptor-data
   assert.notEqual(hermesOut, content);
   assert.match(hermesOut, /Hermes Agent uses HERMES\.md under \.hermes\/\./);
 });
+
+// ---------------------------------------------------------------------------
+// K1 — migration completeness: every registry runtime with an `agents` kind
+// is reachable from the REAL production entry point, not the (now-deleted)
+// inline loop.
+// ---------------------------------------------------------------------------
+
+/**
+ * bin/install.js's inline agent-staging loop and its `_DESCRIPTOR_AGENTS_RUNTIMES`
+ * gate were DELETED in #2875 Part 2 Task C — there is no longer a symbol to
+ * assert absent (a source-text check would violate `local/no-source-grep` and
+ * would prove nothing about runtime behavior anyway, per CLAUDE.md's
+ * "Behavioral tests are required"). Row K1 is instead proven the only way
+ * that is actually meaningful once the code is gone: for EVERY `role:
+ * "runtime"` capability in the REAL capability-registry that declares an
+ * `agents` kind (either scope), the REAL production entry point
+ * (`installRuntimeArtifacts` — which internally routes combinedFamilyInstall
+ * runtimes like kilo/opencode through `installOpencodeFamilyAgents`, #2875
+ * Part 2 Task A) actually materializes agents/ on disk. If any runtime were
+ * still silently depending on the deleted inline loop, this call would write
+ * nothing to agents/ for it (the deleted code was the ONLY thing that used to
+ * write it for the six runtimes migrated in this change) and the assertion
+ * below would fail.
+ */
+test('agent-descriptor-parity: K1 — every registry runtime declaring an agents kind is reachable from installRuntimeArtifacts (the inline loop is gone)', () => {
+  const capabilityRegistry = require(path.join(LIB_DIR, 'capability-registry.cjs'));
+  const installEngine = require(path.join(LIB_DIR, 'install-engine.cjs'));
+
+  const runtimesWithAgentsKind = Object.entries(capabilityRegistry.runtimes || {})
+    .filter(([, cap]) => {
+      const layout = cap.runtime && cap.runtime.artifactLayout;
+      if (!layout) return false;
+      const entries = [...(layout.global || []), ...(layout.local || [])];
+      return entries.some((e) => e.kind === 'agents');
+    })
+    .map(([id]) => id);
+
+  assert.ok(runtimesWithAgentsKind.length >= 6, 'sanity: expected at least the six #2875 Part 2 runtimes to declare an agents kind');
+
+  for (const runtime of runtimesWithAgentsKind) {
+    const { commandsGsd, agentsDir, root } = buildSourceTree(SAMPLE_AGENTS);
+    const targetDir = buildTargetDir(commandsGsd);
+    try {
+      const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
+      const result = installEngine.installRuntimeArtifacts(runtime, targetDir, 'global', resolvedProfile, () => undefined, undefined);
+      const agentsKindEntry = result.kinds.find((k) => k.kind === 'agents');
+      assert.ok(agentsKindEntry, `${runtime}: installRuntimeArtifacts reported no agents kind in the executed plan — it did not go through the descriptor path`);
+      const writtenFiles = fs.readdirSync(agentsKindEntry.destDir).filter((f) => f.endsWith('.md'));
+      assert.ok(writtenFiles.length > 0, `${runtime}: agents kind reported but nothing was actually written to ${agentsKindEntry.destDir}`);
+    } finally {
+      cleanup(root);
+      cleanup(targetDir);
+      void agentsDir;
+    }
+  }
+});
