@@ -1063,6 +1063,79 @@ function detectPhaseNumberFromFiles(files: string[] | undefined): string | null 
   return null;
 }
 
+type CommitDocsSource = 'phase' | 'config' | 'gitignore' | 'default';
+interface CommitDocsResolution {
+  resolved: boolean;
+  source: CommitDocsSource;
+}
+
+/**
+ * #3587: resolve the `phase_commit_docs.<phase-id>` override for `phaseNum`
+ * against `config['phase_commit_docs']` (a `{ "<phase-id>": boolean }` map, the
+ * same shape `agent_skills`/`features` use for their dynamic key families).
+ * Returns `undefined` — "no override applies" — when: no phase is known (B7),
+ * the map carries no entry for THIS phase (B5: no cross-phase leak), or the
+ * entry exists but is not a boolean (B6: never silently coerced). Both sides of
+ * the comparison route through `normalizePhaseName` so `3`, `03`, and `PROJ-03`
+ * all resolve to the same entry (B4/B9), reusing the single-owner phase-id
+ * normalizer rather than a second, looser string-equality rule.
+ */
+function resolvePhaseCommitDocsOverride(config: Record<string, unknown>, phaseNum: string | null): boolean | undefined {
+  if (!phaseNum) return undefined;
+  const overrides = config['phase_commit_docs'];
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return undefined;
+  const target = normalizePhaseName(phaseNum);
+  for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (normalizePhaseName(key) === target) {
+      return typeof value === 'boolean' ? value : undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * #3587: the four-tier `commit_docs` precedence chain for a single commit —
+ * `phase_commit_docs.<phase-id>` (tier 1, resolved HERE because this call site
+ * is the one place that knows the phase — see 40-design.md "Rejected" §1: NOT
+ * inside `loadConfig`, which has no phase context and is called by nearly every
+ * command), then the pre-existing explicit `commit_docs` (tier 2), `.gitignore`
+ * auto-detect (tier 3), and manifest default (tier 4). Tiers 2-4 are byte-for-
+ * behaviour identical to the pre-#3587 inline checks (epic #2292 AC4): when no
+ * phase override applies, `resolved` matches exactly what those checks computed
+ * and `source` merely labels which of the three decided it.
+ *
+ * `isPlanningGitIgnored` is a thunk, not a plain boolean, so the pre-existing
+ * short-circuit is preserved byte-for-behaviour: the original inline checks
+ * only ever ran `isGitIgnored` (a real `git check-ignore` subprocess) when
+ * `commit_docs` was truthy, and a phase override or an explicit `commit_docs:
+ * false` must keep skipping that call entirely, not just its result. Passing
+ * a thunk also keeps this function pure and directly property-testable
+ * (test matrix F1) without spawning git.
+ */
+function resolveCommitDocsPolicy(
+  config: Record<string, unknown>,
+  phaseNum: string | null,
+  isPlanningGitIgnored: () => boolean,
+): CommitDocsResolution {
+  const phaseOverride = resolvePhaseCommitDocsOverride(config, phaseNum);
+  if (phaseOverride !== undefined) return { resolved: phaseOverride, source: 'phase' };
+  if (!config['commit_docs']) return { resolved: false, source: 'config' };
+  if (isPlanningGitIgnored()) return { resolved: false, source: 'gitignore' };
+  return { resolved: true, source: 'default' };
+}
+
+// Reason string per commit_docs-resolution source, for the tier-1/tier-2 skip
+// envelope below. `phase` gets its OWN reason (`skipped_commit_docs_phase_false`)
+// rather than reusing `skipped_commit_docs_false` — telling a user "commit_docs
+// is false" when their project setting is actually `true` would be actively
+// misleading (design "Rejected" §3). `config` keeps the pre-existing string
+// unchanged: `agents/gsd-executor.md` pattern-matches on it (D2).
+const COMMIT_DOCS_SKIP_REASON: Record<Exclude<CommitDocsSource, 'default'>, string> = {
+  phase: 'skipped_commit_docs_phase_false',
+  config: 'skipped_commit_docs_false',
+  gitignore: 'skipped_gitignored',
+};
+
 function cmdCommit(cwd: string, message: string | undefined, files: string[] | undefined, raw: boolean, amend: boolean, noVerify: boolean): void {
   if (!message && !amend) {
     error('commit message required');
@@ -1079,19 +1152,24 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
 
   const config = loadConfig(cwd);
 
-  // Check commit_docs config
+  // Check commit_docs config — #3587: resolved through the tier 1
+  // (phase_commit_docs.<phase-id>) → tier 2 (commit_docs) → tier 3 (.gitignore)
+  // → tier 4 (default) precedence chain; see resolveCommitDocsPolicy above.
   // `skipped: true` is explicit so agent prompts can match on a first-class
   // success signal rather than inferring "skip" from "committed is missing"
   // and improvising raw git fallbacks (#3678).
-  if (!config['commit_docs']) {
-    const result = { committed: false, skipped: true, hash: null, reason: 'skipped_commit_docs_false' };
-    output(result, raw, 'skipped');
-    return;
-  }
-
-  // Check if .planning is gitignored
-  if (isGitIgnored(cwd, '.planning')) {
-    const result = { committed: false, skipped: true, hash: null, reason: 'skipped_gitignored' };
+  const commitDocsPolicy = resolveCommitDocsPolicy(
+    config,
+    detectPhaseNumberFromFiles(files),
+    () => isGitIgnored(cwd, '.planning'),
+  );
+  if (!commitDocsPolicy.resolved) {
+    const result = {
+      committed: false,
+      skipped: true,
+      hash: null,
+      reason: COMMIT_DOCS_SKIP_REASON[commitDocsPolicy.source as Exclude<CommitDocsSource, 'default'>],
+    };
     output(result, raw, 'skipped');
     return;
   }
@@ -2395,6 +2473,10 @@ export = {
   cmdResolveGranularity,
   cmdResolveExecution,
   cmdEffortSync,
+  detectPhaseNumberFromFiles,
+  resolvePhaseCommitDocsOverride,
+  resolveCommitDocsPolicy,
+  COMMIT_DOCS_SKIP_REASON,
   cmdCommit,
   cmdCommitToSubrepo,
   cmdPrSubrepo,

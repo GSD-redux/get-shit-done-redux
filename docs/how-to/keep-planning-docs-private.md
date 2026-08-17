@@ -87,10 +87,55 @@ it — removing files from the index is destructive and the timing is yours.
 - **Teammates who have already pulled the tracked files** will see them deleted by your step-3
   commit. That is the intended effect — the files leave the repo, not their working copies of your
   branch — but say so in the commit message or PR description so it is not a surprise.
-- **Per-phase control** (committing docs for an architecture phase while keeping execution phases
-  local) is tracked separately; `commit_docs` is currently project-wide.
+
+## Per-phase override
+
+You just made the whole project local-only in step 1. If instead you want ONE phase's artifacts —
+say, an architecture or ADR phase whose PLAN.md and REQUIREMENTS.md are worth sharing with the
+team — committed while every other phase stays local, set a `phase_commit_docs` entry for that
+phase's number instead of (or on top of) the project-wide switch:
+
+```bash
+gsd-tools config-set planning.commit_docs false
+gsd-tools config-set phase_commit_docs.03 true
+```
+
+```json
+{
+  "planning": { "commit_docs": false },
+  "phase_commit_docs": { "03": true }
+}
+```
+
+Now `gsd-tools query commit` commits phase 03's artifacts normally, and skips (with the
+`skipped_commit_docs_phase_false`-or-`skipped_commit_docs_false` reason depending on which tier
+decided) every other phase's — the project-wide setting from step 1 still governs everything
+`phase_commit_docs` does not name.
+
+A few things worth knowing before you rely on this:
+
+- **The phase-id form doesn't matter.** `phase_commit_docs.3`, `phase_commit_docs.03`, and (if your
+  project uses a `project_code`) `phase_commit_docs.PROJ-03` all resolve to the same entry — GSD
+  normalizes the phase number before lookup, the same way it does everywhere else phase numbers are
+  compared.
+- **It only applies to a commit that names a phase-scoped file.** `gsd-tools query commit` resolves
+  the phase from the `--files` paths you pass it (via the `.planning/phases/<phase-dir>/…`
+  segment). A commit that names no phase file — e.g. a bare `ROADMAP.md` update — has no phase to
+  look up, so `phase_commit_docs` never applies to it and the project-wide setting governs, same as
+  before this feature existed.
+- **It's per phase, not per artifact.** You cannot commit a phase's ADR but suppress its SUMMARY
+  within the same commit; the override applies to the whole phase.
+- **Reverse direction works too.** With the project-wide default (`commit_docs: true`), set
+  `phase_commit_docs.<phase-id> false` to suppress just one noisy execution phase while everything
+  else commits normally.
+
+Full precedence order (highest wins): `phase_commit_docs.<phase-id>` → explicit `commit_docs` /
+`planning.commit_docs` → `.gitignore` auto-detect → the manifest default. See
+[Configuration reference — per-phase override](../CONFIGURATION.md#per-phase-override-phase_commit_docs)
+for the complete rules, including how a non-boolean value is handled.
 
 ## Related
 
 - [Configuration reference — `planning.commit_docs`](../CONFIGURATION.md#planning-settings)
 - [Configuration reference — auto-detection and the tracked-files caveat](../CONFIGURATION.md#auto-detection)
+- [Configuration reference — per-phase override](../CONFIGURATION.md#per-phase-override-phase_commit_docs)

@@ -181,7 +181,12 @@
     {
       "topLevel": "model_policy",
       "source": "^model_policy\\.runtime_tiers\\.[a-zA-Z0-9_-]+\\.(opus|sonnet|haiku)$",
-      "description": "model_policy.runtime_tiers.<runtime>.<opus|sonnet|haiku>"
+      "description": "model_policy.runtime_tiers.<runtime>.<opus|sonnet|haiku> (#3587)"
+    },
+    {
+      "topLevel": "phase_commit_docs",
+      "source": "^phase_commit_docs\\.\\d+[A-Z]?(?:\\.\\d+)*$",
+      "description": "phase_commit_docs.<phase-id> — per-phase commit_docs override (#3587). The <phase-id> segment is a hand-copy of the canonical PHASE_NUMBER_TOKEN_SOURCE grammar owned by src/phase-id.cts (#2128); this manifest is hand-maintained JSON so it cannot import that constant. Pinned against drift by the behavioral parity test in tests/phase-commit-docs.test.cjs (describe block 'E', #3587) — do not hand-edit this pattern without updating that test."
     }
   ]
 }

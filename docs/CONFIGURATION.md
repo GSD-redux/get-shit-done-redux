@@ -530,6 +530,52 @@ Note: a file deliberately force-added under an otherwise-ignored `.planning/` (`
 .planning/keep.md`) triggers this same warning — there is no reliable way to distinguish an
 intentional force-add from the accidental case above, so `W029` is expected in that situation too.
 
+### Per-Phase Override (`phase_commit_docs`)
+
+`commit_docs` is a single project-wide switch by default, but a tech lead may want to commit one
+phase's artifacts (e.g. an architecture or ADR phase) while keeping execution phases local. Set a
+dynamic key of the form `phase_commit_docs.<phase-id>` to override `commit_docs` for that phase only:
+
+```bash
+gsd-tools config-set phase_commit_docs.03 true
+gsd-tools config-set phase_commit_docs.07 false
+```
+
+```json
+{
+  "commit_docs": false,
+  "phase_commit_docs": {
+    "03": true,
+    "07": false
+  }
+}
+```
+
+The `<phase-id>` segment accepts the same phase-number shapes GSD uses elsewhere (`3`, `03`,
+`12A`, `3.2` — a project-code prefix like `PROJ-03` is normalized to the bare phase number before
+lookup), so `phase_commit_docs.3` and `phase_commit_docs.03` refer to the same entry.
+
+**Resolution order** (highest wins) when `gsd-tools commit` / `query commit` resolves the phase from
+the committed `--files` paths:
+
+1. `phase_commit_docs.<phase-id>` for the phase being committed
+2. explicit `commit_docs` / `planning.commit_docs` in config.json
+3. `.gitignore` auto-detect (see [Auto-Detection](#auto-detection) above)
+4. the manifest default (`true`)
+
+A per-phase value must be a real boolean — `"true"` (string), `1`, or `null` are never coerced and
+fall through to the next tier. A value set for a different phase than the one being committed never
+applies (no cross-phase leak). A commit that names no phase-scoped file (e.g. a project-wide
+`ROADMAP.md`-only commit) has no phase to look up, so tier 1 is inapplicable and resolution starts
+at tier 2 — unchanged from pre-#3587 behavior.
+
+When tier 1 suppresses a commit, the skip envelope's `reason` is
+`skipped_commit_docs_phase_false` — distinct from the project-wide `skipped_commit_docs_false` —
+so a caller is never told "commit_docs is false" when the project setting is actually `true`.
+
+See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md#per-phase-override)
+for a worked example.
+
 ---
 
 ## Hook Settings
