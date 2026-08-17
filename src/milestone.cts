@@ -60,7 +60,7 @@ const { extractFrontmatter } = frontmatterMod;
 // divergence signal). Routed through the single write-seam composition
 // (`syncAndPreserveStateMd`) instead, under `withStateLock` — see
 // `cmdMilestoneComplete`'s own STATE.md-update block for the full rationale.
-const { syncAndPreserveStateMd, withStateLock } = stateMod;
+const { syncAndPreserveStateMd, withStateLock, readModifyWriteStateMd } = stateMod;
 
 // #2288 security: a milestone version label becomes a filesystem directory
 // component (`milestones/<label>-phases/`) into which phase directories are
@@ -786,24 +786,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       // pass below would move.
       phaseDirsToArchive.push(...listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value);
     }
-    // #2142: dry-run preview of quick-task archival — read-only, mirrors the
-    // directory-entry filter `archiveQuickTaskDirectories` applies for real.
-    // Absent --archive-quick this stays `[]` and nothing on disk is touched
-    // either way (dry-run always returns before any mutation below).
-    const quickDirsToArchive: string[] = [];
-    if (options.archiveQuick) {
-      try {
-        quickDirsToArchive.push(
-          ...fs
-            .readdirSync(planningPaths(cwd).quick, { withFileTypes: true })
-            .filter((e) => e.isDirectory())
-            .map((e) => e.name)
-            .sort(),
-        );
-      } catch {
-        /* .planning/quick absent or unreadable — empty preview list */
-      }
-    }
+    // #2142 MAJOR 5 (review): dry-run preview of quick-task archival —
+    // read-only, routed through the SAME `listQuickTaskDirsForArchive`
+    // selection `archiveQuickTaskDirectories` uses for real (directory
+    // entries only, `requireSafePath`-guarded, sorted) so this preview can
+    // never disagree with what a real run actually archives. Absent
+    // --archive-quick this stays `[]` and nothing on disk is touched either
+    // way (dry-run always returns before any mutation below).
+    const quickDirsToArchive: string[] = options.archiveQuick ? listQuickTaskDirsForArchive(cwd) : [];
     const dryRunResult = {
       dry_run: true,
       version,
@@ -839,17 +829,6 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // archive directory behind. Reaching this point means the run is
   // committed to mutating.
   platformEnsureDir(archiveDir);
-
-  // #2142: opt-in quick-task archival. Runs here — after every refusal/guard
-  // above but BEFORE the STATE.md write block below — so the Quick Tasks
-  // table reset can be folded into that SAME existing `withStateLock`
-  // transform (one lock, one write) and made conditional on the directories
-  // having actually moved. `archiveQuick` is opt-in (default OFF); absent
-  // the flag this is `null` and every downstream read of it degrades to "no
-  // quick archival happened".
-  const quickArchiveResult = options.archiveQuick
-    ? archiveQuickTaskDirectories(cwd, version)
-    : null;
 
   // Archive ROADMAP.md
   if (fs.existsSync(roadmapPath)) {
@@ -906,6 +885,25 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   } else {
     platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
+
+  // #2142 BLOCKER 2 (review): opt-in quick-task archival. This call MUST sit
+  // immediately adjacent to the STATE.md write block directly below it, with
+  // NO unguarded IO in between (unlike the ROADMAP/REQUIREMENTS/audit/
+  // MILESTONES.md writes above, none of which are wrapped in a try/catch).
+  // If the move ran earlier — e.g. right after `platformEnsureDir(archiveDir)`
+  // — and any one of those unguarded writes then threw, the quick-task
+  // directories would already be gone from `.planning/quick/` while the
+  // STATE.md Quick Tasks table reset (which lives inside `withStateLock`
+  // immediately below) would never be reached. That is precisely the
+  // STATE-vs-disk drift #2142 exists to eliminate: a table still describing
+  // directories that no longer exist. Keeping the move and the reset
+  // adjacent — separated only by this comment, never by IO that can throw —
+  // means either both happen or (if the move itself throws) neither does.
+  // `archiveQuick` is opt-in (default OFF); absent the flag this is `null`
+  // and every downstream read of it degrades to "no quick archival happened".
+  const quickArchiveResult = options.archiveQuick
+    ? archiveQuickTaskDirectories(cwd, version)
+    : null;
 
   // Update STATE.md — keep frontmatter/body semantically aligned after closure.
   // ADR-1769 Phase 5: dispatches to the STATE.md Transition Module. The closure
@@ -1255,19 +1253,48 @@ function archivePhaseDirectories(cwd: string, phasesDir: string, dirs: ReadonlyA
 }
 
 /**
- * #2142: escape one directory-name span for insertion as markdown LINK TEXT
- * (`[...]`) — a directory name containing a literal `|`, `[` or `]` must not
- * be able to break the enclosing markdown. Mirrors `escapeCell`'s
- * escape-the-escape-char-FIRST convention (markdown-table.cts) so a literal
- * backslash in the name is never mistaken for part of an escape sequence
- * this function introduces.
+ * #2142 BLOCKER 1 (review): escape one directory-name span for insertion as
+ * markdown LINK TEXT (`[...]`) — a directory name containing a literal `|`,
+ * `[` or `]` must not be able to break the enclosing markdown. `mkdirSync`
+ * accepts an embedded newline in a directory name on POSIX (and `isDirectory()`
+ * still reports true for it), so an unescaped newline would let attacker-
+ * controlled content — including a markdown HEADING — land verbatim in the
+ * generated README.md, an indirect prompt-injection vector for any agent
+ * workflow step that later reads that file. Mirrors `escapeCell`'s exact
+ * convention (markdown-table.cts `escapeCell`): collapse `\r?\n+` to a single
+ * space FIRST (so a newline can never re-enter the output as a line break),
+ * THEN escape the escape char itself (before the rest, so a literal backslash
+ * in the name is never mistaken for part of an escape sequence this function
+ * introduces), THEN the markdown-syntax characters.
  */
 function escapeMarkdownLinkText(text: string): string {
   return text
+    .replace(/\r?\n+/g, ' ')
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
     .replace(/\[/g, '\\[')
     .replace(/\]/g, '\\]');
+}
+
+/**
+ * #2142 BLOCKER 1 (review): encode one path span for insertion as a markdown
+ * link DESTINATION (`(...)`) — `relSummary` is built from a directory name
+ * that may legally contain a space, a `(`/`)`, or a control character
+ * (including an embedded newline) on POSIX. Per CommonMark, an unbracketed
+ * link destination terminates at the first ASCII space/control character and
+ * requires parens to be balanced or escaped — any of those would truncate or
+ * corrupt the link, or let attacker-controlled content spill out of the
+ * `(...)` span into the surrounding markdown (the same indirect
+ * prompt-injection vector `escapeMarkdownLinkText` guards the link TEXT
+ * against). Percent-encodes just the unsafe set (space, `(`, `)`, and C0
+ * control chars incl. `\r`/`\n`, plus DEL) rather than switching to the
+ * angle-bracket `<...>` destination form — percent-encoding is reversible (a
+ * markdown viewer resolving the link still reaches the right file) and does
+ * not introduce a new pair of syntax characters (`<`/`>`) that would in turn
+ * need their own escaping.
+ */
+function encodeMarkdownLinkTarget(target: string): string {
+  return target.replace(/[\x00-\x1f\x7f ()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`);
 }
 
 /**
@@ -1288,42 +1315,93 @@ function escapeMarkdownLinkText(text: string): string {
  * under-report the index, which is worse than an unlinked entry).
  *
  * Entries are sorted for deterministic output. A directory name containing
- * `|`, `[` or `]` is escaped via `escapeMarkdownLinkText` so it cannot break
- * the generated markdown. The summary path is normalized to POSIX
- * (`.split(path.sep).join('/')`) so the link is stable across platforms.
+ * `|`, `[`, `]` or an embedded newline is neutralized via
+ * `escapeMarkdownLinkText` (link TEXT) so it cannot break the generated
+ * markdown or inject a heading, and the destination is separately encoded via
+ * `encodeMarkdownLinkTarget` (link TARGET) so a space/paren/control char in
+ * the name cannot truncate or corrupt the `(...)` span. The summary path is
+ * normalized to POSIX (`.split(path.sep).join('/')`) so the link is stable
+ * across platforms.
  *
  * No-ops (writes nothing) when `archiveQuickDir` is unreadable — this is a
- * best-effort index, not a gate on milestone completion.
+ * best-effort index, not a gate on milestone completion. #2142 MAJOR 4
+ * (review): the whole body is additionally wrapped in a try/catch so a
+ * failure of the WRITE itself (read-only archive dir, full disk, or a
+ * quick-task directory literally named `README.md` colliding with the file
+ * being written) degrades the same way — this function genuinely cannot
+ * throw, matching its own "best-effort, not a gate" contract; the directories
+ * are already safely archived by the time this runs.
  */
 function writeQuickArchiveReadme(archiveQuickDir: string): void {
-  let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(archiveQuickDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  const dirNames = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort();
+    const entries = fs.readdirSync(archiveQuickDir, { withFileTypes: true });
+    const dirNames = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
 
-  const lines: string[] = ['# Archived Quick Tasks', ''];
-  for (const dirName of dirNames) {
-    const taskDir = path.join(archiveQuickDir, dirName);
-    const summaryPath = resolveQuickTaskSummaryFile(taskDir, dirName);
-    const escapedName = escapeMarkdownLinkText(dirName);
-    if (summaryPath) {
-      const relSummary = path.relative(archiveQuickDir, summaryPath).split(path.sep).join('/');
-      lines.push(`- [${escapedName}](${relSummary})`);
-    } else {
-      // No summary file — list the directory, but never link into it (there
-      // is nothing to point at). See indexListsTaskWithoutSummaryWithoutLink.
-      lines.push(`- ${escapedName}`);
+    const lines: string[] = ['# Archived Quick Tasks', ''];
+    for (const dirName of dirNames) {
+      const taskDir = path.join(archiveQuickDir, dirName);
+      const summaryPath = resolveQuickTaskSummaryFile(taskDir, dirName);
+      const escapedName = escapeMarkdownLinkText(dirName);
+      if (summaryPath) {
+        const relSummary = path.relative(archiveQuickDir, summaryPath).split(path.sep).join('/');
+        lines.push(`- [${escapedName}](${encodeMarkdownLinkTarget(relSummary)})`);
+      } else {
+        // No summary file — list the directory, but never link into it (there
+        // is nothing to point at). See indexListsTaskWithoutSummaryWithoutLink.
+        lines.push(`- ${escapedName}`);
+      }
     }
-  }
-  lines.push('');
+    lines.push('');
 
-  platformWriteSync(path.join(archiveQuickDir, 'README.md'), lines.join('\n'));
+    platformWriteSync(path.join(archiveQuickDir, 'README.md'), lines.join('\n'));
+  } catch {
+    /* best-effort (#2142 MAJOR 4): a read-only archive dir, a full disk, or a
+     * quick-task directory literally named `README.md` colliding with the
+     * file this function writes must never crash `milestone complete` —
+     * the quick-task directories are already safely archived on disk by the
+     * time this index-generation step runs. */
+  }
+}
+
+/**
+ * #2142 MAJOR 5 (review): the single owned selection rule for "which
+ * directories under `.planning/quick/` would/will move" — directory entries
+ * only (symlinks are excluded here, per the MAJOR 3 note above), each
+ * additionally guarded with `requireSafePath` (the same guard
+ * `scanQuickTasks`/`archiveQuickTaskDirectories` use), sorted for
+ * deterministic output. Extracted so `cmdMilestoneComplete`'s dry-run
+ * preview, `cmdQuickArchive`'s dry-run preview, and the REAL selection inside
+ * `archiveQuickTaskDirectories` all call this ONE function instead of each
+ * re-deriving the rule — the "Generative Fix Divergence" anti-pattern this
+ * repo explicitly guards against (a prior version of this code had the rule
+ * written three times, and only the real-run copy applied `requireSafePath`,
+ * so a dry-run preview could list a directory the real run would silently
+ * skip).
+ */
+function listQuickTaskDirsForArchive(cwd: string): string[] {
+  const planningBase = planningPaths(cwd).planning;
+  const quickDir = planningPaths(cwd).quick;
+  let sourceEntries: fs.Dirent[];
+  try {
+    sourceEntries = fs.readdirSync(quickDir, { withFileTypes: true });
+  } catch {
+    // .planning/quick absent or unreadable — nothing to select.
+    return [];
+  }
+  const names: string[] = [];
+  for (const entry of sourceEntries) {
+    if (!entry.isDirectory()) continue; // excludes symlinks too — see MAJOR 3 note above
+    try {
+      requireSafePath(path.join(quickDir, entry.name), planningBase, 'quick task dir', { allowAbsolute: true });
+    } catch {
+      continue; // symlink/escape attempt — never a candidate, in preview OR real run
+    }
+    names.push(entry.name);
+  }
+  return names.sort();
 }
 
 /**
@@ -1338,10 +1416,21 @@ function writeQuickArchiveReadme(archiveQuickDir: string): void {
  * `cmdMilestoneComplete`'s entry — this helper does not re-validate it, and
  * must only ever be called after that guard has run.
  *
- * Every source entry is additionally guarded with `requireSafePath` — the
- * SAME guard `scanQuickTasks` (audit.cts) uses — so a symlink under
- * `.planning/quick/` cannot escape the planning root; an entry that fails
- * the guard is skipped, never archived, never counted.
+ * #2142 MAJOR 3 (review): a symlink under `.planning/quick/` — even one that
+ * targets a directory — is excluded by the `dirEntries` filter below
+ * (`fs.Dirent.isDirectory()` returns FALSE for a symlink, regardless of what
+ * it points at), so it is never a candidate `entry` in the first place and
+ * `requireSafePath` below never runs against it. `requireSafePath` is
+ * retained here as defense-in-depth for the NON-symlink path (a real
+ * directory entry whose resolved path still needs re-validating against
+ * `planningBase`) — the SAME guard `scanQuickTasks` (audit.cts) uses — so an
+ * entry that fails it is skipped, never archived, never counted. See the
+ * symlink regression tests in tests/milestone-archive.test.cjs
+ * (`symlinkEscapeIsNeverArchivedByMilestoneComplete` /
+ * `symlinkEscapeIsNeverArchivedByQuickArchive`) for a fixture proving neither
+ * the symlink nor its external target is ever moved or altered — added
+ * specifically so a future change to this filter cannot silently reopen the
+ * escape with nothing to catch it.
  *
  * No-op (returns `{archived: 0, entries: []}`, creates NOTHING on disk) when
  * `.planning/quick/` does not exist or contains zero DIRECTORY entries — a
@@ -1360,17 +1449,15 @@ function archiveQuickTaskDirectories(cwd: string, version: string): { archiveDir
   const quickDir = planningPaths(cwd).quick;
   const archiveQuickDir = path.join(planningBase, 'milestones', `${version}-quick`);
 
-  let sourceEntries: fs.Dirent[];
-  try {
-    sourceEntries = fs.readdirSync(quickDir, { withFileTypes: true });
-  } catch {
-    // .planning/quick absent or unreadable — no-op, no archive dir created.
-    return { archiveDir: archiveQuickDir, archived: 0, entries: [] };
-  }
-  const dirEntries = sourceEntries.filter((e) => e.isDirectory());
-  if (dirEntries.length === 0) {
-    // Boundary 0 (#2142): zero directory entries (empty dir, or only stray
-    // files) must not create the archive directory.
+  // #2142 MAJOR 5 (review): dirNames is the SAME selection
+  // `listQuickTaskDirsForArchive` hands to both dry-run previews — this is
+  // the real run, so it cannot disagree with what a preview reported.
+  const dirNames = listQuickTaskDirsForArchive(cwd);
+  if (dirNames.length === 0) {
+    // Boundary 0 (#2142): zero (safe) directory entries (empty dir, only
+    // stray files, or every entry excluded by the selection rule) must not
+    // create the archive directory. Also covers `.planning/quick/` being
+    // absent/unreadable — `listQuickTaskDirsForArchive` degrades to `[]`.
     return { archiveDir: archiveQuickDir, archived: 0, entries: [] };
   }
 
@@ -1378,21 +1465,26 @@ function archiveQuickTaskDirectories(cwd: string, version: string): { archiveDir
   const entries: string[] = [];
   try {
     platformEnsureDir(archiveQuickDir);
-    for (const entry of dirEntries) {
-      const src = path.join(quickDir, entry.name);
+    for (const name of dirNames) {
+      const src = path.join(quickDir, name);
       let safeSrc: string;
       try {
+        // Re-validated here (not just trusted from the selection above) as
+        // TOCTOU defense-in-depth: `listQuickTaskDirsForArchive` and this
+        // rename are two separate filesystem observations, and an entry
+        // that was a safe real directory at selection time could in theory
+        // be swapped for a symlink before this loop reaches it.
         safeSrc = requireSafePath(src, planningBase, 'quick task dir', { allowAbsolute: true });
       } catch {
         continue; // symlink/escape attempt — skip, not archived
       }
 
       // Collision-safe: if a same-named archive entry exists (re-run), suffix it.
-      let dest = path.join(archiveQuickDir, entry.name);
-      let destName = entry.name;
+      let dest = path.join(archiveQuickDir, name);
+      let destName = name;
       let n = 1;
       while (fs.existsSync(dest)) {
-        destName = `${entry.name}.${n++}`;
+        destName = `${name}.${n++}`;
         dest = path.join(archiveQuickDir, destName);
       }
       retryRenameSync(safeSrc, dest);
@@ -1443,10 +1535,22 @@ interface QuickArchiveOptions {
  * NEITHER the unstarted-phase guard NOR the milestone-window/TRUNCATED
  * refusal — those remain `milestone complete`'s alone.
  *
- * Unlike `cmdMilestoneComplete` (which folds the table reset into its own
- * pre-existing `withStateLock` transform, alongside the closure transition),
- * this is a standalone invocation and takes its OWN `withStateLock` — there
- * is no surrounding lock to fold into here.
+ * #2142 MAJOR 6 (review): the STATE.md write now routes through
+ * `readModifyWriteStateMd` — the same owned read-transform-write composition
+ * `gsd-tools.cjs`'s `quick-tasks-append` handler uses (ADR-3408 §8.3 / #3469:
+ * "the single owned composition ... so the composition cannot diverge"). A
+ * prior version of this function called `platformWriteSync` directly with
+ * the reset result, bypassing `syncAndPreserveStateMd` entirely — the exact
+ * bypass shape that ADR closed. Per `src/state.cts:3289-3330`,
+ * `readModifyWriteStateMd` ALREADY acquires its own exclusive lock
+ * (`acquireStateLock`/`releaseStateLock`, a real `O_CREAT|O_EXCL` file lock,
+ * not reentrant) across its own read -> transform -> write cycle — so, unlike
+ * `cmdMilestoneComplete` (which folds the table reset into its own
+ * pre-existing `withStateLock` transform because it ALSO needs that lock for
+ * the closure-transition write happening in the same block), this function
+ * must NOT wrap the call in its own `withStateLock`: doing so would acquire
+ * the same lock file twice in the same process, and the second acquire would
+ * spin against a lock this same call already holds until it times out.
  */
 function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOptions, raw: boolean): void {
   if (!version) {
@@ -1463,21 +1567,12 @@ function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOpti
   const planningBase = planningPaths(cwd).planning;
   const toPosixRel = (p: string): string => path.relative(cwd, p).split(path.sep).join('/');
 
-  // --dry-run: preview only — mirrors the quick-archival slice of
-  // `cmdMilestoneComplete`'s own dry-run preview, mutates nothing.
+  // --dry-run: preview only, mutates nothing. #2142 MAJOR 5 (review): routed
+  // through the SAME `listQuickTaskDirsForArchive` selection
+  // `cmdMilestoneComplete`'s own dry-run preview and the real
+  // `archiveQuickTaskDirectories` both use, so all three can never disagree.
   if (options.dryRun) {
-    const quickDirsToArchive: string[] = [];
-    try {
-      quickDirsToArchive.push(
-        ...fs
-          .readdirSync(planningPaths(cwd).quick, { withFileTypes: true })
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name)
-          .sort(),
-      );
-    } catch {
-      /* .planning/quick absent or unreadable — empty preview list */
-    }
+    const quickDirsToArchive: string[] = listQuickTaskDirsForArchive(cwd);
     output(
       {
         dry_run: true,
@@ -1500,17 +1595,33 @@ function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOpti
   // created lazily by quick.md Step 7b and absent from templates/state.md,
   // so absence is the common case, not an anomaly). Any other reset failure
   // is surfaced via `warnings`, never thrown.
+  //
+  // #2142 MAJOR 6 (review): routed through `readModifyWriteStateMd` (see the
+  // docstring above) instead of a bare `platformWriteSync` — the transform
+  // returns the ORIGINAL content unchanged whenever the reset did not apply
+  // (sentinel-absent or a genuine failure), so `readModifyWriteStateMd`'s own
+  // no-op guard (#948, state.cts:3304) skips the write and its `false`
+  // return accurately reports "nothing was written" — the same "state_updated
+  // must report accurately" contract the prior direct-write version upheld.
   if (quickArchiveResult.archived > 0 && fs.existsSync(statePath)) {
-    withStateLock(statePath, () => {
-      const originalStateContent = platformReadSync(statePath) || '';
-      const resetResult = resetQuickTaskRows(originalStateContent);
-      if (resetResult.ok) {
-        platformWriteSync(statePath, resetResult.value.content);
-        stateUpdated = true;
-      } else if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
-        warnings.push({ field: 'quick_tasks_table', reason: resetResult.reason });
-      }
-    });
+    let resetFailureReason: string | undefined;
+    stateUpdated = readModifyWriteStateMd(
+      statePath,
+      (content: string) => {
+        const resetResult = resetQuickTaskRows(content);
+        if (resetResult.ok) {
+          return resetResult.value.content;
+        }
+        if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
+          resetFailureReason = resetResult.reason;
+        }
+        return content;
+      },
+      cwd,
+    );
+    if (resetFailureReason) {
+      warnings.push({ field: 'quick_tasks_table', reason: resetFailureReason });
+    }
   }
 
   output(

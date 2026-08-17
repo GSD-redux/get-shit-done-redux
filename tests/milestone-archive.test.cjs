@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
 const { findTableBySchema } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 function runSdkQuery(args, cwd) {
   const result = runGsdTools(args, cwd);
@@ -973,5 +974,178 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
       !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
       'no archive dir should be created when .planning/quick is absent',
     );
+  });
+
+  // MAJOR 6 (#2142 review): `quick.archive`'s STATE.md write now routes
+  // through `readModifyWriteStateMd` (src/milestone.cts cmdQuickArchive)
+  // instead of a bare `platformWriteSync`. Behavioral proof that the reset
+  // still applies correctly and `state_updated` still reports `true`.
+  test('quickArchiveResetsStateTableThroughOwnedCompositionAndReportsStateUpdated', () => {
+    writeQuickTaskDir(tmpDir, '2026-09-04-a');
+    writeQuickTaskDir(tmpDir, '2026-09-04-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(2));
+
+    const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
+    assert.ok(result.success, `quick.archive failed: ${result.error}`);
+    assert.strictEqual(result.data.archived, 2);
+    assert.strictEqual(result.data.state_updated, true, 'state_updated must be true when the table reset actually applied');
+    assert.deepStrictEqual(result.data.warnings, []);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table header must survive the reset');
+    assert.strictEqual(table.rows.length, 0, 'all quick task rows must be cleared');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142 review — BLOCKER 1, MAJOR 3, MAJOR 5 regression coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2142 review: README injection, symlink escape, dry-run/real-run parity', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // BLOCKER 1: a quick-task directory name containing an embedded newline
+  // plus markdown heading syntax must never let that heading land verbatim
+  // in the generated README.md (indirect prompt-injection vector).
+  test('embeddedNewlineInDirNameCannotInjectAHeadingIntoTheGeneratedReadme', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const maliciousName = '2026-10-01-evil\n\n## Injected';
+    try {
+      writeQuickTaskDir(tmpDir, maliciousName);
+    } catch (err) {
+      if (err && ['EINVAL', 'ENAMETOOLONG'].includes(err.code)) {
+        t.skip(`this platform's filesystem rejects a newline in a directory name (${err.code})`);
+        return;
+      }
+      throw err;
+    }
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+
+    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const readme = fs.readFileSync(readmePath, 'utf-8');
+    const lines = splitLines(readme);
+    assert.ok(
+      !lines.some((line) => line.trim() === '## Injected'),
+      `README.md must not contain an injected heading line as its own line; got:\n${readme}`,
+    );
+    assert.ok(
+      !readme.includes('\n\n## Injected'),
+      'README.md must not contain the raw injected heading sequence verbatim',
+    );
+  });
+
+  // MAJOR 3: a symlink under `.planning/quick/` — even one targeting a real
+  // directory OUTSIDE the planning root — must never be archived (moved) and
+  // its target must never be altered, for BOTH archival entry points.
+  function setupSymlinkEscape(t) {
+    const outsideDir = createTempProject('gsd-quick-escape-target-');
+    fs.writeFileSync(path.join(outsideDir, 'marker.txt'), 'do not touch\n');
+    const symlinkPath = path.join(tmpDir, '.planning', 'quick', '2026-10-02-escape-symlink');
+    fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
+    try {
+      fs.symlinkSync(outsideDir, symlinkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      cleanup(outsideDir);
+      if (err && ['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
+        t.skip(`symlink creation is not available on this platform (${err.code})`);
+        return null;
+      }
+      throw err;
+    }
+    return { outsideDir, symlinkPath };
+  }
+
+  test('symlinkEscapeIsNeverArchivedByMilestoneComplete', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir, symlinkPath } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-02-real-task');
+
+      const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+      assert.strictEqual(result.data.archived.quick, true, 'the real task dir must still archive');
+
+      assert.ok(fs.existsSync(symlinkPath), 'the symlink must remain in .planning/quick, never moved');
+      assert.ok(fs.lstatSync(symlinkPath).isSymbolicLink(), 'the entry must still be a symlink, untouched');
+      assert.ok(
+        fs.existsSync(path.join(outsideDir, 'marker.txt')),
+        "the symlink's external target must never be moved or altered",
+      );
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-10-02-escape-symlink')),
+        'the symlink must never appear inside the archive directory',
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  test('symlinkEscapeIsNeverArchivedByQuickArchive', (t) => {
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir, symlinkPath } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-03-real-task');
+
+      const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
+      assert.ok(result.success, `quick.archive failed: ${result.error}`);
+      assert.strictEqual(result.data.archived, 1, 'only the real task dir must archive');
+
+      assert.ok(fs.existsSync(symlinkPath), 'the symlink must remain in .planning/quick, never moved');
+      assert.ok(fs.lstatSync(symlinkPath).isSymbolicLink(), 'the entry must still be a symlink, untouched');
+      assert.ok(
+        fs.existsSync(path.join(outsideDir, 'marker.txt')),
+        "the symlink's external target must never be moved or altered",
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  // MAJOR 5: dry-run preview must be produced by the SAME selection rule
+  // (`listQuickTaskDirsForArchive`) as the real archive pass, so a fixture
+  // containing an entry the real run would skip (a symlink) is ALSO absent
+  // from the dry-run preview — they cannot disagree.
+  test('dryRunPreviewMatchesRealArchiveWhenAnEntryIsSkipped', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-04-keep');
+
+      const dryRun = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run', '--archive-quick'], tmpDir);
+      assert.ok(dryRun.success, `dry-run failed: ${dryRun.error}`);
+      assert.deepStrictEqual(
+        dryRun.data.would_archive.quick,
+        ['2026-10-04-keep'],
+        'the skipped symlink entry must not appear in the dry-run preview',
+      );
+
+      const real = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      assert.ok(real.success, `real run failed: ${real.error}`);
+      const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+      const archivedNames = fs
+        .readdirSync(archiveDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort();
+      assert.deepStrictEqual(
+        archivedNames,
+        dryRun.data.would_archive.quick,
+        'the real run must archive exactly what the dry-run preview reported',
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
   });
 });
