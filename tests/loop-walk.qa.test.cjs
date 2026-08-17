@@ -16,7 +16,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { execFile } = require('node:child_process');
+const { execFile, spawnSync } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -1084,10 +1084,13 @@ describe('scenario discovery (mutations wired for real)', () => {
     assert.strictEqual(names.includes('_selftest-must-fail.json'), false);
   });
 
-  test('every discovered perturbation scenario applies its mutation, holds its own expectations, and runs to completion', () => {
+  test('every discovered scenario holds its own expectations and runs to completion; every perturbation applies its mutation', () => {
     const liveCommands = [...getLiveCommandTokens()];
-    const perturbationFiles = discoverScenarioFiles().filter((p) => path.basename(p).startsWith('perturbation-'));
+    const allFiles = discoverScenarioFiles();
+    const perturbationFiles = allFiles.filter((p) => path.basename(p).startsWith('perturbation-'));
+    const nonPerturbationFiles = allFiles.filter((p) => !path.basename(p).startsWith('perturbation-'));
     assert.ok(perturbationFiles.length >= 3, 'expected at least the crlf, truncated-frontmatter, and delete-artifact scenarios');
+    assert.ok(nonPerturbationFiles.length >= 1, 'expected at least one non-perturbation scenario — otherwise this widening silently narrows back to a perturbation-only loop');
 
     // Anti-vacuity for perturbations specifically: a mutation that changes
     // nothing observable in ANY scenario is indistinguishable from a
@@ -1099,7 +1102,13 @@ describe('scenario discovery (mutations wired for real)', () => {
     // over by weakening this assertion.
     let anyMutationObserved = false;
 
-    for (const file of perturbationFiles) {
+    // Widened to EVERY discovered scenario, not just perturbations: scoping
+    // the `expectFailures`/`report.ok` contract checks to `perturbation-*`
+    // was itself the #3597 blind spot in miniature — `multi-workstream`, the
+    // exact scenario this PR fixes, is not a perturbation scenario, so the
+    // old perturbation-only loop could never have seen it fail.
+    for (const file of allFiles) {
+      const isPerturbation = path.basename(file).startsWith('perturbation-');
       const scenario = loadScenario(file);
       const report = runScenario(scenario, { LoopWalk, runOracles, liveCommands });
 
@@ -1131,6 +1140,8 @@ describe('scenario discovery (mutations wired for real)', () => {
         true,
         `${scenario.name}: scenario reported ok:false`,
       );
+
+      if (!isPerturbation) continue;
 
       const mutatedStep = report.steps.find((s) => s.mutation);
       assert.ok(mutatedStep, `${scenario.name}: no step recorded a mutation — mutations remain unwired`);
@@ -1404,21 +1415,122 @@ describe('qa-smell-ratchet gate (#3597)', () => {
     };
   }
 
-  test('requiring the ratchet does NOT run a full walk — its exports are reachable from a test', () => {
-    // `scripts/qa-smell-ratchet.cjs` used to call `runMain(main)` unconditionally
-    // at module load, so merely `require()`ing it (as a test would have to, to
-    // reach `collectFindings`) drove a full 20-scenario walk against the real
-    // CLI. That made `collectFindings` — an export that exists purely to be
-    // testable in isolation — untestable in practice, and is exactly why the
-    // `expectFailures` hole below shipped with zero test coverage.
-    const startedAtMs = Date.now();
-    const ratchet = require('../scripts/qa-smell-ratchet.cjs');
-    const elapsedMs = Date.now() - startedAtMs;
-    assert.strictEqual(typeof ratchet.collectFindings, 'function');
-    assert.ok(
-      elapsedMs < 3000,
-      `require() of qa-smell-ratchet.cjs took ${elapsedMs}ms — a load this slow suggests it ran a real walk instead of just defining exports`,
+  /**
+   * Build a single step object, EXACTLY like `reportWithStep`'s inline step —
+   * except `expectFailures`/`violations`/`smells` are only set on `step` when
+   * explicitly present in `fields`. Passing `{}` produces a step where all
+   * three keys are ABSENT entirely (not empty arrays), which is what
+   * exercises `collectFindings`'s `step.violations || []` /
+   * `step.expectFailures || []` / `step.smells || []` defensive fallbacks —
+   * `reportWithStep` alone can never omit a key, since it always assigns all
+   * three with `= []` defaults.
+   *
+   * @param {{expectFailures?: string[], violations?: Array<object>, smells?: Array<object>, at?: string, argv?: string[]}} [fields]
+   * @returns {object}
+   */
+  function buildStep(fields = {}) {
+    const step = {
+      at: fields.at || 'execute:post',
+      argv: fields.argv || ['--ws', 'alpha', 'progress'],
+      kind: 'json',
+      mutation: null,
+      mutationNoop: false,
+      mutationObserved: false,
+      repro: 'cd /tmp/x && node gsd-core/bin/gsd-tools.cjs --ws alpha progress',
+    };
+    if (fields.expectFailures !== undefined) step.expectFailures = fields.expectFailures;
+    if (fields.violations !== undefined) step.violations = fields.violations;
+    if (fields.smells !== undefined) step.smells = fields.smells;
+    return step;
+  }
+
+  /**
+   * Build a full synthetic report spanning one or more scenarios (each with
+   * its own, possibly empty, `steps` array) — a sibling to `reportWithStep`
+   * for shapes it cannot express (multiple scenarios; zero-step scenarios).
+   * `totalViolations` is supplied explicitly by the caller so each PARITY
+   * case can assert against the exact combined count it intends
+   * `report.totals.violations` to carry, mirroring how `buildReport()`
+   * computes that field for real reports.
+   *
+   * @param {Array<{name: string, steps: object[]}>} scenarioDefs
+   * @param {number} totalViolations
+   * @returns {object}
+   */
+  function reportWithScenarios(scenarioDefs, totalViolations) {
+    return {
+      reportVersion: 1,
+      meta: { nodeVersion: 'v24.0.0', platform: 'linux', generatedAt: '2026-01-01T00:00:00.000Z' },
+      totals: {
+        scenarios: scenarioDefs.length,
+        steps: scenarioDefs.reduce((sum, s) => sum + s.steps.length, 0),
+        violations: totalViolations,
+        smells: 0,
+        mutationsApplied: 0,
+        mutationsObserved: 0,
+      },
+      scenarios: scenarioDefs.map((s) => ({
+        name: s.name,
+        ok: true,
+        fixture: 'greenfield',
+        steps: s.steps,
+      })),
+      smellSummary: [],
+    };
+  }
+
+  test('requiring the ratchet does NOT run a full walk — proven by running require() to completion in a CHILD PROCESS (#3597)', () => {
+    // WHY AN IN-PROCESS ELAPSED-TIME CHECK IS INSUFFICIENT (and banned):
+    // `runMain` (`scripts/lib/cli-exit.cjs:38`) defers through
+    // `Promise.resolve().then(() => main())` — a microtask — so a synchronous
+    // `require()` call ALWAYS returns before `main()` has had any chance to
+    // run, REGARDLESS of whether the `require.main === module` guard exists
+    // at all. Proven with a synthetic module whose `main()` blocks for
+    // 4000ms: `require()` of it still returns in ~2ms. Both "typeof
+    // collectFindings === 'function'" and "elapsed < Nms" pass identically
+    // against the UNGUARDED file, so an in-process timing assertion proves
+    // nothing about the guard — it is vacuous. It is also a wall-clock
+    // assertion, which CLAUDE.md's test rules ban outright ("Clock Seams: Do
+    // not assert on wall-clock time").
+    //
+    // WHY A CHILD PROCESS IS THE ONLY THING THAT ACTUALLY OBSERVES THE GUARD:
+    // spawning `node -e "require(<path>)"` and letting the event loop drain
+    // to natural completion (rather than measuring how fast `require()`
+    // returns) lets whatever `runMain` scheduled actually run. Loaded via
+    // `-e`, the required module's own `module` object is never
+    // `require.main` (that identity belongs to the `-e` pseudo-module), so a
+    // genuinely guarded file never calls `runMain(main)` and its process
+    // never prints `main()`'s "qa-smell-ratchet: ..." summary line. Against
+    // the pre-#3597 unguarded shape, `runMain(main)` always fires and that
+    // line DOES appear in the child's output. That presence/absence is the
+    // only thing that actually distinguishes guarded from unguarded.
+    const scriptPath = path.join(__dirname, '..', 'scripts', 'qa-smell-ratchet.cjs');
+    const repoRoot = path.join(__dirname, '..');
+    const result = spawnSync(
+      process.execPath,
+      ['-e', `require(${JSON.stringify(scriptPath)})`],
+      { cwd: repoRoot, timeout: 120000, encoding: 'utf-8' },
     );
+    assert.strictEqual(
+      result.status,
+      0,
+      `child process exited non-zero (status=${result.status}): stdout=${result.stdout} stderr=${result.stderr}`,
+    );
+    const combined = `${result.stdout || ''}${result.stderr || ''}`;
+    assert.strictEqual(
+      combined.includes('qa-smell-ratchet:'),
+      false,
+      'require()ing the ratchet printed main()\'s summary line in a child process — the require.main guard did not prevent a full walk',
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(repoRoot, 'qa-report.json')),
+      false,
+      'require()ing the ratchet must not write qa-report.json as a side effect',
+    );
+
+    // `collectFindings` remains reachable in-process, as documented.
+    const ratchet = require('../scripts/qa-smell-ratchet.cjs');
+    assert.strictEqual(typeof ratchet.collectFindings, 'function');
   });
 
   test('collectFindings surfaces a scenario expectation failure — a failing scenario must reach the gate', () => {
@@ -1442,6 +1554,13 @@ describe('qa-smell-ratchet gate (#3597)', () => {
     const { collectFindings } = require('../scripts/qa-smell-ratchet.cjs');
     const report = reportWithStep({ expectFailures: ['path "percent": expected 100, got null'] });
     const found = collectFindings(report);
+    // Tied to the new bucket: pre-fix, `collectFindings` returned
+    // `{smells: [], violations: []}` for this exact input (it never read
+    // `step.expectFailures` at all), so both `deepStrictEqual([])` arms below
+    // passed unchanged whether the fix was present or not. Asserting the
+    // expectation failure was actually collected is what makes this test
+    // capable of failing against that pre-fix shape.
+    assert.strictEqual(found.expectationFailures.length, 1);
     assert.deepStrictEqual(found.violations, []);
     assert.deepStrictEqual(found.smells, []);
   });
@@ -1471,6 +1590,28 @@ describe('qa-smell-ratchet gate (#3597)', () => {
       reportWithStep({ expectFailures: ['a'] }),
       reportWithStep({ violations: [{ id: 'exit-contract', detail: 'boom' }] }),
       reportWithStep({ expectFailures: ['a', 'b'], violations: [{ id: 'exit-contract', detail: 'boom' }] }),
+      // A step whose expectFailures/violations/smells keys are ABSENT
+      // entirely (not empty arrays) — exercises collectFindings's `|| []`
+      // defensive fallbacks.
+      reportWithScenarios([{ name: 'absent-keys-scenario', steps: [buildStep({})] }], 0),
+      // Two scenarios, each contributing at least one expectation failure
+      // and/or violation, with totals.violations set to the true combined
+      // count across BOTH scenarios.
+      reportWithScenarios(
+        [
+          {
+            name: 'scenario-one',
+            steps: [
+              buildStep({ expectFailures: ['a'] }),
+              buildStep({ violations: [{ id: 'exit-contract', detail: 'boom' }] }),
+            ],
+          },
+          { name: 'scenario-two', steps: [buildStep({ expectFailures: ['b', 'c'] })] },
+        ],
+        4,
+      ),
+      // A scenario whose steps array is EMPTY.
+      reportWithScenarios([{ name: 'empty-steps-scenario', steps: [] }], 0),
     ];
     for (const report of cases) {
       const found = collectFindings(report);

@@ -347,6 +347,11 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
  * an absent `phasesDir` is a real empty (a new project genuinely has no
  * phases) and inherits the window's scope, whereas a `phasesDir` that exists
  * but cannot be read is UNREADABLE.
+ *
+ * `opts.ws` is tri-state, matching `planningDir`'s own contract: `undefined`
+ * (the default — do not pass `ws` at all) resolves the AMBIENT workstream
+ * from `GSD_WORKSTREAM`; `null` FORCES the project root regardless of any
+ * ambient workstream; a string forces that specific workstream.
  */
 function listMilestonePhaseDirs(
   phasesDir: string,
@@ -357,7 +362,17 @@ function listMilestonePhaseDirs(
     phaseIdConvention?: string | null;
   } = {},
 ): { value: string[]; scope: Scope } {
-  const { cwd, ws = null, versionOverride = null, phaseIdConvention = null } = opts;
+  // #3597: `ws` must default to `undefined`, NOT `null`. `undefined` means
+  // "resolve the ambient workstream" (mirrors planningDir's own contract,
+  // src/planning-workspace.cts:124); `null` means "force the project root".
+  // Every cwd-bearing caller derives `phasesDir` ambiently (planningPaths(cwd)
+  // / planningDir(cwd) with no explicit ws), so defaulting `ws` to `null` here
+  // forced the milestone WINDOW to the root ROADMAP while the caller's
+  // `phasesDir` stayed workstream-scoped — numerator and denominator drawn
+  // from different scoped sets (ADR-3180 §7.6 rule 3 violation). That is what
+  // made `--ws <name> progress` read `phase_scope: "unreadable"` and withhold
+  // `percent` once `workstream create` migrated the root ROADMAP away.
+  const { cwd, ws, versionOverride = null, phaseIdConvention = null } = opts;
 
   // Without a cwd there is nothing to scope AGAINST — the caller asked for an
   // unscoped read, which is a real answer (mirrors extractCurrentMilestoneScoped's

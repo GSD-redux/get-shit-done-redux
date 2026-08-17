@@ -417,6 +417,33 @@ function fragmentSkeleton(finding) {
 }
 
 /**
+ * Flatten one untrusted, scenario-authored string for safe single-line
+ * rendering into CI logs and the GitHub step summary.
+ *
+ * `detail` / `scenario` / `at` values originate in scenario JSON
+ * (`expect[].path` reaches `detail` verbatim via `evaluateExpectations`)
+ * and are validated only as non-empty strings. Rendered raw into
+ * `$GITHUB_STEP_SUMMARY` — which GitHub renders as markdown — a newline
+ * plus a forged heading or a fake "0 expectation failures" line lets a
+ * red run present a green-looking summary; a backtick breaks out of the
+ * code span it is rendered inside; an ANSI escape repaints the CI log.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function flattenUntrusted(value) {
+  const MAX_LEN = 300;
+  let s = String(value)
+    // eslint-disable-next-line no-control-regex -- deliberately stripping C0/C1 control chars (incl. CR/LF/ANSI escapes)
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
+    .replace(/`/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length > MAX_LEN) s = `${s.slice(0, MAX_LEN)}…`;
+  return s;
+}
+
+/**
  * Build the markdown block appended to `GITHUB_STEP_SUMMARY`, when set —
  * kept intentionally compact (a PR reviewer's first read, not a log dump).
  *
@@ -440,21 +467,21 @@ function buildStepSummaryMarkdown({ smells, violations, expectationFailures, new
   );
   lines.push('');
 
+  if (expectationFailures.length) {
+    lines.push('### ❌ Scenario expectation failures');
+    lines.push('');
+    for (const f of expectationFailures) {
+      lines.push(`- \`${flattenUntrusted(f.scenario)}\` at **${flattenUntrusted(f.at)}** — ${flattenUntrusted(f.detail)}`);
+    }
+    lines.push('');
+  }
+
   if (newKeys.length) {
     lines.push('### 🚨 NEW (unacknowledged) smells');
     lines.push('');
     for (const key of newKeys) {
       const f = smells.find((s) => s.key === key);
-      lines.push(`- \`${f.id}\` in **${f.scenario}** — ${f.detail}`);
-    }
-    lines.push('');
-  }
-
-  if (expectationFailures.length) {
-    lines.push('### ❌ Scenario expectation failures');
-    lines.push('');
-    for (const f of expectationFailures) {
-      lines.push(`- \`${f.scenario}\` at **${f.at}** — ${f.detail}`);
+      lines.push(`- \`${flattenUntrusted(f.id)}\` in **${flattenUntrusted(f.scenario)}** — ${flattenUntrusted(f.detail)}`);
     }
     lines.push('');
   }
@@ -463,7 +490,7 @@ function buildStepSummaryMarkdown({ smells, violations, expectationFailures, new
     lines.push('### Stale baseline/fragment entries (no longer produced)');
     lines.push('');
     for (const e of staleEntries) {
-      lines.push(`- \`${e.id}\` in **${e.scenario}** (${e.source})`);
+      lines.push(`- \`${flattenUntrusted(e.id)}\` in **${flattenUntrusted(e.scenario)}** (${flattenUntrusted(e.source)})`);
     }
     lines.push('');
   }
@@ -474,7 +501,7 @@ function buildStepSummaryMarkdown({ smells, violations, expectationFailures, new
     lines.push('| oracle id | count |');
     lines.push('|---|---|');
     for (const entry of smellSummary) {
-      lines.push(`| \`${entry.id}\` | ${entry.count} |`);
+      lines.push(`| \`${flattenUntrusted(entry.id)}\` | ${entry.count} |`);
     }
     lines.push('');
   }
@@ -486,7 +513,9 @@ function buildStepSummaryMarkdown({ smells, violations, expectationFailures, new
     lines.push('### Repro (first failing step)');
     lines.push('');
     lines.push('```sh');
-    lines.push(firstFailingRepro);
+    // Backticks are replaced with `'` by flattenUntrusted, so the flattened
+    // value can never contain a ``` run that would close this fence early.
+    lines.push(flattenUntrusted(firstFailingRepro));
     lines.push('```');
     lines.push('');
   }
@@ -701,10 +730,10 @@ function main() {
 function printViolations(violations) {
   console.error(`qa-smell-ratchet: ${violations.length} VIOLATION(s) — never acknowledgeable, always fail:\n`);
   for (const v of violations) {
-    console.error(`VIOLATION: ${v.id}`);
-    console.error(`  scenario: ${v.scenario}`);
-    console.error(`  argv:     ${v.argv.join(' ')}`);
-    console.error(`  detail:   ${v.detail}`);
+    console.error(`VIOLATION: ${flattenUntrusted(v.id)}`);
+    console.error(`  scenario: ${flattenUntrusted(v.scenario)}`);
+    console.error(`  argv:     ${flattenUntrusted(v.argv.join(' '))}`);
+    console.error(`  detail:   ${flattenUntrusted(v.detail)}`);
     console.error(`  repro:    ${v.repro}`);
   }
 }
@@ -716,10 +745,10 @@ function printExpectationFailures(expectationFailures) {
   console.error(`qa-smell-ratchet: ${expectationFailures.length} SCENARIO EXPECTATION FAILURE(S) — never acknowledgeable, always fail:\n`);
   for (const f of expectationFailures) {
     console.error('EXPECTATION FAILURE:');
-    console.error(`  scenario: ${f.scenario}`);
-    console.error(`  at:       ${f.at}`);
-    console.error(`  argv:     ${f.argv.join(' ')}`);
-    console.error(`  detail:   ${f.detail}`);
+    console.error(`  scenario: ${flattenUntrusted(f.scenario)}`);
+    console.error(`  at:       ${flattenUntrusted(f.at)}`);
+    console.error(`  argv:     ${flattenUntrusted(f.argv.join(' '))}`);
+    console.error(`  detail:   ${flattenUntrusted(f.detail)}`);
     console.error(`  repro:    ${f.repro}`);
   }
 }
