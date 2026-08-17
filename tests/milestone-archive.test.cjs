@@ -18,7 +18,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
 const { findTableBySchema } = require('../gsd-core/bin/lib/markdown-table.cjs');
-const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+const { buildQuickArchiveIndex } = require('../gsd-core/bin/lib/milestone.cjs');
 
 function runSdkQuery(args, cwd) {
   const result = runGsdTools(args, cwd);
@@ -604,11 +604,13 @@ describe('#2142: quick task archival at milestone close-out', () => {
       );
       assert.ok(fs.existsSync(path.join(archiveDir, name)), `${name} must exist in the archive dir`);
     }
-    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
-    // allow-test-rule: source-text-is-the-product (#2142)
-    const readme = fs.readFileSync(path.join(archiveDir, 'README.md'), 'utf-8');
+    const readmeStat = fs.statSync(path.join(archiveDir, 'README.md'));
+    assert.ok(readmeStat.isFile(), 'README.md index must be generated');
+    assert.ok(readmeStat.size > 0, 'README.md index must be non-empty');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const indexedNames = index.entries.map((e) => e.name);
     for (const name of names) {
-      assert.ok(readme.includes(name), `README.md must name ${name}`);
+      assert.ok(indexedNames.includes(name), `index entries must name ${name}`);
     }
 
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
@@ -752,11 +754,12 @@ describe('#2142: quick task archival at milestone close-out', () => {
 
     const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
-    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
-    // allow-test-rule: source-text-is-the-product (#2142)
-    const readme = fs.readFileSync(readmePath, 'utf-8');
-    assert.ok(readme.includes(name), 'README.md must list the task directory');
-    assert.ok(readme.includes(`${name}-SUMMARY.md`), 'README.md must link the per-task summary file');
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must list the task directory');
+    assert.strictEqual(entry.summary, `${name}-SUMMARY.md`, 'index entry must link the per-task summary file');
   });
 
   test('indexLinksLegacyBareSummaryFile', () => {
@@ -766,11 +769,12 @@ describe('#2142: quick task archival at milestone close-out', () => {
 
     const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
-    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
-    // allow-test-rule: source-text-is-the-product (#2142)
-    const readme = fs.readFileSync(readmePath, 'utf-8');
-    assert.ok(readme.includes(name), 'README.md must list the task directory');
-    assert.ok(readme.includes('SUMMARY.md'), 'README.md must link the legacy bare summary file');
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must list the task directory');
+    assert.strictEqual(entry.summary, 'SUMMARY.md', 'index entry must link the legacy bare summary file');
   });
 
   test('indexListsTaskWithoutSummaryWithoutLink', () => {
@@ -780,14 +784,12 @@ describe('#2142: quick task archival at milestone close-out', () => {
 
     const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
-    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
-    // allow-test-rule: source-text-is-the-product (#2142)
-    const readme = fs.readFileSync(readmePath, 'utf-8');
-    assert.ok(readme.includes(name), 'README.md must still list a task directory with no summary');
-    assert.ok(
-      !readme.includes(`(${name}/`),
-      'README.md must not link into a directory that has no summary file to point at',
-    );
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must still list a task directory with no summary');
+    assert.strictEqual(entry.summary, null, 'index entry must not link into a directory that has no summary file to point at');
   });
 
   test('skipsNonDirectoryEntriesInQuickDir', () => {
@@ -867,17 +869,17 @@ describe('#2142: quick task archival at milestone close-out', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #2142 escalation: `quick.archive` — narrow archival entry point
+// #2142 escalation: `milestone.archive-quick` — narrow archival entry point
 //
 // `milestone.complete --archive-quick` cannot be reused by cleanup.md: it
 // hard-errors via `missingExplicitVersion` for an already-completed milestone
 // (no `### Phase N:` headings left in its ROADMAP window), re-archives
 // ROADMAP.md over the very snapshot cleanup depends on, and would append a
-// duplicate MILESTONES.md entry on every re-run. `quick.archive` is the
+// duplicate MILESTONES.md entry on every re-run. `milestone.archive-quick` is the
 // narrow replacement — see `cmdQuickArchive` in src/milestone.cts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('#2142 escalation: quick.archive — narrow archival entry point', () => {
+describe('#2142 escalation: milestone.archive-quick — narrow archival entry point', () => {
   let tmpDir;
 
   beforeEach(() => { tmpDir = createTempProject(); });
@@ -906,8 +908,8 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
 
     writeQuickTaskDir(tmpDir, '2026-09-01-fix-typo');
 
-    const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
-    assert.ok(result.success, `quick.archive should succeed where milestone.complete fails: ${result.error}`);
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick should succeed where milestone.complete fails: ${result.error}`);
     assert.strictEqual(result.data.archived, 1);
     assert.ok(
       fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-09-01-fix-typo')),
@@ -915,23 +917,23 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
     );
 
     const liveRoadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
-    assert.strictEqual(liveRoadmapAfter, liveRoadmap, '.planning/ROADMAP.md must be byte-identical after quick.archive');
+    assert.strictEqual(liveRoadmapAfter, liveRoadmap, '.planning/ROADMAP.md must be byte-identical after milestone.archive-quick');
     const archivedRoadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md'), 'utf-8');
     assert.strictEqual(
       archivedRoadmapAfter,
       archivedRoadmap,
-      'the archived v1.0-ROADMAP.md snapshot must be byte-identical after quick.archive',
+      'the archived v1.0-ROADMAP.md snapshot must be byte-identical after milestone.archive-quick',
     );
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.planning', 'MILESTONES.md')),
-      'quick.archive must never write a MILESTONES.md entry',
+      'milestone.archive-quick must never write a MILESTONES.md entry',
     );
   });
 
   test('quickArchiveRejectsVersionWithPathSeparator', () => {
     writeQuickTaskDir(tmpDir, '2026-09-02-evil-version');
 
-    const result = runSdkQuery(['quick.archive', '../evil'], tmpDir);
+    const result = runSdkQuery(['milestone.archive-quick', '../evil'], tmpDir);
     assert.strictEqual(result.success, false, 'a version containing a path separator must be rejected');
     assert.ok(!fs.existsSync(path.join(tmpDir, '..', 'evil')), 'nothing must be created outside the temp fixture root');
     const milestonesDir = path.join(tmpDir, '.planning', 'milestones');
@@ -950,8 +952,8 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
     const names = ['2026-09-03-preview-a', '2026-09-03-preview-b'];
     for (const name of names) writeQuickTaskDir(tmpDir, name);
 
-    const result = runSdkQuery(['quick.archive', 'v1.0', '--dry-run'], tmpDir);
-    assert.ok(result.success, `quick.archive --dry-run failed: ${result.error}`);
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0', '--dry-run'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick --dry-run failed: ${result.error}`);
     assert.ok(Array.isArray(result.data.would_archive), 'would_archive must be an array');
     for (const name of names) {
       assert.ok(result.data.would_archive.includes(name), `would_archive must name ${name}`);
@@ -967,8 +969,8 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
   });
 
   test('quickArchiveIsNoOpWhenQuickDirAbsent', () => {
-    const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
-    assert.ok(result.success, `quick.archive should succeed with no .planning/quick: ${result.error}`);
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick should succeed with no .planning/quick: ${result.error}`);
     assert.strictEqual(result.data.archived, 0);
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
@@ -976,7 +978,7 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
     );
   });
 
-  // MAJOR 6 (#2142 review): `quick.archive`'s STATE.md write now routes
+  // MAJOR 6 (#2142 review): `milestone.archive-quick`'s STATE.md write now routes
   // through `readModifyWriteStateMd` (src/milestone.cts cmdQuickArchive)
   // instead of a bare `platformWriteSync`. Behavioral proof that the reset
   // still applies correctly and `state_updated` still reports `true`.
@@ -985,8 +987,8 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
     writeQuickTaskDir(tmpDir, '2026-09-04-b');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(2));
 
-    const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
-    assert.ok(result.success, `quick.archive failed: ${result.error}`);
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick failed: ${result.error}`);
     assert.strictEqual(result.data.archived, 2);
     assert.strictEqual(result.data.state_updated, true, 'state_updated must be true when the table reset actually applied');
     assert.deepStrictEqual(result.data.warnings, []);
@@ -1002,6 +1004,19 @@ describe('#2142 escalation: quick.archive — narrow archival entry point', () =
 // #2142 review — BLOCKER 1, MAJOR 3, MAJOR 5 regression coverage
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Placement note (code-review FIX 3): per docs/TESTING-SUITES.md this
+// adversarial/prompt-injection + path-escape coverage belongs in a
+// `*.security.test.cjs` file, not this unsuffixed unit lane. It stays here
+// instead: `scripts/lint-test-file-count.allowlist.json`'s `milestone` entry
+// is an IDENTITY ratchet (an exact, already-over-cap list of 8 known
+// filenames) — a new `milestone-archive.security.test.cjs` buckets into the
+// same `milestone` module (`testEffectivePrefix` strips `.test.cjs`, and
+// `milestone-archive.security` still starts with `milestone-`) and is a
+// NOVEL file the ratchet has never seen, so `node scripts/lint-test-file-count.cjs`
+// fails it outright (verified empirically: FAIL_NOVEL_FILES, exit 1).
+// Splitting this describe block out is blocked by that ratchet, not by
+// oversight; revisit if the `milestone` module's test files are ever
+// consolidated below the cap.
 describe('#2142 review: README injection, symlink escape, dry-run/real-run parity', () => {
   let tmpDir;
 
@@ -1027,17 +1042,14 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
     const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
 
-    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
-    // allow-test-rule: source-text-is-the-product (#2142)
-    const readme = fs.readFileSync(readmePath, 'utf-8');
-    const lines = splitLines(readme);
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    assert.strictEqual(index.entries.length, 1, 'exactly one archived quick-task directory');
     assert.ok(
-      !lines.some((line) => line.trim() === '## Injected'),
-      `README.md must not contain an injected heading line as its own line; got:\n${readme}`,
-    );
-    assert.ok(
-      !readme.includes('\n\n## Injected'),
-      'README.md must not contain the raw injected heading sequence verbatim',
+      !index.entries[0].name.includes('\n'),
+      `escaped entry name must not contain a raw newline — a newline surviving escaping is what would let ` +
+        `an embedded "## Injected" become a standalone markdown heading line; got: ${JSON.stringify(index.entries[0].name)}`,
     );
   });
 
@@ -1096,8 +1108,8 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
     try {
       writeQuickTaskDir(tmpDir, '2026-10-03-real-task');
 
-      const result = runSdkQuery(['quick.archive', 'v1.0'], tmpDir);
-      assert.ok(result.success, `quick.archive failed: ${result.error}`);
+      const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+      assert.ok(result.success, `milestone.archive-quick failed: ${result.error}`);
       assert.strictEqual(result.data.archived, 1, 'only the real task dir must archive');
 
       assert.ok(fs.existsSync(symlinkPath), 'the symlink must remain in .planning/quick, never moved');

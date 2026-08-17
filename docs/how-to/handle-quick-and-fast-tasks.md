@@ -143,7 +143,7 @@ there is no way to split them per-milestone.
   Skip
 ```
 
-Under the hood this calls the narrower `gsd-tools quick archive <version>` command — the same move/index/reset logic as `--archive-quick`, but without touching `ROADMAP.md`, `REQUIREMENTS.md`, `MILESTONES.md`, or milestone-completion guards, so it is safe to run against a milestone that's already closed.
+Under the hood this calls the narrower `gsd-tools milestone archive-quick <version>` command — the same move/index/reset logic as `--archive-quick`, but without touching `ROADMAP.md`, `REQUIREMENTS.md`, `MILESTONES.md`, or milestone-completion guards, so it is safe to run against a milestone that's already closed.
 
 ### What both paths do
 

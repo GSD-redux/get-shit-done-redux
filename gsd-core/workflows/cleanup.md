@@ -192,10 +192,10 @@ Repeat for all milestones in the cleanup set.
 
 Only run this step when the "Yes — archive quick tasks into v{X.Y}" option was confirmed in `show_dry_run`.
 
-Uses the narrow `quick.archive` command (#2142 escalation) rather than `milestone.complete --archive-quick`: cleanup runs against milestones that are typically ALREADY completed, and `milestone.complete` is the full close-out — it archives ROADMAP/REQUIREMENTS and writes a MILESTONES.md entry, so re-running it against an already-completed milestone would clobber that milestone's archived ROADMAP/REQUIREMENTS snapshot (the very snapshot this cleanup depends on) and duplicate its MILESTONES.md entry. `quick.archive` shares the same move/README-index/table-reset logic as `milestone.complete --archive-quick` (same underlying helper) without any of that.
+Uses the narrow `milestone.archive-quick` command (#2142 escalation) rather than `milestone.complete --archive-quick`: cleanup runs against milestones that are typically ALREADY completed, and `milestone.complete` is the full close-out — it archives ROADMAP/REQUIREMENTS and writes a MILESTONES.md entry, so re-running it against an already-completed milestone would clobber that milestone's archived ROADMAP/REQUIREMENTS snapshot (the very snapshot this cleanup depends on) and duplicate its MILESTONES.md entry. `milestone.archive-quick` shares the same move/README-index/table-reset logic as `milestone.complete --archive-quick` (same underlying helper) without any of that.
 
 ```bash
-gsd_run query quick.archive "v{X.Y}"
+gsd_run query milestone.archive-quick "v{X.Y}"
 ```
 
 This moves every directory under `.planning/quick/` into `.planning/milestones/v{X.Y}-quick/`, (re)writes that directory's `README.md` index, and clears STATE.md's `### Quick Tasks Completed` table rows — identical move/index/reset behavior to the `--archive-quick` flag documented in `complete-milestone.md`'s `archive_milestone` step, without touching ROADMAP.md, REQUIREMENTS.md, MILESTONES.md, or milestone-completion guards. Extract `archived` from the result to confirm.
@@ -254,7 +254,7 @@ Pruned: {N} local branches whose upstream is gone.
 - [ ] Phase directories moved to `.planning/milestones/v{X.Y}-phases/`
 - [ ] Stale local branches pruned (branches whose upstream is gone)
 - [ ] `.planning/quick/` checked; quick-task archival offered only when non-empty
-- [ ] When offered and confirmed, ALL remaining quick-task directories archived into the single named target milestone (bucket-all, not per-milestone) via `quick.archive`
+- [ ] When offered and confirmed, ALL remaining quick-task directories archived into the single named target milestone (bucket-all, not per-milestone) via `milestone.archive-quick`
 - [ ] Changes committed
 
 </success_criteria>

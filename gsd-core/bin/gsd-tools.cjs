@@ -71,7 +71,7 @@
  *     [--archive-quick]              Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
  *                                    Quick Tasks Completed table (#2142; opt-in, default OFF)
  *
- *   quick archive <version>            Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
+ *   milestone archive-quick <version>  Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
  *                                      Quick Tasks Completed table, WITHOUT the milestone complete close-out
  *                                      (no ROADMAP/REQUIREMENTS/MILESTONES.md writes, no completion guards);
  *                                      safe against an already-completed milestone (#2142 escalation)
@@ -2147,14 +2147,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // "do nothing" rather than "skip a default-on behavior".
             const archiveQuick = args.includes('--archive-quick');
             milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases, force, dryRun, archiveQuick }, raw);
-          } else {
-            error('Unknown milestone subcommand. Available: complete', ERROR_REASON.SDK_UNKNOWN_COMMAND);
-          }
-  }
-
-  function routeQuick({ args, cwd, raw, error }) {
-    const subcommand = args[1];
-          if (subcommand === 'archive') {
+          } else if (subcommand === 'archive-quick') {
             // #2142 escalation: narrow archival-only entry point (does NOT
             // touch ROADMAP/REQUIREMENTS/MILESTONES.md, runs no completion
             // guards) — safe to call against an already-completed milestone,
@@ -2162,7 +2155,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             const dryRun = args.includes('--dry-run');
             milestone.cmdQuickArchive(cwd, args[2], { dryRun }, raw);
           } else {
-            error('Unknown quick subcommand. Available: archive', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+            error('Unknown milestone subcommand. Available: complete, archive-quick', ERROR_REASON.SDK_UNKNOWN_COMMAND);
           }
   }
 
@@ -3715,7 +3708,6 @@ const HOST_COMMAND_ROUTERS = {
     'requirements': routeRequirements,
     'gap-analysis': routeGapAnalysis,
     'milestone': routeMilestone,
-    'quick': routeQuick,
     'progress': routeProgress,
     'uat': routeUat,
     'stats': routeStats,

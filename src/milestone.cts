@@ -519,6 +519,33 @@ function cmdRequirementsRevertPhase(cwd: string, reqIdsRaw: string[], raw: boole
   );
 }
 
+/**
+ * #2142 (code-review FIX 4): the single owned "should the Quick Tasks
+ * Completed table be reset, and is a reset failure worth a warning" decision
+ * — shared by `cmdMilestoneComplete` (which folds this into its own
+ * `withStateLock` transform, since it already holds that lock for the
+ * closure-transition write happening in the same block) and `cmdQuickArchive`
+ * (which routes through `readModifyWriteStateMd`'s own transform instead, per
+ * the lock-reentrancy note on that function). Only the WRITE mechanics
+ * differ between the two callers — the decision itself ("skip a
+ * `QUICK_TASKS_SECTION_ABSENT` result silently; surface any other failure")
+ * was previously duplicated verbatim at both call sites.
+ *
+ * Never throws: a reset failure degrades to returning `content` unchanged
+ * with a non-null `warning`, mirroring both callers' pre-existing
+ * "liberal but visible" posture.
+ */
+function applyQuickTasksReset(content: string): { content: string; warning: { field: string; reason: string } | null } {
+  const resetResult = resetQuickTaskRows(content);
+  if (resetResult.ok) {
+    return { content: resetResult.value.content, warning: null };
+  }
+  if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
+    return { content, warning: { field: 'quick_tasks_table', reason: resetResult.reason } };
+  }
+  return { content, warning: null };
+}
+
 function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCompleteOptions, raw: boolean): void {
   if (!version) {
     error('version required for milestone complete (e.g., v1.0)');
@@ -990,12 +1017,9 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       // value.
       let quickTasksResetContent = result.content;
       if (quickArchiveResult && quickArchiveResult.archived > 0) {
-        const resetResult = resetQuickTaskRows(quickTasksResetContent);
-        if (resetResult.ok) {
-          quickTasksResetContent = resetResult.value.content;
-        } else if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
-          preservationWarnings.push({ field: 'quick_tasks_table', reason: resetResult.reason });
-        }
+        const { content: resetContent, warning } = applyQuickTasksReset(quickTasksResetContent);
+        quickTasksResetContent = resetContent;
+        if (warning) preservationWarnings.push(warning);
       }
 
       const finalContent = syncAndPreserveStateMd(
@@ -1297,15 +1321,41 @@ function encodeMarkdownLinkTarget(target: string): string {
   return target.replace(/[\x00-\x1f\x7f ()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`);
 }
 
+interface QuickArchiveIndexEntry {
+  /** Escaped for markdown LINK TEXT (`escapeMarkdownLinkText`) — see below. */
+  name: string;
+  /**
+   * POSIX-relative path (from `archiveQuickDir`) to the task's summary file,
+   * NOT yet percent-encoded for markdown link-destination use — `render()`
+   * applies `encodeMarkdownLinkTarget` at render time. `null` when the task
+   * has no resolvable summary file.
+   */
+  summary: string | null;
+}
+
+interface QuickArchiveIndex {
+  entries: QuickArchiveIndexEntry[];
+  /** Render the entries as the `README.md` markdown body. */
+  render(): string;
+}
+
 /**
- * #2142: (re)generate `<archiveQuickDir>/README.md` — an index of every
- * quick-task directory PHYSICALLY PRESENT in the archive, built by scanning
- * the ARCHIVE directory on disk. Deliberately NOT built from STATE.md's
- * Quick Tasks table (the issue evidenced that table drifting — 53 rows
- * against 49 dirs, ~22 rows pointing at absent dirs, 18 dirs missing from
- * the table — the filesystem is the only source of truth) and NOT from the
- * pre-move source list either, so a RE-RUN's index includes entries a PRIOR
- * run already archived, not just this run's (design row 11).
+ * #2142 (code-review FIX 2): PURE builder — scans `archiveQuickDir` and
+ * resolves each entry's summary link, but performs NO IO beyond the read
+ * scan itself; never writes. Split out of the former `writeQuickArchiveReadme`
+ * so tests can assert on the returned structured IR (`entries`) instead of
+ * substring-matching rendered markdown (CONTRIBUTING.md "Prohibited: Raw Text
+ * Matching on Test Outputs" — a generated archive index is a "Rendered file",
+ * which requires a pure builder returning IR, not the `.md`-IS-the-runtime-
+ * artifact exemption).
+ *
+ * (re)generates an index of every quick-task directory PHYSICALLY PRESENT in
+ * the archive, built by scanning the ARCHIVE directory on disk. Deliberately
+ * NOT built from STATE.md's Quick Tasks table (the issue evidenced that table
+ * drifting — 53 rows against 49 dirs, ~22 rows pointing at absent dirs, 18
+ * dirs missing from the table — the filesystem is the only source of truth)
+ * and NOT from the pre-move source list either, so a RE-RUN's index includes
+ * entries a PRIOR run already archived, not just this run's (design row 11).
  *
  * Each entry's summary link is resolved via `resolveQuickTaskSummaryFile`
  * (audit.cts) — the SAME rule `scanQuickTasks` uses to read a task's record
@@ -1317,46 +1367,70 @@ function encodeMarkdownLinkTarget(target: string): string {
  * Entries are sorted for deterministic output. A directory name containing
  * `|`, `[`, `]` or an embedded newline is neutralized via
  * `escapeMarkdownLinkText` (link TEXT) so it cannot break the generated
- * markdown or inject a heading, and the destination is separately encoded via
- * `encodeMarkdownLinkTarget` (link TARGET) so a space/paren/control char in
- * the name cannot truncate or corrupt the `(...)` span. The summary path is
- * normalized to POSIX (`.split(path.sep).join('/')`) so the link is stable
- * across platforms.
+ * markdown or inject a heading — applied here, at build time, so `entries`
+ * itself already carries the injection-safe name (the regression test
+ * asserts on THIS, not on rendered output). The destination is separately
+ * encoded via `encodeMarkdownLinkTarget` (link TARGET) at RENDER time, so a
+ * space/paren/control char in the name cannot truncate or corrupt the
+ * `(...)` span. The summary path is normalized to POSIX
+ * (`.split(path.sep).join('/')`) so the link is stable across platforms.
  *
- * No-ops (writes nothing) when `archiveQuickDir` is unreadable — this is a
- * best-effort index, not a gate on milestone completion. #2142 MAJOR 4
- * (review): the whole body is additionally wrapped in a try/catch so a
- * failure of the WRITE itself (read-only archive dir, full disk, or a
- * quick-task directory literally named `README.md` colliding with the file
- * being written) degrades the same way — this function genuinely cannot
- * throw, matching its own "best-effort, not a gate" contract; the directories
- * are already safely archived by the time this runs.
+ * Throws when `archiveQuickDir` is unreadable — the caller (`writeQuickArchiveReadme`)
+ * is the best-effort boundary, not this builder.
+ */
+function buildQuickArchiveIndex(archiveQuickDir: string): QuickArchiveIndex {
+  const dirEntries = fs.readdirSync(archiveQuickDir, { withFileTypes: true });
+  const dirNames = dirEntries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+
+  const entries: QuickArchiveIndexEntry[] = dirNames.map((dirName) => {
+    const taskDir = path.join(archiveQuickDir, dirName);
+    const summaryPath = resolveQuickTaskSummaryFile(taskDir, dirName);
+    const escapedName = escapeMarkdownLinkText(dirName);
+    if (summaryPath) {
+      const relSummary = path.relative(archiveQuickDir, summaryPath).split(path.sep).join('/');
+      return { name: escapedName, summary: relSummary };
+    }
+    // No summary file — list the directory, but never link into it (there
+    // is nothing to point at). See indexListsTaskWithoutSummaryWithoutLink.
+    return { name: escapedName, summary: null };
+  });
+
+  return {
+    entries,
+    render(): string {
+      const lines: string[] = ['# Archived Quick Tasks', ''];
+      for (const entry of entries) {
+        if (entry.summary !== null) {
+          lines.push(`- [${entry.name}](${encodeMarkdownLinkTarget(entry.summary)})`);
+        } else {
+          lines.push(`- ${entry.name}`);
+        }
+      }
+      lines.push('');
+      return lines.join('\n');
+    },
+  };
+}
+
+/**
+ * #2142: thin writer — calls `buildQuickArchiveIndex` and writes its
+ * `render()` output to `<archiveQuickDir>/README.md`. No-ops (writes
+ * nothing) when `archiveQuickDir` is unreadable — this is a best-effort
+ * index, not a gate on milestone completion. #2142 MAJOR 4 (review): the
+ * whole body is wrapped in a try/catch so a failure of the WRITE itself
+ * (read-only archive dir, full disk, or a quick-task directory literally
+ * named `README.md` colliding with the file being written) degrades the same
+ * way — this function genuinely cannot throw, matching its own
+ * "best-effort, not a gate" contract; the directories are already safely
+ * archived by the time this runs.
  */
 function writeQuickArchiveReadme(archiveQuickDir: string): void {
   try {
-    const entries = fs.readdirSync(archiveQuickDir, { withFileTypes: true });
-    const dirNames = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
-
-    const lines: string[] = ['# Archived Quick Tasks', ''];
-    for (const dirName of dirNames) {
-      const taskDir = path.join(archiveQuickDir, dirName);
-      const summaryPath = resolveQuickTaskSummaryFile(taskDir, dirName);
-      const escapedName = escapeMarkdownLinkText(dirName);
-      if (summaryPath) {
-        const relSummary = path.relative(archiveQuickDir, summaryPath).split(path.sep).join('/');
-        lines.push(`- [${escapedName}](${encodeMarkdownLinkTarget(relSummary)})`);
-      } else {
-        // No summary file — list the directory, but never link into it (there
-        // is nothing to point at). See indexListsTaskWithoutSummaryWithoutLink.
-        lines.push(`- ${escapedName}`);
-      }
-    }
-    lines.push('');
-
-    platformWriteSync(path.join(archiveQuickDir, 'README.md'), lines.join('\n'));
+    const index = buildQuickArchiveIndex(archiveQuickDir);
+    platformWriteSync(path.join(archiveQuickDir, 'README.md'), index.render());
   } catch {
     /* best-effort (#2142 MAJOR 4): a read-only archive dir, a full disk, or a
      * quick-task directory literally named `README.md` colliding with the
@@ -1515,9 +1589,12 @@ interface QuickArchiveOptions {
 }
 
 /**
- * #2142 escalation: `quick.archive` — the narrow archival helper the issue's
- * own "Scope of changes" anticipated ("a `quick.archive`-style routine"),
- * for callers (chiefly `gsd-core/workflows/cleanup.md`) that need to sweep
+ * #2142 escalation: `milestone.archive-quick` (CLI: `milestone archive-quick`,
+ * renamed from the original `quick.archive` per code-review FIX 1 — folded
+ * under the existing `milestone` namespace rather than adding a new top-level
+ * command) — the narrow archival helper the issue's own "Scope of changes"
+ * anticipated ("a `quick.archive`-style routine"), for callers (chiefly
+ * `gsd-core/workflows/cleanup.md`) that need to sweep
  * `.planning/quick/*` WITHOUT the full `milestone complete` close-out.
  *
  * `milestone complete --archive-quick` cannot be reused for this: it
@@ -1554,13 +1631,13 @@ interface QuickArchiveOptions {
  */
 function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOptions, raw: boolean): void {
   if (!version) {
-    error('version required for quick.archive (e.g., v1.0)');
+    error('version required for milestone.archive-quick (e.g., v1.0)');
   }
   // #2288-class security: `version` becomes a filesystem directory component
   // (`milestones/<version>-quick/`) that directories are MOVED into — same
   // guard + wording shape `cmdMilestoneComplete` uses for its own version arg.
   if (!ARCHIVE_VERSION_LABEL_RE.test(version)) {
-    error(`quick.archive: version "${version}" is invalid — a milestone version label may contain only letters, digits, '.', '-' and '_', and must not contain path separators or "..".`);
+    error(`milestone.archive-quick: version "${version}" is invalid — a milestone version label may contain only letters, digits, '.', '-' and '_', and must not contain path separators or "..".`);
   }
 
   const statePath = planningPaths(cwd).state;
@@ -1604,23 +1681,18 @@ function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOpti
   // return accurately reports "nothing was written" — the same "state_updated
   // must report accurately" contract the prior direct-write version upheld.
   if (quickArchiveResult.archived > 0 && fs.existsSync(statePath)) {
-    let resetFailureReason: string | undefined;
+    let resetWarning: { field: string; reason: string } | null = null;
     stateUpdated = readModifyWriteStateMd(
       statePath,
       (content: string) => {
-        const resetResult = resetQuickTaskRows(content);
-        if (resetResult.ok) {
-          return resetResult.value.content;
-        }
-        if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
-          resetFailureReason = resetResult.reason;
-        }
-        return content;
+        const { content: nextContent, warning } = applyQuickTasksReset(content);
+        resetWarning = warning;
+        return nextContent;
       },
       cwd,
     );
-    if (resetFailureReason) {
-      warnings.push({ field: 'quick_tasks_table', reason: resetFailureReason });
+    if (resetWarning) {
+      warnings.push(resetWarning);
     }
   }
 
@@ -1645,4 +1717,5 @@ export = {
   cmdMilestoneComplete,
   cmdPhasesClear,
   cmdQuickArchive,
+  buildQuickArchiveIndex,
 };
