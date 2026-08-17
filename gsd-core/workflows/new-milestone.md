@@ -259,8 +259,13 @@ rejects any `--archive-version` value that is not a plain version token (no path
 Stage the phase archive move + source removal so they land in the same commit as the milestone start (atomic — no orphaned uncommitted deletions, no un-archived dirs carried forward). `phases.clear` archives each non-999 dir to `milestones/<version>-phases/`; staging both dirs captures the new archive and the removals together (#1871).
 
 ```bash
-git add .planning/milestones/ .planning/phases/ 2>/dev/null || true
+COMMIT_DOCS=$(gsd_run query config-get commit_docs 2>/dev/null || echo "true")
+if [ "$COMMIT_DOCS" != "false" ]; then
+  git add .planning/milestones/ .planning/phases/ 2>/dev/null || true
+fi
 ```
+
+When `commit_docs` is false, the archive move and phase removals are deliberately left unstaged here — not a bug — since Step 6's commit is skipped too.
 
 Stage PROJECT.md in both modes. Step 4's Part A guard — not this commit — is what protects the shared `## Current Milestone` heading (#2308): when a workstream is active Part A never writes it, so the only change PROJECT.md can carry here is Part B's idempotent `## Evolution` backfill, which must be committed rather than stranded as a dangling edit. Do NOT reintroduce a `[ -n "$GSD_WS" ]` branch around this commit: `GSD_WS` is set in Step 1's shell and each step's bash block runs in its own shell (the same reason Step 5 round-trips `OUTGOING_MILESTONE` through a file), so such a guard reads an unset variable, always takes the flat-mode branch, and only appears to work.
 

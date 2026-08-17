@@ -55,7 +55,11 @@ Do the work directly:
 Commit the change atomically:
 
 ```bash
-git add -A
+# fast writes no planning artifacts (its own guardrails forbid PLAN.md/SUMMARY.md), and its
+# STATE.md row is appended in a LATER step, so .planning/ is never part of what this commit
+# should carry — excluding it also stops an unrelated in-flight planning edit being swept
+# into a fix: commit.
+git add -A -- ':!.planning'
 git commit -m "fix: {concise description of what changed}"
 ```
 
