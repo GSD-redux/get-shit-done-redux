@@ -11618,3 +11618,129 @@ still to be determined by the roadmap.
     );
   });
 });
+
+// ─── #3572: phase remove must not prepend a second frontmatter block ──────────
+
+describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter blocks', () => {
+  const ISSUE_STATE = [
+    '---',
+    'gsd_state_version: 1.0',
+    'milestone: v1.0',
+    'milestone_name: First',
+    'current_phase: 2',
+    'current_phase_name: Feature',
+    'status: executing',
+    'stopped_at: Phase 1 complete',
+    'last_updated: "2026-08-16T10:00:00.000Z"',
+    'last_activity: 2026-08-16',
+    'last_activity_desc: "Phase 1 complete."',
+    'progress:',
+    '  total_phases: 2',
+    '  completed_phases: 1',
+    '  total_plans: 2',
+    '  completed_plans: 1',
+    '  percent: 50',
+    '---',
+    '',
+    '# Project State',
+    '',
+    'Some prose here that must survive.',
+    '',
+  ].join('\n');
+
+  const TWO_PHASE_ROADMAP = '# Roadmap\n\n## Milestone v1.0\n\n### Phase 1: Setup\n**Goal:** Bootstrap the project.\n\n### Phase 2: Feature\n**Goal:** Ship the feature.\n';
+
+  function setupProject(t, stateMd = ISSUE_STATE, eol = '\n') {
+    const tmpDir = createTempProject('gsd-3572-');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), TWO_PHASE_ROADMAP);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      stateMd.split('\n').join(eol),
+    );
+    t.after(() => cleanup(tmpDir));
+    return tmpDir;
+  }
+
+  function fenceLineCount(content) {
+    return content.split(/\r?\n/).filter((l) => l.trim() === '---').length;
+  }
+
+  test('#3572: phase remove of an inserted decimal phase keeps STATE.md a single frontmatter block', (t) => {
+    const tmpDir = setupProject(t);
+    // The issue's exact sequence: insert creates the directory; remove then has a
+    // targetDir !== null, and the body lacks Total Phases/of-N — the trigger.
+    let r = runGsdTools('phase insert 1 "Inserted probe"', tmpDir);
+    assert.ok(r.success, `phase insert failed: ${r.error}`);
+    r = runGsdTools('phase remove 1.1', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    assert.strictEqual(JSON.parse(r.output).state_updated, true, 'the #2640 resync must still happen');
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(after.startsWith('---\n') || after.startsWith('---\r\n'), 'file must still OPEN with the frontmatter fence');
+    assert.strictEqual(fenceLineCount(after), 2, `exactly one frontmatter block (2 fence lines); got ${fenceLineCount(after)}:\n${after.slice(0, 400)}`);
+    assert.strictEqual((after.match(/gsd_state_version/g) || []).length, 1, 'exactly one gsd_state_version — no second derived block');
+    assert.ok(after.includes('Some prose here that must survive.'), 'body prose must survive verbatim');
+    assert.match(after, /^Total Phases:\s*\d+$/m, 'the inserted count field must live in the BODY (line-start), not before the first fence');
+    const fm = after.match(/total_phases:\s*(\d+)/);
+    assert.ok(fm, 'frontmatter progress.total_phases present');
+    assert.strictEqual(fm[1], '2', `total_phases must resync to the 2 remaining roadmap phases; got ${fm[1]}`);
+  });
+
+  test('#3572: integer-phase remove with directory also stays single-block (strengthens #2640)', (t) => {
+    const tmpDir = setupProject(t);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-feature'), { recursive: true });
+    const r = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(fenceLineCount(after), 2, `single frontmatter block; got ${fenceLineCount(after)}`);
+    assert.ok(after.startsWith('---'), 'opens with the fence');
+    assert.ok(after.includes('Some prose here that must survive.'), 'body prose preserved');
+  });
+
+  test('#3572: existing body Total Phases decremented in place, single block', (t) => {
+    const stateWithField = ISSUE_STATE.replace(
+      'Some prose here that must survive.',
+      'Total Phases: 2\n\nSome prose here that must survive.',
+    );
+    const tmpDir = setupProject(t, stateWithField);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-feature'), { recursive: true });
+    const r = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(fenceLineCount(after), 2, 'single frontmatter block');
+    const bodyCounts = after.match(/^Total Phases:\s*(\d+)$/gm) || [];
+    assert.strictEqual(bodyCounts.length, 1, `exactly one Total Phases field; got ${bodyCounts.length}`);
+    assert.match(bodyCounts[0], /^Total Phases:\s*1$/, `field decremented to 1; got ${bodyCounts[0]}`);
+  });
+
+  test('#3572: frontmatter-less STATE.md gets the field at content start', (t) => {
+    const tmpDir = setupProject(t, '# Bare state\n\nNo fences at all here.\n');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-feature'), { recursive: true });
+    const r = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.match(after, /^Total Phases:\s*\d+$/m, 'field lands at content start when the whole file is body');
+    assert.ok(after.includes('No fences at all here.'), 'original body preserved');
+  });
+
+  test('#3572: CRLF STATE.md stays single-block with CRLF preserved', (t) => {
+    const tmpDir = setupProject(t, ISSUE_STATE, '\r\n');
+    let r = runGsdTools('phase insert 1 "Inserted probe"', tmpDir);
+    assert.ok(r.success, `phase insert failed: ${r.error}`);
+    r = runGsdTools('phase remove 1.1', tmpDir);
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(fenceLineCount(after), 2, `single frontmatter block under CRLF; got ${fenceLineCount(after)}`);
+    assert.ok(after.includes('Some prose here that must survive.'), 'body prose preserved');
+    assert.match(after, /^Total Phases:\s*\d+\r?$/m, 'count field present in body');
+  });
+
+  test('#3572: ROADMAP-only phase removal leaves STATE.md untouched (issue control)', (t) => {
+    const tmpDir = setupProject(t);
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const r = runGsdTools('phase remove 2', tmpDir); // phase 2 has NO directory
+    assert.ok(r.success, `phase remove failed: ${r.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'issue control: removal without a directory must not touch STATE.md');
+  });
+});
