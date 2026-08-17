@@ -2198,10 +2198,35 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
                 `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries multiple milestone sections; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354)\n`
               );
             }
+            // #3573: the roadmap-absent sibling of the #3354 shape. With ROADMAP.md
+            // absent/unreadable the #549 heading counter never ran (roadmapScope
+            // stayed null), `milestoneBounded` is vacuously true (its gate requires
+            // roadmapRaw), and the dir count — which only ever counts phases that
+            // have STARTED — would be persisted as progress.total_phases by every
+            // state.* write. A STATE that asserts a milestone (storedMilestone —
+            // getMilestoneInfo is useless here, it reads the roadmap that is
+            // absent) declared a total somewhere; keep the stored frontmatter
+            // value instead. Without an asserted milestone (fresh project,
+            // pre-roadmap) the disk count is still the only source and stays
+            // authoritative (the #3354 doctrine's degenerate case).
+            const roadmapAbsentWithAssertedMilestone =
+              roadmapRaw === null &&
+              typeof storedMilestone === 'string' &&
+              storedMilestone.trim() !== '';
+            if (roadmapAbsentWithAssertedMilestone) {
+              process.stderr.write(
+                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3573)\n`
+              );
+            }
             return {
-              totalPhases: safeToUseRoadmapCount
-                ? Math.max(phaseDirs.length, roadmapPhaseCount)
-                : (milestonedButUnbounded ? null : phaseDirs.length),
+              // The two WITHHOLD shapes (#3354 milestoned-but-unbounded, #3573
+              // roadmap-absent-with-asserted-milestone) must be evaluated BEFORE
+              // safeToUseRoadmapCount — in the #3573 shape milestoneBounded is
+              // vacuously true (its gate requires roadmapRaw), so the safe-count
+              // arm would otherwise swallow the withhold.
+              totalPhases: (milestonedButUnbounded || roadmapAbsentWithAssertedMilestone)
+                ? null
+                : (safeToUseRoadmapCount ? Math.max(phaseDirs.length, roadmapPhaseCount) : phaseDirs.length),
               milestoneBounded,
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
