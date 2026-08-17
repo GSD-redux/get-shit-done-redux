@@ -57,6 +57,9 @@ const { checkAgentsInstalled } = agentInstallCheckMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- worktree-safety.cjs is an export= CommonJS module
 import worktreeSafetyMod = require('./worktree-safety.cjs');
 const { inspectWorktreeHealth } = worktreeSafetyMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
+import configLoaderMod = require('./config-loader.cjs');
+const { isGitIgnored } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, OPTIONAL_PHASE_TAG_SOURCE, stripProjectCodePrefix, scopeToPhase } = phaseIdMod;
@@ -121,6 +124,11 @@ interface PlanningSnapshot {
   config: { value: Record<string, unknown> | null; scope: Scope; exists: boolean };
   agentInstall: { value: ReturnType<typeof checkAgentsInstalled>; scope: Scope };
   worktreeHealth: { value: ReturnType<typeof inspectWorktreeHealth>['findings']; scope: Scope; reason: string };
+  // ─── #3586 (Phase 2, epic #2292) addition ──────────────────────────────────
+  // Backs W029: detects `.planning/` matching an ignore rule while at least
+  // one path under it is still tracked by git — see `buildPlanningTrackedField`'s
+  // own doc comment for the full rationale.
+  planningTracked: { value: { tracked: boolean; ignored: boolean }; scope: Scope; reason: string };
   // ─── Phase 11 (#3309) "Rule table organization" additions ─────────────────
   // The design doc's own "Rule table organization" table and prose disagree
   // on the count: the table lists EIGHT rows (through `planningRootFiles`,
@@ -449,6 +457,65 @@ function buildWorktreeHealthField(cwd: string): { value: ReturnType<typeof inspe
     return { value: result.findings, scope: SCOPE.COMPLETE, reason: result.reason };
   } catch {
     return { value: [], scope: SCOPE.UNREADABLE, reason: 'exception' };
+  }
+}
+
+// #3586 (Phase 2, epic #2292): git norm this repo's other git-subprocess
+// callers already use (`worktree-safety.cts`'s own `DEFAULT_GIT_TIMEOUT_MS`) —
+// generous enough for a normal repo, bounded enough to degrade rather than
+// stall `buildPlanningSnapshot`, which every health path calls.
+const PLANNING_TRACKED_GIT_TIMEOUT_MS = 10_000;
+
+/**
+ * Resolve `planningTracked` — whether `.planning/` matches a gitignore rule
+ * AND whether at least one path under it is still tracked by git (#3586,
+ * Phase 2 of epic #2292). `.gitignore` has no effect on files git already
+ * tracks, so a project that committed `.planning/` before ignoring it keeps
+ * staging those files forever — while `commit_docs` auto-resolves `false`
+ * (`isGitIgnored`, reused below, is exactly what that resolution consults),
+ * which is what makes the contradiction invisible. Backs W029
+ * (`src/health-diagnostic-rules/config-validation.cts`).
+ *
+ * Modeled directly on `buildWorktreeHealthField` above (ADR-3180 §8.1 rule 1:
+ * a `Rule.check(snapshot)` may perform no ambient I/O, so this `git ls-files`
+ * probe lives here, in the snapshot builder, not the rule).
+ *
+ * `tracked` runs `git ls-files -- .planning` through the module's own
+ * injected `execGit` seam: non-empty stdout means at least one path under
+ * `.planning/` is in the INDEX — worktree presence is irrelevant (a path
+ * tracked in the index but deleted on disk still counts; that is what "the
+ * index is what matters" means for this probe).
+ *
+ * `ignored` reuses `isGitIgnored` (`config-loader.cjs`) — the SAME
+ * `git check-ignore -q --no-index` resolution `commit_docs` auto-resolution
+ * already calls (`config-loader.cts:824`) — rather than a second,
+ * independently-drifting `check-ignore` invocation. Only computed once the
+ * `ls-files` probe itself succeeded; a probe that could not run has no
+ * grounds to ask a second question either.
+ *
+ * Degradation mirrors `buildWorktreeHealthField` exactly: not a git repo →
+ * `SCOPE.UNREADABLE` + reason `not_a_git_repo` (silent downstream — matches
+ * the sibling builder's deliberate treatment of a `.planning/`-only
+ * fixture/tmp dir with no git repo at all); a timed-out `ls-files` →
+ * `git_timed_out`; any other non-zero exit → `git_list_failed`; a thrown
+ * exception → `exception`. Never throws out of the builder.
+ */
+function buildPlanningTrackedField(cwd: string): { value: { tracked: boolean; ignored: boolean }; scope: Scope; reason: string } {
+  try {
+    const result = execGit(['ls-files', '--', '.planning'], { cwd, timeout: PLANNING_TRACKED_GIT_TIMEOUT_MS });
+    if (result.timedOut) {
+      return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason: 'git_timed_out' };
+    }
+    if (result.exitCode !== 0) {
+      const stderr = String(result.stderr || '');
+      const reason = /not a git repository|not a git repo/i.test(stderr) ? 'not_a_git_repo' : 'git_list_failed';
+      return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason };
+    }
+    const tracked = result.stdout.trim().length > 0;
+    const ignored = isGitIgnored(cwd, '.planning/');
+    return { value: { tracked, ignored }, scope: SCOPE.COMPLETE, reason: 'ok' };
+  } catch {
+    return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason: 'exception' };
   }
 }
 
@@ -952,6 +1019,7 @@ function buildPlanningSnapshot(cwd: string): PlanningSnapshot {
     config: buildConfigField(cwd),
     agentInstall: buildAgentInstallField(cwd),
     worktreeHealth: buildWorktreeHealthField(cwd),
+    planningTracked: buildPlanningTrackedField(cwd),
     projectSections: buildProjectSectionsField(cwd),
     statePhaseTokens: stateFields.statePhaseTokens,
     stateStatus: stateFields.stateStatus,
