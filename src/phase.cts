@@ -1940,22 +1940,19 @@ interface PhaseRemoveOptions {
  * former behavior for that shape.
  */
 function insertStateBodyFieldAtTop(content: string, fieldLine: string): string {
-  // #3572 review: detect EOL from the FIRST line ending — an LF-dominant file
-  // with one stray \r\n later must not be split on \r\n (the blobs would defeat
-  // the fence check and fall through to the raw prepend this helper exists to
-  // replace). split('\n') keeps any stray \r in place on its own line, where
-  // the trimmed fence compare still matches.
-  const firstNl = /\r?\n/.exec(content);
-  const eol = firstNl ? firstNl[0] : '\n';
+  // Split AND join on bare '\n' so CRLF line endings stay attached to their
+  // own lines — each '\r' remains the tail of the line it terminated, where
+  // the trimmed fence compare still matches it. (#3572 review: splitting on
+  // '\n' but re-joining on a detected '\r\n' doubled every carriage return.)
   const lines = content.split('\n');
   if ((lines[0] ?? '').trim() === '---') {
     const closeIdx = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === '---');
     if (closeIdx !== -1) {
       lines.splice(closeIdx + 1, 0, '', fieldLine);
-      return lines.join(eol);
+      return lines.join('\n');
     }
   }
-  return fieldLine + eol + content;
+  return fieldLine + '\n' + content;
 }
 
 function cmdPhaseRemove(
