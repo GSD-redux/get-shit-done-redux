@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
 
-const { parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow, resetQuickTaskRows } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const { parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow, resetQuickTaskRows, QUICK_TASKS_SECTION_ABSENT } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { buildHeader, normalize } = require('../scripts/lint-table-schema-drift.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -319,7 +319,7 @@ describe('appendQuickTaskRow (#2133)', () => {
     const noSection = '# STATE\n\n### Blockers/Concerns\nNone\n';
     const result = appendQuickTaskRow(noSection, { description: 'x', date: '2026-07-13', commit: 'abc' });
     assert.equal(result.ok, false);
-    assert.match(result.reason, /no Quick Tasks Completed section/);
+    assert.equal(result.reason, QUICK_TASKS_SECTION_ABSENT);
   });
 
   test('boundary: next row number is 1 with zero data rows, 3 with two data rows', () => {
@@ -1102,7 +1102,7 @@ describe('resetQuickTaskRows (#2142)', () => {
     const noSection = '# STATE\n\n### Blockers/Concerns\nNone\n';
     const result = resetQuickTaskRows(noSection);
     assert.equal(result.ok, false);
-    assert.match(result.reason, /no Quick Tasks Completed section/);
+    assert.equal(result.reason, QUICK_TASKS_SECTION_ABSENT);
   });
 
   test('CRLF input keeps \\r\\n in the touched section (no mixed EOL)', () => {

@@ -500,6 +500,8 @@ The marker never overwrites the artifact's own `status:` field for the eight fro
 
 > **Sentinel directories stay put.** Moving phase directories into the archive (the default, unless `--no-archive-phases` is passed) now excludes `999.*` (backlog) and `0-*` (pre-milestone) directories via the same sentinel predicate the unstarted-phase guard already uses. Previously the archive move was scoped only by the milestone window, so a sentinel directory sitting inside that window could be archived along with the milestone's own phases.
 
+> **Quick-task archival (opt-in, default OFF, #2142).** Unlike phase archival above, quick-task archival does not run unless you say yes — doing nothing leaves `.planning/quick/` untouched. If `.planning/quick/` contains at least one directory, the workflow asks: `Archive completed quick tasks into this milestone too?` with options `Yes — archive quick tasks into v[X.Y]` / `Skip`. Choosing "Yes" passes `--archive-quick` to the underlying `gsd-tools milestone complete` call, which moves every directory under `.planning/quick/` into `.planning/milestones/v[X.Y]-quick/`, (re)writes that directory's `README.md` index (built by scanning the archive directory, not STATE.md), and clears the data rows of STATE.md's `### Quick Tasks Completed` table while preserving its header and column variant. **Known limit:** there is no on-disk record of which milestone a quick task belongs to, so archival buckets **all** remaining `.planning/quick/*` into the one milestone being completed — a task predating an earlier, unarchived milestone lands in the current bucket regardless. See [Archiving quick tasks](how-to/handle-quick-and-fast-tasks.md#archiving-quick-tasks) for the full walkthrough, including the retroactive path.
+
 ---
 
 ### `/gsd-milestone-summary`
@@ -1052,9 +1054,11 @@ covers only orphan worktrees, with the stale-worktree case moving to the new
 
 ### `/gsd-cleanup`
 
-Archive accumulated phase directories from completed milestones and prune local branches whose upstream has been deleted.
+Archive accumulated phase directories from completed milestones, prune local branches whose upstream has been deleted, and — when applicable — retroactively archive quick tasks (#2142).
 
 **Behaviour:** Presents a dry-run summary of phase directories to archive (moved from `.planning/phases/` into `.planning/milestones/v{X.Y}-phases/`) and local branches whose upstream is gone (pruned via `git fetch --prune`). Requires confirmation before writing any changes. The currently checked-out branch is never pruned.
+
+**Retroactive quick-task archival (opt-in, #2142).** When `.planning/quick/` contains at least one directory, `/gsd-cleanup` additionally offers to sweep it: `Archive ALL {N} quick-task directories into v{X.Y} — {Milestone Name}? This buckets every remaining quick task into this ONE milestone; there is no way to split them per-milestone.` with options `Yes — archive quick tasks into v{X.Y}` / `Skip`. The target is the single most recent completed milestone (from `MILESTONES.md`) that does not yet have a `v{X.Y}-quick` archive directory. If `.planning/quick/` is empty, this step is not offered at all. Confirming calls the narrower `gsd-tools quick archive <version>` command — the same move/README-index/table-reset logic `/gsd-complete-milestone`'s `--archive-quick` uses, but without touching `ROADMAP.md`, `REQUIREMENTS.md`, `MILESTONES.md`, or milestone-completion guards, since `/gsd-cleanup` typically targets a milestone that is already closed. See [Archiving quick tasks](how-to/handle-quick-and-fast-tasks.md#archiving-quick-tasks) for the full walkthrough and the silent/failure cases.
 
 ```bash
 /gsd-cleanup

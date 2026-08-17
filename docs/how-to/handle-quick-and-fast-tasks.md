@@ -113,6 +113,59 @@ The key distinction is subagent isolation. `/gsd-quick` spawns a fresh planner a
 
 ---
 
+## Archiving quick tasks
+
+`.planning/quick/` accumulates one directory per `/gsd-quick` task forever unless you archive it. Archival is **opt-in** (#2142) — it deliberately does not mirror phase-directory archival, which is default-ON. Do nothing and `.planning/quick/` stays exactly as it is.
+
+There are two paths in, depending on when you archive:
+
+### Forward path — archive at milestone close-out
+
+When you run `/gsd-complete-milestone` and `.planning/quick/` has at least one directory, you are asked:
+
+```text
+Archive completed quick tasks into this milestone too?
+  Yes — archive quick tasks into v[X.Y]
+  Skip
+```
+
+Choosing "Yes" folds `--archive-quick` into the same `gsd-tools milestone complete` call that archives `ROADMAP.md`/`REQUIREMENTS.md` and phase directories — one command, one `STATE.md` write. "Skip" (or an empty `.planning/quick/`) leaves everything untouched.
+
+### Retroactive path — archive an already-completed milestone
+
+`/gsd-complete-milestone` only runs once per milestone, so if quick tasks piled up after you already closed one out, use `/gsd-cleanup` instead. When it finds `.planning/quick/` non-empty, it offers to sweep it into the most recent completed milestone that doesn't yet have a `-quick` archive:
+
+```text
+Archive ALL {N} quick-task directories into v{X.Y} — {Milestone Name}?
+This buckets every remaining quick task into this ONE milestone;
+there is no way to split them per-milestone.
+  Yes — archive quick tasks into v{X.Y}
+  Skip
+```
+
+Under the hood this calls the narrower `gsd-tools quick archive <version>` command — the same move/index/reset logic as `--archive-quick`, but without touching `ROADMAP.md`, `REQUIREMENTS.md`, `MILESTONES.md`, or milestone-completion guards, so it is safe to run against a milestone that's already closed.
+
+### What both paths do
+
+1. Move every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`.
+2. (Re)write that archive directory's `README.md` — a plain list, one entry per archived task directory, linking to its `<dir>-SUMMARY.md` (or legacy bare `SUMMARY.md`) when one exists, listed unlinked when it doesn't. The index is built by scanning the archive directory itself, never from `STATE.md`'s table — the table is known to drift from disk, so the filesystem is the only source of truth here.
+3. Clear the data rows of `STATE.md`'s `### Quick Tasks Completed` table, preserving its header row and whichever column variant (with or without a Status column) was detected.
+
+**Bucket-all, not per-milestone.** Quick tasks carry no on-disk record of which milestone they belong to, so every remaining `.planning/quick/*` directory lands in the ONE milestone you're archiving into — including tasks that predate an earlier, unarchived milestone. There's no way to split them after the fact; this is a known limit, not a bug.
+
+### Telling "nothing to archive" from "refused to touch it"
+
+Four cases look similar from the outside but mean different things:
+
+| What you see | Meaning |
+|---|---|
+| No archive prompt at all | `.planning/quick/` is absent or empty — nothing to archive, nothing reported |
+| Archive prompt appears, directories move, but `STATE.md` doesn't change | Your `STATE.md` has no `### Quick Tasks Completed` section yet — normal, since `/gsd-quick` creates that section lazily on first completion, not the project template. This is a silent no-op, not a failure |
+| Directories move, but you see a `warnings` entry naming `quick_tasks_table` | Your `### Quick Tasks Completed` table has a column set that matches neither registered variant. The reset is **refused** — every row is preserved untouched rather than risk destroying data under a schema GSD doesn't recognize |
+| Fewer directories moved than existed in `.planning/quick/` | A rename failed partway through. The result's `archived` count reflects exactly what succeeded — never a false full count — and the directories that didn't move are still in `.planning/quick/` for a retry |
+
+---
+
 ## Related
 
 - [The phase loop](../explanation/the-phase-loop.md)

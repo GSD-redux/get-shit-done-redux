@@ -720,6 +720,18 @@ export function escapeCell(value: string): string {
     .trim();
 }
 
+/**
+ * Shared sentinel `reason` returned by both `appendQuickTaskRow` and
+ * `resetQuickTaskRows` when the "Quick Tasks Completed" heading is absent
+ * from `stateContent` (#2142). The section is created lazily by
+ * `gsd-core/workflows/quick.md` Step 7b and is absent from
+ * `gsd-core/templates/state.md`, so an absent section is the common case,
+ * not an anomaly — callers compare against this constant rather than
+ * matching on the free-form reason string (CONTRIBUTING.md "Prohibited:
+ * Raw Text Matching").
+ */
+export const QUICK_TASKS_SECTION_ABSENT = 'no Quick Tasks Completed section';
+
 /** Fields needed to render one "Quick Tasks Completed" row (schema-driven). */
 export interface QuickTaskFields {
   description: string;
@@ -754,7 +766,7 @@ export function appendQuickTaskRow(
 ): Result<{ content: string; row: string; variant: string }> {
   const section = collectSection(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
   if (!section) {
-    return { ok: false, reason: 'no Quick Tasks Completed section' };
+    return { ok: false, reason: QUICK_TASKS_SECTION_ABSENT };
   }
 
   const parsed = parseMarkdownTable(section.body);
@@ -808,6 +820,95 @@ export function appendQuickTaskRow(
   const content = replaceSection(stateContent, section, newBody);
 
   return { ok: true, value: { content, row, variant: match.label } };
+}
+
+// ─── resetQuickTaskRows (#2142) ────────────────────────────────────────────
+
+/**
+ * Clear every DATA row from STATE.md's "Quick Tasks Completed" table, leaving
+ * the header + delimiter lines byte-identical, for use at milestone close when
+ * `--archive-quick` has actually moved the underlying `.planning/quick/*`
+ * directories out from under the table (see `src/milestone.cts`'s
+ * `archiveQuickTaskDirectories` / `cmdMilestoneComplete` wiring).
+ *
+ * Mirrors `appendQuickTaskRow`'s exact contract (same `collectSection` ->
+ * `parseMarkdownTable` -> `matchTableSchema` pipeline, same fail-loud posture,
+ * same EOL-detect-before-split handling) rather than inventing a second one:
+ *   - no "Quick Tasks Completed" heading -> `{ok:false, reason:
+ *     QUICK_TASKS_SECTION_ABSENT}` (no-op; a STATE.md without the section has
+ *     nothing to reset — per #2142 design doc §40, behavior table row 5, the
+ *     section is created lazily by quick.md Step 7b and is absent from
+ *     templates/state.md, so absence is the common path, not an anomaly.
+ *     Callers MUST treat this sentinel as silent — never surface it as a
+ *     `preservation_warnings` entry).
+ *   - the section body doesn't parse as a GFM table -> `{ok:false, reason}`.
+ *   - the table's header doesn't match a known `TABLE_SCHEMAS.QuickTasks`
+ *     variant -> `{ok:false, reason}` and — CRITICAL — no modification at
+ *     all. A user-added column means the data can't be safely addressed by
+ *     name, so clearing it would destroy rows under a schema we don't
+ *     understand (Postel's Law: liberal in accepting known shapes,
+ *     conservative about destroying what we don't).
+ */
+export function resetQuickTaskRows(
+  stateContent: string,
+): Result<{ content: string; cleared: number; variant: string }> {
+  if (typeof stateContent !== 'string' || stateContent.trim() === '') {
+    return { ok: false, reason: 'empty or non-string input' };
+  }
+
+  const section = collectSection(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
+  if (!section) {
+    return { ok: false, reason: QUICK_TASKS_SECTION_ABSENT };
+  }
+
+  const parsed = parseMarkdownTable(section.body);
+  if (!parsed.ok) {
+    return { ok: false, reason: `quick-tasks table: ${parsed.reason}` };
+  }
+
+  const match = matchTableSchema(parsed.value.columns);
+  if (!match || match.id !== 'QuickTasks') {
+    // Refuse the reset — keep every row, caller-owned content is untouched.
+    return {
+      ok: false,
+      reason: `unrecognized Quick Tasks schema (columns: ${parsed.value.columns.join(' | ')})`,
+    };
+  }
+
+  const cleared = parsed.value.rows.length;
+
+  // Detect the section's EOL BEFORE splitting on /\r?\n/ (which discards it) —
+  // exactly `appendQuickTaskRow`'s convention — so a CRLF document is not
+  // downgraded to mixed EOL by the rejoin below.
+  const eol = /\r\n/.test(section.body) ? '\r\n' : '\n';
+  const lines = section.body.split(/\r?\n/);
+
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith('|')) { headerIdx = i; break; }
+  }
+  // headerIdx is always found here — parseMarkdownTable already confirmed a
+  // header + delimiter row exist in this same `section.body`.
+
+  let lastTableLineIdx = headerIdx + 1; // delimiter row, when there are zero data rows
+  for (let i = headerIdx + 2; i < lines.length; i++) {
+    if (!lines[i].trim().startsWith('|')) break;
+    lastTableLineIdx = i;
+  }
+
+  // Keep the header + delimiter lines [0 .. headerIdx+1] plus everything
+  // after the contiguous run of `|`-prefixed data rows — dropping only the
+  // data rows themselves. Non-table content before/after the table inside
+  // the section is preserved untouched.
+  const newLines = [
+    ...lines.slice(0, headerIdx + 2),
+    ...lines.slice(lastTableLineIdx + 1),
+  ];
+  const newBody = newLines.join(eol);
+
+  const content = replaceSection(stateContent, section, newBody);
+
+  return { ok: true, value: { content, cleared, variant: match.label } };
 }
 
 // Consumers: require('../gsd-core/bin/lib/markdown-table.cjs')

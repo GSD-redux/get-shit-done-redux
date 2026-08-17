@@ -680,7 +680,10 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # Archive milestone
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run]
+node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run] [--archive-quick]
+
+# Archive .planning/quick/* into milestones/<version>-quick/ WITHOUT the milestone complete close-out (#2142)
+node gsd-tools.cjs quick archive <version> [--dry-run]
 
 # Mark requirements as complete
 node gsd-tools.cjs requirements mark-complete <ids>
@@ -694,12 +697,24 @@ node gsd-tools.cjs requirements mark-complete <ids>
 | `<version>` | Milestone version label to archive (e.g. `v1.0`). |
 | `--name <name>` | Display name for the MILESTONES.md entry. Defaults to `<version>`. |
 | `--no-archive-phases` | Leave phase directories in place instead of moving them into `.planning/milestones/<version>-phases/`. |
+| `--archive-quick` | Opt-in (default OFF, #2142): also move every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`, (re)write that archive directory's `README.md` index, and clear STATE.md's `### Quick Tasks Completed` table rows. See "`quick archive`" below for the narrower standalone form and the full behavior. |
 | `--force` | Override the unstarted-phase guard (see below). |
-| `--dry-run` | Print the archive plan (roadmap, requirements, phases to move) without mutating anything. |
+| `--dry-run` | Print the archive plan (roadmap, requirements, phases, and — when `--archive-quick` is also passed — quick-task dirs to move) without mutating anything. |
 
 **Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
 **Sentinel directories are never archived.** The phase-directory move performed when `--no-archive-phases` is absent is now filtered through the same canonical sentinel predicate as `phases list` and `phases clear`: `999.*` (backlog) and `0-*` (pre-milestone) directories are left in place rather than moved into `.planning/milestones/<version>-phases/`. Previously this path was scoped only by the milestone window, with no sentinel filter, so a sentinel directory sitting inside the window could be archived along with the milestone's real phases.
+
+**`quick archive` (#2142 escalation)**
+
+A narrower sibling of `milestone complete --archive-quick`, for callers that need to sweep `.planning/quick/*` WITHOUT the full milestone close-out — chiefly `gsd-core/workflows/cleanup.md`, which runs against milestones that are typically already completed.
+
+| Flag | Description |
+|------|-------------|
+| `<version>` | Milestone version label to archive quick-task directories under (e.g. `v1.0`). Same validation as `milestone complete`'s `<version>` — letters/digits/`.`/`-`/`_` only, no path separators or `..`. |
+| `--dry-run` | List what would move (`would_archive`) without mutating anything. |
+
+It moves every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`, (re)writes that archive directory's `README.md` index, and clears STATE.md's `### Quick Tasks Completed` table rows — the same move/index/reset logic `milestone complete --archive-quick` uses. Unlike `milestone complete`, it never archives `ROADMAP.md`/`REQUIREMENTS.md`, never writes a `MILESTONES.md` entry, and runs neither the unstarted-phase guard nor the milestone-window refusal — so, unlike `milestone complete --archive-quick`, it can be safely re-run against an already-completed milestone. JSON result: `{ version, archived, entries, archive_dir, state_updated, warnings }`.
 
 ---
 
@@ -771,6 +786,8 @@ node gsd-tools.cjs verify-path-exists <path>
 
 # Append a row to STATE.md's "Quick Tasks Completed" table (schema-backed; #2133)
 node gsd-tools.cjs quick-tasks-append --task "<description>"
+# See "Milestone Commands" below for `quick archive` (#2142) — sweeps .planning/quick/* into
+# milestones/<version>-quick/ and clears this table, without a full `milestone complete`.
 
 # Aggregate all SUMMARY.md data
 node gsd-tools.cjs history-digest

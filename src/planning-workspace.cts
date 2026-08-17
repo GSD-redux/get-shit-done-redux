@@ -167,6 +167,17 @@ interface PlanningPaths {
   phases: string;
   requirements: string;
   debug: string;
+  quick: string;
+}
+
+// #2142: the quick-task directory. Exported as its own function (not only as a
+// `planningPaths` key) because `audit.cts`'s `scanQuickTasks` receives an
+// already-resolved planning base rather than a `cwd`, so it cannot reach
+// `planningPaths`. Without this shared helper, adding the `quick` key would
+// leave TWO composers of `<planning>/quick` — the DEFECT.GENERATIVE-FIX shape
+// the `debug` key (#3149) was introduced to eliminate.
+function quickDirFrom(planningBase: string): string {
+  return path.join(planningBase, 'quick');
 }
 
 function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
@@ -183,6 +194,8 @@ function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
     // `debug_dir` field and `init.debug`'s — previously each composed its own
     // `path.join(planning, 'debug')` (DEFECT.GENERATIVE-FIX).
     debug: path.join(base, 'debug'),
+    // #2142: quick-task directory, composed via the shared quickDirFrom helper.
+    quick: quickDirFrom(base),
   };
 }
 
@@ -425,6 +438,7 @@ export = {
   planningRoot,
   listAvailableWorkstreams,
   planningPaths,
+  quickDirFrom,
   withPlanningLock,
   getActiveWorkstream,
   setActiveWorkstream,
