@@ -548,9 +548,19 @@ test('agent-descriptor-parity: J8 — kilo and opencode both resolve model overr
   // one shared installModelOverrideResolver.resolveAgentModelOverride.
   const kiloOut = _stageWithModelOverride('kilo', J8_OVERRIDE_MODEL);
   const opencodeOut = _stageWithModelOverride('opencode', J8_OVERRIDE_MODEL);
-  const overrideRe = new RegExp(`^model:\\s*${J8_OVERRIDE_MODEL.replace(/\//g, '\\/')}$`, 'm');
-  assert.match(kiloOut.get('gsd-planner.md'), overrideRe, 'kilo must apply the shared model override via the real descriptor path');
-  assert.match(opencodeOut.get('gsd-planner.md'), overrideRe, 'opencode must apply the SAME shared model override via the real descriptor path');
+  // J8_OVERRIDE_MODEL is a fixed constant: assert the exact expected
+  // frontmatter line, matched line-wise, rather than building a RegExp from
+  // an interpolated value (CodeQL js/incomplete-sanitization — a
+  // metachar-bearing value would silently widen the match).
+  const expectedModelLine = `model: ${J8_OVERRIDE_MODEL}`;
+  assert.ok(
+    kiloOut.get('gsd-planner.md').split('\n').some((line) => line.trim() === expectedModelLine),
+    'kilo must apply the shared model override via the real descriptor path',
+  );
+  assert.ok(
+    opencodeOut.get('gsd-planner.md').split('\n').some((line) => line.trim() === expectedModelLine),
+    'opencode must apply the SAME shared model override via the real descriptor path',
+  );
 });
 
 // ---------------------------------------------------------------------------
