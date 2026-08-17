@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
+const { findTableBySchema } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 function runSdkQuery(args, cwd) {
   const result = runGsdTools(args, cwd);
@@ -513,5 +514,305 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'only CK-01-first should match Phase 1; CK-99 and CK-100 must be excluded');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142: quick task archival at milestone close-out
+// ─────────────────────────────────────────────────────────────────────────────
+
+function setupQuickArchiveRoadmap(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'ROADMAP.md'),
+    `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n`,
+  );
+  fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+}
+
+function writeQuickTaskDir(tmpDir, name, files = {}) {
+  const dir = path.join(tmpDir, '.planning', 'quick', name);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [filename, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, filename), content);
+  }
+  return dir;
+}
+
+function quickTasksStateWithRows(count) {
+  const rows = [];
+  for (let i = 1; i <= count; i++) {
+    rows.push(`| ${i} | quick task ${i} | 2026-01-0${i} | abc000${i} | — |`);
+  }
+  return [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    ...rows,
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+}
+
+describe('#2142: quick task archival at milestone close-out', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('leavesQuickTasksInPlaceWhenFlagAbsent', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const quickDir = writeQuickTaskDir(tmpDir, '2026-01-01-fix-typo', {
+      '2026-01-01-fix-typo-SUMMARY.md': '# Summary\n',
+    });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(1));
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false, 'archived.quick must be false when --archive-quick is absent');
+    assert.ok(fs.existsSync(quickDir), 'quick task directory must remain in place');
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'no quick archive dir should be created',
+    );
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table must still be present');
+    assert.strictEqual(table.rows.length, 1, 'quick task row must remain untouched');
+  });
+
+  test('archivesQuickTasksAndResetsTableWhenFlagPassed', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const names = ['2026-01-01-a', '2026-01-02-b', '2026-01-03-c'];
+    for (const name of names) writeQuickTaskDir(tmpDir, name);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(3));
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete --archive-quick failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    for (const name of names) {
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning', 'quick', name)),
+        `${name} must be moved out of .planning/quick`,
+      );
+      assert.ok(fs.existsSync(path.join(archiveDir, name)), `${name} must exist in the archive dir`);
+    }
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const readme = fs.readFileSync(path.join(archiveDir, 'README.md'), 'utf-8');
+    for (const name of names) {
+      assert.ok(readme.includes(name), `README.md must name ${name}`);
+    }
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table header must survive the reset');
+    assert.strictEqual(table.rows.length, 0, 'all quick task rows must be cleared');
+  });
+
+  test('noOpsWhenQuickDirectoryAbsent', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false);
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')));
+  });
+
+  test('doesNotCreateArchiveDirForEmptyQuickDir', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'quick'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false, 'boundary 0: an empty quick dir must not count as archived');
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'no archive dir for zero entries',
+    );
+  });
+
+  test('archivesSingleQuickTaskDirectory', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-02-01-only-one');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true, 'boundary 1: a single quick task dir must archive');
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-02-01-only-one')));
+  });
+
+  test('archivesMultipleQuickTaskDirectories', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-02-01-first');
+    writeQuickTaskDir(tmpDir, '2026-02-02-second');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true, 'boundary 2: multiple quick task dirs must archive');
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.existsSync(path.join(archiveDir, '2026-02-01-first')));
+    assert.ok(fs.existsSync(path.join(archiveDir, '2026-02-02-second')));
+  });
+
+  test('archivesWhenStateHasNoQuickTasksSection', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-03-01-no-section');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# STATE\n\n### Blockers/Concerns\nNone\n');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete must succeed even without a Quick Tasks Completed section: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-03-01-no-section')));
+  });
+
+  test('suffixesCollidingQuickTaskDirectoryOnRerun', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-04-01-rerun';
+    writeQuickTaskDir(tmpDir, name, { 'new-marker.txt': 'new run\n' });
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    fs.mkdirSync(path.join(archiveDir, name), { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, name, 'existing-marker.txt'), 'prior run\n');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(fs.existsSync(path.join(archiveDir, name, 'existing-marker.txt')), 'prior archive entry must survive');
+    assert.strictEqual(
+      fs.readFileSync(path.join(archiveDir, name, 'existing-marker.txt'), 'utf-8'),
+      'prior run\n',
+      'prior archive entry contents must be untouched',
+    );
+    assert.ok(fs.existsSync(path.join(archiveDir, `${name}.1`)), 'the newly-archived dir must be suffixed .1');
+    assert.ok(
+      fs.existsSync(path.join(archiveDir, `${name}.1`, 'new-marker.txt')),
+      "the suffixed dir must carry this run's content",
+    );
+  });
+
+  test('indexLinksPerTaskSummaryFile', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-01-per-task-summary';
+    writeQuickTaskDir(tmpDir, name, { [`${name}-SUMMARY.md`]: '# Summary\nDid the thing.\n' });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const readme = fs.readFileSync(readmePath, 'utf-8');
+    assert.ok(readme.includes(name), 'README.md must list the task directory');
+    assert.ok(readme.includes(`${name}-SUMMARY.md`), 'README.md must link the per-task summary file');
+  });
+
+  test('indexLinksLegacyBareSummaryFile', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-02-bare-summary';
+    writeQuickTaskDir(tmpDir, name, { 'SUMMARY.md': '# Summary\nDid the other thing.\n' });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const readme = fs.readFileSync(readmePath, 'utf-8');
+    assert.ok(readme.includes(name), 'README.md must list the task directory');
+    assert.ok(readme.includes('SUMMARY.md'), 'README.md must link the legacy bare summary file');
+  });
+
+  test('indexListsTaskWithoutSummaryWithoutLink', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-03-no-summary';
+    writeQuickTaskDir(tmpDir, name); // no files at all
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const readmePath = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'README.md');
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const readme = fs.readFileSync(readmePath, 'utf-8');
+    assert.ok(readme.includes(name), 'README.md must still list a task directory with no summary');
+    assert.ok(
+      !readme.includes(`(${name}/`),
+      'README.md must not link into a directory that has no summary file to point at',
+    );
+  });
+
+  test('skipsNonDirectoryEntriesInQuickDir', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'quick'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt'), 'not a task dir\n');
+    writeQuickTaskDir(tmpDir, '2026-06-01-real-task');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt')),
+      'a loose file must not be archived',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'stray-notes.txt')),
+      'loose file must not appear under the archive dir',
+    );
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-06-01-real-task')),
+      'the real task directory must still archive',
+    );
+  });
+
+  test('dryRunPreviewsQuickArchivalWithoutMutating', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const names = ['2026-07-01-preview-a', '2026-07-02-preview-b'];
+    for (const name of names) writeQuickTaskDir(tmpDir, name);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete --dry-run failed: ${result.error}`);
+    assert.ok(Array.isArray(result.data.would_archive.quick), 'would_archive.quick must be an array');
+    for (const name of names) {
+      assert.ok(result.data.would_archive.quick.includes(name), `would_archive.quick must name ${name}`);
+      assert.ok(
+        fs.existsSync(path.join(tmpDir, '.planning', 'quick', name)),
+        `${name} must remain on disk after a dry run`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'dry run must not create the archive dir',
+    );
+  });
+
+  test('rejectsVersionWithPathSeparator', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-08-01-evil-version');
+
+    const result = runSdkQuery(['milestone.complete', '../evil', '--archive-quick'], tmpDir);
+    assert.strictEqual(result.success, false, 'a version containing a path separator must be rejected');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '..', 'evil')), 'nothing must be created outside the temp fixture root');
+    const milestonesDir = path.join(tmpDir, '.planning', 'milestones');
+    if (fs.existsSync(milestonesDir)) {
+      for (const entry of fs.readdirSync(milestonesDir)) {
+        assert.ok(!entry.includes('..'), `no traversal-shaped entry may exist under milestones/: ${entry}`);
+      }
+    }
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'quick', '2026-08-01-evil-version')),
+      'quick task dir must remain untouched on refusal',
+    );
+  });
+
+  test('archivesQuickTaskWithUnicodeAndSpaces', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-01-01-café report';
+    writeQuickTaskDir(tmpDir, name);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', name)),
+      'a unicode/space-containing quick task directory name must archive correctly',
+    );
   });
 });

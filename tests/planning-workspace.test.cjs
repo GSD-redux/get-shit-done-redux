@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, toPosixPath } = require('./helpers.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
 
 const planningWorkspaceDirect = require('../gsd-core/bin/lib/planning-workspace.cjs');
@@ -652,5 +652,45 @@ describe('bug #1883 — findContextMdIn distinguishes a permission error from em
       'array path matches padded form');
     assert.strictEqual(findContextMdIn(['PLAN.md']), null,
       'array path returns null when no match');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142: quick task workspace path (planningPaths().quick)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2142: quick task workspace path (planningPaths().quick)', () => {
+  const cwd = '/fake/repo';
+  let savedProject;
+  let savedWorkstream;
+
+  beforeEach(() => {
+    savedProject = process.env.GSD_PROJECT;
+    savedWorkstream = process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+    delete process.env.GSD_WORKSTREAM;
+  });
+
+  afterEach(() => {
+    if (savedProject !== undefined) process.env.GSD_PROJECT = savedProject;
+    else delete process.env.GSD_PROJECT;
+    if (savedWorkstream !== undefined) process.env.GSD_WORKSTREAM = savedWorkstream;
+    else delete process.env.GSD_WORKSTREAM;
+  });
+
+  test('exposesQuickDirectoryPath: planningPaths(cwd).quick ends with .planning/quick', () => {
+    const paths = planningPaths(cwd, null);
+    assert.strictEqual(toPosixPath(paths.quick), toPosixPath(path.join(cwd, '.planning', 'quick')));
+    assert.ok(toPosixPath(paths.quick).endsWith('.planning/quick'));
+  });
+
+  test('resolvesQuickPathUnderWorkstream: quick resolves under the workstream base like phases', () => {
+    const paths = planningPaths(cwd, 'feature-x');
+    assert.strictEqual(
+      toPosixPath(paths.quick),
+      toPosixPath(path.join(cwd, '.planning', 'workstreams', 'feature-x', 'quick')),
+    );
+    // Same parent directory as `phases` — quick is workstream-aware exactly like phases.
+    assert.strictEqual(path.dirname(paths.quick), path.dirname(paths.phases));
   });
 });
