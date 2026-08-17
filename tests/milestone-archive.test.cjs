@@ -1045,6 +1045,20 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
   test('embeddedNewlineInDirNameCannotInjectAHeadingIntoTheGeneratedReadme', (t) => {
     setupQuickArchiveRoadmap(tmpDir);
     const maliciousName = '2026-10-01-evil\n\n## Injected';
+    // Windows forbids control characters (0x00-0x1F, which includes \n) in
+    // path names outright, so `fs.mkdirSync` below cannot even create this
+    // fixture there — it fails during SETUP, not as a defect in the escaping
+    // under test. Skip deterministically by platform rather than by error
+    // code: Windows reports this specific failure as the generic ENOENT
+    // (verified in CI, errno -4058), and ENOENT is also the code a genuine
+    // POSIX fixture-setup bug (e.g. a missing parent directory) would throw.
+    // Adding ENOENT to the catch below would blanket-skip that real failure
+    // on POSIX too, silently turning a defect into a pass — do not
+    // "simplify" this back to a single try/catch.
+    if (process.platform === 'win32') {
+      t.skip('Windows forbids control characters (including newline) in path names, so this fixture cannot be created here; the escaping it guards is exercised on POSIX');
+      return;
+    }
     try {
       writeQuickTaskDir(tmpDir, maliciousName);
     } catch (err) {
