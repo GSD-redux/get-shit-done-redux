@@ -165,3 +165,94 @@ the same name. The decision above rests on read code, not on those numbers.
 - Placement seam: [ADR-3660](3660-runtime-artifact-layout-module.md) · content seam: [ADR-1508](1508-runtime-artifact-conversion-module.md) · policy/adapter split: [ADR-58](58-runtime-install-policy-module.md)
 - The epic's own frame: [ADR-2866](2866-install-surface-resolution.md), which mandated that this module owe its own ADR
 - User-directory preservation this ADR protects: #2973, #3664
+
+## Amendment (2026-08-17, #2875): four factual claims corrected by implementation
+
+Implementing this ADR as Phase 6 disproved four of the statements it rests on. **The central
+decision — §1, no single materializer — is unaffected and stands**; the divergence table that
+justified it was measured correctly. What follows corrects the surrounding claims, because a reader
+who acts on them will be misled.
+
+This is the same failure mode the ADR itself warns about in "A note on the evidence": conclusions
+reached by reading code without executing it. Three of the four corrections below are cases where
+inspection produced a confident, wrong answer.
+
+### 1. §Decision 3 is void — the retired-kind prune already had a single owner
+
+The ADR says the prune "is extracted" and is "already called by both `installRuntimeArtifacts` and
+`applySurface`". Measured: `pruneRetiredRuntimeArtifacts` already lives alone in
+`src/retired-artifact-cleanup.cts`, already exports a single function, already routes every fs call
+through `installFs()`, and has **three** callers — `installRuntimeArtifacts`,
+`uninstallRuntimeArtifacts` and `applySurface`.
+
+There was nothing to extract. **No refactor was invented to satisfy this decision.** A future reader
+should treat §3 as already-satisfied, not as outstanding work.
+
+### 2. The `agents`-bypass runtime set was wrong, and §Decision 4 was the *hardest* part, not the easiest
+
+The ADR states the inline dispatch "survives only for codex, cline, hermes and generic runtimes",
+and calls closing it "the part of Phase 6 whose evidence survived scrutiny intact".
+
+Both are wrong. `_DESCRIPTOR_AGENTS_RUNTIMES` (`bin/install.js`) holds ten runtimes; every other
+runtime reaches the inline loop — including **claude**, the flagship, plus kilo and opencode.
+(`pi` is excluded separately by its `pluginOnlyInstall` branch.)
+
+Worse, closing the bypass could not be done "on its own terms". It required **three new pieces of
+descriptor contract**, because the descriptor pipeline had no per-agent resolution context:
+
+| gap | consumer |
+|---|---|
+| a frontmatter-extensions step (`effort`, `disallowedTools`) | claude |
+| per-agent model-override resolution threaded to the converter | kilo, opencode |
+| a named branding converter (the *data* was already declared; the converter was not) | hermes |
+
+Every one of those failed **silently** if migrated without the contract work — wrong bytes, nothing
+thrown. §Decision 4's framing as independent and low-risk should not be relied on.
+
+### 3. Three of the four blockers in `runtime-artifact-layout.cts` were already stale
+
+The ADR treats that comment's blocker list as current. Measured, only one was:
+
+| blocker | status |
+|---|---|
+| Copilot's `.agent.md` filename rename | stale — #2099 dropped the ternary; the suffix comes from `hostBehaviors.agentFileExtension` |
+| cross-cutting path-prefix rewrite + attribution | stale — `stageAgentsForRuntimeWithConverter` already does both when `agentCtx` is present |
+| stale-file cleanup | stale — `_removeGsdEntries` prunes more broadly than the loop's extension-gated check |
+| config-reading steps | **real** — and it was the entire remaining gap (see §2 above) |
+
+### 4. F19 is seven call sites, not four — and the helper was the wrong thing to search for
+
+The ADR names four call sites, found by locating callers of `preserveUserArtifacts`. There are
+**seven**. Three of them never call the helper at all; they open-code the same
+`readFileSync` → wipe → `writeFileSync`.
+
+**The generalizable lesson: the defect is the pattern "user data held only in memory across a
+wipe", not the helper.** Searching for callers of the helper under-counts by construction. The three
+extra sites were found by sweeping for the pattern — a read shortly before a wipe and a write
+shortly after.
+
+The ADR also understates the severity. The worst site is the mainline install path, where the
+window spans the **entire `gsd-core` tree rebuild** inside `copyWithPathReplacement`, not a single
+`rmSync`. Any interruption of a normal install destroys the file.
+
+### 5. Resolved: `USER_OWNED_ARTIFACTS`
+
+"What this ADR does not decide" records its membership as unconfirmable. It is confirmed:
+`src/install-engine.cts` defines it as exactly **`['USER-PROFILE.md']`**, with a docblock recording
+the invariant that a file is either manifest-tracked distribution or a preserved user artifact,
+never both (#2771). `dev-preferences.md` is preserved at other sites by explicit name. That open
+question is closed.
+
+### 6. `copyPreservingSymlink` could not be reused verbatim
+
+§Decision 2 directs reusing it, and that is still the right primitive for the reason given (it never
+dereferences a symlink). But it used raw `fs` for all five of its calls, while its new caller sits on
+the install path Phase 5 routed through an injectable seam. Verbatim reuse would have punched a hole
+through that seam — the partial-adapter trap `install-fs-adapter.cts` documents. It was routed
+through `installFs()` as part of the extraction; its existing migration caller is unaffected, since
+the ambient default resolves to real fs.
+
+**A caution for anyone extending this module:** that same fall-through is a live hazard. A missing
+method on an injected adapter does not fail loudly — it silently reaches the real filesystem. Adding
+a new `installFs()` call to a routed path without extending every adapter is a real-IO bug that
+passes typecheck.
