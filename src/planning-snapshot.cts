@@ -460,10 +460,12 @@ function buildWorktreeHealthField(cwd: string): { value: ReturnType<typeof inspe
   }
 }
 
-// #3586 (Phase 2, epic #2292): git norm this repo's other git-subprocess
-// callers already use (`worktree-safety.cts`'s own `DEFAULT_GIT_TIMEOUT_MS`) —
-// generous enough for a normal repo, bounded enough to degrade rather than
-// stall `buildPlanningSnapshot`, which every health path calls.
+// #3586 (Phase 2, epic #2292): matches `execGit`'s own default timeout
+// (`shell-command-projection.cts:628`, also `10_000`) — kept as an explicit
+// named constant here (rather than omitting `timeout` and relying on that
+// default silently) so this call site's bound is self-documenting; generous
+// enough for a normal repo, bounded enough to degrade rather than stall
+// `buildPlanningSnapshot`, which every health path calls.
 const PLANNING_TRACKED_GIT_TIMEOUT_MS = 10_000;
 
 /**
@@ -499,6 +501,36 @@ const PLANNING_TRACKED_GIT_TIMEOUT_MS = 10_000;
  * fixture/tmp dir with no git repo at all); a timed-out `ls-files` →
  * `git_timed_out`; any other non-zero exit → `git_list_failed`; a thrown
  * exception → `exception`. Never throws out of the builder.
+ *
+ * Repo-presence is determined STRUCTURALLY, not by reading `ls-files`'s
+ * stderr prose (#3586): git localizes its error text (`LANG`/`LC_ALL`), so a
+ * regex matching the English "not a git repository" string silently
+ * misclassifies `not_a_git_repo` as `git_list_failed` under any non-English
+ * locale — this is exactly the "raw text matching on subprocess output"
+ * `CONTRIBUTING.md` bans, applied to production code rather than a test.
+ * Instead, on the `ls-files` failure path ONLY (never on the happy path —
+ * `buildPlanningSnapshot` runs on every health invocation, and the happy
+ * path must stay a single subprocess call), this asks git a structural
+ * yes/no question via `git rev-parse --is-inside-work-tree`: exit 0 means we
+ * ARE inside a work tree, so the `ls-files` failure was something else →
+ * `git_list_failed`; a non-zero exit means we are NOT → `not_a_git_repo`.
+ * If that probe itself times out, `result.timedOut` (the shared
+ * `isSpawnTimeout` predicate) reports `git_timed_out` — not a hand-rolled
+ * timeout check.
+ *
+ * `ENOBUFS` overflow (#3586 review F2): `execGit` sets no `maxBuffer`, so
+ * `spawnSync`'s Node-default 1MB cap applies to `ls-files`' stdout. A
+ * `.planning/` tree with enough tracked paths to exceed 1MB makes
+ * `spawnSync` report `error.code === 'ENOBUFS'` — exactly the large-tracked-
+ * history case this probe exists to catch, and exactly the case most likely
+ * to legitimately overflow the buffer. Falling into the generic
+ * non-zero-exit path here would misclassify it as `git_list_failed` →
+ * `SCOPE.UNREADABLE`, silently dropping the finding in precisely the
+ * scenario where it matters most. Overflow is therefore treated as PROOF OF
+ * TRACKING, not as a degraded read: `ls-files` only overflows because it had
+ * non-empty output to begin with, so `tracked` is unconditionally `true` —
+ * detected BEFORE the generic `exitCode !== 0` branch below, so this case
+ * never reaches (and never pays for) the `rev-parse` structural probe.
  */
 function buildPlanningTrackedField(cwd: string): { value: { tracked: boolean; ignored: boolean }; scope: Scope; reason: string } {
   try {
@@ -506,9 +538,16 @@ function buildPlanningTrackedField(cwd: string): { value: { tracked: boolean; ig
     if (result.timedOut) {
       return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason: 'git_timed_out' };
     }
+    if ((result.error as NodeJS.ErrnoException | null | undefined)?.code === 'ENOBUFS') {
+      const ignored = isGitIgnored(cwd, '.planning/');
+      return { value: { tracked: true, ignored }, scope: SCOPE.COMPLETE, reason: 'ok_truncated' };
+    }
     if (result.exitCode !== 0) {
-      const stderr = String(result.stderr || '');
-      const reason = /not a git repository|not a git repo/i.test(stderr) ? 'not_a_git_repo' : 'git_list_failed';
+      const probe = execGit(['rev-parse', '--is-inside-work-tree'], { cwd, timeout: PLANNING_TRACKED_GIT_TIMEOUT_MS });
+      if (probe.timedOut) {
+        return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason: 'git_timed_out' };
+      }
+      const reason = probe.exitCode === 0 ? 'git_list_failed' : 'not_a_git_repo';
       return { value: { tracked: false, ignored: false }, scope: SCOPE.UNREADABLE, reason };
     }
     const tracked = result.stdout.trim().length > 0;

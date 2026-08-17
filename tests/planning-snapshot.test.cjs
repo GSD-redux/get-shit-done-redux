@@ -1335,14 +1335,52 @@ function mockGitSpawnTimeout(t) {
   }));
 }
 
-// Simulates `git ls-files` exiting non-zero for a reason OTHER than "not a
-// git repository" (that string is what the builder uses to distinguish
-// `not_a_git_repo` from `git_list_failed`).
+// Simulates `git ls-files` exiting non-zero while the structural
+// `rev-parse --is-inside-work-tree` probe (the builder's OWN follow-up call
+// on the failure path, #3586) still succeeds — i.e. a real repo, but the
+// `ls-files` invocation failed for some other reason. Differentiates by argv
+// rather than blanket-mocking every spawnSync call, since the builder now
+// issues a second git subprocess on this path.
 function mockGitSpawnFailure(t) {
+  t.mock.method(childProcess, 'spawnSync', (_cmd, args) => {
+    if (Array.isArray(args) && args.includes('rev-parse')) {
+      return { status: 0, stdout: 'true', stderr: '', signal: null, error: null };
+    }
+    return { status: 128, stdout: '', stderr: 'fatal: some other git failure', signal: null, error: null };
+  });
+}
+
+// Simulates `git ls-files` overflowing spawnSync's Node-default 1MB stdout
+// buffer (#3586 review F2) — Node reports this as `error.code === 'ENOBUFS'`,
+// `status: null`. Discriminates by argv (mirrors `mockGitSpawnFailure` above)
+// so the `check-ignore` call `isGitIgnored` issues on the same happy path
+// still reaches the REAL spawnSync against the fixture's real `.gitignore` —
+// a blanket mock here would falsely report `ignored: false` too.
+function mockGitSpawnEnobufs(t) {
+  const originalSpawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+    if (Array.isArray(args) && args.includes('ls-files')) {
+      return {
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: null,
+        error: Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' }),
+      };
+    }
+    return originalSpawnSync.call(childProcess, cmd, args, opts);
+  });
+}
+
+// Simulates a directory that is genuinely not inside any git work tree: both
+// `ls-files` AND the structural `rev-parse --is-inside-work-tree` probe fail.
+// Used to prove the `not_a_git_repo` classification does NOT depend on
+// stderr content — both calls here carry EMPTY stderr.
+function mockGitSpawnNotARepoNoStderr(t) {
   t.mock.method(childProcess, 'spawnSync', () => ({
     status: 128,
     stdout: '',
-    stderr: 'fatal: some other git failure',
+    stderr: '',
     signal: null,
     error: null,
   }));
@@ -1507,5 +1545,107 @@ describe('planningTracked field (#3586, matrix rows A1-A12)', () => {
 
     const snap = buildPlanningSnapshot(cwd);
     assert.deepStrictEqual(snap.planningTracked.value, { tracked: true, ignored: false });
+  });
+
+  // ─── Locale-independence regression (#3586) ────────────────────────────────
+  // The original defect: `not_a_git_repo` vs `git_list_failed` was
+  // distinguished by regex-matching git's (localized) stderr prose. Under a
+  // non-English `LANG`/`LC_ALL`, git prints the translated string and the
+  // regex misses, misclassifying a plain non-git directory as
+  // `git_list_failed`. The fix asks git a structural yes/no question
+  // (`rev-parse --is-inside-work-tree`) instead of parsing stderr.
+
+  test('A5-locale: not-a-git-repo classification holds with a non-English LANG/LC_ALL set', (t) => {
+    const cwd = createTempDir('gsd-3586-a5-locale-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+
+    const savedLang = process.env['LANG'];
+    const savedLcAll = process.env['LC_ALL'];
+    process.env['LANG'] = 'de_DE.UTF-8';
+    process.env['LC_ALL'] = 'de_DE.UTF-8';
+    t.after(() => {
+      if (savedLang === undefined) delete process.env['LANG'];
+      else process.env['LANG'] = savedLang;
+      if (savedLcAll === undefined) delete process.env['LC_ALL'];
+      else process.env['LC_ALL'] = savedLcAll;
+    });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'not_a_git_repo');
+    // NOTE: this machine's `git` (Apple Git 2.50.1) ships no German NLS
+    // catalog (verified: no `.mo` translation file under its install), so
+    // this run does not actually exercise TRANSLATED stderr text — git still
+    // prints English here even with the locale env vars set. This test
+    // therefore does not, by itself, prove locale-independence; the test
+    // below (A5-structural) is the real regression coverage: it fails
+    // against the old stderr-regex implementation regardless of what
+    // translations happen to be installed on the machine running the suite.
+  });
+
+  test('A5-structural: not_a_git_repo classification does not depend on stderr content (regression for #3586)', (t) => {
+    const cwd = createTempDir('gsd-3586-a5-structural-');
+    t.after(() => cleanup(cwd));
+    mockGitSpawnNotARepoNoStderr(t);
+
+    const snap = buildPlanningSnapshot(cwd);
+    // Both `ls-files` and the structural `rev-parse` probe fail here with
+    // EMPTY stderr (no "not a git repository" string anywhere) — the old
+    // stderr-regex implementation would have misclassified this as
+    // `git_list_failed`. The fix classifies structurally from the probe's
+    // exit code alone, so this still correctly reads `not_a_git_repo`.
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'not_a_git_repo');
+  });
+
+  test('happy path issues exactly ONE git subprocess for planningTracked (no rev-parse probe when ls-files succeeds)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-one-call-');
+    t.after(() => cleanup(cwd));
+
+    const originalSpawnSync = childProcess.spawnSync;
+    let lsFilesCalls = 0;
+    let revParseProbeCalls = 0;
+    t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+      if (cmd === 'git' && Array.isArray(args)) {
+        if (args.includes('ls-files')) lsFilesCalls += 1;
+        if (args.includes('rev-parse') && args.includes('--is-inside-work-tree')) revParseProbeCalls += 1;
+      }
+      return originalSpawnSync.call(childProcess, cmd, args, opts);
+    });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.COMPLETE);
+    assert.strictEqual(lsFilesCalls, 1, 'ls-files must run exactly once on the happy path');
+    assert.strictEqual(
+      revParseProbeCalls,
+      0,
+      'the rev-parse probe must NOT run when ls-files succeeds — the happy path stays a single subprocess',
+    );
+  });
+
+  // ─── ENOBUFS overflow (#3586 review F2) ────────────────────────────────────
+  // `execGit` sets no `maxBuffer`, so a `.planning/` tree with enough tracked
+  // paths to exceed spawnSync's Node-default 1MB stdout cap makes `ls-files`
+  // fail with `error.code === 'ENOBUFS'`. Treating that like any other
+  // non-zero-exit failure (scope UNREADABLE, silent downstream) would hide
+  // W029 in exactly the large-tracked-history case it exists to catch — the
+  // overflow itself is proof `ls-files` had non-empty output, so `tracked`
+  // must read `true`, not degrade.
+
+  test('A13: git ls-files ENOBUFS overflow is treated as proof of tracking, not a failure', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a13-enobufs-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+    mockGitSpawnEnobufs(t);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: true, ignored: true },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok_truncated',
+    });
   });
 });

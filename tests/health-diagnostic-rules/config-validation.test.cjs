@@ -39,6 +39,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 
 const { createTempDir, createTempGitProject, cleanup } = require('../helpers.cjs');
 const { gitOrThrow } = require('../helpers/git-fixture.cjs');
@@ -48,6 +49,7 @@ const { RULES } = configValidation;
 
 const { buildPlanningSnapshot } = require('../../gsd-core/bin/lib/planning-snapshot.cjs');
 const { SEVERITY, REMEDY_ACTION, REMEDY_RISK, applyRepairs } = require('../../gsd-core/bin/lib/health-diagnostic.cjs');
+const { SCOPE } = require('../../gsd-core/bin/lib/planning-scope.cjs');
 
 // Real shipped default, parsed once — the mutation base for every
 // MECHANICAL MUTATION fixture below (design doc Fixture provenance §4).
@@ -796,6 +798,41 @@ describe('W029 — .planning/ ignored but still tracked', () => {
 
   test('B5: the RULES entry marks W029 non-repairable — ADVISE never auto-untracks', () => {
     assert.equal(ruleFor('W029').repairable, false);
+  });
+
+  // ─── ENOBUFS overflow (#3586 review F2) — the field reads COMPLETE/tracked
+  // via the overflow-as-proof-of-tracking path, so the rule must still fire.
+  // Discriminates by argv (mirrors tests/planning-snapshot.test.cjs's own
+  // `mockGitSpawnEnobufs`) so `isGitIgnored`'s `check-ignore` call still runs
+  // against the real fixture `.gitignore`.
+
+  test('B1-enobufs: an ENOBUFS-overflowed ls-files still fires W029 (tracked is proof, not a failure)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-w029-b1-enobufs-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const originalSpawnSync = childProcess.spawnSync;
+    t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+      if (Array.isArray(args) && args.includes('ls-files')) {
+        return {
+          status: null,
+          stdout: '',
+          stderr: '',
+          signal: null,
+          error: Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' }),
+        };
+      }
+      return originalSpawnSync.call(childProcess, cmd, args, opts);
+    });
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snapshot.planningTracked.value.tracked, true);
+    assert.strictEqual(snapshot.planningTracked.scope, SCOPE.COMPLETE);
+
+    const diagnostics = ruleFor('W029').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W029');
   });
 
   // ─── C3 — negative-proof: --repair must NOT untrack anything ─────────────

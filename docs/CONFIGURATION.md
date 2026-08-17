@@ -526,6 +526,10 @@ The warning is advisory. GSD never untracks files for you — `--repair` deliber
 Once you run the `git rm -r --cached` above, `.planning/` is untracked, the ignore rule takes full
 effect, and the warning clears.
 
+Note: a file deliberately force-added under an otherwise-ignored `.planning/` (`git add -f
+.planning/keep.md`) triggers this same warning — there is no reliable way to distinguish an
+intentional force-add from the accidental case above, so `W029` is expected in that situation too.
+
 ---
 
 ## Hook Settings
