@@ -76,7 +76,7 @@ Evaluate `check` (one of `query`, `predicate`, or `agentVerdict`). Then honor `b
 - `blocking: false` → advisory only; surface the message but continue regardless of outcome.
 
 Honor `onError` if the check itself errors: `skip` means treat as non-blocking and continue;
-`fail` means surface the error and stop.
+`halt` means surface the error and stop.
 
 ## Empty / absent `activeHooks`
 

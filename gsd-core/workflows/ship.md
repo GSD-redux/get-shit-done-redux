@@ -147,14 +147,19 @@ Verify the work is ready to ship:
 
    - **Every other `capId`** — run the gate's own declared check through the generic evaluator. This arm is what makes a third-party capability's declared gate enforceable at all (#3559); before it existed, a gate whose `capId` was not named above was resolved and then silently dropped.
 
-     For a `predicate` gate (ADR-2008 / #2008), inline the predicate as compact JSON:
-     ```bash
-     GATE_RESULT=$(gsd_run check predicate --predicate '<hook.check.predicate as JSON>' --phase-dir "${PHASE_DIR}" --phase-number "${PHASE_NUMBER}" --raw)
-     CHECK_EXIT=$?
-     ```
-     For a named-query gate:
+     ⚠ **A gate's `check` comes from a capability manifest, which may be THIRD-PARTY — validate before any shell use.** Until #3559 no third-party string reached a shell at `ship:pre`, because dispatch never left the two first-party arms; it does now. `gates[].check` is **not** one of the four executable surfaces the install consent prompt discloses (`hooks`, command modules, `mcpServers`, reviewer lanes), so a capability can be consented to as declarative-only and still reach a shell here. Apply the same in-context validation `gsd-core/references/loop-hook-dispatch.md` mandates for `ref.command`.
+
+     For a named-query gate, **check the value you read from `activeHooks` against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` yourself, IN-CONTEXT** — **never** by pasting it into a shell command to be tested there, because a value carrying a quote, `;`, a backtick, `$(`, or a newline would terminate the assignment and run as its own statement before any shell-side check could execute. A value that fails is a malformed manifest: record a warning naming the `capId`, treat it as a check-command failure routed per step 1a, and do NOT run it. Only a value that has passed is run:
      ```bash
      GATE_RESULT=$(gsd_run check ${hook.check.query} "${PHASE_DIR}" --raw)
+     CHECK_EXIT=$?
+     ```
+
+     (The named-query argument convention — a single `"${PHASE_DIR}"` positional — mirrors `verify-work.md`'s `verify:pre` arm verbatim. No capability declares a `check.query` gate at `ship:pre` today; the arm exists so the documented check contract is complete rather than half-implemented.)
+
+     For a `predicate` gate (ADR-2008 / #2008), serialize `hook.check.predicate` to compact JSON and pass it as a **single argv element**. Do NOT re-quote it into a shell string — a predicate field containing an apostrophe would close the literal below and the remainder would parse as shell. A predicate that cannot be represented as one argument is a malformed manifest: warn and route per step 1a rather than running it.
+     ```bash
+     GATE_RESULT=$(gsd_run check predicate --predicate '<hook.check.predicate as JSON>' --phase-dir "${PHASE_DIR}" --phase-number "${PHASE_NUMBER}" --raw)
      CHECK_EXIT=$?
      ```
      A gate carrying neither — including an `agentVerdict` check, which has no runner at `ship:pre` — cannot be evaluated here. Record a warning naming the `capId` and treat it as a check-command failure routed per step 1a, **never** as a silent pass.

