@@ -25,6 +25,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const os = require('node:os');
+const espree = require('espree');
+const { splitLines, joinLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
@@ -4693,94 +4695,151 @@ describe('layout module no longer exports getInstallExports', () => {
 });
 
 // ---------------------------------------------------------------------------
-// DEFECT.GENERATIVE-FIX: single-owner reference-identity guard (#1511),
-// retired by #2876 (epic #2866 Phase 7).
+// DEFECT.GENERATIVE-FIX: single-owner duplicate-body guard (#1511),
+// re-armed AST-based after #2876 (epic #2866 Phase 7) retired the exports
+// the original reference-identity check compared against.
 //
 // #1511 proved install.js bound to the conversion module's implementation
-// rather than a duplicate local copy — the single-owner property held via a
-// re-export. #2876 found zero production consumers of any of these
-// re-exports and retired them from bin/install.js's module.exports
-// entirely, so there is no longer a second reference to compare against —
-// runtime-artifact-conversion.cjs (conversionCjs below) is now the ONLY
-// place these names are reachable from. The single-owner property this
-// block protects now holds trivially (there is exactly one exported copy,
-// full stop), so each assertion below confirms the re-export's absence
-// instead of its reference-identity.
+// rather than a duplicate local copy — the single-owner property held via
+// `assert.strictEqual(install.X, conversion.X)` (reference identity). #2876
+// retired these names from bin/install.js's module.exports entirely because
+// nothing consumed the re-export. That broke the reference-identity form
+// (there is no `install.X` left to compare), and a same-shaped
+// `install.X === undefined` replacement is NOT an equivalent guard: it only
+// inspects the EXPORT surface, so a duplicate, unexported, re-implemented
+// copy of one of these functions/consts added directly to bin/install.js
+// would satisfy `install.X === undefined` trivially while still being
+// exactly the drift-hazard duplicate this guard exists to catch.
+//
+// Fix: parse bin/install.js's own top-level AST (espree) and assert directly
+// on what is actually declared there, instead of on what is exported.
 // ---------------------------------------------------------------------------
 
-describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2, retired by #2876)', () => {
+describe('single-owner duplicate-body guard (ADR-1508 / #1511 Phase 2, AST-based since #2876)', () => {
   let install;
   let conversionCjs;
+  let installTopLevel;
+
+  // Collect every top-level `function <name>(...) {}` declaration and every
+  // top-level `const/let/var <name> = <init>;` declarator in bin/install.js,
+  // keyed by name. A duplicate body re-introduced under EITHER shape (a real
+  // function, or a const bound to something other than a bare
+  // runtimeArtifactConversion.<Y> reference) is visible here regardless of
+  // whether it is ever exported.
+  function collectTopLevelBindings(ast) {
+    const functionNames = new Set();
+    const variableInits = new Map();
+    for (const node of ast.body) {
+      if (node.type === 'FunctionDeclaration' && node.id) {
+        functionNames.add(node.id.name);
+      }
+      if (node.type === 'VariableDeclaration') {
+        for (const decl of node.declarations) {
+          if (decl.type === 'VariableDeclarator' && decl.id && decl.id.type === 'Identifier') {
+            variableInits.set(decl.id.name, decl.init);
+          }
+        }
+      }
+    }
+    return { functionNames, variableInits };
+  }
+
+  // True iff `node` is exactly `<objectName>.<propertyName>` — a bare
+  // single-hop member-expression reference, not a call, not a duplicated
+  // function/object body.
+  function isMemberReferenceTo(node, objectName, propertyName) {
+    return (
+      !!node &&
+      node.type === 'MemberExpression' &&
+      !node.computed &&
+      node.object &&
+      node.object.type === 'Identifier' &&
+      node.object.name === objectName &&
+      node.property &&
+      node.property.type === 'Identifier' &&
+      node.property.name === propertyName
+    );
+  }
+
   before(() => {
     process.env['GSD_TEST_MODE'] = '1';
     install = require('../bin/install.js');
     conversionCjs = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+    // bin/install.js opens with a `#!/usr/bin/env node` shebang line, which
+    // is not valid top-level JS syntax for espree's parser — strip it before
+    // parsing (mirrors how Node's own module loader strips it at runtime).
+    // Uses splitLines() (src/text-lines.cts, the repo's sole `\r?\n` split
+    // seam) rather than a readFileSync-content regex, per
+    // local/no-unbounded-quantifier and local/no-crlf-fragile-split.
+    const installSrcRaw = fs.readFileSync(INSTALL_SCRIPT, 'utf8');
+    const installSrcLines = splitLines(installSrcRaw);
+    if (installSrcLines[0] && installSrcLines[0].startsWith('#!')) {
+      installSrcLines[0] = '';
+    }
+    const installSrc = joinLines(installSrcLines, '\n');
+    const ast = espree.parse(installSrc, { ecmaVersion: 2022, sourceType: 'script', range: true, loc: true });
+    installTopLevel = collectTopLevelBindings(ast);
   });
 
-  test('install.computePathPrefix is retired (#2876); conversion._computePathPrefix remains the single implementation', () => {
-    assert.strictEqual(install.computePathPrefix, undefined, 'bin/install.js must no longer export computePathPrefix');
-    assert.strictEqual(typeof conversionCjs._computePathPrefix, 'function');
-  });
+  // Names #2876 retired from bin/install.js entirely (no export, no internal
+  // caller). Regression shape this guards against: someone re-adds one of
+  // these as either a real `function NAME(...) {...}` OR a
+  // `const NAME = <anything>;` — under a plain `install.X === undefined`
+  // check, an unexported re-add of either shape passes silently.
+  const RETIRED_NAMES = [
+    ['applyRuntimeContentRewritesInPlace', 'applyRuntimeContentRewritesInPlace'],
+    ['applyRuntimeContentRewritesForCommandsInPlace', 'applyRuntimeContentRewritesForCommandsInPlace'],
+    ['convertClaudeToAugmentMarkdown', 'convertClaudeToAugmentMarkdown'],
+    ['convertClaudeCommandToAugmentSkill', 'convertClaudeCommandToAugmentSkill'],
+    ['convertClaudeAgentToAugmentAgent', 'convertClaudeAgentToAugmentAgent'],
+    ['convertClaudeCommandToWindsurfSkill', 'convertClaudeCommandToWindsurfSkill'],
+    ['convertClaudeCommandToWindsurfWorkflow', 'convertClaudeCommandToWindsurfWorkflow'],
+    ['convertClaudeAgentToWindsurfAgent', 'convertClaudeAgentToWindsurfAgent'],
+  ];
 
-  test('install.applyRuntimeContentRewritesInPlace is retired (#2876); conversion.applyRuntimeContentRewritesInPlace remains the single walk loop', () => {
-    assert.strictEqual(install.applyRuntimeContentRewritesInPlace, undefined, 'bin/install.js must no longer export applyRuntimeContentRewritesInPlace');
-    assert.strictEqual(typeof conversionCjs.applyRuntimeContentRewritesInPlace, 'function');
-  });
+  for (const [name, conversionProp] of RETIRED_NAMES) {
+    test(`${name}: retired from bin/install.js with zero top-level presence (#2876); conversion.${conversionProp} remains the single implementation`, () => {
+      assert.strictEqual(install[name], undefined, `bin/install.js must no longer export ${name}`);
+      assert.strictEqual(
+        installTopLevel.functionNames.has(name),
+        false,
+        `bin/install.js must not declare a top-level function named ${name} — a re-added unexported copy is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(
+        installTopLevel.variableInits.has(name),
+        false,
+        `bin/install.js must not declare a top-level const/let/var named ${name} — a re-added unexported copy is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(typeof conversionCjs[conversionProp], 'function', `${conversionProp} remains available from the conversion module`);
+    });
+  }
 
-  test('install.applyRuntimeContentRewritesForCommandsInPlace is retired (#2876); conversion.applyRuntimeContentRewritesForCommandsInPlace remains the single copy+rewrite loop', () => {
-    assert.strictEqual(install.applyRuntimeContentRewritesForCommandsInPlace, undefined, 'bin/install.js must no longer export applyRuntimeContentRewritesForCommandsInPlace');
-    assert.strictEqual(typeof conversionCjs.applyRuntimeContentRewritesForCommandsInPlace, 'function');
-  });
+  // Names #2876 kept as a bare single-hop reference (`const X =
+  // runtimeArtifactConversion.<Y>;`) because bin/install.js still calls them
+  // internally (computePathPrefix, _applyRuntimeRewrites,
+  // convertClaudeToWindsurfMarkdown, applyClaudeCodeBrandSwap — #2931). The
+  // regression this half guards against: the reference gets replaced with an
+  // actual re-implemented body instead of staying a pointer to the single
+  // conversion-module owner.
+  const REFERENCE_ONLY_NAMES = [
+    ['computePathPrefix', '_computePathPrefix'],
+    ['_applyRuntimeRewrites', '_applyRuntimeRewrites'],
+    ['convertClaudeToWindsurfMarkdown', 'convertClaudeToWindsurfMarkdown'],
+    ['applyClaudeCodeBrandSwap', 'applyClaudeCodeBrandSwap'],
+  ];
 
-  test('install._applyRuntimeRewrites is retired (#2876); conversion._applyRuntimeRewrites remains the single switch engine', () => {
-    assert.strictEqual(install._applyRuntimeRewrites, undefined, 'bin/install.js must no longer export _applyRuntimeRewrites');
-    assert.strictEqual(typeof conversionCjs._applyRuntimeRewrites, 'function');
-  });
-
-  // #1675 (ADR-1508): the augment converter family is single-sourced in the
-  // conversion module. #2876 retired install.js's re-binding entirely.
-  test('install.convertClaudeToAugmentMarkdown is retired (#2876); conversion.convertClaudeToAugmentMarkdown remains the single converter', () => {
-    assert.strictEqual(install.convertClaudeToAugmentMarkdown, undefined, 'bin/install.js must no longer export convertClaudeToAugmentMarkdown');
-    assert.strictEqual(typeof conversionCjs.convertClaudeToAugmentMarkdown, 'function');
-  });
-
-  test('install.convertClaudeCommandToAugmentSkill is retired (#2876); conversion.convertClaudeCommandToAugmentSkill remains the single converter', () => {
-    assert.strictEqual(install.convertClaudeCommandToAugmentSkill, undefined, 'bin/install.js must no longer export convertClaudeCommandToAugmentSkill');
-    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToAugmentSkill, 'function');
-  });
-
-  test('install.convertClaudeAgentToAugmentAgent is retired (#2876); conversion.convertClaudeAgentToAugmentAgent remains the single converter', () => {
-    assert.strictEqual(install.convertClaudeAgentToAugmentAgent, undefined, 'bin/install.js must no longer export convertClaudeAgentToAugmentAgent');
-    assert.strictEqual(typeof conversionCjs.convertClaudeAgentToAugmentAgent, 'function');
-  });
-
-  // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
-  // conversion module, same pattern as the #1675 Augment dedup above.
-  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow is retired (#2876)', () => {
-    assert.strictEqual(install.convertClaudeCommandToWindsurfWorkflow, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfWorkflow');
-    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfWorkflow, 'function');
-  });
-
-  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter re-export is retired (#2876)', () => {
-    assert.strictEqual(install.convertClaudeToWindsurfMarkdown, undefined, 'bin/install.js must no longer export convertClaudeToWindsurfMarkdown');
-    assert.strictEqual(typeof conversionCjs.convertClaudeToWindsurfMarkdown, 'function');
-    assert.strictEqual(install.convertClaudeCommandToWindsurfSkill, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfSkill');
-    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfSkill, 'function');
-    assert.strictEqual(install.convertClaudeCommandToWindsurfWorkflow, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfWorkflow');
-    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfWorkflow, 'function');
-    assert.strictEqual(install.convertClaudeAgentToWindsurfAgent, undefined, 'bin/install.js must no longer export convertClaudeAgentToWindsurfAgent');
-    assert.strictEqual(typeof conversionCjs.convertClaudeAgentToWindsurfAgent, 'function');
-  });
-
-  // #2931 (ADR-1508): applyClaudeCodeBrandSwap + RUNTIME_COMPATIBILITY_BLOCK_RE
-  // were duplicated verbatim in install.js (used by the local Cursor/Trae/
-  // CodeBuddy/Cline converters) alongside the conversion module's copy —
-  // exactly the unlinked-duplicate-implementation class this guard exists to
-  // catch. #2876 retired install.js's re-binding entirely.
-  test('install.applyClaudeCodeBrandSwap is retired (#2876); conversion.applyClaudeCodeBrandSwap remains the single implementation', () => {
-    assert.strictEqual(install.applyClaudeCodeBrandSwap, undefined, 'bin/install.js must no longer export applyClaudeCodeBrandSwap');
-    assert.strictEqual(typeof conversionCjs.applyClaudeCodeBrandSwap, 'function');
-  });
+  for (const [local, conversionProp] of REFERENCE_ONLY_NAMES) {
+    test(`${local}: still a bare runtimeArtifactConversion.${conversionProp} reference, not a re-implemented body`, () => {
+      assert.strictEqual(install[local], undefined, `bin/install.js must no longer export ${local}`);
+      const init = installTopLevel.variableInits.get(local);
+      assert.ok(init, `bin/install.js must still declare a top-level const named ${local} (has an internal caller)`);
+      assert.ok(
+        isMemberReferenceTo(init, 'runtimeArtifactConversion', conversionProp),
+        `bin/install.js's ${local} binding must be a bare \`runtimeArtifactConversion.${conversionProp}\` reference — anything else (a real function/object body) is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(typeof conversionCjs[conversionProp], 'function');
+    });
+  }
 });
   });
 }

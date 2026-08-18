@@ -3368,9 +3368,9 @@ before(() => {
 
 describe('bin/install.js compatibility export audit (#1559, retired by #2876)', () => {
   test('the two previously-audited compatibility relays are retired — test consumers now import runtime-artifact-conversion.cjs directly', () => {
-    assert.ok('processAttribution' in conversion, 'processAttribution remains available from the conversion module');
+    assert.equal(typeof conversion.processAttribution, 'function', 'processAttribution remains available from the conversion module');
     assert.equal(installer.processAttribution, undefined, 'processAttribution is no longer re-exported by bin/install.js (#2876)');
-    assert.ok('applyRuntimeContentRewritesForCommandsInPlace' in conversion, 'applyRuntimeContentRewritesForCommandsInPlace remains available from the conversion module');
+    assert.equal(typeof conversion.applyRuntimeContentRewritesForCommandsInPlace, 'function', 'applyRuntimeContentRewritesForCommandsInPlace remains available from the conversion module');
     assert.equal(installer.applyRuntimeContentRewritesForCommandsInPlace, undefined, 'applyRuntimeContentRewritesForCommandsInPlace is no longer re-exported by bin/install.js (#2876)');
   });
 

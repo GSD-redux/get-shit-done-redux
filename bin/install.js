@@ -44,7 +44,10 @@ const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
 // conversion module's rewrite engine can consume it without importing
-// bin/install.js. Re-exported below for back-compat consumers/tests.
+// bin/install.js. Imported here for install.js's own internal call sites
+// (getConfigDirFromHome and the runtime-content-rewrite loops below) — #2876
+// retired the re-export; tests now import getDirName directly from
+// gsd-core/bin/lib/runtime-name-policy.cjs.
 const { getDirName, getRuntimeLabel, getGlobalConfigHomeFragment, runtimeFlags, getRuntimeNewProjectCommand } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
 const {
   applyWorktreeBaseRef,
@@ -76,9 +79,14 @@ const { ensureCommonJsMarker, removeCommonJsMarker } = require('../gsd-core/bin/
 const { HOOKS_TO_COPY: _HOOKS_TO_COPY } = require('../scripts/build-hooks.js');
 const INSTALLED_HOOK_FILES = new Set(_HOOKS_TO_COPY);
 
-// ADR-857 phase 5f-1: hook-surface writer functions extracted to a dedicated module.
-// bin/install.js re-exports everything from hooksSurface so existing callers
-// (require('../bin/install.js').writeCursorHooksJson etc.) continue to work.
+// ADR-857 phase 5f-1: hook-surface writer functions extracted to a dedicated
+// module. install.js used to re-export the whole hooksSurface surface so
+// existing callers (require('../bin/install.js').writeCursorHooksJson etc.)
+// kept working — #2876 found zero production/test consumers of any of those
+// re-exports (tests import runtime-hooks-surface.cjs directly) and retired
+// them from module.exports. install.js still requires hooksSurface below for
+// its own internal call sites (writeCursorHooksJson, writeClineArtifacts,
+// resolveNodeRunner, applySettingsJsonHooks, etc.).
 const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 /**
@@ -306,13 +314,26 @@ const GSD_COPILOT_SESSION_HOOK_PWSH =
 //   subagentStart  → gsd-cursor-subagent-start.js   (subagent context injection)
 //   subagentStop   → gsd-cursor-subagent-stop.js    (subagent completion reminder)
 // Cursor docs: https://cursor.com/docs/hooks
-const GSD_CURSOR_SESSION_HOOK_SCRIPT = 'gsd-cursor-session-start.js';
-const GSD_CURSOR_POST_TOOL_HOOK_SCRIPT = 'gsd-cursor-post-tool.js';
-const GSD_CURSOR_PRE_TOOL_HOOK_SCRIPT = 'gsd-cursor-pre-tool.js';
-const GSD_CURSOR_STOP_HOOK_SCRIPT = 'gsd-cursor-stop.js';
-const GSD_CURSOR_SUBAGENT_START_HOOK_SCRIPT = 'gsd-cursor-subagent-start.js';
-const GSD_CURSOR_SUBAGENT_STOP_HOOK_SCRIPT = 'gsd-cursor-subagent-stop.js';
-// All GSD-managed Cursor hook scripts (used by uninstall cleanup).
+//
+// These script-name/marker constants used to be independently re-declared
+// here with their own string literals — a second, unlinked copy of exactly
+// the values runtime-hooks-surface.cts also defines for its own internal use
+// (buildCursorHookEntry, writeCursorHooksJson, etc.). #2876's code review
+// found tests reading the constant from install.js's copy while calling
+// functions built from hooksSurface's copy, with nothing guarding the two
+// staying equal — the same unlinked-duplicate-value hazard the ADR-1508
+// dedup elsewhere in this file exists to prevent. Fixed at the root: these
+// are now bare references to hooksSurface's own exports, so there is exactly
+// one literal definition of each value, full stop.
+const GSD_CURSOR_SESSION_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_SESSION_HOOK_SCRIPT;
+const GSD_CURSOR_POST_TOOL_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_POST_TOOL_HOOK_SCRIPT;
+const GSD_CURSOR_PRE_TOOL_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_PRE_TOOL_HOOK_SCRIPT;
+const GSD_CURSOR_STOP_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_STOP_HOOK_SCRIPT;
+const GSD_CURSOR_SUBAGENT_START_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_SUBAGENT_START_HOOK_SCRIPT;
+const GSD_CURSOR_SUBAGENT_STOP_HOOK_SCRIPT = hooksSurface.GSD_CURSOR_SUBAGENT_STOP_HOOK_SCRIPT;
+// All GSD-managed Cursor hook scripts (used by uninstall cleanup). Not
+// independently defined in hooksSurface — built here from the bare
+// references above, so it can never drift from them either.
 const GSD_CURSOR_HOOK_SCRIPTS = [
   GSD_CURSOR_SESSION_HOOK_SCRIPT,
   GSD_CURSOR_POST_TOOL_HOOK_SCRIPT,
@@ -322,7 +343,7 @@ const GSD_CURSOR_HOOK_SCRIPTS = [
   GSD_CURSOR_SUBAGENT_STOP_HOOK_SCRIPT,
 ];
 // Marker comment embedded in managed hook entries so GSD can find+remove them.
-const GSD_CURSOR_HOOK_MARKER = 'gsd-managed';
+const GSD_CURSOR_HOOK_MARKER = hooksSurface.GSD_CURSOR_HOOK_MARKER;
 
 // #2100 Stage 2 — Windsurf/Cascade lifecycle hook constants.
 // Windsurf/Cascade reads hook configs from <project-root>/.windsurf/hooks.json
@@ -338,13 +359,15 @@ const GSD_CURSOR_HOOK_MARKER = 'gsd-managed';
 // have no Windsurf counterpart and are deliberately NOT ported.
 // Cascade hooks docs (reference): https://docs.windsurf.com/llms-full.txt ,
 //                                  https://docs.devin.ai/desktop/cascade/hooks
-const GSD_WINDSURF_PRE_WRITE_HOOK_SCRIPT = 'gsd-windsurf-pre-write.js';
-const GSD_WINDSURF_PRE_COMMAND_HOOK_SCRIPT = 'gsd-windsurf-pre-command.js';
+//
+// Same #2876 fix as the Cursor block above: bare references to hooksSurface's
+// own exports instead of a second, unlinked literal copy.
+const GSD_WINDSURF_PRE_WRITE_HOOK_SCRIPT = hooksSurface.GSD_WINDSURF_PRE_WRITE_HOOK_SCRIPT;
+const GSD_WINDSURF_PRE_COMMAND_HOOK_SCRIPT = hooksSurface.GSD_WINDSURF_PRE_COMMAND_HOOK_SCRIPT;
 // All GSD-managed Windsurf hook scripts (used by uninstall cleanup).
-const GSD_WINDSURF_HOOK_SCRIPTS = [
-  GSD_WINDSURF_PRE_WRITE_HOOK_SCRIPT,
-  GSD_WINDSURF_PRE_COMMAND_HOOK_SCRIPT,
-];
+// hooksSurface independently defines the same array — bare reference here so
+// the two can never drift.
+const GSD_WINDSURF_HOOK_SCRIPTS = hooksSurface.GSD_WINDSURF_HOOK_SCRIPTS;
 
 // GSD-managed files under hooks/lib/ (helpers required by gsd-*.js hooks).
 // git-cmd.js does not start with "gsd-" (shared classifier for #3129), gsd-graphify-rebuild.sh does.
@@ -708,26 +731,26 @@ const {
 // getCommitAttribution STAYS here (impure install-time config I/O); it is injected
 // into the engine functions via the resolveAttribution parameter at each call site.
 const installEngine = require(path.join(_gsdLibDir, 'install-engine.cjs'));
+// #2876: _copyStaged, convertClaudeCommandToOpencodeSkill, and
+// convertClaudeCommandToKiloSkill used to be destructured here too — all
+// three had no install.js internal caller and no export consumer (tests
+// import all three directly from gsd-core/bin/lib/install-engine.cjs), so
+// the retired bindings were dead code. applyOpencodeFamilyPathPrefix,
+// _runLegacyInstallMigrations, _runLegacyUninstallCleanup,
+// _removeGsdEntries, _restoreDir, and _removeHermesBareStemDirs were the
+// same — unused local bindings that were never part of this module's export
+// surface either — found and retired in the same sweep.
 const {
   installRuntimeArtifacts,
   uninstallRuntimeArtifacts,
   installOpencodeFamilySkills,
   installAgentsKindStandalone,
   _installNativePluginIfDeclared,
-  _copyStaged,
   hasExistingSymlinkBetween,
   isSymlinkedDestOptIn,
   migrateLegacyDevPreferencesToSkill,
-  applyOpencodeFamilyPathPrefix,
-  convertClaudeCommandToOpencodeSkill,
-  convertClaudeCommandToKiloSkill,
   USER_OWNED_ARTIFACTS,
-  _runLegacyInstallMigrations,
-  _runLegacyUninstallCleanup,
-  _removeGsdEntries,
   _snapshotDir,
-  _restoreDir,
-  _removeHermesBareStemDirs,
 } = installEngine;
 
 // #2875 (epic #2866 Phase 6): durable on-disk staging for USER_OWNED_ARTIFACTS
@@ -965,7 +988,8 @@ Then re-run: npx ${pkg.name}@latest
 }
 
 // getDirName (runtime -> local config dir name) now lives in
-// runtime-name-policy.cjs (ADR-1508 / #1510 Phase 1); imported + re-exported.
+// runtime-name-policy.cjs (ADR-1508 / #1510 Phase 1); imported above for
+// install.js's own internal use only — #2876 retired the re-export.
 
 /**
  * Get the config directory path relative to home directory for a runtime
@@ -1086,17 +1110,20 @@ if (hasHelp) {
 }
 
 // computePathPrefix: implementation moved to runtimeArtifactConversion._computePathPrefix
-// (ADR-1508 / #1511 Phase 2 — single owner). The const binding above (~line 638)
-// re-exports it here for call sites and module.exports.
+// (ADR-1508 / #1511 Phase 2 — single owner). The const binding above re-binds
+// it here for install.js's own internal call sites only — #2876 retired the
+// module.exports entry (zero consumers found; tests import
+// runtimeArtifactConversion._computePathPrefix directly).
 // Original doc: Compute the path prefix used for `@file` references in installed
 // command/skill markdown. For global installs under $HOME uses $HOME/... form;
 // OpenCode always uses the absolute path (#2376 Windows, #2831 macOS/Linux).
 
-// normalizeNodePath, resolveNodeRunner, resolveBashRunner, referencesHook are
-// now owned by the runtime-hooks-surface module. Import them here so
-// install.js callers continue to work and so there is a single implementation
-// of these helpers.
-const normalizeNodePath = hooksSurface.normalizeNodePath;
+// resolveNodeRunner, resolveBashRunner, referencesHook are now owned by the
+// runtime-hooks-surface module. Import them here so install.js callers
+// continue to work and so there is a single implementation of these helpers.
+// (normalizeNodePath was re-bound here too until #2876 found bin/install.js
+// had no internal caller and no export consumer for it — hooksSurface owns
+// the single implementation now, used internally by resolveNodeRunner there.)
 const resolveNodeRunner = hooksSurface.resolveNodeRunner;
 const resolveBashRunner = hooksSurface.resolveBashRunner;
 // referencesHook: pure predicate over hook entry objects, shared between
@@ -1114,47 +1141,27 @@ const removeKimiHooksToml = hooksSurface.removeKimiHooksToml;
 // callers continue to work and there is a single implementation. (All call
 // sites are below this line, so the const binding has no TDZ hazard.)
 const processAttribution = runtimeArtifactConversion.processAttribution;
-// #2875 Part 2: descriptor-driven agent cross-cutting pieces, single-sourced
-// in runtimeArtifactConversion so the inline agent loop below and the
-// descriptor pipeline (stageAgentsForRuntimeWithConverter) resolve through
-// the SAME code — no drift between the two byte-parity-gated pipelines.
-const {
-  deriveAgentName,
-  applyAgentFrontmatterExtensions,
-  applyAgentBrandingRewrites,
-} = runtimeArtifactConversion;
-// computePathPrefix / applyRuntimeContentRewritesInPlace / applyRuntimeContentRewritesForCommandsInPlace:
-// Single implementations now live in runtimeArtifactConversion (ADR-1508 / #1511 Phase 2).
-// Re-bound here so install.js call sites and exports continue to work unchanged.
-// Local bodies replaced by breadcrumb comments at their original locations.
-// All call sites are below this line → no TDZ hazard.
-const computePathPrefix = runtimeArtifactConversion._computePathPrefix;
-const applyRuntimeContentRewritesInPlace = runtimeArtifactConversion.applyRuntimeContentRewritesInPlace;
-const applyRuntimeContentRewritesForCommandsInPlace = runtimeArtifactConversion.applyRuntimeContentRewritesForCommandsInPlace;
-// #1675 (ADR-1508): the augment converter family is single-sourced in the
-// conversion module. install.js re-binds (does not re-define) these so there
-// is exactly one body — the generative-drift hazard the dedup removes. The two
-// private helpers (getAugmentSkillAdapterHeader, convertSlashCommandsToAugmentSkillMentions)
-// live only in the conversion module now; they are no longer duplicated here.
+// computePathPrefix: implementation lives in runtimeArtifactConversion
+// (ADR-1508 / #1511 Phase 2 — single owner). Re-bound here so install.js call
+// sites continue to work. #2876 retired the sibling
+// applyRuntimeContentRewritesInPlace / applyRuntimeContentRewritesForCommandsInPlace
+// re-bindings that used to sit alongside it, and the entire #1675 Augment
+// converter family re-binding (convertClaudeToAugmentMarkdown /
+// convertClaudeCommandToAugmentSkill / convertClaudeAgentToAugmentAgent) that
+// used to follow — bin/install.js had no internal caller for any of them (the
+// descriptor pipeline in runtimeArtifactConversion calls them directly).
 // (All call sites are below this line → no TDZ hazard.)
-const convertClaudeToAugmentMarkdown = runtimeArtifactConversion.convertClaudeToAugmentMarkdown;
-const convertClaudeCommandToAugmentSkill = runtimeArtifactConversion.convertClaudeCommandToAugmentSkill;
-const convertClaudeAgentToAugmentAgent = runtimeArtifactConversion.convertClaudeAgentToAugmentAgent;
+const computePathPrefix = runtimeArtifactConversion._computePathPrefix;
 // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
-// conversion module, same pattern as the #1675 Augment dedup above. install.js
-// re-binds (does not re-define) these so there is exactly one body — the
-// generative-drift hazard the dedup removes. The two private helpers
-// (getWindsurfSkillAdapterHeader, convertSlashCommandsToWindsurfSkillMentions)
-// live only in the conversion module now; they are no longer duplicated here.
-// The reference-identity parity guard lives in
-// tests/install-runtime-artifacts.test.cjs (single-owner reference-identity
-// guard describe block), not tests/enh-1511-rewrite-engine-relocation.test.cjs
-// as the Augment comment above stated — that reference was stale.
+// conversion module. install.js re-binds (does not re-define) the one member
+// it still calls internally so there is exactly one body — the
+// generative-drift hazard the dedup removes. #2876 retired the sibling
+// convertClaudeCommandToWindsurfSkill / convertClaudeCommandToWindsurfWorkflow /
+// convertClaudeAgentToWindsurfAgent re-bindings — bin/install.js had no
+// internal caller for any of them (the descriptor pipeline in
+// runtimeArtifactConversion calls them directly).
 // (All call sites are below this line → no TDZ hazard.)
 const convertClaudeToWindsurfMarkdown = runtimeArtifactConversion.convertClaudeToWindsurfMarkdown;
-const convertClaudeCommandToWindsurfSkill = runtimeArtifactConversion.convertClaudeCommandToWindsurfSkill;
-const convertClaudeCommandToWindsurfWorkflow = runtimeArtifactConversion.convertClaudeCommandToWindsurfWorkflow;
-const convertClaudeAgentToWindsurfAgent = runtimeArtifactConversion.convertClaudeAgentToWindsurfAgent;
 // #2931 (ADR-1508): single-sourced in the conversion module — was a second,
 // unlinked verbatim copy here (used by the local Cursor/Trae/CodeBuddy/Cline
 // converters below), the exact drift class this PR exists to reduce. Verified
@@ -1170,125 +1177,14 @@ function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
 }
 
-// #3329: rewrite already-registered managed `.sh` hook commands to the shape
-// the current installer would generate (the #580/#3393 bash-runner-omission
-// migration the register-only-if-absent path never applied to existing
-// entries). Invoked inside applySettingsJsonHooks in the compiled surface
-// module; re-bound here for tests/consumers, mirroring the #2979 rewriter.
-function reconcileManagedShellHookCommands(settings, expected, opts) {
-  return hooksSurface.reconcileManagedShellHookCommands(settings, expected, opts);
-}
-
-/**
- * Build the GSD-managed Codex SessionStart hook block for config.toml.
- *
- * Issue #3017: the previous shape inlined `command = "node ${path}"` which
- * fails under GUI/minimal-PATH runtimes where bare `node` doesn't resolve
- * (same failure mode as #2979 → fixed for settings.json by #3002, this
- * helper closes the gap for Codex's TOML hook surface).
- *
- * Returns null when `absoluteRunner` is null so callers can warn-and-skip
- * registration — emitting a broken bare-node hook is strictly worse than
- * not registering one (the user can re-run install once node is on PATH).
- *
- * @param {string} targetDir - Resolved absolute Codex config dir (e.g. ~/.codex).
- * @param {{ absoluteRunner: string|null, eol?: string }} opts
- *   absoluteRunner: result of resolveNodeRunner() — a JSON-stringified
- *   absolute node path with forward slashes (e.g. `"/usr/local/bin/node"`),
- *   or null when process.execPath was unavailable.
- *   eol: line ending to emit ('\n' or '\r\n') — caller passes
- *   detectLineEnding(configContent) so existing CRLF files stay CRLF.
- *   Defaults to '\n'.
- * @returns {string|null} The toml block to append, or null on missing runner.
- */
-function buildCodexHookBlock(targetDir, opts) {
-  return hooksSurface.buildCodexHookBlock(targetDir, opts);
-}
-
-/**
- * Rewrite legacy bare-`node` managed-hook command lines in a Codex
- * config.toml string to use the absolute Node runner. Mirror of
- * rewriteLegacyManagedNodeHookCommands but for the toml surface (#3017).
- *
- * Only rewrites entries whose script basename matches CODEX_MANAGED_HOOK_BASENAMES
- * (basename equality, not substring containment) — user-authored bare-node
- * hooks pointing at scripts outside the managed allowlist are left alone.
- *
- * @param {string} content - Current config.toml contents.
- * @param {string|null} absoluteRunner - Result of resolveNodeRunner().
- * @returns {{ content: string, changed: boolean }}
- */
-function rewriteLegacyCodexHookBlock(content, absoluteRunner, opts) {
-  return hooksSurface.rewriteLegacyCodexHookBlock(content, absoluteRunner, opts);
-}
-
-/**
- * Generic reconcile helper: ensure hooks.json contains exactly one managed GSD
- * hook entry for `eventName`, while preserving all user-owned entries.
- *
- * Supports both known hooks.json shapes:
- *   1) { "<EventName>": [...] }
- *   2) { "hooks": { "<EventName>": [...] } }
- *
- * @param {string} targetDir - Codex config dir (e.g. ~/.codex or <project>/.codex).
- * @param {string} eventName - Codex hook event name (e.g. 'SessionStart', 'Stop').
- * @param {{ managedCommand?: string|null, commandWindows?: string|null, matcher?: string|null, timeout?: number|null }} opts
- *   managedCommand: POSIX hook command string to register, or null to remove.
- *   commandWindows: Windows .cmd shim path to emit as `commandWindows` field
- *     (#772). When provided, Codex uses this path on Windows and `managedCommand`
- *     on POSIX without needing per-platform config regeneration.
- *   matcher: optional Codex MatcherGroup pattern (e.g. 'Bash|Edit|Write').
- *   timeout: optional timeout in seconds.
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function reconcileCodexHooksJsonEvent(targetDir, eventName, opts = {}) {
-  return hooksSurface.reconcileCodexHooksJsonEvent(targetDir, eventName, opts);
-}
-
-/**
- * Reconcile the GSD-managed SessionStart hook entry in hooks.json.
- * Delegates to the generic reconcileCodexHooksJsonEvent helper.
- *
- * @param {string} targetDir
- * @param {{ managedCommand?: string|null, commandWindows?: string|null }} opts
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function reconcileCodexHooksJsonSessionStart(targetDir, opts = {}) {
-  return hooksSurface.reconcileCodexHooksJsonSessionStart(targetDir, opts);
-}
-
-/**
- * Build a typed IR for the Codex hook .cmd shim used on Windows (#3426).
- *
- * On Windows, Codex runs hook commands from a PowerShell/cmd execution
- * environment. The previous command format was:
- *
- *   "C:/Program Files/nodejs/node.exe" "C:/path/.codex/hooks/gsd-check-update.js"
- *
- * This caused `bash.exe: bash.exe: cannot execute binary file` because
- * Codex's hook dispatch shell (Git Bash / MSYS) tried to POSIX-exec node.exe
- * (a Windows PE binary) via execvp(), which fails with ENOEXEC on Windows PE
- * binaries that the MSYS layer doesn't know how to fork-exec natively.
- *
- * Fix: write a .cmd shim (using the same CRLF .cmd shim pattern) whose
- * content is `@ECHO OFF / @SETLOCAL / @"node.exe" "script.js" %*`.
- * cmd.exe executes
- * .cmd natively via CreateProcess — no POSIX exec layer, no MSYS shebang
- * walk, no PE binary fork-exec failure.
- *
- * Returns the typed IR `{ invocation, cmdPath, hookCommand, render }` so
- * callers can assert on the structured shape (CONTRIBUTING.md L558–L565
- * IR-first discipline).  Returns null when absoluteRunnerToken is null so
- * callers can warn-and-skip instead of writing a broken hook.
- *
- * @param {string} scriptAbsPath - Absolute path to the .js hook script.
- * @param {string|null} absoluteRunnerToken - JSON-quoted absolute node path
- *   (result of resolveNodeRunner()), e.g. `"C:/Program Files/nodejs/node.exe"`.
- * @returns {{ invocation: { interpreter: string, target: string }, cmdPath: string, hookCommand: string, render: { cmd: () => string } }|null}
- */
-function buildCodexHookWindowsShimIR(scriptAbsPath, absoluteRunnerToken) {
-  return hooksSurface.buildCodexHookWindowsShimIR(scriptAbsPath, absoluteRunnerToken);
-}
+// #2876: reconcileManagedShellHookCommands, buildCodexHookBlock,
+// rewriteLegacyCodexHookBlock, reconcileCodexHooksJsonEvent, and
+// reconcileCodexHooksJsonSessionStart used to be re-bound here as one-line
+// delegates to the equivalent hooksSurface.* implementations. None had an
+// install.js internal caller or an export consumer (tests import all five
+// directly from gsd-core/bin/lib/runtime-hooks-surface.cjs), so the retired
+// bindings were dead code with no reachable body — removed rather than kept
+// as unreachable wrappers.
 
 /**
  * Ensure Codex hooks.json contains exactly one managed SessionStart
@@ -1507,10 +1403,10 @@ const {
 // (single source of truth with the descriptor pipeline's
 // applyAgentFrontmatterExtensions step, which now also owns disallowedTools
 // injection + the read-only agent deny-list internally — see its module doc
-// in src/runtime-artifact-conversion.cts). injectEffortFrontmatter is kept
-// bound here only because it is still part of this module's export surface
-// (tests reach it via require('../bin/install.js')).
-const { injectEffortFrontmatter } = runtimeArtifactConversion;
+// in src/runtime-artifact-conversion.cts). injectEffortFrontmatter used to be
+// re-bound here purely to stay on this module's export surface; #2876 found
+// no install.js internal caller either (tests import it directly from
+// gsd-core/bin/lib/runtime-artifact-conversion.cjs) and retired the binding.
 
 // Cache for attribution settings (populated once per runtime during install)
 const attributionCache = new Map();
@@ -6662,43 +6558,13 @@ function stripGsdFromCopilotInstructions(content) {
 const GSD_AGENTS_MD_MARKER = '<!-- GSD Configuration — managed by gsd-core installer -->';
 const GSD_AGENTS_MD_CLOSE_MARKER = '<!-- End GSD Configuration -->';
 
-/**
- * The GSD instruction body shared by the Cline directory-form rules file and
- * the cross-tool AGENTS.md block. Self-contained — references only the gsd-core
- * engine layout, not the (separate) #782 Cline skills directory.
- */
-function buildClineRulesBody() {
-  return hooksSurface.buildClineRulesBody();
-}
-
-/** AGENTS.md body for the cross-tool global instruction target (`~/.agents/AGENTS.md`). */
-function buildClineAgentsMdBody() {
-  return hooksSurface.buildClineAgentsMdBody();
-}
-
-/**
- * The Cline PreToolUse hook script (issue #787).
- *
- * Cline invokes hooks as executable scripts named exactly after the event with
- * no extension, passing the operation context as JSON on stdin and reading a
- * JSON decision from stdout ({ cancel, errorMessage, contextModification }).
- *
- * This hook is a self-standing planning-artifact guard: it cancels write-class
- * tool calls that target `.planning/` (GSD-owned artifacts), and otherwise
- * allows the operation. It FAILS OPEN — any parse/IO error allows the call so a
- * hook bug can never wedge the user. No dependency on the #782 skills work.
- */
-function buildClinePreToolUseHook() {
-  return hooksSurface.buildClinePreToolUseHook();
-}
-
-/**
- * Merge the GSD AGENTS.md block into an existing file (or create it), preserving
- * any user content. Mirrors mergeCopilotInstructions: marker-delimited, idempotent.
- */
-function mergeGsdAgentsMd(filePath, gsdContent) {
-  return hooksSurface.mergeGsdAgentsMd(filePath, gsdContent);
-}
+// #2876: buildClineRulesBody, buildClineAgentsMdBody, buildClinePreToolUseHook,
+// and mergeGsdAgentsMd used to be re-bound here as one-line delegates to the
+// equivalent hooksSurface.* implementations. None had an install.js internal
+// caller or an export consumer (tests import all four directly from
+// gsd-core/bin/lib/runtime-hooks-surface.cjs), so the retired bindings were
+// dead code with no reachable body — removed rather than kept as unreachable
+// wrappers.
 
 /**
  * Strip the GSD block from AGENTS.md content. Returns null if the file became
@@ -6750,47 +6616,13 @@ function writeClineArtifacts(targetDir, isGlobalInstall) {
 //
 // References: https://cursor.com/docs/hooks
 
-/**
- * Build a managed Cursor hook entry for a given hook script path.
- *
- * @param {string} scriptPath - Absolute path to the hook script
- * @returns {object} Cursor hook entry object
- */
-function buildCursorHookEntry(scriptPath) {
-  return hooksSurface.buildCursorHookEntry(scriptPath);
-}
-
-/**
- * Return true if a Cursor hook entry is GSD-managed.
- * Detection: presence of the GSD_CURSOR_HOOK_MARKER sentinel field.
- *
- * @param {object} entry - A hooks array element from hooks.json
- * @returns {boolean}
- */
-function isManagedCursorHookEntry(entry) {
-  return hooksSurface.isManagedCursorHookEntry(entry);
-}
-
-/**
- * Reconcile the GSD-managed entries in a Cursor hooks.json file.
- *
- * Supports both known hooks.json shapes:
- *   1) { "version": 1, "hooks": { "sessionStart": [...], "postToolUse": [...] } }
- *   2) { "sessionStart": [...], "postToolUse": [...] }   (no wrapper object)
- *
- * Managed entries (those with GSD_CURSOR_HOOK_MARKER) are removed then
- * re-added if managedEntries is non-null/non-empty. User-owned entries are
- * preserved. File is written atomically only when content changes.
- *
- * @param {string} hooksJsonPath - Absolute path to the hooks.json file
- * @param {{ sessionStart?: object|null, postToolUse?: object|null }|null} managedEntries
- *   Map from event name to the new hook entry to register (or null to remove).
- *   Pass null for the whole param to remove all managed entries.
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function reconcileCursorHooksJson(hooksJsonPath, managedEntries) {
-  return hooksSurface.reconcileCursorHooksJson(hooksJsonPath, managedEntries);
-}
+// #2876: buildCursorHookEntry, isManagedCursorHookEntry, and
+// reconcileCursorHooksJson used to be re-bound here as one-line delegates to
+// the equivalent hooksSurface.* implementations. None had an install.js
+// internal caller or an export consumer (tests import all three directly from
+// gsd-core/bin/lib/runtime-hooks-surface.cjs), so the retired bindings were
+// dead code with no reachable body — removed rather than kept as unreachable
+// wrappers.
 
 /**
  * #777 — Write GSD-managed Cursor lifecycle hooks into <targetDir>/hooks.json.
@@ -6850,23 +6682,13 @@ function removeWindsurfHooksJson(targetDir) {
   return hooksSurface.removeWindsurfHooksJson(targetDir);
 }
 
-/**
- * #786 — Build the GSD-managed GitHub Copilot lifecycle hook config object.
- *
- * Returns the verbatim JSON shape Copilot CLI expects:
- *   { version: 1, hooks: { sessionStart: [ <hook entry> ] } }
- *
- * The sessionStart entry is a `command` hook whose `bash`/`powershell` bodies
- * run inline (no external script file), so the config can never reference a
- * hook script that the installer did not also install — it is self-contained
- * by construction. The command is advisory-only (always exits 0) and orients
- * the agent toward the project's GSD planning state at session start.
- *
- * @returns {object} Copilot hooks-configuration object
- */
-function buildCopilotHookConfig() {
-  return hooksSurface.buildCopilotHookConfig();
-}
+// #2876: buildCopilotHookConfig used to be re-bound here as a one-line
+// delegate to hooksSurface.buildCopilotHookConfig. It had no install.js
+// internal caller or export consumer (tests import it directly from
+// gsd-core/bin/lib/runtime-hooks-surface.cjs), so the retired binding was
+// dead code with no reachable body — removed rather than kept as an
+// unreachable wrapper. writeCopilotHookConfig below is unaffected — it still
+// has an internal caller (finishInstall).
 
 /**
  * #786 — Write the GSD-managed Copilot lifecycle hook config under the runtime
@@ -7395,10 +7217,14 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
 
 // convertClaudeCommandToOpencodeFamilySkill, convertClaudeCommandToOpencodeSkill,
 // convertClaudeCommandToKiloSkill: moved to src/install-engine.cts (ADR-1239 Phase B).
-// Imported from installEngine above.
+// #2876 found no install.js internal caller for the latter two (tests import
+// them directly from gsd-core/bin/lib/install-engine.cjs) and retired the
+// destructured bindings above.
 
 // applyOpencodeFamilyPathPrefix: moved to src/install-engine.cts (ADR-1239 Phase B).
-// Imported from installEngine above.
+// #2876 found no install.js internal caller (never had one either — it was
+// never part of this module's export surface) and retired the destructured
+// binding above.
 //
 // copyFlattenedCommands (OpenCode/Kilo flattened command/ writer): moved to
 // src/install-engine.cts as installOpencodeFamilyCommands (ADR-1239 / #2087).
@@ -7500,12 +7326,13 @@ function writeHermesCategoryDescription(categoryDir) {
  * @param {boolean} isGlobal - Whether this is a global install
  */
 
-// USER_OWNED_ARTIFACTS, migrateLegacyDevPreferencesToSkill, _copyStaged, _removeGsdEntries,
-// _runLegacyInstallMigrations, _runLegacyUninstallCleanup, _snapshotDir,
-// _restoreDir, _removeHermesBareStemDirs, installRuntimeArtifacts,
-// installOpencodeFamilySkills, uninstallRuntimeArtifacts:
-// ALL moved to src/install-engine.cts (ADR-1239 Phase B).
-// Imported from installEngine above.
+// USER_OWNED_ARTIFACTS, migrateLegacyDevPreferencesToSkill, _snapshotDir,
+// installRuntimeArtifacts, installOpencodeFamilySkills, uninstallRuntimeArtifacts:
+// ALL moved to src/install-engine.cts (ADR-1239 Phase B). Imported from
+// installEngine above. _copyStaged, _removeGsdEntries,
+// _runLegacyInstallMigrations, _runLegacyUninstallCleanup, _restoreDir, and
+// _removeHermesBareStemDirs moved there too but #2876 found no install.js
+// internal caller for any of them and retired their destructured bindings.
 
 // ---------------------------------------------------------------------------
 // Phase 2 — Layout-driven install/uninstall orchestrators (moved to engine)

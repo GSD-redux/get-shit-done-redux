@@ -181,7 +181,9 @@ export const NO_LOCAL_CONFIG_DIR_SENTINEL = '(no-local-config-dir)';
  * Pure runtime-identity projection. Relocated from `bin/install.js` per
  * ADR-1508 (epic #1507, #1510 Phase 1) so the Runtime Artifact Conversion
  * Module's rewrite engine can consume it without importing the installer.
- * `bin/install.js` re-exports this same function for back-compat.
+ * Consumers import it from here. `bin/install.js` used to re-export it for
+ * back-compat; that re-export was retired in #2876, once an audit found the
+ * compatibility spine had no production consumer at all.
  */
 export function getDirName(runtime: string): string {
   if (!runtime) return '.claude';
