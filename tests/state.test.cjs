@@ -61,6 +61,20 @@ function writePassedVerification(tmpDir, phaseDirName, paddedPhase) {
 }
 
 /**
+ * CONTRIBUTING.md "Prohibited: Raw Text Matching on Test Outputs" — extract
+ * the body `Progress` field through the repo's own field extractor (never a
+ * raw substring/regex match against the whole rendered STATE.md) and return
+ * the parsed percent number, so `state update-progress` body-bar tests
+ * assert on a typed value instead of the rendered text.
+ */
+function bodyProgressPercent(stateMdContent) {
+  const raw = stateDocument.stateExtractField(stateMdContent, 'Progress');
+  if (raw === null) return null;
+  const match = raw.match(/(\d{1,3})%/);
+  return match ? Number(match[1]) : null;
+}
+
+/**
  * Run `fn` while capturing every fd-1 write a `cmdState*` handler's
  * `output()` performs (it writes via a raw `fs.writeSync(1, ...)`, never
  * `console.log`/`process.stdout.write`). Standalone helper with no test
@@ -1985,8 +1999,12 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     // The body line advanced to 0% (min-capped) AND its descriptive suffix survived.
-    assert.ok(updated.includes('[░░░░░░░░░░] 0% (1/2 plans complete)'),
-      'body Progress line must update to 0% (min-capped) with suffix preserved');
+    // CONTRIBUTING.md "Prohibited: Raw Text Matching" — assert on the field
+    // extractor's parsed value, not a substring of the whole rendered file.
+    assert.strictEqual(bodyProgressPercent(updated), 0, 'body Progress line must update to 0% (min-capped)');
+    const progressField = stateDocument.stateExtractField(updated, 'Progress');
+    assert.ok(progressField && progressField.includes('(1/2 plans complete)'),
+      'descriptive suffix must survive on the extracted Progress field');
     // The frontmatter block is intact (not mangled by the old \s*-crosses-newline match).
     assert.ok(updated.includes('total_phases: 1'), 'frontmatter total_phases key must survive');
     assert.ok(updated.includes('percent:'), 'frontmatter percent key must survive');
@@ -1997,7 +2015,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Progress:** [█████░░░░░] 50% (2/4 plans done; blocked on API keys)\n'
     );
-    // 1 of 1 plan complete → 100%.
+    // 1 of 1 plan summarized, but no passing *-VERIFICATION.md → 0% (min-capped, see below).
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01');
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
@@ -2009,8 +2027,11 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     // #3583: min-capped, not raw plan throughput — phase 01 has no passing
     // *-VERIFICATION.md, so completed_phases is 0/1 and the min caps at 0
     // even though the single plan is fully summarized.
-    assert.ok(/\[░░░░░░░░░░\] 0% \(2\/4 plans done; blocked on API keys\)/.test(updated),
-      'the machine segment updates to 0% (min-capped) while the suffix is preserved verbatim');
+    // CONTRIBUTING.md "Prohibited: Raw Text Matching" — parsed value, not rendered text.
+    assert.strictEqual(bodyProgressPercent(updated), 0, 'the machine segment updates to 0% (min-capped)');
+    const progressField = stateDocument.stateExtractField(updated, 'Progress');
+    assert.ok(progressField && progressField.includes('(2/4 plans done; blocked on API keys)'),
+      'the descriptive suffix is preserved verbatim on the extracted Progress field');
   });
 
   test('#2177 no body Progress: line → updated:false even if frontmatter has a progress: key', () => {
@@ -2068,7 +2089,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.strictEqual(output.percent, 50, 'stdout percent should be min-capped at 50');
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes('[█████░░░░░] 50%'), 'body bar should read 50%');
+    assert.strictEqual(bodyProgressPercent(updated), 50, 'body bar should read 50%');
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
@@ -2104,7 +2125,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.strictEqual(output.percent, 0, 'stdout percent should be 0 (0/2 phases verified caps the min)');
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes('[░░░░░░░░░░] 0%'), 'body bar should read 0%');
+    assert.strictEqual(bodyProgressPercent(updated), 0, 'body bar should read 0%');
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
@@ -2177,7 +2198,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.strictEqual(output.percent, 100);
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes('[██████████] 100%'), 'body bar should read 100%');
+    assert.strictEqual(bodyProgressPercent(updated), 100, 'body bar should read 100%');
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
@@ -2301,7 +2322,80 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     );
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes('[░░░░░░░░░░] 0%'), 'body bar must reflect the verification-passed derivation, not summary parity');
+    assert.strictEqual(bodyProgressPercent(updated), 0, 'body bar must reflect the verification-passed derivation, not summary parity');
+  });
+
+  test('#3583 finding 1: percent and completed/total must come from the SAME (stored-milestone-scoped) window, not a differently-scoped auto-derive', () => {
+    // Reproduces the exact divergence: `cmdStateUpdateProgress`'s own guard
+    // scan calls `listMilestonePhaseDirs(phasesDir, { cwd })` with NO
+    // versionOverride, so it falls back to auto-deriving "current" via
+    // `extractCurrentMilestoneScoped`, which (per #730/#2947) merges the
+    // PREAMBLE — everything before the first milestone heading — into its
+    // window UNLESS the selected milestone's own section already carries a
+    // `### Phase N:` heading directly (in which case the preamble is
+    // stripped of phase headings to avoid duplicating them). This milestone
+    // section deliberately carries ONLY a checklist bullet (no heading of
+    // its own — the heading lives in the split "(Phase Details)" section),
+    // so that strip never fires and Phase 03's preamble heading leaks into
+    // the auto-derived window. `buildStateFrontmatter`'s scan, scoped via
+    // `versionOverride: storedMilestone` ("v2.0"), calls `sliceMilestoneWindow`
+    // instead, which never includes the preamble — so it correctly excludes
+    // Phase 03. Both windows classify SCOPE.COMPLETE (verified directly
+    // against `listMilestonePhaseDirs` before this test was written), so
+    // neither the #3217 nor the #1761 withhold intercepts — before the fix,
+    // this silently produced percent:0 (derived from the correct v2.0-only
+    // window: 1/1 plan, capped to 0 by the missing phase verification)
+    // alongside completed:1/total:2 (leaking Phase 03's unsummarized plan
+    // into the denominator from the auto-derived window) — mutually
+    // inconsistent in the SAME JSON object. Fixed: completed/total now come
+    // from the identical buildStateFrontmatter call percent does.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 03: Legacy Preamble Phase',
+        '',
+        '## v2.0: Current',
+        '',
+        '- [ ] **Phase 2: Feature**',
+        '',
+        '## v2.0 (Phase Details)',
+        '',
+        '### Phase 2: Feature',
+        '**Goal:** build it.',
+        '',
+      ].join('\n')
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      ['---', 'gsd_state_version: "1.0"', 'milestone: v2.0', 'status: executing', '---', '',
+        '# Project State', '', '**Progress:** [░░░░░░░░░░] 0%', ''].join('\n')
+    );
+
+    const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02');
+    fs.mkdirSync(phase02Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phase02Dir, '02-01-SUMMARY.md'), '# Summary\n');
+    // Phase 03 belongs to no milestone (preamble-only) and is NOT summarized —
+    // if it leaks into the reported denominator, completed/total disagree
+    // with the v2.0-scoped percent.
+    const phase03Dir = path.join(tmpDir, '.planning', 'phases', '03');
+    fs.mkdirSync(phase03Dir, { recursive: true });
+    fs.writeFileSync(path.join(phase03Dir, '03-01-PLAN.md'), '# Plan\n');
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true, 'both windows are SCOPE.COMPLETE — neither withhold guard should fire');
+
+    // The mutual-consistency assertion finding 1 requires: completed/total
+    // must describe the SAME window percent was computed against (v2.0 only:
+    // phase 02, 1 plan, not phase-verified → percent 0; NOT phase 03's leaked
+    // unsummarized plan folded into the denominator).
+    assert.strictEqual(output.percent, 0, 'v2.0-scoped plan fraction (1/1) is capped to 0 by the missing phase verification');
+    assert.strictEqual(output.total, 1, 'total must be v2.0-scoped (phase 02 only) — Phase 03 must not leak in from the auto-derived scan');
+    assert.strictEqual(output.completed, 1, 'completed must be v2.0-scoped (phase 02 only)');
   });
 });
 
