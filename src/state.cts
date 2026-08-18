@@ -948,7 +948,34 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // excluded sentinels, unlike the owner). The owner already handles an
     // absent phasesDir as a real empty, so the fs.existsSync guard folds
     // into it.
-    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    //
+    // #2761 (round-11 BLOCKER, single-derivation hygiene): `phaseIdConvention`
+    // threaded explicitly (resolved ambiently off `cwd` — this call site has
+    // no `ws` of its own, same contract `resolvePhaseIdConvention` uses
+    // elsewhere in this file, e.g. the `phaseConvention` ONCE-and-THREAD
+    // pattern at ~:2267/:2300) rather than left `undefined`.
+    //
+    // This does NOT change `phaseScope` — `scope` (roadmap-parser.cts
+    // `getMilestonePhaseFilter`) is assigned at :1979/:2030, both BEFORE
+    // `headingConvention` resolves at ~:2048, so the #3217 withhold gate a
+    // few lines below is convention-independent either way (verified
+    // empirically: forcing `phaseIdConvention: null` here left every
+    // `state update-progress` assertion in
+    // tests/adr-612-bracket-phase-counting.test.cjs's round-11 BLOCKER block
+    // unchanged). What DOES depend on convention is `phaseDirs`/`totalPlans`
+    // — the enumerated `.value` these two lines feed into the #3233
+    // zero-plans no-op check just below. The actual `percent` this command
+    // reports/writes comes from a separate, already-correctly-threaded scan
+    // (`computeUpdateProgressPreview` -> `buildStateFrontmatter`, which
+    // resolves its own `phaseConvention` at :2267). Threading here removes a
+    // second, silent, lazily-resolved answer for the SAME question that scan
+    // already answers explicitly — the single-derivation discipline this
+    // file's own :2300 comment states as a rule — rather than fixing an
+    // observed defect.
+    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, {
+      cwd,
+      phaseIdConvention: cwd ? resolvePhaseIdConvention(cwd) : null,
+    });
     phaseScope = scope;
     for (const dir of phaseDirs) {
       const { planCount } = scanPhasePlans(path.join(phasesDir, dir));
@@ -4788,6 +4815,20 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     // it here (discarding `.value`, which duplicates `entries`'s own
     // retired-phase-filtered listing) gets the real scope without changing
     // the disk-scan totals computed above.
+    //
+    // #2761 (round-11 M2 follow-up): deliberately NOT threading
+    // `phaseIdConvention` here, unlike the other call sites this same PR
+    // converts. Only `.scope` is consumed (the `.value` directory list is
+    // thrown away), and inside `getMilestonePhaseFilter` `scope` is computed
+    // from `extractCurrentMilestoneScoped`/`classifyMilestoneWindow` BEFORE
+    // `headingConvention` is resolved — `phaseIdConvention` only reaches the
+    // heading/dir MEMBERSHIP scan (`scanMilestonePhaseIds`, `isDirInMilestone`)
+    // that produces `.value`, never the scope discriminator itself. So the
+    // `undefined` default here (lazy resolve-from-config) and an explicitly
+    // threaded `syncConvention` would compute the identical `scope` either
+    // way — there is no silent-inherit exposure to close at this site, only
+    // at sites (milestone.cts, cmdStateUpdateProgress above) that also
+    // consume `.value`.
     const syncScope: Scope = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr }).scope;
     if (syncScope !== SCOPE.COMPLETE) {
       changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);

@@ -3159,3 +3159,144 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
     assert.equal(readTotal(), 2, 'base-parity: this shape has never been closed by any build in this arc');
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// #2761 round-11 BLOCKER (trek-e review): `listMilestonePhaseDirs`'s third
+// param (`phaseIdConvention`) lost its `= null` default so a caller that
+// omits it now gets "resolve from config" instead of "explicitly not
+// bracket" — a deliberate flip, but the changeset claimed "the archival and
+// milestone-completion paths are unchanged." False: `cmdMilestoneComplete`
+// (src/milestone.cts) and `cmdStateUpdateProgress` (src/state.cts) both call
+// the enumerator and neither file was in the PR-2 diff. Both now thread the
+// convention explicitly (resolved once, ambiently, off `cwd`) instead of
+// silently inheriting the lazy default. These two blocks PIN the enumerated
+// set / write behavior on a bracket project so a future regression to a
+// hardcoded (non-bracket) default — or to a different resolve-from-config
+// answer — is a failing test, not a silent set change on a command that
+// renames/archives directories or writes STATE.md.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-scoped set', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-milestone-complete-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('PIN: --dry-run would_archive.phases is exactly the 3 bracket-declared phase dirs, not the whole phases/ directory', () => {
+    // BRACKET_ROADMAP (above) declares milestone v2.0 with phases 01, 05, 06
+    // under the [GSD.02] bracket tag. One directory per declared phase, PLUS
+    // a decoy that belongs to NO declared phase. Correct (convention-threaded)
+    // scoping excludes the decoy. A regression back to the pre-#612 hardcoded
+    // "not bracket" default would fail to recognize the bracket HEADINGS at
+    // all, `milestonePhaseNums` would come back empty, and
+    // `getMilestonePhaseFilter` degrades to a pass-all predicate — which
+    // would sweep the decoy in too. Either failure mode shows up as a
+    // mismatch against the pinned set below.
+    writeProject(BRACKET_ROADMAP, 'bracket', [
+      'GSD.02-01-setup',
+      'GSD.02-05-real-work',
+      'GSD.02-06-follow-up',
+      'not-a-declared-phase',
+    ]);
+
+    const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
+    assert.ok(r.success, `milestone complete --dry-run failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.deepStrictEqual(
+      [...parsed.would_archive.phases].sort(),
+      ['GSD.02-01-setup', 'GSD.02-05-real-work', 'GSD.02-06-follow-up'],
+      'would_archive.phases must be exactly the 3 declared bracket phases — never the decoy, ' +
+      'and never empty (the pre-#612 hardcoded-legacy failure mode)',
+    );
+    assert.strictEqual(parsed.stats.phases, 3, 'the read-only stats loop shares the same single enumeration');
+  });
+
+  test('CONTROL: the identical shape under the legacy (non-bracket) convention is unaffected', () => {
+    // Same directory/decoy shape, legacy headings instead of bracket ones —
+    // this is the "byte-identical for null/milestone-prefixed projects"
+    // guarantee the changeset makes; pinned here at the cmdMilestoneComplete
+    // consumer, not just at the enumerator's own unit level.
+    writeProject(`# Roadmap
+
+## v2.0
+
+### Phase 01: Setup
+**Goal:** a
+
+### Phase 05: Real work
+**Goal:** b
+
+### Phase 06: Follow-up
+**Goal:** c
+`, undefined, ['01-setup', '05-real-work', '06-follow-up', 'not-a-declared-phase']);
+
+    const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
+    assert.ok(r.success, `milestone complete --dry-run failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.deepStrictEqual(
+      [...parsed.would_archive.phases].sort(),
+      ['01-setup', '05-real-work', '06-follow-up'],
+    );
+  });
+});
+
+describe('#2761 round-11 BLOCKER: cmdStateUpdateProgress computes+writes a percent on bracket projects', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-update-progress-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('PIN: `state update-progress` writes a real (non-withheld) percent for a bracket-scoped milestone', () => {
+    // One fully-verified phase (01) and one plan-only phase (05) under the
+    // [GSD.02] v2.0 bracket milestone — mirrors writeProject's own
+    // PLAN+SUMMARY+VERIFICATION shape for "complete" entries. Round-11 named
+    // this exact command: "cmdStateUpdateProgress ... now computes/writes a
+    // completion percent on bracket projects where it previously withheld
+    // one." Pinning `updated: true` plus the exact percent/completed/total
+    // triple is what makes a future regression to the withheld shape (or to
+    // silently mis-scoped counts) a failing assertion instead of an
+    // unobserved behavior change.
+    writeProject(BRACKET_ROADMAP, 'bracket', [
+      ['GSD.02-01-setup', true],
+      ['GSD.02-05-real-work', false],
+    ]);
+
+    const r = runGsdTools(['state', 'update-progress'], tmpDir);
+    assert.ok(r.success, `state update-progress failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.strictEqual(parsed.updated, true,
+      'a bracket project with a resolvable milestone window must not withhold — got: ' + JSON.stringify(parsed));
+    assert.strictEqual(parsed.completed, 1);
+    assert.strictEqual(parsed.total, 2);
+
+    const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses the STATE.md this test just wrote, fixed-size fixture output, not adversarial input
+    const m = raw.match(/^\*\*Progress:\*\*[^\r\n]*?(\d+)%/m);
+    assert.ok(m, `state update-progress must have rendered a Progress percent into STATE.md; got:\n${raw}`);
+    assert.strictEqual(parseInt(m[1], 10), parsed.percent,
+      'the percent update-progress reports and the one it writes into the body must agree');
+  });
+
+  test('CONTROL: the identical shape under the legacy (non-bracket) convention behaves the same way', () => {
+    writeProject(`# Roadmap
+
+## v2.0
+
+### Phase 01: Setup
+**Goal:** a
+
+### Phase 05: Real work
+**Goal:** b
+`, undefined, [
+      ['01-setup', true],
+      ['05-real-work', false],
+    ]);
+
+    const r = runGsdTools(['state', 'update-progress'], tmpDir);
+    assert.ok(r.success, `state update-progress failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.strictEqual(parsed.updated, true);
+    assert.strictEqual(parsed.completed, 1);
+    assert.strictEqual(parsed.total, 2);
+  });
+});
