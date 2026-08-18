@@ -1185,7 +1185,12 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // second, silent, lazily-resolved answer for the SAME question that scan
     // already answers explicitly — the single-derivation discipline this
     // file's own :2300 comment states as a rule — rather than fixing an
-    // observed defect.
+    // observed defect. #2761 round-12: the #3233 gate IS the one place this
+    // is observable, so it — not the reported percent — is what
+    // tests/adr-612-bracket-phase-counting.test.cjs's round-12 addition to
+    // the round-11 BLOCKER block pins: a bracket milestone with no plans on
+    // disk versus a decoy directory outside the milestone window that must
+    // not be swept in by a pass-all degrade.
     const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, {
       cwd,
       phaseIdConvention: cwd ? resolvePhaseIdConvention(cwd) : null,

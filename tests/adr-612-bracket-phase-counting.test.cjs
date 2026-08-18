@@ -3144,6 +3144,48 @@ describe('#2761 round-11 BLOCKER: cmdStateUpdateProgress computes+writes a perce
       'the percent update-progress reports and the one it writes into the body must agree');
   });
 
+  test('#2761 round-12 GAP: the enumerator .value THIS call site feeds (not the separately-scoped ' +
+    'percent) gates the #3233 zero-plans no-op — a decoy outside the bracket window must not count', () => {
+    // Round-11's PIN test above (and its own inline comment at state.cts
+    // ~:965) established that `cmdStateUpdateProgress`'s reported/written
+    // percent is IMMUNE to this call site's convention threading — it comes
+    // from computeUpdateProgressPreview -> buildStateFrontmatter, a separate,
+    // independently-scoped derivation. Mutation testing on the round-11
+    // response confirmed that empirically: reverting this call site's thread
+    // left the PIN test above still green.
+    //
+    // What THIS call site's enumerated `.value` actually feeds is
+    // `totalPlans` (summed across the enumerated dirs, just below) and the
+    // #3233 zero-plans no-op gate built on it — the ONLY place that value has
+    // any observable effect on this command's output. This fixture pins
+    // exactly that gate: BRACKET_ROADMAP declares milestone v2.0's phases
+    // (01/05/06 under [GSD.02]) but none of their directories are scaffolded
+    // on disk — zero plans exist for this milestone's real window either way.
+    // A directory that plainly does not belong to it ('not-a-declared-phase':
+    // no bracket tag, no phase token at all) sits alongside it WITH a plan.
+    //
+    // Correctly bracket-scoped, the decoy is excluded (it matches no
+    // GSD.02-qualified id) and totalPlans stays 0 -> the #3233 no-op fires.
+    // Degraded to the pass-all legacy reading (BRACKET_ROADMAP's headings are
+    // invisible under a non-bracket read — proven above by "a NON-bracket
+    // repo counts neither form of the same roadmap" — so
+    // `milestonePhaseNums` comes back empty and the filter admits
+    // everything), the decoy is swept in and totalPlans flips nonzero -> the
+    // no-op never fires and the command proceeds past it.
+    writeProject(BRACKET_ROADMAP, 'bracket', [['not-a-declared-phase', false]]);
+
+    const r = runGsdTools(['state', 'update-progress'], tmpDir);
+    assert.ok(r.success, `state update-progress failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.strictEqual(parsed.updated, false,
+      'a decoy directory outside the bracket-declared milestone window must never contribute to ' +
+      'totalPlans for that milestone — got: ' + JSON.stringify(parsed));
+    assert.match(String(parsed.reason ?? ''), /no plans found/,
+      'must be the #3233 zero-plans no-op specifically (proves the enumerator excluded the decoy), ' +
+      'not some other withhold reason — got: ' + JSON.stringify(parsed));
+  });
+
   test('CONTROL: the identical shape under the legacy (non-bracket) convention behaves the same way', () => {
     writeProject(`# Roadmap
 
