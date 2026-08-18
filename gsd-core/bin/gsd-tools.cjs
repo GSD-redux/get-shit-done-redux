@@ -1420,7 +1420,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         // private copies here; `projectSpawnInvocation` owns them, so a fix to either
         // reaches every spawn site instead of only this one.
         const { projectSpawnInvocation } = require('./lib/shell-command-projection.cjs');
-        const { command: spawnBinary, args: spawnArgv } = projectSpawnInvocation(binary, argv);
+        const { command: spawnBinary, args: spawnArgv, windowsVerbatimArguments } = projectSpawnInvocation(binary, argv);
         const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
@@ -1432,6 +1432,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
           // into the orchestrating session or into the next lane.
           ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+          ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         });
         return {
           status: r.status,

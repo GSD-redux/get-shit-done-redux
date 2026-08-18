@@ -662,6 +662,24 @@ function _isFile(candidate: string): boolean {
   }
 }
 
+/** cmd.exe's own quoting rule inside a `/c` string: a literal quote is doubled. */
+function _cmdQuoteToken(token: string): string {
+  return `"${token.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Build a single verbatim command-line string for `cmd.exe /c` where every
+ * token is force-quoted, then wrap the whole thing in one more outer pair.
+ * cmd.exe strips exactly one outer quote pair when the string begins with a
+ * quote and contains at least two — so the outer wrap disappears and what's
+ * left is a sequence of individually-quoted tokens. Force-quoting is the
+ * point: an unquoted `a&b` is split by cmd's own metacharacter parsing, but a
+ * quoted `"a&b"` is one literal argument.
+ */
+function _buildVerbatimCmdLine(target: string, args: string[]): string {
+  return `"${[target, ...args].map(_cmdQuoteToken).join(' ')}"`;
+}
+
 /**
  * #3411: resolve a DECLARED command name to the file a spawn can actually start.
  * The single canonical answer to "where is this binary?" for the whole tree.
@@ -755,12 +773,30 @@ export function resolveExecutableBinary(
  *
  * POSIX is a strict no-op: the declared command is returned unchanged and the
  * environment is never consulted.
+ *
+ * The mediated command line is built VERBATIM rather than left to libuv: libuv's
+ * `quote_cmd_arg` only force-quotes an argument that contains a space, tab, or
+ * quote — it does not know about cmd.exe metacharacters (`&`, `|`, `>`, `<`,
+ * `^`, ...) at all, so an argument like `a&calc` reaches cmd.exe unquoted and
+ * gets re-parsed as two commands (the CVE-2024-27980 argument-injection class).
+ * Node's own CVE-2024-27980 escaping does not help here because it only fires
+ * when the spawned FILE itself is a `.bat`/`.cmd` — in this seam the spawned
+ * file is `cmd.exe`, not the target. Building the line ourselves and passing
+ * `windowsVerbatimArguments: true` (the shape Rust's std uses for the sibling
+ * CVE-2024-24576) means every token is force-quoted inside one outer pair, so
+ * a metacharacter inside a quoted token can never split the command line.
+ *
+ * KNOWN LIMIT: `%VAR%` still expands inside a cmd `/c` string, and there is no
+ * escape for `%` outside a batch file — an argument containing `%FOO%` is
+ * substituted with the environment value regardless of quoting. That is an
+ * information-disclosure limit, not arbitrary execution, and it's the same
+ * limit Rust's std documents for its own `CommandExt::raw_arg` escape hatch.
  */
 export function projectSpawnInvocation(
   command: string,
   args: string[] = [],
   opts: { platform?: string; env?: NodeJS.ProcessEnv } = {},
-): { command: string; args: string[]; resolved: string | null } {
+): { command: string; args: string[]; resolved: string | null; windowsVerbatimArguments?: boolean } {
   const platform = opts.platform ?? process.platform;
   if (platform !== 'win32') return { command, args, resolved: null };
 
@@ -779,10 +815,20 @@ export function projectSpawnInvocation(
     // not-found contract `_spawnResult` and its 53 dependent files rely on.
     return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
   }
+  // A CR/LF cannot be represented inside a Windows command line at all — cmd.exe
+  // treats it as a line terminator, so mediating it would silently truncate the
+  // argument rather than pass it through. Fail visibly instead: fall back to the
+  // unmediated shape so the spawn either fails with ENOENT (bare unresolved name)
+  // or hands the raw string to CreateProcess, whichever the caller was already
+  // prepared to see for a non-.cmd/.bat target.
+  if (/[\r\n]/.test(target) || args.some((a) => /[\r\n]/.test(a))) {
+    return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
+  }
   return {
     command: String(env['ComSpec'] || 'cmd.exe'),
-    args: ['/d', '/s', '/c', target, ...args],
+    args: ['/d', '/s', '/c', _buildVerbatimCmdLine(target, args)],
     resolved,
+    windowsVerbatimArguments: true,
   };
 }
 
@@ -800,6 +846,7 @@ export function execTool(program: string, args: string[], opts: { cwd?: string; 
     stdio: 'pipe',
     timeout: opts.timeout ?? 30_000,
     windowsHide: true,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   // Stamp the DECLARED name, never the resolved path: `_spawnResult` renders
   // `${program}: not found`, and callers across 53 files match on the string they

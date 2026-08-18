@@ -372,6 +372,13 @@ describe('resolveExecutableBinary (#3411)', () => {
 
 // ─── projectSpawnInvocation (#3411) ─────────────────────────────────────────
 
+// Mirrors the seam's own `_cmdQuoteToken` (a literal `"` is doubled) so
+// expectations here are built the same way the implementation builds them,
+// without importing the private helper.
+function _q(token) {
+  return `"${String(token).replace(/"/g, '""')}"`;
+}
+
 describe('projectSpawnInvocation (#3411)', () => {
   test('P1: .CMD mediates through cmd.exe', () => {
     const dir = createTempDir();
@@ -382,8 +389,9 @@ describe('projectSpawnInvocation (#3411)', () => {
       const result = projectSpawnInvocation('foo', ['a', 'b'], { platform: 'win32', env });
       assert.deepEqual(result, {
         command: 'C:\\Windows\\System32\\cmd.exe',
-        args: ['/d', '/s', '/c', resolved, 'a', 'b'],
+        args: ['/d', '/s', '/c', `"${_q(resolved)} ${_q('a')} ${_q('b')}"`],
         resolved,
+        windowsVerbatimArguments: true,
       });
     } finally {
       cleanup(dir);
@@ -399,8 +407,9 @@ describe('projectSpawnInvocation (#3411)', () => {
       const result = projectSpawnInvocation('foo', ['a'], { platform: 'win32', env });
       assert.deepEqual(result, {
         command: 'C:\\Windows\\System32\\cmd.exe',
-        args: ['/d', '/s', '/c', resolved, 'a'],
+        args: ['/d', '/s', '/c', `"${_q(resolved)} ${_q('a')}"`],
         resolved,
+        windowsVerbatimArguments: true,
       });
     } finally {
       cleanup(dir);
@@ -464,7 +473,7 @@ describe('projectSpawnInvocation (#3411)', () => {
       const resolved = path.join(dir, 'foo.CMD');
       const env = { PATH: dir, PATHEXT: '.CMD' };
       const result = projectSpawnInvocation('foo', [], { platform: 'win32', env });
-      assert.deepEqual(result.args, ['/d', '/s', '/c', resolved]);
+      assert.deepEqual(result.args, ['/d', '/s', '/c', `"${_q(resolved)}"`]);
     } finally {
       cleanup(dir);
     }
@@ -477,8 +486,12 @@ describe('projectSpawnInvocation (#3411)', () => {
       const env = { PATH: dir, PATHEXT: '.CMD' };
       const originalArgs = ['a b', 'x&y', 'q"z'];
       const result = projectSpawnInvocation('foo', originalArgs, { platform: 'win32', env });
-      const mediatedTail = result.args.slice(4);
-      assert.deepEqual(mediatedTail, originalArgs);
+      // Each original argument content survives intact — quoted, never split or
+      // concatenated by cmd's own metacharacter parsing.
+      const line = result.args[3];
+      assert.ok(line.includes(_q('a b')));
+      assert.ok(line.includes(_q('x&y')));
+      assert.ok(line.includes(_q('q"z')));
     } finally {
       cleanup(dir);
     }
@@ -491,8 +504,9 @@ describe('projectSpawnInvocation (#3411)', () => {
       const result = projectSpawnInvocation('missing.cmd', ['a'], { platform: 'win32', env });
       assert.deepEqual(result, {
         command: 'C:\\Windows\\System32\\cmd.exe',
-        args: ['/d', '/s', '/c', 'missing.cmd', 'a'],
+        args: ['/d', '/s', '/c', `"${_q('missing.cmd')} ${_q('a')}"`],
         resolved: null,
+        windowsVerbatimArguments: true,
       });
     } finally {
       cleanup(dir);
@@ -505,6 +519,102 @@ describe('projectSpawnInvocation (#3411)', () => {
       const env = { PATH: dir, PATHEXT: '.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
       const result = projectSpawnInvocation('missing', ['a'], { platform: 'win32', env });
       assert.deepEqual(result, { command: 'missing', args: ['a'], resolved: null });
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('P11: mediated args are force-quoted so cmd metacharacters cannot split', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const env = { PATH: dir, PATHEXT: '.CMD', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const result = projectSpawnInvocation('foo', ['a&calc', 'b|c', 'd>e'], { platform: 'win32', env });
+      assert.equal(result.windowsVerbatimArguments, true);
+      assert.equal(result.args.length, 4);
+      const line = result.args[3];
+      assert.ok(line.includes('"a&calc"'));
+      assert.ok(line.includes('"b|c"'));
+      assert.ok(line.includes('"d>e"'));
+      // The bare unquoted sequence must not appear outside of a quoted token —
+      // every occurrence of `a&calc` in the line is immediately preceded by a
+      // quote and followed by a quote.
+      let idx = -1;
+      while ((idx = line.indexOf('a&calc', idx + 1)) !== -1) {
+        assert.equal(line[idx - 1], '"');
+        assert.equal(line[idx + 'a&calc'.length], '"');
+      }
+      assert.equal(line.startsWith('"'), true);
+      assert.equal(line.endsWith('"'), true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('P12: embedded quotes are doubled', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const env = { PATH: dir, PATHEXT: '.CMD' };
+      const result = projectSpawnInvocation('foo', ['he said "hi"'], { platform: 'win32', env });
+      const line = result.args[3];
+      assert.ok(line.includes('he said ""hi""'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('P13: an argument containing a newline is not mediated', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const resolved = path.join(dir, 'foo.CMD');
+      const env = { PATH: dir, PATHEXT: '.CMD', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const result = projectSpawnInvocation('foo', ['a\nb'], { platform: 'win32', env });
+      assert.deepEqual(result, { command: resolved, args: ['a\nb'], resolved });
+      assert.equal(result.args.includes('/d'), false);
+      assert.equal(result.windowsVerbatimArguments, undefined);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('P14: non-mediated returns never set windowsVerbatimArguments', () => {
+    const dir = createTempDir();
+    try {
+      // POSIX no-op.
+      const posixResult = projectSpawnInvocation('foo', ['a'], { platform: 'linux', env: {} });
+      assert.equal(posixResult.windowsVerbatimArguments, undefined);
+
+      // Unresolved bare name.
+      const bareEnv = { PATH: dir, PATHEXT: '.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const bareResult = projectSpawnInvocation('missing', ['a'], { platform: 'win32', env: bareEnv });
+      assert.equal(bareResult.windowsVerbatimArguments, undefined);
+
+      // Resolved .EXE.
+      fs.writeFileSync(path.join(dir, 'foo.EXE'), '');
+      const exeEnv = { PATH: dir, PATHEXT: '.EXE' };
+      const exeResult = projectSpawnInvocation('foo', ['a'], { platform: 'win32', env: exeEnv });
+      assert.equal(exeResult.windowsVerbatimArguments, undefined);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test("P15: the mediated line round-trips through cmd's own outer-quote rule", () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const resolved = path.join(dir, 'foo.CMD');
+      const env = { PATH: dir, PATHEXT: '.CMD', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const result = projectSpawnInvocation('foo', ['a'], { platform: 'win32', env });
+      const line = result.args[3];
+      // Outer pair immediately followed by the target's own opening quote.
+      assert.equal(line.startsWith('""'), true);
+      // Stripping the outer pair leaves the individually-quoted tokens, whose
+      // first token is the quoted resolved path.
+      const stripped = line.slice(1, -1);
+      assert.equal(stripped.startsWith(_q(resolved)), true);
     } finally {
       cleanup(dir);
     }
@@ -575,7 +685,7 @@ describe('execTool (#3411 windows resolution)', () => {
     if (process.platform === 'win32') {
       assert.deepEqual(received, {
         command: 'C:\\Windows\\System32\\cmd.exe',
-        args: ['/d', '/s', '/c', resolved, 'x'],
+        args: ['/d', '/s', '/c', `"${_q(resolved)} ${_q('x')}"`],
       });
     } else {
       // Non-win32: projectSpawnInvocation is a strict no-op (process.platform
