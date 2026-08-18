@@ -88,6 +88,62 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
   });
 });
 
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — degrade, not crash ─────
+//
+// gsd-core/bin/lib/semver-compare.cjs, package-identity.cjs, and (via
+// check-latest-version.cjs's own transitive requires) gsd-core/bin/lib/
+// cli-exit.cjs + shell-command-projection.cjs are tsc build artifacts
+// (ADR-457), gitignored and absent on a raw plugin-marketplace / git-clone
+// install that never ran `npm run build:lib`. This worker is a DETACHED
+// SessionStart background process (spawned with stdio: 'ignore' by
+// hooks/gsd-check-update.js) — before #3582 a missing library crashed the
+// worker at module load with no visible signal (stderr discarded by the
+// parent) and no cache-file write at all, so the statusline/banner would
+// silently never see an update signal. The fix wraps ensureRuntimeBuild()
+// and the three compiled-lib requires in one try/catch and degrades to
+// no-signal fallbacks (isSemverNewer -> false, checkLatestVersion -> not ok,
+// PACKAGE_NAME -> null) on failure — the worker still runs to completion and
+// writes a result cache record. Simulated hermetically via a fixture install
+// tree that copies hooks/ + the seam module but never gsd-core/bin/lib/ or
+// tsconfig.build.json (tests/helpers/cold-runtime-lib-fixture.cjs) — the REAL
+// gsd-core/bin/lib/ is never touched.
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+  const { createTempDir, cleanup } = require('./helpers.cjs');
+
+  describe('gsd-check-update-worker.js: #3582 cold tree — degrade, not crash', () => {
+    test('missing compiled runtime library -> worker still writes a degraded result cache, no crash', (t) => {
+      const cold = buildColdInstallTree();
+      t.after(cold.cleanup);
+      const cacheDir = createTempDir('gsd-worker-cold-');
+      t.after(() => cleanup(cacheDir));
+      const cacheFile = path.join(cacheDir, 'cache.json');
+
+      const env = {
+        ...process.env,
+        GSD_CACHE_FILE: cacheFile,
+        GSD_PROJECT_VERSION_FILE: path.join(cacheDir, 'no-such-project', 'VERSION'),
+        GSD_GLOBAL_VERSION_FILE: path.join(cacheDir, 'no-such-global', 'VERSION'),
+      };
+      const r = runHookSeam(path.join(cold.hooksDir, 'gsd-check-update-worker.js'), [], {
+        env,
+        timeoutMs: 8000,
+      });
+      assert.equal(r.exitCode, 0, `worker must exit 0 on a build failure; stderr: ${r.stderr}`);
+      assert.ok(fs.existsSync(cacheFile), 'worker must still reach the end and write a cache record');
+      const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      assert.equal(cache.package_name, null, 'degraded package_name must be null (no-signal, never a stale/foreign value)');
+      assert.ok(!cache.update_available, 'degraded update_available must be falsy');
+      assert.equal(cache.installed, '0.0.0', 'installed detection is unaffected by the compiled-lib degrade');
+    });
+  });
+}
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2992-check-latest-version.test.cjs — consolidation epic #1969 (B5 #1974)

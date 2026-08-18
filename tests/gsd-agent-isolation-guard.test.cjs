@@ -1271,3 +1271,54 @@ describe('#2486 regression: inspect-dispatch-isolation is the sentinel-free read
     assert.ok(inspectedJson.exec, 'precondition: this branch actually populates exec, so the comparison means something');
   });
 });
+
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — self-heal surfacing ────
+//
+// gsd-core/bin/lib/*.cjs are tsc build artifacts (ADR-457), gitignored and
+// absent on a raw plugin-marketplace / git-clone install that never ran
+// `npm run build:lib`. Before #3582, resolveRegistryIsolation's
+// require('../gsd-core/bin/lib/runtime-name-policy.cjs') threw a bare
+// "Cannot find module", which resolveIsolationState's catch folded into the
+// SAME generic "could not read or resolve ... configuration" reason as an
+// unreadable config.json (row 8/12 above) — a misreport of a completely
+// different failure (#3050 lesson). The fix: resolveRegistryIsolation now
+// calls ensureRuntimeBuild() first; a RuntimeBuildError surfaces its own
+// actionable message instead. Simulated hermetically via a fixture install
+// tree that copies hooks/ + the seam module but never gsd-core/bin/lib/ or
+// tsconfig.build.json (tests/helpers/cold-runtime-lib-fixture.cjs) — the
+// REAL gsd-core/bin/lib/ is never touched.
+describe('gsd-agent-isolation-guard.js: #3582 cold tree — RuntimeBuildError surfaces distinctly', () => {
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  test('missing compiled runtime library -> DENY (fail-closed) with the seam\'s own actionable message, not the generic config-unreadable text', (t) => {
+    const cold = buildColdInstallTree();
+    t.after(cold.cleanup);
+    const project = mkProject('gsd-aig-cold-');
+    t.after(() => cleanup(project));
+    writeConfig(project, JSON.stringify({ runtime: 'claude' }));
+
+    const env = { ...process.env };
+    delete env.GSD_RUNTIME;
+    const r = runHookSeam(path.join(cold.hooksDir, 'gsd-agent-isolation-guard.js'), [], {
+      input: JSON.stringify(agentPayload()),
+      cwd: project,
+      env,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    const result = toLegacyResult(r);
+    assert.equal(result.status, 2, `expected fail-closed DENY; stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.decision, 'block');
+    // The seam's own message (ensure-runtime-build.cjs), not the generic
+    // "could not read or resolve ... configuration" text rows 8/12 assert on.
+    assert.match(out.reason, /runtime library failed to self-build/);
+    assert.match(out.reason, /tsconfig\.build\.json not found/);
+    assert.match(out.reason, /npm run build:lib/);
+    assert.match(out.reason, /#3050/);
+    assert.doesNotMatch(
+      out.reason,
+      /could not read or resolve this project's dispatch-isolation configuration \(/,
+      'a build failure must not be misreported as an unreadable config.json',
+    );
+  });
+});

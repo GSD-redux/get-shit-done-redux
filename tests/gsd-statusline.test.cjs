@@ -2415,3 +2415,49 @@ describe('evaluateUpdateCache lineage guard', () => {
 });
   });
 }
+
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — degrade, not crash ─────
+//
+// gsd-core/bin/lib/semver-compare.cjs, package-identity.cjs,
+// state-document.cjs, active-workstream-store.cjs, and planning-workspace.cjs
+// are tsc build artifacts (ADR-457), gitignored and absent on a raw
+// plugin-marketplace / git-clone install that never ran `npm run build:lib`.
+// The statusline renders on EVERY prompt — before #3582 a missing library
+// crashed the whole hook process at module load (bare "Cannot find module"),
+// so Claude Code's statusline would show nothing AND emit a visible error on
+// every single render. The fix: the spawned-as-a-script path
+// (`require.main === module`) calls ensureRuntimeBuild() first and, on
+// failure, writes empty stdout and exits 0 — the SAME quiet no-signal
+// behavior every other internal failure in this hook already degrades to
+// (see e.g. the `try { ... } catch (e) { /* Silent fail */ }` wrapping
+// runStatusline's own body). Simulated hermetically via a fixture install
+// tree that copies hooks/ + the seam module but never gsd-core/bin/lib/ or
+// tsconfig.build.json (tests/helpers/cold-runtime-lib-fixture.cjs) — the REAL
+// gsd-core/bin/lib/ is never touched.
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  describe('gsd-statusline.js: #3582 cold tree — degrade to empty output, exit 0', () => {
+    test('missing compiled runtime library -> empty stdout, exit 0, no crash', (t) => {
+      const cold = buildColdInstallTree();
+      t.after(cold.cleanup);
+
+      const payload = JSON.stringify({
+        model: { display_name: 'Claude' },
+        workspace: { current_dir: os.tmpdir() },
+        session_id: `test-3582-${Date.now()}`,
+      });
+      const r = runHookSeam(path.join(cold.hooksDir, 'gsd-statusline.js'), [], {
+        input: payload,
+        timeoutMs: 4000,
+      });
+      assert.equal(r.exitCode, 0, `must exit 0 on a build failure; stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(r.stdout, '', 'must degrade to empty output, not throw a stack trace to stdout');
+    });
+  });
+}

@@ -997,3 +997,50 @@ describe('gsd-cursor-subagent-start.js: #3566 — per-install .gsd-runtime marke
     );
   });
 });
+
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — self-heal surfacing ────
+//
+// Mirrors tests/gsd-agent-isolation-guard.test.cjs's identical #3582 case for
+// the sibling Claude guard. evaluateRootIsolation now calls
+// ensureRuntimeBuild() immediately after the GSD-project existence check —
+// before resolveFallbackIsolation's runtime-name-policy.cjs/
+// capability-registry.cjs requires or resolveIsolationEvidence's
+// runtime-homes.cjs/worktree-safety.cjs requires — so a missing compiled
+// runtime library denies with the seam's own actionable message rather than
+// the generic "could not read or resolve ... configuration" text (#3050).
+// Simulated hermetically via tests/helpers/cold-runtime-lib-fixture.cjs — the
+// REAL gsd-core/bin/lib/ is never touched.
+describe('gsd-cursor-subagent-start.js: #3582 cold tree — RuntimeBuildError surfaces distinctly', () => {
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  test('missing compiled runtime library -> DENY (fail-closed) with the seam\'s own actionable message, not the generic config-unreadable text', (t) => {
+    const cold = buildColdInstallTree();
+    t.after(cold.cleanup);
+    const project = createTempDir('gsd-cs-cold-');
+    t.after(() => cleanup(project));
+    fs.mkdirSync(path.join(project, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
+
+    const env = { ...process.env };
+    delete env.GSD_RUNTIME;
+    delete env.CURSOR_CONFIG_DIR;
+    const r = toLegacyResult(runNode([path.join(cold.hooksDir, 'gsd-cursor-subagent-start.js')], {
+      input: JSON.stringify(subagentPayload([project])),
+      cwd: require('node:os').tmpdir(),
+      env,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    }));
+    assert.equal(r.status, 0, `this hook always exits 0; stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /runtime library failed to self-build/);
+    assert.match(out.user_message, /tsconfig\.build\.json not found/);
+    assert.match(out.user_message, /npm run build:lib/);
+    assert.match(out.user_message, /#3050/);
+    assert.doesNotMatch(
+      out.user_message,
+      /could not read or resolve this project's dispatch-isolation configuration \(/,
+      'a build failure must not be misreported as an unreadable config.json',
+    );
+  });
+});
