@@ -69,13 +69,16 @@ function buildProbeSource(hookPath) {
  * @param {string} opts.cwd - fake cwd (project base) for this run.
  * @param {object} [opts.envOverrides] - applied after HOME/USERPROFILE and
  *   after CLAUDE_CONFIG_DIR is deleted, so a row can reintroduce it.
+ * @param {string} [opts.hookPath] - override the hook under test (defaults to
+ *   the real hooks/gsd-check-update.js). Used by the #3582 cold-tree suite
+ *   below to point at a fixture copy instead.
  */
-function probe({ homeDir, cwd, envOverrides = {} }) {
+function probe({ homeDir, cwd, envOverrides = {}, hookPath = CHECK_UPDATE_PATH }) {
   const childEnv = { ...process.env, HOME: homeDir, USERPROFILE: homeDir };
   delete childEnv.CLAUDE_CONFIG_DIR;
   Object.assign(childEnv, envOverrides);
 
-  const result = runNode(['-e', buildProbeSource(CHECK_UPDATE_PATH)], {
+  const result = runNode(['-e', buildProbeSource(hookPath)], {
     cwd,
     env: childEnv,
     timeoutMs: PROBE_TIMEOUT_MS,
@@ -304,6 +307,42 @@ describe('detectConfigDir runtime behavior (#1860)', () => {
       result.project,
       path.join(tmpProject, '.config', 'opencode'),
       'project resolution must be independent of the home (global) fixture state'
+    );
+  });
+});
+
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — degraded cache filename ─
+//
+// gsd-core/bin/lib/package-identity.cjs is a tsc build artifact (ADR-457),
+// gitignored and absent on a raw plugin-marketplace / git-clone install that
+// never ran `npm run build:lib`. This SessionStart hook degrades to the
+// hardcoded fallback cache filename ('gsd-update-check.json') rather than
+// crash session start (see the hook's own #3582 comment). The DEGRADED
+// VERDICT this test locks is observable via the SAME spawn-env probe seam
+// used above: the GSD_CACHE_FILE env var the hook hands to its worker must
+// end with the fallback literal, not throw and not silently vanish.
+// Simulated hermetically via tests/helpers/cold-runtime-lib-fixture.cjs — the
+// REAL gsd-core/bin/lib/ is never touched.
+describe('gsd-check-update.js: #3582 cold tree — degrades to the fallback cache filename', () => {
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  test('missing compiled runtime library -> worker still launched, with the hardcoded fallback cache filename', (t) => {
+    const cold = buildColdInstallTree();
+    t.after(cold.cleanup);
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-cold-home-')));
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-cold-project-')));
+    t.after(() => { cleanup(home); cleanup(project); });
+
+    const result = probe({
+      homeDir: home,
+      cwd: project,
+      hookPath: path.join(cold.hooksDir, 'gsd-check-update.js'),
+    });
+
+    assert.equal(
+      path.basename(result.cache),
+      'gsd-update-check.json',
+      `expected the hardcoded degrade fallback cache filename when package-identity.cjs cannot be built; got: ${result.cache}`,
     );
   });
 });

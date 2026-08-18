@@ -20,6 +20,9 @@
  *   resolve-model <agent-type>         Get model for agent based on profile
  *   find-phase <phase>                 Find phase directory by number
  *   commit <message> [--files f1 f2] [--no-verify]   Commit planning docs
+ *   commit-docs-guard enable|disable   Opt-in .git/hooks/pre-commit guard
+ *                                       that refuses a commit staging
+ *                                       .planning/ when commit_docs is false
  *   commit-to-subrepo <msg> --files f1 f2  Route commits to sub-repos
  *   verify-summary <path>              Verify a SUMMARY.md file
  *   generate-slug <text>               Convert text to URL-safe slug
@@ -68,6 +71,14 @@
  *   milestone complete <version>       Archive milestone, create MILESTONES.md
  *     [--name <name>]
  *     [--no-archive-phases]          Skip moving phase dirs to milestones/vX.Y-phases/ (archived by default)
+ *     [--archive-quick]              Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
+ *                                    Quick Tasks Completed table (#2142; opt-in, default OFF)
+ *
+ *   milestone archive-quick <version>  Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
+ *                                      Quick Tasks Completed table, WITHOUT the milestone complete close-out
+ *                                      (no ROADMAP/REQUIREMENTS/MILESTONES.md writes, no completion guards);
+ *                                      safe against an already-completed milestone (#2142 escalation)
+ *     [--dry-run]                     Preview what would move, mutates nothing
  *
  * User Story Validation:
  *   user-story validate --story "..."  Validate "As a / I want to / so that" format
@@ -260,8 +271,7 @@ try {
   }
 } catch { /* advisory — never block */ }
 
-const { getActiveWorkstream } = require('./lib/planning-workspace.cjs');
-const { resolveActiveWorkstream, applyResolvedWorkstreamEnv } = require('./lib/active-workstream-store.cjs');
+const { resolveActiveWorkstream, applyResolvedWorkstreamEnv, peekActiveWorkstream } = require('./lib/active-workstream-store.cjs');
 const state = require('./lib/state.cjs');
 const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
@@ -922,6 +932,17 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     commands.cmdCheckCommit(cwd, raw);
   }
 
+  function routeCommitDocsGuard({ args, cwd, raw, error }) {
+    const subcommand = args[1];
+    if (subcommand === 'enable') {
+      commands.cmdCommitDocsGuardEnable(cwd, raw);
+    } else if (subcommand === 'disable') {
+      commands.cmdCommitDocsGuardDisable(cwd, raw);
+    } else {
+      error('Unknown commit-docs-guard subcommand. Available: enable, disable', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+    }
+  }
+
   function routeCommitToSubrepo({ args, cwd, raw, error }) {
     const message = args[1];
           const filesIndex = args.indexOf('--files');
@@ -1394,11 +1415,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         // PATH search already worked there, and the #3275 acceptance contract
         // holds macOS/Linux behavior unchanged. A name that resolves to nothing
         // falls back to the declared name so the ENOENT still surfaces (#3086).
-        const isWin = process.platform === 'win32';
-        const target = isWin ? (resolveSpawnBinary(binary) || binary) : binary;
-        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(target));
-        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : target;
-        const spawnArgv = winShim ? ['/d', '/s', '/c', target, ...argv] : argv;
+        // #3411: the resolve-then-mediate pair is one seam call now. Both halves had
+        // private copies here; `projectSpawnInvocation` owns them, so a fix to either
+        // reaches every spawn site instead of only this one.
+        //
+        // Unlike execTool, this lane adopts the RESOLVED path even for a non-batch
+        // binary: that is the behavior #3445 shipped and `deps.hasBinary` answers
+        // from the same resolver, so probe and spawn must agree on the exact file.
+        const { projectSpawnInvocation } = require('./lib/shell-command-projection.cjs');
+        const { command: spawnBinary, args: spawnArgv, windowsVerbatimArguments } = projectSpawnInvocation(binary, argv);
         const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
@@ -1410,6 +1435,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
           // into the orchestrating session or into the next lane.
           ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+          ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         });
         return {
           status: r.status,
@@ -1816,11 +1842,14 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     //  1. SENTINEL-FREE, not write-free. This route writes nothing itself, and
     //     in particular never writes .gsd/dispatch-isolation-sentinel.json —
     //     the only write that can hard-block a later executor dispatch. It is
-    //     NOT a claim of total filesystem purity: like every gsd-tools
-    //     invocation, it runs the shared bootstrap and active-workstream
-    //     resolution first, and getActiveWorkstream self-heals (unlinks) a
-    //     stale or invalid pointer. That is pre-existing, verb-independent,
-    //     and harmless to dispatch.
+    //     NOT an unconditional claim of total filesystem purity: like every
+    //     gsd-tools invocation, it runs the shared bootstrap and
+    //     active-workstream resolution first. As of #3579's root-cause fix
+    //     that bootstrap resolves via the non-mutating peekActiveWorkstream
+    //     (never unlinks); an actual stale/invalid pointer is still
+    //     self-healed, but only by whichever verb's own getActiveWorkstream
+    //     call later consumes it for real — this inspection route makes no
+    //     such call, so it is now also side-effect-free on the pointer file.
     //
     //  2. SHARED NEGOTIATION, for the arguments this verb accepts. Both verbs
     //     call resolveDispatchIsolationDecision, so the natural resolution
@@ -2134,9 +2163,20 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             const force = args.includes('--force');
             // #2118: --dry-run prints a preview plan without mutating.
             const dryRun = args.includes('--dry-run');
-            milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases, force, dryRun }, raw);
+            // #2142: quick-task archival is opt-in (default OFF) — unlike
+            // --no-archive-phases' inverted shape, absence of this flag means
+            // "do nothing" rather than "skip a default-on behavior".
+            const archiveQuick = args.includes('--archive-quick');
+            milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases, force, dryRun, archiveQuick }, raw);
+          } else if (subcommand === 'archive-quick') {
+            // #2142 escalation: narrow archival-only entry point (does NOT
+            // touch ROADMAP/REQUIREMENTS/MILESTONES.md, runs no completion
+            // guards) — safe to call against an already-completed milestone,
+            // unlike `milestone complete --archive-quick`.
+            const dryRun = args.includes('--dry-run');
+            milestone.cmdQuickArchive(cwd, args[2], { dryRun }, raw);
           } else {
-            error('Unknown milestone subcommand. Available: complete', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+            error('Unknown milestone subcommand. Available: complete, archive-quick', ERROR_REASON.SDK_UNKNOWN_COMMAND);
           }
   }
 
@@ -3582,32 +3622,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
  *
  * Path-like names (any '/' or '\') bypass the PATH scan: the name is already an
  * address, so it passes through when the file exists and is a file.
+ *
+ * #3411: the scan itself now lives in the declared platform seam
+ * (`src/shell-command-projection.cts` → `resolveExecutableBinary`). This function is
+ * the `bin/` entry point onto it and holds no copy of the logic — `CONTEXT.md`
+ * declares that file "All OS-facing I/O; single platform seam", and a private
+ * duplicate here is what made it untrue.
  */
 function resolveSpawnBinary(name, platform = process.platform, env = process.env) {
-  if (!name) return null;
-  if (name.includes('/') || name.includes('\\')) {
-    try { return fs.statSync(name).isFile() ? name : null; } catch { return null; }
-  }
-  const segments = String(env.PATH || '').split(path.delimiter).filter(Boolean);
-  if (platform !== 'win32') {
-    for (const dir of segments) {
-      const candidate = path.join(dir, name);
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch { /* next candidate */ }
-    }
-    return null;
-  }
-  const exts = String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean);
-  for (const dir of segments) {
-    for (const ext of exts) {
-      const candidate = path.join(dir, name + ext);
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch { /* next candidate */ }
-    }
-  }
-  return null;
+  const { resolveExecutableBinary } = require('./lib/shell-command-projection.cjs');
+  return resolveExecutableBinary(name, { platform, env });
 }
 
 const HOST_COMMAND_ROUTERS = {
@@ -3659,6 +3683,7 @@ const HOST_COMMAND_ROUTERS = {
     'find-phase': routeFindPhase,
     'commit': routeCommit,
     'check-commit': routeCheckCommit,
+    'commit-docs-guard': routeCommitDocsGuard,
     'commit-to-subrepo': routeCommitToSubrepo,
     'pr-subrepo': routePrSubrepo,
     'verify-summary': routeVerifySummary,
@@ -3926,7 +3951,7 @@ function runWithTimeout(argv) {
 // independently hand-maintained sites and nothing previously caught them
 // drifting apart when a query command was added to only one or two.
 const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--ws <name>] [--json-errors]\n' +
-  'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-to-subrepo, pr-subrepo, ' +
+  'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-docs-guard, commit-to-subrepo, pr-subrepo, ' +
   'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
   'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
   'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
@@ -4091,8 +4116,21 @@ async function main() {
   // Priority: --ws flag > GSD_WORKSTREAM env var > session/shared pointer > null.
   let workstreamContext = null;
   try {
+    // #3579 root-cause fix: this bootstrap resolution only decides whether to
+    // populate GSD_WORKSTREAM env for downstream routing — it is a check, not
+    // the consuming read. Using the mutating getActiveWorkstream here
+    // self-healed (cleared) a present-but-unresolvable pointer BEFORE the
+    // dispatched command's own resolution/diagnostic ran, so a second read in
+    // the same process (e.g. a subcommand's own getActiveWorkstream call, or
+    // a fail-safe guard's diagnoseUnresolvedActiveWorkstream) observed
+    // already-cleared state — silently falling through to a fallback marker
+    // it should never have inherited (isolation violation), or losing the
+    // evidence a diagnostic needed to explain why nothing resolved. peek
+    // shares the identical resolution logic and only differs by never
+    // calling adapter.clear(); self-heal still happens, exactly once, at
+    // whichever call site actually consumes the workstream for real.
     workstreamContext = resolveActiveWorkstream(cwd, args, process.env, {
-      getStored: getActiveWorkstream,
+      getStored: peekActiveWorkstream,
     });
     args = workstreamContext.args;
     // Set env var so all modules (planningDir, planningPaths) auto-resolve workstream paths.

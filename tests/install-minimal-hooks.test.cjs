@@ -1044,7 +1044,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
-const { applySettingsJsonHooks } = require('../bin/install.js');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const JS_HOOKS = [
   'gsd-check-update.js',
@@ -1167,7 +1167,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
-const { applySettingsJsonHooks } = require('../bin/install.js');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const SH_HOOKS = [
   'gsd-validate-commit.sh',
@@ -1292,7 +1292,7 @@ before(() => {
   ensureHooksDist();
 });
 
-const { applySettingsJsonHooks } = require('../bin/install.js');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

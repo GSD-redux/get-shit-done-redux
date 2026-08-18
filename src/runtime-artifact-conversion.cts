@@ -41,6 +41,12 @@ import { scanFencedBlocks } from './markdown-sectionizer.cjs';
 // runtime-homes.cjs + node builtins, never this module) — no cycle. See the
 // isGlobal sites below for why the boolean projection is centralized here too.
 import { isGlobalScope } from './install-scope.cjs';
+// #2875 Part 2: install-effort-resolver.cjs is a leaf-tier sibling (#2071) —
+// used by applyAgentFrontmatterExtensions below to read the SAME merged
+// effort config the install-time Claude .md injection has always read,
+// without this module reaching upward into bin/install.js (ADR-1508).
+import installEffortResolver = require('./install-effort-resolver.cjs');
+const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort, _getGsdEffortCatalog } = installEffortResolver;
 
 // #1383: resolve GSD's version WITHOUT a top-level
 // `require('../../../package.json')`. That require ran at module load on every
@@ -2585,6 +2591,46 @@ function convertClaudeAgentToClineAgent(content) {
 }
 
 /**
+ * Apply a runtime's descriptor-declared `hostBehaviors.brandingRewrites` to an
+ * agent body — the three literal-substring replaces the inline agent loop
+ * (bin/install.js) previously hardcoded per-branding-runtime (qwen/hermes):
+ *   CLAUDE.md    -> brandingRewrites['CLAUDE.md']
+ *   Claude Code  -> brandingRewrites['Claude Code']  (word-boundary, \bClaude Code\b)
+ *   .claude/     -> brandingRewrites['.claude/']
+ *
+ * Data-driven (#2875 Part 2 / J10): reads the rewrite table from the
+ * runtime's OWN descriptor rather than hardcoding any runtime's strings, so a
+ * runtime declaring a different `brandingRewrites` table gets its own
+ * rewrites applied automatically. A runtime with no `brandingRewrites`
+ * declared returns `content` unchanged (no rewrite table to apply).
+ *
+ * Byte-identical to the inline loop's `else if (_hostBehaviors(runtime).brandingRewrites)`
+ * branch, including plain (non-word-boundary) `.replace(/\bClaude Code\b/g, ...)`
+ * semantics — J9.
+ */
+function applyAgentBrandingRewrites(content, runtime) {
+  const _b = _hostBehaviors(runtime).brandingRewrites;
+  if (!_b) return content;
+  let converted = content;
+  if (_b['CLAUDE.md']) converted = converted.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
+  if (_b['Claude Code']) converted = converted.replace(/\bClaude Code\b/g, _b['Claude Code']);
+  if (_b['.claude/']) converted = converted.replace(/\.claude\//g, _b['.claude/']);
+  return converted;
+}
+
+/**
+ * Named branding converter for Hermes agents (#2875 Part 2 / J9-J10).
+ * `convertedAgentsKind` dispatches converters by exported name, so a named
+ * export is required even though the transform itself is fully generic
+ * (`applyAgentBrandingRewrites`) — resolved from
+ * `capabilities/hermes/capability.json`'s `hostBehaviors.brandingRewrites`,
+ * never hardcoded here.
+ */
+function convertClaudeAgentToHermesAgent(content) {
+  return applyAgentBrandingRewrites(content, 'hermes');
+}
+
+/**
  * Convert Claude Code agent markdown to Codex agent format.
  * Applies base markdown conversions, then adds a <codex_agent_role> header
  * and cleans up frontmatter (removes tools/color fields).
@@ -3335,6 +3381,136 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
 // ── End rewrite engine ────────────────────────────────────────────────────────
 
 /**
+ * Derive an agent's stem name from its source `.md` filename. Byte-identical
+ * to the inline agent loop's `entry.name.replace(/\.md$/, '')` (bin/install.js)
+ * — single-sourced here so the descriptor pipeline's per-agent resolution
+ * context (`agentCtx.agentName`, ADR-1235 §1 / #2875 Part 2 row I3) can never
+ * diverge from it. A filename with no trailing `.md` is returned unchanged
+ * (the regex has nothing to match) — I3's boundary row.
+ */
+function deriveAgentName(fileName: string): string {
+  return fileName.replace(/\.md$/, '');
+}
+
+/**
+ * #443 — Inject `effort: <value>` into YAML frontmatter of a Claude .md agent
+ * file in a newline-agnostic way (LF and CRLF source files are both handled).
+ * Relocated verbatim from bin/install.js (#2875 Part 2) — see
+ * `applyAgentFrontmatterExtensions` below for the orchestration that calls it.
+ *
+ * The function:
+ *   - Detects the file's EOL (CRLF if the first `---` line ends with \r\n,
+ *     otherwise LF).
+ *   - Skips injection if an `effort:` key already exists in the frontmatter
+ *     (idempotent).
+ *   - Inserts `effort: <value>` immediately before the closing `---` delimiter,
+ *     using the same EOL as the surrounding frontmatter so the output file
+ *     stays EOL-consistent.
+ *   - Returns the original content unchanged when no YAML frontmatter is found.
+ */
+function injectEffortFrontmatter(content: string, effortValue: string): string {
+  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
+  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
+  const match = fmRe.exec(content);
+  if (!match) return content; // no YAML frontmatter — leave unchanged
+
+  const fmBody = match[1]; // content between the two `---` lines
+  if (/^effort:/m.test(fmBody)) return content;
+
+  const openLen = 3 + eol.length; // "---" + eol
+  const closingStart = match.index + openLen + fmBody.length;
+
+  const before = content.slice(0, closingStart);
+  const after = content.slice(closingStart);
+  return `${before}effort: ${effortValue}${eol}${after}`;
+}
+
+/**
+ * #767 — Inject `disallowedTools: <value>` into the YAML frontmatter of a
+ * Claude .md agent. Mirrors injectEffortFrontmatter: idempotent (skips if
+ * disallowedTools: already present), inserts immediately before the closing
+ * `---`. Claude-only — never call for other runtimes, which break on unknown
+ * frontmatter keys. Relocated verbatim from bin/install.js (#2875 Part 2).
+ */
+function injectDisallowedToolsFrontmatter(content: string, disallowedValue: string): string {
+  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
+  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
+  const match = fmRe.exec(content);
+  if (!match) return content; // no YAML frontmatter — leave unchanged
+
+  const fmBody = match[1]; // content between the two `---` lines
+  if (/^disallowedTools:/m.test(fmBody)) return content;
+
+  const openLen = 3 + eol.length; // "---" + eol
+  const closingStart = match.index + openLen + fmBody.length;
+
+  const before = content.slice(0, closingStart);
+  const after = content.slice(closingStart);
+  return `${before}disallowedTools: ${disallowedValue}${eol}${after}`;
+}
+
+// #767 — Read-only verifier/auditor agents get a Claude-Code disallowedTools deny-list.
+// Group A (pure read-only) deny Write,Edit,MultiEdit. Group B report-writers Write one
+// output file so they deny only Edit,MultiEdit. gsd-nyquist-auditor is intentionally
+// excluded (it legitimately uses Write AND Edit to create/patch test files). Relocated
+// verbatim from bin/install.js (#2875 Part 2) — single source of truth for both the
+// inline loop (which now requires this export) and the descriptor pipeline.
+const READONLY_AGENT_DISALLOWED_TOOLS: Record<string, string> = {
+  'gsd-plan-checker': 'Write, Edit, MultiEdit',
+  'gsd-integration-checker': 'Write, Edit, MultiEdit',
+  'gsd-ui-checker': 'Write, Edit, MultiEdit',
+  'gsd-verifier': 'Edit, MultiEdit',
+  'gsd-doc-verifier': 'Edit, MultiEdit',
+  'gsd-eval-auditor': 'Edit, MultiEdit',
+  'gsd-ui-auditor': 'Edit, MultiEdit',
+};
+
+/**
+ * Post-converter frontmatter-extensions step (#2875 Part 2 / ADR-1235 §1
+ * follow-up). Driven by the runtime descriptor's
+ * `hostBehaviors.agentFrontmatterExtensions` allow-list — Claude is its only
+ * declared consumer today (`agentFrontmatterExtensions: ["effort"]`).
+ * A runtime that does NOT declare the extension gets nothing injected (J3):
+ * OpenCode/Qwen/Hermes reject unknown frontmatter keys.
+ *
+ * Byte-identical to the inline agent loop's
+ * `if ((_hostBehaviors(runtime).agentFrontmatterExtensions || []).includes('effort'))`
+ * block (bin/install.js): both the effort injection AND the disallowedTools
+ * injection are gated behind the SAME `'effort'` extension flag — there is no
+ * separate `'disallowedTools'` extension key, mirroring the loop exactly.
+ *
+ * J2 (the trap row): when the resolved effort is `'inherit'`, NO `effort:`
+ * key is written at all — the absence of the key IS the behavior (#3533).
+ * Writing `effort: inherit` would be a regression that looks like success.
+ *
+ * @param content    agent .md content, already converter-transformed
+ * @param runtime    canonical runtime ID
+ * @param agentName  agent stem (from deriveAgentName), e.g. 'gsd-planner'
+ * @param targetDir  install root — resolves .planning/config.json + ~/.gsd/defaults.json
+ */
+function applyAgentFrontmatterExtensions(
+  content: string,
+  { runtime, agentName, targetDir }: { runtime: string; agentName: string; targetDir?: string | null },
+): string {
+  const extensions = (_hostBehaviors(runtime).agentFrontmatterExtensions as string[] | undefined) || [];
+  if (!extensions.includes('effort')) return content;
+
+  let result = content;
+  const effortCfg = readGsdEffectiveEffortConfig(targetDir ?? null);
+  const universalEffort = resolveInstallTimeEffort(effortCfg, agentName);
+  // #3533 (10d): 'inherit' means the effort: key must NOT exist — Claude Code
+  // then follows the session effort. The canonical source agents carry no
+  // effort key, so skipping injection is the whole job.
+  if (universalEffort !== 'inherit') {
+    const renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, universalEffort).value;
+    result = injectEffortFrontmatter(result, renderedEffort);
+  }
+  const disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[agentName];
+  if (disallowedTools) result = injectDisallowedToolsFrontmatter(result, disallowedTools);
+  return result;
+}
+
+/**
  * Apply Co-Authored-By attribution policy to file content.
  *   - null      -> remove the Co-Authored-By line and its preceding blank line
  *   - undefined -> leave content unchanged
@@ -3439,6 +3615,10 @@ export = {
   convertClaudeAgentToCodebuddyAgent,
   convertClaudeAgentToClineAgent,
   convertClaudeAgentToCodexAgent,
+  // #2875 Part 2 (J10): Hermes named branding converter, generic underlying
+  // transform exported alongside it for direct reuse/testing.
+  convertClaudeAgentToHermesAgent,
+  applyAgentBrandingRewrites,
   // ADR-1239 / #2092 Phase B Upgrade 1: native .qwen/agents/*.md subagent
   // projection — registered by name so convertedAgentsKind's
   // conversionExports[converterName] dispatch (runtime-artifact-layout.cts)
@@ -3459,6 +3639,15 @@ export = {
   // ADR-1235 §1: descriptor-driven agent cross-cutting
   applyAgentPathRewrites,
   normalizeAgentBodyForRuntime,
+  // #2875 Part 2: descriptor-driven agent frontmatter-extensions step + its
+  // single-sourced building blocks (also required back by bin/install.js so
+  // the inline loop and the descriptor pipeline resolve through the SAME
+  // code — no drift between the two byte-parity-gated pipelines).
+  deriveAgentName,
+  injectEffortFrontmatter,
+  injectDisallowedToolsFrontmatter,
+  READONLY_AGENT_DISALLOWED_TOOLS,
+  applyAgentFrontmatterExtensions,
   _computePathPrefix: computePathPrefix,
   _restoreClaudeGlobalAtRefTilde: restoreClaudeGlobalAtRefTilde,
   _applyRuntimeRewrites,

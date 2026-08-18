@@ -29,7 +29,8 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const fc = require('fast-check');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 // `export =` shape TBD by the implementing phase — this module is "the sole
 // export consumers reach for" per the design doc, with `worstScope` also
@@ -1289,5 +1290,362 @@ describe('Phase-10/11 fields unchanged by the Phase-12 extension (matrix row 8)'
     }
     assert.deepStrictEqual(snap.perPhaseOrphanSummaries.value, []);
     assert.deepStrictEqual(snap.perPhaseWaveMissingPlans.value, []);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// #3586 (Phase 2, epic #2292) — `planningTracked` field
+//
+// Design:      .gsd/phase/fix-3586-tracked-gitignored-planning/40-design.md
+// Test matrix: .gsd/phase/fix-3586-tracked-gitignored-planning/50-test-matrix.md
+//              section A (rows A1-A12)
+//
+// `.gitignore` has no effect on files git already tracks — this field detects
+// the resulting contradiction: `.planning/` matches an ignore rule AND at
+// least one path under it is still tracked. Backs W029
+// (`src/health-diagnostic-rules/config-validation.cts`).
+// ═════════════════════════════════════════════════════════════════════════
+
+function initBareGitRepo(cwd) {
+  gitOrThrow(['init'], { cwd });
+  gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd });
+  gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd });
+}
+
+function commitAll(cwd, message) {
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', message], { cwd });
+}
+
+function writeGitignore(cwd, content) {
+  fs.writeFileSync(path.join(cwd, '.gitignore'), content);
+}
+
+// Simulates a timed-out `git ls-files` at the spawnSync seam — mirrors this
+// file's existing `mockGitWorktreeListTimeout` convention (t.mock.method,
+// auto-restored by node:test, never chmod 0o000).
+function mockGitSpawnTimeout(t) {
+  t.mock.method(childProcess, 'spawnSync', () => ({
+    status: null,
+    stdout: '',
+    stderr: '',
+    signal: null,
+    error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+  }));
+}
+
+// Simulates `git ls-files` exiting non-zero while the structural
+// `rev-parse --is-inside-work-tree` probe (the builder's OWN follow-up call
+// on the failure path, #3586) still succeeds — i.e. a real repo, but the
+// `ls-files` invocation failed for some other reason. Differentiates by argv
+// rather than blanket-mocking every spawnSync call, since the builder now
+// issues a second git subprocess on this path.
+function mockGitSpawnFailure(t) {
+  t.mock.method(childProcess, 'spawnSync', (_cmd, args) => {
+    if (Array.isArray(args) && args.includes('rev-parse')) {
+      return { status: 0, stdout: 'true', stderr: '', signal: null, error: null };
+    }
+    return { status: 128, stdout: '', stderr: 'fatal: some other git failure', signal: null, error: null };
+  });
+}
+
+// Simulates `git ls-files` overflowing spawnSync's Node-default 1MB stdout
+// buffer (#3586 review F2) — Node reports this as `error.code === 'ENOBUFS'`,
+// `status: null`. Discriminates by argv (mirrors `mockGitSpawnFailure` above)
+// so the `check-ignore` call `isGitIgnored` issues on the same happy path
+// still reaches the REAL spawnSync against the fixture's real `.gitignore` —
+// a blanket mock here would falsely report `ignored: false` too.
+function mockGitSpawnEnobufs(t) {
+  const originalSpawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+    if (Array.isArray(args) && args.includes('ls-files')) {
+      return {
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: null,
+        error: Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' }),
+      };
+    }
+    return originalSpawnSync.call(childProcess, cmd, args, opts);
+  });
+}
+
+// Simulates a directory that is genuinely not inside any git work tree: both
+// `ls-files` AND the structural `rev-parse --is-inside-work-tree` probe fail.
+// Used to prove the `not_a_git_repo` classification does NOT depend on
+// stderr content — both calls here carry EMPTY stderr.
+function mockGitSpawnNotARepoNoStderr(t) {
+  t.mock.method(childProcess, 'spawnSync', () => ({
+    status: 128,
+    stdout: '',
+    stderr: '',
+    signal: null,
+    error: null,
+  }));
+}
+
+describe('planningTracked field (#3586, matrix rows A1-A12)', () => {
+  test('A1: ignored + tracked is detected', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a1-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: true, ignored: true },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok',
+    });
+  });
+
+  test('A2: ignored + untracked is clean', (t) => {
+    const cwd = createTempDir('gsd-3586-a2-');
+    t.after(() => cleanup(cwd));
+    initBareGitRepo(cwd);
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'initial (gitignore only)');
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: false, ignored: true },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok',
+    });
+  });
+
+  test('A3: tracked + NOT ignored is the normal (default) project — must NOT read as detected', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a3-');
+    t.after(() => cleanup(cwd));
+    // No .gitignore at all — the default state of essentially every project.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: true, ignored: false },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok',
+    });
+  });
+
+  test('A4: fresh project (untracked, not ignored) is clean', (t) => {
+    const cwd = createTempDir('gsd-3586-a4-');
+    t.after(() => cleanup(cwd));
+    initBareGitRepo(cwd);
+    gitOrThrow(['commit', '--allow-empty', '-m', 'initial'], { cwd });
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+    // Deliberately never `git add`.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: false, ignored: false },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok',
+    });
+  });
+
+  test('A5: not a git repo degrades to UNREADABLE/not_a_git_repo, silently', (t) => {
+    const cwd = createTempDir('gsd-3586-a5-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+    // No `git init` at all.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'not_a_git_repo');
+  });
+
+  test('A6: git ls-files timeout degrades quietly (no throw)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a6-');
+    t.after(() => cleanup(cwd));
+    mockGitSpawnTimeout(t);
+
+    let snap;
+    assert.doesNotThrow(() => {
+      snap = buildPlanningSnapshot(cwd);
+    });
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'git_timed_out');
+  });
+
+  test('A7: git ls-files non-zero exit degrades quietly (no throw)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a7-');
+    t.after(() => cleanup(cwd));
+    mockGitSpawnFailure(t);
+
+    let snap;
+    assert.doesNotThrow(() => {
+      snap = buildPlanningSnapshot(cwd);
+    });
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'git_list_failed');
+  });
+
+  test('A8: .planning/ absent from disk is silent (untracked, not ignored)', (t) => {
+    const cwd = createTempDir('gsd-3586-a8-');
+    t.after(() => cleanup(cwd));
+    initBareGitRepo(cwd);
+    gitOrThrow(['commit', '--allow-empty', '-m', 'initial'], { cwd });
+    // .planning/ never created at all.
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: false, ignored: false },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok',
+    });
+  });
+
+  test('A9: exactly ONE tracked file under an ignored .planning/ is enough to detect', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a9-');
+    t.after(() => cleanup(cwd));
+    // createTempGitProject seeds exactly .planning/PROJECT.md — one file.
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.value.tracked, true);
+    assert.strictEqual(snap.planningTracked.value.ignored, true);
+  });
+
+  test('A10: tracked in the index but deleted from the worktree is still detected', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a10-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+    // Delete the tracked file from disk WITHOUT `git rm` — it stays in the index.
+    // (fs.unlinkSync, not fs.rmSync — this is a single tracked file, not a
+    // directory teardown, so the Windows-EBUSY-retry rmSync rule does not apply.)
+    fs.unlinkSync(path.join(cwd, '.planning', 'PROJECT.md'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked.value, { tracked: true, ignored: true });
+  });
+
+  test('A11: ignored via .git/info/exclude counts the same as .gitignore', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a11-');
+    t.after(() => cleanup(cwd));
+    // Local-only, never committed — check-ignore honors it all the same.
+    fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '.planning/\n');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked.value, { tracked: true, ignored: true });
+  });
+
+  test('A12: a .gitignore covering only .planning/cache/ does NOT count as the root ignored (sub-path ignore is not the contradictory state)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a12-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/cache/\n');
+    commitAll(cwd, 'add sub-path gitignore');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked.value, { tracked: true, ignored: false });
+  });
+
+  // ─── Locale-independence regression (#3586) ────────────────────────────────
+  // The original defect: `not_a_git_repo` vs `git_list_failed` was
+  // distinguished by regex-matching git's (localized) stderr prose. Under a
+  // non-English `LANG`/`LC_ALL`, git prints the translated string and the
+  // regex misses, misclassifying a plain non-git directory as
+  // `git_list_failed`. The fix asks git a structural yes/no question
+  // (`rev-parse --is-inside-work-tree`) instead of parsing stderr.
+
+  test('A5-locale: not-a-git-repo classification holds with a non-English LANG/LC_ALL set', (t) => {
+    const cwd = createTempDir('gsd-3586-a5-locale-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+
+    const savedLang = process.env['LANG'];
+    const savedLcAll = process.env['LC_ALL'];
+    process.env['LANG'] = 'de_DE.UTF-8';
+    process.env['LC_ALL'] = 'de_DE.UTF-8';
+    t.after(() => {
+      if (savedLang === undefined) delete process.env['LANG'];
+      else process.env['LANG'] = savedLang;
+      if (savedLcAll === undefined) delete process.env['LC_ALL'];
+      else process.env['LC_ALL'] = savedLcAll;
+    });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'not_a_git_repo');
+    // NOTE: this machine's `git` (Apple Git 2.50.1) ships no German NLS
+    // catalog (verified: no `.mo` translation file under its install), so
+    // this run does not actually exercise TRANSLATED stderr text — git still
+    // prints English here even with the locale env vars set. This test
+    // therefore does not, by itself, prove locale-independence; the test
+    // below (A5-structural) is the real regression coverage: it fails
+    // against the old stderr-regex implementation regardless of what
+    // translations happen to be installed on the machine running the suite.
+  });
+
+  test('A5-structural: not_a_git_repo classification does not depend on stderr content (regression for #3586)', (t) => {
+    const cwd = createTempDir('gsd-3586-a5-structural-');
+    t.after(() => cleanup(cwd));
+    mockGitSpawnNotARepoNoStderr(t);
+
+    const snap = buildPlanningSnapshot(cwd);
+    // Both `ls-files` and the structural `rev-parse` probe fail here with
+    // EMPTY stderr (no "not a git repository" string anywhere) — the old
+    // stderr-regex implementation would have misclassified this as
+    // `git_list_failed`. The fix classifies structurally from the probe's
+    // exit code alone, so this still correctly reads `not_a_git_repo`.
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.UNREADABLE);
+    assert.strictEqual(snap.planningTracked.reason, 'not_a_git_repo');
+  });
+
+  test('happy path issues exactly ONE git subprocess for planningTracked (no rev-parse probe when ls-files succeeds)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-one-call-');
+    t.after(() => cleanup(cwd));
+
+    const originalSpawnSync = childProcess.spawnSync;
+    let lsFilesCalls = 0;
+    let revParseProbeCalls = 0;
+    t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+      if (cmd === 'git' && Array.isArray(args)) {
+        if (args.includes('ls-files')) lsFilesCalls += 1;
+        if (args.includes('rev-parse') && args.includes('--is-inside-work-tree')) revParseProbeCalls += 1;
+      }
+      return originalSpawnSync.call(childProcess, cmd, args, opts);
+    });
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.planningTracked.scope, SCOPE.COMPLETE);
+    assert.strictEqual(lsFilesCalls, 1, 'ls-files must run exactly once on the happy path');
+    assert.strictEqual(
+      revParseProbeCalls,
+      0,
+      'the rev-parse probe must NOT run when ls-files succeeds — the happy path stays a single subprocess',
+    );
+  });
+
+  // ─── ENOBUFS overflow (#3586 review F2) ────────────────────────────────────
+  // `execGit` sets no `maxBuffer`, so a `.planning/` tree with enough tracked
+  // paths to exceed spawnSync's Node-default 1MB stdout cap makes `ls-files`
+  // fail with `error.code === 'ENOBUFS'`. Treating that like any other
+  // non-zero-exit failure (scope UNREADABLE, silent downstream) would hide
+  // W029 in exactly the large-tracked-history case it exists to catch — the
+  // overflow itself is proof `ls-files` had non-empty output, so `tracked`
+  // must read `true`, not degrade.
+
+  test('A13: git ls-files ENOBUFS overflow is treated as proof of tracking, not a failure', (t) => {
+    const cwd = createTempGitProject('gsd-3586-a13-enobufs-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+    mockGitSpawnEnobufs(t);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.planningTracked, {
+      value: { tracked: true, ignored: true },
+      scope: SCOPE.COMPLETE,
+      reason: 'ok_truncated',
+    });
   });
 });

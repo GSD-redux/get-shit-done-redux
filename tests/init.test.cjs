@@ -4480,3 +4480,75 @@ describe('#3171: init execute-phase emits the display name, not the directory sl
     );
   });
 });
+
+// ─── #3581: init.progress frontier prefers roadmap order over stray artifacts ──
+describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
+  function writeProgressFixture(t, { strayNine, completeAll }) {
+    fs.writeFileSync(path.join(tmpDirOf(t), '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.1.0', '', '### Phase 8: Payments', '**Goal:** g', '', '### Phase 9: Compatibility', '**Goal:** g', ''].join('\n'));
+    fs.writeFileSync(path.join(tmpDirOf(t), '.planning', 'STATE.md'), [
+      '---', 'gsd_state_version: 1.0', 'milestone: v1.1.0', 'milestone_name: Active',
+      'status: executing', 'current_phase: 8', 'progress:', '  total_phases: 9',
+      '  completed_phases: 7', '  percent: 78', '---', '', '# Project State', '',
+      '## Current Position', '', 'Phase: 8', 'Status: Executing',
+    ].join('\n'));
+    if (strayNine) {
+      const nine = path.join(tmpDirOf(t), '.planning', 'phases', '09-live-compatibility-diagnostics');
+      fs.mkdirSync(nine, { recursive: true });
+      fs.writeFileSync(path.join(nine, 'UAT.md'), '# UAT evidence\n');
+    }
+    if (completeAll) {
+      // both phases complete on disk (plans, summaries, PASSING verification —
+      // the #3168 disk-strict bar) + roadmap checkboxes
+      for (const dir of ['08-payments', '09-compatibility']) {
+        const d = path.join(tmpDirOf(t), '.planning', 'phases', dir);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, 'PLAN.md'), '# p\n');
+        fs.writeFileSync(path.join(d, 'SUMMARY.md'), '# s\n');
+        fs.writeFileSync(path.join(d, `${dir.split('-')[0]}-VERIFICATION.md`), '---\nstatus: passed\n---\n\n# V\n');
+      }
+    }
+  }
+  // local alias so the helper reads the same as the suite's own fixtures
+  function tmpDirOf(t) { return t.tmpDir3581 ?? (t.tmpDir3581 = createTempProject('gsd-3581-')); }
+
+  test('#3581: init.progress prefers the roadmap frontier over a stray out-of-order artifact', (t) => {
+    writeProgressFixture(t, { strayNine: true });
+    t.after(() => cleanup(tmpDirOf(t)));
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDirOf(t));
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.ok(out.next_phase, `next_phase present; got keys ${Object.keys(out)}`);
+    assert.equal(String(out.next_phase.number).replace(/^0+/, ''), '8',
+      `the roadmap's Phase 8 (pending, unscaffolded) must be the frontier — not the stray 09 artifact dir; got ${out.next_phase.number}`);
+    const eight = (out.phases || []).find((p) => String(p.number).replace(/^0+/, '') === '8');
+    assert.ok(eight, 'Phase 8 present in the phases array (roadmap-derived)');
+    assert.equal(eight.directory, null, 'Phase 8 has no directory (corroborating the stray-only-disk shape)');
+  });
+
+  test('#3581 (control): a pending roadmap-only phase outranks a later pending directory', (t) => {
+    writeProgressFixture(t, { strayNine: false });
+    // pure ordering property, no stray artifacts: roadmap-only pending 8 vs a
+    // pending 9 DIRECTORY (empty). The pinned mixed-statuses contract (an
+    // in-progress phase is currentPhase's lane, not nextPhase's) is untouched.
+    const nine = path.join(tmpDirOf(t), '.planning', 'phases', '09-compatibility');
+    fs.mkdirSync(nine, { recursive: true });
+    t.after(() => cleanup(tmpDirOf(t)));
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDirOf(t));
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.equal(String(out.next_phase.number).replace(/^0+/, ''), '8',
+      'the unscaffolded roadmap Phase 8 is the frontier even against a legitimately-pending 9 directory');
+  });
+
+  test('#3581 (boundary): completed milestone yields no frontier', (t) => {
+    writeProgressFixture(t, { strayNine: false, completeAll: true });
+    fs.writeFileSync(path.join(tmpDirOf(t), '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.1.0', '', '- [x] **Phase 8: Payments**', '- [x] **Phase 9: Compatibility**', ''].join('\n'));
+    t.after(() => cleanup(tmpDirOf(t)));
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDirOf(t));
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.equal(out.next_phase, null, 'all-complete milestone: no frontier (completion flow owns the answer)');
+  });
+});

@@ -62,6 +62,15 @@ const os = require('os');
 // writeCursorHooksJson so the require always resolves post-install.
 const { resolveStatePath } = require('./lib/cursor-workspace.js');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+const { REASON_CODE } = require('./lib/isolation-deny-reason.js');
+// #3582: gsd-core/bin/lib/*.cjs (runtime-homes.cjs, worktree-safety.cjs,
+// runtime-name-policy.cjs, capability-registry.cjs — required below, inside
+// resolveIsolationEvidence and resolveFallbackIsolation) are tsc build
+// artifacts (ADR-457), gitignored and absent on a raw plugin-marketplace /
+// git-clone install that never ran `npm run build:lib`. Self-heal once, in
+// evaluateRootIsolation, before any of those four requires run — see the
+// call site below. This module itself depends on nothing under ./lib.
+const { ensureRuntimeBuild, RuntimeBuildError } = require('../gsd-core/bin/ensure-runtime-build.cjs');
 
 const MSG_PRESENT =
   'GSD: Subagent session started — review .planning/STATE.md for the current phase and any blockers before acting.';
@@ -333,6 +342,37 @@ function resolveIsolationDecision(data, { clock = Date, realpath = fs.realpathSy
   return { action: 'allow' };
 }
 
+// ─── #3566: per-install runtime marker ────────────────────────────────────────
+// Same contract as hooks/gsd-agent-isolation-guard.js's readInstallRuntimeMarker
+// (mirroring src/model-resolver.cts #2297): bin/install.js writes
+// `<install>/gsd-core/.gsd-runtime` beside VERSION for every runtime install;
+// this hook ships at `<install>/hooks/`, so the marker is the `gsd-core` sibling
+// of this file's own directory — the same sibling-layout assumption the
+// require('../gsd-core/bin/lib/…') calls below already make. Epic #3473 B3 owns
+// consolidating every marker reader into one shared seam.
+let _installMarkerCache; // undefined = unread; null = known absent; string = value
+
+function readInstallRuntimeMarker() {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', 'gsd-core', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf-8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297 — "no signal
+    // from this rung", never a resolution failure.
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seam — same contract as model-resolver.cts's #2297 seam; the dev/source
+// tree has no marker file, so spawned-hook tests (fresh process, no marker)
+// are unaffected.
+function _setInstallRuntimeMarkerForTests(value) {
+  _installMarkerCache = value;
+}
+
 /**
  * Conservative fallback resolution used when the #3045 sentinel is absent or
  * stale for `root`: re-derive isolation from the registry CAPABILITY, gated
@@ -355,7 +395,8 @@ function resolveIsolationDecision(data, { clock = Date, realpath = fs.realpathSy
  * otherwise legitimate dispatches, unlike `hooks/gsd-agent-isolation-guard.js`,
  * which degrades an undeterminable runtime to inert (#3045 MAJOR 2). Aligned
  * here: an explicit signal is now required — `GSD_RUNTIME` > config.json
- * `runtime` key > `~/.gsd/defaults.json` `runtime` (mirrors the Claude hook's
+ * `runtime` key > the per-install `.gsd-runtime` marker (#3566) >
+ * `~/.gsd/defaults.json` `runtime` (mirrors the Claude hook's
  * `resolveRuntimeIdentity`; `bin/install.js`'s `writeNonClaudeDefaults`
  * persists the installed runtime there for every non-Claude install,
  * including Cursor, so a REAL Cursor+GSD install still resolves confidently
@@ -371,6 +412,13 @@ function resolveFallbackIsolation(root, configPath) {
   const parsedConfig = JSON.parse(rawConfig);
   if (!runtimeId && parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
     runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || null;
+  }
+  if (!runtimeId) {
+    // #3566: the per-install marker, above the host-wide defaults — same fix as
+    // hooks/gsd-agent-isolation-guard.js's resolveRuntimeIdentity. defaults.json
+    // is host-wide and names whichever runtime installed LAST (#2840's poison);
+    // the marker describes THIS install (written for every runtime since #2297).
+    runtimeId = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker()) || null;
   }
   if (!runtimeId) {
     try {
@@ -419,6 +467,28 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
   }
   if (!isGsdProject) return { action: 'allow' };
 
+  // #3582: self-heal the compiled runtime library BEFORE any of its four
+  // downstream requires (resolveFallbackIsolation's two, resolveIsolationEvidence's
+  // two — reached only below this point). Checked separately from the
+  // sentinel/fallback try block below so a build failure surfaces its own
+  // actionable RuntimeBuildError message rather than being folded into the
+  // generic "could not read or resolve ... configuration" deny reason (the
+  // #3050 misreport this issue exists to fix). Still fails closed either way.
+  try {
+    ensureRuntimeBuild();
+  } catch (err) {
+    return {
+      action: 'deny',
+      reason:
+        `GSD subagent isolation guard: cannot resolve this project's dispatch-isolation ` +
+        `configuration because the GSD runtime library failed to self-build. ` +
+        `${err instanceof RuntimeBuildError ? err.message : String(err && err.message || err)} ` +
+        `Refusing to allow this subagent to spawn until the runtime library is built — a guard ` +
+        `that cannot verify must not answer "safe" (#3050).`,
+      reasonCode: REASON_CODE.RUNTIME_BUILD_FAILED,
+    };
+  }
+
   let declaredIsolation;
   try {
     // #3045 BLOCKER fix: a fresh sentinel is authoritative for THIS
@@ -439,6 +509,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `Refusing to allow this subagent to spawn without being able to verify whether ` +
         `isolation is required — a guard that cannot verify must not answer "safe" (#3050). ` +
         `Retry once the project configuration is readable.`,
+      reasonCode: REASON_CODE.CONFIG_UNREADABLE,
     };
   }
 
@@ -455,6 +526,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `"harness-worktree", but the subagentStart payload for this dispatch carries no usable ` +
         `subagent_type. Refusing to allow it to spawn without being able to confirm whether it ` +
         `is a GSD executor — a guard that cannot verify must not answer "safe" (#3050).`,
+      reasonCode: REASON_CODE.NO_SUBAGENT_TYPE,
     };
   }
 
@@ -471,6 +543,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `could not be determined (git did not respond). Refusing to allow subagent_type=` +
         `"${subagentType}" to spawn without being able to verify isolation — a guard that ` +
         `cannot verify must not answer "safe" (#3050). Retry once git is responsive.`,
+      reasonCode: REASON_CODE.CANNOT_DETERMINE_ISOLATION,
     };
   }
 
@@ -483,6 +556,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
       `directly, with no consent and no warning. Start an isolated session first (the ` +
       `"--worktree" CLI flag or the "/worktree" chat command; Cursor manages these worktrees ` +
       `under "~/.cursor/worktrees/") and retry.`,
+    reasonCode: REASON_CODE.NOT_ISOLATED_WORKTREE,
   };
 }
 
@@ -532,7 +606,7 @@ function main() {
         decision = { action: 'allow' };
       }
       if (decision.action === 'deny') {
-        const out = { permission: 'deny', user_message: decision.reason };
+        const out = { permission: 'deny', user_message: decision.reason, reason_code: decision.reasonCode };
         if (additionalContext !== null) out.additional_context = additionalContext;
         process.stdout.write(JSON.stringify(out));
         return;
@@ -557,4 +631,5 @@ module.exports = {
   resolveFallbackIsolation,
   resolveIsolationEvidence,
   getWorkspaceRoots,
+  _setInstallRuntimeMarkerForTests,
 };

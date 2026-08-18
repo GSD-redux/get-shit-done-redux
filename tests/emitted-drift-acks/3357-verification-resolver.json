@@ -2,7 +2,7 @@
   "version": 1,
   "paths": {
     "verify-work.md": {
-      "reason": "#3357: the `03-VERIFICATION.md` staleness check now resolves the phase's own report via `gsd_run query verification.resolve-file \"$PHASE_DIR\" --raw` instead of `ls \"${PHASE_DIR}\"/*-VERIFICATION.md | head -1`, routing through the same shared resolver seam as transition.md so both call sites agree on which file is canonical. Growth is +13 bytes (38,983 -> 38,996), the delta between the old ls/head-1 pipeline and the gsd_run call."
+      "reason": "#3357: the `03-VERIFICATION.md` staleness check now resolves the phase's own report via `gsd_run query verification.resolve-file \"$PHASE_DIR\" --raw` instead of `ls \"${PHASE_DIR}\"/*-VERIFICATION.md | head -1`, routing through the same shared resolver seam as transition.md so both call sites agree on which file is canonical. Growth is +13 bytes (38,983 -> 38,996), the delta between the old ls/head-1 pipeline and the gsd_run call. #3559: the generic gate-dispatch arm gained the in-context validation contract for manifest-supplied check values. gates[].check is not one of the four executable surfaces the install consent prompt discloses, so a capability consented to as declarative-only could still reach a shell through an unvalidated check.query interpolated into a command substitution. The reference (references/loop-hook-dispatch.md) stated this requirement for step -> ref.command and omitted it for gate; that omission is the root cause and is now closed at the reference plus all four dispatch sites. Growth is one validation paragraph per site. 38996 -> 39107 bytes (+111)."
     }
   }
 }

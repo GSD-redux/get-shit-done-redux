@@ -711,6 +711,20 @@ export const NON_FAMILY_COMMAND_ALIASES: NonFamilyCommandAlias[] = [
     "mutation": true
   },
   {
+    "canonical": "commit-docs-guard.disable",
+    "aliases": [
+      "commit-docs-guard disable"
+    ],
+    "mutation": true
+  },
+  {
+    "canonical": "commit-docs-guard.enable",
+    "aliases": [
+      "commit-docs-guard enable"
+    ],
+    "mutation": true
+  },
+  {
     "canonical": "commit-to-subrepo",
     "aliases": [],
     "mutation": true

@@ -29,13 +29,15 @@ const {
   maskStringLiterals,
   findDispatchCallSpans,
   _assertProjectionComplete,
-  applyClaudeCodeBrandSwap,
-  convertClaudeToWindsurfMarkdown,
   install,
   uninstall,
 } = require('../bin/install.js');
 
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const {
+  applyClaudeCodeBrandSwap,
+  convertClaudeToWindsurfMarkdown,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 const { parseFrontmatter, cleanup } = require('./helpers.cjs');
 const { nestedSkillPath } = require('./helpers/nested-layout.cjs');
 const pkg = require('../package.json');

@@ -78,7 +78,7 @@ const {
   listCodebaseMapFiles,
 } = onboardProjection;
 
-const { output, error } = io;
+const { output, error, ERROR_REASON } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
@@ -97,7 +97,9 @@ const {
   planningDir,
   planningRoot,
   listAvailableWorkstreams,
-  getActiveWorkstream,
+  peekActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
+  describeUnresolvedWorkstreamReason,
   findContextMdIn,
 } = planningWorkspace;
 
@@ -1372,7 +1374,13 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
   // source as `cmdInitTransition`: `GSD_WORKSTREAM` env, falling back to the
   // stored active-workstream pointer (mirrors `cmdInitProgress`'s own
   // resolution above).
-  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  //
+  // #3579 root-cause fix: this is a read-only informational field (no write
+  // follows), so use the non-mutating peek — getActiveWorkstream's self-heal
+  // would otherwise silently delete a stale/invalid pointer as a side effect
+  // of building a JSON report field, and (per #3579) could change what a
+  // LATER resolution in the same process observes.
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   const workstreamActive = !!resolvedWorkstream;
   const flatMode = !workstreamActive;
 
@@ -2817,7 +2825,9 @@ function cmdInitUpdate(cwd: string, raw: boolean, options: Record<string, unknow
  * pure JSON consumer with no `gsd_run` call of its own.
  */
 function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
-  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  // #3579 root-cause fix: read-only informational field — peek, don't
+  // self-heal (see cmdInitNewMilestone's identical rationale above).
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   const workstreamActive = !!resolvedWorkstream;
 
   const result: Record<string, unknown> = {
@@ -2914,12 +2924,33 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   // Mirror planningDir's resolution (GSD_WORKSTREAM env > stored active pointer) so
   // an explicit --ws (which sets GSD_WORKSTREAM) satisfies the check.
   const _availableWorkstreams = listAvailableWorkstreams(cwd);
-  const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  // #3579 root-cause fix: this is a check, not a consuming read — use the
+  // non-mutating peek so an unresolvable pointer isn't self-healed (cleared)
+  // here and then found "absent" by diagnoseUnresolvedActiveWorkstream below,
+  // which would misreport a present-but-bad marker as no marker at all.
+  const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   if (_availableWorkstreams.length > 0 && !_resolvedWorkstream) {
+    // #3579: getActiveWorkstream now inherits a pointer-less session's read
+    // from the shared .planning/active-workstream marker, so reaching this
+    // branch with a marker actually present means the marker EXISTED but
+    // didn't resolve (invalid name, or its workstream dir is gone) — a
+    // materially different situation from "nothing was ever set" and one
+    // that deserves its own diagnostic instead of the generic message below.
+    const _diagnosis = diagnoseUnresolvedActiveWorkstream(cwd);
+    if (_diagnosis.present) {
+      error(
+        `init.progress requires a workstream in workstream mode — the active-workstream marker names '${_diagnosis.value}', but it did not resolve: ${describeUnresolvedWorkstreamReason(_diagnosis.reason)}. Root STATE.md (likely stale) would be reported otherwise. ` +
+          `Pass --ws <name> or run ${formatGsdSlash('workstream set', _slashRuntime) as string} to point it at an existing workstream. ` +
+          `Available workstreams: ${_availableWorkstreams.join(', ')}`,
+        ERROR_REASON.WORKSTREAM_MODE_MARKER_UNRESOLVED,
+        { marker_value: _diagnosis.value, marker_reason: _diagnosis.reason },
+      );
+    }
     error(
       `init.progress requires a workstream in workstream mode — no active workstream is set, so root STATE.md (likely stale) would be reported. ` +
         `Pass --ws <name> or run ${formatGsdSlash('workstream set', _slashRuntime) as string} first. ` +
         `Available workstreams: ${_availableWorkstreams.join(', ')}`,
+      ERROR_REASON.WORKSTREAM_MODE_NONE_ACTIVE,
     );
   }
 
@@ -3068,6 +3099,25 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   phases.sort(
     (a, b) => parseInt(a['number'] as string, 10) - parseInt(b['number'] as string, 10),
   );
+
+  // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
+  // above could claim nextPhase from a stray out-of-order artifact directory
+  // (a phase-9 UAT evidence dir while roadmap phase 8 was pending and
+  // unscaffolded), silently skipping 8 — and init.progress then disagreed with
+  // roadmap.analyze on the same tree. Re-derive from the sorted union: the
+  // first phase that has not begun ('pending' | 'not_started') and is not
+  // roadmap-complete wins; artifacts still feed each entry's status and
+  // completion (corroborating evidence) but no longer outrank the ordering.
+  // Aligned trees derive the identical frontier as the loops above; an
+  // all-complete milestone finds none and keeps nextPhase null for the
+  // completion flow.
+  {
+    const frontier = phases.find((p) => {
+      const st = p['status'];
+      return (st === 'pending' || st === 'not_started') && p['roadmap_complete'] !== true;
+    });
+    if (frontier) nextPhase = frontier;
+  }
 
   let pausedAt: string | null = null;
   const state = platformReadSync(path.join(planningDir(cwd), 'STATE.md'));

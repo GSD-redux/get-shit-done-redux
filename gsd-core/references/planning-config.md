@@ -76,6 +76,8 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 **Auto-detection:** If `.planning/` is gitignored, `commit_docs` is automatically `false` regardless of config.json. This prevents git errors when users have `.planning/` in `.gitignore`.
 
+**Per-phase override:** `phase_commit_docs.<phase-id>` (e.g. `phase_commit_docs.03`) overrides `commit_docs` for one phase only, and wins over both the explicit config value and gitignore auto-detection — see `docs/CONFIGURATION.md#per-phase-override-phase_commit_docs` for the full precedence chain and examples.
+
 **Commit via CLI (handles checks automatically):**
 
 ```bash
@@ -380,7 +382,7 @@ These can be set at top level or nested under `planning.*` (e.g., `"planning": {
 
 Several config fields affect each other or trigger special behavior:
 
-1. **`commit_docs` auto-detection** -- When no explicit value is set in config.json and `.planning/` is in `.gitignore`, `commit_docs` automatically resolves to `false`. An explicit `true` or `false` in config always overrides auto-detection.
+1. **`commit_docs` resolution chain** -- Four tiers, highest wins: (1) `phase_commit_docs.<phase-id>` for the phase being committed, (2) an explicit `commit_docs` (or `planning.commit_docs`) value in config.json, (3) `.gitignore` auto-detection (`.planning/` in `.gitignore` resolves to `false`), (4) the manifest default (`true`). Precedence: per-phase → explicit config → gitignore auto-detect → default.
 
 2. **`branching_strategy` controls branch templates** -- The `phase_branch_template` and `milestone_branch_template` fields are only used when `branching_strategy` is set to `"phase"` or `"milestone"` respectively. When `branching_strategy` is `"none"`, all template fields are ignored.
 

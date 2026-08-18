@@ -258,10 +258,8 @@ Read the completed AI-SPEC.md. Check that:
 
 ## 11. Commit
 
-**If `commit_docs` is true:**
 ```bash
-git add "${AI_SPEC_FILE}"
-git commit -m "docs({phase_slug}): generate AI-SPEC.md — {primary_framework} + domain context + eval strategy"
+gsd_run query commit "docs({phase_slug}): generate AI-SPEC.md — {primary_framework} + domain context + eval strategy" --files "${AI_SPEC_FILE}"
 ```
 
 ## 12. Display Completion

@@ -184,7 +184,7 @@ describe('atomic write temp-tracking — shared Set parity guard', () => {
     assert.ok(tmpsSet instanceof Set, '__atomicWrittenTmps must be a Set');
     const sizeBefore = tmpsSet.size;
 
-    const { writeCursorHooksJson } = require('../bin/install.js');
+    const { writeCursorHooksJson } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
     writeCursorHooksJson(targetDir, srcDir, {});
 
     // After the write, the Set must have grown: the hooks.json temp path
@@ -227,7 +227,8 @@ describe('cursor hook registration — behavioral guard (module-owned hooks)', (
     fs.writeFileSync(path.join(srcHooksDir, 'gsd-cursor-session-start.js'), '// stub\n');
     fs.writeFileSync(path.join(srcHooksDir, 'gsd-cursor-post-tool.js'), '// stub\n');
 
-    const { writeCursorHooksJson, GSD_CURSOR_HOOK_MARKER } = require('../bin/install.js');
+    const { GSD_CURSOR_HOOK_MARKER } = require('../bin/install.js');
+    const { writeCursorHooksJson } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
     const result = writeCursorHooksJson(targetDir, srcDir, {});
 
     assert.ok(result, 'writeCursorHooksJson must return a result');

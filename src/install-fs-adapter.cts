@@ -75,16 +75,34 @@
  * a guard) must never leak a fake adapter into whatever runs next in the
  * same process (e.g. the next `node:test` in a shared worker).
  *
- * ⚠️ PARTIAL-ADAPTER TRAP: `withInstallFs` merges the injected `partial`
- * OVER the real adapter (`{ ...REAL_ADAPTER, ...partial }`) — any method the
- * partial does not define resolves to REAL `node:fs`, silently. An
- * incomplete fake is not a smaller fake adapter; for the methods it omits,
- * it IS the real filesystem. A test asserting "no real IO happened" against
- * a partial fake must either implement every method the exercised code path
- * touches, or explicitly account for the ones it does not (see
- * `tests/executed-plan.test.cjs`'s F2 test, which poisons real `fs` methods
- * for exactly this reason — a gap here shows up as the poisoned method
- * firing, not as a silent pass).
+ * ⚠️ PARTIAL-ADAPTER TRAP (#2875 defect fix — CLOSED, not merely documented):
+ * `withInstallFs` used to merge the injected `partial` OVER the real adapter
+ * (`{ ...REAL_ADAPTER, ...partial }`), so any method the partial did not
+ * define silently resolved to REAL `node:fs`. An incomplete fake was not a
+ * smaller fake adapter; for the methods it omitted, it WAS the real
+ * filesystem — a genuine production hazard, not only a test-authoring
+ * footgun: `user-artifact-staging.cts`'s `stageUserArtifacts` calls
+ * `installFs().rmSync(entryDir)` unconditionally as its entryDir-clearing
+ * step, and a `deps.fs` that omits `rmSync` (an easy oversight — nothing in
+ * the type system catches a plain-JS test object missing a key at runtime)
+ * silently deleted the real `<configDir>/.gsd-staging/<key>` on disk instead
+ * of failing loudly or staying confined to the fake's own store.
+ *
+ * `withInstallFs` now builds a GUARDED adapter instead: every method the
+ * partial does not define — except `realpathSync`, the one method this
+ * module's own contract documents as intentionally degrading to real fs
+ * (see its own doc comment below) — throws immediately IF CALLED, naming the
+ * missing method, instead of silently delegating to real fs. This only
+ * changes behavior for the injected-partial path (`withInstallFs(partial,
+ * fn)` with a defined `partial`); the no-adapter-injected default (AC4)
+ * still resolves to `REAL_ADAPTER` untouched, and any partial fake that
+ * genuinely implements every method its code path touches — the documented,
+ * intended usage — is byte-identical to before. A test asserting "no real IO
+ * happened" against a partial fake can now rely on this guard directly
+ * instead of having to hand-poison real `fs` methods itself (see
+ * `tests/executed-plan.test.cjs`'s F2 test, which still poisons real `fs` as
+ * defense-in-depth belt-and-suspenders, not because this guard is
+ * insufficient on its own).
  *
  * ─────────────────────────────────────────────────────────────────────────
  * SECURITY NOTE (40-design.md rows 6/7, H1-H5)
@@ -149,6 +167,13 @@ interface InstallFsAdapter {
   realpathSync(p: string): string;
   unlinkSync(p: string): void;
   rmdirSync(p: string): void;
+  /** #2875 (epic #2866 Phase 6 / user-artifact-staging.cts): added so
+   *  installer-migrations.cts's `copyPreservingSymlink` — reused by the
+   *  staging module to copy a user-owned artifact without ever dereferencing
+   *  a symlink (test-matrix A4) — can route ALL FIVE of its fs calls through
+   *  this seam instead of punching a hole through it for just these two. */
+  symlinkSync(target: string, p: string): void;
+  readlinkSync(p: string): string;
   /** Raw-fd streaming trio, added so `installer-migrations.cts`'s
    *  `sha256File` can hash a file in fixed-size chunks through this seam
    *  instead of buffering the whole file via `readFileSync` — see the
@@ -177,6 +202,8 @@ const REAL_ADAPTER: InstallFsAdapter = {
   realpathSync: (p) => nodeFs.realpathSync(p),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
   rmdirSync: (p) => nodeFs.rmdirSync(p),
+  symlinkSync: (target, p) => nodeFs.symlinkSync(target, p),
+  readlinkSync: (p) => nodeFs.readlinkSync(p),
   openSync: (p, flags) => nodeFs.openSync(p, flags),
   readSync: (fd, buffer, offset, length, position) => nodeFs.readSync(fd, buffer, offset, length, position),
   closeSync: (fd) => nodeFs.closeSync(fd),
@@ -194,20 +221,59 @@ function installFs(): InstallFsAdapter {
   return current;
 }
 
+// Methods allowed to silently degrade to real fs when a partial injected
+// adapter omits them — see the module doc's "PARTIAL-ADAPTER TRAP". This is
+// deliberately a single, narrow, documented exception: `realpathSync`'s own
+// interface doc comment already promises graceful real-fs fallback (the
+// symlink guard treats a `realpathSync` failure as "fall back to the lexical
+// form" anyway, so an absent method degrading the same way changes nothing
+// observable). Every other method is REQUIRED by `InstallFsAdapter`'s own
+// type (no `?`) and now enforces that at runtime too.
+const OPTIONAL_ADAPTER_METHODS: ReadonlySet<keyof InstallFsAdapter> = new Set(['realpathSync']);
+
 /**
- * Run `fn` with `partial` merged over the real adapter as the active
- * install-fs adapter, restoring the previous adapter afterward — even on
- * throw (see the module doc's re-entrancy/synchronous-only assumption for
+ * Build a merged adapter for an injected `partial`: every method `partial`
+ * defines is used as-is; `realpathSync` (only) falls back to real fs when
+ * absent; every other omitted method becomes a stub that THROWS if actually
+ * called, naming the missing method — turning a silent real-fs fall-through
+ * into an immediate, diagnosable failure (module doc "PARTIAL-ADAPTER TRAP").
+ * A method never invoked by the exercised code path never throws, so this is
+ * safe for any existing partial fake that only implements what it touches.
+ */
+function buildGuardedAdapter(partial: Partial<InstallFsAdapter>): InstallFsAdapter {
+  const guarded = {} as Record<keyof InstallFsAdapter, unknown>;
+  for (const key of Object.keys(REAL_ADAPTER) as (keyof InstallFsAdapter)[]) {
+    if (Object.prototype.hasOwnProperty.call(partial, key)) {
+      guarded[key] = partial[key];
+    } else if (OPTIONAL_ADAPTER_METHODS.has(key)) {
+      guarded[key] = REAL_ADAPTER[key];
+    } else {
+      guarded[key] = (..._args: unknown[]) => {
+        throw new Error(
+          `installFs().${key}(...) was called but the injected partial adapter does not implement it. ` +
+          `A fake adapter must implement every method its code path touches (install-fs-adapter.cts's ` +
+          `PARTIAL-ADAPTER TRAP) — falling through to real fs is no longer allowed for this method.`,
+        );
+      };
+    }
+  }
+  return guarded as unknown as InstallFsAdapter;
+}
+
+/**
+ * Run `fn` with a GUARDED merge of `partial` over the real adapter as the
+ * active install-fs adapter, restoring the previous adapter afterward — even
+ * on throw (see the module doc's re-entrancy/synchronous-only assumption for
  * why a bare module-level variable is safe here, and why it would not be
  * under async interleaving or concurrent installs). `partial` undefined is
  * a no-op: `fn` runs against whatever adapter was already active (real fs
  * by default) — this is what keeps every existing `deps`-less call site
- * (AC4) byte-identical.
+ * (AC4) byte-identical. See `buildGuardedAdapter` for what "guarded" means.
  */
 function withInstallFs<T>(partial: Partial<InstallFsAdapter> | undefined, fn: () => T): T {
   if (!partial) return fn();
   const previous = current;
-  current = { ...REAL_ADAPTER, ...partial };
+  current = buildGuardedAdapter(partial);
   try {
     return fn();
   } finally {

@@ -819,3 +819,21 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 - Researchers have web access — they need current ecosystem information
 - Executors have Edit — they modify code but not web access
 - Mappers have Write — they write analysis documents but not Edit (no code changes)
+
+## Completion Contracts (machine-enforced)
+
+Every agent's return contract is declared in [`gsd-core/references/agent-contracts.md`](../gsd-core/references/agent-contracts.md)'s **Agent Registry** table — `(Agent, Completion Markers, Consumed by, Kind)` — and enforced by `npm run check:contract-drift` (part of `lint:ci`).
+
+The `Kind` column records how a caller actually detects the agent's completion:
+
+| Kind | Detection mechanism |
+|---|---|
+| `sentinel-match` | Exact-case string match against a declared marker (by a workflow, command, or another agent) |
+| `artifact+query` | The agent writes a file; the caller reads or queries that artifact |
+| `structured-return` | The agent returns parseable sections/JSON inline; the caller reads the return text |
+
+When you add an agent or change what it returns, update its registry row in the same change — a stale row is a build failure, not a documentation cleanup for later. Markers are extracted **fence-aware** (a heading inside a fenced block is the emitted template; the same words outside a fence are prose documentation), producer scope includes `@`-included `gsd-core/references/**` files, and consumers are matched **exact-case** (a case-insensitive hit is reported as a collision, never accepted). A marker that is deliberately emitted but matched by nothing carries an `(unconsumed: <reason>)` annotation — an auditable exemption that waives only the consumer requirement.
+
+The same check also enforces the read-tag pairing: whenever a declared consumer emits `<required_reading>`, the producing agent's instructions must reference the gate (directly or via an `@`-included reference) — and the retired `<files_to_read>` vocabulary may not reappear under `workflows/`, `commands/`, or `agents/`.
+
+For acting on a specific finding, see [How to resolve a contract-drift finding](how-to/resolve-contract-drift-findings.md).

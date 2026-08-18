@@ -43,8 +43,9 @@
 // authoritative — `none`/`orchestrator-worktree` ALLOW immediately
 // (sequential/orchestrator-managed dispatch is legitimate, not a bug); an
 // absent/stale sentinel falls back to a conservative registry+config check
-// (GSD_RUNTIME env > .planning/config.json `runtime` — no confident signal
-// degrades to inert rather than guessing 'claude', see resolveRegistryIsolation)
+// (GSD_RUNTIME env > .planning/config.json `runtime` > the per-install
+// `.gsd-runtime` marker, #3566 — no confident signal degrades to inert rather
+// than guessing 'claude', see resolveRegistryIsolation)
 // gated additionally by `workflow.use_worktrees` — read directly, in-process,
 // no subprocess spawn.
 //
@@ -63,6 +64,15 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+const { REASON_CODE } = require('./lib/isolation-deny-reason.js');
+// #3582: gsd-core/bin/lib/*.cjs (runtime-name-policy.cjs, capability-registry.cjs
+// below) are tsc build artifacts (ADR-457), gitignored and absent on a raw
+// plugin-marketplace / git-clone install that never ran `npm run build:lib`.
+// Self-heal before the first such require (resolveRegistryIsolation, below) —
+// see ensureRuntimeBuild's own header for the full rationale. This module
+// itself (gsd-core/bin/ensure-runtime-build.cjs) depends on nothing under
+// ./lib, so requiring it here is always safe.
+const { ensureRuntimeBuild, RuntimeBuildError } = require('../gsd-core/bin/ensure-runtime-build.cjs');
 
 // No other executor-shaped subagent_type exists in agents/ today
 // (verified: only agents/gsd-executor.md). A Set, not a bare string compare,
@@ -85,6 +95,42 @@ function parseHarnessFlag(flag) {
   return { param: m[1], value: m[2] };
 }
 
+// ─── #3566: per-install runtime marker ────────────────────────────────────────
+// bin/install.js writes `<install>/gsd-core/.gsd-runtime` for EVERY runtime
+// install (#2297), co-located with VERSION. Unlike `~/.gsd/defaults.json` —
+// which is host-wide and names whichever runtime's install ran LAST, the exact
+// leakage #2840's config.cjs change exists to prevent — the marker describes
+// THIS install, which is the property runtime identity needs on a machine
+// with 2+ runtimes. Mirrors readInstallRuntimeMarker in src/model-resolver.cts
+// (same cache + test-seam shape); this hook cannot import that module without
+// dragging the whole model-resolution stack into a PreToolUse hot path, so the
+// 5-line read lives here against the same sibling-layout assumption the hook's
+// own require('../gsd-core/bin/lib/…') already makes. Epic #3473 B3 owns
+// consolidating every marker reader into one shared seam.
+let _installMarkerCache; // undefined = unread; null = known absent; string = value
+
+function readInstallRuntimeMarker() {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', 'gsd-core', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf-8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297 — "no signal
+    // from this rung", never a resolution failure. Falls through to the
+    // defaults rung below.
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seam for the marker rung (the dev/source tree has no marker file, so
+// the read always bottoms out at null there — same seam contract as
+// model-resolver.cts's _setInstallRuntimeMarkerForTests, #2297).
+function _setInstallRuntimeMarkerForTests(value) {
+  _installMarkerCache = value;
+}
+
 /**
  * Resolve this project's declared `runtime` identity WITHOUT defaulting to
  * 'claude' when no explicit signal exists (#3045 MAJOR 2).
@@ -100,9 +146,10 @@ function parseHarnessFlag(flag) {
  *
  * Returns `{ runtimeId, confident }`. `confident` is true only when an
  * explicit signal exists (GSD_RUNTIME env override, a `runtime` key literally
- * present in config.json, or a `runtime` persisted to `~/.gsd/defaults.json`
- * by the installer — see below); false means "cannot determine" and callers
- * must NOT silently substitute 'claude' — see resolveRegistryIsolation.
+ * present in config.json, the per-install `.gsd-runtime` marker, or a
+ * `runtime` persisted to `~/.gsd/defaults.json` by the installer — see
+ * below); false means "cannot determine" and callers must NOT silently
+ * substitute 'claude' — see resolveRegistryIsolation.
  *
  * #3045 BLOCKER 2 fix: precedence is GSD_RUNTIME env > config.json `runtime`
  * key > `~/.gsd/defaults.json` `runtime`. The first two are unchanged; the
@@ -117,6 +164,17 @@ function parseHarnessFlag(flag) {
  * (`nativeModelAliases` short-circuits it) and therefore correctly still rely
  * on config.json/env. Reading the installer's own persisted signal makes
  * "confident" the common case instead.
+ *
+ * #3566: the per-install `.gsd-runtime` marker now sits BETWEEN config.json
+ * and defaults.json. defaults.json is host-wide and names whichever runtime
+ * installed LAST — on a 2-runtime machine that confidently resolves the WRONG
+ * runtime (a Codex install's `runtime:"codex"` leaking into Claude projects),
+ * and when the wrong runtime declares no harnessIsolationFlag the guard goes
+ * silently inert. The marker describes THIS install (written for every
+ * runtime since #2297), which is the source #2840's config.cjs change names
+ * as correct. defaults.json stays as the final rung so single-runtime default
+ * installs and pre-#2297 installs (no marker on disk) keep the #3045
+ * BLOCKER 2 behavior.
  */
 function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates) {
   const envRuntime = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
@@ -131,6 +189,13 @@ function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidate
     const configRuntime = resolveRuntimeNameFromCandidates(parsed.runtime);
     if (configRuntime) return { runtimeId: configRuntime, confident: true };
   }
+
+  // #3566: the per-install marker, above the host-wide defaults — see the
+  // block comment on readInstallRuntimeMarker. An empty/whitespace-only file
+  // or an unknown value degrades exactly like the other rungs (no signal /
+  // future-runtime tolerance via resolveRuntimeNameFromCandidates).
+  const markerRuntime = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
+  if (markerRuntime) return { runtimeId: markerRuntime, confident: true };
 
   // #3045 BLOCKER 2: fall back to the installer-persisted default. Read
   // defensively — an absent/corrupt/non-object defaults.json is "no signal",
@@ -183,6 +248,15 @@ function resolveHarnessFlag(runtimeId, runtimes) {
  * run, e.g. a manual Agent() call before any sentinel has been written).
  */
 function resolveRegistryIsolation(cwd, configPath) {
+  // #3582: self-heal the compiled runtime library BEFORE either require
+  // below — this is the only reaching path to both (resolveRegistryIsolation
+  // is the sole caller of each), so one call here covers both. Throws
+  // RuntimeBuildError on an unbuildable tree; the caller (resolveIsolationState)
+  // already wraps this whole function in try/catch and folds any error into
+  // its fail-closed `error` result — evaluateDispatch below distinguishes a
+  // RuntimeBuildError there so it surfaces this seam's actionable message
+  // instead of being misreported as an unreadable config.json (#3050 lesson).
+  ensureRuntimeBuild();
   const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
   const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
@@ -360,13 +434,27 @@ function evaluateDispatch(data, { clock = Date } = {}) {
   if (!state.gsdProject) return { action: 'allow' };
 
   if (state.error) {
-    const reason =
-      `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
-      `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
-      `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
-      `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
-      `project configuration is readable.`;
-    return { action: 'block', reason };
+    // #3582: a missing/unbuildable compiled runtime library (RuntimeBuildError,
+    // thrown by ensureRuntimeBuild in resolveRegistryIsolation) is a DIFFERENT,
+    // actionable failure from an unreadable/unparsable config.json — surface
+    // its own message instead of misreporting it as the generic
+    // "could not read or resolve ... configuration" text (the exact #3050
+    // misreport this issue exists to fix). Both cases still fail closed
+    // (block); only the message differs.
+    const isBuildFailure = state.error instanceof RuntimeBuildError;
+    const reason = isBuildFailure
+      ? `Agent isolation guard: cannot resolve this project's dispatch-isolation ` +
+        `configuration because the GSD runtime library failed to self-build. ` +
+        `${state.error.message} Refusing to dispatch subagent_type="${subagentType}" until ` +
+        `the runtime library is built — a guard that cannot verify must not answer "safe" ` +
+        `(#3050).`
+      : `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
+        `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
+        `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
+        `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
+        `project configuration is readable.`;
+    const reasonCode = isBuildFailure ? REASON_CODE.RUNTIME_BUILD_FAILED : REASON_CODE.CONFIG_UNREADABLE;
+    return { action: 'block', reason, reasonCode };
   }
 
   if (state.isolation !== 'harness-worktree') return { action: 'allow' };
@@ -382,7 +470,7 @@ function evaluateDispatch(data, { clock = Date } = {}) {
     `${parsed.param}="${parsed.value}". Add ${parsed.param}="${parsed.value}" to the Agent() ` +
     `call so the executor runs in an isolated worktree instead of the primary checkout ` +
     `(gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md).`;
-  return { action: 'block', reason };
+  return { action: 'block', reason, reasonCode: REASON_CODE.HARNESS_FLAG_MISSING };
 }
 
 /* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
@@ -397,7 +485,7 @@ function main() {
       const data = JSON.parse(input);
       const decision = evaluateDispatch(data);
       if (decision.action === 'block') {
-        const out = { decision: 'block', reason: decision.reason };
+        const out = { decision: 'block', reason: decision.reason, reason_code: decision.reasonCode };
         process.stdout.write(JSON.stringify(out));
         // Kimi feeds stderr (not stdout) back to the model on exit 2.
         process.stderr.write(decision.reason);
@@ -425,4 +513,5 @@ module.exports = {
   resolveHarnessFlag,
   resolveRegistryIsolation,
   parseHarnessFlag,
+  _setInstallRuntimeMarkerForTests,
 };

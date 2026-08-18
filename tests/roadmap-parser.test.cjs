@@ -3325,3 +3325,123 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     assert.strictEqual(UNUSABLE_REASON.ROADMAP_UNREADABLE, 'roadmap_unreadable');
   });
 });
+
+// ─── #3577: markdown-table phase listings ────────────────────────────────────
+// Self-contained block: a ROADMAP whose current-milestone phase listing is a
+// GFM table (`| Phase | ... |` header, id in the first data cell) declared real
+// phases that every enumeration surface reported as absent (phase_count: 0,
+// found: false) — the #2199 bullet blind spot's table sibling. Surfaces: the
+// lookup chain (get-phase/phase-op), scanMilestonePhaseIds (milestone filter +
+// scope probe), hasPhaseEntries (window classification), and roadmap analyze's
+// enumerator. The canonical RoadmapProgress table also leads with `Phase` —
+// schema discrimination is load-bearing.
+{
+  const { describe: d3, test: t3, beforeEach: be3, afterEach: ae3 } = require('node:test');
+  const a3 = require('node:assert/strict');
+  const fs3 = require('node:fs');
+  const path3 = require('node:path');
+  const { createTempProject: ctp3, cleanup: cu3, runGsdTools: rgt3 } = require('./helpers.cjs');
+  const rp3 = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+  const writeRoadmap3 = (d, c) => fs3.writeFileSync(path3.join(d, '.planning', 'ROADMAP.md'), c);
+
+  const TABLE_ROADMAP = [
+    '# Roadmap: Table Repro', '',
+    '## Milestone v2.0', '',
+    '| Phase | Focus | Requirements | Success criteria (preview) |',
+    '| --- | --- | --- | --- |',
+    '| 20 | Alpha focus | R1 | Works |',
+    '| 21 | Beta focus | R2 | Works too |',
+    '',
+  ].join('\n');
+
+  d3('#3577 markdown-table phase listings resolve across surfaces', () => {
+    let tmpDir;
+    be3(() => { tmpDir = ctp3('fix-3577-'); });
+    ae3(() => { cu3(tmpDir); });
+
+    t3('#3577: roadmap get-phase finds a table-declared phase', () => {
+      writeRoadmap3(tmpDir, TABLE_ROADMAP);
+      const p20 = rp3.getRoadmapPhaseInternal(tmpDir, '20');
+      a3.ok(p20 && p20.found, 'phase 20 must resolve from its table row');
+      a3.match(p20.phase_name, /Alpha focus/);
+      const absent = rp3.getRoadmapPhaseInternal(tmpDir, '99');
+      a3.ok(!absent || !absent.found, 'an absent phase must not resolve');
+    });
+
+    t3('#3577: init phase-op resolves a table-declared phase (third named tool)', () => {
+      writeRoadmap3(tmpDir, TABLE_ROADMAP);
+      const r = rgt3(['init', 'phase-op', '20'], tmpDir);
+      a3.ok(r.success, `init phase-op failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      a3.ok(out.found !== false, `phase-op must resolve the table-declared phase; got ${r.output.slice(0, 200)}`);
+    });
+
+    t3('#3577: scanMilestonePhaseIds sees table-declared ids (milestone filter)', () => {
+      writeRoadmap3(tmpDir, TABLE_ROADMAP);
+      const scoped = rp3.extractCurrentMilestoneScoped(
+        fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
+        tmpDir,
+      );
+      const ids = rp3.scanMilestonePhaseIds(scoped.value);
+      a3.ok(ids.has('20') || [...ids].some((i) => i.replace(/^0+/, '') === '20'), `ids must contain 20; got ${[...ids]}`);
+      a3.ok(ids.has('21') || [...ids].some((i) => i.replace(/^0+/, '') === '21'), `ids must contain 21; got ${[...ids]}`);
+    });
+
+    t3('#3577: roadmap analyze counts table-declared phases', () => {
+      writeRoadmap3(tmpDir, TABLE_ROADMAP);
+      const r = rgt3(['roadmap', 'analyze', 'json'], tmpDir);
+      a3.ok(r.success, `roadmap analyze json failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      a3.ok(Array.isArray(out.phases), `expected phases array; got ${r.output.slice(0, 200)}`);
+      a3.strictEqual(out.phases.length, 2, `both table phases counted; got ${out.phases.length}`);
+      a3.ok(out.phases.some((p) => /Alpha focus/.test(p.phase_name || p.name || '')), 'phase 20 named from column 2');
+    });
+
+    t3('#3577: the canonical progress table is not a phase listing; fenced examples excluded', () => {
+      writeRoadmap3(tmpDir, [
+        '# Roadmap', '', '## v1.0', '',
+        '## Progress', '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '| --- | --- | --- | --- |',
+        '| 3 | 1/2 | In Progress | |',
+        '',
+        '```md',
+        '| Phase | Focus |',
+        '| --- | --- |',
+        '| 77 | fenced example |',
+        '```',
+        '',
+      ].join('\n'));
+      const scoped = rp3.extractCurrentMilestoneScoped(
+        fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
+        tmpDir,
+      );
+      const ids = [...rp3.scanMilestonePhaseIds(scoped.value)].map((i) => i.replace(/^0+/, ''));
+      a3.ok(!ids.includes('3'), `a RoadmapProgress row is a progress marker, not a declaration; got ${ids}`);
+      a3.ok(!ids.includes('77'), `a fenced table example must not count; got ${ids}`);
+      const p77 = rp3.getRoadmapPhaseInternal(tmpDir, '77');
+      a3.ok(!p77 || !p77.found, 'a fenced table row must not resolve');
+    });
+
+    t3('#3577: heading and table declarations union without duplicates; decimals count, 999 excluded', () => {
+      writeRoadmap3(tmpDir, [
+        '# Roadmap', '', '## v1.0', '',
+        '### Phase 1: Heading Form', '**Goal:** g', '',
+        '| Phase | Focus |',
+        '| --- | --- |',
+        '| 1 | heading dup guard |',
+        '| 2.5 | decimal row |',
+        '| 999 | icebox row |',
+        '',
+      ].join('\n'));
+      const r = rgt3(['roadmap', 'analyze', 'json'], tmpDir);
+      a3.ok(r.success, `analyze failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      const nums = out.phases.map((p) => p.phase_number || p.number).sort();
+      a3.ok(nums.includes('1'), 'heading phase present');
+      a3.strictEqual(nums.filter((n) => n === '1' || n === '01').length, 1, `id declared in BOTH heading and table counts once; got ${nums}`);
+      a3.ok(nums.some((n) => n.replace(/^0+/, '') === '2.5'), `decimal table id counted; got ${nums}`);
+      a3.ok(!nums.some((n) => /^0*999/.test(n)), `icebox 999 excluded; got ${nums}`);
+    });
+  });
+}

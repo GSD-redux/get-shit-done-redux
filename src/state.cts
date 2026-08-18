@@ -86,7 +86,6 @@ import { tokenizeHeadings, collectSection, replaceSection, stripFencedCode } fro
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
-import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import healthDiagnosticTypesMod = require('./health-diagnostic-types.cjs');
 const { SEVERITY, adviseRemedy } = healthDiagnosticTypesMod;
@@ -880,14 +879,66 @@ function cmdStateRecordMetric(cwd: string, options: StateRecordMetricOptions, ra
   output(result, raw, 'true');
 }
 
+type UpdateProgressPreview =
+  | { withheld: true; reason: string }
+  | { withheld: false; percent: number; completedPlans: number; totalPlans: number };
+
+/**
+ * #3583: computes the write-path percent AND the completed/total plan counts
+ * reported alongside it from ONE `buildStateFrontmatter` call, so
+ * `cmdStateUpdateProgress`'s JSON output cannot report a `percent` that
+ * disagrees with its own `completed`/`total` (`buildStateFrontmatter`'s
+ * `progress.{percent,completed_plans,total_plans}` all come from the same
+ * disk scan, scoped to the STORED `milestone:` frontmatter value — #3017).
+ * Re-deriving completed/total from a second, differently-scoped scan (the
+ * auto-derived one `cmdStateUpdateProgress` still runs for its own #3217/
+ * #3233 withhold gates) is what let the two disagree when the auto-derived
+ * "current" milestone differs from the stored one.
+ *
+ * Perf note: this duplicates buildStateFrontmatter's own `getMilestoneInfo`
+ * (re-reads/re-parses ROADMAP.md) and `readGitHeadSha` (a `git rev-parse`
+ * subprocess spawn) — neither is memoized, unlike the phase/plan disk scan
+ * (`_diskScanCache`), which IS shared with the second `buildStateFrontmatter`
+ * call `readModifyWriteStateMd` makes below. Both non-cached calls therefore
+ * run twice per `state update-progress`.
+ */
+function computeUpdateProgressPreview(statePath: string, cwd: string): UpdateProgressPreview {
+  const preContent = fs.readFileSync(statePath, 'utf-8');
+  const existingFm = extractFrontmatter(preContent, statePath) as Record<string, unknown>;
+  const preBody = stripFrontmatter(preContent);
+  const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const builtFm = buildStateFrontmatter(preBody, cwd, storedMilestone, readStoredTotalPhases(existingFm));
+  const progress = builtFm['progress'] as Record<string, unknown> | undefined;
+  const percent = progress && typeof progress['percent'] === 'number' ? progress['percent'] : null;
+  const completedPlans = progress && typeof progress['completed_plans'] === 'number' ? progress['completed_plans'] : null;
+  const totalPlans = progress && typeof progress['total_plans'] === 'number' ? progress['total_plans'] : null;
+  // A null percent is REACHABLE beyond the #3217/#3233 withholds the caller
+  // already applies — buildStateFrontmatter also nulls it via its own #1761
+  // milestone-unbounded guard, evaluated from `assertedMilestoneVersion`
+  // (an independent derivation, including a bare-version-token-in-prose
+  // fallback) rather than from `storedMilestone`/diskScope, so a STATE.md
+  // with no explicit `milestone:` field but a bare vX.Y token mentioned in
+  // ROADMAP prose can pass both of the caller's guards and still land here.
+  // Falling back to a locally-computed percent would reintroduce the exact
+  // #3583 defect for that case, so withhold instead — same shape as the
+  // caller's own no-op guards.
+  if (percent === null || completedPlans === null || totalPlans === null) {
+    return { withheld: true, reason: 'progress percent withheld by buildStateFrontmatter — STATE.md left unchanged' };
+  }
+  return { withheld: false, percent, completedPlans, totalPlans };
+}
+
 function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
-  // Count summaries across current milestone phases only (outside lock — read-only)
+  // Auto-derived scan across current-milestone phases (outside lock — read-only).
+  // Gates the #3217/#3233 withholds below ONLY — the reported completed/total
+  // counts come from computeUpdateProgressPreview's differently-scoped
+  // (stored-milestone) scan instead, so percent and completed/total can never
+  // disagree (#3583, finding 1).
   const phasesDir = planningPaths(cwd).phases;
   let totalPlans = 0;
-  let totalSummaries = 0;
   let phaseScope: Scope = SCOPE.UNREADABLE;
 
   {
@@ -900,9 +951,8 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
     phaseScope = scope;
     for (const dir of phaseDirs) {
-      const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
+      const { planCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
-      totalSummaries += summaryCount;
     }
   }
 
@@ -946,15 +996,25 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
 
-  const percent = clampPercent(totalSummaries, totalPlans);
+  // #3583: percent AND the completed/total counts reported alongside it both
+  // come from the SAME buildStateFrontmatter call (computeUpdateProgressPreview)
+  // — never from the auto-derived scan above, which exists only to gate the
+  // #3217/#3233 withholds and is scoped differently (no stored-milestone
+  // override), so reusing its counts here could report a percent that
+  // disagrees with its own completed/total.
+  const preview = computeUpdateProgressPreview(statePath, cwd);
+  if (preview.withheld) {
+    process.stderr.write(`[gsd-tools] WARNING: state update-progress skipped — ${preview.reason}\n`);
+    output({ updated: false, reason: preview.reason }, raw, 'false');
+    return;
+  }
+  const { percent, completedPlans: fmCompletedPlans, totalPlans: fmTotalPlans } = preview;
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
   const progressStr = `[${bar}] ${percent}%`;
 
   let updated = false;
-  const _totalPlans = totalPlans;
-  const _totalSummaries = totalSummaries;
 
   readModifyWriteStateMd(statePath, (content) => {
     // #2177: match against the BODY only. With /i the patterns below would
@@ -987,7 +1047,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   }, cwd);
 
   if (updated) {
-    output({ updated: true, percent, completed: _totalSummaries, total: _totalPlans, bar: progressStr }, raw, progressStr);
+    output({ updated: true, percent, completed: fmCompletedPlans, total: fmTotalPlans, bar: progressStr }, raw, progressStr);
   } else {
     output({ updated: false, reason: 'Progress field not found in STATE.md' }, raw, 'false');
   }
@@ -2397,10 +2457,35 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
                 `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries multiple milestone sections; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354)\n`
               );
             }
+            // #3573: the roadmap-absent sibling of the #3354 shape. With ROADMAP.md
+            // absent/unreadable the #549 heading counter never ran (roadmapScope
+            // stayed null), `milestoneBounded` is vacuously true (its gate requires
+            // roadmapRaw), and the dir count — which only ever counts phases that
+            // have STARTED — would be persisted as progress.total_phases by every
+            // state.* write. A STATE that asserts a milestone (storedMilestone —
+            // getMilestoneInfo is useless here, it reads the roadmap that is
+            // absent) declared a total somewhere; keep the stored frontmatter
+            // value instead. Without an asserted milestone (fresh project,
+            // pre-roadmap) the disk count is still the only source and stays
+            // authoritative (the #3354 doctrine's degenerate case).
+            const roadmapAbsentWithAssertedMilestone =
+              roadmapRaw === null &&
+              typeof storedMilestone === 'string' &&
+              storedMilestone.trim() !== '';
+            if (roadmapAbsentWithAssertedMilestone) {
+              process.stderr.write(
+                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3573)\n`
+              );
+            }
             return {
-              totalPhases: safeToUseRoadmapCount
-                ? Math.max(phaseDirs.length, roadmapPhaseCount)
-                : (milestonedButUnbounded ? null : phaseDirs.length),
+              // The two WITHHOLD shapes (#3354 milestoned-but-unbounded, #3573
+              // roadmap-absent-with-asserted-milestone) must be evaluated BEFORE
+              // safeToUseRoadmapCount — in the #3573 shape milestoneBounded is
+              // vacuously true (its gate requires roadmapRaw), so the safe-count
+              // arm would otherwise swallow the withhold.
+              totalPhases: (milestonedButUnbounded || roadmapAbsentWithAssertedMilestone)
+                ? null
+                : (safeToUseRoadmapCount ? Math.max(phaseDirs.length, roadmapPhaseCount) : phaseDirs.length),
               milestoneBounded,
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
@@ -2470,7 +2555,39 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
     if (pctMatch) progressPercent = parseInt(pctMatch[1], 10);
   }
 
-  const normalizedStatus = normalizeStateStatus(status, pausedAt);
+  let normalizedStatus = normalizeStateStatus(status, pausedAt);
+  // #3578: normalizeStateStatus matches 'complete' as a case-insensitive
+  // SUBSTRING, so the phase-completion prose cmdStateCompletePhase writes to
+  // the body (`Phase ${N} complete`) collapses to the milestone-level
+  // 'completed' status even when other phases remain open. Phase-level
+  // prose must never decide milestone-level status — completedPhases /
+  // totalPhases / diskScope, already derived above from a disk scan, are
+  // the authority on whether the MILESTONE is actually done. Only override
+  // when: (a) normalizeStateStatus actually landed on 'completed'; (b) the
+  // raw prose is UNAMBIGUOUSLY phase-completion prose — the anchored
+  // pattern below deliberately excludes "All phases complete" (no `\S+`
+  // phase token) and milestone-close prose like "v1.0 milestone complete"
+  // (no leading "phase"); and (c) the counters are trustworthy (a COMPLETE
+  // disk scope, both counts are finite numbers, and a positive
+  // denominator) and affirmatively disagree with 'completed'. In every
+  // other case normalizedStatus is left exactly as normalizeStateStatus
+  // returned it.
+  if (
+    normalizedStatus === 'completed' &&
+    typeof status === 'string' &&
+    /^\s*phase\s+\S+\s+complete\s*$/i.test(status) &&
+    diskScope === SCOPE.COMPLETE &&
+    // #1761: an unbounded milestone yields a conflated/understated total — the
+    // same authority that nulls progressPercent above. Without this, a bad
+    // denominator could demote a genuinely-complete milestone.
+    !milestoneUnbounded &&
+    typeof completedPhases === 'number' && Number.isFinite(completedPhases) &&
+    typeof totalPhases === 'number' && Number.isFinite(totalPhases) &&
+    totalPhases > 0 &&
+    completedPhases < totalPhases
+  ) {
+    normalizedStatus = 'executing';
+  }
 
   const fm: Record<string, unknown> = { gsd_state_version: '1.0' };
 
@@ -3709,7 +3826,12 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   // when SUMMARY files were added after the last STATE.md write (#1589).
   // #3354: pass the stored total so the milestoned-but-unbounded withhold can
   // report the preserved value instead of omitting the key.
-  const built = buildStateFrontmatter(body, cwd, undefined, readStoredTotalPhases(existingFm));
+  // #3573: pass the STORED MILESTONE too (same parity reasoning) — otherwise the
+  // roadmap-absent withhold never fires on this read surface and `state json`
+  // reports the phase-directory count while the persisted file preserves the
+  // stored total, exactly the write/read divergence #3354 closed for its shape.
+  const storedMilestoneJson = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm));
 
   // ADR-3408 §8.5 / D3: route stopped_at / paused_at / status / current_phase /
   // current_phase_name / current_plan through the SAME `preserve-when-unchanged`

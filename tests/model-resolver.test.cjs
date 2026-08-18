@@ -2354,7 +2354,7 @@ const {
 
 const {
   injectEffortFrontmatter,
-} = require('../bin/install.js');
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function writeConfig(dir, config) {
   const planningDir = path.join(dir, '.planning');
@@ -5512,9 +5512,10 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
   const prevTestMode = process.env.GSD_TEST_MODE;
   process.env.GSD_TEST_MODE = '1';
   const installMod = require('../bin/install.js');
+  const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
   if (prevTestMode === undefined) delete process.env.GSD_TEST_MODE;
   else process.env.GSD_TEST_MODE = prevTestMode;
-  const { readGsdRuntimeProfileResolver, generateCodexAgentToml } = installMod;
+  const { generateCodexAgentToml } = installMod;
 
   let tmpDir;
   beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
@@ -5606,6 +5607,75 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
     const libDir = path.join(installDir, '..', 'gsd-core', 'bin', 'lib');
     assert.ok(fs.existsSync(path.join(libDir, 'model-catalog.cjs')));
     assert.ok(fs.existsSync(path.join(libDir, 'model-profiles.cjs')));
+  });
+});
+
+// ─── #2875: install-model-override-resolver.cts's `depth < 8` upward-walk ──
+// boundary (CLAUDE.md boundary coverage: a budget limit must be exercised at
+// limit-1/limit/limit+1). The walk starts AT targetDir (checked at depth=0,
+// "0 levels up") and stops after depth=7 ("7 levels up", the LAST reachable
+// ancestor) — a `.planning/config.json` 8 levels up is never reached. Both
+// `readGsdRuntimeProfileResolver` and `readGsdEffectiveModelOverrides` run
+// the identical loop shape; readGsdRuntimeProfileResolver is exercised here
+// since resolver.runtime !== null is a simple, direct found/not-found signal.
+describe('#2875: install-model-override-resolver upward-walk depth boundary (limit-1/limit/limit+1)', () => {
+  const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+
+  beforeEach(() => { isolateHome(); resetRuntimeWarningCaches(); });
+  afterEach(() => { restoreHome(); });
+
+  // Builds an 8-level-deep directory chain under a fresh temp root and
+  // returns { root, leaf }, where leaf is 8 levels below root (root/L1/../L8).
+  // ancestorLevelsUp(leaf, n) === root/L1/../L(8-n).
+  function buildDeepChain() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-depth-walk-'));
+    let dir = root;
+    for (let i = 1; i <= 8; i += 1) {
+      dir = path.join(dir, `L${i}`);
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    return { root, leaf: dir };
+  }
+
+  function ancestorLevelsUp(leaf, n) {
+    let dir = leaf;
+    for (let i = 0; i < n; i += 1) dir = path.dirname(dir);
+    return dir;
+  }
+
+  // writeConfig assumes `<dir>/.planning/` already exists (every other call
+  // site in this file writes into a `createTempProject()`-scaffolded tree,
+  // which pre-creates it) — the bare ancestor dirs `buildDeepChain` makes do
+  // not, so create it first.
+  function writeConfigAt(dir, obj) {
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    writeConfig(dir, obj);
+  }
+
+  test('limit-1: config.json 6 levels up from targetDir is found', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 6), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.ok(resolver, 'a config.json 6 levels up must be found — well within the 8-deep walk');
+    assert.strictEqual(resolver.runtime, 'codex');
+  });
+
+  test('limit: config.json 7 levels up from targetDir is found — the LAST reachable ancestor', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 7), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.ok(resolver, 'a config.json exactly 7 levels up (the walk\'s last checked ancestor) must still be found');
+    assert.strictEqual(resolver.runtime, 'codex');
+  });
+
+  test('limit+1: config.json 8 levels up from targetDir is NEVER found — one level past what the walk reaches', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 8), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.strictEqual(resolver, null, 'a config.json 8 levels up is past the walk\'s cap and must not be found');
   });
 });
 

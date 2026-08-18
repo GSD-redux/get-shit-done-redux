@@ -15,7 +15,7 @@ const {
   convertClaudeCommandToAugmentSkill,
   convertClaudeAgentToAugmentAgent,
   convertClaudeToAugmentMarkdown,
-} = require('../bin/install.js');
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 describe('convertClaudeCommandToAugmentSkill', () => {
   test('writes unquoted Augment skill name in frontmatter', () => {

@@ -19,7 +19,7 @@ import { collectSection } from './markdown-sectionizer.cjs';
 import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir } = planningWorkspace;
+const { planningDir, quickDirFrom } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, spliceFrontmatter } = frontmatter;
@@ -530,7 +530,9 @@ function resolveQuickTaskSummaryFile(taskDir: string, dirName: string): string |
  * Incomplete if SUMMARY.md missing or status !== 'complete'.
  */
 function scanQuickTasks(planDir: string): ScanOutcome<QuickTaskItem> {
-  const quickDir = path.join(planDir, 'quick');
+  // #2142: routed through the shared quickDirFrom composer (planning-workspace.cts)
+  // so `.planning/quick` has exactly ONE owner instead of two ad-hoc path.joins.
+  const quickDir = quickDirFrom(planDir);
   if (!fs.existsSync(quickDir)) return { items: [], acknowledged: 0 };
 
   let entries: fs.Dirent[];
@@ -1682,4 +1684,7 @@ export = {
   formatAuditReport,
   listAuditPhaseTargets,
   cmdAuditAcknowledge,
+  // #2142: exported so src/milestone.cts's archiveQuickTaskDirectories README
+  // index generator shares this ONE discovery rule rather than re-deriving it.
+  resolveQuickTaskSummaryFile,
 };

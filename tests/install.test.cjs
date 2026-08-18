@@ -37,7 +37,6 @@ const pkg = require('../package.json');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
-  getDirName,
   getConfigDirFromHome,
   install,
   uninstall,
@@ -48,11 +47,13 @@ const {
   resolveKiloConfigPath,
   configureKiloPermissions,
   selectRuntimesFromArgs,
-  normalizeNodePath,
   GSD_CHANGESET_FILES,
   GSD_SCRIPTS_LIB_FILES,
-  installRuntimeArtifacts,
 } = require('../bin/install.js');
+
+const { getDirName } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+const { normalizeNodePath } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 // #2874 AC3 exemplar (see the qwen install/uninstall group below): resolves
@@ -2031,11 +2032,11 @@ const path = require('path');
 const isWindows = process.platform === 'win32';
 
 const {
-  readGsdEffectiveModelOverrides,
   generateCodexAgentToml,
   convertClaudeToOpencodeFrontmatter,
   getCodexSkillAdapterHeader,
 } = require('../bin/install.js');
+const { readGsdEffectiveModelOverrides } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const makeTmp = (prefix) => createTempDir(`gsd-2256-${prefix}-`);
@@ -2203,8 +2204,8 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
-const { normalizeNodePath, resolveNodeRunner, rewriteLegacyManagedNodeHookCommands } = INSTALL;
+const HOOKS_SURFACE = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
+const { normalizeNodePath, resolveNodeRunner, rewriteLegacyManagedNodeHookCommands } = HOOKS_SURFACE;
 
 // ─── normalizeNodePath ────────────────────────────────────────────────────────
 
@@ -2499,8 +2500,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
-const { normalizeNodePath, resolveNodeRunner } = INSTALL;
+const { normalizeNodePath, resolveNodeRunner } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
 
 // ─── Synthetic paths used across tests ───────────────────────────────────────
 
@@ -2709,8 +2709,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
-const { buildHookCommand, resolveNodeRunner } = INSTALL;
+const { buildHookCommand, resolveNodeRunner, rewriteLegacyManagedNodeHookCommands } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
 
 /**
  * Parse a hook command string into { runner, hookPath } structured
@@ -2875,8 +2874,6 @@ describe('Bug #2979: buildHookCommand for .sh hooks still uses bare "bash" (POSI
 });
 
 // ─── #3002 CR follow-up: legacy-bare-node migration ─────────────────────────
-
-const { rewriteLegacyManagedNodeHookCommands } = INSTALL;
 
 describe('Bug #2979 (#3002 CR): rewriteLegacyManagedNodeHookCommands rewrites bare-node managed hooks on reinstall', () => {
   test('exported as a function', () => {
@@ -3146,7 +3143,7 @@ describe('Bug #2979 (#3002 CR): resolveNodeRunner returns null when execPath una
 
 // ─── #3002 CR follow-up #2: null-command guards in settings.json ──────────
 
-const { validateHookFields } = INSTALL;
+const { validateHookFields } = require('../bin/install.js');
 
 describe('Bug #2979 (#3002 CR follow-up): no command:null hook entries survive serialization', () => {
   // CR feedback: assert structurally on the resulting settings object, not by
@@ -3369,13 +3366,12 @@ before(() => {
   conversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 });
 
-describe('bin/install.js compatibility export audit (#1559)', () => {
-  test('retains audited compatibility relays for shared rewrite helpers', () => {
-    assert.strictEqual(installer.processAttribution, conversion.processAttribution);
-    assert.strictEqual(
-      installer.applyRuntimeContentRewritesForCommandsInPlace,
-      conversion.applyRuntimeContentRewritesForCommandsInPlace,
-    );
+describe('bin/install.js compatibility export audit (#1559, retired by #2876)', () => {
+  test('the two previously-audited compatibility relays are retired — test consumers now import runtime-artifact-conversion.cjs directly', () => {
+    assert.equal(typeof conversion.processAttribution, 'function', 'processAttribution remains available from the conversion module');
+    assert.equal(installer.processAttribution, undefined, 'processAttribution is no longer re-exported by bin/install.js (#2876)');
+    assert.equal(typeof conversion.applyRuntimeContentRewritesForCommandsInPlace, 'function', 'applyRuntimeContentRewritesForCommandsInPlace remains available from the conversion module');
+    assert.equal(installer.applyRuntimeContentRewritesForCommandsInPlace, undefined, 'applyRuntimeContentRewritesForCommandsInPlace is no longer re-exported by bin/install.js (#2876)');
   });
 
   test('does not leak unaudited conversion-module helpers through the installer', () => {
@@ -3558,16 +3554,17 @@ describe('uninstall — manifest cleanup (#1908)', () => {
  * Regression tests for bug #2771: USER-PROFILE.md tracked in install manifest
  *
  * USER-PROFILE.md is a user-owned artifact created/refreshed by /gsd-profile-user.
- * preserveUserArtifacts() correctly preserves it across reinstalls. But writeManifest()
- * also records it under "gsd-core/USER-PROFILE.md" with a SHA-256 of whatever was
- * on disk at install time. On the next install, saveLocalPatches() compares the on-disk
- * (refreshed) hash to the manifest hash, finds them different, and emits the spurious
- * "Found N locally modified GSD file(s) — backed up to gsd-local-patches/" warning.
+ * The user-artifact-staging.cts durable staging path (#2875) correctly preserves it
+ * across reinstalls. But writeManifest() also records it under
+ * "gsd-core/USER-PROFILE.md" with a SHA-256 of whatever was on disk at install time.
+ * On the next install, saveLocalPatches() compares the on-disk (refreshed) hash to
+ * the manifest hash, finds them different, and emits the spurious "Found N locally
+ * modified GSD file(s) — backed up to gsd-local-patches/" warning.
  *
  * Invariant: a file is either distribution (manifest-tracked, diff'd against manifest)
  * or user artifact (preserved across installs, never diff'd). It cannot be both. The
  * shared truth source must be a single USER_OWNED_ARTIFACTS list referenced by both
- * preserveUserArtifacts callers and writeManifest.
+ * the staging call sites and writeManifest.
  *
  * Closes: #2771
  */
@@ -3639,7 +3636,7 @@ describe('#2771: USER-PROFILE.md is excluded from gsd-file-manifest.json', () =>
   });
 });
 
-// ─── Test 2: preserveUserArtifacts still preserves USER-PROFILE.md ────────────
+// ─── Test 2: USER-PROFILE.md is still preserved (via durable staging, #2875) ──
 
 describe('#2771: USER-PROFILE.md is still preserved across reinstall', () => {
   let tmpDir;
@@ -3758,25 +3755,29 @@ describe('#2771: legacy manifest entries for USER_OWNED_ARTIFACTS are normalized
 // ─── Test 4: shared constant exists and is used by both call sites ────────────
 
 describe('#2771: USER_OWNED_ARTIFACTS is a single source of truth', () => {
-  test('install.js exports USER_OWNED_ARTIFACTS containing USER-PROFILE.md', () => {
+  test('install-engine.cjs exports USER_OWNED_ARTIFACTS containing USER-PROFILE.md; bin/install.js no longer re-exports it (#2876)', () => {
     const origMode = process.env.GSD_TEST_MODE;
     process.env.GSD_TEST_MODE = '1';
     let mod;
+    let engine;
     try {
       delete require.cache[require.resolve(INSTALL_SCRIPT)];
       mod = require(INSTALL_SCRIPT);
+      engine = require('../gsd-core/bin/lib/install-engine.cjs');
     } finally {
       if (origMode === undefined) delete process.env.GSD_TEST_MODE;
       else process.env.GSD_TEST_MODE = origMode;
     }
 
+    assert.strictEqual(mod.USER_OWNED_ARTIFACTS, undefined, 'bin/install.js must no longer export USER_OWNED_ARTIFACTS (#2876)');
+
     assert.ok(
-      Array.isArray(mod.USER_OWNED_ARTIFACTS) || mod.USER_OWNED_ARTIFACTS instanceof Set,
-      'install.js must export USER_OWNED_ARTIFACTS as a single source of truth'
+      Array.isArray(engine.USER_OWNED_ARTIFACTS) || engine.USER_OWNED_ARTIFACTS instanceof Set,
+      'install-engine.cjs must export USER_OWNED_ARTIFACTS as a single source of truth'
     );
-    const list = Array.isArray(mod.USER_OWNED_ARTIFACTS)
-      ? mod.USER_OWNED_ARTIFACTS
-      : Array.from(mod.USER_OWNED_ARTIFACTS);
+    const list = Array.isArray(engine.USER_OWNED_ARTIFACTS)
+      ? engine.USER_OWNED_ARTIFACTS
+      : Array.from(engine.USER_OWNED_ARTIFACTS);
     assert.ok(
       list.includes('USER-PROFILE.md'),
       'USER_OWNED_ARTIFACTS must include USER-PROFILE.md'
@@ -6000,52 +6001,63 @@ const manifestPath = path.join(
 );
 const manifest = require(manifestPath);
 
-// Load install.js exported values (executes the module, not text inspection)
+// Load install-effort-resolver.cjs's catalog (executes the module, not text
+// inspection). #2876 (epic #2866 Phase 7) retired bin/install.js's
+// `_GSD_EFFORT_MANIFEST_TIER_DEFAULTS` / `_GSD_EFFORT_MANIFEST_DEFAULT`
+// getter re-exports — install-effort-resolver.cjs's `_getGsdEffortCatalog()`
+// was always the single source; bin/install.js's getters merely relayed it.
 const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-const {
-  _GSD_EFFORT_MANIFEST_TIER_DEFAULTS,
-  _GSD_EFFORT_MANIFEST_DEFAULT,
-} = require(installPath);
+const { _getGsdEffortCatalog } = require(
+  path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'install-effort-resolver.cjs')
+);
+const _GSD_EFFORT_MANIFEST_TIER_DEFAULTS = _getGsdEffortCatalog().EFFORT_MANIFEST_TIER_DEFAULTS;
+const _GSD_EFFORT_MANIFEST_DEFAULT = _getGsdEffortCatalog().EFFORT_MANIFEST_DEFAULT;
 
-test('install.js _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.light matches manifest effort.routing_tier_defaults.light', () => {
+test('bin/install.js no longer re-exports _GSD_EFFORT_MANIFEST_TIER_DEFAULTS / _GSD_EFFORT_MANIFEST_DEFAULT (#2876)', () => {
+  const installExports = require(installPath);
+  assert.strictEqual(installExports._GSD_EFFORT_MANIFEST_TIER_DEFAULTS, undefined);
+  assert.strictEqual(installExports._GSD_EFFORT_MANIFEST_DEFAULT, undefined);
+});
+
+test('install-effort-resolver.cjs _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.light matches manifest effort.routing_tier_defaults.light', () => {
   assert.strictEqual(
     _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.light,
     manifest.effort.routing_tier_defaults.light,
-    `install.js tier default for "light" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.light}) differs from manifest (${manifest.effort.routing_tier_defaults.light})`
+    `install-effort-resolver.cjs tier default for "light" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.light}) differs from manifest (${manifest.effort.routing_tier_defaults.light})`
   );
 });
 
-test('install.js _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.standard matches manifest effort.routing_tier_defaults.standard', () => {
+test('install-effort-resolver.cjs _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.standard matches manifest effort.routing_tier_defaults.standard', () => {
   assert.strictEqual(
     _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.standard,
     manifest.effort.routing_tier_defaults.standard,
-    `install.js tier default for "standard" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.standard}) differs from manifest (${manifest.effort.routing_tier_defaults.standard})`
+    `install-effort-resolver.cjs tier default for "standard" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.standard}) differs from manifest (${manifest.effort.routing_tier_defaults.standard})`
   );
 });
 
-test('install.js _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.heavy matches manifest effort.routing_tier_defaults.heavy', () => {
+test('install-effort-resolver.cjs _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.heavy matches manifest effort.routing_tier_defaults.heavy', () => {
   assert.strictEqual(
     _GSD_EFFORT_MANIFEST_TIER_DEFAULTS.heavy,
     manifest.effort.routing_tier_defaults.heavy,
-    `install.js tier default for "heavy" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.heavy}) differs from manifest (${manifest.effort.routing_tier_defaults.heavy})`
+    `install-effort-resolver.cjs tier default for "heavy" (${_GSD_EFFORT_MANIFEST_TIER_DEFAULTS.heavy}) differs from manifest (${manifest.effort.routing_tier_defaults.heavy})`
   );
 });
 
-test('install.js _GSD_EFFORT_MANIFEST_DEFAULT matches manifest effort.default', () => {
+test('install-effort-resolver.cjs _GSD_EFFORT_MANIFEST_DEFAULT matches manifest effort.default', () => {
   assert.strictEqual(
     _GSD_EFFORT_MANIFEST_DEFAULT,
     manifest.effort.default,
-    `install.js effort default (${_GSD_EFFORT_MANIFEST_DEFAULT}) differs from manifest (${manifest.effort.default})`
+    `install-effort-resolver.cjs effort default (${_GSD_EFFORT_MANIFEST_DEFAULT}) differs from manifest (${manifest.effort.default})`
   );
 });
 
-test('install.js tier-defaults object has exactly the same keys as manifest effort.routing_tier_defaults', () => {
+test('install-effort-resolver.cjs tier-defaults object has exactly the same keys as manifest effort.routing_tier_defaults', () => {
   const installKeys = Object.keys(_GSD_EFFORT_MANIFEST_TIER_DEFAULTS).sort();
   const manifestKeys = Object.keys(manifest.effort.routing_tier_defaults).sort();
   assert.deepStrictEqual(
     installKeys,
     manifestKeys,
-    `Key mismatch — install.js: [${installKeys.join(', ')}], manifest: [${manifestKeys.join(', ')}]`
+    `Key mismatch — install-effort-resolver.cjs: [${installKeys.join(', ')}], manifest: [${manifestKeys.join(', ')}]`
   );
 });
   });

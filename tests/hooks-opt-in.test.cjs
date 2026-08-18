@@ -124,8 +124,11 @@ describe('hook file validation', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Typed import — no source-grep needed (#455)
-const { GSD_UNINSTALL_HOOKS, buildHookCommand } = require(
+const { GSD_UNINSTALL_HOOKS } = require(
   path.join(__dirname, '..', 'bin', 'install.js')
+);
+const { buildHookCommand } = require(
+  path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs')
 );
 
 describe('installer hook registration', () => {

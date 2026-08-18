@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "cleanup.md": "#2142: adds retroactive quick-task archival — identify_quick_tasks step (target-milestone selection), dry-run summary + AskUserQuestion, archive_quick_tasks step using the narrow `milestone.archive-quick` command (not `milestone.complete --archive-quick`, which cannot be safely re-run against an already-completed milestone — see the step's own note), and success_criteria updates; the command was renamed from `quick.archive` to `milestone.archive-quick` (code-review FIX 1: fold under the existing `milestone` namespace, no new top-level command). 10319 -> 14941 bytes. (complete-milestone.md's #2142 growth is acknowledged in tests/emitted-drift-acks/3409-unreachable-guard-arms.json — two ack sources may never name the same path.)"
+  }
+}

@@ -77,6 +77,7 @@ build/
 /gsd-core/bin/lib/host-integration-adapters/cline-sdk-binding.cjs
 /gsd-core/bin/lib/handshake-serialized.cjs
 /gsd-core/bin/lib/install-effort-resolver.cjs
+/gsd-core/bin/lib/install-model-override-resolver.cjs
 /gsd-core/bin/lib/install-engine.cjs
 /gsd-core/bin/lib/embedding-adapter.cjs
 /gsd-core/bin/lib/adapter-declarative.cjs
@@ -219,6 +220,7 @@ build/
 /gsd-core/bin/lib/runtime-artifact-layout.cjs
 /gsd-core/bin/lib/install-scope.cjs
 /gsd-core/bin/lib/install-fs-adapter.cjs
+/gsd-core/bin/lib/user-artifact-staging.cjs
 /gsd-core/bin/lib/installed-surface-resolver.cjs
 /gsd-core/bin/lib/install-shadow-report.cjs
 /gsd-core/bin/lib/runtime-config-adapter-registry.cjs

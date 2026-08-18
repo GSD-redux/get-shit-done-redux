@@ -8,11 +8,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeEol } from './text-lines.cjs';
 import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, ERROR_REASON } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, isGitIgnored } = configLoaderMod;
@@ -1063,6 +1064,79 @@ function detectPhaseNumberFromFiles(files: string[] | undefined): string | null 
   return null;
 }
 
+type CommitDocsSource = 'phase' | 'config' | 'gitignore' | 'default';
+interface CommitDocsResolution {
+  resolved: boolean;
+  source: CommitDocsSource;
+}
+
+/**
+ * #3587: resolve the `phase_commit_docs.<phase-id>` override for `phaseNum`
+ * against `config['phase_commit_docs']` (a `{ "<phase-id>": boolean }` map, the
+ * same shape `agent_skills`/`features` use for their dynamic key families).
+ * Returns `undefined` — "no override applies" — when: no phase is known (B7),
+ * the map carries no entry for THIS phase (B5: no cross-phase leak), or the
+ * entry exists but is not a boolean (B6: never silently coerced). Both sides of
+ * the comparison route through `normalizePhaseName` so `3`, `03`, and `PROJ-03`
+ * all resolve to the same entry (B4/B9), reusing the single-owner phase-id
+ * normalizer rather than a second, looser string-equality rule.
+ */
+function resolvePhaseCommitDocsOverride(config: Record<string, unknown>, phaseNum: string | null): boolean | undefined {
+  if (!phaseNum) return undefined;
+  const overrides = config['phase_commit_docs'];
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return undefined;
+  const target = normalizePhaseName(phaseNum);
+  for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (normalizePhaseName(key) === target) {
+      return typeof value === 'boolean' ? value : undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * #3587: the four-tier `commit_docs` precedence chain for a single commit —
+ * `phase_commit_docs.<phase-id>` (tier 1, resolved HERE because this call site
+ * is the one place that knows the phase — see 40-design.md "Rejected" §1: NOT
+ * inside `loadConfig`, which has no phase context and is called by nearly every
+ * command), then the pre-existing explicit `commit_docs` (tier 2), `.gitignore`
+ * auto-detect (tier 3), and manifest default (tier 4). Tiers 2-4 are byte-for-
+ * behaviour identical to the pre-#3587 inline checks (epic #2292 AC4): when no
+ * phase override applies, `resolved` matches exactly what those checks computed
+ * and `source` merely labels which of the three decided it.
+ *
+ * `isPlanningGitIgnored` is a thunk, not a plain boolean, so the pre-existing
+ * short-circuit is preserved byte-for-behaviour: the original inline checks
+ * only ever ran `isGitIgnored` (a real `git check-ignore` subprocess) when
+ * `commit_docs` was truthy, and a phase override or an explicit `commit_docs:
+ * false` must keep skipping that call entirely, not just its result. Passing
+ * a thunk also keeps this function pure and directly property-testable
+ * (test matrix F1) without spawning git.
+ */
+function resolveCommitDocsPolicy(
+  config: Record<string, unknown>,
+  phaseNum: string | null,
+  isPlanningGitIgnored: () => boolean,
+): CommitDocsResolution {
+  const phaseOverride = resolvePhaseCommitDocsOverride(config, phaseNum);
+  if (phaseOverride !== undefined) return { resolved: phaseOverride, source: 'phase' };
+  if (!config['commit_docs']) return { resolved: false, source: 'config' };
+  if (isPlanningGitIgnored()) return { resolved: false, source: 'gitignore' };
+  return { resolved: true, source: 'default' };
+}
+
+// Reason string per commit_docs-resolution source, for the tier-1/tier-2 skip
+// envelope below. `phase` gets its OWN reason (`skipped_commit_docs_phase_false`)
+// rather than reusing `skipped_commit_docs_false` — telling a user "commit_docs
+// is false" when their project setting is actually `true` would be actively
+// misleading (design "Rejected" §3). `config` keeps the pre-existing string
+// unchanged: `agents/gsd-executor.md` pattern-matches on it (D2).
+const COMMIT_DOCS_SKIP_REASON: Record<Exclude<CommitDocsSource, 'default'>, string> = {
+  phase: 'skipped_commit_docs_phase_false',
+  config: 'skipped_commit_docs_false',
+  gitignore: 'skipped_gitignored',
+};
+
 function cmdCommit(cwd: string, message: string | undefined, files: string[] | undefined, raw: boolean, amend: boolean, noVerify: boolean): void {
   if (!message && !amend) {
     error('commit message required');
@@ -1079,19 +1153,24 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
 
   const config = loadConfig(cwd);
 
-  // Check commit_docs config
+  // Check commit_docs config — #3587: resolved through the tier 1
+  // (phase_commit_docs.<phase-id>) → tier 2 (commit_docs) → tier 3 (.gitignore)
+  // → tier 4 (default) precedence chain; see resolveCommitDocsPolicy above.
   // `skipped: true` is explicit so agent prompts can match on a first-class
   // success signal rather than inferring "skip" from "committed is missing"
   // and improvising raw git fallbacks (#3678).
-  if (!config['commit_docs']) {
-    const result = { committed: false, skipped: true, hash: null, reason: 'skipped_commit_docs_false' };
-    output(result, raw, 'skipped');
-    return;
-  }
-
-  // Check if .planning is gitignored
-  if (isGitIgnored(cwd, '.planning')) {
-    const result = { committed: false, skipped: true, hash: null, reason: 'skipped_gitignored' };
+  const commitDocsPolicy = resolveCommitDocsPolicy(
+    config,
+    detectPhaseNumberFromFiles(files),
+    () => isGitIgnored(cwd, '.planning'),
+  );
+  if (!commitDocsPolicy.resolved) {
+    const result = {
+      committed: false,
+      skipped: true,
+      hash: null,
+      reason: COMMIT_DOCS_SKIP_REASON[commitDocsPolicy.source as Exclude<CommitDocsSource, 'default'>],
+    };
     output(result, raw, 'skipped');
     return;
   }
@@ -2178,7 +2257,13 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // Matches both plain numeric (Phase 1:) and milestone-prefixed (Phase 2-01:) headings.
     // Also tolerates optional [bracket-token] scope prefix on phase headings.
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
+    // #3569: the id capture is the canonical #3036 shape (digit REQUIRED — incl.
+    // letter-prefixed B7, decimals, milestone 2-01), the same group roadmap.cts's
+    // collectAnalyzePhases uses. The former `([\w][\w.-]*)` matched ANY word, so
+    // prose mentioning `### Phase N:` inside an inline code span produced a phantom
+    // Not-Started row and made phases_total disagree with roadmap analyze.
+    // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
+    const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {
       // #3185: the heading seed carried no sentinel filter, so a
@@ -2342,35 +2427,239 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 }
 
 /**
- * Check whether a commit should be allowed based on commit_docs config.
- * When commit_docs is false, rejects commits that stage .planning/ files.
- * Intended for use as a pre-commit hook guard.
+ * Check whether a commit should be allowed based on the `commit_docs`
+ * precedence chain, INCLUDING any `phase_commit_docs.<phase-id>` override
+ * (#3587/#3601). Rejects commits that stage `.planning/` files when the
+ * resolved policy is false. Intended for use as a pre-commit hook guard —
+ * see `commit-docs-guard enable` above.
+ *
+ * The phase is derived from the STAGED `.planning/` paths via the single-
+ * owner `detectPhaseNumberFromFiles` (the same helper `cmdCommit` uses), and
+ * the policy itself is resolved via the single-owner `resolveCommitDocsPolicy`
+ * (also shared with `cmdCommit`) — this function never re-derives phase
+ * detection or precedence, so it cannot diverge from `cmdCommit`'s decision
+ * for the same staged tree (#3588 Part 1: this guard was previously
+ * phase-blind, reading only project-level `commit_docs` and directly
+ * contradicting `gsd-tools query commit`'s phase-aware resolution).
+ *
+ * Staged paths are read via `git diff --cached --name-only -z`, NUL-
+ * delimited, rather than the LF-delimited default. Without `-z`, git
+ * C-style-quotes (wraps in double quotes, octal-escapes) any path containing
+ * a non-ASCII byte, a space-adjacent special character, or a literal quote —
+ * `.planning/café.md` is reported as `".planning/caf\303\251.md"`, which
+ * does not start with `.planning/`, so the old LF-based filter silently
+ * missed it and allowed the commit (#3588 F2: a false negative in the harm
+ * direction this guard exists to prevent). `-z` disables that quoting
+ * entirely and NUL-terminates each path instead, so every staged path is
+ * read as literal, unquoted bytes and no unquoting logic is needed.
  */
 function cmdCheckCommit(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
 
-  // If commit_docs is true (or not set), allow all commits
-  if (config['commit_docs'] !== false) {
-    output({ allowed: true, reason: 'commit_docs_enabled' }, raw, 'allowed');
+  const stagedResult = execGit(['diff', '--cached', '--name-only', '-z'], { cwd });
+  if (stagedResult.exitCode === 0) {
+    const files = stagedResult.stdout.split('\0').filter(Boolean);
+    const planningFiles = files.filter(f => f.startsWith('.planning/'));
+
+    if (planningFiles.length > 0) {
+      const policy = resolveCommitDocsPolicy(
+        config,
+        detectPhaseNumberFromFiles(planningFiles),
+        () => isGitIgnored(cwd, '.planning'),
+      );
+      if (!policy.resolved) {
+        error(
+          `commit_docs is false but ${planningFiles.length} .planning/ file(s) are staged:\n` +
+          planningFiles.map(f => `  ${f}`).join('\n') +
+          `\n\nTo unstage: git reset HEAD ${planningFiles.join(' ')}`
+        );
+        return;
+      }
+      output(
+        { allowed: true, reason: policy.source === 'phase' ? 'phase_commit_docs_true' : 'commit_docs_enabled' },
+        raw,
+        'allowed',
+      );
+      return;
+    }
+  }
+  // exitCode !== 0 (no staged files / not a git repo) or no .planning/ files staged — allow
+
+  output({ allowed: true, reason: 'no_planning_files_staged' }, raw, 'allowed');
+}
+
+// ─── commit-docs-guard: opt-in pre-commit hook (#3588) ─────────────────────
+
+/**
+ * Stable sentinel line identifying a `.git/hooks/pre-commit` file as ours.
+ * Detection is by PRESENCE of this line, not byte-equality (design "Identifying
+ * 'our' hook") — a user who appends a line to a GSD-written hook must not make
+ * it unrecognizable, and a hook lacking this line must never be overwritten or
+ * deleted by `commit-docs-guard enable`/`disable`.
+ */
+const COMMIT_DOCS_GUARD_MARKER = '# gsd-core:commit-docs-guard';
+
+/**
+ * Locate `gsd-core/workflows/_runtime-launcher.snippet.sh` — the SAME
+ * gsd-tools-resolution chain every shipped workflow/agent bash block uses
+ * (scripts/sync-runtime-launcher.cjs) — by walking up from this module's own
+ * compiled location rather than a fixed literal `../..` join, so the walk
+ * tolerates the module living at a different depth under an alternate build
+ * or bundling layout (same defensive shape as
+ * runtime-artifact-layout.cts#findInstallSourceRoot).
+ */
+function findRuntimeLauncherSnippet(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, 'workflows', '_runtime-launcher.snippet.sh');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(`commit-docs-guard: could not locate workflows/_runtime-launcher.snippet.sh from ${__dirname}`);
+}
+
+/**
+ * Build the literal `.git/hooks/pre-commit` content `commit-docs-guard enable`
+ * writes. Reuses the canonical gsd_run resolution preamble byte-for-byte
+ * (read from disk, never hand-copied — see findRuntimeLauncherSnippet) so this
+ * hook resolves `gsd-tools` exactly the way every other shipped workflow bash
+ * block does, and cannot drift from it.
+ *
+ * LF-only (#3588 A2): the snippet file and every literal line here are joined
+ * with `\n`; platformWriteSync additionally normalizes CRLF→LF on write, so a
+ * CRLF shebang — which is not executable under Git Bash — cannot reach disk.
+ */
+function buildCommitDocsGuardHookScript(): string {
+  const snippetPath = findRuntimeLauncherSnippet();
+  const preamble = normalizeEol(fs.readFileSync(snippetPath, 'utf8')).replace(/\n+$/, '');
+  const lines = [
+    '#!/usr/bin/env bash',
+    COMMIT_DOCS_GUARD_MARKER,
+    '# Refuses a commit that stages .planning/ files when `commit_docs` resolves',
+    '# false (honoring any per-phase override). Installed by',
+    '# `gsd-tools commit-docs-guard enable`; remove with',
+    '# `gsd-tools commit-docs-guard disable`. See',
+    '# docs/how-to/keep-planning-docs-private.md.',
+    'set -euo pipefail',
+    '',
+    preamble,
+    '',
+    'gsd_run check-commit --raw',
+  ];
+  return lines.join('\n') + '\n';
+}
+
+interface HooksDirResolution {
+  ok: boolean;
+  dir?: string;
+  reason?: string;
+}
+
+/**
+ * Resolve the real git hooks directory for `cwd` via `git rev-parse
+ * --git-path hooks` — never a literal `.git/hooks` join (#3588 row 8: a
+ * linked worktree or submodule's `.git` is a FILE pointing elsewhere, and
+ * this is the one git-native call that already resolves that correctly).
+ */
+function resolveCommitDocsGuardHooksDir(cwd: string): HooksDirResolution {
+  const gitDirResult = execGit(['rev-parse', '--git-dir'], { cwd });
+  if (gitDirResult.exitCode !== 0) {
+    return { ok: false, reason: 'not_a_git_repo' };
+  }
+  const hooksPathResult = execGit(['rev-parse', '--git-path', 'hooks'], { cwd });
+  if (hooksPathResult.exitCode !== 0) {
+    return { ok: false, reason: 'not_a_git_repo' };
+  }
+  const hooksDirRaw = hooksPathResult.stdout.trim();
+  const hooksDir = path.isAbsolute(hooksDirRaw) ? hooksDirRaw : path.join(cwd, hooksDirRaw);
+  return { ok: true, dir: hooksDir };
+}
+
+/** Marker presence, not byte-equality (#3588 row B10). */
+function isCommitDocsGuardHook(content: string): boolean {
+  return content.includes(COMMIT_DOCS_GUARD_MARKER);
+}
+
+/**
+ * `gsd-tools commit-docs-guard enable` — write `.git/hooks/pre-commit`.
+ * Behavior table (40-design.md rows 1-3, 8-9): refuses to clobber a foreign
+ * hook, refuses when `core.hooksPath` would make our own write inert, and is
+ * idempotent when already enabled.
+ */
+function cmdCommitDocsGuardEnable(cwd: string, raw: boolean): void {
+  const hooksDir = resolveCommitDocsGuardHooksDir(cwd);
+  if (!hooksDir.ok || !hooksDir.dir) {
+    error('not a git repository (or any of the parent directories)', ERROR_REASON.COMMIT_DOCS_GUARD_NOT_A_REPO);
     return;
   }
 
-  // commit_docs is false — check if any .planning/ files are staged
-  const stagedResult = execGit(['diff', '--cached', '--name-only'], { cwd });
-  if (stagedResult.exitCode === 0) {
-    const planningFiles = stagedResult.stdout.split('\n').filter(f => f.startsWith('.planning/') || f.startsWith('.planning\\'));
+  // core.hooksPath already set: our .git/hooks/pre-commit would be inert —
+  // git would never invoke it. Silently writing an ignored file is worse
+  // than refusing (design row 9).
+  const hooksPathConfig = execGit(['config', '--get', 'core.hooksPath'], { cwd });
+  if (hooksPathConfig.exitCode === 0 && hooksPathConfig.stdout.trim() !== '') {
+    const configuredPath = hooksPathConfig.stdout.trim();
+    error(
+      `core.hooksPath is set to "${configuredPath}"; a hook written to ${path.join(hooksDir.dir, 'pre-commit')} ` +
+      `would never run. Wire commit-docs-guard into "${configuredPath}" manually, or unset core.hooksPath first.`,
+      ERROR_REASON.COMMIT_DOCS_GUARD_HOOKS_PATH_SET,
+    );
+    return;
+  }
 
-    if (planningFiles.length > 0) {
+  const hookPath = path.join(hooksDir.dir, 'pre-commit');
+  const existing = platformReadSync(hookPath);
+  if (existing !== null) {
+    if (!isCommitDocsGuardHook(existing)) {
       error(
-        `commit_docs is false but ${planningFiles.length} .planning/ file(s) are staged:\n` +
-        planningFiles.map(f => `  ${f}`).join('\n') +
-        `\n\nTo unstage: git reset HEAD ${planningFiles.join(' ')}`
+        `refusing to overwrite an existing pre-commit hook at ${hookPath} that GSD did not write. ` +
+        `Remove or rename it, or wire commit-docs-guard into it by hand.`,
+        ERROR_REASON.COMMIT_DOCS_GUARD_FOREIGN_HOOK,
       );
     }
+    // Already ours — idempotent no-op (row 3). Leave any user edits intact;
+    // just make sure the executable bit survived.
+    try { fs.chmodSync(hookPath, 0o755); } catch { /* best-effort */ }
+    output({ enabled: true, action: 'already_enabled', path: hookPath }, raw, 'already_enabled');
+    return;
   }
-  // exitCode !== 0 → no staged files or not a git repo — allow
 
-  output({ allowed: true, reason: 'no_planning_files_staged' }, raw, 'allowed');
+  platformWriteSync(hookPath, buildCommitDocsGuardHookScript());
+  fs.chmodSync(hookPath, 0o755);
+  output({ enabled: true, action: 'written', path: hookPath }, raw, 'enabled');
+}
+
+/**
+ * `gsd-tools commit-docs-guard disable` — remove `.git/hooks/pre-commit`
+ * ONLY when it is the hook we wrote (marker presence). Never deletes a
+ * foreign hook (design row 5); a missing hook is a no-op success, not an
+ * error (row 6).
+ */
+function cmdCommitDocsGuardDisable(cwd: string, raw: boolean): void {
+  const hooksDir = resolveCommitDocsGuardHooksDir(cwd);
+  if (!hooksDir.ok || !hooksDir.dir) {
+    error('not a git repository (or any of the parent directories)', ERROR_REASON.COMMIT_DOCS_GUARD_NOT_A_REPO);
+    return;
+  }
+
+  const hookPath = path.join(hooksDir.dir, 'pre-commit');
+  const existing = platformReadSync(hookPath);
+  if (existing === null) {
+    output({ disabled: true, action: 'noop', path: hookPath }, raw, 'noop');
+    return;
+  }
+  if (!isCommitDocsGuardHook(existing)) {
+    error(
+      `refusing to remove the pre-commit hook at ${hookPath}: it does not carry the ` +
+      `${COMMIT_DOCS_GUARD_MARKER} marker, so GSD did not write it.`,
+      ERROR_REASON.COMMIT_DOCS_GUARD_FOREIGN_HOOK,
+    );
+  }
+
+  fs.unlinkSync(hookPath);
+  output({ disabled: true, action: 'removed', path: hookPath }, raw, 'disabled');
 }
 
 export = {
@@ -2389,6 +2678,10 @@ export = {
   cmdResolveGranularity,
   cmdResolveExecution,
   cmdEffortSync,
+  detectPhaseNumberFromFiles,
+  resolvePhaseCommitDocsOverride,
+  resolveCommitDocsPolicy,
+  COMMIT_DOCS_SKIP_REASON,
   cmdCommit,
   cmdCommitToSubrepo,
   cmdPrSubrepo,
@@ -2400,5 +2693,9 @@ export = {
   cmdScaffold,
   cmdStats,
   cmdCheckCommit,
+  COMMIT_DOCS_GUARD_MARKER,
+  buildCommitDocsGuardHookScript,
+  cmdCommitDocsGuardEnable,
+  cmdCommitDocsGuardDisable,
   _wsParseRetryAfter,
 };

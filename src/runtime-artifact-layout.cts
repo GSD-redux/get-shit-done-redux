@@ -37,6 +37,11 @@ import runtimeArtifactConversion = require('./runtime-artifact-conversion.cjs');
 const conversionExports = runtimeArtifactConversion as Record<string, unknown> & {
   readGsdCommandNames?: () => string[];
 };
+// #2875 Part 2 (J8): shared model-override precedence resolver — see its
+// module doc for why kilo/opencode MUST resolve through this ONE function
+// rather than re-deriving the chain per runtime.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installModelOverrideResolver = require('./install-model-override-resolver.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 // #2870: `isGlobalScope` centralizes the `scope === 'global'` boolean
 // projection both kind-builder closures below need at the converters'
@@ -91,6 +96,11 @@ interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
+  /** #2875 Part 2 (row I1-I3): install root, threaded through to the
+   *  frontmatter-extensions step and (for kilo/opencode's converters) the
+   *  per-agent model-override resolution below. Mirrors install-profiles.cts's
+   *  identically-named AgentCtx field — see its doc comment. */
+  targetDir?: string | null;
 }
 
 interface ArtifactKind {
@@ -255,12 +265,60 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
     // inline agent loop, and installCodexConfig's per-agent .toml writer. The
     // exhaustive per-runtime sweep in tests/agent-fragments-emission.install.test.cjs
     // is what keeps a fourth from appearing uncomposed.
-    stage: (resolved) => stageAgentsForRuntimeWithConverter(
+    // #2875 Part 2 (row I2): agentCtx threaded through so a runtime using this
+    // converter:null builder (claude, plus any future identity-copy runtime)
+    // ALSO gets path-rewrites/attribution/frontmatter-extensions/normalize
+    // when a caller supplies agentCtx (createRuntimeArtifactInstallPlan /
+    // applySurface's agentCtx build). Previously this closure's `(resolved) =>`
+    // signature silently dropped the second arg every caller already passed —
+    // a caller with NO agentCtx in scope is unaffected (row I2: converter-only,
+    // as today), matching stageAgentsForRuntimeWithConverter's own contract.
+    stage: (resolved, agentCtx) => stageAgentsForRuntimeWithConverter(
       findAgentsSourceRoot(configDir),
       resolved,
       (content: string) => content,
+      false,
+      agentCtx,
     ),
   };
+}
+
+/**
+ * Runtime allowlist check for a descriptor-declared `converter` name, applied
+ * at DISPATCH time (security fix). `VALID_CONVERTER_NAMES` (capability-
+ * validator.cjs) is otherwise enforced ONLY at lint/build time
+ * (`check:contract-drift`) — every `conversionExports[converterName]`
+ * dynamic-property read below trusted that a `capability.json` reaching this
+ * far had already passed that check. It had not, in general: a hand-edited
+ * or malformed descriptor naming an Object-prototype member (`"constructor"`,
+ * `"toString"`, `"hasOwnProperty"`, ...) resolves to that member instead of
+ * throwing, producing garbage staged content rather than a loud failure —
+ * pre-existing, but promoted from the `/gsd-surface`-only path to the real
+ * install path for seven runtimes by #2875 Part 2's agents-bypass closure.
+ * Required lazily (call-time, not module-top) to avoid a load-time circular
+ * require, the same pattern install-engine.cts's `_hostBehaviors` already
+ * uses for `capability-registry.cjs`. Fails CLOSED: any error loading the
+ * allowlist itself (missing module, exotic bundling) is treated as "nothing
+ * is allowed", never as "skip the check".
+ */
+function _resolveNamedConverter(converterName: string, kindLabel: string): (...args: unknown[]) => unknown {
+  let validNames: Set<string> | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    validNames = (require('./capability-validator.cjs') as { VALID_CONVERTER_NAMES: Set<string> }).VALID_CONVERTER_NAMES;
+  } catch {
+    validNames = undefined;
+  }
+  if (!validNames || !validNames.has(converterName)) {
+    throw new Error(
+      `Unknown converter "${converterName}" declared for a ${kindLabel} kind — refusing to dispatch (not in capability-validator.cjs's VALID_CONVERTER_NAMES allowlist).`,
+    );
+  }
+  const fn = conversionExports[converterName];
+  if (typeof fn !== 'function') {
+    throw new Error(`Converter "${converterName}" is allowlisted but is not an exported function of runtime-artifact-conversion.cjs.`);
+  }
+  return fn as (...args: unknown[]) => unknown;
 }
 
 /**
@@ -274,27 +332,80 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
  * Agent filenames are preserved verbatim (the prefix is already embedded in the
  * agent stem — e.g. `gsd-planner.md`).
  *
- * #1173 SCOPE — plumbing only (real install still elsewhere): this provides
- * the converter dispatch + `isGlobal` scope threading for the descriptor's
- * `agents` kind. As of #2092, 8 non-Claude runtimes DO declare a converted
- * `agents` kind in their `capability.json` — qwen (`convertClaudeAgentToQwenAgent`)
- * plus the 7 that already declared one before it (antigravity, augment,
- * codebuddy, copilot, cursor, trae, windsurf) — so the descriptor-level
- * declaration is no longer deferred. What IS still deferred is wiring
- * `resolveRuntimeArtifactLayout`'s `agents` kind into the REAL install:
- * `bin/install.js`'s agent-staging loop does not consume this module's
- * `convertedAgentsKind` resolution at all — it dispatches the very same
- * converter functions directly via `_hostBehaviors(runtime)` checks
- * (`frontmatterDialect`, `brandingRewrites`, `isCopilot`/`isAntigravity`/…),
- * duplicating the mapping declared here. That duplication is deliberate until
- * the second `layout.kinds` consumer — `applySurface` / `/gsd:surface` /
- * `--materialize` (`src/surface.cts`) — mirrors the legacy agent pipeline
- * (Copilot's `.agent.md` filename rename, the cross-cutting path-prefix
- * rewrite + attribution, stale-file cleanup, config-reading steps); declaring
- * `bin/install.js` itself against this resolver before then would risk
- * regressing the surface path. Until that follow-up lands, `bin/install.js`
- * remains authoritative for the real install, and this `convertedAgentsKind`
- * is exercised only by `/gsd:surface` and synthetic-descriptor seam tests.
+ * #1173 SCOPE, updated by #2875 Part 2 (the agents-bypass closure) — measured
+ * against the tree, not the ADR-3574 framing that preceded it:
+ *
+ * Of the four blockers this comment used to name for wiring `bin/install.js`'s
+ * inline agent loop against this resolver, THREE were already stale by the
+ * time #2875 measured them and are not re-litigated here: Copilot's
+ * `.agent.md` rename (the loop's own `destName = entry.name` comment records
+ * the ternary dropped in #2099; the descriptor fold applies it via
+ * `hostBehaviors.agentFileExtension`), the cross-cutting path-prefix rewrite +
+ * attribution (`stageAgentsForRuntimeWithConverter` already applies
+ * `applyAgentPathRewrites` -> `processAttribution` when `agentCtx` is
+ * present), and stale-file cleanup (`_removeGsdEntries` prunes every
+ * `gsd-`-prefixed entry in a kind's destSubpath, broader than the loop's own
+ * extension-gated check).
+ *
+ * The fourth — config-reading steps — was the real gap, and #2875 Part 2
+ * closed it: `stageAgentsForRuntimeWithConverter` now takes a per-file
+ * `agentName` (`agentCtx.agentName`, ADR-1235 §1) and a `targetDir`
+ * (`agentCtx.targetDir`), which together let it (a) run a post-converter
+ * frontmatter-extensions step (`applyAgentFrontmatterExtensions`, driven by
+ * `hostBehaviors.agentFrontmatterExtensions` — Claude's `effort` +
+ * `disallowedTools` injection) and (b) let THIS function resolve a per-agent
+ * model override (`installModelOverrideResolver.resolveAgentModelOverride`,
+ * `model_overrides[agent]` > `model_profile_overrides.<rt>.<tier>` > omit)
+ * before invoking a converter that needs it (kilo/opencode). Both pieces —
+ * plus a data-driven Hermes branding converter
+ * (`convertClaudeAgentToHermesAgent`, reading `hostBehaviors.brandingRewrites`
+ * rather than a hardcoded string table) — are single-sourced: `bin/install.js`
+ * requires the SAME functions this module does, so its inline loop and the
+ * descriptor path can no longer independently drift (the CLAUDE.md
+ * "Generative Fix Divergence" class the prior duplication risked).
+ *
+ * `tests/agent-descriptor-parity.test.cjs` proves byte-identical output
+ * between the inline loop and a SYNTHETIC descriptor registry (the same
+ * override seam `resolveRuntimeArtifactLayoutFromRegistry` exposes) for all
+ * six runtimes the inline loop still served: claude, cline, codex, hermes,
+ * kilo, opencode.
+ *
+ * Both findings the prior revision of this comment named as STILL deferred
+ * are now CLOSED (#2875 Part 2 Task A/B/C), measured against the real
+ * `capability.json` entries and the real production entry points, not
+ * argued from this module alone:
+ *
+ * 1. **kilo/opencode reaching `layout.kinds`.** `installEngine.
+ *    installAgentsKindStandalone` (install-engine.cts) is called from inside
+ *    `installOpencodeFamilyArtifacts` and resolves the agents kind through
+ *    THIS SAME `resolveRuntimeArtifactLayout`/`convertedAgentsKind` path —
+ *    `installOpencodeFamilyArtifacts` no longer stages only `commands` +
+ *    `skills`. `bin/install.js`'s legacy-flat local path (claude-local,
+ *    `hostBehaviors.localInstallStyle === 'legacy-flat'`) reaches the SAME
+ *    generic loop only via `installRuntimeArtifacts`'s conditional
+ *    `_isSkillsRuntime` branch; a call to `installAgentsKindStandalone` was
+ *    added at claude-local's own call site to cover that scope too — the
+ *    install-tree golden fixture (`tests/fixtures/install-tree/claude-local.json`)
+ *    is what caught the gap when it was first missed.
+ * 2. **`/gsd:surface` / `applySurface` activation.** Confirmed convergent,
+ *    not merely non-broken: for all six runtimes (claude, cline, codex,
+ *    hermes, kilo, opencode), staging via `applySurface` into a freshly
+ *    wiped `agents/` directory produces byte-identical output (including
+ *    filenames) to `installRuntimeArtifacts`'s own write — verified directly
+ *    against the built registry, not inferred.
+ *
+ * The inline loop (`_DESCRIPTOR_AGENTS_RUNTIMES` and the `bin/install.js`
+ * agent-staging block it gated) is DELETED — every runtime the registry
+ * declares an `agents` kind for is descriptor-driven now, including a
+ * seventh runtime (`kimi-code`) this comment's own prior measurement missed
+ * (it fell through the inline loop's generic `else if` branch, same as
+ * claude, with no dedicated dialect arm — caught by the same golden fixture).
+ *
+ * Codex's `config.toml [agents.gsd-*]` strip (`bin/install.js`, under
+ * `isMinimalMode` + `hostBehaviors.tomlConfigInstall`) remains the one
+ * genuinely out-of-scope constraint: it mutates a host config file, not the
+ * agents directory, and no descriptor kind models host-config mutation. It
+ * stays exactly where it is.
  *
  * Mirrors the `convertedCommandsKind` pattern (#785).
  *
@@ -315,16 +426,42 @@ function convertedAgentsKind(
     destSubpath,
     prefix,
     stage: (resolved, agentCtx) => {
-      // isGlobal is threaded so scope-aware agent converters (copilot, antigravity)
-      // choose global-home vs workspace-relative paths; converters that only take
-      // (content) ignore the extra positional arg. Mirrors skillsKind's scope
-      // threading (#1173).
       // #2870: `scope` is this function's own parameter (default `'global'`,
       // so it is never undefined here), sourced upstream from the Install
       // Scope Module's resolved id. `isGlobalScope` projects it to the
       // boolean `stageAgentsForRuntimeWithConverter`'s positional API
       // requires — see its doc comment in install-scope.cts.
-      const converter = conversionExports[converterName] as (content: string, isGlobal?: boolean) => string;
+      const rawConverter = _resolveNamedConverter(converterName, 'agents') as
+        (content: string, arg2?: boolean | { isAgent?: boolean; modelOverride?: string | null }) => string;
+
+      // #2875 Part 2 (J5-J8): kilo/opencode agent converters take an options
+      // bag (`{isAgent, modelOverride}`), not the `isGlobal` boolean every
+      // other agent converter's 2nd positional arg means — mirrors the
+      // inline loop's per-runtime `frontmatterDialect === 'opencode' | 'kilo'`
+      // branches (bin/install.js), which resolve model_overrides[agent] >
+      // model_profile_overrides.<runtime>.<tier> > omit BEFORE calling the
+      // converter. Resolved ONCE per stage() call (not per file — a pure
+      // function of configDir/targetDir) via the single shared precedence
+      // resolver so kilo and opencode can never diverge (J8).
+      const needsModelOverride = converterName === 'convertClaudeToOpencodeFrontmatter' || converterName === 'convertClaudeToKiloFrontmatter';
+      let converter: (content: string, isGlobal?: boolean, meta?: { agentName: string }) => string;
+      if (needsModelOverride) {
+        const overrideTargetDir = agentCtx?.targetDir ?? configDir;
+        const modelOverrides = installModelOverrideResolver.readGsdEffectiveModelOverrides(overrideTargetDir);
+        const runtimeResolver = installModelOverrideResolver.readGsdRuntimeProfileResolver(overrideTargetDir);
+        converter = (content, _isGlobal, meta) => {
+          const modelOverride = meta
+            ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver)
+            : null;
+          return rawConverter(content, { isAgent: true, modelOverride });
+        };
+      } else {
+        // isGlobal is threaded so scope-aware agent converters (copilot, antigravity)
+        // choose global-home vs workspace-relative paths; converters that only take
+        // (content) ignore the extra positional arg. Mirrors skillsKind's scope
+        // threading (#1173).
+        converter = (content) => rawConverter(content, isGlobalScope(scope));
+      }
       // ADR-1235 §1: when agentCtx is provided (by createRuntimeArtifactInstallPlan
       // for descriptor-driven runtimes), thread it through so stageAgentsForRuntimeWithConverter
       // can apply the full pre-converter + post-converter sequence in the correct order.
@@ -422,7 +559,7 @@ function skillsKind(
     prefix,
     converter: converterName,
     stage: (resolved) => {
-      const realConverter = conversionExports[converterName] as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
+      const realConverter = _resolveNamedConverter(converterName, 'skills') as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
       // Compute cmdNames once per stage call for performance (#3583).
       // Extra trailing args are ignored by converters that don't need them. The
       // isGlobal flag is the 5th positional (NOT the 3rd): the 3rd positional is
@@ -481,7 +618,7 @@ function convertedCommandsKind(
     destSubpath,
     prefix,
     stage: (resolved) => {
-      const converter = conversionExports[converterName] as (content: string, commandName: string) => string;
+      const converter = _resolveNamedConverter(converterName, 'commands') as (content: string, commandName: string) => string;
       return stageCommandsForRuntimeFlat(findInstallSourceRoot(configDir), resolved, converter, prefix);
     },
   };

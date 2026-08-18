@@ -20,7 +20,11 @@ import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
 import { writeSetComplete } from './write-set.cjs';
 import type { WriteSet } from './write-set.cjs';
-import { updateTableCell } from './markdown-table.cjs';
+import { updateTableCell, resetQuickTaskRows, QUICK_TASKS_SECTION_ABSENT } from './markdown-table.cjs';
+import { requireSafePath } from './security.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- audit.cjs is an export= CommonJS module
+import auditMod = require('./audit.cjs');
+const { resolveQuickTaskSummaryFile } = auditMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -56,7 +60,7 @@ const { extractFrontmatter } = frontmatterMod;
 // divergence signal). Routed through the single write-seam composition
 // (`syncAndPreserveStateMd`) instead, under `withStateLock` — see
 // `cmdMilestoneComplete`'s own STATE.md-update block for the full rationale.
-const { syncAndPreserveStateMd, withStateLock } = stateMod;
+const { syncAndPreserveStateMd, withStateLock, readModifyWriteStateMd } = stateMod;
 
 // #2288 security: a milestone version label becomes a filesystem directory
 // component (`milestones/<label>-phases/`) into which phase directories are
@@ -72,6 +76,11 @@ interface MilestoneCompleteOptions {
   force?: boolean;
   archivePhases?: boolean;
   dryRun?: boolean;
+  // #2142: opt-in quick-task archival. Default OFF (unlike archivePhases,
+  // which is default-ON since #1871) — acceptance criterion 1 is explicit
+  // that Skip/absent must preserve today's behavior. Do NOT mirror
+  // archivePhases' inverted `--no-archive-phases` shape.
+  archiveQuick?: boolean;
 }
 
 /**
@@ -510,6 +519,33 @@ function cmdRequirementsRevertPhase(cwd: string, reqIdsRaw: string[], raw: boole
   );
 }
 
+/**
+ * #2142 (code-review FIX 4): the single owned "should the Quick Tasks
+ * Completed table be reset, and is a reset failure worth a warning" decision
+ * — shared by `cmdMilestoneComplete` (which folds this into its own
+ * `withStateLock` transform, since it already holds that lock for the
+ * closure-transition write happening in the same block) and `cmdQuickArchive`
+ * (which routes through `readModifyWriteStateMd`'s own transform instead, per
+ * the lock-reentrancy note on that function). Only the WRITE mechanics
+ * differ between the two callers — the decision itself ("skip a
+ * `QUICK_TASKS_SECTION_ABSENT` result silently; surface any other failure")
+ * was previously duplicated verbatim at both call sites.
+ *
+ * Never throws: a reset failure degrades to returning `content` unchanged
+ * with a non-null `warning`, mirroring both callers' pre-existing
+ * "liberal but visible" posture.
+ */
+function applyQuickTasksReset(content: string): { content: string; warning: { field: string; reason: string } | null } {
+  const resetResult = resetQuickTaskRows(content);
+  if (resetResult.ok) {
+    return { content: resetResult.value.content, warning: null };
+  }
+  if (resetResult.reason !== QUICK_TASKS_SECTION_ABSENT) {
+    return { content, warning: { field: 'quick_tasks_table', reason: resetResult.reason } };
+  }
+  return { content, warning: null };
+}
+
 function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCompleteOptions, raw: boolean): void {
   if (!version) {
     error('version required for milestone complete (e.g., v1.0)');
@@ -713,15 +749,23 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   let totalTasks = 0;
   const accomplishments: string[] = [];
 
-  try {
-    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
-    // CURRENT milestone" — routed through the canonical owner (with the
-    // explicit `version` this command already resolved) instead of a
-    // hand-rolled readdirSync + isDirInMilestone filter, which also never
-    // excluded sentinels, unlike the owner.
-    const dirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
+  // #3597 (ADR-3180 Decision 2): SINGLE resolution of "which phase
+  // directories belong to the current milestone" AND the SCOPE discriminator
+  // that resolution came from — shared verbatim by the read-only stats loop
+  // immediately below, the --dry-run preview, and the real archive pass, so
+  // none of the three can ever disagree. `listMilestonePhaseDirs` never
+  // throws (its own doc comment), so this is safe to call unguarded ahead of
+  // the try/catch that scopes the stats roll-up below.
+  //
+  // The stats loop's own ENUMERATION behavior is intentionally left
+  // unaffected by a non-COMPLETE scope — it reports what is actually on
+  // disk, same as before #3597. Only the destructive archive pass (and its
+  // --dry-run preview) refuses to act on a non-COMPLETE (non-answer) scope;
+  // see the guard built from `milestonePhaseScope` further down.
+  const { value: milestonePhaseDirs, scope: milestonePhaseScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version });
 
-    for (const dir of dirs) {
+  try {
+    for (const dir of milestonePhaseDirs) {
       phaseCount++;
       // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
       // from the single owner, rather than a root-only hand-rolled readdirSync
@@ -767,16 +811,50 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
      * accomplishments=[] rather than crash `milestone complete`. */
   }
 
+  // #3597 (ADR-3180 Decision 2): `SCOPE.UNREADABLE` is the ONE classification
+  // where `getMilestonePhaseFilter` throws (no workstream ROADMAP of its
+  // own), leaves `milestonePhaseNums` empty, and the window degrades to a
+  // pass-all fallback — that fallback is what silently WIDENS the archive
+  // set past the single-derivation guarantee this block exists to protect
+  // (confirmed empirically: a workstream with phase dirs but no workstream
+  // ROADMAP.md reports UNREADABLE and used to enumerate every directory on
+  // disk). `SCOPE.TRUNCATED` already refuses the WHOLE command above.
+  // `SCOPE.UNSCOPED` is a DIFFERENT, pre-existing classification — e.g. a
+  // root project with no milestone asserted in STATE.md — whose
+  // `listMilestonePhaseDirs` resolution is a real (non-degraded) answer, and
+  // its rollover archive behavior predates this branch and must not change.
+  // The guard therefore refuses ONLY on UNREADABLE, not on "not COMPLETE" —
+  // widening to every non-COMPLETE scope was itself a regression (a root
+  // project with no active workstream resolves UNSCOPED, and refusing to
+  // archive there broke the ordinary `milestone complete` -> `phases clear`
+  // rollover). Computed once here from the single
+  // `milestonePhaseDirs`/`milestonePhaseScope` resolution above, so the
+  // --dry-run preview below and the real archive pass further down can never
+  // disagree about whether (or what) to archive.
+  const phasesArchiveSkippedForScope = options.archivePhases !== false && milestonePhaseScope === SCOPE.UNREADABLE;
+  const phasesArchiveSkipReason = phasesArchiveSkippedForScope
+    ? `milestone window scope is "${milestonePhaseScope}" — refusing to archive phase directories until the window can be resolved (ADR-3180)`
+    : null;
+
   // #2118: --dry-run preview — compute what WOULD happen without mutating.
   // The stats above are read-only; all mutations start at the archive section below.
   if (options.dryRun) {
     const phaseDirsToArchive: string[] = [];
-    if (options.archivePhases !== false) {
-      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats loop
-      // above — the dry-run preview must list exactly what the real archive
-      // pass below would move.
-      phaseDirsToArchive.push(...listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value);
+    if (options.archivePhases !== false && !phasesArchiveSkippedForScope) {
+      // #3185 (ADR-3180 Decision 1) / #3597: same single routed derivation as
+      // the stats loop above — the dry-run preview must list exactly what
+      // the real archive pass below would move, including refusing to list
+      // anything when the window scope is not COMPLETE.
+      phaseDirsToArchive.push(...milestonePhaseDirs);
     }
+    // #2142 MAJOR 5 (review): dry-run preview of quick-task archival —
+    // read-only, routed through the SAME `listQuickTaskDirsForArchive`
+    // selection `archiveQuickTaskDirectories` uses for real (directory
+    // entries only, `requireSafePath`-guarded, sorted) so this preview can
+    // never disagree with what a real run actually archives. Absent
+    // --archive-quick this stays `[]` and nothing on disk is touched either
+    // way (dry-run always returns before any mutation below).
+    const quickDirsToArchive: string[] = options.archiveQuick ? listQuickTaskDirsForArchive(cwd) : [];
     const dryRunResult = {
       dry_run: true,
       version,
@@ -794,6 +872,9 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
           ? { source: path.relative(cwd, path.join(planningBase, `${version}-MILESTONE-AUDIT.md`)).split(path.sep).join('/'), target: path.relative(cwd, path.join(archiveDir, `${version}-MILESTONE-AUDIT.md`)).split(path.sep).join('/') }
           : null,
         phases: phaseDirsToArchive,
+        phases_archive_skipped: phasesArchiveSkippedForScope,
+        phases_archive_skip_reason: phasesArchiveSkipReason,
+        quick: quickDirsToArchive,
       },
       would_update: {
         milestones_md: path.relative(cwd, milestonesPath).split(path.sep).join('/'),
@@ -868,6 +949,25 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
     platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
 
+  // #2142 BLOCKER 2 (review): opt-in quick-task archival. This call MUST sit
+  // immediately adjacent to the STATE.md write block directly below it, with
+  // NO unguarded IO in between (unlike the ROADMAP/REQUIREMENTS/audit/
+  // MILESTONES.md writes above, none of which are wrapped in a try/catch).
+  // If the move ran earlier — e.g. right after `platformEnsureDir(archiveDir)`
+  // — and any one of those unguarded writes then threw, the quick-task
+  // directories would already be gone from `.planning/quick/` while the
+  // STATE.md Quick Tasks table reset (which lives inside `withStateLock`
+  // immediately below) would never be reached. That is precisely the
+  // STATE-vs-disk drift #2142 exists to eliminate: a table still describing
+  // directories that no longer exist. Keeping the move and the reset
+  // adjacent — separated only by this comment, never by IO that can throw —
+  // means either both happen or (if the move itself throws) neither does.
+  // `archiveQuick` is opt-in (default OFF); absent the flag this is `null`
+  // and every downstream read of it degrades to "no quick archival happened".
+  const quickArchiveResult = options.archiveQuick
+    ? archiveQuickTaskDirectories(cwd, version)
+    : null;
+
   // Update STATE.md — keep frontmatter/body semantically aligned after closure.
   // ADR-1769 Phase 5: dispatches to the STATE.md Transition Module. The closure
   // write (Status, Last Activity, Last Activity Description, Current Position
@@ -930,9 +1030,37 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       if (typeof preCurrentPhaseName === 'string' && preCurrentPhaseName.trim().length > 0) {
         authoritativeFm['current_phase_name'] = preCurrentPhaseName;
       }
+
+      // #2142: fold the Quick Tasks table reset into this SAME
+      // `withStateLock` transform — no second lock acquisition, no second
+      // `syncAndPreserveStateMd`/`platformWriteSync` pass. Only applied when
+      // quick archival actually MOVED something (never when the flag was
+      // absent, and never for a mere dry-run preview, which never reaches
+      // here at all). A refused reset degrades to leaving the content
+      // untouched and never fails milestone completion, but the two refusal
+      // shapes are NOT equally noteworthy (design doc §40, behavior table
+      // row 5): an ABSENT "Quick Tasks Completed" section is the normal,
+      // common case — the section is created lazily by
+      // `gsd-core/workflows/quick.md` Step 7b, not by
+      // `gsd-core/templates/state.md`, so most projects simply don't have
+      // one — and is silently skipped (compared via the shared
+      // `QUICK_TASKS_SECTION_ABSENT` sentinel, never by matching on the
+      // free-form reason string). A section that EXISTS but couldn't be
+      // reset (unparseable table, or columns matching neither registered
+      // QuickTasks variant) is a genuine anomaly and IS surfaced via
+      // `preservationWarnings`, the same "liberal but visible" posture the
+      // rest of this block already uses for a disagreeing derived STATE.md
+      // value.
+      let quickTasksResetContent = result.content;
+      if (quickArchiveResult && quickArchiveResult.archived > 0) {
+        const { content: resetContent, warning } = applyQuickTasksReset(quickTasksResetContent);
+        quickTasksResetContent = resetContent;
+        if (warning) preservationWarnings.push(warning);
+      }
+
       const finalContent = syncAndPreserveStateMd(
         originalStateContent,
-        result.content,
+        quickTasksResetContent,
         statePath,
         cwd,
         {
@@ -959,7 +1087,15 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // Archive phase directories if requested
   let phasesArchived = false;
   // #1871: archive phase dirs by default on milestone complete (opt out via --no-archive-phases).
-  if (options.archivePhases !== false) {
+  // #3597: `phasesArchiveSkippedForScope` (computed once, above, from the SAME
+  // `milestonePhaseDirs`/`milestonePhaseScope` resolution the --dry-run preview
+  // consumed) refuses this destructive rename loop entirely when the window
+  // scope is UNREADABLE — the one scope whose resolution degrades to a
+  // pass-all fallback (ADR-3180). UNSCOPED/TRUNCATED are real, pre-existing
+  // answers and archive exactly as they did before this branch.
+  // `phasesArchived` stays false and the refusal is surfaced on `result` below;
+  // nothing on disk moves, and `phaseArchiveDir` is never even created.
+  if (options.archivePhases !== false && !phasesArchiveSkippedForScope) {
     // #2245 audit (was ERROR-HIDING): retryRenameSync moves one phase dir at a
     // time — a mid-loop failure (e.g. the Nth rename) used to leave
     // `phasesArchived` at its `false` default even though the first N-1 dirs
@@ -972,12 +1108,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       const phaseArchiveDir = path.join(archiveDir, `${version}-phases`);
       platformEnsureDir(phaseArchiveDir);
 
-      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats
-      // loop above — only the CURRENT milestone's phase directories move,
-      // never a sentinel or an out-of-window directory left for a later
-      // milestone.
-      const phaseDirNames = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
-      for (const dir of phaseDirNames) {
+      // #3185 (ADR-3180 Decision 1) / #3597: same single routed derivation as
+      // the stats loop and the --dry-run preview above — only the CURRENT
+      // milestone's phase directories move, never a sentinel or an
+      // out-of-window directory left for a later milestone, and never a
+      // pass-all degrade from a non-COMPLETE scope (refused above).
+      for (const dir of milestonePhaseDirs) {
         retryRenameSync(path.join(phasesDir, dir), path.join(phaseArchiveDir, dir));
         archivedCount++;
       }
@@ -1003,6 +1139,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       requirements: fs.existsSync(path.join(archiveDir, `${version}-REQUIREMENTS.md`)),
       audit: fs.existsSync(path.join(archiveDir, `${version}-MILESTONE-AUDIT.md`)),
       phases: phasesArchived,
+      // #3597: machine-readable refusal signal — distinguishes "nothing to
+      // archive because the milestone genuinely has no phase directories"
+      // (phases: false, phases_archive_skipped: false) from "refused to
+      // archive because the milestone window scope was not COMPLETE"
+      // (phases: false, phases_archive_skipped: true, with a reason).
+      phases_archive_skipped: phasesArchiveSkippedForScope,
+      phases_archive_skip_reason: phasesArchiveSkipReason,
+      quick: !!quickArchiveResult && quickArchiveResult.archived > 0,
     },
     milestones_updated: true,
     state_updated: fs.existsSync(statePath),
@@ -1183,10 +1327,446 @@ function archivePhaseDirectories(cwd: string, phasesDir: string, dirs: ReadonlyA
   return { archiveDir: archivePhasesDir, archived };
 }
 
+/**
+ * #2142 BLOCKER 1 (review): escape one directory-name span for insertion as
+ * markdown LINK TEXT (`[...]`) — a directory name containing a literal `|`,
+ * `[` or `]` must not be able to break the enclosing markdown. `mkdirSync`
+ * accepts an embedded newline in a directory name on POSIX (and `isDirectory()`
+ * still reports true for it), so an unescaped newline would let attacker-
+ * controlled content — including a markdown HEADING — land verbatim in the
+ * generated README.md, an indirect prompt-injection vector for any agent
+ * workflow step that later reads that file. Mirrors `escapeCell`'s exact
+ * convention (markdown-table.cts `escapeCell`): collapse `\r?\n+` to a single
+ * space FIRST (so a newline can never re-enter the output as a line break),
+ * THEN escape the escape char itself (before the rest, so a literal backslash
+ * in the name is never mistaken for part of an escape sequence this function
+ * introduces), THEN the markdown-syntax characters.
+ */
+function escapeMarkdownLinkText(text: string): string {
+  return text
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
+}
+
+/**
+ * #2142 BLOCKER 1 (review): encode one path span for insertion as a markdown
+ * link DESTINATION (`(...)`) — `relSummary` is built from a directory name
+ * that may legally contain a space, a `(`/`)`, or a control character
+ * (including an embedded newline) on POSIX. Per CommonMark, an unbracketed
+ * link destination terminates at the first ASCII space/control character and
+ * requires parens to be balanced or escaped — any of those would truncate or
+ * corrupt the link, or let attacker-controlled content spill out of the
+ * `(...)` span into the surrounding markdown (the same indirect
+ * prompt-injection vector `escapeMarkdownLinkText` guards the link TEXT
+ * against). Percent-encodes just the unsafe set (space, `(`, `)`, and C0
+ * control chars incl. `\r`/`\n`, plus DEL) rather than switching to the
+ * angle-bracket `<...>` destination form — percent-encoding is reversible (a
+ * markdown viewer resolving the link still reaches the right file) and does
+ * not introduce a new pair of syntax characters (`<`/`>`) that would in turn
+ * need their own escaping.
+ */
+function encodeMarkdownLinkTarget(target: string): string {
+  return target.replace(/[\x00-\x1f\x7f ()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`);
+}
+
+interface QuickArchiveIndexEntry {
+  /** Escaped for markdown LINK TEXT (`escapeMarkdownLinkText`) — see below. */
+  name: string;
+  /**
+   * POSIX-relative path (from `archiveQuickDir`) to the task's summary file,
+   * NOT yet percent-encoded for markdown link-destination use — `render()`
+   * applies `encodeMarkdownLinkTarget` at render time. `null` when the task
+   * has no resolvable summary file.
+   */
+  summary: string | null;
+}
+
+interface QuickArchiveIndex {
+  entries: QuickArchiveIndexEntry[];
+  /** Render the entries as the `README.md` markdown body. */
+  render(): string;
+}
+
+/**
+ * #2142 (code-review FIX 2): PURE builder — scans `archiveQuickDir` and
+ * resolves each entry's summary link, but performs NO IO beyond the read
+ * scan itself; never writes. Split out of the former `writeQuickArchiveReadme`
+ * so tests can assert on the returned structured IR (`entries`) instead of
+ * substring-matching rendered markdown (CONTRIBUTING.md "Prohibited: Raw Text
+ * Matching on Test Outputs" — a generated archive index is a "Rendered file",
+ * which requires a pure builder returning IR, not the `.md`-IS-the-runtime-
+ * artifact exemption).
+ *
+ * (re)generates an index of every quick-task directory PHYSICALLY PRESENT in
+ * the archive, built by scanning the ARCHIVE directory on disk. Deliberately
+ * NOT built from STATE.md's Quick Tasks table (the issue evidenced that table
+ * drifting — 53 rows against 49 dirs, ~22 rows pointing at absent dirs, 18
+ * dirs missing from the table — the filesystem is the only source of truth)
+ * and NOT from the pre-move source list either, so a RE-RUN's index includes
+ * entries a PRIOR run already archived, not just this run's (design row 11).
+ *
+ * Each entry's summary link is resolved via `resolveQuickTaskSummaryFile`
+ * (audit.cts) — the SAME rule `scanQuickTasks` uses to read a task's record
+ * — imported rather than re-derived, so the read and write paths can never
+ * disagree about which file is a task's summary. A task WITHOUT a summary is
+ * still listed, just without a link — never omitted (an omission would
+ * under-report the index, which is worse than an unlinked entry).
+ *
+ * Entries are sorted for deterministic output. A directory name containing
+ * `|`, `[`, `]` or an embedded newline is neutralized via
+ * `escapeMarkdownLinkText` (link TEXT) so it cannot break the generated
+ * markdown or inject a heading — applied here, at build time, so `entries`
+ * itself already carries the injection-safe name (the regression test
+ * asserts on THIS, not on rendered output). The destination is separately
+ * encoded via `encodeMarkdownLinkTarget` (link TARGET) at RENDER time, so a
+ * space/paren/control char in the name cannot truncate or corrupt the
+ * `(...)` span. The summary path is normalized to POSIX
+ * (`.split(path.sep).join('/')`) so the link is stable across platforms.
+ *
+ * Throws when `archiveQuickDir` is unreadable — the caller (`writeQuickArchiveReadme`)
+ * is the best-effort boundary, not this builder.
+ */
+function buildQuickArchiveIndex(archiveQuickDir: string): QuickArchiveIndex {
+  const dirEntries = fs.readdirSync(archiveQuickDir, { withFileTypes: true });
+  const dirNames = dirEntries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+
+  const entries: QuickArchiveIndexEntry[] = dirNames.map((dirName) => {
+    const taskDir = path.join(archiveQuickDir, dirName);
+    const summaryPath = resolveQuickTaskSummaryFile(taskDir, dirName);
+    const escapedName = escapeMarkdownLinkText(dirName);
+    if (summaryPath) {
+      const relSummary = path.relative(archiveQuickDir, summaryPath).split(path.sep).join('/');
+      return { name: escapedName, summary: relSummary };
+    }
+    // No summary file — list the directory, but never link into it (there
+    // is nothing to point at). See indexListsTaskWithoutSummaryWithoutLink.
+    return { name: escapedName, summary: null };
+  });
+
+  return {
+    entries,
+    render(): string {
+      const lines: string[] = ['# Archived Quick Tasks', ''];
+      for (const entry of entries) {
+        if (entry.summary !== null) {
+          lines.push(`- [${entry.name}](${encodeMarkdownLinkTarget(entry.summary)})`);
+        } else {
+          lines.push(`- ${entry.name}`);
+        }
+      }
+      lines.push('');
+      return lines.join('\n');
+    },
+  };
+}
+
+/**
+ * #2142: thin writer — calls `buildQuickArchiveIndex` and writes its
+ * `render()` output to `<archiveQuickDir>/README.md`. No-ops (writes
+ * nothing) when `archiveQuickDir` is unreadable — this is a best-effort
+ * index, not a gate on milestone completion. #2142 MAJOR 4 (review): the
+ * whole body is wrapped in a try/catch so a failure of the WRITE itself
+ * (read-only archive dir, full disk, or a quick-task directory literally
+ * named `README.md` colliding with the file being written) degrades the same
+ * way — this function genuinely cannot throw, matching its own
+ * "best-effort, not a gate" contract; the directories are already safely
+ * archived by the time this runs.
+ */
+function writeQuickArchiveReadme(archiveQuickDir: string): void {
+  try {
+    const index = buildQuickArchiveIndex(archiveQuickDir);
+    platformWriteSync(path.join(archiveQuickDir, 'README.md'), index.render());
+  } catch {
+    /* best-effort (#2142 MAJOR 4): a read-only archive dir, a full disk, or a
+     * quick-task directory literally named `README.md` colliding with the
+     * file this function writes must never crash `milestone complete` —
+     * the quick-task directories are already safely archived on disk by the
+     * time this index-generation step runs. */
+  }
+}
+
+/**
+ * #2142 MAJOR 5 (review): the single owned selection rule for "which
+ * directories under `.planning/quick/` would/will move" — directory entries
+ * only (symlinks are excluded here, per the MAJOR 3 note above), each
+ * additionally guarded with `requireSafePath` (the same guard
+ * `scanQuickTasks`/`archiveQuickTaskDirectories` use), sorted for
+ * deterministic output. Extracted so `cmdMilestoneComplete`'s dry-run
+ * preview, `cmdQuickArchive`'s dry-run preview, and the REAL selection inside
+ * `archiveQuickTaskDirectories` all call this ONE function instead of each
+ * re-deriving the rule — the "Generative Fix Divergence" anti-pattern this
+ * repo explicitly guards against (a prior version of this code had the rule
+ * written three times, and only the real-run copy applied `requireSafePath`,
+ * so a dry-run preview could list a directory the real run would silently
+ * skip).
+ */
+function listQuickTaskDirsForArchive(cwd: string): string[] {
+  const planningBase = planningPaths(cwd).planning;
+  const quickDir = planningPaths(cwd).quick;
+  let sourceEntries: fs.Dirent[];
+  try {
+    sourceEntries = fs.readdirSync(quickDir, { withFileTypes: true });
+  } catch {
+    // .planning/quick absent or unreadable — nothing to select.
+    return [];
+  }
+  const names: string[] = [];
+  for (const entry of sourceEntries) {
+    if (!entry.isDirectory()) continue; // excludes symlinks too — see MAJOR 3 note above
+    try {
+      requireSafePath(path.join(quickDir, entry.name), planningBase, 'quick task dir', { allowAbsolute: true });
+    } catch {
+      continue; // symlink/escape attempt — never a candidate, in preview OR real run
+    }
+    names.push(entry.name);
+  }
+  return names.sort();
+}
+
+/**
+ * #2142: move each DIRECTORY entry under `.planning/quick/` into
+ * `milestones/<version>-quick/` (collision-safe), then (re)write that
+ * archive directory's README.md index. Sibling of `archivePhaseDirectories`
+ * — extracted rather than inlined into `cmdMilestoneComplete` (already
+ * cyclomatic 61) — mirroring its collision-safe destination-suffix loop,
+ * `retryRenameSync`, and `platformEnsureDir` usage.
+ *
+ * `version` is ALREADY validated by `ARCHIVE_VERSION_LABEL_RE` at
+ * `cmdMilestoneComplete`'s entry — this helper does not re-validate it, and
+ * must only ever be called after that guard has run.
+ *
+ * #2142 MAJOR 3 (review): a symlink under `.planning/quick/` — even one that
+ * targets a directory — is excluded by the `dirEntries` filter below
+ * (`fs.Dirent.isDirectory()` returns FALSE for a symlink, regardless of what
+ * it points at), so it is never a candidate `entry` in the first place and
+ * `requireSafePath` below never runs against it. `requireSafePath` is
+ * retained here as defense-in-depth for the NON-symlink path (a real
+ * directory entry whose resolved path still needs re-validating against
+ * `planningBase`) — the SAME guard `scanQuickTasks` (audit.cts) uses — so an
+ * entry that fails it is skipped, never archived, never counted. See the
+ * symlink regression tests in tests/milestone-archive.test.cjs
+ * (`symlinkEscapeIsNeverArchivedByMilestoneComplete` /
+ * `symlinkEscapeIsNeverArchivedByQuickArchive`) for a fixture proving neither
+ * the symlink nor its external target is ever moved or altered — added
+ * specifically so a future change to this filter cannot silently reopen the
+ * escape with nothing to catch it.
+ *
+ * No-op (returns `{archived: 0, entries: []}`, creates NOTHING on disk) when
+ * `.planning/quick/` does not exist or contains zero DIRECTORY entries — a
+ * stray file with no sibling directory is neither an empty-dir case nor an
+ * archive case.
+ *
+ * A mid-loop rename failure (or a failure to create the archive directory
+ * itself) does not crash `milestone complete` — it degrades to whatever
+ * `archived`/`entries` had already accumulated before the failure, mirroring
+ * the `archivedCount` finally-pattern `cmdMilestoneComplete`'s own phase
+ * archival uses a few hundred lines above (so a partial archive reports the
+ * TRUE count, never a false `0`/`false`).
+ */
+function archiveQuickTaskDirectories(cwd: string, version: string): { archiveDir: string; archived: number; entries: string[] } {
+  const planningBase = planningPaths(cwd).planning;
+  const quickDir = planningPaths(cwd).quick;
+  const archiveQuickDir = path.join(planningBase, 'milestones', `${version}-quick`);
+
+  // #2142 MAJOR 5 (review): dirNames is the SAME selection
+  // `listQuickTaskDirsForArchive` hands to both dry-run previews — this is
+  // the real run, so it cannot disagree with what a preview reported.
+  const dirNames = listQuickTaskDirsForArchive(cwd);
+  if (dirNames.length === 0) {
+    // Boundary 0 (#2142): zero (safe) directory entries (empty dir, only
+    // stray files, or every entry excluded by the selection rule) must not
+    // create the archive directory. Also covers `.planning/quick/` being
+    // absent/unreadable — `listQuickTaskDirsForArchive` degrades to `[]`.
+    return { archiveDir: archiveQuickDir, archived: 0, entries: [] };
+  }
+
+  let archived = 0;
+  const entries: string[] = [];
+  try {
+    platformEnsureDir(archiveQuickDir);
+    for (const name of dirNames) {
+      const src = path.join(quickDir, name);
+      let safeSrc: string;
+      try {
+        // Re-validated here (not just trusted from the selection above) as
+        // TOCTOU defense-in-depth: `listQuickTaskDirsForArchive` and this
+        // rename are two separate filesystem observations, and an entry
+        // that was a safe real directory at selection time could in theory
+        // be swapped for a symlink before this loop reaches it.
+        safeSrc = requireSafePath(src, planningBase, 'quick task dir', { allowAbsolute: true });
+      } catch {
+        continue; // symlink/escape attempt — skip, not archived
+      }
+
+      // Collision-safe: if a same-named archive entry exists (re-run), suffix it.
+      let dest = path.join(archiveQuickDir, name);
+      let destName = name;
+      let n = 1;
+      while (fs.existsSync(dest)) {
+        destName = `${name}.${n++}`;
+        dest = path.join(archiveQuickDir, destName);
+      }
+      retryRenameSync(safeSrc, dest);
+      archived++;
+      entries.push(destName);
+    }
+  } catch {
+    /* best-effort: platformEnsureDir failed, or the rename loop failed
+     * partway — `archived`/`entries` above already reflect exactly what
+     * succeeded before the failure (accumulated incrementally, never lost
+     * with the swallowed exception — mirrors the archivedCount pattern at
+     * cmdMilestoneComplete's phase-archival block). */
+  }
+
+  // Regenerate the README from whatever is ACTUALLY on disk now — covers
+  // both a clean full archive and a degraded partial one, and (on a re-run)
+  // includes entries a PRIOR run already archived. Skipped only when the
+  // archive directory itself was never created (ensureDir failed above).
+  if (fs.existsSync(archiveQuickDir)) {
+    writeQuickArchiveReadme(archiveQuickDir);
+  }
+
+  return { archiveDir: archiveQuickDir, archived, entries };
+}
+
+interface QuickArchiveOptions {
+  dryRun?: boolean;
+}
+
+/**
+ * #2142 escalation: `milestone.archive-quick` (CLI: `milestone archive-quick`,
+ * renamed from the original `quick.archive` per code-review FIX 1 — folded
+ * under the existing `milestone` namespace rather than adding a new top-level
+ * command) — the narrow archival helper the issue's own "Scope of changes"
+ * anticipated ("a `quick.archive`-style routine"), for callers (chiefly
+ * `gsd-core/workflows/cleanup.md`) that need to sweep
+ * `.planning/quick/*` WITHOUT the full `milestone complete` close-out.
+ *
+ * `milestone complete --archive-quick` cannot be reused for this: it
+ * hard-errors via `missingExplicitVersion` for an already-completed
+ * milestone (no `### Phase N:` headings left in its ROADMAP window),
+ * re-archives ROADMAP.md over the very snapshot cleanup depends on, and
+ * appends a duplicate MILESTONES.md entry on every re-run.
+ *
+ * This command performs ONLY the two things `archiveQuickTaskDirectories`
+ * already does (move `.planning/quick/*` dirs into
+ * `milestones/<version>-quick/` + (re)write that archive's README index —
+ * the SAME helper `cmdMilestoneComplete` calls, so the two entry points can
+ * never diverge on step 1) plus a Quick Tasks Completed table reset. It
+ * NEVER touches ROADMAP.md, REQUIREMENTS.md, or MILESTONES.md, and runs
+ * NEITHER the unstarted-phase guard NOR the milestone-window/TRUNCATED
+ * refusal — those remain `milestone complete`'s alone.
+ *
+ * #2142 MAJOR 6 (review): the STATE.md write now routes through
+ * `readModifyWriteStateMd` — the same owned read-transform-write composition
+ * `gsd-tools.cjs`'s `quick-tasks-append` handler uses (ADR-3408 §8.3 / #3469:
+ * "the single owned composition ... so the composition cannot diverge"). A
+ * prior version of this function called `platformWriteSync` directly with
+ * the reset result, bypassing `syncAndPreserveStateMd` entirely — the exact
+ * bypass shape that ADR closed. Per `src/state.cts:3289-3330`,
+ * `readModifyWriteStateMd` ALREADY acquires its own exclusive lock
+ * (`acquireStateLock`/`releaseStateLock`, a real `O_CREAT|O_EXCL` file lock,
+ * not reentrant) across its own read -> transform -> write cycle — so, unlike
+ * `cmdMilestoneComplete` (which folds the table reset into its own
+ * pre-existing `withStateLock` transform because it ALSO needs that lock for
+ * the closure-transition write happening in the same block), this function
+ * must NOT wrap the call in its own `withStateLock`: doing so would acquire
+ * the same lock file twice in the same process, and the second acquire would
+ * spin against a lock this same call already holds until it times out.
+ */
+function cmdQuickArchive(cwd: string, version: string, options: QuickArchiveOptions, raw: boolean): void {
+  if (!version) {
+    error('version required for milestone.archive-quick (e.g., v1.0)');
+  }
+  // #2288-class security: `version` becomes a filesystem directory component
+  // (`milestones/<version>-quick/`) that directories are MOVED into — same
+  // guard + wording shape `cmdMilestoneComplete` uses for its own version arg.
+  if (!ARCHIVE_VERSION_LABEL_RE.test(version)) {
+    error(`milestone.archive-quick: version "${version}" is invalid — a milestone version label may contain only letters, digits, '.', '-' and '_', and must not contain path separators or "..".`);
+  }
+
+  const statePath = planningPaths(cwd).state;
+  const planningBase = planningPaths(cwd).planning;
+  const toPosixRel = (p: string): string => path.relative(cwd, p).split(path.sep).join('/');
+
+  // --dry-run: preview only, mutates nothing. #2142 MAJOR 5 (review): routed
+  // through the SAME `listQuickTaskDirsForArchive` selection
+  // `cmdMilestoneComplete`'s own dry-run preview and the real
+  // `archiveQuickTaskDirectories` both use, so all three can never disagree.
+  if (options.dryRun) {
+    const quickDirsToArchive: string[] = listQuickTaskDirsForArchive(cwd);
+    output(
+      {
+        dry_run: true,
+        version,
+        would_archive: quickDirsToArchive,
+        archive_dir: toPosixRel(path.join(planningBase, 'milestones', `${version}-quick`)),
+      },
+      raw,
+    );
+    return;
+  }
+
+  const quickArchiveResult = archiveQuickTaskDirectories(cwd, version);
+  const warnings: Array<{ field: string; reason: string }> = [];
+  let stateUpdated = false;
+
+  // Same silent/surfaced rule `cmdMilestoneComplete` applies: only attempt
+  // the reset when something actually moved, and treat the
+  // QUICK_TASKS_SECTION_ABSENT sentinel as a silent no-op (the section is
+  // created lazily by quick.md Step 7b and absent from templates/state.md,
+  // so absence is the common case, not an anomaly). Any other reset failure
+  // is surfaced via `warnings`, never thrown.
+  //
+  // #2142 MAJOR 6 (review): routed through `readModifyWriteStateMd` (see the
+  // docstring above) instead of a bare `platformWriteSync` — the transform
+  // returns the ORIGINAL content unchanged whenever the reset did not apply
+  // (sentinel-absent or a genuine failure), so `readModifyWriteStateMd`'s own
+  // no-op guard (#948, state.cts:3304) skips the write and its `false`
+  // return accurately reports "nothing was written" — the same "state_updated
+  // must report accurately" contract the prior direct-write version upheld.
+  if (quickArchiveResult.archived > 0 && fs.existsSync(statePath)) {
+    let resetWarning: { field: string; reason: string } | null = null;
+    stateUpdated = readModifyWriteStateMd(
+      statePath,
+      (content: string) => {
+        const { content: nextContent, warning } = applyQuickTasksReset(content);
+        resetWarning = warning;
+        return nextContent;
+      },
+      cwd,
+    );
+    if (resetWarning) {
+      warnings.push(resetWarning);
+    }
+  }
+
+  output(
+    {
+      version,
+      archived: quickArchiveResult.archived,
+      entries: quickArchiveResult.entries,
+      archive_dir: toPosixRel(quickArchiveResult.archiveDir),
+      state_updated: stateUpdated,
+      warnings,
+    },
+    raw,
+    `${quickArchiveResult.archived} quick task director${quickArchiveResult.archived === 1 ? 'y' : 'ies'} archived`,
+  );
+}
+
 export = {
   cmdRequirementsMarkComplete,
   cmdRequirementsReadyIds,
   cmdRequirementsRevertPhase,
   cmdMilestoneComplete,
   cmdPhasesClear,
+  cmdQuickArchive,
+  buildQuickArchiveIndex,
 };

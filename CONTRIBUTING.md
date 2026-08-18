@@ -1119,6 +1119,74 @@ commit, so you are told which of the two problems you actually have. A marker th
 survives shell tokenization as an *argument* declares nothing: it reached argv, which
 means the runtime executed the line.
 
+### Every `git add` in shipped content that can reach `.planning/` must sit inside an *executable* `commit_docs` check
+
+`tests/commit-docs-bypass.test.cjs` scans every `.md` under `gsd-core/workflows/`,
+`gsd-core/references/`, `agents/`, `commands/` and `skills/` and fails if a `git add` that could
+stage `.planning/` is not enclosed by a `commit_docs` check that actually runs.
+
+This is the sibling of the `--files` guard above, and it exists for the complementary hole.
+That one keeps a *seam* invocation honest; this one catches the steps that never reach the seam
+at all. `commit_docs` is resolved and enforced inside `cmdCommit`, so a step that types
+`git add` into its own shell bypasses it completely — no code change can intercept that, only a
+guard over the shipped text.
+
+**Prose is not a guard.** This is the failure the scan was written for. All three of these
+*looked* gated and none of them were:
+
+````markdown
+**If `commit_docs` is true:**
+```bash
+git add "${EVAL_REVIEW_FILE}"          ← runs unconditionally; the bold line is markdown
+```
+````
+
+The bash block executes whatever the sentence above it says. Write the check in shell, which is
+the form `gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md` already uses:
+
+```bash
+COMMIT_DOCS=$(gsd_run query config-get commit_docs 2>/dev/null || echo "true")
+if [ "$COMMIT_DOCS" != "false" ]; then
+  git add "${ARTIFACT}"
+fi
+```
+
+Both polarities are accepted (`!= "false"` and `= "true"`). The `|| echo "true"` fallback is
+deliberate: a tooling failure must fail *open*, or a broken `gsd-tools` silently stops committing
+planning docs for someone who wants them.
+
+Three consequences worth knowing before you edit shipped content:
+
+**Guard state does not cross a fenced block.** Each fenced block is its own shell, so an `if`
+opened in one block does not protect a `git add` in the next — the same reason
+`new-milestone.md` warns that a `GSD_WS` guard set in an earlier step reads as unset later. Put
+the check and the `git add` in the same block.
+
+**An unresolvable path is treated as reaching `.planning/`.** `git add "${ARTIFACT}"` is flagged,
+because whether `$ARTIFACT` expands under `.planning/` is not knowable statically and the scan
+fails closed. A `{placeholder}` in braces with no `$` is documentation notation and does not
+trigger it. If your `git add` genuinely cannot touch `.planning/`, name the path literally.
+
+**Only fenced lines are scanned.** Inline-backtick prose — including the anti-pattern
+documentation that tells you never to run `git add -A` — is not executable and is not flagged.
+
+The same `# gsd-scan-ignore: #NNN` declaration as the `--files` guard exempts a deliberate
+counter-example, on the invocation's own line, in shell-comment position, with a reason naming a
+tracking issue or URL. Both guards share one tokenizer and one marker implementation
+(`tests/helpers/shipped-command-scan.cjs`) so the two conventions can never drift into two rules
+wearing one name.
+
+**Known limits.** The scan (`tests/helpers/planning-add-guard.cjs`) is a token-oriented text scan,
+not a shell interpreter, and it targets accidental reintroduction of an unguarded stage by a
+contributor editing shipped content — not a determined bypass. Four shapes are confirmed (#3585)
+to stage `.planning/` at runtime while scoring zero offenders, and none is a shape GSD content
+actually uses: `eval "git add -A"`, `find .planning -type f | xargs git add`, a one-line shell
+function body (`f() { git add -A; }`), and a backslash line-continuation split across two physical
+lines. The scan also only models `git add` and `git commit -a`/`--all` as staging commands — it
+does not recognize `git stash`, `git rm --cached`, `git restore --staged`, or
+`git update-index --add`, any of which can also move `.planning/` content into a state a later
+commit picks up.
+
 ### CI Test Quality Checks
 
 The following checks run on every PR in addition to the test suite:

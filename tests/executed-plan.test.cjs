@@ -610,7 +610,17 @@ describe('installRuntimeArtifacts — E4: kilo (second family member)', () => {
       result, undefined,
       'E4: kilo, the SECOND combined-family runtime, must ALSO return a plan — E3 is not a one-runtime special case',
     );
-    assert.deepStrictEqual(result.kinds.map((k) => k.kind).sort(), ['commands', 'skills']);
+    // 'agents' was added here deliberately by #2875 Part 2 Task A
+    // (installAgentsKindStandalone, install-engine.cts:1614-1618): the
+    // combined-family (opencode/kilo) executed plan now also reports the
+    // agents kind it stages via installAgentsKindStandalone, mirroring the
+    // generic layout-driven loop's own top-level shape (install-engine.cts:1627-1637).
+    // This test was written under #2874 (Phase 5), before that kind was
+    // wired in — its expected list was never updated. Kilo's resolved layout
+    // declares an `agents` kind, so a correct plan MUST include it; a
+    // ['commands', 'skills']-only expectation encoded the pre-#2875 shape,
+    // not a real contract.
+    assert.deepStrictEqual(result.kinds.map((k) => k.kind).sort(), ['agents', 'commands', 'skills']);
   });
 });
 
@@ -775,6 +785,44 @@ describe('installRuntimeArtifacts — E12: executed plan key set is locked', () 
 
 // ─── F. Fs adapter seam — F4-F6 ───────────────────────────────────────────────
 
+/**
+ * Build a fs object that implements EVERY InstallFsAdapter method by
+ * delegating to real `node:fs` (mirroring install-fs-adapter.cts's own
+ * REAL_ADAPTER), then applies `overrides` on top. buildGuardedAdapter
+ * (install-fs-adapter.cts) now throws for any method an injected partial
+ * omits (the module doc's "PARTIAL-ADAPTER TRAP" fix), so an end-to-end test
+ * that drives a REAL install against a REAL destDir (F4/I2/I5 below — these
+ * need real command/agent source content actually copied) while
+ * intercepting only one or two specific calls needs a COMPLETE fake that
+ * only fakes what it overrides — exactly the "documented, intended usage"
+ * install-fs-adapter.cts's own module doc calls out, as opposed to
+ * `createFakeInstallFs`'s fully in-memory store (used where the test itself
+ * controls all content, e.g. F2/F5/F6).
+ */
+function createRealDelegatingFs(overrides = {}) {
+  const base = {
+    existsSync: (p) => fs.existsSync(p),
+    mkdirSync: (p, opts) => fs.mkdirSync(p, opts),
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- delegate for a fake-adapter method, not test cleanup
+    rmSync: (p, opts) => fs.rmSync(p, opts),
+    readdirSync: (p, opts) => (opts ? fs.readdirSync(p, opts) : fs.readdirSync(p)),
+    readFileSync: (p, encoding) => (encoding ? fs.readFileSync(p, encoding) : fs.readFileSync(p)),
+    writeFileSync: (p, data, opts) => fs.writeFileSync(p, data, opts),
+    copyFileSync: (src, dest) => fs.copyFileSync(src, dest),
+    cpSync: (src, dest, opts) => fs.cpSync(src, dest, opts),
+    lstatSync: (p) => fs.lstatSync(p),
+    realpathSync: (p) => fs.realpathSync(p),
+    unlinkSync: (p) => fs.unlinkSync(p),
+    rmdirSync: (p) => fs.rmdirSync(p),
+    symlinkSync: (target, p) => fs.symlinkSync(target, p),
+    readlinkSync: (p) => fs.readlinkSync(p),
+    openSync: (p, flags) => fs.openSync(p, flags),
+    readSync: (fd, buffer, offset, length, position) => fs.readSync(fd, buffer, offset, length, position),
+    closeSync: (fd) => fs.closeSync(fd),
+  };
+  return { ...base, ...overrides };
+}
+
 describe('installRuntimeArtifacts — F4: adapter errors propagate, cleanup still runs', () => {
   test('adapter errors propagate, cleanup still runs', (t) => {
     const configDir = createTempDir('gsd-f4-augment-');
@@ -782,7 +830,7 @@ describe('installRuntimeArtifacts — F4: adapter errors propagate, cleanup stil
     sandboxHome(t, configDir);
 
     let capturedCleanupDir;
-    const fakeFs = {
+    const fakeFs = createRealDelegatingFs({
       writeFileSync: (p, data, opts) => {
         if (String(p).includes('gsd-cmd-rewrites-') && capturedCleanupDir === undefined) {
           capturedCleanupDir = path.dirname(p);
@@ -794,7 +842,7 @@ describe('installRuntimeArtifacts — F4: adapter errors propagate, cleanup stil
         err.code = 'EACCES';
         throw err;
       },
-    };
+    });
 
     assert.throws(
       () => installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs }),
@@ -834,37 +882,35 @@ describe('installRuntimeArtifacts — F5: fake existsSync drives the same branch
   });
 });
 
-describe('installRuntimeArtifacts — F6: incomplete adapter falls back to real fs, never silently no-ops', () => {
-  test('incomplete adapter fails loudly (never silently skips the write)', (t) => {
-    // install-fs-adapter.cts's documented PARTIAL-ADAPTER TRAP: withInstallFs
-    // merges the injected partial OVER the real adapter — any method the
-    // partial omits resolves to REAL node:fs, silently. This pins the
-    // dangerous alternative it guards against: an omitted method must never
-    // degrade into a silent no-op (skipping the operation, pretending
-    // success) — it must actually execute, for real.
-    const configDir = createTempDir('gsd-f6-claude-');
-    t.after(() => cleanup(configDir));
-    sandboxHome(t, configDir);
+describe('installRuntimeArtifacts — F6: incomplete adapter fails loudly, never silently falls back to real fs', () => {
+  // #2875 REVERSES this row's earlier pinned contract ("falls back to real
+  // fs, never silently no-ops"). That contract was itself the defect
+  // buildGuardedAdapter closes (install-fs-adapter.cts's "PARTIAL-ADAPTER
+  // TRAP" doc comment): merging an injected partial OVER the real adapter
+  // meant any method the partial omitted was silently REAL `node:fs` — e.g.
+  // user-artifact-staging.cts's `stageUserArtifacts` calling
+  // `installFs().rmSync(entryDir)` unconditionally, where a test fake
+  // missing `rmSync` would silently delete the real
+  // `<configDir>/.gsd-staging/<key>` on disk. Falling through to real fs is
+  // exactly how a fake-adapter test can end up performing real, uncontrolled
+  // IO — the bug, not a feature. The guarded contract instead throws
+  // immediately, naming the missing method, the moment the exercised path
+  // reaches it: never a silent no-op AND never a silent real-fs write.
+  test('incomplete adapter fails loudly (never silently skips the write)', () => {
+    const configDir = path.join(os.tmpdir(), `gsd-f6-must-not-exist-${crypto.randomUUID()}`);
 
-    let realMkdirCalls = 0;
-    // Deliberately incomplete: only mkdirSync is overridden (to prove this
-    // partial is genuinely merged over real fs, not a full copy of it) —
-    // every other method (existsSync/readdirSync/writeFileSync/
-    // copyFileSync/cpSync/...) is omitted entirely.
+    // Deliberately incomplete: only mkdirSync is implemented, to prove the
+    // FIRST other method the call path reaches throws immediately instead of
+    // silently degrading to real fs or a no-op.
     const incompleteFs = {
-      mkdirSync: (p, opts) => { realMkdirCalls++; return fs.mkdirSync(p, opts); },
+      mkdirSync: () => undefined,
     };
 
-    const result = installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, undefined, { fs: incompleteFs });
-
-    assert.notStrictEqual(result, undefined, 'F6: an incomplete adapter must not silently produce no result');
-    assert.ok(realMkdirCalls > 0, 'F6 test precondition: mkdirSync must have been called');
-    const skillsKind = result.kinds.find((k) => k.kind === 'skills');
-    assert.ok(skillsKind, 'F6 precondition: claude global writes a skills kind');
-    assert.ok(
-      fs.existsSync(skillsKind.destDir) && fs.readdirSync(skillsKind.destDir).length > 0,
-      'F6: every method the incomplete adapter omitted fell back to REAL fs and actually wrote real ' +
-      'content — an incomplete fake never silently no-ops the operations it does not implement',
+    assert.throws(
+      () => installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, undefined, { fs: incompleteFs }),
+      (err) => /does not implement it/.test(err.message) && /PARTIAL-ADAPTER TRAP/.test(err.message),
+      'F6: an incomplete adapter must fail loudly, naming the missing method, the moment the call path ' +
+      'reaches a method it does not implement — never silently no-op or fall back to real fs',
     );
   });
 });
@@ -1017,19 +1063,15 @@ describe('installRuntimeArtifacts — I2: failed cleanup is visible, not silent'
     t.after(() => cleanup(configDir));
     sandboxHome(t, configDir);
 
-    const fakeFs = {
+    const fakeFs = createRealDelegatingFs({
       rmSync: (p, opts) => {
         if (String(p).includes('gsd-cmd-rewrites-')) {
           throw new Error('I2: simulated cleanup failure');
         }
-        // This is a fake fs-adapter METHOD delegating to real fs for paths
-        // it does not intentionally poison, not a test's own directory-
-        // cleanup call (which still goes through t.after(() => cleanup(...))
-        // above).
         // eslint-disable-next-line local/no-raw-rmsync-in-tests -- delegate, not test cleanup
         return fs.rmSync(p, opts);
       },
-    };
+    });
 
     const result = installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs });
 
@@ -1080,7 +1122,7 @@ describe('installRuntimeArtifacts — I5: rewrite failure mid-plan cleans up and
     sandboxHome(t, configDir);
 
     let capturedCleanupDir;
-    const fakeFs = {
+    const fakeFs = createRealDelegatingFs({
       mkdirSync: (p, opts) => {
         if (String(p).includes('gsd-profile-runtime-skills-')) {
           throw new Error('I5: simulated skills-stage failure AFTER commands already rewrote+registered a cleanup dir');
@@ -1094,7 +1136,7 @@ describe('installRuntimeArtifacts — I5: rewrite failure mid-plan cleans up and
         }
         fs.writeFileSync(p, data, opts);
       },
-    };
+    });
 
     assert.throws(
       () => installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_FULL, TEST_ATTRIBUTION, undefined, { fs: fakeFs }),

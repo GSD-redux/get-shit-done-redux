@@ -18,7 +18,7 @@ const {
   convertClaudeCommandToWindsurfWorkflow,
   convertClaudeAgentToWindsurfAgent,
   convertClaudeToWindsurfMarkdown,
-} = require('../bin/install.js');
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 // Mirrors WINDSURF_WORKFLOW_DESCRIPTION_MAX in
 // src/runtime-artifact-conversion.cts (not exported — the module's own

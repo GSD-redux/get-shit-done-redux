@@ -127,7 +127,7 @@ verification: backstop }` in `must_haves.truths`, NOT a prose note (the verifier
 deterministically on the `verification: backstop` field; a parenthetical is unparseable — the #1110
 fragility; flat scalar `verification:` key, never a nested object, ADR-550 #1278). A `backstop` truth
 the verifier cannot confirm with explicit evidence abstains → `human_needed` (reason
-`insufficient_spec`), never a silent pass (#1154; `references/honest-verifier.md`). **Never
+`insufficient_spec`), never a silent pass (#1154; `gsd-core/references/honest-verifier.md`). **Never
 auto-dismiss** (a wrong dismissal is the exact silent failure this eliminates). An `unclassified` row
 stays **`unresolved`** (#1110) — never auto-resolved with backstop — and is surfaced to the planner as a flagged
 assumption. Pass `$COVERAGE` (+ the gate's `$SPECLESS_FALLBACK_DISABLED` note) into the gsd-planner

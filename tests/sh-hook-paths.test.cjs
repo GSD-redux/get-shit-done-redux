@@ -27,10 +27,10 @@ const assert = require('node:assert/strict');
 const path = require('path');
 
 // buildHookCommand was extracted to gsd-core/bin/lib/runtime-hooks-surface.cjs
-// (ADR-857 phase 5f-1) and re-exported via install.js.  Import through install.js
-// so the test exercises the same public surface that the rest of the codebase uses.
-const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
-const { buildHookCommand } = INSTALL;
+// (ADR-857 phase 5f-1). #2876 (epic #2866 Phase 7) retired install.js's
+// pass-through re-export (zero production consumers) — import the module
+// directly.
+const { buildHookCommand } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
 
 const SH_HOOKS = [
   { name: 'gsd-validate-commit.sh' },

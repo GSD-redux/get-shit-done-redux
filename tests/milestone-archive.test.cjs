@@ -17,6 +17,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
+const { seedWorkstream } = require('./fixtures/index.cjs');
+const { findTableBySchema } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const { buildQuickArchiveIndex } = require('../gsd-core/bin/lib/milestone.cjs');
 
 function runSdkQuery(args, cwd) {
   const result = runGsdTools(args, cwd);
@@ -513,5 +516,839 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'only CK-01-first should match Phase 1; CK-99 and CK-100 must be excluded');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142: quick task archival at milestone close-out
+// ─────────────────────────────────────────────────────────────────────────────
+
+function setupQuickArchiveRoadmap(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'ROADMAP.md'),
+    `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n`,
+  );
+  fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+}
+
+function writeQuickTaskDir(tmpDir, name, files = {}) {
+  const dir = path.join(tmpDir, '.planning', 'quick', name);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [filename, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, filename), content);
+  }
+  return dir;
+}
+
+function quickTasksStateWithRows(count) {
+  const rows = [];
+  for (let i = 1; i <= count; i++) {
+    rows.push(`| ${i} | quick task ${i} | 2026-01-0${i} | abc000${i} | — |`);
+  }
+  return [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    ...rows,
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+}
+
+describe('#2142: quick task archival at milestone close-out', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('leavesQuickTasksInPlaceWhenFlagAbsent', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const quickDir = writeQuickTaskDir(tmpDir, '2026-01-01-fix-typo', {
+      '2026-01-01-fix-typo-SUMMARY.md': '# Summary\n',
+    });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(1));
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false, 'archived.quick must be false when --archive-quick is absent');
+    assert.ok(fs.existsSync(quickDir), 'quick task directory must remain in place');
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'no quick archive dir should be created',
+    );
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table must still be present');
+    assert.strictEqual(table.rows.length, 1, 'quick task row must remain untouched');
+  });
+
+  test('archivesQuickTasksAndResetsTableWhenFlagPassed', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const names = ['2026-01-01-a', '2026-01-02-b', '2026-01-03-c'];
+    for (const name of names) writeQuickTaskDir(tmpDir, name);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(3));
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete --archive-quick failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    for (const name of names) {
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning', 'quick', name)),
+        `${name} must be moved out of .planning/quick`,
+      );
+      assert.ok(fs.existsSync(path.join(archiveDir, name)), `${name} must exist in the archive dir`);
+    }
+    const readmeStat = fs.statSync(path.join(archiveDir, 'README.md'));
+    assert.ok(readmeStat.isFile(), 'README.md index must be generated');
+    assert.ok(readmeStat.size > 0, 'README.md index must be non-empty');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const indexedNames = index.entries.map((e) => e.name);
+    for (const name of names) {
+      assert.ok(indexedNames.includes(name), `index entries must name ${name}`);
+    }
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table header must survive the reset');
+    assert.strictEqual(table.rows.length, 0, 'all quick task rows must be cleared');
+  });
+
+  test('noOpsWhenQuickDirectoryAbsent', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false);
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')));
+  });
+
+  test('doesNotCreateArchiveDirForEmptyQuickDir', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'quick'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, false, 'boundary 0: an empty quick dir must not count as archived');
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'no archive dir for zero entries',
+    );
+  });
+
+  test('archivesSingleQuickTaskDirectory', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-02-01-only-one');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true, 'boundary 1: a single quick task dir must archive');
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-02-01-only-one')));
+  });
+
+  test('archivesMultipleQuickTaskDirectories', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-02-01-first');
+    writeQuickTaskDir(tmpDir, '2026-02-02-second');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true, 'boundary 2: multiple quick task dirs must archive');
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.existsSync(path.join(archiveDir, '2026-02-01-first')));
+    assert.ok(fs.existsSync(path.join(archiveDir, '2026-02-02-second')));
+  });
+
+  test('archivesWhenStateHasNoQuickTasksSection', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-03-01-no-section');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# STATE\n\n### Blockers/Concerns\nNone\n');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete must succeed even without a Quick Tasks Completed section: ${result.error}`);
+    assert.strictEqual(result.data.archived.quick, true);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-03-01-no-section')));
+    // #2142 design doc §40 behavior table row 5: an absent "Quick Tasks
+    // Completed" section is the common, silent no-op path (the section is
+    // created lazily by quick.md, not by templates/state.md) — it must
+    // never be surfaced as a preservation_warnings entry.
+    assert.ok(
+      !(result.data.preservation_warnings || []).some((w) => w.field === 'quick_tasks_table'),
+      `an absent Quick Tasks Completed section must not produce a quick_tasks_table warning, got: ${JSON.stringify(result.data.preservation_warnings)}`,
+    );
+  });
+
+  test('refusesResetAndWarnsWhenQuickTasksTableHasNonCanonicalHeader', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-03-02-noncanonical');
+    const nonCanonicalState = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed',
+      '',
+      '| # | Thing | When |',
+      '|---|-------|------|',
+      '| 1 | custom thing | 2026-03-02 |',
+      '',
+      '### Blockers/Concerns',
+      'None',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), nonCanonicalState);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete must succeed even when the reset is refused: ${result.error}`);
+    // The quick directories still move — only the STATE.md table reset is refused.
+    assert.strictEqual(result.data.archived.quick, true);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-03-02-noncanonical')));
+
+    assert.ok(
+      (result.data.preservation_warnings || []).some((w) => w.field === 'quick_tasks_table'),
+      `a non-canonical Quick Tasks table header must produce a quick_tasks_table warning, got: ${JSON.stringify(result.data.preservation_warnings)}`,
+    );
+
+    // allow-test-rule: source-text-is-the-product (#2142)
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(
+      stateContent.includes('| # | Thing | When |'),
+      'the non-canonical header must survive byte-exact since the reset was refused',
+    );
+    assert.ok(
+      stateContent.includes('| 1 | custom thing | 2026-03-02 |'),
+      'the original data row must remain on disk — a refused reset must not drop rows',
+    );
+  });
+
+  test('suffixesCollidingQuickTaskDirectoryOnRerun', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-04-01-rerun';
+    writeQuickTaskDir(tmpDir, name, { 'new-marker.txt': 'new run\n' });
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    fs.mkdirSync(path.join(archiveDir, name), { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, name, 'existing-marker.txt'), 'prior run\n');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(fs.existsSync(path.join(archiveDir, name, 'existing-marker.txt')), 'prior archive entry must survive');
+    assert.strictEqual(
+      fs.readFileSync(path.join(archiveDir, name, 'existing-marker.txt'), 'utf-8'),
+      'prior run\n',
+      'prior archive entry contents must be untouched',
+    );
+    assert.ok(fs.existsSync(path.join(archiveDir, `${name}.1`)), 'the newly-archived dir must be suffixed .1');
+    assert.ok(
+      fs.existsSync(path.join(archiveDir, `${name}.1`, 'new-marker.txt')),
+      "the suffixed dir must carry this run's content",
+    );
+  });
+
+  test('indexLinksPerTaskSummaryFile', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-01-per-task-summary';
+    writeQuickTaskDir(tmpDir, name, { [`${name}-SUMMARY.md`]: '# Summary\nDid the thing.\n' });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must list the task directory');
+    assert.strictEqual(
+      entry.summary,
+      `${name}/${name}-SUMMARY.md`,
+      'index entry must link the per-task summary file via its archive-dir-relative path (name/name-SUMMARY.md), not a bare filename',
+    );
+    const rendered = index.render();
+    const linkMatch = rendered.match(new RegExp(`\\[${name}\\]\\(([^)]+)\\)`));
+    assert.ok(linkMatch, 'rendered index must contain a markdown link for the task');
+    assert.strictEqual(
+      linkMatch[1],
+      `${name}/${name}-SUMMARY.md`,
+      'rendered link target must resolve into the task subdirectory, not the archive root',
+    );
+  });
+
+  test('indexLinksLegacyBareSummaryFile', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-02-bare-summary';
+    writeQuickTaskDir(tmpDir, name, { 'SUMMARY.md': '# Summary\nDid the other thing.\n' });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must list the task directory');
+    assert.strictEqual(
+      entry.summary,
+      `${name}/SUMMARY.md`,
+      'index entry must link the legacy bare summary file via its archive-dir-relative path (name/SUMMARY.md), not a bare filename',
+    );
+  });
+
+  test('indexListsTaskWithoutSummaryWithoutLink', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-05-03-no-summary';
+    writeQuickTaskDir(tmpDir, name); // no files at all
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    const entry = index.entries.find((e) => e.name === name);
+    assert.ok(entry, 'index entries must still list a task directory with no summary');
+    assert.strictEqual(entry.summary, null, 'index entry must not link into a directory that has no summary file to point at');
+  });
+
+  test('skipsNonDirectoryEntriesInQuickDir', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'quick'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt'), 'not a task dir\n');
+    writeQuickTaskDir(tmpDir, '2026-06-01-real-task');
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt')),
+      'a loose file must not be archived',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', 'stray-notes.txt')),
+      'loose file must not appear under the archive dir',
+    );
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-06-01-real-task')),
+      'the real task directory must still archive',
+    );
+  });
+
+  test('dryRunPreviewsQuickArchivalWithoutMutating', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const names = ['2026-07-01-preview-a', '2026-07-02-preview-b'];
+    for (const name of names) writeQuickTaskDir(tmpDir, name);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete --dry-run failed: ${result.error}`);
+    assert.ok(Array.isArray(result.data.would_archive.quick), 'would_archive.quick must be an array');
+    for (const name of names) {
+      assert.ok(result.data.would_archive.quick.includes(name), `would_archive.quick must name ${name}`);
+      assert.ok(
+        fs.existsSync(path.join(tmpDir, '.planning', 'quick', name)),
+        `${name} must remain on disk after a dry run`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'dry run must not create the archive dir',
+    );
+  });
+
+  test('rejectsVersionWithPathSeparator', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    writeQuickTaskDir(tmpDir, '2026-08-01-evil-version');
+
+    const result = runSdkQuery(['milestone.complete', '../evil', '--archive-quick'], tmpDir);
+    assert.strictEqual(result.success, false, 'a version containing a path separator must be rejected');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '..', 'evil')), 'nothing must be created outside the temp fixture root');
+    const milestonesDir = path.join(tmpDir, '.planning', 'milestones');
+    if (fs.existsSync(milestonesDir)) {
+      for (const entry of fs.readdirSync(milestonesDir)) {
+        assert.ok(!entry.includes('..'), `no traversal-shaped entry may exist under milestones/: ${entry}`);
+      }
+    }
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'quick', '2026-08-01-evil-version')),
+      'quick task dir must remain untouched on refusal',
+    );
+  });
+
+  test('archivesQuickTaskWithUnicodeAndSpaces', () => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const name = '2026-01-01-café report';
+    writeQuickTaskDir(tmpDir, name);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', name)),
+      'a unicode/space-containing quick task directory name must archive correctly',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142 escalation: `milestone.archive-quick` — narrow archival entry point
+//
+// `milestone.complete --archive-quick` cannot be reused by cleanup.md: it
+// hard-errors via `missingExplicitVersion` for an already-completed milestone
+// (no `### Phase N:` headings left in its ROADMAP window), re-archives
+// ROADMAP.md over the very snapshot cleanup depends on, and would append a
+// duplicate MILESTONES.md entry on every re-run. `milestone.archive-quick` is the
+// narrow replacement — see `cmdQuickArchive` in src/milestone.cts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2142 escalation: milestone.archive-quick — narrow archival entry point', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('quickArchiveMovesDirectoriesWithoutTouchingRoadmap', () => {
+    // Already-completed-milestone shape: v1.0 was archived by a PRIOR
+    // milestone.complete run (its ROADMAP snapshot lives at
+    // milestones/v1.0-ROADMAP.md), and the LIVE ROADMAP.md has moved on to
+    // v1.1 — it carries no `### Phase N:` heading for v1.0 at all. This is
+    // exactly the shape that makes `milestone.complete v1.0 --archive-quick`
+    // fail with `missingExplicitVersion`.
+    const liveRoadmap = '# Roadmap\n\n## v1.1: Next\n\n### Phase 1: New Work\n**Goal:** Ship more.\n';
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), liveRoadmap);
+    const archivedRoadmap = '# Roadmap\n\n## v1.0: First\n\n### Phase 1: Foundation\n**Goal:** Setup.\n';
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'milestones'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md'), archivedRoadmap);
+
+    // Confirm the premise this command exists to fix.
+    const milestoneCompleteResult = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.strictEqual(
+      milestoneCompleteResult.success,
+      false,
+      'milestone.complete v1.0 --archive-quick must still fail against an already-archived milestone',
+    );
+
+    writeQuickTaskDir(tmpDir, '2026-09-01-fix-typo');
+
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick should succeed where milestone.complete fails: ${result.error}`);
+    assert.strictEqual(result.data.archived, 1);
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-09-01-fix-typo')),
+      'quick task dir must be moved into the v1.0-quick archive',
+    );
+
+    const liveRoadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.strictEqual(liveRoadmapAfter, liveRoadmap, '.planning/ROADMAP.md must be byte-identical after milestone.archive-quick');
+    const archivedRoadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md'), 'utf-8');
+    assert.strictEqual(
+      archivedRoadmapAfter,
+      archivedRoadmap,
+      'the archived v1.0-ROADMAP.md snapshot must be byte-identical after milestone.archive-quick',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'MILESTONES.md')),
+      'milestone.archive-quick must never write a MILESTONES.md entry',
+    );
+  });
+
+  test('quickArchiveRejectsVersionWithPathSeparator', () => {
+    writeQuickTaskDir(tmpDir, '2026-09-02-evil-version');
+
+    const result = runSdkQuery(['milestone.archive-quick', '../evil'], tmpDir);
+    assert.strictEqual(result.success, false, 'a version containing a path separator must be rejected');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '..', 'evil')), 'nothing must be created outside the temp fixture root');
+    const milestonesDir = path.join(tmpDir, '.planning', 'milestones');
+    if (fs.existsSync(milestonesDir)) {
+      for (const entry of fs.readdirSync(milestonesDir)) {
+        assert.ok(!entry.includes('..'), `no traversal-shaped entry may exist under milestones/: ${entry}`);
+      }
+    }
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'quick', '2026-09-02-evil-version')),
+      'quick task dir must remain untouched on refusal',
+    );
+  });
+
+  test('quickArchiveDryRunMutatesNothing', () => {
+    const names = ['2026-09-03-preview-a', '2026-09-03-preview-b'];
+    for (const name of names) writeQuickTaskDir(tmpDir, name);
+
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0', '--dry-run'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick --dry-run failed: ${result.error}`);
+    assert.ok(Array.isArray(result.data.would_archive), 'would_archive must be an array');
+    for (const name of names) {
+      assert.ok(result.data.would_archive.includes(name), `would_archive must name ${name}`);
+      assert.ok(
+        fs.existsSync(path.join(tmpDir, '.planning', 'quick', name)),
+        `${name} must remain on disk after a dry run`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'dry run must not create the archive dir',
+    );
+  });
+
+  test('quickArchiveIsNoOpWhenQuickDirAbsent', () => {
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick should succeed with no .planning/quick: ${result.error}`);
+    assert.strictEqual(result.data.archived, 0);
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')),
+      'no archive dir should be created when .planning/quick is absent',
+    );
+  });
+
+  // MAJOR 6 (#2142 review): `milestone.archive-quick`'s STATE.md write now routes
+  // through `readModifyWriteStateMd` (src/milestone.cts cmdQuickArchive)
+  // instead of a bare `platformWriteSync`. Behavioral proof that the reset
+  // still applies correctly and `state_updated` still reports `true`.
+  test('quickArchiveResetsStateTableThroughOwnedCompositionAndReportsStateUpdated', () => {
+    writeQuickTaskDir(tmpDir, '2026-09-04-a');
+    writeQuickTaskDir(tmpDir, '2026-09-04-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(2));
+
+    const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.archive-quick failed: ${result.error}`);
+    assert.strictEqual(result.data.archived, 2);
+    assert.strictEqual(result.data.state_updated, true, 'state_updated must be true when the table reset actually applied');
+    assert.deepStrictEqual(result.data.warnings, []);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const table = findTableBySchema(stateContent, 'QuickTasks');
+    assert.ok(table, 'Quick Tasks table header must survive the reset');
+    assert.strictEqual(table.rows.length, 0, 'all quick task rows must be cleared');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142 review — BLOCKER 1, MAJOR 3, MAJOR 5 regression coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Placement note (code-review FIX 3): per docs/TESTING-SUITES.md this
+// adversarial/prompt-injection + path-escape coverage belongs in a
+// `*.security.test.cjs` file, not this unsuffixed unit lane. It stays here
+// instead: `scripts/lint-test-file-count.allowlist.json`'s `milestone` entry
+// is an IDENTITY ratchet (an exact, already-over-cap list of 8 known
+// filenames) — a new `milestone-archive.security.test.cjs` buckets into the
+// same `milestone` module (`testEffectivePrefix` strips `.test.cjs`, and
+// `milestone-archive.security` still starts with `milestone-`) and is a
+// NOVEL file the ratchet has never seen, so `node scripts/lint-test-file-count.cjs`
+// fails it outright (verified empirically: FAIL_NOVEL_FILES, exit 1).
+// Splitting this describe block out is blocked by that ratchet, not by
+// oversight; revisit if the `milestone` module's test files are ever
+// consolidated below the cap.
+describe('#2142 review: README injection, symlink escape, dry-run/real-run parity', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // BLOCKER 1: a quick-task directory name containing an embedded newline
+  // plus markdown heading syntax must never let that heading land verbatim
+  // in the generated README.md (indirect prompt-injection vector).
+  test('embeddedNewlineInDirNameCannotInjectAHeadingIntoTheGeneratedReadme', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const maliciousName = '2026-10-01-evil\n\n## Injected';
+    // Windows forbids control characters (0x00-0x1F, which includes \n) in
+    // path names outright, so `fs.mkdirSync` below cannot even create this
+    // fixture there — it fails during SETUP, not as a defect in the escaping
+    // under test. Skip deterministically by platform rather than by error
+    // code: Windows reports this specific failure as the generic ENOENT
+    // (verified in CI, errno -4058), and ENOENT is also the code a genuine
+    // POSIX fixture-setup bug (e.g. a missing parent directory) would throw.
+    // Adding ENOENT to the catch below would blanket-skip that real failure
+    // on POSIX too, silently turning a defect into a pass — do not
+    // "simplify" this back to a single try/catch.
+    if (process.platform === 'win32') {
+      t.skip('Windows forbids control characters (including newline) in path names, so this fixture cannot be created here; the escaping it guards is exercised on POSIX');
+      return;
+    }
+    try {
+      writeQuickTaskDir(tmpDir, maliciousName);
+    } catch (err) {
+      if (err && ['EINVAL', 'ENAMETOOLONG'].includes(err.code)) {
+        t.skip(`this platform's filesystem rejects a newline in a directory name (${err.code})`);
+        return;
+      }
+      throw err;
+    }
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+    assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
+    const index = buildQuickArchiveIndex(archiveDir);
+    assert.strictEqual(index.entries.length, 1, 'exactly one archived quick-task directory');
+    assert.ok(
+      !index.entries[0].name.includes('\n'),
+      `escaped entry name must not contain a raw newline — a newline surviving escaping is what would let ` +
+        `an embedded "## Injected" become a standalone markdown heading line; got: ${JSON.stringify(index.entries[0].name)}`,
+    );
+  });
+
+  // MAJOR 3: a symlink under `.planning/quick/` — even one targeting a real
+  // directory OUTSIDE the planning root — must never be archived (moved) and
+  // its target must never be altered, for BOTH archival entry points.
+  function setupSymlinkEscape(t) {
+    const outsideDir = createTempProject('gsd-quick-escape-target-');
+    fs.writeFileSync(path.join(outsideDir, 'marker.txt'), 'do not touch\n');
+    const symlinkPath = path.join(tmpDir, '.planning', 'quick', '2026-10-02-escape-symlink');
+    fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
+    try {
+      fs.symlinkSync(outsideDir, symlinkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      cleanup(outsideDir);
+      if (err && ['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
+        t.skip(`symlink creation is not available on this platform (${err.code})`);
+        return null;
+      }
+      throw err;
+    }
+    return { outsideDir, symlinkPath };
+  }
+
+  test('symlinkEscapeIsNeverArchivedByMilestoneComplete', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir, symlinkPath } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-02-real-task');
+
+      const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      assert.ok(result.success, `milestone.complete failed: ${result.error}`);
+      assert.strictEqual(result.data.archived.quick, true, 'the real task dir must still archive');
+
+      assert.ok(fs.existsSync(symlinkPath), 'the symlink must remain in .planning/quick, never moved');
+      assert.ok(fs.lstatSync(symlinkPath).isSymbolicLink(), 'the entry must still be a symlink, untouched');
+      assert.ok(
+        fs.existsSync(path.join(outsideDir, 'marker.txt')),
+        "the symlink's external target must never be moved or altered",
+      );
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-10-02-escape-symlink')),
+        'the symlink must never appear inside the archive directory',
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  test('symlinkEscapeIsNeverArchivedByQuickArchive', (t) => {
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir, symlinkPath } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-03-real-task');
+
+      const result = runSdkQuery(['milestone.archive-quick', 'v1.0'], tmpDir);
+      assert.ok(result.success, `milestone.archive-quick failed: ${result.error}`);
+      assert.strictEqual(result.data.archived, 1, 'only the real task dir must archive');
+
+      assert.ok(fs.existsSync(symlinkPath), 'the symlink must remain in .planning/quick, never moved');
+      assert.ok(fs.lstatSync(symlinkPath).isSymbolicLink(), 'the entry must still be a symlink, untouched');
+      assert.ok(
+        fs.existsSync(path.join(outsideDir, 'marker.txt')),
+        "the symlink's external target must never be moved or altered",
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+
+  // MAJOR 5: dry-run preview must be produced by the SAME selection rule
+  // (`listQuickTaskDirsForArchive`) as the real archive pass, so a fixture
+  // containing an entry the real run would skip (a symlink) is ALSO absent
+  // from the dry-run preview — they cannot disagree.
+  test('dryRunPreviewMatchesRealArchiveWhenAnEntryIsSkipped', (t) => {
+    setupQuickArchiveRoadmap(tmpDir);
+    const escape = setupSymlinkEscape(t);
+    if (!escape) return; // t.skip already recorded above
+    const { outsideDir } = escape;
+    try {
+      writeQuickTaskDir(tmpDir, '2026-10-04-keep');
+
+      const dryRun = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run', '--archive-quick'], tmpDir);
+      assert.ok(dryRun.success, `dry-run failed: ${dryRun.error}`);
+      assert.deepStrictEqual(
+        dryRun.data.would_archive.quick,
+        ['2026-10-04-keep'],
+        'the skipped symlink entry must not appear in the dry-run preview',
+      );
+
+      const real = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      assert.ok(real.success, `real run failed: ${real.error}`);
+      const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
+      const archivedNames = fs
+        .readdirSync(archiveDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort();
+      assert.deepStrictEqual(
+        archivedNames,
+        dryRun.data.would_archive.quick,
+        'the real run must archive exactly what the dry-run preview reported',
+      );
+    } finally {
+      cleanup(outsideDir);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3597: milestone complete refuses to archive phase directories when the
+// milestone window's scope is not SCOPE.COMPLETE (ADR-3180 "a non-answer must
+// not be acted on"). Regression coverage for the specific widening #3597
+// introduced when listMilestonePhaseDirs stopped forcing `ws: null` — a
+// workstream with phase directories but NO workstream-local ROADMAP.md now
+// resolves its milestone window against the ACTIVE workstream (fixing --ws
+// progress), but getMilestonePhaseFilter throws internally when it cannot
+// read that workstream's ROADMAP.md, degrading scope to SCOPE.UNREADABLE with
+// a pass-all directory fallback. Before this guard, `milestone complete`
+// archived every phase directory on disk in that shape; after it, the archive
+// step refuses and reports why, while the surrounding command (ROADMAP/
+// REQUIREMENTS archival, STATE.md closure) still completes — matching the
+// pre-existing UNREADABLE/UNSCOPED "legitimately handled" posture documented
+// at the TRUNCATED-only whole-command refusal above it in src/milestone.cts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3597: milestone complete refuses to archive on a non-COMPLETE window scope', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function seedUnreadableWorkstream(cwd) {
+    // Root ROADMAP.md declares only phase 1 — irrelevant to the workstream's
+    // OWN window once the workstream is active, but included to mirror the
+    // exact reproduction shape (a root ROADMAP that could otherwise mislead a
+    // naive root-scoped read).
+    fs.writeFileSync(
+      path.join(cwd, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Root\n\n**Goal:** Root-only work.\n',
+    );
+    // Workstream `alpha`: STATE.md declares milestone v1.0, but NO
+    // ROADMAP.md of its own — this is what makes getMilestonePhaseFilter
+    // throw internally and degrade to SCOPE.UNREADABLE for this workstream's
+    // window.
+    seedWorkstream(cwd, {
+      name: 'alpha',
+      state: '---\nmilestone: v1.0\n---\n\n# GSD State\n',
+      active: true,
+    });
+    const alphaPhases = path.join(cwd, '.planning', 'workstreams', 'alpha', 'phases');
+    for (const dir of ['01-a', '02-b', '03-c']) {
+      fs.mkdirSync(path.join(alphaPhases, dir), { recursive: true });
+    }
+    return alphaPhases;
+  }
+
+  test('archives NOTHING and leaves every phase dir on disk when the workstream has no ROADMAP.md', () => {
+    const alphaPhases = seedUnreadableWorkstream(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete should still succeed (UNREADABLE is not a whole-command refusal): ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, false, 'phases must NOT be reported as archived');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, true, 'the refusal must be surfaced as machine-readable');
+    assert.ok(
+      typeof result.data.archived.phases_archive_skip_reason === 'string'
+        && result.data.archived.phases_archive_skip_reason.length > 0,
+      `expected a non-empty skip reason, got: ${JSON.stringify(result.data.archived.phases_archive_skip_reason)}`,
+    );
+
+    const onDisk = fs.readdirSync(alphaPhases, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    assert.deepStrictEqual(onDisk, ['01-a', '02-b', '03-c'], 'all three phase directories must still be on disk, untouched');
+
+    // Negative proof: no phase-archive directory was even created.
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha', 'milestones', 'v1.0-phases')),
+      false,
+      'the archive destination must never be created on a refused archive pass',
+    );
+  });
+
+  test('--dry-run previews an empty archive list and the same refusal on the unreadable-window workstream', () => {
+    seedUnreadableWorkstream(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run'], tmpDir);
+    assert.ok(result.success, `milestone.complete --dry-run should succeed: ${result.error}`);
+    assert.deepStrictEqual(result.data.would_archive.phases, [], 'dry-run must preview an EMPTY archive list');
+    assert.strictEqual(result.data.would_archive.phases_archive_skipped, true);
+    assert.ok(
+      typeof result.data.would_archive.phases_archive_skip_reason === 'string'
+        && result.data.would_archive.phases_archive_skip_reason.length > 0,
+    );
+  });
+
+  test('the guard is not a blanket refusal — a normal COMPLETE-scope workstream still archives exactly its in-window phase dirs', () => {
+    // Workstream `beta` HAS its own ROADMAP.md declaring phase 1 only — a
+    // real, resolvable (SCOPE.COMPLETE) window. `02-out-of-window` has no
+    // matching ROADMAP entry and must NOT be archived, proving this exercises
+    // real window scoping and not merely "archive everything present".
+    seedWorkstream(tmpDir, {
+      name: 'beta',
+      state: '---\nmilestone: v1.0\n---\n\n# GSD State\n',
+      // #3597: a versioned `## v1.0 ...` heading is required for the window
+      // to resolve SCOPE.COMPLETE against the explicit `version` argument —
+      // a free-form roadmap (no versioned heading at all) resolves UNSCOPED
+      // instead once an explicit version is requested (verified empirically
+      // against the built CLI), which would silently defeat this "guard is
+      // not a blanket refusal" proof.
+      roadmap: '# Roadmap\n\n## v1.0 Current\n\n### Phase 1: Foo\n\n**Goal:** Do foo.\n',
+      active: true,
+    });
+    const betaPhases = path.join(tmpDir, '.planning', 'workstreams', 'beta', 'phases');
+    fs.mkdirSync(path.join(betaPhases, '01-foo'), { recursive: true });
+    fs.mkdirSync(path.join(betaPhases, '02-out-of-window'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, true, 'phases must be reported as archived');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, false, 'a resolvable (COMPLETE) window must not be reported as skipped');
+    assert.strictEqual(result.data.archived.phases_archive_skip_reason, null);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'workstreams', 'beta', 'milestones', 'v1.0-phases');
+    assert.ok(fs.existsSync(path.join(archiveDir, '01-foo')), 'the in-window phase dir must be archived');
+    assert.ok(!fs.existsSync(path.join(archiveDir, '02-out-of-window')), 'the out-of-window phase dir must NOT be archived');
+    assert.ok(fs.existsSync(path.join(betaPhases, '02-out-of-window')), 'the out-of-window phase dir must remain on disk, untouched');
+  });
+
+  // #3597 regression: the guard originally shipped as "refuse whenever scope
+  // !== SCOPE.COMPLETE", which also caught SCOPE.UNSCOPED — a DIFFERENT,
+  // pre-existing classification whose archive behavior predates this branch.
+  // A root project (no active workstream) with a free-form ROADMAP.md (no
+  // versioned `## vX.Y` heading) resolves UNSCOPED once an explicit version
+  // is requested — exactly the `milestone-rollover` QA scenario shape
+  // (tests/qa/scenarios/milestone-rollover.json, fixture "greenfield":
+  // .planning/ROADMAP.md from @roadmap/three-phase, no workstreams at all).
+  // Under the too-broad guard, `milestone complete 1.0 --force` refused to
+  // archive `01-parser`, leaving it on disk and causing the QA walk's
+  // following `phases clear --confirm` step to abort on the #1447
+  // uncommitted-change safety check. Narrowing the guard to UNREADABLE-only
+  // must restore this exact rollover: the phase directories archive.
+  test('a root project with an unscoped (non-versioned) roadmap still archives phase dirs like before the guard', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Parser\n**Goal:** Parse input.\n\n### Phase 2: Printable Output\n**Goal:** Render output.\n',
+    );
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    fs.mkdirSync(path.join(phasesDir, '01-parser'), { recursive: true });
+    fs.mkdirSync(path.join(phasesDir, '02-printable-output'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--force'], tmpDir);
+    assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, true, 'phases must still be archived for an UNSCOPED (not UNREADABLE) window');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, false, 'UNSCOPED must not trigger the refusal — only UNREADABLE does');
+    assert.strictEqual(result.data.archived.phases_archive_skip_reason, null);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases');
+    assert.ok(fs.existsSync(path.join(archiveDir, '01-parser')), '01-parser must be archived');
+    assert.ok(fs.existsSync(path.join(archiveDir, '02-printable-output')), '02-printable-output must be archived');
+    assert.ok(!fs.existsSync(path.join(phasesDir, '01-parser')), '01-parser must no longer be on disk at its original location');
+    assert.ok(!fs.existsSync(path.join(phasesDir, '02-printable-output')), '02-printable-output must no longer be on disk at its original location');
   });
 });

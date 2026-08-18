@@ -2087,7 +2087,8 @@ const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const installModule = require('../bin/install.js');
 const { readInstallState } = require('../gsd-core/bin/lib/installer-migrations.cjs');
-const { install, parseTomlToObject, reconcileCodexHooksJsonEvent } = installModule;
+const { install, parseTomlToObject } = installModule;
+const { reconcileCodexHooksJsonEvent } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');

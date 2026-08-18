@@ -76,25 +76,6 @@ function sha256Text(value: string): string {
 }
 
 /**
- * Copy a managed path for the rollback snapshot or the user-facing backup,
- * WITHOUT dereferencing a symlink.
- *
- * `fs.copyFileSync` follows symlinks, so a managed path that has been replaced
- * by a link (tampering, or an unexpected user layout) would have had the
- * LINK TARGET's bytes copied into `gsd-migration-journal/…-backups/` — e.g. a
- * `gsd.cjs` symlinked at `~/.ssh/id_rsa` would land that key's contents in the
- * backup tree. Nothing GSD installs is ever a symlink, so the faithful snapshot
- * of a symlinked managed path is the link itself: recreating it preserves
- * rollback fidelity (restore re-creates the same link) while never reading the
- * referent. Deletion was already safe — `fs.rmSync` unlinks the link, never the
- * target.
- *
- * Windows note: `fs.symlinkSync` can throw EPERM for unprivileged users. That
- * surfaces as an apply failure and triggers the normal rollback path, which is
- * the correct outcome — refusing to proceed beats silently copying referent
- * bytes.
- */
-/**
  * Evaluate and, if safe, perform a `remove-empty-dir` action against `fullPath`.
  *
  * This is deliberately WEAKER than a recursive directory-removal primitive
@@ -163,17 +144,44 @@ function evaluateRemoveEmptyDir(configDir: string, fullPath: string): string {
   }
 }
 
+/**
+ * Copy a managed path for the rollback snapshot or the user-facing backup,
+ * WITHOUT dereferencing a symlink.
+ *
+ * `fs.copyFileSync` follows symlinks, so a managed path that has been replaced
+ * by a link (tampering, or an unexpected user layout) would have had the
+ * LINK TARGET's bytes copied into `gsd-migration-journal/…-backups/` — e.g. a
+ * `gsd.cjs` symlinked at `~/.ssh/id_rsa` would land that key's contents in the
+ * backup tree. Nothing GSD installs is ever a symlink, so the faithful snapshot
+ * of a symlinked managed path is the link itself: recreating it preserves
+ * rollback fidelity (restore re-creates the same link) while never reading the
+ * referent. Deletion was already safe — `fs.rmSync` unlinks the link, never the
+ * target.
+ *
+ * Windows note: `fs.symlinkSync` can throw EPERM for unprivileged users. That
+ * surfaces as an apply failure and triggers the normal rollback path, which is
+ * the correct outcome — refusing to proceed beats silently copying referent
+ * bytes.
+ *
+ * #2875 (epic #2866 Phase 6): all five fs calls routed through `installFs()`
+ * so this primitive can be reused on the routed install path (by
+ * user-artifact-staging.cts) without punching a hole through the seam Phase 5
+ * built. Every EXISTING caller of this function is on the migration
+ * plan/apply/rollback tree, which never wraps a call in `withInstallFs` — the
+ * ambient adapter there resolves to real `node:fs` by default, so this
+ * routing is behavior-preserving for them (test-matrix D2).
+ */
 function copyPreservingSymlink(srcPath: string, destPath: string): void {
-  if (fs.lstatSync(srcPath).isSymbolicLink()) {
+  if (installFs().lstatSync(srcPath).isSymbolicLink()) {
     // symlinkSync fails with EEXIST on an occupied path, so clear it first.
     // Scoped to this branch on purpose: the regular-file path below keeps
     // copyFileSync's overwrite-in-place, so a mid-restore failure cannot leave
     // the destination destroyed.
-    fs.rmSync(destPath, { force: true });
-    fs.symlinkSync(fs.readlinkSync(srcPath), destPath);
+    installFs().rmSync(destPath, { force: true });
+    installFs().symlinkSync(installFs().readlinkSync(srcPath), destPath);
     return;
   }
-  fs.copyFileSync(srcPath, destPath);
+  installFs().copyFileSync(srcPath, destPath);
 }
 
 // Shared by readInstallManifest (on the installRuntimeArtifacts call tree —
@@ -1219,6 +1227,7 @@ export = {
   acquireInstallMigrationLock,
   applyInstallerMigrationPlan,
   classifyArtifact,
+  copyPreservingSymlink,
   discoverInstallerMigrations,
   evaluateRemoveEmptyDir,
   MANIFEST_SCHEMA_VERSION,

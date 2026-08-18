@@ -4041,9 +4041,18 @@ describe('ADR-1016 phase 5a: closed-vocab set exports', () => {
 // ─── 25. ADR-857 phase 5e: closed ConverterName enum (Part B) ─────────────────
 
 describe('ADR-857 phase 5e: VALID_CONVERTER_NAMES closed enum', () => {
-  test('VALID_CONVERTER_NAMES has exactly 27 entries (16 command/skill/workflow + 11 agent converters)', () => {
+  // #2875 Part 2 (the agents-bypass closure): 3 converters added —
+  // convertClaudeAgentToHermesAgent (data-driven Hermes branding converter,
+  // reads hostBehaviors.brandingRewrites) and convertClaudeToKiloFrontmatter /
+  // convertClaudeToOpencodeFrontmatter (kilo/opencode's agents-kind
+  // converters — shared by name with those runtimes' commands-kind entries,
+  // options-bag signature `(content, {isAgent, modelOverride})`). All three
+  // are genuinely new agent converters (not renamed/leftover), so the agent
+  // count grows from 11 to 14; the 16 command/skill/workflow converters are
+  // unchanged.
+  test('VALID_CONVERTER_NAMES has exactly 30 entries (16 command/skill/workflow + 14 agent converters)', () => {
     assert.ok(VALID_CONVERTER_NAMES instanceof Set, 'VALID_CONVERTER_NAMES must be a Set');
-    assert.strictEqual(VALID_CONVERTER_NAMES.size, 27, 'VALID_CONVERTER_NAMES must have exactly 27 entries, got: ' + VALID_CONVERTER_NAMES.size);
+    assert.strictEqual(VALID_CONVERTER_NAMES.size, 30, 'VALID_CONVERTER_NAMES must have exactly 30 entries, got: ' + VALID_CONVERTER_NAMES.size);
   });
 
   test('VALID_CONVERTER_NAMES contains all expected converter names', () => {
@@ -4078,6 +4087,12 @@ describe('ADR-857 phase 5e: VALID_CONVERTER_NAMES closed enum', () => {
       'convertClaudeAgentToQwenAgent',
       // #3384 — ZCode agent converter (strips mcp__* grants at install time).
       'convertClaudeAgentToZcodeAgent',
+      // #2875 Part 2 (the agents-bypass closure) — data-driven Hermes branding
+      // converter, and the kilo/opencode agent converters (shared name with
+      // those runtimes' commands-kind entries).
+      'convertClaudeAgentToHermesAgent',
+      'convertClaudeToKiloFrontmatter',
+      'convertClaudeToOpencodeFrontmatter',
     ];
     for (const name of expected) {
       assert.ok(VALID_CONVERTER_NAMES.has(name), 'VALID_CONVERTER_NAMES must contain "' + name + '"');

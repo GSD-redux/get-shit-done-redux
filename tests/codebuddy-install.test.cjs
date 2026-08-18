@@ -13,7 +13,6 @@ const os = require('node:os');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const {
-  getDirName,
   getConfigDirFromHome,
   convertClaudeToCodebuddyMarkdown,
   convertClaudeCommandToCodebuddySkill,
@@ -24,6 +23,7 @@ const {
 } = require('../bin/install.js');
 
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const { getDirName } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 
