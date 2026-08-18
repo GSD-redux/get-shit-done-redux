@@ -404,8 +404,8 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
 
 // ─── #3552: protected-branch policy and execute-phase warning ────────────────
 
-function extractProtectedBranchWarningBash() {
-  const content = readFileNormalized(path.join(WORKFLOW_DIR, 'execute-phase.md'));
+function extractProtectedBranchWarningBash(workflowFile, stepName) {
+  const content = readFileNormalized(path.join(WORKFLOW_DIR, workflowFile));
   const lines = content.split('\n');
   const blocks = [];
   let inStep = false;
@@ -413,7 +413,7 @@ function extractProtectedBranchWarningBash() {
   let buffer = [];
 
   for (const line of lines) {
-    if (!inStep && /^<step\s+name="handle_branching">\s*$/.test(line)) {
+    if (!inStep && line === `<step name="${stepName}">`) {
       inStep = true;
       continue;
     }
@@ -432,8 +432,37 @@ function extractProtectedBranchWarningBash() {
   }
 
   const block = blocks.find((candidate) => candidate.includes('--is-protected'));
-  if (!block) throw new Error('handle_branching has no protected-branch warning bash block');
+  if (!block) {
+    throw new Error(`${workflowFile} ${stepName} has no protected-branch warning bash block`);
+  }
   return block;
+}
+
+function writeProtectedBranchWarningScript(prefix, bash) {
+  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const scriptPath = path.join(scriptDir, 'warning.sh');
+  fs.writeFileSync(scriptPath, [
+    '#!/usr/bin/env bash',
+    'set -eu',
+    'git() {',
+    '  if [ "$#" -ne 2 ] || [ "$1" != branch ] || [ "$2" != --show-current ]; then',
+    '    printf "unexpected git invocation\\n" >&2',
+    '    return 97',
+    '  fi',
+    '  printf "%s\\n" "$CURRENT_BRANCH_VALUE"',
+    '}',
+    'gsd_run() {',
+    '  if [ "$#" -ne 4 ] || [ "$1" != query ] || [ "$2" != git.base-branch ] ||',
+    '     [ "$3" != --is-protected ] || [ "$4" != "$CURRENT_BRANCH_VALUE" ]; then',
+    '    printf "unexpected protected-branch query\\n"',
+    '    return 0',
+    '  fi',
+    '  printf "%s\\n" "$PROTECTED_RESULT"',
+    '}',
+    bash,
+    'printf "continued\\n"',
+  ].join('\n'), { mode: 0o755 });
+  return { scriptDir, scriptPath };
 }
 
 describe('#3552: configured protected branches', () => {
@@ -522,18 +551,12 @@ describe('#3552: configured protected branches', () => {
   });
 
   test('#3552 execute-phase warns on true, stays silent on false, and continues both', (t) => {
-    const bash = extractProtectedBranchWarningBash();
-    const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3552-execute-'));
-    t.after(() => cleanup(scriptDir));
-    const scriptPath = path.join(scriptDir, 'warning.sh');
-    fs.writeFileSync(scriptPath, [
-      '#!/usr/bin/env bash',
-      'set -u',
-      'git() { printf "%s\\n" "$CURRENT_BRANCH_VALUE"; }',
-      'gsd_run() { printf "%s\\n" "$PROTECTED_RESULT"; }',
+    const bash = extractProtectedBranchWarningBash('execute-phase.md', 'handle_branching');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(
+      'gsd-3552-execute-',
       bash,
-      'printf "continued\\n"',
-    ].join('\n'), { mode: 0o755 });
+    );
+    t.after(() => cleanup(scriptDir));
 
     const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
     const match = runHook(scriptPath, [], {
@@ -553,6 +576,42 @@ describe('#3552: configured protected branches', () => {
     assert.doesNotMatch(control.stderr, /protected branch/i);
     assert.notStrictEqual(match.stderr, control.stderr,
       'warning negative control must disagree with the protected-branch match');
+  });
+
+  test('#3552 ship warns on true, stays silent on false, and keeps the none-strategy offer', (t) => {
+    const bash = extractProtectedBranchWarningBash('ship.md', 'preflight_checks');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(
+      'gsd-3552-ship-',
+      bash,
+    );
+    t.after(() => cleanup(scriptDir));
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.strictEqual(match.exitCode, 0, match.stderr);
+    assert.strictEqual(control.exitCode, 0, control.stderr);
+    assert.strictEqual(match.stdout, 'continued\n');
+    assert.strictEqual(control.stdout, 'continued\n');
+    assert.match(match.stderr, /protected branch/i);
+    assert.doesNotMatch(control.stderr, /protected branch/i);
+    assert.notStrictEqual(match.stderr, control.stderr,
+      'ship warning negative control must disagree with the protected-branch match');
+
+    const ship = readFileNormalized(path.join(WORKFLOW_DIR, 'ship.md'));
+    const preflight = ship.slice(
+      ship.indexOf('<step name="preflight_checks">'),
+      ship.indexOf('</step>', ship.indexOf('<step name="preflight_checks">')),
+    );
+    assert.match(preflight, /branching_strategy is `none`: offer to create a branch now/i,
+      'protected-branch warning must retain the none-strategy feature-branch offer');
   });
 });
 
