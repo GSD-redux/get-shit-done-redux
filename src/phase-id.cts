@@ -571,6 +571,25 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
     // then failed to match and an icebox item counted as a real phase.
     const bracket = foldBracketId(s).match(BRACKET_ID_PREFIX_RE);
     if (bracket) return SENTINEL_RANGES.includes(parseInt(bracket[1], 10));
+    // #2761 round-12: NO bracket tag matched — a bare/untagged id under
+    // bracket convention (`0-bootstrap`, a directory with no `{CODE}.{MM}-`
+    // prefix, or a legacy-spelled `### Phase 0:` heading routed here without
+    // its own bracketId guard). Falling through to the LEGACY leading-int rule
+    // below would read this bare `0` as sentinel milestone 0 — but under
+    // bracket convention milestone 0 is expressed ONLY via an explicit
+    // bracket tag, so an untagged leading `0` is a real phase token, not a
+    // sentinel. This mirrors the two HEADING-side counters that already carry
+    // this exact carve-out: state.cts's `countRoadmapPhaseHeadings` guards its
+    // bare-0 exclusion with `bracketId &&` (so an untagged `Phase 0:` heading
+    // is counted), and roadmap-parser.cts's `scanMilestonePhaseIds` composes
+    // the bare-token rule as 999-only, deliberately NOT this predicate, for
+    // the identical reason (#3185: the leading-int rule also swallows the
+    // #2554 decimal ids — `0.5-bootstrap` is a real phase, not milestone 0).
+    // The 999/icebox reading stays universal either way — an untagged `999`
+    // is still backlog under every convention — so only that half of
+    // SENTINEL_RANGES applies here.
+    const bare = stripProjectCodePrefix(s).match(/^0*(\d+)/);
+    return bare !== null && parseInt(bare[1], 10) === 999;
   }
   const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)/); // legacy/bare: leading int
   if (!legacy) return false;
