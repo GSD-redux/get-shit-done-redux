@@ -80,7 +80,6 @@ import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sec
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
-import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import healthDiagnosticTypesMod = require('./health-diagnostic-types.cjs');
 const { SEVERITY, adviseRemedy } = healthDiagnosticTypesMod;
@@ -940,7 +939,62 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
 
-  const percent = clampPercent(totalSummaries, totalPlans);
+  // #3583: this verb previously wrote TWO independent percentages in one
+  // call — the raw plan-throughput clampPercent(totalSummaries, totalPlans)
+  // below (stdout + body bar) vs. the min(plan, phase)-capped value
+  // syncStateFrontmatter derives (frontmatter progress.percent), reached via
+  // readModifyWriteStateMd below. Mid-phase (plan throughput ahead of phase
+  // completion) the two diverged and STATE.md contradicted itself.
+  // buildStateFrontmatter is the single canonical owner of
+  // completedPhases (isPhaseComplete-based, ADR-3180 §7.4)/totalPhases/scope
+  // fed into computeProgressPercent (#3242 Bug B's min-cap, unchanged here) —
+  // calling it directly, rather than re-deriving those three inputs locally,
+  // guarantees parity instead of a second, almost-identical derivation that
+  // could drift from the frontmatter seam again. This call reads the SAME
+  // pre-transform content/body/storedMilestone that readModifyWriteStateMd's
+  // own syncStateFrontmatter -> buildStateFrontmatter call below will use
+  // (transformFn only rewrites the body's Progress: line, never frontmatter,
+  // so existingFm/storedMilestone/storedTotalPhases are identical on both
+  // calls) and against the same on-disk phase/plan state (no file this verb
+  // writes changes plan/summary counts), so the two calls agree exactly —
+  // the second even hits `_diskScanCache` populated by this one.
+  const preContent = fs.readFileSync(statePath, 'utf-8');
+  const existingFmForProgress = extractFrontmatter(preContent, statePath) as Record<string, unknown>;
+  const preBody = stripFrontmatter(preContent);
+  const storedMilestoneForProgress = typeof existingFmForProgress['milestone'] === 'string' ? existingFmForProgress['milestone'] : null;
+  const builtFmForProgress = buildStateFrontmatter(preBody, cwd, storedMilestoneForProgress, readStoredTotalPhases(existingFmForProgress));
+  const fmProgressForPercent = builtFmForProgress['progress'] as Record<string, unknown> | undefined;
+  const fmPercent = fmProgressForPercent && typeof fmProgressForPercent['percent'] === 'number' ? fmProgressForPercent['percent'] : null;
+  // #3583 follow-up: a null here is REACHABLE beyond the #3217/#3233 withholds
+  // already handled above — those two guards mirror buildStateFrontmatter's
+  // own diskScope-driven null (computeProgressPercent's rule-4 gate), but
+  // buildStateFrontmatter also nulls the percent via its OWN #1761
+  // milestone-unbounded guard (`milestoneUnbounded` -> `progressPercent =
+  // null`), which is evaluated from `assertedMilestoneVersion`
+  // (getMilestoneInfo's independent derivation, including its own
+  // bare-version-token-in-prose fallback) rather than from `storedMilestone`
+  // /diskScope. A STATE.md with no explicit `milestone:` field but a bare
+  // vX.Y token mentioned in ROADMAP prose (not a heading) hits exactly this:
+  // diskScope and this verb's own `phaseScope` both read COMPLETE (row 3,
+  // free-form legacy), so neither guard above fires, yet
+  // buildStateFrontmatter still withholds. Previously this fell back to
+  // clampPercent(totalSummaries, totalPlans) — reintroducing the #3583 defect
+  // (stdout/body showing a number the frontmatter withheld). Withhold here
+  // too, in the same shape as the #3217/#3233 no-ops: warn, report
+  // updated:false, make no edit.
+  if (fmPercent === null) {
+    process.stderr.write(
+      `[gsd-tools] WARNING: state update-progress skipped — the shared progress computation (buildStateFrontmatter) withheld a percent. ` +
+      `STATE.md's Progress field was left unchanged.\n`
+    );
+    output(
+      { updated: false, reason: 'progress percent withheld by buildStateFrontmatter — STATE.md left unchanged' },
+      raw,
+      'false',
+    );
+    return;
+  }
+  const percent = fmPercent;
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
