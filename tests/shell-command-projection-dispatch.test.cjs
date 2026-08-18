@@ -413,6 +413,228 @@ describe('resolveExecutableBinary (#3411)', () => {
   });
 });
 
+// ─── resolveExecutableBinary seam options (#3618) ───────────────────────────
+// prependPaths / requireExecutable — both opt-in, both default off, so
+// Phase 1 callers (R1-R25 above, P1-P16 below) stay byte-identical. See
+// .gsd/phase/chore-3618-fallow-binary-resolution/50-test-matrix.md (S1-S12).
+
+describe('resolveExecutableBinary seam options (#3618)', () => {
+  test('S1: prependPaths with binary only in dirA resolves in dirA', () => {
+    const dirA = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirA, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: '' },
+        prependPaths: [dirA],
+      });
+      assert.equal(resolved, path.join(dirA, 'foo'));
+    } finally {
+      cleanup(dirA);
+    }
+  });
+
+  test('S2: binary in both prependPaths dir and env.PATH — the prependPaths copy wins (precedence)', () => {
+    const dirA = createTempDir();
+    const dirB = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirA, 'foo'), '');
+      fs.writeFileSync(path.join(dirB, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dirB },
+        prependPaths: [dirA],
+      });
+      assert.equal(resolved, path.join(dirA, 'foo'));
+      assert.notEqual(resolved, path.join(dirB, 'foo'));
+    } finally {
+      cleanup(dirA);
+      cleanup(dirB);
+    }
+  });
+
+  test('S3: prependPaths: [] is identical to omitting it', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      const withEmpty = resolveExecutableBinary('foo', { platform: 'linux', env: { PATH: dir }, prependPaths: [] });
+      const withOmitted = resolveExecutableBinary('foo', { platform: 'linux', env: { PATH: dir } });
+      assert.equal(withEmpty, path.join(dir, 'foo'));
+      assert.equal(withEmpty, withOmitted);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('S4: prependPaths given, binary only on env.PATH — falls through to PATH', () => {
+    const dirA = createTempDir();
+    const dirB = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirB, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dirB },
+        prependPaths: [dirA],
+      });
+      assert.equal(resolved, path.join(dirB, 'foo'));
+    } finally {
+      cleanup(dirA);
+      cleanup(dirB);
+    }
+  });
+
+  test('S5: prependPaths with two dirs, binary in the second — first-match wins, in array order', () => {
+    const dir1 = createTempDir();
+    const dir2 = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir2, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: '' },
+        prependPaths: [dir1, dir2],
+      });
+      assert.equal(resolved, path.join(dir2, 'foo'));
+      // dir1 is first in the array but has no match, so dir2 wins — confirms
+      // the search follows array order, not the reverse.
+      assert.notEqual(resolved, path.join(dir1, 'foo'));
+    } finally {
+      cleanup(dir1);
+      cleanup(dir2);
+    }
+  });
+
+  test('S6: win32 + prependPaths — PATHEXT applies inside the prepended dir too', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'win32',
+        env: { PATH: '', PATHEXT: '.EXE;.CMD' },
+        prependPaths: [dir],
+      });
+      assert.equal(resolved, path.join(dir, 'foo.CMD'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('S7: requireExecutable true, POSIX, file exists and is executable — resolves', () => {
+    const dir = createTempDir();
+    const originalAccessSync = fs.accessSync;
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      // Executability is forced deterministically via accessSync monkeypatch
+      // rather than chmod — root Docker bypasses mode bits (see file header).
+      fs.accessSync = () => {};
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dir },
+        requireExecutable: true,
+      });
+      assert.equal(resolved, path.join(dir, 'foo'));
+    } finally {
+      fs.accessSync = originalAccessSync;
+      cleanup(dir);
+    }
+  });
+
+  test('S8: requireExecutable true, POSIX, accessSync throws EACCES — null', () => {
+    const dir = createTempDir();
+    const originalAccessSync = fs.accessSync;
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      fs.accessSync = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dir },
+        requireExecutable: true,
+      });
+      assert.equal(resolved, null);
+    } finally {
+      fs.accessSync = originalAccessSync;
+      cleanup(dir);
+    }
+  });
+
+  test('S9: requireExecutable omitted — resolves anyway and accessSync is never consulted', () => {
+    const dir = createTempDir();
+    const originalAccessSync = fs.accessSync;
+    let called = false;
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      fs.accessSync = () => {
+        called = true;
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      };
+      const resolved = resolveExecutableBinary('foo', { platform: 'linux', env: { PATH: dir } });
+      assert.equal(resolved, path.join(dir, 'foo'));
+      assert.equal(called, false, 'accessSync must not be consulted when requireExecutable is not set');
+    } finally {
+      fs.accessSync = originalAccessSync;
+      cleanup(dir);
+    }
+  });
+
+  test('S10: requireExecutable true + win32 is a no-op — resolves without consulting accessSync', () => {
+    const dir = createTempDir();
+    const originalAccessSync = fs.accessSync;
+    let called = false;
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      fs.accessSync = () => {
+        called = true;
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      };
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'win32',
+        env: { PATH: dir, PATHEXT: '.CMD' },
+        requireExecutable: true,
+      });
+      assert.equal(resolved, path.join(dir, 'foo.CMD'));
+      assert.equal(called, false, 'accessSync must never be consulted on win32');
+    } finally {
+      fs.accessSync = originalAccessSync;
+      cleanup(dir);
+    }
+  });
+
+  test('S11: requireExecutable true + path-like name — executability still enforced on the direct path', () => {
+    const dir = createTempDir();
+    const originalAccessSync = fs.accessSync;
+    try {
+      const staged = path.join(dir, 'foo');
+      fs.writeFileSync(staged, '');
+      fs.accessSync = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+      const resolved = resolveExecutableBinary(staged, {
+        platform: 'linux',
+        env: { PATH: '' },
+        requireExecutable: true,
+      });
+      assert.equal(resolved, null);
+    } finally {
+      fs.accessSync = originalAccessSync;
+      cleanup(dir);
+    }
+  });
+
+  test('S12: neither seam option set behaves exactly as before (win32 and posix)', () => {
+    const dirWin = createTempDir();
+    const dirPosix = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirWin, 'foo.CMD'), '');
+      const win = resolveExecutableBinary('foo', { platform: 'win32', env: { PATH: dirWin, PATHEXT: '.CMD' } });
+      assert.equal(win, path.join(dirWin, 'foo.CMD'));
+
+      fs.writeFileSync(path.join(dirPosix, 'foo'), '');
+      const posix = resolveExecutableBinary('foo', { platform: 'linux', env: { PATH: dirPosix } });
+      assert.equal(posix, path.join(dirPosix, 'foo'));
+    } finally {
+      cleanup(dirWin);
+      cleanup(dirPosix);
+    }
+  });
+});
+
 // ─── projectSpawnInvocation (#3411) ─────────────────────────────────────────
 
 // Mirrors the seam's own `_cmdQuoteToken` (a literal `"` is doubled) so

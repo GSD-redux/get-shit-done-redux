@@ -395,7 +395,7 @@ Listagem completa: `gsd-core/bin/lib/*.cjs`.
 | `decisions.cjs` | Analisa blocos `<decisions>` do CONTEXT.md; aceita IDs numéricos (D-42) e alfanuméricos (D-INFRA-01); retorna `{id, text, category, tags, trackable}` |
 | `docs.cjs` | Inicialização do workflow docs-update, varredura de Markdown, detecção de monorepo |
 | `drift.cjs` | Detector de drift estrutural pós-execução da base de código (#2003): classifica alterações de arquivo em categorias new-dir/barrel/migration/route e faz round-trip do frontmatter `last_mapped_commit` |
-| `fallow-runner.cjs` | Adaptador de auditoria fallow para `/gsd-code-review`: resolução binária (`PATH` depois `node_modules/.bin`), erros acionáveis de binário ausente e normalização de descobertas estruturais |
+| `fallow-runner.cjs` | Adaptador de auditoria fallow para `/gsd-code-review`: resolução binária (`node_modules/.bin` depois `PATH`), erros acionáveis de binário ausente e normalização de descobertas estruturais |
 | `frontmatter.cjs` | Operações CRUD de frontmatter YAML |
 | `gap-checker.cjs` | Análise de lacunas pós-planejamento (#2493): relatório unificado de cobertura de decisões do REQUIREMENTS.md + CONTEXT.md vs PLAN.md (`gsd-tools gap-analysis`) |
 | `graphify.cjs` | Build/consulta/status/diff do grafo de conhecimento para `/gsd-graphify` |
