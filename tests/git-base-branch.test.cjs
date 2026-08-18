@@ -474,6 +474,22 @@ describe('#3552: configured protected branches', () => {
     };
   };
 
+  test('#3552 direct config reader requests the exact planning config path', () => {
+    const expectedPath = path.join('/repo', '.planning', 'config.json');
+    let reads = 0;
+    const configuredRead = (requestedPath) => {
+      reads += 1;
+      assert.strictEqual(requestedPath, expectedPath);
+      return '{"git":{"protected_branches":["develop","next"]}}';
+    };
+
+    assert.deepStrictEqual(
+      gitBaseBranch.readConfigProtectedBranches(path.dirname(expectedPath), { readFile: configuredRead }),
+      ['develop', 'next'],
+    );
+    assert.strictEqual(reads, 1, 'the reader must request one exact config snapshot');
+  });
+
   test('#3552 configured match and unrelated branch produce opposite results', () => {
     const match = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
       loadConfig: configuredLoad,
