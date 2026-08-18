@@ -116,15 +116,15 @@ Evaluate the rows **in order** and take the first that matches — they are a pr
 
 | # | Run | Tracer `<verify>` | Behavior |
 |---|---|---|---|
-| 1 | Interactive, any mode | task carries `gate="blocking-human"` | **STOP → `checkpoint:human-verify`.** Never auto-continued. |
-| 2 | Auto mode active (`AUTO_CHAIN`/`AUTO_CFG`) | any | Re-run verify; HALT on failure, continue on success. **Pre-existing behavior — unchanged by #3299.** |
+| 1 | **Any run, any mode** (incl. auto) | task carries `gate="blocking-human"` | **STOP → `checkpoint:human-verify`.** Never auto-continued. |
+| 2 | Auto mode active (`AUTO_CHAIN`/`AUTO_CFG`) | any (row 1 already took `blocking-human`) | Re-run verify; HALT on failure, continue on success. **Pre-existing behavior — unchanged by #3299.** |
 | 3 | Interactive, `end-of-phase` (default) | only `<automated>` | Re-run verify; HALT on failure, continue to expansion on success — **no checkpoint** |
 | 4 | Interactive, `end-of-phase` | carries `<human-check>` | STOP → `checkpoint:human-verify` |
 | 5 | Interactive, `mid-flight` | any | STOP → `checkpoint:human-verify` |
 
 **Carve-outs — the #3299 auto-continue (row 3) applies ONLY when all three hold:** the run is interactive, the mode is `end-of-phase`, and the tracer's `<verify>` contains only `<automated>`. Anything else STOPs or falls to the pre-existing auto-mode branch. HALT-on-failure is unconditional in rows 2 and 3 alike: a failing tracer never becomes an approvable checkpoint and never proceeds to expansion, because layering expansion onto a broken slice is the failure this gate exists to prevent.
 
-Row 2 is deliberately left as-is: whether an autonomous run should also stop for a tracer carrying `gate="blocking-human"` is **pre-existing behavior outside #3299's scope** (the issue's Agent Brief names the autonomous branch as out of scope). No planner emits `gate` on a `type="tracer"` task today, so the combination is currently unreachable; row 1 is scoped to interactive runs so this reference states one rule rather than two conflicting ones.
+Row 1 is deliberately **not** scoped to interactive runs. Golden rule 6 above states that `gate="blocking-human"` stops for a human in *every* mode including auto-mode, and a precedence chain that let an autonomous run continue past it would make this file assert two incompatible rules about the same gate. No planner emits `gate` on a `type="tracer"` task today, but `src/verify.cts` parses only `type` and does not consult `gate` on non-checkpoint tasks, so a hand-authored, imported, or externally-generated `PLAN.md` can carry it and validate — unreachable by our planner is not unreachable.
 
 Read `HUMAN_VERIFY_MODE` with an explicit default — `workflow.human_verify_mode` is absent from `SCHEMA_DEFAULTS`, so a bare `config-get` exits non-zero with `Key not found` on any project whose `config.json` predates #3309:
 
