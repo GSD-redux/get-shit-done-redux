@@ -816,6 +816,17 @@ export function resolveExecutableBinary(
  * substituted with the environment value regardless of quoting. That is an
  * information-disclosure limit, not arbitrary execution, and it's the same
  * limit Rust's std documents for its own `CommandExt::raw_arg` escape hatch.
+ *
+ * CALLER CHOICE: this function's return value carries two independently
+ * adoptable pieces of information, and a caller may take either, both, or
+ * neither. `windowsVerbatimArguments: true` marks the cases where mediation
+ * was REQUIRED — the caller MUST adopt `command`+`args` together, since a
+ * `.cmd`/`.bat` genuinely cannot be spawned any other way. A merely-resolved
+ * `.exe` path (no mediation flag set) is only an OFFER: a caller may decline
+ * it and keep spawning the declared name instead, to hold its own observable
+ * contract stable. `execTool` (this file, below) is exactly such a caller —
+ * it adopts the mediated pair when `windowsVerbatimArguments` is set, but
+ * otherwise passes the declared `program`/`args` through untouched.
  */
 export function projectSpawnInvocation(
   command: string,
@@ -858,20 +869,24 @@ export function projectSpawnInvocation(
 }
 
 export function execTool(program: string, args: string[], opts: { cwd?: string; env?: Record<string, string>; timeout?: number } = {}): SpawnResultOutput {
-  // #3411: Windows needs the declared name resolved through PATH+PATHEXT before a
-  // spawn can start it, and `.cmd`/`.bat` mediated through cmd.exe. POSIX is
-  // untouched — `projectSpawnInvocation` returns the declared pair unchanged there,
-  // so Node's own PATH search keeps doing the work for this seam's 167 dependents.
+  // #3411: Windows cannot spawn a .cmd/.bat at all — CreateProcess refuses it —
+  // so those are mediated through cmd.exe. Everything else keeps the DECLARED
+  // program name: libuv's CreateProcess path already performs PATH + PATHEXT
+  // search, so resolving a .exe here would buy nothing and would change what
+  // this seam's 167 dependents observe being spawned. `tests/graphify.test.cjs`
+  // pins that contract by spying on spawnSync's first argument. POSIX never
+  // reaches the mediation branch at all.
   const spawnEnv = opts.env ? { ...process.env, ...opts.env } : undefined;
   const invocation = projectSpawnInvocation(program, args, { env: spawnEnv ?? process.env });
-  const result = childProcess.spawnSync(invocation.command, invocation.args, {
+  const mediated = invocation.windowsVerbatimArguments === true;
+  const result = childProcess.spawnSync(mediated ? invocation.command : program, mediated ? invocation.args : args, {
     cwd: opts.cwd,
     env: spawnEnv,
     encoding: 'utf-8',
     stdio: 'pipe',
     timeout: opts.timeout ?? 30_000,
     windowsHide: true,
-    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    ...(mediated ? { windowsVerbatimArguments: true } : {}),
   });
   // Stamp the DECLARED name, never the resolved path: `_spawnResult` renders
   // `${program}: not found`, and callers across 53 files match on the string they

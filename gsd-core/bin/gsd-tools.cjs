@@ -1419,6 +1419,10 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         // #3411: the resolve-then-mediate pair is one seam call now. Both halves had
         // private copies here; `projectSpawnInvocation` owns them, so a fix to either
         // reaches every spawn site instead of only this one.
+        //
+        // Unlike execTool, this lane adopts the RESOLVED path even for a non-batch
+        // binary: that is the behavior #3445 shipped and `deps.hasBinary` answers
+        // from the same resolver, so probe and spawn must agree on the exact file.
         const { projectSpawnInvocation } = require('./lib/shell-command-projection.cjs');
         const { command: spawnBinary, args: spawnArgv, windowsVerbatimArguments } = projectSpawnInvocation(binary, argv);
         const r = cp.spawnSync(spawnBinary, spawnArgv, {

@@ -706,6 +706,20 @@ describe('execTool (#3411 windows resolution)', () => {
     assert.equal(receivedCommand, 'some-declared-name');
   });
 
+  test('E7: execTool spawns the DECLARED name when no mediation is required', (t) => {
+    let received = null;
+    mock.method(childProcess, 'spawnSync', (command, args) => {
+      received = { command, args };
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    });
+    t.after(() => mock.restoreAll());
+
+    execTool('some-plain-tool', ['--x']);
+
+    assert.equal(received.command, 'some-plain-tool');
+    assert.deepEqual(received.args, ['--x']);
+  });
+
   test('E1: posix execTool still runs a real subprocess', () => {
     const result = execTool(process.execPath, ['-e', 'process.stdout.write("ok")']);
     assert.equal(result.exitCode, 0);
