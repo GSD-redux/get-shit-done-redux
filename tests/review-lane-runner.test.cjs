@@ -11,6 +11,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const { resolveLanePlan, LANE_UNAVAILABLE } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
@@ -25,6 +26,13 @@ const {
   antigravityWatermark,
   antigravityTranscriptFallback,
   runOpenAiCompatible,
+  MODEL_SOURCE,
+  UNRESOLVED_MODEL,
+  parseModelBanner,
+  parseTranscriptModel,
+  resolveSpawnModel,
+  BANNER_SCAN_LINES,
+  MODEL_VALUE_MAX,
 } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
 
 const REVIEW_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
@@ -1166,6 +1174,552 @@ describe('#3194 — evidence grounding is verified from review output, not decla
     assert.ok(
       step.includes('[reviewed-without-repo-access]'),
       'the existing blind-review recognition must survive alongside it',
+    );
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * #2295 — the resolved model, recorded per lane
+ * ------------------------------------------------------------------ */
+
+/** A `transcript_full.jsonl` body: one compact JSON value per line. */
+const jsonl = (...entries) => entries.map((e) => JSON.stringify(e)).join('\n');
+
+/** The Antigravity on-disk paths, both of them, for a given conversation id. */
+const CACHE = '/home/u/.gemini/antigravity-cli/cache/last_conversations.json';
+const fullPath = (id) => `/home/u/.gemini/antigravity-cli/brain/${id}/.system_generated/logs/transcript_full.jsonl`;
+const txPath = (id) => `/home/u/.gemini/antigravity-cli/brain/${id}/.system_generated/logs/transcript.jsonl`;
+
+describe('#2295 — MODEL_SOURCE contract', () => {
+  test('the member set is locked — adding one is three coordinated changes', () => {
+    // Same discipline PARITY_VIOLATION and LANE_UNAVAILABLE already carry: enum + emitting site
+    // + this assertion. A new source that never reaches a caller is not a feature.
+    assert.deepEqual(Object.keys(MODEL_SOURCE).sort(), [
+      'BANNER', 'PINNED', 'REQUESTED', 'SERVED', 'TRANSCRIPT', 'UNKNOWN',
+    ]);
+    assert.equal(Object.isFrozen(MODEL_SOURCE), true, 'the enum must be frozen');
+  });
+
+  test('the unresolved sentinel satisfies the value-source biconditional', () => {
+    // The biconditional is the whole readability contract of the frontmatter block: a reader must
+    // be able to tell "nothing recorded" from "nothing to look at" without a second lookup.
+    assert.equal(UNRESOLVED_MODEL.value, null);
+    assert.equal(UNRESOLVED_MODEL.source, MODEL_SOURCE.UNKNOWN);
+    assert.equal(Object.isFrozen(UNRESOLVED_MODEL), true);
+  });
+});
+
+describe('#2295 — parseModelBanner', () => {
+  test('parses a bare banner line', () => {
+    assert.equal(parseModelBanner('model: gpt-5.6-sol'), 'gpt-5.6-sol');
+  });
+
+  test('tolerates banner chrome and leading whitespace', () => {
+    const banner = [
+      '  OpenAI Codex  (v0.144.3)',
+      '--------',
+      '  model: gpt-5.6-sol',
+      'workdir: /repo',
+    ].join('\n');
+    assert.equal(parseModelBanner(banner), 'gpt-5.6-sol');
+  });
+
+  test('an adjacent reasoning-effort line is not absorbed into the value', () => {
+    assert.equal(parseModelBanner('model: gpt-5.6-sol\nreasoning effort: high'), 'gpt-5.6-sol');
+  });
+
+  test('CRLF parses identically to LF', () => {
+    assert.equal(parseModelBanner('model: gpt-5.6-sol\r\nworkdir: /repo\r\n'), 'gpt-5.6-sol');
+  });
+
+  test('no model line yields null', () => {
+    assert.equal(parseModelBanner('OpenAI Codex\nworkdir: /repo'), null);
+  });
+
+  test('an empty or whitespace-only value yields null', () => {
+    assert.equal(parseModelBanner('model:'), null);
+    assert.equal(parseModelBanner('model:    '), null);
+  });
+
+  test('TWO DIFFERENT values are ambiguous and yield null — never first-wins', () => {
+    // Postel's modern caveat: liberal must not mean "guess silently". Two candidates is an
+    // ambiguity, and picking one would attribute the review to a model on a coin flip.
+    assert.equal(parseModelBanner('model: gpt-5.6-sol\nmodel: o4-mini'), null);
+  });
+
+  test('two IDENTICAL values are not ambiguous', () => {
+    assert.equal(parseModelBanner('model: gpt-5.6-sol\nmodel: gpt-5.6-sol'), 'gpt-5.6-sol');
+  });
+
+  test('the scan window boundary holds at limit-1, limit and limit+1', () => {
+    const at = (n) => parseModelBanner([...Array(n).fill('noise'), 'model: gpt-5.6-sol'].join('\n'));
+    assert.equal(at(BANNER_SCAN_LINES - 2), 'gpt-5.6-sol', 'limit-1 is inside the window');
+    assert.equal(at(BANNER_SCAN_LINES - 1), 'gpt-5.6-sol', 'limit is inside the window');
+    assert.equal(at(BANNER_SCAN_LINES), null, 'limit+1 is outside the window');
+  });
+
+  test('an over-long value is rejected rather than truncated', () => {
+    assert.equal(parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX + 1)}`), null);
+    assert.equal(
+      parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX)}`),
+      'm'.repeat(MODEL_VALUE_MAX),
+      'exactly at the cap is still a model',
+    );
+  });
+
+  test('degenerate inputs yield null without throwing', () => {
+    for (const input of ['', '\n', '\r\n', '   ', 'x'.repeat(100000)]) {
+      assert.equal(parseModelBanner(input), null);
+    }
+  });
+
+  test('a hostile value is recorded inert, never interpreted', () => {
+    // The value is data on its way to a markdown frontmatter field. It is never re-emitted as
+    // argv and never shell-interpolated, so the contract is simply "verbatim or rejected".
+    assert.equal(parseModelBanner('model: $(rm -rf /)'), '$(rm -rf /)');
+    assert.equal(parseModelBanner('model: `id`; echo pwned'), '`id`; echo pwned');
+  });
+
+  test('the unset sentinels are not models', () => {
+    // Shared with the config path rather than re-derived — one source for "what counts as
+    // unset", so the two can never disagree.
+    for (const v of ['null', 'undefined']) assert.equal(parseModelBanner(`model: ${v}`), null);
+  });
+});
+
+describe('#2295 — parseTranscriptModel', () => {
+  test('parses a top-level settings model', () => {
+    assert.equal(
+      parseTranscriptModel(jsonl({ type: 'SETTINGS', model: 'Gemini 3.5 Flash (Medium)' })),
+      'Gemini 3.5 Flash (Medium)',
+    );
+  });
+
+  test('parses a model nested one level under a settings wrapper', () => {
+    // Depth is BOUNDED AT TWO and stated, not recursive: the wrapper key name is not knowable
+    // without guessing, but the depth is. Anything deeper degrades to unknown.
+    assert.equal(
+      parseTranscriptModel(jsonl({ type: 'SETTINGS', settings: { model: 'Gemini 3.5 Flash (Medium)' } })),
+      'Gemini 3.5 Flash (Medium)',
+    );
+  });
+
+  test('a model buried at depth three is NOT found', () => {
+    assert.equal(parseTranscriptModel(jsonl({ a: { b: { model: 'too-deep' } } })), null);
+  });
+
+  test('the LAST settings entry wins', () => {
+    const body = jsonl(
+      { type: 'SETTINGS', model: 'first' },
+      { source: 'MODEL', content: 'a review' },
+      { type: 'SETTINGS', model: 'second' },
+    );
+    assert.equal(parseTranscriptModel(body), 'second');
+  });
+
+  test('prose merely containing the word model is ignored', () => {
+    const body = jsonl({ source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'the model: gpt-5 is wrong here' });
+    assert.equal(parseTranscriptModel(body), null);
+  });
+
+  test('a line parsing to null is ignored (typeof null === object)', () => {
+    assert.equal(parseTranscriptModel(['null', JSON.stringify({ model: 'real' })].join('\n')), 'real');
+    assert.equal(parseTranscriptModel('null'), null);
+  });
+
+  test('array, scalar and string lines are ignored', () => {
+    assert.equal(parseTranscriptModel(jsonl([{ model: 'in-an-array' }], 7, 'a string')), null);
+  });
+
+  test('one unparseable line does not poison the file', () => {
+    const body = ['{not json', JSON.stringify({ model: 'survivor' }), 'also{ not'].join('\n');
+    assert.equal(parseTranscriptModel(body), 'survivor');
+  });
+
+  test('a non-string model value is ignored, never coerced', () => {
+    assert.equal(parseTranscriptModel(jsonl({ model: 0 }, { model: true }, { model: { id: 'x' } })), null);
+  });
+
+  test('prototype keys never resolve as a model', () => {
+    // Own-property lookup only. A transcript is third-party JSON on a trust boundary; a
+    // `constructor`-shaped entry must not walk up to Object.prototype.
+    assert.equal(parseTranscriptModel('{"__proto__":{"model":"polluted"}}'), null);
+    assert.equal(parseTranscriptModel('{"constructor":{"model":"polluted"}}'), null);
+    assert.equal({}.model, undefined, 'no global prototype was mutated');
+  });
+
+  test('degenerate transcripts yield null without throwing', () => {
+    for (const input of ['', '\n\n', '   \r\n  ', '[]', '{}']) {
+      assert.equal(parseTranscriptModel(input), null);
+    }
+  });
+
+  test('CRLF transcripts parse identically', () => {
+    assert.equal(parseTranscriptModel(`${JSON.stringify({ model: 'crlf-ok' })}\r\n`), 'crlf-ok');
+  });
+});
+
+describe('#2295 — resolveLanePlan records only a model that was APPLIED', () => {
+  test('a configured model that reached argv is recorded on the plan', () => {
+    const p = plan('gemini', { 'review.models.gemini': 'gemini-3-pro' });
+    assert.equal(p.model, 'gemini-3-pro');
+    assert.ok(p.argv.includes('gemini-3-pro'), 'and it really is in argv');
+  });
+
+  test('an unset config yields no plan model', () => {
+    assert.equal(plan('gemini').model, null);
+  });
+
+  test('a lane declaring no modelConfigKey records no model', () => {
+    assert.equal(plan('cursor').model, null);
+    assert.equal(plan('coderabbit').model, null);
+  });
+
+  test('the unset sentinels do not become a model', () => {
+    for (const v of ['', '   ', 'null', 'undefined']) {
+      assert.equal(plan('gemini', { 'review.models.gemini': v }).model, null, `sentinel ${JSON.stringify(v)}`);
+    }
+  });
+
+  test('a non-string config value is not coerced into a model', () => {
+    for (const v of [0, 42, true, { id: 'x' }, ['x']]) {
+      assert.equal(plan('gemini', { 'review.models.gemini': v }).model, null);
+    }
+  });
+
+  test('a lane with a modelConfigKey but NO modelArg records nothing — it never reached argv', () => {
+    // The gap this closes: a third-party overlay body can declare a model key and forget the
+    // argument that carries it. The CLI then reviews with its own default while the config says
+    // otherwise. Recording the config value here would assert a model that never ran — the
+    // inverse of the very failure #2295 exists to end.
+    const gemini = REVIEWER_LANES.find((l) => l.slug === 'gemini');
+    const lane = {
+      ...gemini,
+      slug: 'noarg',
+      modelConfigKey: 'review.models.noarg',
+      invoke: { ...gemini.invoke, modelArg: null },
+    };
+    const r = resolveLanePlan({
+      lane,
+      configGet: (k) => (k === 'review.models.noarg' ? 'ghost-model' : undefined),
+      runDir: RUN,
+      repoRoot: ROOT,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.model, null, 'a model that never reached argv is not a resolved model');
+    assert.ok(!r.plan.argv.includes('ghost-model'), 'and it really is absent from argv');
+  });
+
+  test('the http plan model field is unchanged', () => {
+    assert.equal(plan('ollama', { 'review.models.ollama': 'llama3' }).model, 'llama3');
+    assert.equal(plan('ollama').model, null);
+  });
+});
+
+describe('#2295 — runLane reports the resolved model', () => {
+  test('a pinned spawn model is reported as pinned', async () => {
+    const p = plan('gemini', { 'review.models.gemini': 'gemini-3-pro' });
+    const d = deps({ spawn: () => ({ status: 0, stdout: 'a review with src/x.ts:10 evidence', stderr: '' }) });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'gemini-3-pro', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a file-output lane recovers its model from the stdout banner', async () => {
+    const p = plan('codex');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: 'model: gpt-5.6-sol\nworkdir: /repo', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'gpt-5.6-sol', source: MODEL_SOURCE.BANNER });
+  });
+
+  test('a file-output lane recovers its model from the stderr banner', async () => {
+    const p = plan('codex');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: '', stderr: 'model: gpt-5.6-sol' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'gpt-5.6-sol', source: MODEL_SOURCE.BANNER });
+  });
+
+  test('a pinned model outranks a banner', async () => {
+    const p = plan('codex', { 'review.models.codex': 'o4-mini' });
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: 'model: gpt-5.6-sol', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'o4-mini', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a STDOUT lane never parses its own review text as a banner', async () => {
+    // The headline negative. A stdout lane's review lands in exactly the buffer the banner scan
+    // would read, so a review that DISCUSSES a model would be recorded as that lane's model.
+    const p = plan('gemini');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: 'model: gpt-5 is the wrong choice, see src/x.ts:10', stderr: '' }),
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, UNRESOLVED_MODEL, 'review prose is not a banner');
+  });
+
+  test('an unavailable lane reports unknown and still reports its reason', async () => {
+    const p = plan('gemini');
+    const r = await runLane(p, deps({ hasBinary: () => false }), { repoRoot: ROOT });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, LANE_UNAVAILABLE.MISSING_BINARY);
+    assert.deepEqual(r.model, UNRESOLVED_MODEL);
+  });
+
+  test('a lane blocked on egress reports unknown and spawns nothing', async () => {
+    const p = plan('ollama');
+    const d = deps();
+    const r = await runLane(p, d, { repoRoot: ROOT, consentedHost: 'http://elsewhere:1234' });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, LANE_UNAVAILABLE.EGRESS_HOST_CHANGED);
+    assert.deepEqual(r.model, UNRESOLVED_MODEL);
+    assert.equal(d.spawns.length, 0);
+  });
+
+  test('a stubbed lane still reports the model it invoked', async () => {
+    // #2073 mode 2 is exactly this shape: a pinned model that 404s server-side exits 0 with empty
+    // output. The model is the diagnosis, so dropping it on the stub path throws away the evidence.
+    const p = plan('codex', { 'review.models.codex': 'does-not-exist' });
+    const d = deps({ spawn: () => ({ status: 0, stdout: '', stderr: '' }) });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.stubbed, true);
+    assert.deepEqual(r.model, { value: 'does-not-exist', source: MODEL_SOURCE.PINNED });
+  });
+});
+
+describe('#2295 — antigravity recovers its model from transcript_full.jsonl', () => {
+  const CONV = 'conv-1';
+  const settings = (m) => JSON.stringify({ type: 'SETTINGS', model: m });
+  const response = (c) => JSON.stringify({ source: 'MODEL', status: 'DONE', type: 'PLANNER_RESPONSE', content: c });
+
+  /** deps with both transcripts seeded; `full` is the transcript_full body. */
+  const agyDeps = (full, { tx = '', cache = { [ROOT]: CONV } } = {}) =>
+    deps({
+      files: {
+        [CACHE]: JSON.stringify(cache),
+        [txPath(CONV)]: tx,
+        [fullPath(CONV)]: full,
+      },
+      spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }),
+    });
+
+  test("a settings entry written AFTER the watermark is this run's model", async () => {
+    const before = settings('Gemini 3.5 Flash (Medium)');
+    const d = agyDeps(before);
+    // The watermark is taken pre-spawn; the spawn appends the real settings line.
+    d.spawn = () => {
+      d.files[fullPath(CONV)] = [before, settings('Gemini 3.5 Pro')].join('\n');
+      return { status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' };
+    };
+    const r = await runLane(plan('antigravity'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'Gemini 3.5 Pro', source: MODEL_SOURCE.TRANSCRIPT });
+  });
+
+  test("a same-session PRE-watermark entry is accepted — the session model is still this run's", async () => {
+    // Deliberately looser than the review body's staleness rule, and for a stated reason:
+    // last_conversations.json is keyed by WORKSPACE, so a matching conv-id means agy reused the
+    // same session. That session's model IS the model this run ran under. A strict
+    // post-watermark-only scan would report `unknown` for most real runs.
+    const r = await runLane(plan('antigravity'), agyDeps(settings('Gemini 3.5 Flash (Medium)')), { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'Gemini 3.5 Flash (Medium)', source: MODEL_SOURCE.TRANSCRIPT });
+  });
+
+  test('an unreadable full transcript declines rather than guessing', async () => {
+    // #3118's fail-closed shape, applied to the model arm: a file that indisputably exists but
+    // could not be read is not the same fact as an absent one.
+    const d = agyDeps(settings('Gemini 3.5 Pro'));
+    const realRead = d.readFile;
+    d.readFile = (p) => {
+      if (p === fullPath(CONV)) throw new Error('EACCES');
+      return realRead(p);
+    };
+    const r = await runLane(plan('antigravity'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, UNRESOLVED_MODEL);
+  });
+
+  test('a read failure never fails the lane — the review is still written', async () => {
+    const d = agyDeps(settings('Gemini 3.5 Pro'));
+    const realRead = d.readFile;
+    d.readFile = (p) => {
+      if (p === fullPath(CONV)) throw new Error('EACCES');
+      return realRead(p);
+    };
+    const p = plan('antigravity');
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.ok, true);
+    assert.ok(d.files[p.reviewPath], 'the review must still land on disk');
+  });
+
+  test('an absent cache, an absent transcript and a corrupt cache all yield unknown', async () => {
+    const noCache = deps({ spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }) });
+    assert.deepEqual((await runLane(plan('antigravity'), noCache, { repoRoot: ROOT })).model, UNRESOLVED_MODEL);
+
+    const noTx = deps({
+      files: { [CACHE]: JSON.stringify({ [ROOT]: CONV }) },
+      spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }),
+    });
+    assert.deepEqual((await runLane(plan('antigravity'), noTx, { repoRoot: ROOT })).model, UNRESOLVED_MODEL);
+
+    for (const corrupt of ['null', '[]', '{not json']) {
+      const d = deps({
+        files: { [CACHE]: corrupt, [fullPath(CONV)]: settings('never-read') },
+        spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }),
+      });
+      assert.deepEqual(
+        (await runLane(plan('antigravity'), d, { repoRoot: ROOT })).model,
+        UNRESOLVED_MODEL,
+        `corrupt cache ${corrupt}`,
+      );
+    }
+  });
+
+  test('the workspace lookup stays case-insensitive', async () => {
+    const d = agyDeps(settings('Gemini 3.5 Pro'), { cache: { [ROOT.toUpperCase()]: CONV } });
+    const r = await runLane(plan('antigravity'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'Gemini 3.5 Pro', source: MODEL_SOURCE.TRANSCRIPT });
+  });
+
+  test('a pinned agy model short-circuits the transcript arm entirely', async () => {
+    const d = agyDeps(settings('Gemini 3.5 Flash (Medium)'));
+    const p = plan('antigravity', { 'review.models.agy': 'Gemini 3.5 Pro' });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'Gemini 3.5 Pro', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a transcript whose only entries are responses yields unknown', async () => {
+    const r = await runLane(plan('antigravity'), agyDeps(response('a review')), { repoRoot: ROOT });
+    assert.deepEqual(r.model, UNRESOLVED_MODEL);
+  });
+});
+
+describe('#2295 — openai-http reports what the server actually served', () => {
+  const httpDeps = (body, { status = 200, ok = true, models } = {}) =>
+    deps({
+      httpJson: async (url) =>
+        url.endsWith('/v1/models')
+          ? { ok: true, status: 200, body: JSON.stringify({ data: models ? [{ id: models }] : [] }) }
+          : { ok, status, body },
+    });
+
+  const completion = (extra) => JSON.stringify({
+    ...extra,
+    choices: [{ message: { content: 'a review citing src/x.ts:10' } }],
+  });
+
+  test('a served model is recorded as served', async () => {
+    const d = httpDeps(completion({ model: 'llama3:70b' }), { models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:70b', source: MODEL_SOURCE.SERVED });
+  });
+
+  test('served outranks pinned AND the existing mismatch warning still fires', async () => {
+    const d = httpDeps(completion({ model: 'llama3:70b' }));
+    const r = await runLane(plan('ollama', { 'review.models.ollama': 'llama3:8b' }), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:70b', source: MODEL_SOURCE.SERVED },
+      'what actually ran beats what was asked for');
+    assert.ok(d.warnings.some((w) => w.includes('served model')), 'the ADR-2782 mismatch warning must survive');
+  });
+
+  test('a discovered model with no served echo is recorded as requested', async () => {
+    const d = httpDeps(completion({}), { models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
+  });
+
+  test('the declared fallbackModel is recorded as requested when discovery finds nothing', async () => {
+    const d = httpDeps(completion({}));
+    const p = plan('ollama');
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: p.fallbackModel, source: MODEL_SOURCE.REQUESTED });
+  });
+
+  test('an unparseable body still records what was requested', async () => {
+    const d = httpDeps('<html>502 Bad Gateway</html>', { models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
+  });
+
+  test('an http failure with an empty body still records what was requested', async () => {
+    const d = httpDeps('', { ok: false, status: 500, models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
+  });
+
+  test('a non-string served model is ignored, never coerced', async () => {
+    const d = httpDeps(completion({ model: 42 }), { models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
+  });
+});
+
+describe('#2295 — properties (pinned seed, bounded runs)', () => {
+  /** Deterministic: pinned seed, bounded runs, replay data printed on failure. */
+  const FC = { seed: 2295, numRuns: 300 };
+
+  const wellFormed = (v) =>
+    v === null || (typeof v === 'string' && v.trim() === v && v.length > 0 && v.length <= MODEL_VALUE_MAX);
+
+  test('parseModelBanner is total and its output is always well-formed', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.string(),
+          fc.string({ unit: 'grapheme' }),
+          fc.array(fc.string(), { maxLength: 60 }).map((a) => a.join('\n')),
+        ),
+        (input) => wellFormed(parseModelBanner(input)),
+      ),
+      FC,
+    );
+  });
+
+  test('parseTranscriptModel is total and its output is always well-formed', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.string(),
+          fc.array(fc.jsonValue(), { maxLength: 20 }).map((vs) => vs.map((v) => JSON.stringify(v)).join('\n')),
+        ),
+        (input) => wellFormed(parseTranscriptModel(input)),
+      ),
+      FC,
+    );
+  });
+
+  test('every reported spawn model satisfies the value-source biconditional', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('gemini', 'codex', 'antigravity', 'cursor', 'coderabbit'),
+        fc.option(fc.string(), { nil: undefined }),
+        fc.string(),
+        (slug, configured, stdout) => {
+          const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+          const key = lane.modelConfigKey;
+          const r = resolveLanePlan({
+            lane,
+            configGet: (k) => (key && k === key ? configured : undefined),
+            runDir: RUN,
+            repoRoot: ROOT,
+          });
+          if (!r.ok) return true;
+          const reported = resolveSpawnModel(
+            r.plan,
+            { stdout, stderr: '' },
+            { convId: '', lines: 0, fullLines: 0 },
+            deps(),
+          );
+          const isUnknown = reported.source === MODEL_SOURCE.UNKNOWN;
+          return isUnknown === (reported.value === null) && wellFormed(reported.value);
+        },
+      ),
+      FC,
     );
   });
 });
