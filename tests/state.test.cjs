@@ -8808,6 +8808,213 @@ describe('T6 section-splice characterization — complete-phase', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3578 — state complete-phase must not overwrite milestone status when other
+// phases remain open. `normalizeStateStatus` matches 'complete' as a
+// substring, so the phase-completion prose `Phase ${N} complete` collapses to
+// the milestone-level 'completed' status even though completed_phases /
+// total_phases (computed by the same buildStateFrontmatter call) correctly
+// show the milestone is not yet done.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3578: complete-phase does not overwrite milestone status when phases remain open', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const ROADMAP_4_PHASE = [
+    '## Milestone v1.0: Test Milestone',
+    '',
+    '### Phase 01: Alpha',
+    '**Goal:** first',
+    '',
+    '### Phase 02: Beta',
+    '**Goal:** second',
+    '',
+    '### Phase 03: Gamma',
+    '**Goal:** third',
+    '',
+    '### Phase 04: Delta',
+    '**Goal:** fourth',
+  ].join('\n');
+
+  const PHASE_DIRS_4 = ['01-alpha', '02-beta', '03-gamma', '04-delta'];
+
+  /**
+   * Seed `.planning/phases/<NN-slug>` for phases 1..4. Every phase gets a
+   * PLAN.md; phases numbered <= completeThrough additionally get a
+   * SUMMARY.md and a passing VERIFICATION.md (disk-strict completion,
+   * ADR-3180 §7.4 / #3186), so isPhaseComplete reports them done.
+   */
+  function seed4PhaseMilestone(completeThrough) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP_4_PHASE);
+    PHASE_DIRS_4.forEach((dirName, idx) => {
+      const n = idx + 1;
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+      if (n <= completeThrough) {
+        fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary\n');
+        writePassedVerification(tmpDir, dirName, padded);
+      }
+    });
+  }
+
+  function writeStateAtPhase(phase) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'milestone_name: Test Milestone',
+        'status: executing',
+        '---',
+        '',
+        '# GSD State',
+        '',
+        '## Configuration',
+        `Current Phase: ${phase}`,
+        `Status: Executing Phase ${phase}`,
+        'Last Activity: 2026-01-01',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  function frontmatterStatus(after) {
+    const fm = frontmatterLib.extractFrontmatter(after);
+    return fm.status;
+  }
+
+  test('2 of 4 phases complete on disk: --phase 2 must not set frontmatter status completed', () => {
+    // On disk, phases 1-2 are already complete (matches the #3578 repro:
+    // completed_phases/total_phases are correct while status wrongly collapses).
+    seed4PhaseMilestone(2);
+    writeStateAtPhase(2);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '2'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.notEqual(
+      frontmatterStatus(after),
+      'completed',
+      `status must not be 'completed' while phases remain open; got frontmatter:\n${after}`,
+    );
+
+    const jsonResult = runGsdTools('state json', tmpDir);
+    assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
+    const output = JSON.parse(jsonResult.output);
+    assert.strictEqual(Number(output.progress.completed_phases), 2, 'completed_phases must still be 2');
+    assert.strictEqual(Number(output.progress.total_phases), 4, 'total_phases must still be 4');
+  });
+
+  test('3 of 4 phases complete on disk (limit-1): --phase 3 must not set frontmatter status completed', () => {
+    seed4PhaseMilestone(3);
+    writeStateAtPhase(3);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '3'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.notEqual(
+      frontmatterStatus(after),
+      'completed',
+      `status must not be 'completed' with 3 of 4 phases done; got frontmatter:\n${after}`,
+    );
+  });
+
+  test('4 of 4 phases complete on disk (limit): --phase 4 sets frontmatter status completed', () => {
+    seed4PhaseMilestone(4);
+    writeStateAtPhase(4);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '4'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(
+      frontmatterStatus(after),
+      'completed',
+      `status must be 'completed' once all 4 phases are done; got frontmatter:\n${after}`,
+    );
+  });
+
+  test('milestone_name is byte-identical before and after complete-phase (2 of 4 case)', () => {
+    seed4PhaseMilestone(2);
+    writeStateAtPhase(2);
+
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const beforeName = frontmatterLib.extractFrontmatter(before).milestone_name;
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '2'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const afterName = frontmatterLib.extractFrontmatter(after).milestone_name;
+
+    assert.strictEqual(beforeName, 'Test Milestone', 'precondition: milestone_name must start as Test Milestone');
+    assert.strictEqual(
+      afterName,
+      beforeName,
+      `milestone_name must be byte-identical before/after complete-phase; before=${beforeName}, after=${afterName}`,
+    );
+  });
+
+  test('1-of-1 milestone: --phase 1 still sets frontmatter status completed (counter rule allows it)', () => {
+    const ROADMAP_1_PHASE = [
+      '## Milestone v2.0: Solo Milestone',
+      '',
+      '### Phase 01: Only',
+      '**Goal:** the only phase',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP_1_PHASE);
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-only');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    writePassedVerification(tmpDir, '01-only', '01');
+
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v2.0',
+        'milestone_name: Solo Milestone',
+        'status: executing',
+        '---',
+        '',
+        '# GSD State',
+        '',
+        '## Configuration',
+        'Current Phase: 1',
+        'Status: Executing Phase 1',
+        'Last Activity: 2026-01-01',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '1'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(
+      frontmatterStatus(after),
+      'completed',
+      `a genuinely 1-of-1-complete milestone must still report 'completed'; got frontmatter:\n${after}`,
+    );
+  });
+});
+
 describe('T6 section-splice characterization — milestone-switch', () => {
   const STATE_INLINE_MS = [
     '---',
