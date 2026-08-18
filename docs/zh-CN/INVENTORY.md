@@ -395,7 +395,7 @@
 | `decisions.cjs` | 解析 CONTEXT.md `<decisions>` 块；接受数字（D-42）和字母数字（D-INFRA-01）ID；返回 `{id, text, category, tags, trackable}` |
 | `docs.cjs` | 文档更新工作流初始化、Markdown 扫描、单体仓库检测 |
 | `drift.cjs` | 执行后代码库结构漂移检测器（#2003）：将文件更改分类为新目录/桶/迁移/路由类别，并循环处理 `last_mapped_commit` frontmatter |
-| `fallow-runner.cjs` | `/gsd-code-review` 的 fallow 审计适配器：二进制解析（`PATH` 然后 `node_modules/.bin`）、可操作的缺少二进制错误和结构性发现规范化 |
+| `fallow-runner.cjs` | `/gsd-code-review` 的 fallow 审计适配器：二进制解析（`node_modules/.bin` 然后 `PATH`）、可操作的缺少二进制错误和结构性发现规范化 |
 | `frontmatter.cjs` | YAML frontmatter 增删改查操作 |
 | `gap-checker.cjs` | 规划后间隙分析（#2493）：REQUIREMENTS.md + CONTEXT.md 决策 vs PLAN.md 覆盖率报告（`gsd-tools gap-analysis`） |
 | `graphify.cjs` | `/gsd-graphify` 的知识图谱构建/查询/状态/差异 |

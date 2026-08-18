@@ -1,6 +1,6 @@
 When `FALLOW_ENABLED=true`:
 
-1) Resolve binary via PATH first, then `node_modules/.bin/fallow`.
+1) Resolve binary via `node_modules/.bin/fallow` first, then PATH.
 ```bash
 FALLOW_BIN=$(FALLOW_CWD="$(pwd)" node -e "
 const { resolveFallowBinary } = require('./gsd-core/bin/lib/fallow-runner.cjs');

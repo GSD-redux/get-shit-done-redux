@@ -653,11 +653,14 @@ const DEFAULT_PATHEXT = '.EXE;.CMD;.BAT;.COM';
 /** Windows extensions that must be mediated through cmd.exe rather than spawned. */
 const CMD_MEDIATED_EXT = /\.(cmd|bat)$/i;
 
-function _isFile(candidate: string): boolean {
+function _isFile(candidate: string, requireExecutable = false, platform: string = process.platform): boolean {
   try {
-    return fs.statSync(candidate).isFile();
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (requireExecutable && platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
   } catch {
-    // Missing, unreadable (EACCES), or a broken link — all mean "not this one".
+    // Missing, unreadable (EACCES), a broken link, or (when requireExecutable
+    // is set) not executable — all mean "not this one".
     return false;
   }
 }
@@ -733,25 +736,45 @@ function _buildVerbatimCmdLine(target: string, args: string[]): string {
  * Path-like names (any `/` or `\`) bypass the PATH scan: the name is already an
  * address, so it passes through when it names an existing file.
  *
+ * **`opts.prependPaths`** — directories searched BEFORE `env.PATH`, in array
+ * order (e.g. a project-local `node_modules/.bin`). Defaults to `[]`, so
+ * Phase 1's callers (`execTool`, and `gsd-tools.cjs`'s `resolveSpawnBinary` /
+ * `deps.spawn` / `hasBinary`), which set neither new option, are byte-identical
+ * to today. The existing per-directory candidate logic (win32 as-is-then-append-
+ * PATHEXT; POSIX bare name) applies to prepended directories exactly as it does
+ * to `PATH` segments — there is no special-casing.
+ *
+ * **`opts.requireExecutable`** — when `true` and the platform is not `win32`,
+ * a candidate must additionally pass `fs.accessSync(candidate, fs.constants.X_OK)`
+ * to count as a match. On `win32` this is a no-op (mode bits do not mean
+ * execute on Windows — the same carve-out `fallow-runner`'s prior private
+ * resolver already had). Defaults to `false`, so `accessSync` is never called
+ * unless a caller opts in. It is opt-in rather than the default because making
+ * `X_OK` unconditional would break #3445's suite: those tests stage candidates
+ * with plain `fs.writeFileSync` and never set an exec bit (the repo bans
+ * `chmod` in tests), so every one of them would resolve to `null` on POSIX.
+ *
  * @returns the resolved path, or `null` when nothing matched. Callers fall back to
  *   the declared name on `null` so a genuine ENOENT still surfaces (#3086).
  */
 export function resolveExecutableBinary(
   name: string | null | undefined,
-  opts: { platform?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { platform?: string; env?: NodeJS.ProcessEnv; prependPaths?: string[]; requireExecutable?: boolean } = {},
 ): string | null {
   if (!name) return null;
+  const requireExecutable = opts.requireExecutable ?? false;
+  const platform = opts.platform ?? process.platform;
   if (name.includes('/') || name.includes('\\')) {
-    return _isFile(name) ? name : null;
+    return _isFile(name, requireExecutable, platform) ? name : null;
   }
   const env = opts.env ?? process.env;
-  const platform = opts.platform ?? process.platform;
-  const segments = String(_envGet(env, 'PATH') || '').split(path.delimiter).filter(Boolean);
+  const pathSegments = String(_envGet(env, 'PATH') || '').split(path.delimiter).filter(Boolean);
+  const segments = [...(opts.prependPaths ?? []), ...pathSegments];
 
   if (platform !== 'win32') {
     for (const dir of segments) {
       const candidate = path.join(dir, name);
-      if (_isFile(candidate)) return candidate;
+      if (_isFile(candidate, requireExecutable, platform)) return candidate;
     }
     return null;
   }
@@ -766,11 +789,11 @@ export function resolveExecutableBinary(
   for (const dir of segments) {
     if (carriesKnownExt) {
       const asIs = path.join(dir, name);
-      if (_isFile(asIs)) return asIs;
+      if (_isFile(asIs, requireExecutable, platform)) return asIs;
     }
     for (const ext of exts) {
       const candidate = path.join(dir, name + ext);
-      if (_isFile(candidate)) return candidate;
+      if (_isFile(candidate, requireExecutable, platform)) return candidate;
     }
   }
   return null;
