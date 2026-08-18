@@ -418,12 +418,12 @@ function extractProtectedBranchWarningBash(workflowFile, stepName) {
       continue;
     }
     if (inStep && /^<\/step>\s*$/.test(line)) break;
-    if (inStep && !inBash && /^```bash\s*$/.test(line)) {
+    if (inStep && !inBash && /^\s*```bash\s*$/.test(line)) {
       inBash = true;
       buffer = [];
       continue;
     }
-    if (inBash && /^```\s*$/.test(line)) {
+    if (inBash && /^\s*```\s*$/.test(line)) {
       blocks.push(buffer.join('\n'));
       inBash = false;
       continue;
