@@ -2859,7 +2859,7 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   });
 });
 
-describe('commit-docs-guard enable/disable (#3588 B1-B10)', () => {
+describe('commit-docs-guard enable/disable (#3588 B1-B15)', () => {
   const { createTempGitProject } = require('./helpers.cjs');
   let tmpDir;
 
@@ -2941,24 +2941,22 @@ describe('commit-docs-guard enable/disable (#3588 B1-B10)', () => {
     assert.deepStrictEqual(fs.readdirSync(tmpDir), before, 'nothing may be written');
   });
 
-  test('B8: enable resolves the real hooks dir when .git is a worktree file', () => {
+  test('B8: enable resolves the real hooks dir when .git is a worktree file', (t) => {
     tmpDir = createTempGitProject();
     const worktreeParent = createTempDir();
-    try {
-      const wtDir = path.join(worktreeParent, 'wt');
-      gitOrThrow(['worktree', 'add', wtDir, '-b', 'gsd-test-commit-docs-guard-wt'], { cwd: tmpDir });
-      assert.ok(fs.statSync(path.join(wtDir, '.git')).isFile(), 'precondition: .git must be a file in a linked worktree');
+    t.after(() => cleanup(worktreeParent));
 
-      const result = runGsdTools('commit-docs-guard enable --raw', wtDir);
-      assert.ok(result.success, result.error);
-      // Hooks are shared across worktrees in the COMMON git dir — never a
-      // literal `<worktree>/.git/hooks`.
-      assert.ok(!fs.existsSync(path.join(wtDir, '.git', 'hooks')), 'must never write a literal <worktree>/.git/hooks path');
-      const commonHookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
-      assert.ok(fs.existsSync(commonHookPath), 'hook must land in the real (common) hooks directory');
-    } finally {
-      cleanup(worktreeParent);
-    }
+    const wtDir = path.join(worktreeParent, 'wt');
+    gitOrThrow(['worktree', 'add', wtDir, '-b', 'gsd-test-commit-docs-guard-wt'], { cwd: tmpDir });
+    assert.ok(fs.statSync(path.join(wtDir, '.git')).isFile(), 'precondition: .git must be a file in a linked worktree');
+
+    const result = runGsdTools('commit-docs-guard enable --raw', wtDir);
+    assert.ok(result.success, result.error);
+    // Hooks are shared across worktrees in the COMMON git dir — never a
+    // literal `<worktree>/.git/hooks`.
+    assert.ok(!fs.existsSync(path.join(wtDir, '.git', 'hooks')), 'must never write a literal <worktree>/.git/hooks path');
+    const commonHookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    assert.ok(fs.existsSync(commonHookPath), 'hook must land in the real (common) hooks directory');
   });
 
   test('B9: enable refuses when core.hooksPath is already set', () => {
@@ -2988,6 +2986,76 @@ describe('commit-docs-guard enable/disable (#3588 B1-B10)', () => {
     const r3 = runGsdTools('commit-docs-guard disable --raw', tmpDir);
     assert.ok(r3.success, `disable must still recognize the edited hook as ours: ${r3.error}`);
     assert.ok(!fs.existsSync(hookPath));
+  });
+
+  test('B11: no subcommand at all hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard'], tmpDir);
+    assert.ok(!result.success, 'missing subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'missing subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a missing subcommand');
+  });
+
+  test('B12: an unknown subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', 'bogus'], tmpDir);
+    assert.ok(!result.success, 'an unrecognized subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'an unrecognized subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for an unrecognized subcommand');
+  });
+
+  test('B13: an empty-string subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', ''], tmpDir);
+    assert.ok(!result.success, 'an empty-string subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'an empty-string subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for an empty-string subcommand');
+  });
+
+  test('B14: a whitespace-only subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', '   '], tmpDir);
+    assert.ok(!result.success, 'a whitespace-only subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'a whitespace-only subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a whitespace-only subcommand');
+  });
+
+  test('B15: a flag-shaped value in the subcommand position hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', '--enable'], tmpDir);
+    assert.ok(!result.success, 'a flag-shaped subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'a flag-shaped subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a flag-shaped subcommand');
   });
 });
 

@@ -2473,6 +2473,7 @@ function cmdCheckCommit(cwd: string, raw: boolean): void {
           planningFiles.map(f => `  ${f}`).join('\n') +
           `\n\nTo unstage: git reset HEAD ${planningFiles.join(' ')}`
         );
+        return;
       }
       output(
         { allowed: true, reason: policy.source === 'phase' ? 'phase_commit_docs_true' : 'commit_docs_enabled' },
@@ -2605,6 +2606,7 @@ function cmdCommitDocsGuardEnable(cwd: string, raw: boolean): void {
       `would never run. Wire commit-docs-guard into "${configuredPath}" manually, or unset core.hooksPath first.`,
       ERROR_REASON.COMMIT_DOCS_GUARD_HOOKS_PATH_SET,
     );
+    return;
   }
 
   const hookPath = path.join(hooksDir.dir, 'pre-commit');
