@@ -155,3 +155,29 @@ The README's first ratification trap is *"shipped code is necessary, not suffici
 **Full consent parity with hooks** — require the same ceremony for a skill contribution as for a hook. Rejected as consent fatigue. [`capability-trust-model.md`](../explanation/capability-trust-model.md) already rejects a per-run egress prompt on exactly these grounds: inflating every contribution to hook-level ceremony trains users to click through, degrading the prompt that matters.
 
 **Docs correction with no ADR** — rejected: `CONTRIBUTING.md` requires an ADR for an architectural decision, and a docs edit with no recorded decision reproduces the unrecorded posture this ADR exists to end.
+
+## Amendment (2026-08-18): `bundleContentHash` is no longer exclusion-free
+
+The residual-gap section above states that `bundleContentHash` "walks every entry under the
+bundle with no exclusions." As of #3631 that is no longer literally true, so the sentence is
+corrected here rather than edited in place.
+
+`bundleContentHash` now skips a small, hardcoded, gitignore-independent set of derived-cache
+entries from the DIGEST: basenames `__pycache__`, `.pytest_cache`, `.DS_Store`, and any file
+ending `.pyc`/`.pyo`. The trigger was a usability defect, not a security one — running a
+Python-backed capability's own test suite wrote `__pycache__` inside the bundle (an *empty*
+`__pycache__` directory was enough, because the walk emits a typed DIR marker per directory),
+which changed the recomputed hash and silently deactivated the capability.
+
+**D4's argument is unaffected.** The claim this ADR rests on is that a single changed byte in a
+skill body deactivates a project-scoped capability until re-consent. Skill bodies are `.md`
+files and are not in the exclusion set, so that still holds exactly as written. The excluded set
+is strictly derived bytecode that CPython regenerates and validates against its sibling source —
+and that source remains hashed, so a real code change still invalidates consent.
+
+Two properties were preserved deliberately and are pinned by tests: the exclusion is applied
+AFTER the symlink/non-regular fail-closed rejection (so a symlink named `x.pyc` still throws
+rather than being silently skipped), and excluded entries still count toward the walk's
+size/count caps. `node_modules`, `dist`, and `build` were considered and deliberately NOT
+excluded: their contents are required/executed at runtime, so dropping them from the digest
+would stop consent binding executable content.

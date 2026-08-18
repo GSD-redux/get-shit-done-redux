@@ -15,8 +15,9 @@
  * project ledger — `'' === ''` is no binding) NOR to the `disclosureSignature` alone (which covers
  * only executable surfaces, so a declarative-only cap has a constant signature and a repo-write
  * attacker could swap `capability.json` for a malicious gate/contribution while consent still
- * matched). `bundleContentHash` is recomputed by the loader at load over EVERY file in the bundle
- * (manifest AND artifacts AND identity), so any tamper — declarative-only swap, hook-script edit,
+ * matched). `bundleContentHash` is recomputed by the loader at load over the bundle (manifest AND
+ * artifacts AND identity), excluding only derived Python bytecode/cache noise (#3631 — see
+ * `bundleContentHash`'s own doc comment), so any tamper — declarative-only swap, hook-script edit,
  * empty-integrity local install — changes the hash and leaves the cap inactive. `integrity` and
  * `disclosureSignature` remain on the record for the human disclosure + re-consent-on-executable-
  * change UX (TRUST-2); they are NO LONGER the security binding.
@@ -265,9 +266,15 @@ function normalizeSepBytes(rel: Buffer): Buffer {
 
 /**
  * Recursively collect every REGULAR file AND every DIRECTORY under `absDir` as RAW-BYTE POSIX-relative
- * paths (`rel`, relative to the bundle root), refusing to follow symlinks out of the bundle. Bounded:
- * throws if the entry count or total byte size exceeds the caps (fail closed — a hostile/runaway tree
- * never hashes unbounded content). A non-regular entry encountered IN the tree (FIFO/device) is a
+ * paths (`rel`, relative to the bundle root), refusing to follow symlinks out of the bundle, EXCEPT
+ * that an entry whose basename is Python bytecode/cache noise (#3631 — `isBundleDigestExcludedBasename`:
+ * `__pycache__`, `.pytest_cache`, `.DS_Store`, `*.pyc`, `*.pyo`) is never pushed into the output — a
+ * matching directory is also never recursed into. That exclusion check runs strictly AFTER the
+ * lstat-backed symlink/non-regular rejections below, so a symlink or device masquerading under an
+ * excluded name is still fail-closed rejected rather than silently skipped. Bounded: throws if the
+ * entry count or total byte size exceeds the caps (fail closed — a hostile/runaway tree never hashes
+ * unbounded content); an excluded entry still counts toward BOTH caps (the caps guard the walk
+ * itself, not the digest). A non-regular entry encountered IN the tree (FIFO/device) is a
  * fail-closed throw — a bundle must be plain files and directories.
  *
  * #1459 finding 2 (MED/HIGH, ROUND 6): the enumeration ITSELF is bounded. Instead of
@@ -291,6 +298,48 @@ function normalizeSepBytes(rel: Buffer): Buffer {
  * @param relDir  the relpath of `absDir` from the bundle root, as RAW BYTES (Buffer; empty at the root).
  * @param count   the CUMULATIVE entry counter shared across the whole recursive walk (fail-closed at the cap).
  */
+// #3631: basenames excluded FROM THE DIGEST (they are not excluded from the walk's resource caps —
+// see the count.n / total.bytes accounting below, which still sees every excluded entry). These are
+// derived Python bytecode/cache artifacts that CPython regenerates on demand and validates against
+// their sibling SOURCE file before trusting them — the source is still hashed, so a real code change
+// still invalidates consent. Exclusion is by BASENAME regardless of entry kind (file or dir).
+//
+// Exact byte comparison, case-sensitive, deliberately: CPython always writes a lowercase
+// `__pycache__` directory, so byte-exact matching keeps the digest identical across case-insensitive
+// filesystems (e.g. default macOS/Windows) instead of varying with how a name happens to be spelled
+// on disk.
+//
+// DELIBERATELY NOT on this list: node_modules, dist, build, or similar. Those hold code that is
+// actually required/executed at runtime, so excluding them from the digest would stop consent from
+// binding executable content — turning a usability bug (noisy re-consent prompts) into a
+// supply-chain hole (a swapped dependency that never re-triggers consent).
+const PYCACHE_EXACT_BASENAMES: readonly Buffer[] = [
+  Buffer.from('__pycache__'),
+  Buffer.from('.pytest_cache'),
+  Buffer.from('.DS_Store'),
+];
+const PYCACHE_SUFFIXES: readonly Buffer[] = [
+  Buffer.from('.pyc'),
+  Buffer.from('.pyo'),
+];
+
+/**
+ * True when `name` (a raw-byte dirent basename) is Python bytecode/cache noise that must be excluded
+ * from the bundle content hash — see PYCACHE_EXACT_BASENAMES / PYCACHE_SUFFIXES above for the exact
+ * rules and rationale. Byte-level comparison only — `name` is never utf8-decoded.
+ */
+function isBundleDigestExcludedBasename(name: Buffer): boolean {
+  for (const exact of PYCACHE_EXACT_BASENAMES) {
+    if (Buffer.compare(name, exact) === 0) return true;
+  }
+  for (const suffix of PYCACHE_SUFFIXES) {
+    if (name.length >= suffix.length && Buffer.compare(name.subarray(name.length - suffix.length), suffix) === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function collectBundleEntries(absDir: Buffer, relDir: Buffer, acc: BundleEntry[], total: { bytes: number }, count: { n: number }): void {
   let dir: fs.Dir;
   try {
@@ -344,6 +393,12 @@ function collectBundleEntries(absDir: Buffer, relDir: Buffer, acc: BundleEntry[]
       throw new Error(`bundleContentHash: refusing to hash a symlink in the bundle: "${abs.toString('utf8')}"`);
     }
     if (st.isDirectory()) {
+      // #3631: exclusion is checked HERE — after the symlink fail-closed throw above — so a symlink
+      // named e.g. "__pycache__" or "x.pyc" is never silently skipped; only a REAL (lstat-confirmed)
+      // dir/file can be excluded. An excluded directory's own dirent was already counted toward
+      // count.n above (the cap guards the walk itself); it is simply not emitted into the digest AND
+      // not recursed into, so a huge __pycache__ subtree is never walked at all.
+      if (isBundleDigestExcludedBasename(name)) continue;
       // Emit a typed DIR marker for THIS directory (so an empty dir is bound), then recurse into it.
       acc.push({ abs, rel, kind: 'dir' });
       collectBundleEntries(abs, rel, acc, total, count);
@@ -352,11 +407,15 @@ function collectBundleEntries(absDir: Buffer, relDir: Buffer, acc: BundleEntry[]
     if (!st.isFile()) {
       throw new Error(`bundleContentHash: refusing to hash a non-regular file in the bundle: "${abs.toString('utf8')}"`);
     }
-    acc.push({ abs, rel, kind: 'file' });
+    // #3631: an excluded FILE (e.g. *.pyc, .DS_Store) still counts its bytes toward the total-size
+    // cap below — exclusion answers "does this bind the digest?", not "is this safe to read
+    // unbounded?" — so it must never become a way to smuggle unbounded bytes past BUNDLE_MAX_TOTAL_BYTES.
     total.bytes += st.size;
     if (total.bytes > BUNDLE_MAX_TOTAL_BYTES) {
       throw new Error(`bundleContentHash: bundle size exceeds ${BUNDLE_MAX_TOTAL_BYTES} bytes (refusing)`);
     }
+    if (isBundleDigestExcludedBasename(name)) continue;
+    acc.push({ abs, rel, kind: 'file' });
   }
 }
 
@@ -383,8 +442,14 @@ const TAG_DIR = Buffer.from([0x02]);
 
 /**
  * The recomputed full-bundle content hash (#1459 CB-1/CB-2/TRUST2-5) — the SECURITY BINDING. A
- * `sha512-<base64>` over a DETERMINISTIC, INJECTIVE, LOSSLESS serialization of EVERY regular file
- * AND directory under `capDir` (recursively).
+ * `sha512-<base64>` over a DETERMINISTIC, INJECTIVE, LOSSLESS serialization of every regular file
+ * AND directory under `capDir` (recursively), EXCEPT Python bytecode/cache noise (#3631):
+ * `__pycache__`, `.pytest_cache`, `.DS_Store` by exact basename, and `*.pyc` / `*.pyo` by basename
+ * suffix, are excluded from the digest regardless of entry kind. This is safe because that excluded
+ * set is derived bytecode/cache that CPython regenerates and validates against its sibling source —
+ * and that source IS still hashed, so a real code change still invalidates consent. `node_modules`,
+ * `dist`, `build`, and similar are deliberately NOT excluded: their contents are executed/required at
+ * runtime, so dropping them from the digest would stop consent from binding executable content.
  *
  * Canonicalization (#1459 findings 1 + 4 — the prior `relpath + NUL + content + NUL` over utf8-decoded
  * STRINGS was non-injective, lossy in CONTENT, AND lossy in the PATH component):
