@@ -222,23 +222,87 @@ function pickActiveWorkstreamAdapter(cwd: string, opts: ActiveWorkstreamOpts = {
   return createSharedPointerAdapter(cwd);
 }
 
+/**
+ * Read-resolution chain for getActiveWorkstream/peekActiveWorkstream (#3579).
+ *
+ * pickActiveWorkstreamAdapter (above) picks exactly one adapter and remains
+ * the seam for WRITE paths (set/clear), where "which pointer do I mutate" has
+ * only one right answer: the session pointer when a session key exists,
+ * otherwise the shared marker. Reads are different — a session that has
+ * never called `workstream use` has no opinion of its own, so it should
+ * inherit the repo-wide `.planning/active-workstream` marker rather than
+ * resolve to nothing. This returns an ORDERED chain: [owned, ...fallbacks].
+ * `chain[0]` ("owned") is exactly what pickActiveWorkstreamAdapter would have
+ * returned — resolveFromChain() self-heals only chain[0], never a fallback,
+ * so one session's read can never delete another scope's marker. Fallbacks
+ * are consulted ONLY when chain[0].read() comes back absent/empty; a session
+ * with its own (even stale/invalid) pointer never falls through — that is
+ * the isolation guarantee and it must not be weakened by inheritance.
+ */
+function pickActiveWorkstreamAdapterChain(cwd: string, opts: ActiveWorkstreamOpts = {}): WorkstreamPointerAdapter[] {
+  if (opts.activeWorkstreamAdapter) {
+    return [opts.activeWorkstreamAdapter];
+  }
+
+  const sessionKey = getWorkstreamSessionKey();
+  if (!sessionKey) {
+    const shared = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.shared)
+      || createSharedPointerAdapter(cwd);
+    return [shared];
+  }
+
+  const session = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.session)
+    || createSessionScopedPointerAdapter(cwd, sessionKey);
+  const shared = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.shared)
+    || createSharedPointerAdapter(cwd);
+
+  return session ? [session, shared] : [shared];
+}
+
+/**
+ * Resolves a stored workstream name by walking an adapter chain.
+ *
+ * chain[0] is "owned" by this resolution: an absent/empty read falls through
+ * to the next adapter, but a present-and-bad read (invalid name, or a name
+ * whose workstream dir no longer exists) is resolved right there — self-
+ * healed via adapter.clear() when `selfHeal` is true, and never consulted
+ * further. Anything after chain[0] is a read-only fallback (the inherited
+ * marker): a bad value there resolves to null WITHOUT ever calling clear(),
+ * so a pointer-less session's read can never delete the shared marker that
+ * other sessions/scopes still depend on.
+ */
+function resolveFromChain(cwd: string, chain: WorkstreamPointerAdapter[], selfHeal: boolean): string | null {
+  if (chain.length === 0) return null;
+  const [owned, ...fallbacks] = chain;
+
+  const ownedName = owned.read();
+  if (ownedName) {
+    if (!validateWorkstreamName(ownedName)) {
+      if (selfHeal) owned.clear();
+      return null;
+    }
+    const ownedWsDir = path.join(planningRoot(cwd), 'workstreams', ownedName);
+    if (!fs.existsSync(ownedWsDir)) {
+      if (selfHeal) owned.clear();
+      return null;
+    }
+    return ownedName;
+  }
+
+  for (const adapter of fallbacks) {
+    const name = adapter.read();
+    if (!name || !validateWorkstreamName(name)) continue;
+    const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
+    if (!fs.existsSync(wsDir)) continue;
+    return name;
+  }
+
+  return null;
+}
+
 function getActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): string | null {
-  const adapter = pickActiveWorkstreamAdapter(cwd, opts);
-  if (!adapter) return null;
-
-  const name = adapter.read();
-  if (!name || !validateWorkstreamName(name)) {
-    adapter.clear();
-    return null;
-  }
-
-  const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
-  if (!fs.existsSync(wsDir)) {
-    adapter.clear();
-    return null;
-  }
-
-  return name;
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  return resolveFromChain(cwd, chain, true);
 }
 
 /**
@@ -254,16 +318,8 @@ function getActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): stri
  * pointer file is left exactly as it was for whatever created it to fix.
  */
 function peekActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): string | null {
-  const adapter = pickActiveWorkstreamAdapter(cwd, opts);
-  if (!adapter) return null;
-
-  const name = adapter.read();
-  if (!name || !validateWorkstreamName(name)) return null;
-
-  const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
-  if (!fs.existsSync(wsDir)) return null;
-
-  return name;
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  return resolveFromChain(cwd, chain, false);
 }
 
 function setActiveWorkstream(cwd: string, name: string | null | undefined, opts: ActiveWorkstreamOpts = {}): void {
@@ -381,6 +437,7 @@ export = {
   createSessionScopedPointerAdapter,
   createMemoryPointerAdapter,
   pickActiveWorkstreamAdapter,
+  pickActiveWorkstreamAdapterChain,
   getActiveWorkstream,
   peekActiveWorkstream,
   setActiveWorkstream,
