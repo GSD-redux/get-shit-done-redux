@@ -192,7 +192,7 @@ describe('config-field-docs', () => {
         `${name} must state that configured names extend the resolved base`);
       assert.match(reference, /execute-phase and ship/i,
         `${name} must name both advisory warning boundaries`);
-      assert.match(reference, /does not change `git\.branching_strategy: "none"`/i,
+      assert.match(reference, /does not\s+change\s+`git\.branching_strategy: "none"`/i,
         `${name} must preserve branching_strategy none behavior`);
     }
   });

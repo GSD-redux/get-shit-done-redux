@@ -1081,10 +1081,31 @@ All four fields are **optional and additive** — STATE.md files without them ke
 |---------|------|---------|-------------|
 | `git.branching_strategy` | enum | `none` | `none`, `phase`, or `milestone` |
 | `git.base_branch` | string | `main` | The integration branch that phase/milestone branches are created from and merged back into. Override when your repo uses `master` or a release branch |
+| `git.protected_branches` | array of non-empty strings | (none) | Optional additional shared branches that should trigger protected-branch warnings alongside the resolved base branch |
 | `git.create_tag` | boolean | `true` | Create a git tag (`v[X.Y]`) on milestone completion. Set to `false` for projects with their own release flow |
 | `git.phase_branch_template` | string | `gsd/phase-{phase}-{slug}` | Branch name template for phase strategy |
 | `git.milestone_branch_template` | string | `gsd/{milestone}-{slug}` | Branch name template for milestone strategy |
 | `git.quick_branch_template` | string or null | `null` | Optional branch name template for `/gsd-quick` tasks |
+
+### Protected Branch Warnings
+
+`git.protected_branches` is optional and has no persisted default. When the field is absent,
+GSD protects only the resolved base branch, preserving existing project behavior. Every configured
+item must be a non-empty string. The configured list extends the resolved base branch; it never
+replaces that branch or changes base-branch detection.
+
+A match produces an advisory warning at execute-phase and ship and does not change
+`git.branching_strategy: "none"`: GSD still continues on the current branch and ship still offers
+to create a feature branch.
+
+```json
+{
+  "git": {
+    "branching_strategy": "none",
+    "protected_branches": ["develop", "staging"]
+  }
+}
+```
 
 ### Strategy Comparison
 
