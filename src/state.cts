@@ -2318,6 +2318,10 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
     typeof status === 'string' &&
     /^\s*phase\s+\S+\s+complete\s*$/i.test(status) &&
     diskScope === SCOPE.COMPLETE &&
+    // #1761: an unbounded milestone yields a conflated/understated total — the
+    // same authority that nulls progressPercent above. Without this, a bad
+    // denominator could demote a genuinely-complete milestone.
+    !milestoneUnbounded &&
     typeof completedPhases === 'number' && Number.isFinite(completedPhases) &&
     typeof totalPhases === 'number' && Number.isFinite(totalPhases) &&
     totalPhases > 0 &&

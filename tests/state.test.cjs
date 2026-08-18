@@ -12,7 +12,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runGsdTools, createTempDir, createTempProject, cleanup } = require('./helpers.cjs');
-const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
+const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
+// #3578 AC4 (MCP dispatch parity): drives the same `state complete-phase`
+// command through the gsd_invoke_command MCP tool route instead of the CLI,
+// mirroring the gsd-mcp-server.test.cjs `tools/call gsd_invoke_command`
+// pattern (family/subcommand/args -> dispatchGsdCommand -> real subprocess).
+const { handleMessage } = require('../gsd-core/bin/lib/mcp-server.cjs');
 // ADR-3408 §8.3 Matrix A2/A3 (#3469): required fast-check property test — the
 // composed cmdPhaseComplete/readModifyWriteStateMd write-seam identity.
 const fc = require('fast-check');
@@ -8867,9 +8872,9 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     });
   }
 
-  function writeStateAtPhase(phase) {
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'STATE.md'),
+  function writeStateAtPhase(phase, extraBodyLines = []) {
+    writeState(
+      tmpDir,
       [
         '---',
         "gsd_state_version: '1.0'",
@@ -8884,6 +8889,7 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
         `Current Phase: ${phase}`,
         `Status: Executing Phase ${phase}`,
         'Last Activity: 2026-01-01',
+        ...extraBodyLines,
         '',
       ].join('\n'),
     );
@@ -8983,8 +8989,8 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
     writePassedVerification(tmpDir, '01-only', '01');
 
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'STATE.md'),
+    writeState(
+      tmpDir,
       [
         '---',
         "gsd_state_version: '1.0'",
@@ -9011,6 +9017,163 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
       frontmatterStatus(after),
       'completed',
       `a genuinely 1-of-1-complete milestone must still report 'completed'; got frontmatter:\n${after}`,
+    );
+  });
+
+  /**
+   * Body Status field the guard's regex actually inspects (never the
+   * frontmatter `status:` scalar the guard *writes*). Reads via the same
+   * `stateFieldValue` fallback-chain owner (state-document.cjs) the guard's
+   * caller (buildStateFrontmatter) is built on, scoped to the body only
+   * (fmKey null) by stripping frontmatter first.
+   */
+  function bodyStatus(after) {
+    const body = frontmatterLib.stripFrontmatter(after);
+    return stateDocument.stateFieldValue({}, body, null, 'Status').value;
+  }
+
+  /**
+   * Seed `.planning/phases/<NN-slug>` for phases 1..4 exactly like
+   * `seed4PhaseMilestone`, but WITHOUT writing ROADMAP.md at all. Used to
+   * drive `buildStateFrontmatter`'s roadmap-absent withhold path (#3573),
+   * which is the only deterministic way to detach `totalPhases` from the
+   * live disk-scanned total from a fixture.
+   */
+  function seed4PhaseDirsNoRoadmap(completeThrough) {
+    PHASE_DIRS_4.forEach((dirName, idx) => {
+      const n = idx + 1;
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+      if (n <= completeThrough) {
+        fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary\n');
+        writePassedVerification(tmpDir, dirName, padded);
+      }
+    });
+  }
+
+  // Parity assertion (repo rule: "Generative Fix Divergence" — a shared
+  // constant/pattern between parallel surfaces needs a test that fails if
+  // they diverge). The guard's anchored regex
+  // /^\s*phase\s+\S+\s+complete\s*$/i lives in src/state.cts and hand-copies
+  // the SHAPE of the prose cmdStateCompletePhase writes to the body Status
+  // field (`Phase ${N} complete`, gsd-core/bin/lib/state.cjs) rather than
+  // sharing a constant with it. If that prose is ever reworded, the guard
+  // silently stops matching and the #3578 regression returns undetected by
+  // every other test in this block (they only assert the guard's downstream
+  // EFFECT on frontmatter status, never that its input pattern still fires).
+  test("#3578 parity: complete-phase's emitted body Status prose still matches the guard's phase-complete pattern", () => {
+    seed4PhaseMilestone(2);
+    writeStateAtPhase(2);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '2'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const status = bodyStatus(after);
+    assert.match(
+      status,
+      /^\s*phase\s+\S+\s+complete\s*$/i,
+      `emitted body Status prose ("${status}") no longer matches the #3578 guard's pattern in src/state.cts — the guard would silently stop firing`,
+    );
+  });
+
+  test('completed phase dirs on disk exceed a stale declared total (limit+1 on the completedPhases < totalPhases comparison): guard must not fire', () => {
+    // No ROADMAP.md at all + a stale "Total Phases: 2" body annotation drives
+    // the #3573 roadmap-absent withhold path: totalPhases stays pinned at the
+    // stale body-declared value (2) instead of being replaced by the live
+    // disk-scanned total, while completedPhases is UNCONDITIONALLY set from
+    // the disk scan (buildStateFrontmatter) regardless of that withhold — so
+    // completedPhases (4) ends up greater than totalPhases (2), making the
+    // guard's `completedPhases < totalPhases` conjunct false (verified by
+    // direct probe: status lands 'completed' with progress
+    // {total_phases:2, completed_phases:4}). Note this fixture necessarily
+    // also drives listMilestonePhaseDirs' own ROADMAP-absent scope to
+    // non-COMPLETE (same missing file, independent read), so it does not
+    // purely isolate the counter conjunct from `diskScope === SCOPE.COMPLETE`
+    // — src/state.cts's withhold-with-a-stale-numeric-total path is only
+    // reachable via ROADMAP absence, which always drags that second conjunct
+    // along with it; no fixture can decouple the two under the current
+    // implementation. Inconsistent counters deliberately fall through to
+    // normalizeStateStatus's answer rather than guessing which of the two
+    // disagreeing numbers is correct.
+    seed4PhaseDirsNoRoadmap(4);
+    writeStateAtPhase(4, ['Total Phases: 2']);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '4'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(
+      frontmatterStatus(after),
+      'completed',
+      `guard must not demote when completedPhases > totalPhases; got frontmatter:\n${after}`,
+    );
+
+    const jsonResult = runGsdTools('state json', tmpDir);
+    assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
+    const output = JSON.parse(jsonResult.output);
+    assert.strictEqual(Number(output.progress.completed_phases), 4, 'completed_phases must reflect disk truth (4)');
+    assert.strictEqual(Number(output.progress.total_phases), 2, 'total_phases must stay pinned at the stale declared value (2)');
+  });
+
+  test('untrustworthy counters (no ROADMAP.md, no derivable total) must not demote status', () => {
+    // ROADMAP.md absent entirely + an asserted milestone + no body "Total
+    // Phases" annotation: buildStateFrontmatter's #3573 withhold path leaves
+    // totalPhases at null (never a number) because there is nothing on disk
+    // or in the body to derive a denominator from. The guard's
+    // `typeof totalPhases === 'number' && Number.isFinite(totalPhases)`
+    // conjunct fails, so it cannot fire regardless of the true completion
+    // state — the counters are not trustworthy enough to demote on.
+    seed4PhaseDirsNoRoadmap(2);
+    writeStateAtPhase(2);
+
+    const result = runGsdTools(['state', 'complete-phase', '--phase', '2'], tmpDir);
+    assert.ok(result.success, `complete-phase failed: ${result.error || result.output}`);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(
+      frontmatterStatus(after),
+      'completed',
+      `guard must not fire without a trustworthy totalPhases; got frontmatter:\n${after}`,
+    );
+
+    const jsonResult = runGsdTools('state json', tmpDir);
+    assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
+    const output = JSON.parse(jsonResult.output);
+    assert.strictEqual(
+      output.progress.total_phases,
+      undefined,
+      'total_phases must be withheld (no ROADMAP to derive it from), proving the guard truly had no denominator to compare against',
+    );
+    assert.strictEqual(Number(output.progress.completed_phases), 2, 'completed_phases is still disk truth even when total_phases is withheld');
+  });
+
+  test('#3578 AC4: gsd_invoke_command (MCP dispatch) yields the same non-completed status as the CLI route (2 of 4 case)', () => {
+    seed4PhaseMilestone(2);
+    writeStateAtPhase(2);
+
+    const res = handleMessage(
+      {
+        jsonrpc: '2.0',
+        id: 100,
+        method: 'tools/call',
+        params: { name: 'gsd_invoke_command', arguments: { family: 'state', subcommand: 'complete-phase', args: ['--phase', '2'] } },
+      },
+      { cwd: tmpDir },
+    );
+    assert.notStrictEqual(res.result.isError, true, `MCP dispatch must succeed: ${JSON.stringify(res.result)}`);
+    // Same command, reached through a different dispatch surface (real
+    // subprocess spawn via dispatchGsdCommand -> gsd-tools.cjs), must produce
+    // the same on-disk effect as the CLI route above.
+    JSON.parse(res.result.content[0].text);
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.notEqual(
+      frontmatterStatus(after),
+      'completed',
+      `MCP-dispatched complete-phase must not set status completed while phases remain open; got frontmatter:\n${after}`,
     );
   });
 });
