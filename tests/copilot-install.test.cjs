@@ -28,7 +28,6 @@ const { parseFrontmatter, createTempDir, cleanup } = require('./helpers.cjs');
 const { listAgentFiles } = require('./helpers/agent-roster.cjs');
 
 const {
-  getDirName,
   getConfigDirFromHome,
   claudeToCopilotTools,
   convertCopilotToolName,
@@ -40,8 +39,6 @@ const {
   mergeCopilotInstructions,
   stripGsdFromCopilotInstructions,
   GSD_COPILOT_HOOK_FILE,
-  buildCopilotHookConfig,
-  writeCopilotHookConfig,
   writeManifest,
   reportLocalPatches,
   runtimeMap,
@@ -51,6 +48,11 @@ const {
 } = require('../bin/install.js');
 
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const { getDirName } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+const {
+  buildCopilotHookConfig,
+  writeCopilotHookConfig,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 

@@ -40,6 +40,7 @@ const {
 const {
   installRuntimeArtifacts,
   installOpencodeFamilySkills,
+  uninstallRuntimeArtifacts,
   _resolveUserArtifactStagingRoot,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
 
@@ -110,7 +111,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     fs.writeFileSync(path.join(sourceDir, 'proof.md'), '# proof\n');
     fs.writeFileSync(path.join(cleanupDir, 'temp.md'), '# cleanup\n');
     let planArgs;
-    const { installer, restore } = loadFreshInstallerWithInstallPlanStub((args) => {
+    const { restore } = loadFreshInstallerWithInstallPlanStub((args) => {
       planArgs = args;
       return {
         ok: true,
@@ -125,7 +126,12 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     t.after(restore);
 
     // Augment has a flat commands kind and prefixes proof.md as gsd-proof.md.
-    installer.installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_CORE);
+    // `installer` above only reloads bin/install.js (needed for OTHER stubs in
+    // this file); installRuntimeArtifacts itself always lived in install-engine.cjs
+    // (bin/install.js's #2876-retired re-export was an alias to the same
+    // singleton), so calling the direct import exercises the identical,
+    // already-monkeypatched module instance.
+    installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_CORE);
 
     assert.strictEqual(planArgs.layout.runtime, 'augment');
     assert.strictEqual(planArgs.layout.configDir, configDir);
@@ -145,7 +151,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     });
 
     fs.writeFileSync(path.join(cleanupDir, 'temp.md'), '# cleanup\n');
-    const { installer, restore } = loadFreshInstallerWithInstallPlanStub(() => ({
+    const { restore } = loadFreshInstallerWithInstallPlanStub(() => ({
       ok: false,
       kind: 'rewrite_failed',
       failedKind: 'commands',
@@ -155,7 +161,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     t.after(restore);
 
     assert.throws(
-      () => installer.installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
+      () => installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
       /planned failure/,
     );
     assert.ok(!fs.existsSync(cleanupDir), 'failure cleanup dir must be removed');
@@ -745,7 +751,7 @@ describe('uninstallRuntimeArtifacts — consumes Runtime Artifact Uninstall Plan
     fs.writeFileSync(path.join(commandsDir, 'user-custom.md'), '# keep\n');
 
     let planLayout;
-    const { installer, restore } = loadFreshInstallerWithPlanStubs({
+    const { restore } = loadFreshInstallerWithPlanStubs({
       uninstallStub(layout) {
         planLayout = layout;
         return {
@@ -757,7 +763,10 @@ describe('uninstallRuntimeArtifacts — consumes Runtime Artifact Uninstall Plan
     });
     t.after(restore);
 
-    installer.uninstallRuntimeArtifacts('augment', configDir, 'global');
+    // uninstallRuntimeArtifacts always lived in install-engine.cjs (bin/install.js's
+    // #2876-retired re-export was an alias to the same singleton) — the direct
+    // top-level import exercises the identical, already-monkeypatched instance.
+    uninstallRuntimeArtifacts('augment', configDir, 'global');
 
     assert.strictEqual(planLayout.runtime, 'augment');
     assert.strictEqual(planLayout.configDir, configDir);
@@ -774,7 +783,7 @@ describe('uninstallRuntimeArtifacts — removes gsd-owned entries, preserves for
       t.after(() => cleanup(configDir));
       sandboxHome(t, configDir);
 
-      const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+      const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
       assert.strictEqual(typeof uninstallRuntimeArtifacts, 'function');
 
       const layout = resolveRuntimeArtifactLayout(runtime, configDir, 'global');
@@ -928,7 +937,7 @@ describe('installRuntimeArtifacts — legacy migrations run before layout copy',
 
 describe('uninstallRuntimeArtifacts — legacy cleanup runs before layout removal', () => {
   test('hermes: both flat and nested layouts removed (#947: bare-stem dirs cleaned on uninstall)', (t) => {
-    const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+    const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
     const configDir = createTempDir('gsd-legacy-uninstall-hermes-');
     t.after(() => cleanup(configDir));
 
@@ -957,7 +966,7 @@ describe('uninstallRuntimeArtifacts — legacy cleanup runs before layout remova
   });
 
   test('claude: legacy commands/gsd/ cleaned AND new skills/ entries removed', (t) => {
-    const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+    const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
     const configDir = createTempDir('gsd-legacy-uninstall-claude-');
     t.after(() => cleanup(configDir));
 
@@ -1283,10 +1292,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {
-  convertClaudeToWindsurfMarkdown,
   convertClaudeToTraeMarkdown,
-  _applyRuntimeRewrites,
 } = require('../bin/install.js');
+
+const {
+  convertClaudeToWindsurfMarkdown,
+  _applyRuntimeRewrites,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 // ─── Windsurf converter bare-form tests ─────────────────────────────────────
 
@@ -1634,10 +1646,10 @@ const {
   convertClaudeCommandToClineSkill,
   convertClaudeToCliineMarkdown,
   install,
-  _applyRuntimeRewrites,
 } = require('../bin/install.js');
 
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const { _applyRuntimeRewrites } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 const {
   resolveRuntimeArtifactLayout,
@@ -2694,9 +2706,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  readGsdRuntimeProfileResolver,
   install,
 } = require('../bin/install.js');
+const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const makeTmp = (prefix) => createTempDir(`gsd-2794-${prefix}-`);
@@ -4232,8 +4244,10 @@ describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
 // convertClaudeToAugmentMarkdown duplicate dedup is deferred to Phase 2's cleanup
 // (entangled converter cluster; not required to unblock Phase 2).
 // These tests exercise the REAL relocated functions at their new home (the
-// generated .cjs) and assert install.js re-exports the SAME references
-// (Hyrum: existing consumers import these names from bin/install.js).
+// generated .cjs). #2876 (epic #2866 Phase 7) retired install.js's re-export
+// of both names — a repo-wide audit found zero production consumers of the
+// pass-through, so the "existing consumers" beneficiary ADR-1508 cited was
+// the test suite alone. The re-export absence is asserted below instead.
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
@@ -4276,8 +4290,8 @@ describe('getDirName (relocated to runtime-name-policy)', () => {
     assert.strictEqual(runtimeNamePolicy.getDirName(''), '.claude');
   });
 
-  test('bin/install.js re-exports the SAME getDirName reference (no drift)', () => {
-    assert.strictEqual(installer.getDirName, runtimeNamePolicy.getDirName);
+  test('bin/install.js no longer re-exports getDirName (#2876 retired the pass-through)', () => {
+    assert.strictEqual(installer.getDirName, undefined);
   });
 });
 
@@ -4323,10 +4337,8 @@ describe('processAttribution (relocated to runtime-artifact-conversion)', () => 
     );
   });
 
-  test('bin/install.js re-exports the SAME processAttribution reference (no drift)', () => {
-    // processAttribution remains an explicit installer compatibility relay, so
-    // the export must keep pointing at the conversion module's implementation.
-    assert.strictEqual(installer.processAttribution, conversion.processAttribution);
+  test('bin/install.js no longer re-exports processAttribution (#2876 retired the pass-through)', () => {
+    assert.strictEqual(installer.processAttribution, undefined);
   });
 });
   });
@@ -4681,12 +4693,22 @@ describe('layout module no longer exports getInstallExports', () => {
 });
 
 // ---------------------------------------------------------------------------
-// DEFECT.GENERATIVE-FIX: single-owner reference-identity guard (#1511)
-// Proves install.js binds to the conversion module's implementation, not a
-// duplicate local copy. If these fail, a duplicate body was re-introduced.
+// DEFECT.GENERATIVE-FIX: single-owner reference-identity guard (#1511),
+// retired by #2876 (epic #2866 Phase 7).
+//
+// #1511 proved install.js bound to the conversion module's implementation
+// rather than a duplicate local copy — the single-owner property held via a
+// re-export. #2876 found zero production consumers of any of these
+// re-exports and retired them from bin/install.js's module.exports
+// entirely, so there is no longer a second reference to compare against —
+// runtime-artifact-conversion.cjs (conversionCjs below) is now the ONLY
+// place these names are reachable from. The single-owner property this
+// block protects now holds trivially (there is exactly one exported copy,
+// full stop), so each assertion below confirms the re-export's absence
+// instead of its reference-identity.
 // ---------------------------------------------------------------------------
 
-describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2)', () => {
+describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2, retired by #2876)', () => {
   let install;
   let conversionCjs;
   before(() => {
@@ -4695,109 +4717,69 @@ describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2)', () 
     conversionCjs = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
   });
 
-  test('install.computePathPrefix === conversion._computePathPrefix (single implementation)', () => {
-    assert.strictEqual(
-      install.computePathPrefix,
-      conversionCjs._computePathPrefix,
-      'install.js must bind computePathPrefix from conversion (not a duplicate body)',
-    );
+  test('install.computePathPrefix is retired (#2876); conversion._computePathPrefix remains the single implementation', () => {
+    assert.strictEqual(install.computePathPrefix, undefined, 'bin/install.js must no longer export computePathPrefix');
+    assert.strictEqual(typeof conversionCjs._computePathPrefix, 'function');
   });
 
-  test('install.applyRuntimeContentRewritesInPlace === conversion.applyRuntimeContentRewritesInPlace (single walk loop)', () => {
-    assert.strictEqual(
-      install.applyRuntimeContentRewritesInPlace,
-      conversionCjs.applyRuntimeContentRewritesInPlace,
-      'install.js must bind applyRuntimeContentRewritesInPlace from conversion (not a duplicate walk loop)',
-    );
+  test('install.applyRuntimeContentRewritesInPlace is retired (#2876); conversion.applyRuntimeContentRewritesInPlace remains the single walk loop', () => {
+    assert.strictEqual(install.applyRuntimeContentRewritesInPlace, undefined, 'bin/install.js must no longer export applyRuntimeContentRewritesInPlace');
+    assert.strictEqual(typeof conversionCjs.applyRuntimeContentRewritesInPlace, 'function');
   });
 
-  test('install.applyRuntimeContentRewritesForCommandsInPlace === conversion.applyRuntimeContentRewritesForCommandsInPlace (single copy+rewrite loop)', () => {
-    assert.strictEqual(
-      install.applyRuntimeContentRewritesForCommandsInPlace,
-      conversionCjs.applyRuntimeContentRewritesForCommandsInPlace,
-      'install.js must bind applyRuntimeContentRewritesForCommandsInPlace from conversion (not a duplicate copy+rewrite loop)',
-    );
+  test('install.applyRuntimeContentRewritesForCommandsInPlace is retired (#2876); conversion.applyRuntimeContentRewritesForCommandsInPlace remains the single copy+rewrite loop', () => {
+    assert.strictEqual(install.applyRuntimeContentRewritesForCommandsInPlace, undefined, 'bin/install.js must no longer export applyRuntimeContentRewritesForCommandsInPlace');
+    assert.strictEqual(typeof conversionCjs.applyRuntimeContentRewritesForCommandsInPlace, 'function');
   });
 
-  test('install._applyRuntimeRewrites === conversion._applyRuntimeRewrites (single switch engine)', () => {
-    assert.strictEqual(
-      install._applyRuntimeRewrites,
-      conversionCjs._applyRuntimeRewrites,
-      'install.js must bind _applyRuntimeRewrites from conversion (not a local shim)',
-    );
+  test('install._applyRuntimeRewrites is retired (#2876); conversion._applyRuntimeRewrites remains the single switch engine', () => {
+    assert.strictEqual(install._applyRuntimeRewrites, undefined, 'bin/install.js must no longer export _applyRuntimeRewrites');
+    assert.strictEqual(typeof conversionCjs._applyRuntimeRewrites, 'function');
   });
 
   // #1675 (ADR-1508): the augment converter family is single-sourced in the
-  // conversion module. install.js must re-bind (not re-define) these so there
-  // is exactly one body — the generative-drift hazard the dedup removes.
-  test('install.convertClaudeToAugmentMarkdown === conversion.convertClaudeToAugmentMarkdown (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeToAugmentMarkdown,
-      conversionCjs.convertClaudeToAugmentMarkdown,
-      'install.js must bind convertClaudeToAugmentMarkdown from conversion (not a duplicate body)',
-    );
+  // conversion module. #2876 retired install.js's re-binding entirely.
+  test('install.convertClaudeToAugmentMarkdown is retired (#2876); conversion.convertClaudeToAugmentMarkdown remains the single converter', () => {
+    assert.strictEqual(install.convertClaudeToAugmentMarkdown, undefined, 'bin/install.js must no longer export convertClaudeToAugmentMarkdown');
+    assert.strictEqual(typeof conversionCjs.convertClaudeToAugmentMarkdown, 'function');
   });
 
-  test('install.convertClaudeCommandToAugmentSkill === conversion.convertClaudeCommandToAugmentSkill (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeCommandToAugmentSkill,
-      conversionCjs.convertClaudeCommandToAugmentSkill,
-      'install.js must bind convertClaudeCommandToAugmentSkill from conversion (not a duplicate body)',
-    );
+  test('install.convertClaudeCommandToAugmentSkill is retired (#2876); conversion.convertClaudeCommandToAugmentSkill remains the single converter', () => {
+    assert.strictEqual(install.convertClaudeCommandToAugmentSkill, undefined, 'bin/install.js must no longer export convertClaudeCommandToAugmentSkill');
+    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToAugmentSkill, 'function');
   });
 
-  test('install.convertClaudeAgentToAugmentAgent === conversion.convertClaudeAgentToAugmentAgent (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeAgentToAugmentAgent,
-      conversionCjs.convertClaudeAgentToAugmentAgent,
-      'install.js must bind convertClaudeAgentToAugmentAgent from conversion (not a duplicate body)',
-    );
+  test('install.convertClaudeAgentToAugmentAgent is retired (#2876); conversion.convertClaudeAgentToAugmentAgent remains the single converter', () => {
+    assert.strictEqual(install.convertClaudeAgentToAugmentAgent, undefined, 'bin/install.js must no longer export convertClaudeAgentToAugmentAgent');
+    assert.strictEqual(typeof conversionCjs.convertClaudeAgentToAugmentAgent, 'function');
   });
 
   // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
   // conversion module, same pattern as the #1675 Augment dedup above.
-  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfWorkflow,
-      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
-      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
-    );
+  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow is retired (#2876)', () => {
+    assert.strictEqual(install.convertClaudeCommandToWindsurfWorkflow, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfWorkflow');
+    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfWorkflow, 'function');
   });
 
-  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter member', () => {
-    assert.strictEqual(
-      install.convertClaudeToWindsurfMarkdown,
-      conversionCjs.convertClaudeToWindsurfMarkdown,
-      'install.js must bind convertClaudeToWindsurfMarkdown from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfSkill,
-      conversionCjs.convertClaudeCommandToWindsurfSkill,
-      'install.js must bind convertClaudeCommandToWindsurfSkill from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfWorkflow,
-      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
-      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeAgentToWindsurfAgent,
-      conversionCjs.convertClaudeAgentToWindsurfAgent,
-      'install.js must bind convertClaudeAgentToWindsurfAgent from conversion (not a duplicate body)',
-    );
+  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter re-export is retired (#2876)', () => {
+    assert.strictEqual(install.convertClaudeToWindsurfMarkdown, undefined, 'bin/install.js must no longer export convertClaudeToWindsurfMarkdown');
+    assert.strictEqual(typeof conversionCjs.convertClaudeToWindsurfMarkdown, 'function');
+    assert.strictEqual(install.convertClaudeCommandToWindsurfSkill, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfSkill');
+    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfSkill, 'function');
+    assert.strictEqual(install.convertClaudeCommandToWindsurfWorkflow, undefined, 'bin/install.js must no longer export convertClaudeCommandToWindsurfWorkflow');
+    assert.strictEqual(typeof conversionCjs.convertClaudeCommandToWindsurfWorkflow, 'function');
+    assert.strictEqual(install.convertClaudeAgentToWindsurfAgent, undefined, 'bin/install.js must no longer export convertClaudeAgentToWindsurfAgent');
+    assert.strictEqual(typeof conversionCjs.convertClaudeAgentToWindsurfAgent, 'function');
   });
 
   // #2931 (ADR-1508): applyClaudeCodeBrandSwap + RUNTIME_COMPATIBILITY_BLOCK_RE
   // were duplicated verbatim in install.js (used by the local Cursor/Trae/
   // CodeBuddy/Cline converters) alongside the conversion module's copy —
   // exactly the unlinked-duplicate-implementation class this guard exists to
-  // catch. install.js now re-binds (does not re-define) it.
-  test('install.applyClaudeCodeBrandSwap === conversion.applyClaudeCodeBrandSwap (single implementation)', () => {
-    assert.strictEqual(
-      install.applyClaudeCodeBrandSwap,
-      conversionCjs.applyClaudeCodeBrandSwap,
-      'install.js must bind applyClaudeCodeBrandSwap from conversion (not a duplicate body)',
-    );
+  // catch. #2876 retired install.js's re-binding entirely.
+  test('install.applyClaudeCodeBrandSwap is retired (#2876); conversion.applyClaudeCodeBrandSwap remains the single implementation', () => {
+    assert.strictEqual(install.applyClaudeCodeBrandSwap, undefined, 'bin/install.js must no longer export applyClaudeCodeBrandSwap');
+    assert.strictEqual(typeof conversionCjs.applyClaudeCodeBrandSwap, 'function');
   });
 });
   });
@@ -4995,7 +4977,7 @@ describe('Bug #2973: installer migrates existing legacy dev-preferences.md to sk
     // documented signature. End-to-end install testing is covered by
     // tests/install-*.test.cjs which already exercise legacy preservation.
     assert.equal(typeof inst.migrateLegacyDevPreferencesToSkill, 'function',
-      'expected migrateLegacyDevPreferencesToSkill in install.js exports (#2973)');
+      'expected migrateLegacyDevPreferencesToSkill in install-engine.cjs exports (#2973)');
   });
 
   test('migration writes to skills/gsd-dev-preferences/SKILL.md when no skill exists yet', () => {
@@ -6804,7 +6786,8 @@ describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)'
 //   - Kilo mirrors OpenCode (static-frontmatter twin, #2093).
 {
   const { describe: __d3543, test: __t3543, beforeEach: __be3543, afterEach: __ae3543 } = require('node:test');
-  const { install: __install3543, readGsdRuntimeProfileResolver: __resolver3543 } = require('../bin/install.js');
+  const { install: __install3543 } = require('../bin/install.js');
+  const { readGsdRuntimeProfileResolver: __resolver3543 } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
   const { captureConsole: __capture3543 } = require('./helpers.cjs');
 
   // Installer-written shape for a non-Claude runtime (writeNonClaudeDefaults).

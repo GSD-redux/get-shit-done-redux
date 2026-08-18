@@ -235,8 +235,8 @@ let computePathPrefix;
 before(() => {
   process.env.GSD_TEST_MODE = '1';
   // Re-require fresh in case other tests already loaded it.
-  delete require.cache[require.resolve('../bin/install.js')];
-  ({ computePathPrefix } = require('../bin/install.js'));
+  delete require.cache[require.resolve('../gsd-core/bin/lib/runtime-artifact-conversion.cjs')];
+  ({ _computePathPrefix: computePathPrefix } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs'));
 });
 
 after(() => {
@@ -244,7 +244,7 @@ after(() => {
 });
 
 describe('bug-2376: OpenCode on Windows must use absolute path, not $HOME', () => {
-  test('computePathPrefix is exported by install.js', () => {
+  test('computePathPrefix (_computePathPrefix) is exported by runtime-artifact-conversion.cjs', () => {
     assert.equal(typeof computePathPrefix, 'function');
   });
 
@@ -316,8 +316,8 @@ let computePathPrefix;
 
 before(() => {
   process.env.GSD_TEST_MODE = '1';
-  delete require.cache[require.resolve('../bin/install.js')];
-  ({ computePathPrefix } = require('../bin/install.js'));
+  delete require.cache[require.resolve('../gsd-core/bin/lib/runtime-artifact-conversion.cjs')];
+  ({ _computePathPrefix: computePathPrefix } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs'));
 });
 
 after(() => {
@@ -325,7 +325,7 @@ after(() => {
 });
 
 describe('bug-2831: OpenCode pathPrefix uses absolute path on all platforms', () => {
-  test('computePathPrefix is exported by install.js', () => {
+  test('computePathPrefix (_computePathPrefix) is exported by runtime-artifact-conversion.cjs', () => {
     assert.equal(typeof computePathPrefix, 'function');
   });
 

@@ -25,9 +25,12 @@ const {
 } = require('../gsd-core/bin/lib/host-integration-adapters/imperative-hook-bus.cjs');
 
 const {
-  reconcileCursorHooksJson,
   GSD_CURSOR_HOOK_MARKER,
 } = require('../bin/install.js');
+
+const {
+  reconcileCursorHooksJson,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 

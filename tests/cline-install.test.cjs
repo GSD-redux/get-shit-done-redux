@@ -34,20 +34,23 @@ const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 
 const {
-  getDirName,
   getConfigDirFromHome,
   convertClaudeToCliineMarkdown,
   install,
   finishInstall,
   uninstall,
-  buildClineRulesBody,
-  buildClinePreToolUseHook,
-  buildClineAgentsMdBody,
-  mergeGsdAgentsMd,
   stripGsdFromAgentsMd,
   GSD_AGENTS_MD_MARKER,
   GSD_AGENTS_MD_CLOSE_MARKER,
 } = require('../bin/install.js');
+
+const { getDirName } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+const {
+  buildClineRulesBody,
+  buildClinePreToolUseHook,
+  buildClineAgentsMdBody,
+  mergeGsdAgentsMd,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 

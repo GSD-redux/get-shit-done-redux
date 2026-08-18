@@ -22,12 +22,14 @@ process.env['GSD_TEST_MODE'] = '1';
 const {
   copyWithPathReplacement,
   installCodexConfig,
-  _copyStaged,
   _resolveUserArtifactStagingRoot: _installJsResolveUserArtifactStagingRoot,
   _tryResolveUserArtifactStagingRoot: _installJsTryResolveUserArtifactStagingRoot,
   install,
   uninstall,
 } = require('../bin/install.js');
+const {
+  _copyStaged,
+} = require('../gsd-core/bin/lib/install-engine.cjs');
 
 // #2875 (epic #2866 Phase 6): user-artifact-staging confinement rows (E1-E5).
 // Top-level (not inside any of the folded `__foldDescribe` sections below,

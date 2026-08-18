@@ -2354,7 +2354,7 @@ const {
 
 const {
   injectEffortFrontmatter,
-} = require('../bin/install.js');
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function writeConfig(dir, config) {
   const planningDir = path.join(dir, '.planning');
@@ -5512,9 +5512,10 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
   const prevTestMode = process.env.GSD_TEST_MODE;
   process.env.GSD_TEST_MODE = '1';
   const installMod = require('../bin/install.js');
+  const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
   if (prevTestMode === undefined) delete process.env.GSD_TEST_MODE;
   else process.env.GSD_TEST_MODE = prevTestMode;
-  const { readGsdRuntimeProfileResolver, generateCodexAgentToml } = installMod;
+  const { generateCodexAgentToml } = installMod;
 
   let tmpDir;
   beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });

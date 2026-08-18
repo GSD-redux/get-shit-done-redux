@@ -524,7 +524,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const projection = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
-const install = require(path.join(__dirname, '..', 'bin', 'install.js'));
+const hooksSurface = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
 
 const {
   hookCommandNeedsPowerShellCallOperator,
@@ -535,7 +535,7 @@ const {
   projectLegacySettingsHookCommand,
   projectPortableHookBaseDir,
 } = projection;
-const { buildHookCommand, rewriteLegacyManagedNodeHookCommands } = install;
+const { buildHookCommand, rewriteLegacyManagedNodeHookCommands } = hooksSurface;
 
 describe('bug #3413: Shell Command Projection Module uses runtime-aware hook policy', () => {
   test('#1928: no current runtime needs the PowerShell call operator (seam inert after gemini removal)', () => {

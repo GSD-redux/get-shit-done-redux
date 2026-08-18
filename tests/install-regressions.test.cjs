@@ -38,12 +38,18 @@ try {
   else process.env.GSD_TEST_MODE = savedTestMode;
 }
 
-const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, rewriteLegacyManagedNodeHookCommands, resolveNodeRunner, copyWithPathReplacement } = installExports || {};
+const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, copyWithPathReplacement } = installExports || {};
 
 const {
   installRuntimeArtifacts,
   uninstallRuntimeArtifacts,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+const {
+  rewriteLegacyManagedNodeHookCommands,
+  resolveNodeRunner,
+  reconcileManagedShellHookCommands,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
@@ -120,7 +126,7 @@ describe('Defect #1 regression (#3664 reversed by #947): bare-stem dirs removed,
     t.after(() => cleanup(configDir));
 
     assert.strictEqual(typeof installRuntimeArtifacts, 'function',
-      'installRuntimeArtifacts must be exported from bin/install.js');
+      'installRuntimeArtifacts must be exported from install-engine.cjs');
 
     // Pre-create #3664-era bare-stem Hermes layout (no gsd- prefix, now stale).
     // Use real GSD command stems (help, quick) that readGsdCommandNames() knows about.
@@ -307,7 +313,7 @@ describe('U1 (#2973): uninstallRuntimeArtifacts qwen migrates dev-preferences �
     t.after(() => cleanup(configDir));
 
     assert.strictEqual(typeof uninstallRuntimeArtifacts, 'function',
-      'uninstallRuntimeArtifacts must be exported from bin/install.js');
+      'uninstallRuntimeArtifacts must be exported from install-engine.cjs');
 
     const legacyDir = path.join(configDir, 'commands', 'gsd');
     fs.mkdirSync(legacyDir, { recursive: true });
@@ -925,7 +931,7 @@ describe('#976 regression: installer does not duplicate managed hooks when regis
 
   test('rewriteLegacyManagedNodeHookCommands leaves args-form launcher entries unchanged', () => {
     assert.strictEqual(typeof rewriteLegacyManagedNodeHookCommands, 'function',
-      'rewriteLegacyManagedNodeHookCommands must be exported from bin/install.js');
+      'rewriteLegacyManagedNodeHookCommands must be exported from runtime-hooks-surface.cjs');
 
     const launcherCommand = '/usr/local/bin/node-launcher';
     const hookPath = '/Users/user/.claude/hooks/gsd-check-update.js';
@@ -1343,27 +1349,15 @@ describe('#1924: profile-user.md backup path must be outside gsd-core/', () => {
 // guarantee than the retired helper ever gave, and one a plain in-process
 // round-trip would not prove.
 
-describe('#1924: user artifacts survive a wipe via the durable staging path (install.js exports)', () => {
-  test('install.js exports the staging primitives, and content staged through them survives a destDir wipe + crash', (t) => {
-    // Set GSD_TEST_MODE so require() reaches the module.exports block
-    const origMode = process.env.GSD_TEST_MODE;
-    process.env.GSD_TEST_MODE = '1';
-    let mod;
-    try {
-      mod = require(INSTALL_SCRIPT);
-    } finally {
-      if (origMode === undefined) {
-        delete process.env.GSD_TEST_MODE;
-      } else {
-        process.env.GSD_TEST_MODE = origMode;
-      }
-    }
+describe('#1924: user artifacts survive a wipe via the durable staging path (user-artifact-staging.cjs exports)', () => {
+  test('user-artifact-staging.cjs exports the staging primitives, and content staged through them survives a destDir wipe + crash', (t) => {
+    const mod = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
     for (const name of ['stageUserArtifacts', 'restoreStagedUserArtifacts', 'discardStagedUserArtifacts', 'recoverOrphanedUserArtifacts']) {
       assert.strictEqual(
         typeof mod[name],
         'function',
-        `install.js must export ${name} — the mechanism that now makes the #1924 durability property testable`,
+        `user-artifact-staging.cjs must export ${name} — the mechanism that now makes the #1924 durability property testable`,
       );
     }
 
@@ -1519,8 +1513,6 @@ describe('#3333 regression: copyWithPathReplacement tolerates a source file vani
 // user-authored hooks are untouched.
 
 describe('#3329 regression: stale managed .sh hook commands are reconciled on install/update', () => {
-  const { reconcileManagedShellHookCommands } = installExports || {};
-
   const GLOBAL_EXPECTED = {
     'gsd-validate-commit.sh': '"C:/Users/u/.claude/hooks/gsd-validate-commit.sh"',
     'gsd-graphify-update.sh': '"C:/Users/u/.claude/hooks/gsd-graphify-update.sh"',
@@ -1555,9 +1547,9 @@ describe('#3329 regression: stale managed .sh hook commands are reconciled on in
     return out;
   }
 
-  test('reconcileManagedShellHookCommands is exported from bin/install.js', () => {
+  test('reconcileManagedShellHookCommands is exported from runtime-hooks-surface.cjs', () => {
     assert.strictEqual(typeof reconcileManagedShellHookCommands, 'function',
-      'reconcileManagedShellHookCommands must be exported from bin/install.js (#3329)');
+      'reconcileManagedShellHookCommands must be exported from runtime-hooks-surface.cjs (#3329)');
   });
 
   test('win32+claude: bare `bash`-prefixed global entries are rewritten to the bare script path', () => {

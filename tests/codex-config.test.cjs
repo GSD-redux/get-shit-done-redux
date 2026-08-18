@@ -69,10 +69,10 @@ const {
   GSD_CODEX_MARKER,
   CODEX_AGENT_SANDBOX,
   parseTomlToObject,
-  resolveNodeRunner,
   validateCodexConfigSchema,
 } = require('../bin/install.js');
 
+const { resolveNodeRunner } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 
 function runCodexInstall(codexHome, cwd = path.join(__dirname, '..')) {
@@ -5392,9 +5392,9 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
+const HOOKS_SURFACE = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-hooks-surface.cjs'));
 const projection = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
-const { buildCodexHookBlock, rewriteLegacyCodexHookBlock, resolveNodeRunner } = INSTALL;
+const { buildCodexHookBlock, rewriteLegacyCodexHookBlock, resolveNodeRunner } = HOOKS_SURFACE;
 const { projectCodexHookTomlCommand } = projection;
 
 /**
@@ -6959,15 +6959,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const INSTALL = require('../bin/install.js');
+const HOOKS_SURFACE = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const PROJECTION = require('../gsd-core/bin/lib/shell-command-projection.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+
+const {
+  uninstall,
+} = INSTALL;
 
 const {
   buildCodexHookWindowsShimIR,
   ensureCodexHooksJsonSessionStart,
   resolveNodeRunner,
-  uninstall,
-} = INSTALL;
+} = HOOKS_SURFACE;
 
 const { projectManagedHookCommand } = PROJECTION;
 
@@ -6991,12 +6995,12 @@ function hookHandlersForEvent(hooksJson, eventName) {
 describe('#3426 — export surface: buildCodexHookWindowsShimIR must be exported', () => {
   test('buildCodexHookWindowsShimIR is a function', () => {
     assert.equal(typeof buildCodexHookWindowsShimIR, 'function',
-      'buildCodexHookWindowsShimIR must be exported from bin/install.js');
+      'buildCodexHookWindowsShimIR must be exported from runtime-hooks-surface.cjs');
   });
 
   test('ensureCodexHooksJsonSessionStart is a function', () => {
     assert.equal(typeof ensureCodexHooksJsonSessionStart, 'function',
-      'ensureCodexHooksJsonSessionStart must be exported from bin/install.js');
+      'ensureCodexHooksJsonSessionStart must be exported from runtime-hooks-surface.cjs');
   });
 });
 
@@ -9382,13 +9386,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const INSTALL = require('../bin/install.js');
 const {
   ensureCodexHooksJsonSessionStart,
   ensureCodexHooksJsonEvent,
   removeCodexHooksJsonEvent,
   reconcileCodexHooksJsonEvent,
-} = INSTALL;
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -9430,17 +9433,17 @@ function stubHookFile(targetDir, hookName) {
 describe('enh-772: export surface — new functions are exported', () => {
   test('ensureCodexHooksJsonEvent is a function', () => {
     assert.strictEqual(typeof ensureCodexHooksJsonEvent, 'function',
-      'ensureCodexHooksJsonEvent must be exported from bin/install.js');
+      'ensureCodexHooksJsonEvent must be exported from runtime-hooks-surface.cjs');
   });
 
   test('removeCodexHooksJsonEvent is a function', () => {
     assert.strictEqual(typeof removeCodexHooksJsonEvent, 'function',
-      'removeCodexHooksJsonEvent must be exported from bin/install.js');
+      'removeCodexHooksJsonEvent must be exported from runtime-hooks-surface.cjs');
   });
 
   test('reconcileCodexHooksJsonEvent is a function', () => {
     assert.strictEqual(typeof reconcileCodexHooksJsonEvent, 'function',
-      'reconcileCodexHooksJsonEvent must be exported from bin/install.js');
+      'reconcileCodexHooksJsonEvent must be exported from runtime-hooks-surface.cjs');
   });
 });
 
