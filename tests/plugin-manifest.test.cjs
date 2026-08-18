@@ -237,10 +237,22 @@ describe('B: hooks/hooks.json', () => {
 //        platform, every CI job, every local run.  A bug that removes `version`
 //        or changes `name` to an invalid form goes red immediately.
 //
-//   C2 (OPPORTUNISTIC) — When the `claude` binary IS on PATH, also run
-//        `claude plugin validate <temp-plugin-root> --strict` as an end-to-end
-//        smoke test. This tier provides defence-in-depth for schema changes
-//        Claude Code may introduce that the fixture hasn't yet captured.
+//   C2 (OPPORTUNISTIC — LOCAL-ONLY IN PRACTICE) — When the `claude` binary IS on
+//        PATH, also run `claude plugin validate <temp-plugin-root> --strict` as an
+//        end-to-end smoke test, catching schema changes Claude Code may introduce
+//        that the C1 fixture hasn't yet captured.
+//
+//        #3613: no job under .github/workflows/ installs the `claude` CLI, so
+//        `claudeAvailable` is false on today's CI images and this tier runs ONLY on a
+//        developer machine that happens to have the binary. Read its coverage
+//        that way — a best-effort local check, not a gate any PR must clear.
+//        Provisioning the CLI in a CI job would turn it into a real gate; that
+//        is a maintainer call and is deliberately left open here.
+//
+//   C3 (UNCONDITIONAL) — Enforces a symlink-free fixture throughout, deliberately
+//        stricter than what C2 itself requires. It is a
+//        tripwire against a symlink regression, not a substitute for C2's end-to-end
+//        check — but it is the only part of that pair CI can run.
 //
 describe('C: plugin.json schema validation', () => {
 
@@ -395,18 +407,52 @@ describe('C: plugin.json schema validation', () => {
     }
   })();
 
+  // #3613: the component directories are COPIED, never symlinked. `claude plugin
+  // validate` reads them WITHOUT following symlinks and warns when it finds one,
+  // and `--strict` promotes that warning to a non-zero exit — so a symlinked
+  // fixture failed the gate on its own construction rather than on the manifest
+  // under test. Copying still gives the CLI a tree containing only plugin.json
+  // and the three component directories — which is the isolation the temp root
+  // exists for, since nothing else from the repo root is placed where the
+  // validator can read it — while letting it actually read those components.
+  const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
+
+  function buildValidationPluginRoot() {
+    const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-plugin-validate-'));
+    // Construction is self-cleaning: the callers' try/finally only begins once
+    // this returns, so a throw partway through would otherwise strand a
+    // half-built root on disk. Before this helper existed the same steps ran
+    // inside C2's own try, and that teardown guarantee is preserved here.
+    try {
+      fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
+      fs.copyFileSync(PLUGIN_JSON_PATH, path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
+      for (const dir of COMPONENT_DIRS) {
+        fs.cpSync(path.join(ROOT, dir), path.join(pluginRoot, dir), { recursive: true });
+      }
+    } catch (err) {
+      // Best-effort: cleanup() can itself throw (it tolerates Windows EBUSY by
+      // giving up after retries), and a throw here would replace the real
+      // construction error with a teardown one.
+      try {
+        cleanup(pluginRoot);
+      } catch {
+        /* keep the original error */
+      }
+      throw err;
+    }
+    return pluginRoot;
+  }
+
   test(
     'C2: claude plugin validate --strict exits 0 (opportunistic — skip when claude not on PATH)',
-    { skip: !claudeAvailable ? 'claude binary not on PATH' : false },
+    {
+      skip: !claudeAvailable
+        ? 'claude binary not on PATH (local-only tier — no CI job provisions it, see #3613)'
+        : false,
+    },
     () => {
-      const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-plugin-validate-'));
+      const pluginRoot = buildValidationPluginRoot();
       try {
-        fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
-        fs.copyFileSync(PLUGIN_JSON_PATH, path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
-        fs.symlinkSync(path.join(ROOT, 'commands'), path.join(pluginRoot, 'commands'), 'dir');
-        fs.symlinkSync(path.join(ROOT, 'hooks'), path.join(pluginRoot, 'hooks'), 'dir');
-        fs.symlinkSync(path.join(ROOT, 'skills'), path.join(pluginRoot, 'skills'), 'dir');
-
         const result = spawnSync('claude', ['plugin', 'validate', pluginRoot, '--strict'], {
           cwd: ROOT,
           encoding: 'utf-8',
@@ -423,6 +469,86 @@ describe('C: plugin.json schema validation', () => {
       }
     }
   );
+
+  // ── C3: Unconditional fixture-construction guard ─────────────────────────────
+  //
+  // #3613 regression. C2 above is the test that actually shells out to the CLI,
+  // but no CI job provisions that binary today, so it does not execute there. A
+  // revert to symlinked component directories would therefore sail through every
+  // CI lane and surface only as a red suite on contributor machines — which is
+  // exactly how #3613 went unnoticed. This enforces a symlink-free fixture with no
+  // dependency on the CLI, so it runs on every platform and every job — a stricter
+  // invariant than C2 requires, chosen so it does not encode the CLI's exact and
+  // undocumented boundary.
+  //
+  // Scope, stated honestly: this is a tripwire, not product coverage. It cannot be
+  // demonstrated red against the base commit, because the helper it calls arrives in
+  // the same change; the genuine failing-first artifact for #3613 is C2. What it buys
+  // is that a future edit reverting the helper to symlinkSync goes red somewhere CI
+  // can see, which C2 cannot do.
+  //
+  // It deliberately builds the fixture for real rather than stubbing it — that is the
+  // only way it exercises the code path it guards, and it is why the ~1 MB copy now
+  // runs on every job (and twice when `claude` is present). Do not "optimize" that
+  // into a stub; it would void the guard.
+  test('C3: validation fixture exposes real component directories, not symlinks (#3613)', () => {
+    const pluginRoot = buildValidationPluginRoot();
+    try {
+      for (const dir of COMPONENT_DIRS) {
+        const target = path.join(pluginRoot, dir);
+        const stat = fs.lstatSync(target);
+        assert.equal(
+          stat.isSymbolicLink(),
+          false,
+          `${dir}/ is a symlink in the C2 validation fixture. \`claude plugin validate\` reads component directories without following symlinks and warns on each one, and --strict turns that warning into a failing exit (#3613). Copy the directory with fs.cpSync instead of symlinking it.`
+        );
+        assert.ok(stat.isDirectory(), `${dir}/ must be a real directory in the C2 validation fixture`);
+      }
+
+      // Depth-N, not just depth-1. fs.cpSync defaults to dereference:false, so any
+      // symlink inside a component directory is copied AS a symlink. Measured against
+      // claude CLI 2.1.234 (exit code of `plugin validate --strict`):
+      //
+      //     component dir is itself a symlink ............ 1
+      //     symlink one level inside skills/ (file or dir) 1
+      //     symlink two levels inside skills/ ............ 0
+      //     symlink inside commands/ or hooks/ ........... 0
+      //
+      // So the depth that bites is narrower than "anywhere", but wider than the
+      // top-level check alone — an entry directly under skills/ is enough. Rather
+      // than encode that external, undocumented boundary, C3 enforces the stricter
+      // invariant "no symlinks anywhere in the fixture": a superset that stays
+      // correct if the CLI tightens, for one walk over ~176 files. The trees are
+      // symlink-free today, so this is latent, not a live break.
+      //
+      // Walk with an explicit stack, NOT readdirSync's `recursive: true` — that
+      // option follows directory symlinks (verified on Node 24: a symlinked dir
+      // inside the tree is descended into), so a link pointing outward would walk
+      // an unrelated tree, or a cycle, before this assertion ever ran. Record links
+      // and descend only into real directories.
+      const nested = [];
+      const stack = COMPONENT_DIRS.map((dir) => path.join(pluginRoot, dir));
+      while (stack.length > 0) {
+        const current = stack.pop();
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const full = path.join(current, entry.name);
+          if (entry.isSymbolicLink()) {
+            nested.push(path.relative(pluginRoot, full));
+          } else if (entry.isDirectory()) {
+            stack.push(full);
+          }
+        }
+      }
+      nested.sort();
+      assert.deepEqual(
+        nested,
+        [],
+        `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.234, a component dir itself or an entry directly under skills/ is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
+      );
+    } finally {
+      cleanup(pluginRoot);
+    }
+  });
 });
 
 // ─── Section D: Always-on hook contract (drift guard) ────────────────────────
