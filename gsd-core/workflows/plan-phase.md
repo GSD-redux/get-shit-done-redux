@@ -1384,6 +1384,8 @@ PHASE_REQ_IDS="${PHASE_REQ_IDS:-TBD}"
 Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If the
 `gap-analysis` gate hook is absent (capability inactive), skip this step.
 
+⚠ **Validate the check before any shell use.** `check.query`/`check.predicate` come from a capability manifest and may be third-party. Verify the query against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` IN-CONTEXT (never by pasting it into a shell to be tested there) and pass the predicate as a single argv element; a value that fails is a malformed manifest — warn, route per `onError`, do not run it. Full rules: the `gate` section of `gsd-core/references/loop-hook-dispatch.md` (#3559).
+
 **For each active entry where `kind == "gate"`** (process in array order). **Dispatch by check shape** (the registry validates exactly one of `query`/`predicate`/`agentVerdict`):
 
 ```bash

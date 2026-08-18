@@ -70,6 +70,8 @@ VERIFY_PRE_HOOKS_JSON=$(gsd_run loop render-hooks verify:pre --raw)
 PHASE_DIR=$(printf '%s' "$INIT" | jq -r '.phase_dir // empty')
 ```
 
+⚠ **Validate the check before any shell use.** `check.query`/`check.predicate` come from a capability manifest and may be third-party. Verify the query against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` IN-CONTEXT (never by pasting it into a shell to be tested there) and pass the predicate as a single argv element; a value that fails is a malformed manifest — warn, route per `onError`, do not run it. Full rules: the `gate` section of `gsd-core/references/loop-hook-dispatch.md` (#3559).
+
 Resolve active gate hooks from `VERIFY_PRE_HOOKS_JSON` where `kind == "gate"`.
 For each active gate hook, run its declared check (a `check.query` gate runs
 `gsd_run check ${hook.check.query} "${PHASE_DIR}" --raw`; a `predicate` gate

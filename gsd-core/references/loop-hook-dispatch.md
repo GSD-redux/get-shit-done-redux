@@ -69,6 +69,20 @@ not one shape of one.
 
 ### `gate`
 
+**Validate `check` before any shell use.** `check.query` and `check.predicate` come from a
+capability manifest, which may be third-party — and `gates[].check` is **not** one of the
+executable surfaces the install consent prompt discloses (`hooks`, command modules,
+`mcpServers`, reviewer lanes), so a capability can be consented to as declarative-only and
+still reach a shell through a gate. Check the query value you read from `activeHooks` against
+`^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` yourself, IN-CONTEXT — **never** by pasting it into a
+shell command to be tested there, because a value carrying a quote, `;`, a `` ` ``, `$(`, or a
+newline would terminate the assignment and run as its own statement before any shell-side
+check could execute. A value that fails is a malformed manifest: record a warning, route it
+per the gate's `onError`, and do not run it. Pass `check.predicate` as a **single argv
+element** for the same reason — never re-quote it into a shell string, where an apostrophe
+would close the literal. This is the identical requirement `step` → `ref.command` carries
+above; it was stated there and omitted here, which is the gap #3559 closed.
+
 Evaluate `check` (one of `query`, `predicate`, or `agentVerdict`). Then honor `blocking`:
 
 - `blocking: true` → if the check returns `block: true`, surface `check.message` to the user

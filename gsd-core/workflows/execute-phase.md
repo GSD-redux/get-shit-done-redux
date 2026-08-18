@@ -1014,6 +1014,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **If `activeHooks` is empty or absent:** Skip silently to step 5.8.
 
+   ⚠ **Validate the check before any shell use.** `check.query`/`check.predicate` come from a capability manifest and may be third-party. Verify the query against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` IN-CONTEXT (never by pasting it into a shell to be tested there) and pass the predicate as a single argv element; a value that fails is a malformed manifest — warn, route per `onError`, do not run it. Full rules: the `gate` section of `gsd-core/references/loop-hook-dispatch.md` (#3559).
+
    **For each active entry where `kind == "gate"`** (process in array order), run the gate check — for a `predicate` gate (ADR-2008 / #2008) substitute `gsd_run check predicate --predicate '<hook.check.predicate as JSON>' --phase-number "${PHASE_NUMBER}" --raw` for the `check.query` form:
 
    ```bash
@@ -1253,6 +1255,8 @@ Code review found issues. Consider running:
 ```
 
 **Error handling:** If the Skill invocation fails or throws, catch the error, display "Code review encountered an error (non-blocking): {error}" and proceed to gate dispatch. Review failures must never block execution.
+
+⚠ **Validate the check before any shell use.** `check.query`/`check.predicate` come from a capability manifest and may be third-party. Verify the query against `^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$` IN-CONTEXT (never by pasting it into a shell to be tested there) and pass the predicate as a single argv element; a value that fails is a malformed manifest — warn, route per `onError`, do not run it. Full rules: the `gate` section of `gsd-core/references/loop-hook-dispatch.md` (#3559).
 
 **Execute:post gate hook dispatch.** After code review, dispatch all active gate hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "gate"`. For each, run `gsd_run check ${hook.check.query} "${PHASE_NUMBER}" --raw`, or — for a `predicate` gate (ADR-2008 / #2008) — `gsd_run check predicate --predicate '<hook.check.predicate as JSON>' --phase-number "${PHASE_NUMBER}" --raw`:
 

