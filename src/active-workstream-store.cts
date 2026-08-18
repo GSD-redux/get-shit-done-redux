@@ -222,23 +222,142 @@ function pickActiveWorkstreamAdapter(cwd: string, opts: ActiveWorkstreamOpts = {
   return createSharedPointerAdapter(cwd);
 }
 
+/**
+ * Read-resolution chain for getActiveWorkstream/peekActiveWorkstream (#3579).
+ *
+ * pickActiveWorkstreamAdapter (above) picks exactly one adapter and remains
+ * the seam for WRITE paths (set/clear), where "which pointer do I mutate" has
+ * only one right answer: the session pointer when a session key exists,
+ * otherwise the shared marker. Reads are different — a session that has
+ * never called `workstream use` has no opinion of its own, so it should
+ * inherit the repo-wide `.planning/active-workstream` marker rather than
+ * resolve to nothing. This returns an ORDERED chain: [owned, ...fallbacks].
+ * `chain[0]` ("owned") is exactly what pickActiveWorkstreamAdapter would have
+ * returned — resolveFromChain() self-heals only chain[0], never a fallback,
+ * so one session's read can never delete another scope's marker. Fallbacks
+ * are consulted ONLY when chain[0].read() comes back absent/empty; a session
+ * with its own (even stale/invalid) pointer never falls through — that is
+ * the isolation guarantee and it must not be weakened by inheritance.
+ */
+function pickActiveWorkstreamAdapterChain(cwd: string, opts: ActiveWorkstreamOpts = {}): WorkstreamPointerAdapter[] {
+  if (opts.activeWorkstreamAdapter) {
+    return [opts.activeWorkstreamAdapter];
+  }
+
+  // #3579 item 3: when a caller supplies `opts.activeWorkstreamAdapters` at
+  // all, honor ONLY what it provides. The prior `|| createXPointerAdapter(...)`
+  // fallback synthesized a REAL filesystem adapter for whichever half a test
+  // double omitted — so a test injecting only `{ session }` silently touched
+  // the real shared marker file, and one injecting only `{ shared }` silently
+  // touched the real session-scoped tmp file. A missing half now gets a
+  // no-op in-memory adapter (always reads null) instead — this preserves the
+  // chain[0]-is-owned / rest-are-fallback shape resolveFromChain relies on
+  // without ever reaching disk. A caller that wants a real adapter for one
+  // half can still construct and pass it explicitly.
+  const injected = opts.activeWorkstreamAdapters;
+  const sessionKey = getWorkstreamSessionKey();
+
+  if (!sessionKey) {
+    const shared = injected
+      ? (injected.shared ?? createMemoryPointerAdapter(null))
+      : createSharedPointerAdapter(cwd);
+    return [shared];
+  }
+
+  const session = injected
+    ? (injected.session ?? createMemoryPointerAdapter(null))
+    : createSessionScopedPointerAdapter(cwd, sessionKey);
+  const shared = injected
+    ? (injected.shared ?? createMemoryPointerAdapter(null))
+    : createSharedPointerAdapter(cwd);
+
+  return session ? [session, shared] : [shared];
+}
+
+/**
+ * Shared "does this stored name resolve" predicate — format-valid AND its
+ * workstream directory exists. Factored out so resolveFromChain's owned/
+ * fallback arms (and diagnoseUnresolvedActiveWorkstream, #3579 item 1) share
+ * one definition of "resolvable" instead of re-deriving the same two checks.
+ */
+function resolvesToExistingWorkstream(cwd: string, name: string | null): name is string {
+  if (!name || !validateWorkstreamName(name)) return false;
+  return fs.existsSync(path.join(planningRoot(cwd), 'workstreams', name));
+}
+
+/**
+ * Resolves a stored workstream name by walking an adapter chain.
+ *
+ * chain[0] is "owned" by this resolution: an absent/empty read falls through
+ * to the next adapter, but a present-and-bad read (invalid name, or a name
+ * whose workstream dir no longer exists) is resolved right there — self-
+ * healed via adapter.clear() when `selfHeal` is true, and never consulted
+ * further. Anything after chain[0] is a read-only fallback (the inherited
+ * marker): a bad value there resolves to null WITHOUT ever calling clear(),
+ * so a pointer-less session's read can never delete the shared marker that
+ * other sessions/scopes still depend on.
+ */
+function resolveFromChain(cwd: string, chain: WorkstreamPointerAdapter[], selfHeal: boolean): string | null {
+  if (chain.length === 0) return null;
+  const [owned, ...fallbacks] = chain;
+
+  const ownedName = owned.read();
+  if (ownedName) {
+    if (!resolvesToExistingWorkstream(cwd, ownedName)) {
+      if (selfHeal) owned.clear();
+      return null;
+    }
+    return ownedName;
+  }
+
+  for (const adapter of fallbacks) {
+    const name = adapter.read();
+    if (resolvesToExistingWorkstream(cwd, name)) return name;
+  }
+
+  return null;
+}
+
+/**
+ * Diagnostic sibling of resolveFromChain (#3579 item 1). getActiveWorkstream/
+ * peekActiveWorkstream collapse EVERY unresolvable case to `null`, which is
+ * exactly right for routing — but a fail-safe guard reporting "no active
+ * workstream is set" to an operator needs to distinguish two very different
+ * situations that both produce that same `null`:
+ *
+ *   (a) no marker/pointer exists anywhere in the chain at all, vs.
+ *   (b) a marker/pointer EXISTS (names a value) but that value didn't
+ *       resolve — either the name fails validateWorkstreamName, or it's a
+ *       well-formed name whose `workstreams/<name>` directory is missing.
+ *
+ * Walks the same chain resolveFromChain uses and, for the first adapter that
+ * held a non-empty raw value, reports why it didn't resolve. Read-only: never
+ * calls adapter.clear() (mirrors peekActiveWorkstream, not getActiveWorkstream
+ * — a diagnostic read must not have side effects). Reuses
+ * resolvesToExistingWorkstream so this can never disagree with the actual
+ * resolution predicate above.
+ */
+function diagnoseUnresolvedActiveWorkstream(
+  cwd: string,
+  opts: ActiveWorkstreamOpts = {},
+): { present: boolean; value: string | null; reason: 'invalid_name' | 'missing_workstream_dir' | null } {
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  for (const adapter of chain) {
+    const raw = adapter.read();
+    if (!raw) continue;
+    if (resolvesToExistingWorkstream(cwd, raw)) continue;
+    return {
+      present: true,
+      value: raw,
+      reason: validateWorkstreamName(raw) ? 'missing_workstream_dir' : 'invalid_name',
+    };
+  }
+  return { present: false, value: null, reason: null };
+}
+
 function getActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): string | null {
-  const adapter = pickActiveWorkstreamAdapter(cwd, opts);
-  if (!adapter) return null;
-
-  const name = adapter.read();
-  if (!name || !validateWorkstreamName(name)) {
-    adapter.clear();
-    return null;
-  }
-
-  const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
-  if (!fs.existsSync(wsDir)) {
-    adapter.clear();
-    return null;
-  }
-
-  return name;
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  return resolveFromChain(cwd, chain, true);
 }
 
 /**
@@ -254,16 +373,8 @@ function getActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): stri
  * pointer file is left exactly as it was for whatever created it to fix.
  */
 function peekActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): string | null {
-  const adapter = pickActiveWorkstreamAdapter(cwd, opts);
-  if (!adapter) return null;
-
-  const name = adapter.read();
-  if (!name || !validateWorkstreamName(name)) return null;
-
-  const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
-  if (!fs.existsSync(wsDir)) return null;
-
-  return name;
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  return resolveFromChain(cwd, chain, false);
 }
 
 function setActiveWorkstream(cwd: string, name: string | null | undefined, opts: ActiveWorkstreamOpts = {}): void {
@@ -381,8 +492,10 @@ export = {
   createSessionScopedPointerAdapter,
   createMemoryPointerAdapter,
   pickActiveWorkstreamAdapter,
+  pickActiveWorkstreamAdapterChain,
   getActiveWorkstream,
   peekActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
   setActiveWorkstream,
   clearActiveWorkstream,
   parseCliWorkstream,

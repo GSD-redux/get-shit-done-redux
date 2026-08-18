@@ -265,3 +265,69 @@ the ambient default resolves to real fs.
 method on an injected adapter does not fail loudly — it silently reaches the real filesystem. Adding
 a new `installFs()` call to a routed path without extending every adapter is a real-IO bug that
 passes typecheck.
+
+## Amendment (2026-08-18, #2866 complete): reconciled against the shipped environment
+
+Epic #2866 is finished — phases 0-7 all closed. This ADR was written mid-epic and describes a tree
+that no longer exists in three material ways. Reconciled below against the code as merged.
+
+### 1. There are now TWO choreographies, not three
+
+The Context section's table compares three: `installRuntimeArtifacts`, `applySurface`, and
+`bin/install.js`'s agent-staging loop. **The third no longer exists.** Phase 6 (#2875) deleted that
+loop and its `_DESCRIPTOR_AGENTS_RUNTIMES` gate outright; every runtime now materializes `agents`
+from its capability descriptor. All that survives at the old site is a comment recording the
+deletion.
+
+So §Decision 1's refusal — "there will be no single materializer" — now governs a two-way
+divergence, not a three-way one.
+
+### 2. This ADR's own revisit condition has been MET, and revisiting does not change the answer
+
+"What this ADR does not decide" said:
+
+> **Whether the three choreographies ever unify.** The `applySurface` descriptor-agents migration is
+> partly landed; when it completes, the shapes may converge enough that the question is worth
+> reopening on evidence. Revisit then, not before.
+
+That migration completed in Phase 6. Revisited, on evidence:
+
+**The shapes did not converge on the axis that mattered.** The refusal rested on the prune, and the
+prune is untouched by phases 6 and 7 — Phase 6 changed agent materialization, Phase 7 removed
+exports. `applySurface` still prunes through `pruneSkillDirs`, described in its own source as "the
+single point of truth", allow-list scoped so it *structurally cannot* delete a user's file; the
+sibling branch still carries the note that "the unscoped prune deleted user-owned command files".
+`installRuntimeArtifacts` still wipes a prefix-scoped set and restores a snapshot.
+
+A single writer would still have to give up one of those guarantees. **§Decision 1 stands**, now for
+a narrower and better-evidenced reason: not "three loops differ" but "two loops hold incompatible
+guarantees about user data, and one of them cannot lose it by construction."
+
+Phase 6 strengthened rather than weakened that reasoning. Implementing #1874-F19 found **seven** call
+sites holding user files in memory across a wipe, not the four recorded — a design that cannot delete
+user files is worth more than one that promises to put them back.
+
+### 3. Delivery status of each decision
+
+| § | Decision | Status |
+|---|---|---|
+| 1 | No single materializer | **Stands** — see above; now a two-way, not three-way, refusal |
+| 2 | Durable user-artifact staging (F19) | **Delivered** in #2875 — `src/user-artifact-staging.cts`, seven call sites, recovery wired into both install and uninstall |
+| 3 | Extract the retired-kind prune | **Was already true** when measured; nothing was extracted, and no refactor was invented to satisfy it |
+| 4 | Close the `agents` bypass | **Delivered** in #2875 — but it was the *hardest* part, not the independent one this ADR predicted |
+| 5 | Placement/content ownership unchanged | **Holds** — ADR-3660 and ADR-1508 seams intact |
+
+### 4. What #2875's AC1 still says
+
+The issue text still reads *"One module writes a `Layout`; the three former call sites delegate to
+it."* That criterion is **deliberately unmet**, and now doubly stale: there are no longer three call
+sites. Anyone reconciling the tracker should treat this ADR as the governing decision and #2875's
+AC1 as superseded, not outstanding.
+
+### 5. Related environment change worth knowing
+
+Phase 7 (#2876) took `bin/install.js` from 197 exports to 127, retiring 9 dead names and 61
+pass-throughs. Any future work in this area should reach the extracted modules through their own
+interfaces; the installer no longer re-exports them. See
+[ADR-1508's 2026-08-17 amendment](1508-runtime-artifact-conversion-module.md) for why that
+compatibility spine existed and why it turned out to have no production consumer.

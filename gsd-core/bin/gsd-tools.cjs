@@ -271,8 +271,7 @@ try {
   }
 } catch { /* advisory — never block */ }
 
-const { getActiveWorkstream } = require('./lib/planning-workspace.cjs');
-const { resolveActiveWorkstream, applyResolvedWorkstreamEnv } = require('./lib/active-workstream-store.cjs');
+const { resolveActiveWorkstream, applyResolvedWorkstreamEnv, peekActiveWorkstream } = require('./lib/active-workstream-store.cjs');
 const state = require('./lib/state.cjs');
 const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
@@ -1843,11 +1842,14 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     //  1. SENTINEL-FREE, not write-free. This route writes nothing itself, and
     //     in particular never writes .gsd/dispatch-isolation-sentinel.json —
     //     the only write that can hard-block a later executor dispatch. It is
-    //     NOT a claim of total filesystem purity: like every gsd-tools
-    //     invocation, it runs the shared bootstrap and active-workstream
-    //     resolution first, and getActiveWorkstream self-heals (unlinks) a
-    //     stale or invalid pointer. That is pre-existing, verb-independent,
-    //     and harmless to dispatch.
+    //     NOT an unconditional claim of total filesystem purity: like every
+    //     gsd-tools invocation, it runs the shared bootstrap and
+    //     active-workstream resolution first. As of #3579's root-cause fix
+    //     that bootstrap resolves via the non-mutating peekActiveWorkstream
+    //     (never unlinks); an actual stale/invalid pointer is still
+    //     self-healed, but only by whichever verb's own getActiveWorkstream
+    //     call later consumes it for real — this inspection route makes no
+    //     such call, so it is now also side-effect-free on the pointer file.
     //
     //  2. SHARED NEGOTIATION, for the arguments this verb accepts. Both verbs
     //     call resolveDispatchIsolationDecision, so the natural resolution
@@ -4114,8 +4116,21 @@ async function main() {
   // Priority: --ws flag > GSD_WORKSTREAM env var > session/shared pointer > null.
   let workstreamContext = null;
   try {
+    // #3579 root-cause fix: this bootstrap resolution only decides whether to
+    // populate GSD_WORKSTREAM env for downstream routing — it is a check, not
+    // the consuming read. Using the mutating getActiveWorkstream here
+    // self-healed (cleared) a present-but-unresolvable pointer BEFORE the
+    // dispatched command's own resolution/diagnostic ran, so a second read in
+    // the same process (e.g. a subcommand's own getActiveWorkstream call, or
+    // a fail-safe guard's diagnoseUnresolvedActiveWorkstream) observed
+    // already-cleared state — silently falling through to a fallback marker
+    // it should never have inherited (isolation violation), or losing the
+    // evidence a diagnostic needed to explain why nothing resolved. peek
+    // shares the identical resolution logic and only differs by never
+    // calling adapter.clear(); self-heal still happens, exactly once, at
+    // whichever call site actually consumes the workstream for real.
     workstreamContext = resolveActiveWorkstream(cwd, args, process.env, {
-      getStored: getActiveWorkstream,
+      getStored: peekActiveWorkstream,
     });
     args = workstreamContext.args;
     // Set env var so all modules (planningDir, planningPaths) auto-resolve workstream paths.
