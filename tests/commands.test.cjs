@@ -2751,7 +2751,16 @@ describe('check-commit command', () => {
     assert.ok(result.error.includes('with space.md'), result.error);
   });
 
-  test('F2 (#3588): a staged .planning/ file with a quote character in its name is detected and blocked', () => {
+  test('F2 (#3588): a staged .planning/ file with a quote character in its name is detected and blocked', (t) => {
+    // `"` is a reserved NTFS character — a file named `with"quote.md` cannot
+    // exist on Windows at all, so the fixture itself is unrepresentable
+    // there. This is not a gap in the guard's Windows behavior; it is an
+    // input that Windows filesystems reject outright. Do not re-enable this
+    // on win32 — see #3588.
+    if (process.platform === 'win32') {
+      t.skip('a `"` filename is illegal on Windows filesystems (#3588); fixture cannot be created');
+      return;
+    }
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
       JSON.stringify({ commit_docs: false })
@@ -2779,7 +2788,17 @@ describe('check-commit command', () => {
   // (`".planning/back\\slash.md"`) and missed; with `-z` it is read as raw,
   // unquoted bytes and correctly detected via the plain `.planning/` prefix
   // check alone — no backslash-specific branch needed.
-  test('C7 (#3588, flipped): a staged .planning/ file whose name contains a backslash character is detected and blocked', () => {
+  test('C7 (#3588, flipped): a staged .planning/ file whose name contains a backslash character is detected and blocked', (t) => {
+    // `\` is the Windows path separator, not a legal character inside a
+    // single filename component — a file literally named `back\slash.md`
+    // cannot be created on Windows filesystems, so the fixture itself is
+    // unrepresentable there. This is not a gap in the guard's Windows
+    // behavior; it is an input Windows rejects outright. Do not re-enable
+    // this on win32 — see #3588.
+    if (process.platform === 'win32') {
+      t.skip('a `\\` filename is illegal on Windows filesystems (#3588); fixture cannot be created');
+      return;
+    }
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
       JSON.stringify({ commit_docs: false })
