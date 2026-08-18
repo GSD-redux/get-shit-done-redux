@@ -115,16 +115,24 @@ describe('resolveFallowBinary (#3618)', () => {
     }
   });
 
-  test('F4: POSIX, file present but accessSync throws — null (pins the X_OK check)', () => {
+  test('F4: accessSync failure yields null on POSIX; on win32 requireExecutable is a documented no-op', () => {
     const cwd = createTempDir();
     const originalAccessSync = fs.accessSync;
     try {
       const binDir = path.join(cwd, 'node_modules', '.bin');
       fs.mkdirSync(binDir, { recursive: true });
-      fs.writeFileSync(path.join(binDir, FALLOW_FIXTURE), '');
+      const fallowPath = path.join(binDir, FALLOW_FIXTURE);
+      fs.writeFileSync(fallowPath, '');
       fs.accessSync = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
       const resolved = resolveFallowBinary({ cwd, envPath: '' });
-      assert.equal(resolved, null);
+      if (process.platform === 'win32') {
+        // requireExecutable is a documented no-op on win32 (mode bits don't
+        // mean execute there), so accessSync throwing must NOT block resolution.
+        assert.equal(resolved, fallowPath);
+      } else {
+        // POSIX: the X_OK check is consulted, so a throwing accessSync must null out.
+        assert.equal(resolved, null);
+      }
     } finally {
       fs.accessSync = originalAccessSync;
       cleanup(cwd);
