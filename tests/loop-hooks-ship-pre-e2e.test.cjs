@@ -473,7 +473,7 @@ describe('ship:pre gate dispatch contract (#3559)', () => {
     );
     assert.match(
       region,
-      /loop-hook-dispatch\\.md/,
+      /loop-hook-dispatch\.md/,
       'the mandate must point at the reference carrying the rule, so it is actionable',
     );
     assert.match(
