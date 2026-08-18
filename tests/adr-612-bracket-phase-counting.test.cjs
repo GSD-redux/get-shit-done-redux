@@ -3235,7 +3235,11 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
       'GSD.02-01-setup',
       'GSD.02-05-real-work',
       'GSD.02-06-follow-up',
-      'not-a-declared-phase',
+      // Incomplete: the decoy carries no phase token, so it cannot be named
+      // by verificationNameFor's production-derived scheme (see its
+      // docstring) — and completeness is irrelevant to what this test pins,
+      // which is exclusion from would_archive.phases regardless.
+      ['not-a-declared-phase', false],
     ]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
@@ -3268,7 +3272,7 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
 
 ### Phase 06: Follow-up
 **Goal:** c
-`, undefined, ['01-setup', '05-real-work', '06-follow-up', 'not-a-declared-phase']);
+`, undefined, ['01-setup', '05-real-work', '06-follow-up', ['not-a-declared-phase', false]]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
     assert.ok(r.success, `milestone complete --dry-run failed: ${r.error}`);
