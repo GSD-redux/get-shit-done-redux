@@ -368,6 +368,49 @@ describe('resolveExecutableBinary (#3411)', () => {
       cleanup(dir2);
     }
   });
+
+  test('R23: resolves when PATH is spelled Path (Windows casing)', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const resolved = resolveExecutableBinary('foo', { platform: 'win32', env: { Path: dir, PATHEXT: '.CMD' } });
+      assert.equal(resolved, path.join(dir, 'foo.CMD'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('R24: resolves when PATHEXT is spelled Pathext', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.XYZ'), '');
+      const resolved = resolveExecutableBinary('foo', { platform: 'win32', env: { PATH: dir, Pathext: '.XYZ' } });
+      assert.equal(resolved, path.join(dir, 'foo.XYZ'));
+
+      // Negative control: without the differently-cased Pathext key, '.XYZ'
+      // is not in the default PATHEXT, so resolution must fail.
+      const unresolved = resolveExecutableBinary('foo', { platform: 'win32', env: { PATH: dir } });
+      assert.equal(unresolved, null);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('R25: an exact-case key wins over a differently-cased one', () => {
+    const dirExact = createTempDir();
+    const dirOther = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirExact, 'foo.CMD'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'win32',
+        env: { PATH: dirExact, Path: dirOther, PATHEXT: '.CMD' },
+      });
+      assert.equal(resolved, path.join(dirExact, 'foo.CMD'));
+    } finally {
+      cleanup(dirExact);
+      cleanup(dirOther);
+    }
+  });
 });
 
 // ─── projectSpawnInvocation (#3411) ─────────────────────────────────────────
@@ -619,6 +662,18 @@ describe('projectSpawnInvocation (#3411)', () => {
       cleanup(dir);
     }
   });
+
+  test('P16: ComSpec is read case-insensitively', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+      const env = { PATH: dir, PATHEXT: '.CMD', COMSPEC: 'C:\\custom\\cmd.exe' };
+      const result = projectSpawnInvocation('foo', ['a'], { platform: 'win32', env });
+      assert.equal(result.command, 'C:\\custom\\cmd.exe');
+    } finally {
+      cleanup(dir);
+    }
+  });
 });
 
 // ─── execTool (#3411 windows resolution) ────────────────────────────────────
@@ -708,7 +763,11 @@ describe('execTool (#3411 windows resolution)', () => {
     assert.equal(receivedOptions.cwd, '/tmp/x');
     assert.equal(receivedOptions.timeout, 1234);
     assert.equal(receivedOptions.env.FOO, 'bar');
-    assert.equal('PATH' in receivedOptions.env, true);
+    // Case-insensitive: process.env's actual key casing is OS-dependent (Windows
+    // conventionally sets `Path`, not `PATH`), and the merged object here is a
+    // plain spread of process.env — it no longer benefits from the case-insensitive
+    // proxy behavior process.env itself has.
+    assert.equal(Object.keys(receivedOptions.env).some((k) => k.toLowerCase() === 'path'), true);
   });
 });
 

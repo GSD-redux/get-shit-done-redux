@@ -662,6 +662,31 @@ function _isFile(candidate: string): boolean {
   }
 }
 
+/**
+ * Read an environment variable by name, case-insensitively.
+ *
+ * Windows environment variable names are case-insensitive and conventionally
+ * cased `Path` / `ComSpec`, and `process.env` is a case-insensitive proxy that
+ * hides the difference. Spreading it (`{ ...process.env, ...opts.env }`, which
+ * `execTool` does whenever a caller supplies `opts.env`) produces a PLAIN object
+ * that keeps the OS's actual casing and loses the proxy — so an exact-case
+ * `env['PATH']` lookup returns undefined there and the PATH scan silently sees
+ * nothing. Caught by the Windows CI lane on #3617; the #3445 tests never hit it
+ * because they pass uppercase keys explicitly.
+ *
+ * Exact match wins when present, so a caller who sets the canonical name pays
+ * no scan.
+ */
+function _envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const exact = env[name];
+  if (exact !== undefined) return exact;
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === lower) return env[key];
+  }
+  return undefined;
+}
+
 /** cmd.exe's own quoting rule inside a `/c` string: a literal quote is doubled. */
 function _cmdQuoteToken(token: string): string {
   return `"${token.replace(/"/g, '""')}"`;
@@ -721,7 +746,7 @@ export function resolveExecutableBinary(
   }
   const env = opts.env ?? process.env;
   const platform = opts.platform ?? process.platform;
-  const segments = String(env['PATH'] || '').split(path.delimiter).filter(Boolean);
+  const segments = String(_envGet(env, 'PATH') || '').split(path.delimiter).filter(Boolean);
 
   if (platform !== 'win32') {
     for (const dir of segments) {
@@ -731,7 +756,7 @@ export function resolveExecutableBinary(
     return null;
   }
 
-  const exts = String(env['PATHEXT'] || DEFAULT_PATHEXT).split(';').filter(Boolean);
+  const exts = String(_envGet(env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').filter(Boolean);
   // A name already ending in a PATHEXT-listed extension is an address, not a stem:
   // probing `foo.exe` as `foo.exe.EXE` would miss the file sitting right there.
   // Compared case-insensitively because PATHEXT casing is not guaranteed.
@@ -825,7 +850,7 @@ export function projectSpawnInvocation(
     return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
   }
   return {
-    command: String(env['ComSpec'] || 'cmd.exe'),
+    command: String(_envGet(env, 'ComSpec') || 'cmd.exe'),
     args: ['/d', '/s', '/c', _buildVerbatimCmdLine(target, args)],
     resolved,
     windowsVerbatimArguments: true,
