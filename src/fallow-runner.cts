@@ -7,51 +7,18 @@
  *
  * Parses the real fallow `audit --format json` schema (schema_version 3
  * envelope, nested dead_code/duplication sections). See fallow 2.70.0+.
+ *
+ * #3411 Phase 2 (#3618): binary resolution no longer lives here — it delegates
+ * to the platform seam's `resolveExecutableBinary` (shell-command-projection.cts).
+ * This file's prior private resolver deliberately included an extensionless
+ * `fallow` as a win32 candidate; the seam does not, and that is a fix, not a
+ * regression — an extensionless file sitting beside `fallow.cmd` is npm's POSIX
+ * `sh` shim, which `CreateProcess` cannot run (#3275).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-
-function candidateNames(): string[] {
-  return process.platform === 'win32'
-    ? ['fallow.exe', 'fallow.cmd', 'fallow.bat', 'fallow']
-    : ['fallow'];
-}
-
-function isExecutableFile(filePath: string): boolean {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile()) return false;
-    if (process.platform === 'win32') return true;
-    fs.accessSync(filePath, fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function findInPath(envPath: string | undefined): string | null {
-  if (!envPath) return null;
-  const names = candidateNames();
-  const segments = envPath.split(path.delimiter).filter(Boolean);
-  for (const segment of segments) {
-    for (const name of names) {
-      const candidate = path.join(segment, name);
-      if (isExecutableFile(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-function findInNodeModules(cwd: string): string | null {
-  const names = candidateNames();
-  const binDir = path.join(cwd, 'node_modules', '.bin');
-  for (const name of names) {
-    const candidate = path.join(binDir, name);
-    if (isExecutableFile(candidate)) return candidate;
-  }
-  return null;
-}
+import { resolveExecutableBinary } from './shell-command-projection.cjs';
 
 export interface ResolveFallowOpts {
   cwd: string;
@@ -59,7 +26,16 @@ export interface ResolveFallowOpts {
 }
 
 export function resolveFallowBinary({ cwd, envPath = process.env['PATH'] ?? '' }: ResolveFallowOpts): string | null {
-  return findInNodeModules(cwd) || findInPath(envPath) || null;
+  return resolveExecutableBinary('fallow', {
+    prependPaths: [path.join(cwd, 'node_modules', '.bin')],
+    // PATHEXT is passed through (not spread from the rest of process.env) so
+    // win32 resolution still works, while avoiding the spread-loses-the-
+    // case-insensitive-proxy hazard the Windows lane caught in Phase 1. `?? ''`
+    // is intentional: the seam falls back to its own DEFAULT_PATHEXT when this
+    // is empty/absent, so an empty string here is a safe "let the seam decide".
+    env: { PATH: envPath, PATHEXT: process.env['PATHEXT'] ?? '' },
+    requireExecutable: true,
+  });
 }
 
 export function requireFallowBinary({ cwd, envPath = process.env['PATH'] ?? '' }: ResolveFallowOpts): string {

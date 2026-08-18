@@ -38,6 +38,14 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToOpencodeSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToOpencodeFrontmatter"
         }
       ],
       "local": [
@@ -56,6 +64,14 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToOpencodeSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToOpencodeFrontmatter"
         }
       ]
     },

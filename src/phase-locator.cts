@@ -121,9 +121,27 @@ interface ArchiveVersionDir {
  * exactly the shape that let the original #2855 bug (hardcoded root path)
  * exist in one copy and not the other. Sharing this seam means a future
  * change to how the archive tree is located only needs to happen once.
- * Most-recent-milestone-first order (reverse-sorted directory names).
+ * Most-recent-milestone-first order, compared numerically segment-by-segment
+ * on the version (e.g. `v1.10` before `v1.9`) — NOT lexicographically. A
+ * lexicographic `.sort().reverse()` (the prior implementation) ranks `v1.9`
+ * ahead of `v1.10` because the string `"1.9"` sorts after `"1.10"`; that is
+ * deterministic but wrong for every double-digit-or-higher minor/patch
+ * version, and #3458 is what first surfaces archived phases in audit output
+ * where the misordering becomes user-visible.
  * Never throws: an absent/unreadable milestones/ dir yields [].
  */
+function compareArchiveVersionDesc(aName: string, bName: string): number {
+  const aParts = (aName.match(/^v([\d.]+)-phases$/)?.[1] ?? '').split('.').map(Number);
+  const bParts = (bName.match(/^v([\d.]+)-phases$/)?.[1] ?? '').split('.').map(Number);
+  const len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    const a = aParts[i] ?? 0;
+    const b = bParts[i] ?? 0;
+    if (a !== b) return b - a; // descending: newest (numerically largest) first
+  }
+  return 0;
+}
+
 function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
   const milestonesDir = path.join(planningDir(cwd), 'milestones');
   if (!fs.existsSync(milestonesDir)) return [];
@@ -133,8 +151,7 @@ function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
     return milestoneEntries
       .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
       .map(e => e.name)
-      .sort()
-      .reverse()
+      .sort(compareArchiveVersionDesc)
       .map(archiveName => ({
         version: archiveName.match(/^(v[\d.]+)-phases$/)![1],
         archivePath: path.join(milestonesDir, archiveName),
@@ -330,6 +347,11 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
  * an absent `phasesDir` is a real empty (a new project genuinely has no
  * phases) and inherits the window's scope, whereas a `phasesDir` that exists
  * but cannot be read is UNREADABLE.
+ *
+ * `opts.ws` is tri-state, matching `planningDir`'s own contract: `undefined`
+ * (the default — do not pass `ws` at all) resolves the AMBIENT workstream
+ * from `GSD_WORKSTREAM`; `null` FORCES the project root regardless of any
+ * ambient workstream; a string forces that specific workstream.
  */
 function listMilestonePhaseDirs(
   phasesDir: string,
@@ -340,7 +362,17 @@ function listMilestonePhaseDirs(
     phaseIdConvention?: string | null;
   } = {},
 ): { value: string[]; scope: Scope } {
-  const { cwd, ws = null, versionOverride = null, phaseIdConvention = null } = opts;
+  // #3597: `ws` must default to `undefined`, NOT `null`. `undefined` means
+  // "resolve the ambient workstream" (mirrors planningDir's own contract,
+  // src/planning-workspace.cts:124); `null` means "force the project root".
+  // Every cwd-bearing caller derives `phasesDir` ambiently (planningPaths(cwd)
+  // / planningDir(cwd) with no explicit ws), so defaulting `ws` to `null` here
+  // forced the milestone WINDOW to the root ROADMAP while the caller's
+  // `phasesDir` stayed workstream-scoped — numerator and denominator drawn
+  // from different scoped sets (ADR-3180 §7.6 rule 3 violation). That is what
+  // made `--ws <name> progress` read `phase_scope: "unreadable"` and withhold
+  // `percent` once `workstream create` migrated the root ROADMAP away.
+  const { cwd, ws, versionOverride = null, phaseIdConvention = null } = opts;
 
   // Without a cwd there is nothing to scope AGAINST — the caller asked for an
   // unscoped read, which is a real answer (mirrors extractCurrentMilestoneScoped's

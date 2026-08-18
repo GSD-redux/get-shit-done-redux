@@ -468,7 +468,29 @@ Archive milestone, tag release.
 | CONTEXT questions | `*-CONTEXT.md` | questions left open |
 | **Deferred items** | `deferred-items.md` | entry lacks `status: resolved` |
 
-If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowledge all` / `[C] Cancel`. `[A]` records the items to `STATE.md` under its own `## Deferred Items` heading and closes as `override_closeout`; an all-clear closes as `verified_closeout`.
+The four phase-scoped categories above (UAT gaps, Verification gaps, CONTEXT questions, Deferred items) read phase directories from **both** the active `.planning/phases/` root and every archived `.planning/milestones/vX.Y-phases/` root (#3458) — an item still unresolved when its milestone closed and its phase directory archived stays visible in every later audit instead of silently disappearing. In `--json` output, an item sourced from an archived milestone carries an `archived_milestone` field (e.g. `"v1.0"`); active items omit the field entirely. The human-readable report labels an archived item's line with `(archived vX.Y)` so a phase number that repeats across milestones (numbering restarts at `01` after each archive) is not misread as one duplicate line.
+
+If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowledge all` / `[C] Cancel`. `[A]` calls `gsd-tools audit-open acknowledge` once per open item — the CLI writer that actually suppresses each item starting at the next `audit-open` scan — then records the same items to `STATE.md` under its own `## Deferred Items` heading (a disclosure record, not the suppression mechanism) and closes as `override_closeout`; an all-clear closes as `verified_closeout`.
+
+**`audit-open acknowledge` (#3458 follow-up).** Suppresses one open item by writing (or refreshing) a verdict-preserving `audit_acknowledged` marker in the artifact's own frontmatter:
+
+```bash
+gsd-tools audit-open acknowledge --category <category> --milestone <version> [--at <YYYY-MM-DD>] <identifier flags…>
+```
+
+`--category` and `--milestone` are always required; `--at` defaults to today. The identifier flags depend on `--category`:
+
+| `--category` | Identifier flags |
+|---------------|-------------------|
+| `debug_sessions` | `--slug <slug>` |
+| `threads` | `--slug <slug>` |
+| `seeds` | `--seed-id <id>` |
+| `todos` | `--filename <file>` |
+| `quick_tasks` | `--dir <dir>` (the `.planning/quick/<dir>/` directory name — note this is the ORIGINAL directory name, not the date-stripped `slug` the audit JSON displays) |
+| `uat_gaps`, `verification_gaps`, `context_questions` | `--phase <phase> --file <file>` [`--archived-milestone <version>`] |
+| `deferred_items` | `--phase <phase> --file <file> --text <exact bullet text>` [`--archived-milestone <version>`] |
+
+The marker never overwrites the artifact's own `status:` field for the eight frontmatter-marker categories — only `deferred_items` is the deliberate exception, where the marker IS the entry's `status:` field (there is no other meaning for that field on a `deferred-items.md` bullet). The marker also self-invalidates: it snapshots the artifact's current observed state at acknowledgment time — its `status:` for most categories, a composite of `status:` plus its open-scenario count for `uat_gaps` (a status can stay the same while more scenarios go pending), and a content digest of the full question set (not just a count) for `context_questions` (so replacing every question's text while holding the count steady still invalidates the snapshot) — and the item resurfaces on its own the moment that snapshot no longer matches — an edited, reopened, or otherwise-changed artifact is never silently suppressed forever. `--json` output on `audit-open` (the `run` subcommand, default) now reports an `acknowledged` count per category alongside `counts`, plus an `acknowledged.total`, so a clean audit (`counts.total === 0`) can be told apart from one that is clean only because earlier items are still being suppressed (`acknowledged.total > 0`).
 
 > **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
 
@@ -477,6 +499,8 @@ If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowle
 > **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
 
 > **Sentinel directories stay put.** Moving phase directories into the archive (the default, unless `--no-archive-phases` is passed) now excludes `999.*` (backlog) and `0-*` (pre-milestone) directories via the same sentinel predicate the unstarted-phase guard already uses. Previously the archive move was scoped only by the milestone window, so a sentinel directory sitting inside that window could be archived along with the milestone's own phases.
+
+> **Quick-task archival (opt-in, default OFF, #2142).** Unlike phase archival above, quick-task archival does not run unless you say yes — doing nothing leaves `.planning/quick/` untouched. If `.planning/quick/` contains at least one directory, the workflow asks: `Archive completed quick tasks into this milestone too?` with options `Yes — archive quick tasks into v[X.Y]` / `Skip`. Choosing "Yes" passes `--archive-quick` to the underlying `gsd-tools milestone complete` call, which moves every directory under `.planning/quick/` into `.planning/milestones/v[X.Y]-quick/`, (re)writes that directory's `README.md` index (built by scanning the archive directory, not STATE.md), and clears the data rows of STATE.md's `### Quick Tasks Completed` table while preserving its header and column variant. **Known limit:** there is no on-disk record of which milestone a quick task belongs to, so archival buckets **all** remaining `.planning/quick/*` into the one milestone being completed — a task predating an earlier, unarchived milestone lands in the current bucket regardless. See [Archiving quick tasks](how-to/handle-quick-and-fast-tasks.md#archiving-quick-tasks) for the full walkthrough, including the retroactive path.
 
 ---
 
@@ -1014,6 +1038,8 @@ rather than that its contents are correct. The advisory never changes health's
 pass/fail status, and stays silent when the stamp is absent or the project isn't
 a git repo — "unknown" is reported as unknown, not as fresh.
 
+**Cross-scope install shadowing (`W028`).** When a runtime is installed at both `global` and `local` scope and the host's trigger-resolution rules make one scope's `/gsd-*` surface unreachable — the Claude Code case: personal skill always beats project command — health adds a WARNING-severity advisory naming the shadowed triggers, the winning scope, and the losing scope. It never changes health's pass/fail status and is never auto-fixable (there is no single correct scope to remove), so `--repair` never touches it. Identical to the same advisory GSD Core prints at install time. See [Interpret install-shadow warnings](how-to/interpret-install-shadow-warnings.md).
+
 **`--repair` does not apply destructive fixes.** Resetting config.json
 (`resetConfig`) and regenerating STATE.md (`regenerateState`) are destructive
 — the former loses custom settings, the latter loses session history — so
@@ -1028,9 +1054,11 @@ covers only orphan worktrees, with the stale-worktree case moving to the new
 
 ### `/gsd-cleanup`
 
-Archive accumulated phase directories from completed milestones and prune local branches whose upstream has been deleted.
+Archive accumulated phase directories from completed milestones, prune local branches whose upstream has been deleted, and — when applicable — retroactively archive quick tasks (#2142).
 
 **Behaviour:** Presents a dry-run summary of phase directories to archive (moved from `.planning/phases/` into `.planning/milestones/v{X.Y}-phases/`) and local branches whose upstream is gone (pruned via `git fetch --prune`). Requires confirmation before writing any changes. The currently checked-out branch is never pruned.
+
+**Retroactive quick-task archival (opt-in, #2142).** When `.planning/quick/` contains at least one directory, `/gsd-cleanup` additionally offers to sweep it: `Archive ALL {N} quick-task directories into v{X.Y} — {Milestone Name}? This buckets every remaining quick task into this ONE milestone; there is no way to split them per-milestone.` with options `Yes — archive quick tasks into v{X.Y}` / `Skip`. The target is the single most recent completed milestone (from `MILESTONES.md`) that does not yet have a `v{X.Y}-quick` archive directory. If `.planning/quick/` is empty, this step is not offered at all. Confirming calls the narrower `gsd-tools milestone archive-quick <version>` command — the same move/README-index/table-reset logic `/gsd-complete-milestone`'s `--archive-quick` uses, but without touching `ROADMAP.md`, `REQUIREMENTS.md`, `MILESTONES.md`, or milestone-completion guards, since `/gsd-cleanup` typically targets a milestone that is already closed. See [Archiving quick tasks](how-to/handle-quick-and-fast-tasks.md#archiving-quick-tasks) for the full walkthrough and the silent/failure cases.
 
 ```bash
 /gsd-cleanup

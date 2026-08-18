@@ -401,6 +401,39 @@ describe('roadmap analyze disk status variants', () => {
     assert.strictEqual(output.phases[0].has_research, true, 'has_research should be true');
   });
 
+  test('#3511-class: roadmap analyze has_research/has_context ignore another phase\'s misplaced artifact', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 1: Setup
+**Goal:** Build the foundation
+
+### Phase 2: API
+**Goal:** Build the API
+`
+    );
+
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(p1, { recursive: true });
+    // Phase 02's directory holds ONLY a stray artifact whose filename token
+    // ("01-") belongs to phase 01, not to this directory's own phase (02).
+    const p2 = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.mkdirSync(p2, { recursive: true });
+    fs.writeFileSync(path.join(p2, '01-RESEARCH.md'), '# Research for phase 01');
+    fs.writeFileSync(path.join(p2, '01-CONTEXT.md'), '# Context for phase 01');
+
+    const result = runGsdTools('roadmap analyze', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const phase2 = output.phases.find((p) => p.number === '2');
+    assert.strictEqual(phase2.has_research, false,
+      'phase 2 must not report has_research from a file that belongs to phase 1');
+    assert.strictEqual(phase2.has_context, false,
+      'phase 2 must not report has_context from a file that belongs to phase 1');
+  });
+
   test('returns discussed status for phase dir with only CONTEXT.md', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),

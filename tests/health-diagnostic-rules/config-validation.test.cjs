@@ -39,14 +39,17 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 
-const { createTempDir, cleanup } = require('../helpers.cjs');
+const { createTempDir, createTempGitProject, cleanup } = require('../helpers.cjs');
+const { gitOrThrow } = require('../helpers/git-fixture.cjs');
 
 const configValidation = require('../../gsd-core/bin/lib/health-diagnostic-rules/config-validation.cjs');
 const { RULES } = configValidation;
 
 const { buildPlanningSnapshot } = require('../../gsd-core/bin/lib/planning-snapshot.cjs');
-const { SEVERITY, REMEDY_ACTION, REMEDY_RISK } = require('../../gsd-core/bin/lib/health-diagnostic.cjs');
+const { SEVERITY, REMEDY_ACTION, REMEDY_RISK, applyRepairs } = require('../../gsd-core/bin/lib/health-diagnostic.cjs');
+const { SCOPE } = require('../../gsd-core/bin/lib/planning-scope.cjs');
 
 // Real shipped default, parsed once — the mutation base for every
 // MECHANICAL MUTATION fixture below (design doc Fixture provenance §4).
@@ -85,16 +88,16 @@ function ruleFor(code) {
 // ─── RULES shape ────────────────────────────────────────────────────────────
 
 describe('RULES (config-validation group)', () => {
-  test('exports exactly 10 rules: W003, E005, W004, W008, W016, W012, W013, W014, W015, W022', () => {
+  test('exports exactly 11 rules: W003, E005, W004, W008, W016, W012, W013, W014, W015, W022, W029', () => {
     assert.deepEqual(
       RULES.map((r) => r.code).sort(),
-      ['E005', 'W003', 'W004', 'W008', 'W012', 'W013', 'W014', 'W015', 'W016', 'W022'].sort(),
+      ['E005', 'W003', 'W004', 'W008', 'W012', 'W013', 'W014', 'W015', 'W016', 'W022', 'W029'].sort(),
     );
   });
 
   test('E005 is severity ERROR; the rest are severity WARNING', () => {
     assert.equal(ruleFor('E005').severity, SEVERITY.ERROR);
-    for (const code of ['W003', 'W004', 'W008', 'W012', 'W013', 'W014', 'W015', 'W016', 'W022']) {
+    for (const code of ['W003', 'W004', 'W008', 'W012', 'W013', 'W014', 'W015', 'W016', 'W022', 'W029']) {
       assert.equal(ruleFor(code).severity, SEVERITY.WARNING, `${code} should be WARNING`);
     }
   });
@@ -695,5 +698,162 @@ describe('W022 — config.json models malformed', () => {
 
     const snapshot = buildPlanningSnapshot(cwd);
     assert.deepEqual(ruleFor('W022').check(snapshot), []);
+  });
+});
+
+// ─── W029 — .planning/ ignored but still tracked (#3586, epic #2292) ──────
+//
+// Group B of the test matrix (.gsd/phase/fix-3586-tracked-gitignored-planning/
+// 50-test-matrix.md): the rule is a pure predicate over
+// `snapshot.planningTracked` — every fixture here is driven through the REAL
+// `buildPlanningSnapshot(cwd)` against a REAL temp git repo, mirroring
+// tests/planning-snapshot.test.cjs's own A1-A12 fixtures (same helpers:
+// createTempGitProject / gitOrThrow, no hand-built partial snapshots except
+// B4, which specifically tests the field-absent-entirely case).
+
+function writeGitignore(cwd, content) {
+  fs.writeFileSync(path.join(cwd, '.gitignore'), content);
+}
+
+function commitAll(cwd, message) {
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', message], { cwd });
+}
+
+describe('W029 — .planning/ ignored but still tracked', () => {
+  test('B1: fires when ignored AND tracked, carrying the git rm -r --cached remedy', (t) => {
+    const cwd = createTempGitProject('gsd-3586-w029-b1-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W029').check(snapshot);
+
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W029');
+    assert.equal(diagnostics[0].severity, SEVERITY.WARNING);
+    assert.deepEqual(diagnostics[0].remedy.action, REMEDY_ACTION.ADVISE);
+    assert.deepEqual(diagnostics[0].remedy.risk, REMEDY_RISK.NONE);
+    assert.match(diagnostics[0].remedy.args.command, /git rm -r --cached \.planning\//);
+  });
+
+  test('B2a: tracked + NOT ignored (the default project) is silent', (t) => {
+    const cwd = createTempGitProject('gsd-3586-w029-b2a-');
+    t.after(() => cleanup(cwd));
+    // No .gitignore at all.
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W029').check(snapshot), []);
+  });
+
+  test('B2b: ignored + untracked (the healthy ignored state) is silent', (t) => {
+    const cwd = createTempDir('gsd-3586-w029-b2b-');
+    t.after(() => cleanup(cwd));
+    gitOrThrow(['init'], { cwd });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd });
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'initial (gitignore only)');
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W029').check(snapshot), []);
+  });
+
+  test('B2c: neither tracked nor ignored (fresh project) is silent', (t) => {
+    const cwd = createTempDir('gsd-3586-w029-b2c-');
+    t.after(() => cleanup(cwd));
+    gitOrThrow(['init'], { cwd });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd });
+    gitOrThrow(['commit', '--allow-empty', '-m', 'initial'], { cwd });
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W029').check(snapshot), []);
+  });
+
+  test('B3: a degraded (UNREADABLE) probe produces zero findings — never a finding from a failed probe', (t) => {
+    const cwd = createTempDir('gsd-3586-w029-b3-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    // No `git init` at all — the probe degrades to UNREADABLE/not_a_git_repo.
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.notEqual(snapshot.planningTracked.scope, 'complete');
+    assert.deepEqual(ruleFor('W029').check(snapshot), []);
+  });
+
+  test('B4: field absent from the snapshot entirely is silent, no throw (forward/backward compat)', () => {
+    const fakeSnapshot = {}; // deliberately missing `planningTracked`
+    assert.doesNotThrow(() => {
+      assert.deepEqual(ruleFor('W029').check(fakeSnapshot), []);
+    });
+  });
+
+  test('B5: the RULES entry marks W029 non-repairable — ADVISE never auto-untracks', () => {
+    assert.equal(ruleFor('W029').repairable, false);
+  });
+
+  // ─── ENOBUFS overflow (#3586 review F2) — the field reads COMPLETE/tracked
+  // via the overflow-as-proof-of-tracking path, so the rule must still fire.
+  // Discriminates by argv (mirrors tests/planning-snapshot.test.cjs's own
+  // `mockGitSpawnEnobufs`) so `isGitIgnored`'s `check-ignore` call still runs
+  // against the real fixture `.gitignore`.
+
+  test('B1-enobufs: an ENOBUFS-overflowed ls-files still fires W029 (tracked is proof, not a failure)', (t) => {
+    const cwd = createTempGitProject('gsd-3586-w029-b1-enobufs-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const originalSpawnSync = childProcess.spawnSync;
+    t.mock.method(childProcess, 'spawnSync', (cmd, args, opts) => {
+      if (Array.isArray(args) && args.includes('ls-files')) {
+        return {
+          status: null,
+          stdout: '',
+          stderr: '',
+          signal: null,
+          error: Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' }),
+        };
+      }
+      return originalSpawnSync.call(childProcess, cmd, args, opts);
+    });
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snapshot.planningTracked.value.tracked, true);
+    assert.strictEqual(snapshot.planningTracked.scope, SCOPE.COMPLETE);
+
+    const diagnostics = ruleFor('W029').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W029');
+  });
+
+  // ─── C3 — negative-proof: --repair must NOT untrack anything ─────────────
+
+  test('C3: applyRepairs never applies the W029 remedy, and .planning/ stays tracked afterward', (t) => {
+    const cwd = createTempGitProject('gsd-3586-w029-c3-');
+    t.after(() => cleanup(cwd));
+    writeGitignore(cwd, '.planning/\n');
+    commitAll(cwd, 'add gitignore');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W029').check(snapshot);
+    assert.equal(diagnostics.length, 1);
+
+    const result = applyRepairs(cwd, diagnostics, /* repair */ true, /* backfill */ false);
+    assert.deepEqual(result.applied, []);
+    assert.deepEqual(result.refused, []);
+    assert.deepEqual(result.details, []);
+
+    // The tracked file must still be in the index — nothing was untracked.
+    const trackedAfter = gitOrThrow(['ls-files', '--', '.planning'], { cwd }).trim();
+    assert.ok(trackedAfter.length > 0, '.planning/ must still be tracked after a --repair run');
   });
 });

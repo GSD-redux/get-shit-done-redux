@@ -34,20 +34,23 @@ const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 
 const {
-  getDirName,
   getConfigDirFromHome,
   convertClaudeToCliineMarkdown,
   install,
   finishInstall,
   uninstall,
-  buildClineRulesBody,
-  buildClinePreToolUseHook,
-  buildClineAgentsMdBody,
-  mergeGsdAgentsMd,
   stripGsdFromAgentsMd,
   GSD_AGENTS_MD_MARKER,
   GSD_AGENTS_MD_CLOSE_MARKER,
 } = require('../bin/install.js');
+
+const { getDirName } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+const {
+  buildClineRulesBody,
+  buildClinePreToolUseHook,
+  buildClineAgentsMdBody,
+  mergeGsdAgentsMd,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 
@@ -191,6 +194,16 @@ describe('Cline install (local)', () => {
     finishInstall(null, null, null, false, 'cline', false, tmpDir);
     const settingsJson = path.join(tmpDir, 'settings.json');
     assert.ok(!fs.existsSync(settingsJson), 'settings.json must not be written for cline runtime');
+  });
+
+  test('install writes agents/gsd-*.md locally (regression: agents dropped when the inline agent-staging loop was deleted, #2875 Part 2)', () => {
+    install(false, 'cline');
+    const agentsDir = path.join(tmpDir, 'agents');
+    assert.ok(fs.existsSync(agentsDir), 'agents/ directory must exist after cline local install');
+    const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
+    assert.ok(agentFiles.length > 0, 'cline local install must write at least one gsd-*.md agent file');
+    const sample = fs.readFileSync(path.join(agentsDir, agentFiles[0]), 'utf8');
+    assert.match(sample, /^---\r?\nname: /, 'cline agent frontmatter must be Cline-dialect (name + description only)');
   });
 
   test('installed engine files have no leaked .claude paths', () => {

@@ -112,10 +112,10 @@ Select the right AI framework for Phase {phase_number}: {phase_name}
 Goal: {phase_goal}
 </objective>
 
-<files_to_read>
+<required_reading>
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <phase_context>
 Phase: {phase_number} — {phase_name}
@@ -161,10 +161,10 @@ Before editing, verify the section you are about to write is still a template pl
 <objective>
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 framework: {primary_framework}
@@ -196,11 +196,11 @@ Before editing, verify the section you are about to write is still a template pl
 <objective>
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 system_type: {system_type}
@@ -227,11 +227,11 @@ Write Sections 5, 6, and 7 of AI-SPEC.md
 AI-SPEC.md now contains domain context (Section 1b) — use it as your rubric starting point.
 </objective>
 
-<files_to_read>
+<required_reading>
 {ai_spec_path}
 {context_path if exists}
 {requirements_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 system_type: {system_type}
@@ -258,10 +258,8 @@ Read the completed AI-SPEC.md. Check that:
 
 ## 11. Commit
 
-**If `commit_docs` is true:**
 ```bash
-git add "${AI_SPEC_FILE}"
-git commit -m "docs({phase_slug}): generate AI-SPEC.md — {primary_framework} + domain context + eval strategy"
+gsd_run query commit "docs({phase_slug}): generate AI-SPEC.md — {primary_framework} + domain context + eval strategy" --files "${AI_SPEC_FILE}"
 ```
 
 ## 12. Display Completion

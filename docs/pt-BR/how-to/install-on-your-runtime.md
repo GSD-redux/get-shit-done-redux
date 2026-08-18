@@ -36,6 +36,8 @@ npx @opengsd/gsd-core@latest --claude --global
 
 As habilidades são instaladas em `~/.claude/`. Os comandos aparecem como slash commands `/gsd-*` na sua próxima sessão do Claude Code. Reinicie o Claude Code para carregá-los.
 
+**Instalação em ambos os escopos `--global` e `--local`.** Essa é uma configuração suportada, mas as próprias regras de resolução de gatilhos do Claude Code — escopo pessoal sobrepõe escopo de projeto, e uma skill sobrepõe um comando de mesmo nome — apontam para a mesma direção: a skill global sempre vence o gatilho `/gsd-<nome>` sobre o comando local. O GSD Core detecta isso e imprime qual escopo está vencendo logo após a instalação (e reporta o mesmo fato pelo `/gsd-health` como o diagnóstico `W028`); é um aviso, não uma falha — a instalação em si continua bem-sucedida. No escopo **global**, a referência da spec de workflow da skill vencedora é resolvida em tempo de execução em relação ao seu diretório de trabalho primeiro, então um projeto com seu próprio `.claude/gsd-core/` ainda obtém suas próprias specs mesmo que a skill global seja o que o Claude Code invoca.
+
 **Substituir o diretório de instalação:**
 
 ```bash

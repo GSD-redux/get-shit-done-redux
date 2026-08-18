@@ -1098,15 +1098,41 @@ describe('feat-3210: workflow and config contracts', () => {
       stepFile.includes('FALLOW.json'),
       'structural-pre-pass.md step file must reference the FALLOW.json output artifact',
     );
+  });
 
-    // Structural property: the config-gate fact is resolved from the real
-    // code_quality.fallow.enabled config key — checked against the resolver
-    // it was hoisted into (src/init.cts's detectFallowConfig).
-    const initSource = fs.readFileSync(path.join(ROOT, 'src', 'init.cts'), 'utf8');
-    assert.ok(
-      /detectFallowConfig[\s\S]{0,600}'code_quality'[\s\S]{0,40}'fallow'[\s\S]{0,40}'enabled'/.test(initSource),
-      'detectFallowConfig (src/init.cts) must gate on code_quality.fallow.enabled',
-    );
+  // #3508: behavioral replacement for the `detectFallowConfig` source-grep
+  // that used to sit here. `detectFallowConfig` (src/init.cts) is unexported,
+  // but its EFFECT is observable through `init code-review`'s `fallow_enabled`
+  // output field (wired at cmdInitCodeReview) -- driving the real CLI with
+  // code_quality.fallow.enabled set both ways proves detectFallowConfig
+  // resolves THAT config key specifically, without reading init.cts's source.
+  test('init code-review\'s fallow_enabled field tracks the code_quality.fallow.enabled config key (behavioral form of detectFallowConfig)', () => {
+    const tmpDir = createTempProject('gsd-fallow-detect-');
+    try {
+      const setTrue = runGsdTools(['config-set', 'code_quality.fallow.enabled', 'true'], tmpDir, { HOME: tmpDir });
+      assert.ok(setTrue.success, `config-set code_quality.fallow.enabled true failed: ${setTrue.error}`);
+
+      const trueResult = runGsdTools(['init', 'code-review', '1'], tmpDir, { HOME: tmpDir });
+      assert.ok(trueResult.success, `init code-review failed: ${trueResult.error}`);
+      assert.strictEqual(
+        JSON.parse(trueResult.output).fallow_enabled,
+        true,
+        'init code-review must report fallow_enabled: true once code_quality.fallow.enabled is set true',
+      );
+
+      const setFalse = runGsdTools(['config-set', 'code_quality.fallow.enabled', 'false'], tmpDir, { HOME: tmpDir });
+      assert.ok(setFalse.success, `config-set code_quality.fallow.enabled false failed: ${setFalse.error}`);
+
+      const falseResult = runGsdTools(['init', 'code-review', '1'], tmpDir, { HOME: tmpDir });
+      assert.ok(falseResult.success, `init code-review failed: ${falseResult.error}`);
+      assert.strictEqual(
+        JSON.parse(falseResult.output).fallow_enabled,
+        false,
+        'init code-review must report fallow_enabled: false once code_quality.fallow.enabled is set false',
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
   // B4: agent output contract — doc-parity check (approved fallback per config-schema-docs-parity

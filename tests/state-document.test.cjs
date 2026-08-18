@@ -1438,5 +1438,162 @@ describe('#3354 buildStateFrontmatter total_phases — milestoned-but-unbounded 
     );
   });
 });
+
+// #3573 — roadmap-absent sibling of the #3354 shape: when ROADMAP.md is
+// absent/unreadable while STATE.md asserts a milestone, the #549 heading counter
+// never runs (roadmapScope === null) and every state.* write persisted the on-disk
+// phase-directory count as progress.total_phases — counting only phases that have
+// STARTED, quietly defeating #549's single-source-of-truth (5 → 1 in the issue's
+// report). The stored frontmatter total must win, with a stderr warning.
+describe('#3573 total_phases — roadmap absent with an asserted milestone', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** Read the PERSISTED progress.total_phases straight out of STATE.md (the corruption is a file write, not a read derivation). */
+  function persistedTotalPhases(dir) {
+    const raw = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
+    const m = raw.match(/^\s{2}total_phases:\s*(\d+)\s*$/m);
+    return m ? Number(m[1]) : null;
+  }
+
+  function recordSession(dir, stoppedAt = 'Phase 1, Plan 1') {
+    return runNode(
+      [TOOLS_PATH, 'state', 'record-session', '--stopped-at', stoppedAt, '--resume-file', 'none'],
+      { cwd: dir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+  }
+
+  test('#3573: roadmap-absent write keeps the stored total_phases instead of the phase-directory count', () => {
+    // No ROADMAP.md at all — the issue's "scoping fails" endpoint. STATE asserts
+    // milestone v1.0 with a stored total of 5; one phase directory exists.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5 }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+    assert.match(
+      rec.stderr || '',
+      /\(#3573\)/,
+      `a stderr warning must name the roadmap-absent condition; got stderr=${JSON.stringify(rec.stderr)}`,
+    );
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      5,
+      `total_phases must stay at the stored 5, not the phase-directory count of 1`,
+    );
+  });
+
+  test('#3573: begin-phase write keeps the stored total_phases (second issue-named verb)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5, currentPhase: '02' }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'begin-phase', '2'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state begin-phase failed: ${rec.stderr}`);
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      5,
+      `total_phases must stay at the stored 5 across begin-phase's frontmatter resync`,
+    );
+  });
+
+  test('#3573: no milestone asserted + roadmap absent keeps the directory count (fresh-project doctrine)', () => {
+    // The #3354 doctrine: with nothing declared anywhere else, the disk count is
+    // the only source and stays authoritative. A milestone-less STATE must keep
+    // deriving total_phases from the directories — stored 5, dirs 2, expect 2,
+    // so the row DISCRIMINATES: a withhold that fires without the milestone
+    // gate would leave 5 and fail here (mutation-kill guard).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'none', totalPhases: 5 }).replace(/^milestone: none$/m, ''),
+    );
+    seedPhaseDirs(tmpDir, [1, 2]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      2,
+      `without an asserted milestone, the directory count (2) remains the source — not the stored 5`,
+    );
+  });
+
+  test('#3573: state json read surface agrees with the persisted file (write/read parity)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5 }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    const out = JSON.parse(jsonResult.output);
+    assert.strictEqual(
+      Number(out.progress && out.progress.total_phases),
+      5,
+      `#3573 read parity: state json must report the preserved stored 5, not the dir count of 1. Got ${out.progress && out.progress.total_phases}`,
+    );
+  });
+
+  test('#3573: planned-phase write keeps the stored total_phases (third issue-named verb)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5, currentPhase: '02' }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'planned-phase', '2', '--name', 'Core'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state planned-phase failed: ${rec.stderr}`);
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      5,
+      `total_phases must stay at the stored 5 across planned-phase's frontmatter resync`,
+    );
+  });
+
+  test('#3573 (control): roadmap-present scoped write derives from headings, unchanged', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.0', '', ...[1, 2, 3, 4, 5].map((i) => `### Phase ${i}: p${i}`), ''].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMd({ milestone: 'v1.0', totalPhases: 5 }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+    assert.strictEqual(
+      persistedTotalPhases(tmpDir),
+      5,
+      `scoped roadmap keeps the heading-derived total of 5`,
+    );
+  });
+});
   });
 }

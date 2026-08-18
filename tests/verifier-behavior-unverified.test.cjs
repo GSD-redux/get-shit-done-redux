@@ -81,13 +81,18 @@ test('PARITY: per-truth state never leaks into the overall-status vocabulary', (
 });
 
 test('overall-status enum in verification.cts is unchanged (no per-truth leak)', () => {
-  const cts = fs.readFileSync(path.join(ROOT, 'src', 'verification.cts'), 'utf-8');
-  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded src/verification.cts source, not adversarial input
-  const m = cts.match(/VERIFIER_STATUSES[^=]*=\s*\[([^\]]*)\]/);
-  assert.ok(m, 'VERIFIER_STATUSES array must be present');
-  assert.doesNotMatch(m[1], /present_behavior_unverified/i);
+  // Assert on the real exported runtime value rather than regexing the
+  // source text — strictly stronger (exercises the built module) and
+  // immune to source formatting changes.
+  const verificationLib = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'verification.cjs'));
+  const { VERIFIER_STATUSES } = verificationLib;
+  assert.ok(Array.isArray(VERIFIER_STATUSES), 'VERIFIER_STATUSES array must be present');
+  assert.ok(
+    !VERIFIER_STATUSES.includes('present_behavior_unverified'),
+    'VERIFIER_STATUSES must not leak the per-truth present_behavior_unverified state',
+  );
   for (const s of ['passed', 'gaps_found', 'human_needed']) {
-    assert.match(m[1], new RegExp(`'${s}'`));
+    assert.ok(VERIFIER_STATUSES.includes(s), `VERIFIER_STATUSES must contain ${s}`);
   }
 });
 
@@ -196,3 +201,48 @@ describe('bug #3321: gsd-verifier runs probes instead of trusting SUMMARY claims
 });
   });
 }
+
+// ─── #3206: explicit-evidence definition inline + cite resolution ────────────
+// The agent file IS the deployed product; content assertions test the shipped
+// contract (same basis as every test above).
+
+const verifierPhaseGatesPath = path.join(ROOT, 'gsd-core', 'references', 'verifier-phase-gates.md');
+const verifierPhaseGates = fs.readFileSync(verifierPhaseGatesPath, 'utf-8');
+
+test('#3206: step 5b defines explicit evidence inline — presence+wiring never qualifies', () => {
+  const m = verifier.match(/5b\.\s+\*\*Non-inferable[^\r\n]{0,400}/);
+  assert.ok(m, 'step 5b line must exist');
+  assert.match(m[0], /held-out\/property-based test/i);
+  assert.match(m[0], /directly observed/i);
+  assert.match(m[0], /presence\+wirting|presence\+wiring/i);
+  assert.match(m[0], /\*never\* qualifies/, 'presence+wiring must be excluded in the 5b line itself');
+});
+
+test('#3206: every references-tree cite in gsd-verifier.md resolves on disk as written', () => {
+  // Pre-fix, this file cited `references/honest-verifier.md` — a bare path that
+  // 404s from repo root after the reference-tree reorg. Every cite must now
+  // resolve exactly as written.
+  const citeRe = /`((?:gsd-core\/)?references\/[A-Za-z0-9._-]+\.md)`/g;
+  const cites = [...verifier.matchAll(citeRe)].map((m) => m[1]);
+  assert.ok(cites.includes('gsd-core/references/honest-verifier.md'), 'the 5c honest-verifier cite');
+  assert.ok(cites.includes('gsd-core/references/verify-mvp-mode.md'), 'the MVP-mode cite');
+  assert.ok(cites.length >= 2, `expected the two repaired cites, found ${cites.length}`);
+  for (const cited of cites) {
+    assert.ok(
+      fs.existsSync(path.join(ROOT, cited)),
+      `gsd-verifier.md cites \`${cited}\` but no such file exists — the agent is handed a path that does not resolve (#3206)`,
+    );
+  }
+});
+
+test('#3206: backstop reporting contract is in the eagerly-included verifier-phase-gates.md', () => {
+  // The AFK-projection and insufficient_spec-distinctness clauses must be
+  // reachable from the agent's guaranteed reading path: verifier-phase-gates.md
+  // is @~/-included by gsd-verifier.md, so pinning their presence there pins
+  // their reachability.
+  assert.match(verifier, /@~\/\.claude\/gsd-core\/references\/verifier-phase-gates\.md/);
+  assert.match(verifierPhaseGates, /Never silent, never a hard halt/);
+  assert.match(verifierPhaseGates, /complete with N unverified non-inferable checks/);
+  assert.match(verifierPhaseGates, /Distinguishable reason/);
+  assert.match(verifierPhaseGates, /reason: insufficient_spec/);
+});

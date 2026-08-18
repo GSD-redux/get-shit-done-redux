@@ -14,6 +14,13 @@ The command file contract defines what makes a valid `commands/gsd/*.md`:
 - `allowed-tools:` block present and non-empty, all entries from the canonical tool set
 - Every `@`-reference inside `<execution_context>` blocks resolves to an existing file on disk
 - `@`-references inside `<execution_context>` blocks appear on their own line (no trailing prose)
+- Every `gsd-core/workflows/*.md` file is reachable from at least one `commands/`, `agents/`, or `skills/` loader, transitively through `gsd-core/**` (#3560)
+
+The first five checks are per-file frontmatter/body rules. The sixth is a different concern in kind: a repo-level reachability graph, computed once per run rather than per command file. It walks every markdown file under `commands/`, `agents/`, and `skills/` as loader seeds, then follows references transitively through `gsd-core/**` (not just `gsd-core/workflows/`, since a `references/` or `templates/` file can itself name a workflow path) until every reachable workflow file is marked. Any `gsd-core/workflows/*.md` file left unmarked is reported as an orphan.
+
+A reference is recognized in three shapes: an eager `@`-include (the same `<execution_context>` syntax the first five checks already parse), a lazy path named only in prose or code that a command reads on demand rather than inlines, and a parent-relative sub-file path (`execute-phase/steps/post-merge-gate.md`) implicitly rooted under `workflows/`.
+
+Reachability is seeded only from loaders, never from a workflow file's own content — a workflow that references itself, or two workflows that reference only each other, must still be reported as unreachable, since no command, agent, or skill loader ever actually opens them. `docs/` and test fixtures deliberately do not count as loaders: a path merely mentioned in documentation or a test does not make it reachable by any runtime — only `commands/`, `agents/`, and `skills/` do.
 
 ## Context
 

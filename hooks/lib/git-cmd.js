@@ -39,6 +39,7 @@ const { tokenizeShellLike } = require(path.join(__dirname, '..', '..', 'gsd-core
  */
 const ARGUMENT_TAKING_FLAGS = new Set([
   '-C',                // working directory
+  '-c',                // config override (separate-arg form: `git -c k=v …`; #3504)
   '--git-dir',         // path to git repository
   '--work-tree',       // path to working tree
   '--namespace',       // git namespace
@@ -100,6 +101,14 @@ function skipToSubcommand(tokens) {
     const flagName = eqIdx !== -1 ? t.slice(0, eqIdx) : t;
     if (ARGUMENT_TAKING_FLAGS.has(flagName)) {
       i += eqIdx !== -1 ? 1 : 2;
+      continue;
+    }
+    // #3504: glued `-ckey=value` form — git accepts the config override with
+    // its argument attached (`git -cfoo.bar=1 …`). The eq-slice above yields
+    // flagName `-cfoo`, which no set contains, so without this arm the walk
+    // stops and the whole invocation is misclassified as not-git.
+    if (/^-c\S*=/.test(t)) {
+      i++;
       continue;
     }
     if (BOOLEAN_FLAGS.has(t)) {
@@ -171,4 +180,4 @@ function isGitSubcommand(cmd, sub) {
   return tokens[subIdx] === sub;
 }
 
-module.exports = { isGitSubcommand, tokenize, extractBranchArgument };
+module.exports = { isGitSubcommand, tokenize, extractBranchArgument, skipToSubcommand };

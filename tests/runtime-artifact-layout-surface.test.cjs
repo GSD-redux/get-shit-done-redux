@@ -392,7 +392,7 @@ describe('applySurface', () => {
   // both paths must produce identical sets.
   test('applySurface command-dir filenames match a fresh install for every command runtime (#816 parity)', async (t) => {
     process.env.GSD_TEST_MODE = '1';
-    const { installRuntimeArtifacts } = require('../bin/install.js');
+    const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
 
     const manifest = loadSkillsManifest(REAL_COMMANDS_DIR);
     // Build the resolved profile once. Both install and surface sides must use

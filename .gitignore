@@ -77,6 +77,7 @@ build/
 /gsd-core/bin/lib/host-integration-adapters/cline-sdk-binding.cjs
 /gsd-core/bin/lib/handshake-serialized.cjs
 /gsd-core/bin/lib/install-effort-resolver.cjs
+/gsd-core/bin/lib/install-model-override-resolver.cjs
 /gsd-core/bin/lib/install-engine.cjs
 /gsd-core/bin/lib/embedding-adapter.cjs
 /gsd-core/bin/lib/adapter-declarative.cjs
@@ -213,11 +214,15 @@ build/
 /gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs
 /gsd-core/bin/lib/health-diagnostic-rules/milestone-archive-hygiene.cjs
 /gsd-core/bin/lib/health-diagnostic-rules/consistency.cjs
+/gsd-core/bin/lib/health-diagnostic-rules/install-surface-shadowing.cjs
 /gsd-core/bin/lib/command-roster.cjs
 /gsd-core/bin/lib/runtime-artifact-conversion.cjs
 /gsd-core/bin/lib/runtime-artifact-layout.cjs
 /gsd-core/bin/lib/install-scope.cjs
+/gsd-core/bin/lib/install-fs-adapter.cjs
+/gsd-core/bin/lib/user-artifact-staging.cjs
 /gsd-core/bin/lib/installed-surface-resolver.cjs
+/gsd-core/bin/lib/install-shadow-report.cjs
 /gsd-core/bin/lib/runtime-config-adapter-registry.cjs
 /gsd-core/bin/lib/runtime-hooks-surface.cjs
 /gsd-core/bin/lib/command-routing-hub.cjs
@@ -288,6 +293,15 @@ __pycache__/
 venv/
 target/
 vendor/
+# Vendored third-party artifacts under version control on purpose — see
+# gsd-core/bin/lib/vendor/README.md. bin/** must have zero external requires
+# (installed trees ship with no node_modules), so this one directory is a
+# deliberate, tracked exception to the blanket `vendor/` ignore above.
+!/gsd-core/bin/lib/vendor/
+# Source-side twin (tsc resolves a .cts module's relative imports against
+# src/, not the output dir) of the same vendored artifact — see
+# scripts/lint-vendored-deps.cjs, which keeps both copies in sync.
+!/src/vendor/
 *.log
 .cache/
 tmp/

@@ -1,7 +1,7 @@
 {
   "name": "multi-workstream",
   "fixture": "greenfield",
-  "notes": "The point of this scenario is workstream isolation: create two workstreams, populate only one, and prove progress stays isolated per-`--ws` in both directions (populated vs empty, and switching back and forth). No payload field names the active workstream, so monotonic-progress's oracle derives scope from the invocation's own `--ws <name>` argv token — a workstream switch is a scope change, so an apparent counter reset when switching to an untouched workstream is a SMELL, never a VIOLATION. Do not trim/reorder these steps to dodge the oracle — the isolation crossing IS the scenario.",
+  "notes": "The point of this scenario is workstream isolation: create two workstreams, populate only one, and prove progress stays isolated per-`--ws` in both directions (populated vs empty, and switching back and forth). No payload field names the active workstream, so monotonic-progress's oracle derives scope from the invocation's own `--ws <name>` argv token — a workstream switch is a scope change, so an apparent counter reset when switching to an untouched workstream is a SMELL, never a VIOLATION. Do not trim/reorder these steps to dodge the oracle — the isolation crossing IS the scenario. The final step asserts a real percentage because the workstream's own ROADMAP (`.planning/workstreams/alpha/ROADMAP.md`) scopes the milestone window for `--ws alpha`; `phase_scope` is asserted alongside `percent` so a regression to the #3597 root/workstream scope mismatch — which made `listMilestonePhaseDirs` read the milestone window against the ROOT ROADMAP while counting phase directories from the WORKSTREAM's own phases dir, reporting `phase_scope: unreadable` and withholding `percent` — is caught immediately.",
   "steps": [
     {
       "at": "discuss:post",
@@ -58,6 +58,7 @@
       "expect": [
         { "path": "total_plans", "is": 1 },
         { "path": "total_summaries", "is": 1 },
+        { "path": "phase_scope", "is": "complete" },
         { "path": "percent", "is": 100 }
       ]
     },

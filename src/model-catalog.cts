@@ -325,6 +325,13 @@ export function renderEffortArgv(
  * Render a universal effort string for a specific runtime.
  */
 export function renderEffortForRuntime(runtime: string, universalEffort: string): RenderedEffort {
+  // #3533 (10d): 'inherit' is not a wire level on ANY runtime — it means
+  // "omit the key / pass no argument and follow the session/host default".
+  // Renderers must never emit it as a literal; null param/channel tells
+  // resolve-execution consumers there is no propagation.
+  if (universalEffort === 'inherit') {
+    return { value: 'inherit', param: null, channel: null };
+  }
   const spec = EFFORT_RENDERING[runtime];
   if (!spec) {
     return { value: universalEffort, param: null, channel: null };
@@ -334,6 +341,37 @@ export function renderEffortForRuntime(runtime: string, universalEffort: string)
     param: spec.param,
     channel: spec.channel,
   };
+}
+
+/**
+ * #3531 (10c) — Merge a config `effort.routing_tier_defaults` block over the
+ * manifest tier defaults instead of replacing them. A partial config must not
+ * discard built-ins: per tier, a valid override value wins and an invalid one
+ * is ignored so the manifest value for that tier surfaces (ADR-443 D1's
+ * "invalid values fall through" holds within the merged layer).
+ *
+ * Pure: returns a new object and never mutates either input — the manifest
+ * constants (`CANONICAL_CONFIG_DEFAULTS`, the catalog cache) stay frozen. The
+ * validator is injected because `EFFORT_SET` lives in model-resolver, which
+ * imports this leaf (a reverse import would be a cycle); both effort
+ * resolvers pass their own `(v) => typeof v === 'string' && EFFORT_SET.has(v)`.
+ */
+export function mergeEffortTierDefaults(
+  manifest: Record<string, string> | null | undefined,
+  override: unknown,
+  isValid: (v: unknown) => boolean,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...(manifest || {}) };
+  if (override && typeof override === 'object' && !Array.isArray(override)) {
+    for (const [tier, value] of Object.entries(override as Record<string, unknown>)) {
+      // House pollution guard (mirrors _deepMergeConfig in config-loader): the
+      // string-only validator already makes these inert, but an explicit skip
+      // keeps this merge safe even if a caller's validator is ever relaxed.
+      if (tier === '__proto__' || tier === 'constructor' || tier === 'prototype') continue;
+      if (isValid(value)) merged[tier] = value as string;
+    }
+  }
+  return merged;
 }
 
 // ─── Fast mode propagation ───────────────────────────────────────────────────

@@ -795,19 +795,49 @@ Some tests legitimately read source files. There are six recognized categories:
 | `structural-implementation-guard` | A feature's interception or wiring point is not reachable end-to-end via `runGsdTools`. Used temporarily until a behavioral path exists. |
 | `pending-migration-to-typed-ir` | **Tracked for correction, not exempted.** Test was identified by the lint as carrying a raw-text-matching pattern that contradicts the rule above. Each annotated file MUST cite the open migration issue (e.g. `// allow-test-rule: pending-migration-to-typed-ir [#NNNN]`) so the tracking is auditable. New tests cannot use this category — they must refactor production to expose typed IR. The annotation is removed when the test is corrected. |
 
-Annotate with a standalone `//` comment before the file's opening block comment:
+**Suppression is site-scoped, not file-wide.** A marker suppresses only the violation it sits next
+to. Put it immediately above the flagged line — or trailing on that line — with nothing but blank
+lines and other comment lines in between, and no more than **8 lines** above it
+(`MAX_MARKER_LOOKAHEAD_LINES` in `eslint-rules/no-source-grep.cjs`). A single line of real code
+between the marker and the call ends the window, even when the two are physically close.
 
 ```javascript
-// allow-test-rule: architectural-invariant
-// state.cjs locking must use Atomics.wait(), not a spin-loop. Behavioral tests
-// cannot observe which sleep primitive was chosen — only source inspection can.
-
-/**
- * Regression tests for locking bugs #1909...
- */
+test('locking uses Atomics.wait, not a spin-loop', () => {
+  // allow-test-rule: architectural-invariant (#1909)
+  // state.cjs locking must use Atomics.wait(). Behavioral tests cannot observe
+  // which sleep primitive was chosen — only source inspection can.
+  const src = fs.readFileSync(STATE_PATH, 'utf8');
+  assert.ok(src.includes('Atomics.wait'));
+});
 ```
 
-The annotation **must** be a standalone `// allow-test-rule:` line, not inside a `/** */` block comment — the CI linter scans for the pattern `// allow-test-rule:`.
+A violation is a **read + search pair**, and a marker adjacent to *either* half suppresses it — so
+annotating the `readFileSync` directly (the intuitive placement) works just as well as annotating
+the `.includes()`.
+
+> **A marker parked at the top of the file no longer suppresses anything below it.** Before #3508
+> suppression was file-wide, so one justified exemption silently absolved every other source-grep
+> in that file — including ones added later by someone else. If you are copying the old
+> file-header placement from an existing test, it is almost certainly inert: the file's `require`
+> block sits between it and the code, and real code closes the window.
+
+The annotation **must** be a standalone `// allow-test-rule:` line — the marker text must be the
+first thing on its comment line (a leading JSDoc `*` is fine), not buried mid-sentence in prose.
+The reason **must** cite a tracking issue (`#NNN`) or an `https://` URL, per
+[ADR-456](docs/adr/456-test-rigor-architecture.md); `scripts/lint-allow-test-rule-refs.cjs` fails
+the build on an uncited one.
+
+That gate reports two separate numbers, and they mean different things:
+
+| Number | Meaning | Gated? |
+|---|---|---|
+| **Effective exemptions** | markers that actually suppress a violation the rule detects | tightly ratcheted — it may only go down |
+| **Unverified markers** | marker-bearing files where the rule detects nothing to suppress | tracked with a loose ceiling; growth fails, shrinkage never does |
+
+A marker landing in the *unverified* bucket does **not** mean it is vestigial and safe to delete —
+it usually means the rule cannot yet see the read (identifier indirection, a dynamic path, a `.sh`
+file). Shrinking that pool is a rule-coverage job backed by measurement, not a delete-the-markers
+job.
 
 ### Prohibited: Raw Text Matching on Test Outputs (file content, stdout, stderr)
 
@@ -1088,6 +1118,74 @@ with a free-text reason is reported as a malformed declaration rather than as an
 commit, so you are told which of the two problems you actually have. A marker that
 survives shell tokenization as an *argument* declares nothing: it reached argv, which
 means the runtime executed the line.
+
+### Every `git add` in shipped content that can reach `.planning/` must sit inside an *executable* `commit_docs` check
+
+`tests/commit-docs-bypass.test.cjs` scans every `.md` under `gsd-core/workflows/`,
+`gsd-core/references/`, `agents/`, `commands/` and `skills/` and fails if a `git add` that could
+stage `.planning/` is not enclosed by a `commit_docs` check that actually runs.
+
+This is the sibling of the `--files` guard above, and it exists for the complementary hole.
+That one keeps a *seam* invocation honest; this one catches the steps that never reach the seam
+at all. `commit_docs` is resolved and enforced inside `cmdCommit`, so a step that types
+`git add` into its own shell bypasses it completely — no code change can intercept that, only a
+guard over the shipped text.
+
+**Prose is not a guard.** This is the failure the scan was written for. All three of these
+*looked* gated and none of them were:
+
+````markdown
+**If `commit_docs` is true:**
+```bash
+git add "${EVAL_REVIEW_FILE}"          ← runs unconditionally; the bold line is markdown
+```
+````
+
+The bash block executes whatever the sentence above it says. Write the check in shell, which is
+the form `gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md` already uses:
+
+```bash
+COMMIT_DOCS=$(gsd_run query config-get commit_docs 2>/dev/null || echo "true")
+if [ "$COMMIT_DOCS" != "false" ]; then
+  git add "${ARTIFACT}"
+fi
+```
+
+Both polarities are accepted (`!= "false"` and `= "true"`). The `|| echo "true"` fallback is
+deliberate: a tooling failure must fail *open*, or a broken `gsd-tools` silently stops committing
+planning docs for someone who wants them.
+
+Three consequences worth knowing before you edit shipped content:
+
+**Guard state does not cross a fenced block.** Each fenced block is its own shell, so an `if`
+opened in one block does not protect a `git add` in the next — the same reason
+`new-milestone.md` warns that a `GSD_WS` guard set in an earlier step reads as unset later. Put
+the check and the `git add` in the same block.
+
+**An unresolvable path is treated as reaching `.planning/`.** `git add "${ARTIFACT}"` is flagged,
+because whether `$ARTIFACT` expands under `.planning/` is not knowable statically and the scan
+fails closed. A `{placeholder}` in braces with no `$` is documentation notation and does not
+trigger it. If your `git add` genuinely cannot touch `.planning/`, name the path literally.
+
+**Only fenced lines are scanned.** Inline-backtick prose — including the anti-pattern
+documentation that tells you never to run `git add -A` — is not executable and is not flagged.
+
+The same `# gsd-scan-ignore: #NNN` declaration as the `--files` guard exempts a deliberate
+counter-example, on the invocation's own line, in shell-comment position, with a reason naming a
+tracking issue or URL. Both guards share one tokenizer and one marker implementation
+(`tests/helpers/shipped-command-scan.cjs`) so the two conventions can never drift into two rules
+wearing one name.
+
+**Known limits.** The scan (`tests/helpers/planning-add-guard.cjs`) is a token-oriented text scan,
+not a shell interpreter, and it targets accidental reintroduction of an unguarded stage by a
+contributor editing shipped content — not a determined bypass. Four shapes are confirmed (#3585)
+to stage `.planning/` at runtime while scoring zero offenders, and none is a shape GSD content
+actually uses: `eval "git add -A"`, `find .planning -type f | xargs git add`, a one-line shell
+function body (`f() { git add -A; }`), and a backslash line-continuation split across two physical
+lines. The scan also only models `git add` and `git commit -a`/`--all` as staging commands — it
+does not recognize `git stash`, `git rm --cached`, `git restore --staged`, or
+`git update-index --add`, any of which can also move `.planning/` content into a state a later
+commit picks up.
 
 ### CI Test Quality Checks
 

@@ -22,8 +22,30 @@ process.env['GSD_TEST_MODE'] = '1';
 const {
   copyWithPathReplacement,
   installCodexConfig,
-  _copyStaged,
+  _resolveUserArtifactStagingRoot: _installJsResolveUserArtifactStagingRoot,
+  _tryResolveUserArtifactStagingRoot: _installJsTryResolveUserArtifactStagingRoot,
+  install,
+  uninstall,
 } = require('../bin/install.js');
+const {
+  _copyStaged,
+} = require('../gsd-core/bin/lib/install-engine.cjs');
+
+// #2875 (epic #2866 Phase 6): user-artifact-staging confinement rows (E1-E5).
+// Top-level (not inside any of the folded `__foldDescribe` sections below,
+// which each scope their own requires to their own closure).
+const {
+  assertDestWithinConfigHome: _uasAssertDestWithinConfigHome,
+} = require('../gsd-core/bin/lib/runtime-artifact-install-plan.cjs');
+const {
+  _resolveUserArtifactStagingRoot,
+  _tryResolveUserArtifactStagingRoot,
+} = require('../gsd-core/bin/lib/install-engine.cjs');
+const {
+  recoverOrphanedUserArtifacts,
+  stageUserArtifacts,
+  restoreStagedUserArtifacts,
+} = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
 // ---------------------------------------------------------------------------
 // copyWithPathReplacement
@@ -2284,14 +2306,28 @@ describe('#2393: GSD_ALLOW_SYMLINKED_DEST opt-in for intentional symlinked-dest 
     }
   });
 
-  // Documented edge case: a broken symlink (target missing) is silently passed by
-  // both the default and opt-in paths. fs.existsSync follows the link and returns
-  // false, so the component loop terminates before the symlink check fires. This is
-  // pre-existing behavior — the fix preserves it. Subsequent mkdir may then fail or
-  // create the path through the resolved target; that's the caller's responsibility,
-  // not the symlink-escape guard's. Test pins the current behavior so any future
-  // change (e.g. switching to lstatSync for existence) is intentional.
-  test('broken symlink: silently passed (current behavior, preserved by fix)', (t) => {
+  // #2875 defect fix — REVERSES the previously-pinned "silently passed" contract
+  // this test used to name. The old reasoning ("existsSync(cursor) follows the
+  // link -> false -> loop terminates before the symlink check ever fires; the
+  // caller's subsequent mkdir/write is responsible for whatever happens next")
+  // no longer holds: an adversarial reviewer showed the "caller's responsibility"
+  // it rested on is unenforceable in practice — user-artifact-staging.cts's
+  // recovery path reads a staged file NAME out of an attacker-influenceable
+  // on-disk record (`record.json`) and writes through it without a human in the
+  // loop to notice a bad write; a dangling symlink planted at that destination
+  // (e.g. `<configDir>/USER-PROFILE.md -> <outside>/authorized_keys`) let the
+  // actual copy/write follow it and land attacker-chosen content OUTSIDE the
+  // install root, reproduced end-to-end. hasExistingSymlinkBetween now probes
+  // each path segment with `lstatSync` FIRST (see install-engine.cts's own doc
+  // comment on this change), which — unlike `existsSync` — never follows a
+  // symlink and succeeds for a dangling one, so a dangling symlink is now
+  // correctly seen AS a symlink component instead of "nothing here". The guard's
+  // promise is now: a dangling symlink anywhere on the path between root and
+  // destDir is refused exactly like a live one — default refuses outright,
+  // opt-in attempts to follow it (`realpathSync`) and, finding no target,
+  // refuses too (fail-closed on a broken symlink, same posture used elsewhere in
+  // this function for a `realpathSync` failure).
+  test('broken symlink: now refused by both the default and opt-in paths (#2875 fix)', (t) => {
     const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2393-broken-'));
     try {
       const danglingLink = path.join(configHome, 'skills');
@@ -2304,18 +2340,19 @@ describe('#2393: GSD_ALLOW_SYMLINKED_DEST opt-in for intentional symlinked-dest 
       }
       const destDir = path.join(danglingLink, 'gsd-foo');
 
-      // existsSync(danglingLink) follows the link → false → loop returns false early.
-      // Same behavior with and without opt-in. Test documents this so a future
-      // refactor (e.g. lstatSync-based existence) is a deliberate behavior change.
+      // lstatSync(danglingLink) succeeds (it IS a symlink, just a dangling one) —
+      // the segment loop now sees it as a symlink component and refuses.
       assert.strictEqual(
         hasExistingSymlinkBetween(configHome, destDir),
-        false,
-        'broken symlink: component loop terminates early (existsSync follows link → false)',
+        true,
+        'broken symlink: default path now refuses — lstatSync sees the dangling symlink as a symlink component',
       );
+      // Opt-in attempts to follow it via realpathSync, which throws ENOENT for a
+      // missing target — refused (fail-closed), not silently passed through.
       assert.strictEqual(
         hasExistingSymlinkBetween(configHome, destDir, { allowOptInFollow: true }),
-        false,
-        'broken symlink with opt-in: same early-termination behavior',
+        true,
+        'broken symlink with opt-in: realpathSync on a dangling target fails, so this refuses too (fail-closed)',
       );
     } finally {
       try { fs.unlinkSync(path.join(configHome, 'skills')); } catch { /* already gone */ }
@@ -2497,5 +2534,651 @@ describe('_installNativePluginIfDeclared write-confinement', () => {
       cleanup(configDir);
       cleanup(src);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 (epic #2866 Phase 6): User Artifact Staging confinement — E1-E5
+// (.gsd/phase/feat-2875-materialization-primitives/50-test-matrix.md
+// "E. Confinement"). Every row reuses assertDestWithinConfigHome /
+// hasExistingSymlinkBetween rather than a bespoke check — see
+// _resolveUserArtifactStagingRoot's own doc comment (install-engine.cts) and
+// user-artifact-staging.cts's module doc "Confinement".
+// ---------------------------------------------------------------------------
+
+describe('#2875: user-artifact-staging confinement (E1-E5)', () => {
+  test('E1: the staging root resolves through assertDestWithinConfigHome — an escaping subpath is refused by the SAME guard _resolveUserArtifactStagingRoot uses', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e1-'));
+    try {
+      // The real staging subpath ('.gsd-staging/user-artifacts') is a fixed
+      // literal that can never escape — so this asserts the PROPERTY the
+      // call site depends on directly against the same primitive, rather
+      // than trying to force an unreachable escape through the real API.
+      assert.throws(
+        () => _uasAssertDestWithinConfigHome(configDir, path.join('..', '..', 'etc', 'staging')),
+        /escap|strict subpath|configHome/i,
+      );
+      // The real call resolves cleanly and stays confined.
+      const stagingRoot = _resolveUserArtifactStagingRoot(configDir);
+      assert.ok(path.resolve(stagingRoot).startsWith(path.resolve(configDir) + path.sep));
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('E2: recovery refuses a record naming a destDir outside confinement — never writes outside it', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e2-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e2-outside-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'attackerentry0000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'pwned.md'), 'attacker-controlled content');
+      // The record is attacker-influenced data — it names a destDir OUTSIDE
+      // configDir entirely.
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: outside, names: ['pwned.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0);
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
+      assert.ok(!fs.existsSync(path.join(outside, 'pwned.md')), 'must never write outside confinement');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  test('E3: ..-traversal in a staged file name is rejected', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e3-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const entryDir = path.join(stagingRoot, 'traversalentry000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['../../../etc/passwd'], timestamp: new Date().toISOString() }),
+      );
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'traversal name must never be restored');
+      // Neither the previous assertion (checked a path one level further up
+      // than production ever resolves, so it could never fail) nor a naive
+      // `resolve(destDir, name)` check (which, on a Linux runner, resolves to
+      // the REAL /etc/passwd — a file that pre-exists on disk regardless of
+      // whether this guard works, so `!existsSync(...)` fails unconditionally
+      // and proves nothing) exercises what the guard actually does. Trace the
+      // real call order in recoverOrphanedUserArtifacts: `srcPath =
+      // assertDestWithinConfigHome(filesDir, name)` is computed and throws
+      // FIRST — filesDir (`<stagingRoot>/<entry>/files`) is nested several
+      // levels below configDir, and `../../../etc/passwd` resolved against it
+      // still escapes filesDir's own root, so this throw fires before
+      // `destPath` (against confinedDestDir) is ever computed and before any
+      // read/write is attempted. The observable, platform-independent proof
+      // that the traversal was rejected — not merely that some unrelated
+      // system file didn't get overwritten — is that destDir's own directory
+      // listing stays exactly as this test left it: no file materialized
+      // there via the traversal name.
+      assert.deepStrictEqual(
+        fs.readdirSync(destDir), [],
+        'a rejected traversal name must never result in any file being written into destDir',
+      );
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('E4: a symlinked staging root is refused — same refusal as the existing dest guard', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e4-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e4-elsewhere-'));
+    try {
+      // Pre-create .gsd-staging as a symlink pointing outside configDir —
+      // exactly the threat hasExistingSymlinkBetween's root-symlink refusal
+      // (install-engine.cts) already covers for every other write on this
+      // call tree.
+      fs.symlinkSync(elsewhere, path.join(configDir, '.gsd-staging'));
+      assert.throws(
+        () => _resolveUserArtifactStagingRoot(configDir),
+        /symlink/i,
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(elsewhere);
+    }
+  });
+
+  test('E5: a NUL byte in a staged file name is rejected', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e5-'));
+    try {
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const entryDir = path.join(stagingRoot, 'nulbyteentry00000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['USER-PROFILE\u0000.md'], timestamp: new Date().toISOString() }),
+      );
+      let result;
+      assert.doesNotThrow(() => { result = recoverOrphanedUserArtifacts(stagingRoot, configDir); });
+      assert.equal(result.recovered.length, 0, 'NUL-byte name must never be restored');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  // #2875 defect fix: C2's "never overwrite" guard was `existsSync`-based,
+  // which FOLLOWS symlinks and reports `false` for a DANGLING one — invisible
+  // to the guard, so it never refused. A dangling symlink AT the recovered
+  // destination let `copyFileSync`/`symlinkSync` (which DO follow it) write
+  // outside `configDir`.
+  test('E6: a dangling symlink at the recovered destination is treated as already-present, never written through', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e6-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e6-outside-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'orphaned-content');
+      // user-artifact-staging.cts's owner-liveness guard (recoverOrphanedUserArtifacts)
+      // treats a record whose `runId` belongs to a currently-live process as
+      // "not an orphan yet" and skips the ENTIRE entry with reason
+      // 'owner-still-live' — before ever reaching the per-name
+      // dest-already-present check this test pins. `stageUserArtifacts`
+      // defaults `runId` to `String(process.pid)`, i.e. THIS test process,
+      // which is trivially alive for the whole duration of this in-process
+      // test. A real crashed run has a genuinely DEAD pid, so simulating one
+      // here requires an explicit dead `runId` — same convention
+      // tests/user-artifact-staging.test.cjs's C15 already establishes.
+      const deadPid = '999999';
+      stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: deadPid });
+      cleanup(path.join(destDir, 'USER-PROFILE.md'));
+
+      const outsideTarget = path.join(outside, 'authorized_keys');
+      fs.symlinkSync(outsideTarget, path.join(destDir, 'USER-PROFILE.md'));
+      assert.ok(!fs.existsSync(outsideTarget), 'the symlink target must not exist — this is the DANGLING case');
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — the dangling symlink counts as already-present');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'dest-already-present');
+      assert.ok(!fs.existsSync(outsideTarget), 'must never write through the dangling symlink to outsideTarget');
+      assert.ok(fs.lstatSync(path.join(destDir, 'USER-PROFILE.md')).isSymbolicLink(), 'the dangling symlink itself is left untouched');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: restoreStagedUserArtifacts had no guard at all against
+  // a dangling symlink at the destination — the identical hole as E6.
+  test('E7: restoreStagedUserArtifacts refuses a dangling symlink at the destination', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e7-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e7-outside-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), 'current-content');
+      const staged = stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot);
+      cleanup(path.join(destDir, 'USER-PROFILE.md'));
+
+      const outsideTarget = path.join(outside, 'authorized_keys');
+      fs.symlinkSync(outsideTarget, path.join(destDir, 'USER-PROFILE.md'));
+
+      restoreStagedUserArtifacts(destDir, staged);
+
+      assert.ok(!fs.existsSync(outsideTarget), 'must never write through the dangling symlink to outsideTarget');
+      assert.ok(
+        fs.lstatSync(path.join(destDir, 'USER-PROFILE.md')).isSymbolicLink(),
+        'the dangling symlink itself is left untouched, not overwritten',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: assertDestWithinConfigHome is pure lexical path math
+  // and cannot see a symlinked ANCESTOR directory between configDir and a
+  // recorded destDir — only hasExistingSymlinkBetween's component-by-
+  // component walk can. Recovery previously never applied it to the
+  // recorded destDir at all — this is E2 STRENGTHENED: E2 above only covers
+  // a destDir that is lexically outside configDir entirely, which
+  // assertDestWithinConfigHome alone already refused; this row covers the
+  // case that actually failed before this fix.
+  test('E8: recovery refuses a destDir reached only through a symlinked ANCESTOR directory', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e8-cfg-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e8-outside-'));
+    try {
+      fs.symlinkSync(outside, path.join(configDir, 'linkdir'));
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e8entry00000000');
+      fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'USER-PROFILE.md'), 'attacker-controlled content');
+      // The record names a destDir that is LEXICALLY inside configDir
+      // (assertDestWithinConfigHome alone would accept it) but only
+      // reachable by walking through the `linkdir` symlink to `outside`.
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({
+          destDir: path.join(configDir, 'linkdir', 'sub'),
+          names: ['USER-PROFILE.md'],
+          timestamp: new Date().toISOString(),
+        }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — destDir is reached only through a symlinked ancestor');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'destDir-symlink-escape');
+      assert.ok(
+        !fs.existsSync(path.join(outside, 'sub', 'USER-PROFILE.md')),
+        'must never write outside configDir via the symlinked ancestor',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  // #2875 defect fix: `names` accepted any non-escaping subpath, including
+  // one containing a path separator, contrary to this module's flat-name
+  // contract (every real caller stages exactly one flat filename) — the
+  // module doc previously claimed separator names were already rejected;
+  // they were not.
+  test('E9: a staged/recorded name containing a path separator is rejected, never nested under destDir', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e9-cfg-'));
+    try {
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e9entry000000000');
+      fs.mkdirSync(path.join(entryDir, 'files', 'nested'), { recursive: true });
+      fs.writeFileSync(path.join(entryDir, 'files', 'nested', 'x.md'), 'should never land');
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['nested/x.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'a separator-containing name must never be restored');
+      assert.ok(!fs.existsSync(path.join(destDir, 'nested', 'x.md')), 'must never create a nested subpath under destDir');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  // #2875 defect fix (security — source-side symlink escape): the ancestor-
+  // symlink guard (E8) covered only `destDir`. A real `entryDir` whose
+  // `files` CHILD is a symlink to an unrelated victim directory (e.g.
+  // `/etc`, `~/.ssh`) was dereferenced by every per-file `existsSync`/
+  // `stagedCopy` read below `filesDir`, copying victim-readable content into
+  // an attacker-named path inside `configDir`.
+  test('E10: recovery refuses an entryDir whose `files` child is a symlink — never dereferences the source side', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e10-cfg-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e10-victim-'));
+    try {
+      fs.writeFileSync(path.join(victim, 'attacker-chosen-name.md'), 'VICTIM SECRET CONTENT');
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const entryDir = path.join(stagingRoot, 'e10entry0000000');
+      fs.mkdirSync(entryDir, { recursive: true });
+      fs.symlinkSync(victim, path.join(entryDir, 'files'));
+      const destDir = path.join(configDir, 'gsd-core');
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(entryDir, 'record.json'),
+        JSON.stringify({ destDir: path.resolve(destDir), names: ['attacker-chosen-name.md'], timestamp: new Date().toISOString() }),
+      );
+
+      const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.equal(result.recovered.length, 0, 'must refuse — the files/ child is a symlink to an untrusted directory');
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].reason, 'files-symlink-escape');
+      assert.ok(
+        !fs.existsSync(path.join(destDir, 'attacker-chosen-name.md')),
+        'the victim directory\'s content must never be copied into destDir',
+      );
+    } finally {
+      cleanup(configDir);
+      cleanup(victim);
+    }
+  });
+
+  // #2875 defect fix (security/correctness — cwd-dependent confinement): a
+  // RELATIVE `record.destDir` made `path.relative(configHome, record.destDir)`
+  // resolve the relative argument against `process.cwd()` internally, not
+  // against `configHome` — so recovery's behavior for a forged or malformed
+  // record depended on whatever directory the CLI happened to be invoked
+  // from, rather than being a deterministic function of `configDir`.
+  // `stageUserArtifacts` (this module's own writer) always records an
+  // ALREADY-resolved absolute `destDir`; a relative one only ever reaches
+  // recovery via a forged/hand-edited record.
+  test('E11: recovery refuses a RELATIVE record.destDir — confinement never depends on process.cwd()', (t) => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e11-cfg-'));
+    t.after(() => cleanup(configDir));
+    const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+    const entryDir = path.join(stagingRoot, 'e11entry0000000');
+    fs.mkdirSync(path.join(entryDir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(entryDir, 'files', 'x.md'), 'x');
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: 'gsd-core', names: ['x.md'], timestamp: new Date().toISOString() }),
+    );
+
+    // Run from a cwd that resolves the relative destDir straight back to
+    // configDir (mirrors the real cline-local call shape, where targetDir
+    // === process.cwd()) — the exact case that must NOT be treated as
+    // "correctly resolved" just because the coincidence lines up.
+    const previousCwd = process.cwd();
+    t.after(() => process.chdir(previousCwd));
+    process.chdir(configDir);
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+    assert.equal(result.recovered.length, 0, 'a relative destDir must never be accepted, regardless of cwd');
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].reason, 'destDir-outside-confinement');
+  });
+
+  // #2875 security-review finding: E10 covers the default (no opt-in) case.
+  // `GSD_ALLOW_SYMLINKED_DEST` is documented (install-engine.cts
+  // `isSymlinkedDestOptIn`) as relaxing only the DESTINATION-side
+  // pre-existing-symlink refusal — the user asserting they own/trust a
+  // symlinked WRITE destination. `entryDir`/`filesDir` here is the staging
+  // SOURCE, GSD-owned internal state this module creates itself, never a
+  // user-authored layout — the opt-in must NOT relax this read-side check.
+  test('E12: recovery refuses the source-side `files/` symlink even with GSD_ALLOW_SYMLINKED_DEST=1 — the dest opt-in never relaxes the source-side read', (t) => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e12-cfg-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-e12-victim-'));
+    t.after(() => {
+      cleanup(configDir);
+      cleanup(victim);
+    });
+    fs.writeFileSync(path.join(victim, 'attacker-chosen-name.md'), 'VICTIM SECRET CONTENT');
+    const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+    const entryDir = path.join(stagingRoot, 'e12entry0000000');
+    fs.mkdirSync(entryDir, { recursive: true });
+    try {
+      fs.symlinkSync(victim, path.join(entryDir, 'files'));
+    } catch (_e) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+    const destDir = path.join(configDir, 'gsd-core');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(entryDir, 'record.json'),
+      JSON.stringify({ destDir: path.resolve(destDir), names: ['attacker-chosen-name.md'], timestamp: new Date().toISOString() }),
+    );
+
+    process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+    t.after(() => delete process.env.GSD_ALLOW_SYMLINKED_DEST);
+    const result = recoverOrphanedUserArtifacts(stagingRoot, configDir);
+
+    assert.equal(result.recovered.length, 0, 'must refuse — the source-side files/ symlink is never relaxed by the dest opt-in');
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].reason, 'files-symlink-escape');
+    assert.ok(
+      !fs.existsSync(path.join(destDir, 'attacker-chosen-name.md')),
+      'the victim directory\'s content must never be copied into destDir, even with the opt-in set',
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Parity: install-engine.cts's `_resolveUserArtifactStagingRoot` is
+  // deliberately duplicated (not shared) into bin/install.js, to avoid a
+  // circular `require` between the two (see that function's own doc comment
+  // in both files). This codebase names unguarded duplication across
+  // parallel surfaces "Generative Fix Divergence" and requires a parity
+  // assertion that fails the moment the two copies diverge — same inputs,
+  // same resolved root, same refusal behavior.
+  // -------------------------------------------------------------------------
+
+  test('parity: install-engine.cts and bin/install.js copies of _resolveUserArtifactStagingRoot resolve the SAME root for the same configDir', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-happy-'));
+    try {
+      const fromEngine = _resolveUserArtifactStagingRoot(configDir);
+      const fromInstallJs = _installJsResolveUserArtifactStagingRoot(configDir);
+      assert.equal(fromInstallJs, fromEngine, 'both copies must resolve to the identical staging root');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+
+  test('parity: both copies refuse a symlinked staging root identically', () => {
+    const configDirEngine = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-engine-'));
+    const configDirInstallJs = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-installjs-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-parity-sym-elsewhere-'));
+    try {
+      fs.symlinkSync(elsewhere, path.join(configDirEngine, '.gsd-staging'));
+      fs.symlinkSync(elsewhere, path.join(configDirInstallJs, '.gsd-staging'));
+
+      let engineThrew = false;
+      let engineMessage = '';
+      try {
+        _resolveUserArtifactStagingRoot(configDirEngine);
+      } catch (err) {
+        engineThrew = true;
+        engineMessage = err.message;
+      }
+      let installJsThrew = false;
+      let installJsMessage = '';
+      try {
+        _installJsResolveUserArtifactStagingRoot(configDirInstallJs);
+      } catch (err) {
+        installJsThrew = true;
+        installJsMessage = err.message;
+      }
+
+      assert.ok(engineThrew, 'install-engine.cts copy must refuse a symlinked staging root');
+      assert.ok(installJsThrew, 'bin/install.js copy must refuse a symlinked staging root');
+      // Both messages must carry the same refusal shape (symlink refusal),
+      // even though configDir differs between the two (each needs its own
+      // sandbox — the throw itself, not the literal path, is what parity
+      // checks here).
+      assert.match(engineMessage, /symlink/i);
+      assert.match(installJsMessage, /symlink/i);
+    } finally {
+      cleanup(configDirEngine);
+      cleanup(configDirInstallJs);
+      cleanup(elsewhere);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Parity: the DEGRADE-not-abort wrapper (`_tryResolveUserArtifactStagingRoot`)
+  // is ALSO duplicated verbatim into bin/install.js (same doc-comment
+  // rationale as the throwing version above). "Same inputs, same resolved
+  // root, same refusal" above does not cover "same degrade": a caller-facing
+  // regression where one copy started throwing again (bricking the command)
+  // while the other correctly degraded to `null` would slip past the tests
+  // above, since neither calls the wrapper.
+  // -------------------------------------------------------------------------
+
+  test('parity: install-engine.cts and bin/install.js copies of _tryResolveUserArtifactStagingRoot resolve the SAME root for the same configDir (happy path)', (t) => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-happy-'));
+    t.after(() => cleanup(configDir));
+    const fromEngine = _tryResolveUserArtifactStagingRoot(configDir);
+    const fromInstallJs = _installJsTryResolveUserArtifactStagingRoot(configDir);
+    assert.notEqual(fromEngine, null, 'the engine copy must resolve (not degrade) on a clean configDir');
+    assert.equal(fromInstallJs, fromEngine, 'both copies must resolve to the identical staging root');
+  });
+
+  test('parity: both copies of _tryResolveUserArtifactStagingRoot degrade to null (never throw) for the SAME symlinked staging root', (t) => {
+    const configDirEngine = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-engine-'));
+    const configDirInstallJs = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-installjs-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uas-try-parity-sym-elsewhere-'));
+    t.after(() => {
+      cleanup(configDirEngine);
+      cleanup(configDirInstallJs);
+      cleanup(elsewhere);
+    });
+    fs.symlinkSync(elsewhere, path.join(configDirEngine, '.gsd-staging'));
+    fs.symlinkSync(elsewhere, path.join(configDirInstallJs, '.gsd-staging'));
+
+    let engineThrew = false;
+    let engineResult;
+    try {
+      engineResult = _tryResolveUserArtifactStagingRoot(configDirEngine);
+    } catch {
+      engineThrew = true;
+    }
+    let installJsThrew = false;
+    let installJsResult;
+    try {
+      installJsResult = _installJsTryResolveUserArtifactStagingRoot(configDirInstallJs);
+    } catch {
+      installJsThrew = true;
+    }
+
+    assert.equal(engineThrew, false, 'the engine copy\'s try-wrapper must never throw — this is the whole point of the wrapper');
+    assert.equal(installJsThrew, false, 'the bin/install.js copy\'s try-wrapper must never throw either');
+    assert.equal(engineResult, null, 'the engine copy must degrade to null for a refused staging root');
+    assert.equal(installJsResult, null, 'the bin/install.js copy must degrade to null identically');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyDevPreferencesToSkill — dangling-symlink leaf write (security
+// review finding, found while closing the #2875 agents-descriptor migration
+// gap): existsSync(skillFile) follows symlinks and reports false for a
+// dangling one, and the symlink-escape guard only walked to the PARENT
+// directory, never lstat-checking the leaf file itself — so a dangling
+// symlink planted exactly at the skill-file destination sailed through both
+// checks and writeFileSync (which DOES follow symlinks) wrote attacker
+// content to the symlink's target.
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyDevPreferencesToSkill — dangling-symlink leaf write', () => {
+  const { migrateLegacyDevPreferencesToSkill } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+  test('refuses to write through a dangling symlink planted at the skill-file leaf', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-sym-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-sym-outside-'));
+    const attackerTarget = path.join(outside, 'authorized_keys');
+    try {
+      const skillDir = path.join(configDir, 'skills', 'gsd-dev-preferences');
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.symlinkSync(attackerTarget, skillFile); // dangling — target does not exist
+
+      const saved = new Map([['dev-preferences.md', 'attacker-controlled content\n']]);
+
+      assert.throws(
+        () => migrateLegacyDevPreferencesToSkill(configDir, saved, 'claude', 'global'),
+        /symlink/i,
+        'must refuse to write through a symlinked skill-file leaf',
+      );
+      assert.ok(!fs.existsSync(attackerTarget), 'attacker target must never be created/written');
+    } finally {
+      cleanup(configDir);
+      cleanup(outside);
+    }
+  });
+
+  test('a real, already-migrated skill file (not a symlink) still short-circuits as before', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-migrate-real-'));
+    try {
+      const skillDir = path.join(configDir, 'skills', 'gsd-dev-preferences');
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.writeFileSync(skillFile, 'already migrated\n', 'utf8');
+
+      const saved = new Map([['dev-preferences.md', 'new content\n']]);
+      const migrated = migrateLegacyDevPreferencesToSkill(configDir, saved, 'claude', 'global');
+
+      assert.strictEqual(migrated, false, 'must not clobber an existing real skill file');
+      assert.strictEqual(fs.readFileSync(skillFile, 'utf8'), 'already migrated\n');
+    } finally {
+      cleanup(configDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uninstallRuntimeArtifacts — staged legacy dev-preferences.md symlink
+// dereference (security review finding). Sibling call sites
+// (_runLegacyInstallMigrations, bin/install.js's own uninstall()) already
+// lstat-guard a staged name before readFileSync; this uninstall call site did
+// not, so a symlinked staged dev-preferences.md had its referent's bytes read
+// into SKILL.md, and a symlink to a directory threw EISDIR uncaught.
+// ---------------------------------------------------------------------------
+
+describe('uninstallRuntimeArtifacts — staged dev-preferences.md symlink dereference', () => {
+  const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+  test('a symlinked staged dev-preferences.md is skipped (never dereferenced) and uninstall does not throw', () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uninstall-sym-'));
+    const secretFile = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uninstall-sym-secret-'));
+    const secretPath = path.join(secretFile, 'id_rsa');
+    fs.writeFileSync(secretPath, 'PRIVATE KEY MATERIAL\n', 'utf8');
+    try {
+      // Claude global uses the legacy commands/gsd/ location.
+      const legacyDir = path.join(configDir, 'commands', 'gsd');
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.symlinkSync(secretPath, path.join(legacyDir, 'dev-preferences.md'));
+
+      // Must not throw (no EISDIR/unhandled error) and must never migrate the
+      // symlink's referent content into any installed skill file.
+      assert.doesNotThrow(() => uninstallRuntimeArtifacts('claude', configDir, 'global'));
+
+      const skillFile = path.join(configDir, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+      if (fs.existsSync(skillFile)) {
+        const content = fs.readFileSync(skillFile, 'utf8');
+        assert.ok(!content.includes('PRIVATE KEY MATERIAL'), 'the symlink referent must never be migrated into SKILL.md');
+      }
+    } finally {
+      cleanup(configDir);
+      cleanup(secretFile);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 defect fix (security/regression): a staging-root resolution failure
+// (e.g. `.gsd-staging/user-artifacts` is/contains a symlink) must DEGRADE —
+// skip staging for that step, warn — rather than abort install()/uninstall()
+// entirely. Before this fix, `_resolveUserArtifactStagingRoot` was called
+// UNGUARDED as the first statement of both, so a hostile/broken
+// `.gsd-staging` path bricked BOTH commands, including uninstall — the
+// remedy for the first problem.
+// ---------------------------------------------------------------------------
+
+describe('install()/uninstall() degrade (never abort) on a staging-root resolution failure', () => {
+  function withHostileStagingSymlink(runFn) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-staging-degrade-'));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-staging-degrade-elsewhere-'));
+    const previousCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      fs.mkdirSync(path.join(tmp, '.gsd-staging'));
+      fs.symlinkSync(elsewhere, path.join(tmp, '.gsd-staging', 'user-artifacts'));
+      runFn(tmp);
+    } finally {
+      process.chdir(previousCwd);
+      cleanup(tmp);
+      cleanup(elsewhere);
+    }
+  }
+
+  test('install() proceeds and still writes gsd-core/ when the staging root is a hostile symlink', () => {
+    withHostileStagingSymlink((tmp) => {
+      assert.doesNotThrow(() => install(false, 'cline'), 'install() must degrade, never throw, on a staging-root failure');
+      assert.ok(fs.existsSync(path.join(tmp, 'gsd-core')), 'gsd-core/ must still be installed despite the staging-root failure');
+    });
+  });
+
+  test('uninstall() proceeds and still removes gsd-core/ when the staging root is a hostile symlink', () => {
+    withHostileStagingSymlink((tmp) => {
+      // Bypass the (also-degrading) install() path to set up a realistic
+      // pre-existing gsd-core/ without depending on install() itself.
+      fs.mkdirSync(path.join(tmp, 'gsd-core'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'gsd-core', 'USER-PROFILE.md'), 'user content');
+      assert.doesNotThrow(() => uninstall(false, 'cline'), 'uninstall() must degrade, never throw, on a staging-root failure');
+      assert.ok(!fs.existsSync(path.join(tmp, 'gsd-core')), 'gsd-core/ must still be removed despite the staging-root failure');
+    });
   });
 });

@@ -16,7 +16,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -26,7 +26,7 @@ const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings, scanMilestonePhaseIds } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings, scanMilestonePhaseIds, collectTablePhaseRows } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 import { clampPercent } from './phase-lifecycle.cjs';
@@ -114,11 +114,17 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
   let phaseFiles: string[] = [];
   try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+  // #3511: scope the raw listing to this phase dir before the
+  // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
+  // summaryCount above stay on scanPhasePlans's own unscoped listing since a
+  // PLAN/SUMMARY leading number is a plan sequence number, not a phase
+  // number. Mirrors core-utils.cts's getPhaseFileStats.
+  const scopedFiles = scopeToPhase(phaseFiles, path.basename(phaseDir));
   return {
     planCount,
     summaryCount,
-    hasContext: findContextMdIn(phaseFiles) !== null,
-    hasResearch: phaseFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
   };
 }
 
@@ -305,6 +311,22 @@ function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
       if (!malformed) malformed = (milestoneResult?.error ? milestoneResult : (fullResult?.error ? fullResult : null));
     }
 
+    // #3577: no heading or checklist entry matched — fall back to a
+    // markdown-table row declaration (the same last-resort tier
+    // getRoadmapPhaseInternal gained). Zero-pad-tolerant id compare (#3572
+    // lesson: the declared form may be padded).
+    const stripPad = (s: string) => s.replace(/^0+(?=.)/, '');
+    const tableHit = collectTablePhaseRows(milestoneContent).find((tr) => stripPad(tr.id) === stripPad(phaseNum))
+      ?? collectTablePhaseRows(fullContent).find((tr) => stripPad(tr.id) === stripPad(phaseNum));
+    if (tableHit) {
+      output(
+        { found: true, phase_number: phaseNum, phase_name: tableHit.name ?? `Phase ${tableHit.id}`, goal: null, section: tableHit.row.trim() },
+        raw,
+        tableHit.row.trim(),
+      );
+      return;
+    }
+
     if (malformed) {
       output(malformed, raw, '');
       return;
@@ -451,6 +473,41 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
       has_research: hasResearch,
       disk_status: diskStatus,
       roadmap_complete: roadmapComplete,
+    });
+  }
+
+  // #3577: markdown-table row declarations join the enumeration — same
+  // enrichment contract as headings (disk counts when the directory exists),
+  // zero-pad-tolerant duplicate guard so an id declared in BOTH a heading and
+  // a table counts once.
+  const stripPadA = (s: string) => s.replace(/^0+(?=.)/, '');
+  const seen = new Set(phases.map((ph) => stripPadA(ph.number)));
+  for (const tr of collectTablePhaseRows(content)) {
+    if (seen.has(stripPadA(tr.id))) continue;
+    const dirMatchA = matchPhaseDirs(phaseDirNames, normalizePhaseName(tr.id)).matches[0];
+    let tPlanCount = 0;
+    let tSummaryCount = 0;
+    let tHasContext = false;
+    let tHasResearch = false;
+    if (dirMatchA) {
+      const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatchA));
+      tPlanCount = counts.planCount;
+      tSummaryCount = counts.summaryCount;
+      tHasContext = fs.existsSync(path.join(phasesDir, dirMatchA, 'CONTEXT.md'));
+      tHasResearch = fs.existsSync(path.join(phasesDir, dirMatchA, 'RESEARCH.md'));
+    }
+    phases.push({
+      number: tr.id,
+      name: tr.name ?? `Phase ${tr.id}`,
+      goal: null,
+      mode: null,
+      depends_on: null,
+      plan_count: tPlanCount,
+      summary_count: tSummaryCount,
+      has_context: tHasContext,
+      has_research: tHasResearch,
+      disk_status: dirMatchA ? 'ok' : 'no_directory',
+      roadmap_complete: false,
     });
   }
   return phases;

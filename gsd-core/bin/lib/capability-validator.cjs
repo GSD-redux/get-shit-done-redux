@@ -730,6 +730,13 @@ const VALID_CONVERTER_NAMES = new Set([
   // #3384 — ZCode agents are Claude-shaped but its dispatcher treats mcp__* tools
   // grants as required MCP servers; this converter strips them at install time.
   'convertClaudeAgentToZcodeAgent',
+  // #2875 Part 2 (the agents-bypass closure) — data-driven Hermes branding
+  // converter (reads hostBehaviors.brandingRewrites rather than a hardcode),
+  // and the kilo/opencode agent converters (shared with those runtimes'
+  // commands-kind entries, options-bag signature `(content, {isAgent, modelOverride})`).
+  'convertClaudeAgentToHermesAgent',
+  'convertClaudeToKiloFrontmatter',
+  'convertClaudeToOpencodeFrontmatter',
 ]);
 
 // C3: Validate role:runtime body

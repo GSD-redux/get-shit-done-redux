@@ -19,6 +19,15 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+// #2874 (ADR-58 cleanup phase): route this module's content-rewrite-pass fs
+// calls through the installRuntimeArtifacts call tree's injectable seam —
+// see install-fs-adapter.cts's module doc. Resolves to real `node:fs` unless
+// the top-level installRuntimeArtifacts call injected a `deps.fs`. These
+// walkers operate on already-staged temp directories (never the real GSD
+// source tree or the real install destination directly), so routing them is
+// unconditionally safe.
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, mkInstallTempDir } = installFsAdapter;
 import commandRoster = require('./command-roster.cjs');
 const { readGsdCommandNames, transformContentToHyphen } = commandRoster;
 import runtimeNamePolicy = require('./runtime-name-policy.cjs');
@@ -27,10 +36,17 @@ import capabilityRegistry = require('./capability-registry.cjs');
 import hostIntegration = require('./host-integration.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { escapeRegex as escapeRegExp } from './pattern.cjs';
+import { scanFencedBlocks } from './markdown-sectionizer.cjs';
 // #2870: install-scope.cts is a leaf-tier sibling (imports only
 // runtime-homes.cjs + node builtins, never this module) — no cycle. See the
 // isGlobal sites below for why the boolean projection is centralized here too.
 import { isGlobalScope } from './install-scope.cjs';
+// #2875 Part 2: install-effort-resolver.cjs is a leaf-tier sibling (#2071) —
+// used by applyAgentFrontmatterExtensions below to read the SAME merged
+// effort config the install-time Claude .md injection has always read,
+// without this module reaching upward into bin/install.js (ADR-1508).
+import installEffortResolver = require('./install-effort-resolver.cjs');
+const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort, _getGsdEffortCatalog } = installEffortResolver;
 
 // #1383: resolve GSD's version WITHOUT a top-level
 // `require('../../../package.json')`. That require ran at module load on every
@@ -502,6 +518,90 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
   fm += '---';
 
   return `${fm}\n${normalizedBody}`;
+}
+
+// #2873 (4b) — spec-root reachability. Matches ONLY a line that is a real
+// `@~/.claude/gsd-core/workflows/<stem>.md` include: line-start `@`, exact
+// spec-root shape, nothing else on the line. This is deliberately narrower
+// than "any line mentioning gsd-core/workflows" so prose mentions and
+// `references/`/`templates/`/`@.planning/...` includes are never touched
+// (rows 24/25). CRLF-safe: an optional trailing `\r` is captured and
+// preserved rather than dropped.
+const WORKFLOW_SPEC_ROOT_INCLUDE_RE = /^@~\/\.claude\/gsd-core\/workflows\/([A-Za-z0-9._-]+)\.md[ \t]*(\r?)$/gm;
+
+/**
+ * Rewrite a static global-scope Claude skill `@`-include of the command's own
+ * workflow spec into an imperative two-step resolution the agent performs at
+ * runtime: prefer the project-local spec (cwd-relative), fall back to the
+ * global spec, and treat "neither exists" as a visible failure rather than a
+ * silent no-spec proceed.
+ *
+ * WHY this can't stay a static `@`-include (even a relative one): Claude Code
+ * documents relative `@`-paths as resolving against the file *containing* the
+ * import, which for a global skill is `~/.claude/skills/gsd-<stem>/` — not
+ * the project's working directory. `@./.claude/...` would therefore always
+ * resolve inside the skill's own install directory, never the project, so
+ * there is no static include syntax that can express "prefer local, fall
+ * back to global". This function exists precisely so that resolution can be
+ * performed by the agent, not the host's pre-expansion.
+ *
+ * Scope-free by design: this function does not know or care whether it is
+ * being applied to a global or local artifact, or which runtime — that
+ * judgment belongs to the caller (`skillsKind` in
+ * `runtime-artifact-layout.cts`, the one site that knows install scope).
+ * Applying it to a body with no workflow include is a no-op (row 26); a body
+ * with two independent workflow includes has each rewritten independently
+ * (row 27); an include inside a fenced code block or wrapped in inline
+ * backticks is left untouched (the backtick case is already excluded by the
+ * line-start anchor, since a backtick-wrapped line does not begin with `@`).
+ * Idempotent: the replacement text never begins with `@` and never matches
+ * `WORKFLOW_SPEC_ROOT_INCLUDE_RE`, so re-applying this function to its own
+ * output is a no-op.
+ *
+ * Fence detection reuses `scanFencedBlocks` (markdown-sectionizer.cts) — the
+ * same CommonMark-correct state machine `stripFencedCode`/`extractFencedBlock`
+ * are built on — instead of a hand-rolled "any delimiter line toggles
+ * open/closed" tracker. A naive toggle is wrong under CommonMark: a fence
+ * opened with ``` is NOT closed by a ~~~ line (closer must share the
+ * opener's delimiter character and have run length >= the opener's), so a
+ * mismatched delimiter is fence CONTENT, not a boundary. #2873 review.
+ */
+function resolveSpecRootReference(body) {
+  if (typeof body !== 'string' || body.length === 0) return body;
+  if (!body.includes('@~/.claude/gsd-core/workflows/')) return body;
+
+  // Collect [start, end) character-offset ranges covered by fenced code
+  // blocks so matches inside them are skipped. An unterminated trailing
+  // fence covers to the end of the string (still "inside a fence").
+  const lines = body.split('\n');
+  const lineStartOffsets = [];
+  {
+    let offset = 0;
+    for (const line of lines) {
+      lineStartOffsets.push(offset);
+      offset += line.length + 1; // +1 for the '\n' separator
+    }
+  }
+  const fenceRanges = scanFencedBlocks(lines).map(({ openLineIdx, closeLineIdx }) => {
+    const start = lineStartOffsets[openLineIdx];
+    const end = closeLineIdx === -1
+      ? body.length
+      : lineStartOffsets[closeLineIdx] + lines[closeLineIdx].length;
+    return [start, end];
+  });
+  const isInsideFence = (offset) => fenceRanges.some(([start, end]) => offset >= start && offset < end);
+
+  return body.replace(WORKFLOW_SPEC_ROOT_INCLUDE_RE, (match, stem, cr, offset) => {
+    if (isInsideFence(offset)) return match;
+    return (
+      `To load this command's workflow spec: check for ` +
+      `\`.claude/gsd-core/workflows/${stem}.md\` relative to the current working ` +
+      `directory first (project-local); if it is not there, fall back to ` +
+      `\`~/.claude/gsd-core/workflows/${stem}.md\` (the global install). If ` +
+      `neither file exists, stop — a workflow spec is required and none was found.` +
+      cr
+    );
+  });
 }
 
 function normalizeKimiSkillName(skillName) {
@@ -1648,7 +1748,7 @@ Typed mapping (agent_type-capable schema only):
   to \`spawn_agent\` when the runtime/tool supports it. Omit missing, empty,
   inherited, or unsupported values; do not invent one-off effort literals in
   workflow prose.
-- \`fork_context: false\` by default — GSD agents load their own context via \`<files_to_read>\` blocks
+- \`fork_context: false\` by default — GSD agents load their own context via \`<required_reading>\` blocks
 - \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
 - \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
@@ -2491,6 +2591,46 @@ function convertClaudeAgentToClineAgent(content) {
 }
 
 /**
+ * Apply a runtime's descriptor-declared `hostBehaviors.brandingRewrites` to an
+ * agent body — the three literal-substring replaces the inline agent loop
+ * (bin/install.js) previously hardcoded per-branding-runtime (qwen/hermes):
+ *   CLAUDE.md    -> brandingRewrites['CLAUDE.md']
+ *   Claude Code  -> brandingRewrites['Claude Code']  (word-boundary, \bClaude Code\b)
+ *   .claude/     -> brandingRewrites['.claude/']
+ *
+ * Data-driven (#2875 Part 2 / J10): reads the rewrite table from the
+ * runtime's OWN descriptor rather than hardcoding any runtime's strings, so a
+ * runtime declaring a different `brandingRewrites` table gets its own
+ * rewrites applied automatically. A runtime with no `brandingRewrites`
+ * declared returns `content` unchanged (no rewrite table to apply).
+ *
+ * Byte-identical to the inline loop's `else if (_hostBehaviors(runtime).brandingRewrites)`
+ * branch, including plain (non-word-boundary) `.replace(/\bClaude Code\b/g, ...)`
+ * semantics — J9.
+ */
+function applyAgentBrandingRewrites(content, runtime) {
+  const _b = _hostBehaviors(runtime).brandingRewrites;
+  if (!_b) return content;
+  let converted = content;
+  if (_b['CLAUDE.md']) converted = converted.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
+  if (_b['Claude Code']) converted = converted.replace(/\bClaude Code\b/g, _b['Claude Code']);
+  if (_b['.claude/']) converted = converted.replace(/\.claude\//g, _b['.claude/']);
+  return converted;
+}
+
+/**
+ * Named branding converter for Hermes agents (#2875 Part 2 / J9-J10).
+ * `convertedAgentsKind` dispatches converters by exported name, so a named
+ * export is required even though the transform itself is fully generic
+ * (`applyAgentBrandingRewrites`) — resolved from
+ * `capabilities/hermes/capability.json`'s `hostBehaviors.brandingRewrites`,
+ * never hardcoded here.
+ */
+function convertClaudeAgentToHermesAgent(content) {
+  return applyAgentBrandingRewrites(content, 'hermes');
+}
+
+/**
  * Convert Claude Code agent markdown to Codex agent format.
  * Applies base markdown conversions, then adds a <codex_agent_role> header
  * and cleans up frontmatter (removes tools/color fields).
@@ -2701,6 +2841,81 @@ function _stampNonClaudeRuntimeDefaults(content: string, runtime: string): strin
 }
 
 /**
+ * #3544 (extending #3133's fix): restore `@$HOME<suffix>` `@`-file-reference
+ * lines back to their tilde equivalent (`@~<suffix>`) in Claude-emitted
+ * content whose pathPrefix is the `$HOME` form. This is a NARROW,
+ * context-sensitive correction layered on top of the blanket `~/.claude/` /
+ * `$HOME/.claude/` -> pathPrefix substitution every Claude emit path
+ * applies: that blanket substitution MUST keep emitting `$HOME` for global
+ * installs — shell commands embedded in workflow/command bodies (e.g.
+ * `node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs"`) need it, since `~` does
+ * not expand inside double-quoted shell strings (#1284). But Claude Code's
+ * own `@`-import resolver does the opposite: it documents `~` expansion and
+ * does NOT expand `$HOME`. That is not merely undocumented — a controlled
+ * `/context` measurement showed an `@$HOME/…` import loading nothing (see
+ * .gsd/bug/fix-3544-home-expansion-spec-tree/10-diagnosis.md's ADDENDUM). No
+ * automated test can verify *resolution* inside a live Claude Code session
+ * (nothing in CI can spawn one and read `/context`); every test here — unit
+ * and spawned-installer alike — verifies only the emitted STRING takes the
+ * `~` form Claude Code documents as expanding. A single pathPrefix string
+ * cannot satisfy both the shell and the `@`-import consumer, so this runs as
+ * a second, `@`-anchored pass AFTER the blanket substitution.
+ *
+ * #3133 first applied this restore inline in `_applyRuntimeRewrites`'s
+ * `case 'claude'` below (the skill/command staging pipeline). #3544 found
+ * the identical defect in bin/install.js's `copyWithPathReplacement` — the
+ * `gsd-core/` spec-tree emit path, which never had the restore step, so
+ * every `@~/.claude/gsd-core/…` include in a global install's workflows/
+ * references tree silently resolved to nothing (54 includes across 22 files
+ * on a live install, per the diagnosis). Both call sites now share this one
+ * implementation instead of drifting independently (DEFECT.GENERATIVE-FIX).
+ *
+ * No-op unless `pathPrefix` is the `$HOME` form — local installs already
+ * bake an absolute, `@`-resolvable pathPrefix and are unaffected, as are
+ * every non-Claude runtime (never called for them).
+ *
+ * #3544 review (2nd pass): the first cut of this function hardcoded the
+ * literal `.claude/` segment, so it silently no-opped for any global install
+ * under a non-default `--config-dir` (e.g. `~/.claude-work`) — reproducing
+ * the exact defect #3544 fixes, just one directory name later. This ALSO
+ * corrects the same latent gap in #3133's original path, since both call
+ * sites share this one implementation. Fixed by deriving the rewrite from
+ * `pathPrefix` itself rather than a hardcoded directory name: the tilde
+ * equivalent of any `$HOME`-form prefix is `'~' + pathPrefix.slice(5)`
+ * (`'$HOME'.length === 5`), so the transform generalizes to any config-dir
+ * name with no runtime-specific literal.
+ *
+ * #3544 review (2nd pass), quote-awareness: the anchor is a negative
+ * lookbehind for a preceding quote character, NOT a line-start anchor —
+ * Claude Code documents `@`-references as valid "anywhere in your
+ * CLAUDE.md" (e.g. `See @README for project overview`), so anchoring to
+ * line-start would miss a legitimate mid-line reference. The lookbehind
+ * instead guards the one demonstrated false-positive: a quoted shell string
+ * like `echo "@$HOME/.claude/x"`, where rewriting `$HOME` to `~` inside
+ * double quotes reintroduces the #1284 failure mode (`~` does not expand in
+ * double-quoted shell). Deliberately NOT fenced-code-block aware (unlike
+ * `resolveSpecRootReference`'s `scanFencedBlocks` use above): this pass
+ * targets genuine `@`-import lines and inline shell references across the
+ * whole emitted corpus, and today there are zero occurrences anywhere in the
+ * tree of an `@$HOME<suffix>` sequence inside a fenced code block (the
+ * quote-guard already closes the one reachable false-positive class).
+ * Layering `scanFencedBlocks` on top would roughly double this function's
+ * size to guard an undemonstrated case — the opposite of the brief's
+ * "simpler, not more complex" direction. If a fenced example ever needs this
+ * literal sequence, add fence-awareness then, with a regression test proving
+ * the fence is real.
+ *
+ * @private — exported as `_restoreClaudeGlobalAtRefTilde` for tests and for
+ * bin/install.js's `copyWithPathReplacement`.
+ */
+function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
+  if (typeof pathPrefix !== 'string' || !pathPrefix.startsWith('$HOME')) return content;
+  const tildeEquivalent = '~' + pathPrefix.slice('$HOME'.length);
+  const atRefRe = new RegExp(`(?<!["'])@${escapeRegExp(pathPrefix)}`, 'g');
+  return content.replace(atRefRe, `@${tildeEquivalent}`);
+}
+
+/**
  * Apply the per-runtime rewrite table to a single content string.
  * Relocated from bin/install.js `_applyRuntimeRewrites`.
  *
@@ -2831,18 +3046,10 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = content.replace(/~\/\.claude\//g, pathPrefix);
       content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
       content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
-      // #3133: Claude Code expands `~` and absolute paths in @-file references
-      // but NOT `$HOME`. computePathPrefix returns the $HOME/.claude/ form for
-      // global installs under $HOME (correct for double-quoted shell commands —
-      // `~` does not expand inside double quotes, causing MODULE_NOT_FOUND,
-      // #1284), so the substitutions above rewrite @~/.claude/… → @$HOME/.claude/…
-      // which silently resolves to nothing and leaves skills with an empty
-      // execution_context. Restore the tilde form Claude expands (the form the
-      // shipped tarball uses). Local installs use an absolute pathPrefix (already
-      // @-resolvable) and are unaffected — the guard fires only for the $HOME form.
-      if (pathPrefix.startsWith('$HOME')) {
-        content = content.replace(/@\$HOME\/\.claude\//g, '@~/.claude/');
-      }
+      // #3133 / #3544: restore @-file-reference lines to the tilde form
+      // Claude actually expands — see restoreClaudeGlobalAtRefTilde's doc
+      // comment above for why this must be a separate, @-anchored pass.
+      content = restoreClaudeGlobalAtRefTilde(content, pathPrefix);
       content = processAttribution(content, attribution);
       break;
 
@@ -2936,17 +3143,17 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
  * @param attribution  Co-Authored-By value (string | null | undefined)
  */
 function applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGlobal = false, attribution = undefined) {
-  if (!fs.existsSync(stagedDir)) return;
+  if (!installFs().existsSync(stagedDir)) return;
 
   const walkAndRewrite = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walkAndRewrite(fullPath);
       } else if (entry.name.endsWith('.md')) {
-        let content = fs.readFileSync(fullPath, 'utf8');
+        let content = installFs().readFileSync(fullPath, 'utf8');
         content = _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal, attribution);
-        fs.writeFileSync(fullPath, content);
+        installFs().writeFileSync(fullPath, content);
       }
     }
   };
@@ -2972,13 +3179,13 @@ function applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGl
  * @returns {string} path to the temp dir (caller is responsible for cleanup)
  */
 function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathPrefix, isGlobal = false, attribution = undefined) {
-  if (!fs.existsSync(stagedDir)) return stagedDir;
+  if (!installFs().existsSync(stagedDir)) return stagedDir;
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cmd-rewrites-'));
+  const tempDir = mkInstallTempDir('gsd-cmd-rewrites-');
   try {
-    for (const entry of fs.readdirSync(stagedDir, { withFileTypes: true })) {
+    for (const entry of installFs().readdirSync(stagedDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-      let content = fs.readFileSync(path.join(stagedDir, entry.name), 'utf8');
+      let content = installFs().readFileSync(path.join(stagedDir, entry.name), 'utf8');
       content = _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal, attribution);
       // #2097 (ADR-1239): descriptor-driven — commandBodyConverter name comes
       // from runtime.hostBehaviors instead of a hardcoded runtime-name branch.
@@ -2986,13 +3193,45 @@ function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathP
       if (_cmdConv && COMMAND_BODY_CONVERTERS[_cmdConv]) {
         content = COMMAND_BODY_CONVERTERS[_cmdConv](content);
       }
-      fs.writeFileSync(path.join(tempDir, entry.name), content);
+      installFs().writeFileSync(path.join(tempDir, entry.name), content);
     }
   } catch (err) {
-    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { installFs().rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
   return tempDir;
+}
+
+/**
+ * #2873 (4b) — second pass over a staged skills directory, run strictly AFTER
+ * `applyRuntimeContentRewritesInPlace`. That pass's `case 'claude':` branch
+ * unconditionally rewrites any bare (non-`@`-prefixed) `~/.claude/` substring
+ * in the body to the computed pathPrefix (`$HOME/.claude/` for a global
+ * install) and restores ONLY the `@`-prefixed form back to `~`
+ * (`@$HOME/.claude/` → `@~/.claude/`). `resolveSpecRootReference`'s
+ * replacement text is deliberately imperative prose containing a literal,
+ * non-`@`-prefixed `~/.claude/gsd-core/workflows/<stem>.md` — running it
+ * BEFORE the pass above would let that literal tilde text get silently
+ * mangled into the undocumented `$HOME/` form the design explicitly rejects.
+ * Running it here, after, means it only ever sees the FINAL
+ * `@~/.claude/gsd-core/workflows/<stem>.md` include line (which survives the
+ * pass above intact via its own `@`-guarded restore).
+ */
+function applySpecRootReferenceToStagedSkills(stagedDir) {
+  if (!installFs().existsSync(stagedDir)) return;
+  const walk = (dir) => {
+    for (const entry of installFs().readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.name === 'SKILL.md') {
+        const content = installFs().readFileSync(fullPath, 'utf8');
+        const rewritten = resolveSpecRootReference(content);
+        if (rewritten !== content) installFs().writeFileSync(fullPath, rewritten);
+      }
+    }
+  };
+  walk(stagedDir);
 }
 
 /**
@@ -3018,7 +3257,7 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
     platform = process.platform,
     resolveAttribution,
   } = opts;
-  if (!fs.existsSync(stagedDir)) return;
+  if (!installFs().existsSync(stagedDir)) return;
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
@@ -3032,6 +3271,17 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
   const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
 
   applyRuntimeContentRewritesInPlace(stagedDir, runtime, pathPrefix, isGlobal, attribution);
+  // #2873 (4b): claude, global scope only — see
+  // applySpecRootReferenceToStagedSkills's doc comment for why this MUST run
+  // after the rewrite pass above, not before. `rewriteStagedSkillBodies` is
+  // the skills-kind seam (`kind.kind === 'skills'`), so this never touches a
+  // 'commands' or 'agents' kind body (rows 24/25 unaffected), and claude has
+  // no skills-kind entry at local scope, so this is already structurally
+  // scoped to global (row 23) — the explicit isGlobal check is defense-in-depth
+  // against that descriptor wiring ever changing.
+  if (runtime === 'claude' && isGlobal) {
+    applySpecRootReferenceToStagedSkills(stagedDir);
+  }
 }
 
 /**
@@ -3059,7 +3309,7 @@ function rewriteStagedCommandBodies(stagedDir, opts) {
     platform = process.platform,
     resolveAttribution,
   } = opts;
-  if (!fs.existsSync(stagedDir)) return stagedDir;
+  if (!installFs().existsSync(stagedDir)) return stagedDir;
 
   const resolvedTarget = posixNormalize(path.resolve(configDir));
   const homeDir = posixNormalize(homedir());
@@ -3131,6 +3381,136 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
 // ── End rewrite engine ────────────────────────────────────────────────────────
 
 /**
+ * Derive an agent's stem name from its source `.md` filename. Byte-identical
+ * to the inline agent loop's `entry.name.replace(/\.md$/, '')` (bin/install.js)
+ * — single-sourced here so the descriptor pipeline's per-agent resolution
+ * context (`agentCtx.agentName`, ADR-1235 §1 / #2875 Part 2 row I3) can never
+ * diverge from it. A filename with no trailing `.md` is returned unchanged
+ * (the regex has nothing to match) — I3's boundary row.
+ */
+function deriveAgentName(fileName: string): string {
+  return fileName.replace(/\.md$/, '');
+}
+
+/**
+ * #443 — Inject `effort: <value>` into YAML frontmatter of a Claude .md agent
+ * file in a newline-agnostic way (LF and CRLF source files are both handled).
+ * Relocated verbatim from bin/install.js (#2875 Part 2) — see
+ * `applyAgentFrontmatterExtensions` below for the orchestration that calls it.
+ *
+ * The function:
+ *   - Detects the file's EOL (CRLF if the first `---` line ends with \r\n,
+ *     otherwise LF).
+ *   - Skips injection if an `effort:` key already exists in the frontmatter
+ *     (idempotent).
+ *   - Inserts `effort: <value>` immediately before the closing `---` delimiter,
+ *     using the same EOL as the surrounding frontmatter so the output file
+ *     stays EOL-consistent.
+ *   - Returns the original content unchanged when no YAML frontmatter is found.
+ */
+function injectEffortFrontmatter(content: string, effortValue: string): string {
+  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
+  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
+  const match = fmRe.exec(content);
+  if (!match) return content; // no YAML frontmatter — leave unchanged
+
+  const fmBody = match[1]; // content between the two `---` lines
+  if (/^effort:/m.test(fmBody)) return content;
+
+  const openLen = 3 + eol.length; // "---" + eol
+  const closingStart = match.index + openLen + fmBody.length;
+
+  const before = content.slice(0, closingStart);
+  const after = content.slice(closingStart);
+  return `${before}effort: ${effortValue}${eol}${after}`;
+}
+
+/**
+ * #767 — Inject `disallowedTools: <value>` into the YAML frontmatter of a
+ * Claude .md agent. Mirrors injectEffortFrontmatter: idempotent (skips if
+ * disallowedTools: already present), inserts immediately before the closing
+ * `---`. Claude-only — never call for other runtimes, which break on unknown
+ * frontmatter keys. Relocated verbatim from bin/install.js (#2875 Part 2).
+ */
+function injectDisallowedToolsFrontmatter(content: string, disallowedValue: string): string {
+  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
+  const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
+  const match = fmRe.exec(content);
+  if (!match) return content; // no YAML frontmatter — leave unchanged
+
+  const fmBody = match[1]; // content between the two `---` lines
+  if (/^disallowedTools:/m.test(fmBody)) return content;
+
+  const openLen = 3 + eol.length; // "---" + eol
+  const closingStart = match.index + openLen + fmBody.length;
+
+  const before = content.slice(0, closingStart);
+  const after = content.slice(closingStart);
+  return `${before}disallowedTools: ${disallowedValue}${eol}${after}`;
+}
+
+// #767 — Read-only verifier/auditor agents get a Claude-Code disallowedTools deny-list.
+// Group A (pure read-only) deny Write,Edit,MultiEdit. Group B report-writers Write one
+// output file so they deny only Edit,MultiEdit. gsd-nyquist-auditor is intentionally
+// excluded (it legitimately uses Write AND Edit to create/patch test files). Relocated
+// verbatim from bin/install.js (#2875 Part 2) — single source of truth for both the
+// inline loop (which now requires this export) and the descriptor pipeline.
+const READONLY_AGENT_DISALLOWED_TOOLS: Record<string, string> = {
+  'gsd-plan-checker': 'Write, Edit, MultiEdit',
+  'gsd-integration-checker': 'Write, Edit, MultiEdit',
+  'gsd-ui-checker': 'Write, Edit, MultiEdit',
+  'gsd-verifier': 'Edit, MultiEdit',
+  'gsd-doc-verifier': 'Edit, MultiEdit',
+  'gsd-eval-auditor': 'Edit, MultiEdit',
+  'gsd-ui-auditor': 'Edit, MultiEdit',
+};
+
+/**
+ * Post-converter frontmatter-extensions step (#2875 Part 2 / ADR-1235 §1
+ * follow-up). Driven by the runtime descriptor's
+ * `hostBehaviors.agentFrontmatterExtensions` allow-list — Claude is its only
+ * declared consumer today (`agentFrontmatterExtensions: ["effort"]`).
+ * A runtime that does NOT declare the extension gets nothing injected (J3):
+ * OpenCode/Qwen/Hermes reject unknown frontmatter keys.
+ *
+ * Byte-identical to the inline agent loop's
+ * `if ((_hostBehaviors(runtime).agentFrontmatterExtensions || []).includes('effort'))`
+ * block (bin/install.js): both the effort injection AND the disallowedTools
+ * injection are gated behind the SAME `'effort'` extension flag — there is no
+ * separate `'disallowedTools'` extension key, mirroring the loop exactly.
+ *
+ * J2 (the trap row): when the resolved effort is `'inherit'`, NO `effort:`
+ * key is written at all — the absence of the key IS the behavior (#3533).
+ * Writing `effort: inherit` would be a regression that looks like success.
+ *
+ * @param content    agent .md content, already converter-transformed
+ * @param runtime    canonical runtime ID
+ * @param agentName  agent stem (from deriveAgentName), e.g. 'gsd-planner'
+ * @param targetDir  install root — resolves .planning/config.json + ~/.gsd/defaults.json
+ */
+function applyAgentFrontmatterExtensions(
+  content: string,
+  { runtime, agentName, targetDir }: { runtime: string; agentName: string; targetDir?: string | null },
+): string {
+  const extensions = (_hostBehaviors(runtime).agentFrontmatterExtensions as string[] | undefined) || [];
+  if (!extensions.includes('effort')) return content;
+
+  let result = content;
+  const effortCfg = readGsdEffectiveEffortConfig(targetDir ?? null);
+  const universalEffort = resolveInstallTimeEffort(effortCfg, agentName);
+  // #3533 (10d): 'inherit' means the effort: key must NOT exist — Claude Code
+  // then follows the session effort. The canonical source agents carry no
+  // effort key, so skipping injection is the whole job.
+  if (universalEffort !== 'inherit') {
+    const renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, universalEffort).value;
+    result = injectEffortFrontmatter(result, renderedEffort);
+  }
+  const disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[agentName];
+  if (disallowedTools) result = injectDisallowedToolsFrontmatter(result, disallowedTools);
+  return result;
+}
+
+/**
  * Apply Co-Authored-By attribution policy to file content.
  *   - null      -> remove the Co-Authored-By line and its preceding blank line
  *   - undefined -> leave content unchanged
@@ -3176,6 +3556,11 @@ export = {
   convertClaudeToAntigravityContent,
   convertClaudeCommandToAntigravitySkill,
   convertClaudeCommandToClaudeSkill,
+  // #2873 (4b): pure, scope-free transform — applied by the one call site
+  // that knows install scope (skillsKind's stage() in
+  // runtime-artifact-layout.cts), never inside convertClaudeCommandToClaudeSkill
+  // itself.
+  resolveSpecRootReference,
   convertClaudeCommandToKimiSkill,
   convertClaudeCommandToKimiCodeSkill,
   buildKimiAgentArtifacts,
@@ -3230,6 +3615,10 @@ export = {
   convertClaudeAgentToCodebuddyAgent,
   convertClaudeAgentToClineAgent,
   convertClaudeAgentToCodexAgent,
+  // #2875 Part 2 (J10): Hermes named branding converter, generic underlying
+  // transform exported alongside it for direct reuse/testing.
+  convertClaudeAgentToHermesAgent,
+  applyAgentBrandingRewrites,
   // ADR-1239 / #2092 Phase B Upgrade 1: native .qwen/agents/*.md subagent
   // projection — registered by name so convertedAgentsKind's
   // conversionExports[converterName] dispatch (runtime-artifact-layout.cts)
@@ -3250,7 +3639,17 @@ export = {
   // ADR-1235 §1: descriptor-driven agent cross-cutting
   applyAgentPathRewrites,
   normalizeAgentBodyForRuntime,
+  // #2875 Part 2: descriptor-driven agent frontmatter-extensions step + its
+  // single-sourced building blocks (also required back by bin/install.js so
+  // the inline loop and the descriptor pipeline resolve through the SAME
+  // code — no drift between the two byte-parity-gated pipelines).
+  deriveAgentName,
+  injectEffortFrontmatter,
+  injectDisallowedToolsFrontmatter,
+  READONLY_AGENT_DISALLOWED_TOOLS,
+  applyAgentFrontmatterExtensions,
   _computePathPrefix: computePathPrefix,
+  _restoreClaudeGlobalAtRefTilde: restoreClaudeGlobalAtRefTilde,
   _applyRuntimeRewrites,
   _stampNonClaudeRuntimeDefaults,
   // #2652: registry-resolved dispatch isolation, mirroring routeDispatchIsolation

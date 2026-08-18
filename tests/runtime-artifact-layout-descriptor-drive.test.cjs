@@ -49,8 +49,16 @@ const FAKE_DIR = '/tmp/fake-config-dir-dd';
 
 const GOLDEN = {
   // ── claude ──────────────────────────────────────────────────────────────────
+  // #2875 Part 2 (the agents-descriptor migration): claude/global gains an
+  // `agents` kind. This is NOT new on-disk behavior — a `claude --global`
+  // install always wrote `<configDir>/agents/gsd-*.md` via the now-deleted
+  // inline agent-staging loop in bin/install.js (claude was never in
+  // `_DESCRIPTOR_AGENTS_RUNTIMES`, and that loop ran unconditionally,
+  // independent of `_isSkillsRuntime`/scope). The descriptor previously never
+  // modeled that write; it now does, matching what was always materialized.
   'claude/global': [
     { kind: 'skills', destSubpath: 'skills', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
   'claude/local': [
     { kind: 'commands', destSubpath: 'commands', prefix: 'gsd-' }, // #1367: flat gsd-<cmd>.md
@@ -73,11 +81,17 @@ const GOLDEN = {
 
   // ── codex ────────────────────────────────────────────────────────────────────
   // Old switch: no scope branch → local == global. 5b backfill restores this.
+  // #2875 Part 2: agents kind added (the inline loop wrote codex agents too —
+  // codex was never in `_DESCRIPTOR_AGENTS_RUNTIMES`; the config.toml
+  // [agents.gsd-*] strip on a full→minimal downgrade is a SEPARATE, still
+  // hand-rolled write this migration deliberately does not touch).
   'codex/global': [
     { kind: 'skills', destSubpath: 'skills', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
   'codex/local': [
     { kind: 'skills', destSubpath: 'skills', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
 
   // ── copilot ──────────────────────────────────────────────────────────────────
@@ -155,11 +169,15 @@ const GOLDEN = {
 
   // ── hermes ───────────────────────────────────────────────────────────────────
   // Old switch: no scope branch → local == global. 5b backfill restores this.
+  // #2875 Part 2: agents kind added (the inline loop wrote hermes agents too,
+  // via a new named branding converter — convertClaudeAgentToHermesAgent).
   'hermes/global': [
     { kind: 'skills', destSubpath: 'skills/gsd', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
   'hermes/local': [
     { kind: 'skills', destSubpath: 'skills/gsd', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
 
   // ── codebuddy ────────────────────────────────────────────────────────────────
@@ -178,10 +196,26 @@ const GOLDEN = {
 
   // ── cline ────────────────────────────────────────────────────────────────────
   // Old switch: scope='global' → [skills]; scope='local' → []. Matches descriptor.
+  // #2875 Part 2: agents kind added to global (the inline loop wrote cline
+  // agents too, via convertClaudeAgentToClineAgent).
+  // #2875 Part 2 defect fix (cline-local agents-drop regression, closed):
+  // cline was never scope-gated in the deleted inline loop either, so a real
+  // `cline --local` install ALSO wrote agent files pre-migration (to the
+  // project root, per hostBehaviors.localTargetIsProjectRoot). `local` now
+  // ALSO declares the agents kind (capabilities/cline/capability.json),
+  // restoring that behavior — see tests/agent-descriptor-parity.test.cjs's
+  // cline (local) H row and tests/cline-install.test.cjs's local-install
+  // regression test for the byte-parity / end-to-end proofs. `local` still
+  // declares no `skills` kind: cline-local commands are embedded in
+  // .clinerules, never materialized as skill files
+  // (hostBehaviors.localCommandsViaRules).
   'cline/global': [
     { kind: 'skills', destSubpath: 'skills', prefix: 'gsd-' },
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
   ],
-  'cline/local': [],
+  'cline/local': [
+    { kind: 'agents', destSubpath: 'agents', prefix: 'gsd-' },
+  ],
 
   // ── kimi ─────────────────────────────────────────────────────────────────────
   // Old switch: scope='global' → [skills, kimi-agents]; scope='local' → []. Matches descriptor.
@@ -197,24 +231,35 @@ const GOLDEN = {
   // OpenCode discovers slash commands from commands/ (plural); the singular
   // command/ dir GSD previously wrote to is not scanned by OpenCode 1.17.13,
   // so none of the ~71 /gsd-* commands ever appeared in the OpenCode TUI.
+  // #2875 Part 2: agents kind added (the inline loop wrote opencode agents
+  // too — opencode's agents materialization previously went through the
+  // separate installOpencodeFamilySkills-adjacent inline loop, not through
+  // this layout at all; installAgentsKindStandalone now covers it).
   'opencode/global': [
     { kind: 'commands', destSubpath: 'commands', prefix: 'gsd-' },
     { kind: 'skills',   destSubpath: 'skills',   prefix: 'gsd-' },
+    { kind: 'agents',   destSubpath: 'agents',   prefix: 'gsd-' },
   ],
   'opencode/local': [
     { kind: 'commands', destSubpath: 'commands', prefix: 'gsd-' },
     { kind: 'skills',   destSubpath: 'skills',   prefix: 'gsd-' },
+    { kind: 'agents',   destSubpath: 'agents',   prefix: 'gsd-' },
   ],
 
   // ── kilo ─────────────────────────────────────────────────────────────────────
   // Old switch: no scope branch → local == global. 5b backfill restores this.
+  // #2875 Part 2: agents kind added (mirrors opencode — same combined-family
+  // install shape, same install-engine.cts installOpencodeFamilyArtifacts /
+  // installAgentsKindStandalone coverage).
   'kilo/global': [
     { kind: 'commands', destSubpath: 'command', prefix: 'gsd-' },
     { kind: 'skills',   destSubpath: 'skills',  prefix: 'gsd-' },
+    { kind: 'agents',   destSubpath: 'agents',  prefix: 'gsd-' },
   ],
   'kilo/local': [
     { kind: 'commands', destSubpath: 'command', prefix: 'gsd-' },
     { kind: 'skills',   destSubpath: 'skills',  prefix: 'gsd-' },
+    { kind: 'agents',   destSubpath: 'agents',  prefix: 'gsd-' },
   ],
 };
 

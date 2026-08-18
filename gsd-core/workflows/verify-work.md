@@ -70,6 +70,8 @@ VERIFY_PRE_HOOKS_JSON=$(gsd_run loop render-hooks verify:pre --raw)
 PHASE_DIR=$(printf '%s' "$INIT" | jq -r '.phase_dir // empty')
 ```
 
+⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
+
 Resolve active gate hooks from `VERIFY_PRE_HOOKS_JSON` where `kind == "gate"`.
 For each active gate hook, run its declared check (a `check.query` gate runs
 `gsd_run check ${hook.check.query} "${PHASE_DIR}" --raw`; a `predicate` gate
@@ -570,7 +572,7 @@ If execution verification is waiting only on human UAT and this session recorded
 
 ```bash
 PHASE_DIR=$(printf '%s' "$INIT" | jq -r '.phase_dir // empty')
-VERIFICATION_FILE=$(ls "${PHASE_DIR}"/*-VERIFICATION.md 2>/dev/null | head -1)
+VERIFICATION_FILE=$(gsd_run query verification.resolve-file "$PHASE_DIR" --raw 2>/dev/null)
 VERIFICATION_STATUS=$(gsd_run query verification.status "$PHASE_DIR" 2>/dev/null)
 VERIFICATION_STATUS_VALUE=$(printf '%s' "$VERIFICATION_STATUS" | jq -r '.status // empty' 2>/dev/null || echo "")
 PHASE_VERIFICATION_STATUS="$VERIFICATION_STATUS_VALUE"
@@ -704,11 +706,11 @@ Agent(
 **Phase:** {phase_number}
 **Mode:** gap_closure
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/{phase_num}-UAT.md (UAT with diagnoses)
 - {state_path} (Project State)
 - {roadmap_path} (Roadmap)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 
@@ -769,9 +771,9 @@ Agent(
 **Phase:** {phase_number}
 **Phase Goal:** Close diagnosed gaps from UAT
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/*-PLAN.md (Plans to verify)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_CHECKER}
 
@@ -813,9 +815,9 @@ Agent(
 **Phase:** {phase_number}
 **Mode:** revision
 
-<files_to_read>
+<required_reading>
 - {phase_dir}/*-PLAN.md (Existing plans)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 

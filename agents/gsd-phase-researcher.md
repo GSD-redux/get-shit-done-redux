@@ -545,7 +545,8 @@ Also read `.planning/config.json` — include Validation Architecture section in
 
 Then read CONTEXT.md if exists:
 ```bash
-cat "$phase_dir"/*-CONTEXT.md 2>/dev/null
+_CTX=( "$phase_dir"/*-CONTEXT.md )
+if [ -e "${_CTX[0]}" ]; then cat "${_CTX[@]}"; fi
 ```
 
 **If CONTEXT.md exists**, it constrains research:

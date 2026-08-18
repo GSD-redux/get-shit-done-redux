@@ -14,8 +14,10 @@ const assert = require('node:assert/strict');
 const {
   convertClaudeCommandToCursorSkill,
   convertClaudeAgentToCursorAgent,
-  _applyRuntimeRewrites,
 } = require('../bin/install.js');
+const {
+  _applyRuntimeRewrites,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 describe('convertClaudeCommandToCursorSkill', () => {
   test('writes unquoted Cursor skill name in frontmatter', () => {

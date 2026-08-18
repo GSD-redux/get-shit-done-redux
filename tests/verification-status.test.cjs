@@ -14,8 +14,20 @@
  *  8. CRLF line endings in frontmatter
  *  9. Body-only file (no frontmatter block) → missing
  * 10. Nonexistent phase directory → missing
- * 11. Multiple *-VERIFICATION.md files → first by sort
+ * 11. Multiple *-VERIFICATION.md files, none matching the phase's own token →
+ *     alphabetically-first FALLBACK wins (the phase-pinned rule's #2 tier —
+ *     see #3492 below for the primary, phase-pinned tier)
  * 12. ship.md PHASE_VERIFICATION_INCOMPLETE sentinel (contract anchor for #651 consolidation)
+ * 13. #3357/#3492: `<phase-token>-VERIFICATION.md` resolution — resolveVerificationFile
+ *     unit coverage plus behavioral tests through readVerificationStatus and
+ *     findStaleVerificationSummary. THE CONTRACT (#3492): a candidate whose
+ *     name exactly matches THIS phase's own token always wins, even over a
+ *     different phase's canonically-shaped file; alphabetical-first among all
+ *     dashed candidates is only the fallback when no exact match exists. The
+ *     resolveVerificationFile unit tests are the reliable anchors for this —
+ *     the readVerificationStatus/findStaleVerificationSummary behavioral tests
+ *     are illustrative (their outcome also depends on directory-basename
+ *     token derivation, not exercised in isolation there).
  *
  * PORTABILITY: pure JS — no shell-outs, no bash fences.
  * Cross-platform (passes on Windows). Ref: DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.
@@ -35,7 +47,10 @@ const {
   VERIFIER_STATUSES,
   VERIFICATION_ROUTING_TABLE,
   defaultPhaseCleanCommitTimesMs,
+  resolveVerificationFile,
+  resolveUatFile,
   readVerificationStatus,
+  findStaleVerificationSummary,
 } = require('../gsd-core/bin/lib/verification.cjs');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
@@ -44,11 +59,18 @@ const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Create a temporary phase directory under os.tmpdir().
- * Returns the absolute path; caller must clean up.
+ * Create a temporary phase directory named like a real one (`NN-slug`),
+ * inside a throwaway parent. #3511: a phase directory's own name determines
+ * which files count as ITS artifacts, so a fixture whose basename does not
+ * name the same phase as the files written into it is not a valid phase dir.
+ * @param {string} suffix       - test-distinguishing suffix for the parent
+ * @param {string} phaseDirName - basename of the phase dir (default '01-foo')
  */
-function mkPhaseDir(suffix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `gsd-651-${suffix}-`));
+function mkPhaseDir(suffix, phaseDirName = '01-foo') {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-651-${suffix}-`));
+  const phaseDir = path.join(parent, phaseDirName);
+  fs.mkdirSync(phaseDir);
+  return phaseDir;
 }
 
 /**
@@ -84,7 +106,7 @@ describe('verification-status', () => {
       assert.equal(result.next_command, '', 'next_command must be empty for passed');
       assert.ok(result.next_action.length > 0, 'next_action must be non-empty');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -114,7 +136,14 @@ describe('verification-status', () => {
 
   // ── Case 3: human_needed ──────────────────────────────────────────────────
   test('status: human_needed → status human_needed, next_command is empty', () => {
-    const dir = mkPhaseDir('human-needed');
+    // Deliberately non-numeric dir basename ("human-needed" has no digits at
+    // all) — extractPhaseToken has no derivable token, so (a) isPhaseArtifact's
+    // fail-safe still includes 01-hn-VERIFICATION.md as this "phase"'s own
+    // report, and (b) the next_command number-append check (which requires a
+    // PURELY numeric token) never fires. This is what this test is actually
+    // pinning — see the comment below — so the dir name must stay non-numeric,
+    // not the realistic 'NN-slug' default.
+    const dir = mkPhaseDir('human-needed', 'human-needed');
     try {
       writeVerificationMd(dir, '01-hn-VERIFICATION.md', 'human_needed');
       const result = readVerificationStatus(dir);
@@ -124,13 +153,16 @@ describe('verification-status', () => {
       assert.equal(result.next_command, '/gsd-verify-work');
       assert.ok(result.next_action.length > 0);
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
   // ── Case 4: no *-VERIFICATION.md → missing ────────────────────────────────
   test('no *-VERIFICATION.md file → status missing, next_command execute-phase', () => {
-    const dir = mkPhaseDir('missing');
+    // Non-numeric dir basename: next_command asserts no phase-number argument
+    // is appended, which requires extractPhaseToken(dirName) to not be purely
+    // numeric — see the human_needed test above for the same rationale.
+    const dir = mkPhaseDir('missing', 'missing');
     try {
       // write a non-matching file to confirm it is ignored
       fs.writeFileSync(path.join(dir, 'README.md'), '# phase');
@@ -143,13 +175,15 @@ describe('verification-status', () => {
         `next_action must reassure the user execute-phase will not redo work (#1762); got: ${result.next_action}`,
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
   // ── Case 5: unknown frontmatter status value ──────────────────────────────
   test("frontmatter status 'bogus' → status unknown, next_command execute-phase", () => {
-    const dir = mkPhaseDir('unknown');
+    // Non-numeric dir basename: next_command asserts no phase-number argument
+    // is appended — see the human_needed test above for the same rationale.
+    const dir = mkPhaseDir('unknown', 'unknown');
     try {
       writeVerificationMd(dir, '01-u-VERIFICATION.md', 'bogus');
       const result = readVerificationStatus(dir);
@@ -164,7 +198,7 @@ describe('verification-status', () => {
         `next_action must acknowledge an unrecognized status may be an intentional marker (#1762); got: ${result.next_action}`,
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -210,7 +244,7 @@ describe('verification-status', () => {
       );
       assert.equal(result.next_command, '', 'next_command must be empty for passed');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -283,7 +317,7 @@ describe('verification-status', () => {
       assert.equal(result.status, 'passed', 'CRLF frontmatter must parse to passed');
       assert.equal(result.next_command, '');
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -301,7 +335,7 @@ describe('verification-status', () => {
         "A body-only status: line must NOT be read — result should be 'missing'",
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -313,9 +347,19 @@ describe('verification-status', () => {
     assert.equal(result.next_command, '/gsd-execute-phase');
   });
 
-  // Multiple *-VERIFICATION.md files → deterministic pick (first by sort)
-  test('multiple *-VERIFICATION.md files in dir → first by sort order wins', () => {
-    const dir = mkPhaseDir('multi');
+  // Multiple *-VERIFICATION.md files, NEITHER matching the phase dir's own
+  // token → deterministic FALLBACK pick (first by sort). This is the #2 tier
+  // of the #3492 phase-pinned rule, not the contract itself — see the
+  // `#3357/#3492` describe block below for the primary, phase-pinned tier
+  // (resolveVerificationFile unit tests are the reliable anchors there).
+  // The dir basename ('multi', no digits) has no derivable phase token, so
+  // scopeToPhase's isPhaseArtifact fail-safe passes BOTH candidates through
+  // unfiltered (#3511: scopeToPhase is a plain filter with no other
+  // fallback — a derivable token that matched neither file would empty the
+  // set and this test would read 'missing', not exercise the alphabetical
+  // tiebreak at all).
+  test('multiple *-VERIFICATION.md files, none matching the phase token → alphabetically-first FALLBACK wins', () => {
+    const dir = mkPhaseDir('multi', 'multi');
     try {
       // Write two files: alphabetically "01-a" comes before "02-b"
       // "01-a" has passed; "02-b" has gaps_found — first by sort must win
@@ -326,10 +370,10 @@ describe('verification-status', () => {
       assert.equal(
         result.status,
         'passed',
-        'When multiple *-VERIFICATION.md files exist, the first by lexicographic sort must be used',
+        'With no exact phase-token match, the first by lexicographic sort must be used',
       );
     } finally {
-      cleanup(dir);
+      cleanup(path.dirname(dir));
     }
   });
 
@@ -809,6 +853,534 @@ describe('verification-status', () => {
     );
   });
 
+});
+
+// ─── #3357/#3492: phase-pinned *-VERIFICATION.md resolution ──────────────────
+//
+// A phase dir can legitimately hold more than one `*-VERIFICATION.md` — the
+// real per-phase report (`03-VERIFICATION.md`) alongside an ad-hoc plan
+// worksheet (`03-CORRECTION-VERIFICATION.md`). The original "alphabetically
+// first" pick chose the worksheet ('C' < 'V'), and a worksheet with no
+// frontmatter `status:` made the whole phase read `missing` even though a
+// passing report sat right next to it (#3357).
+//
+// #3492 REGRESSION this block anchors: the #3357 fix's first cut preferred
+// ANY canonically-shaped `<token>-VERIFICATION.md`, regardless of WHOSE token
+// it carried — so a stray cross-phase or sentinel-numbered canonical file
+// (`999-VERIFICATION.md`) could outrank the querying phase's own (possibly
+// non-canonical) report. THE CONTRACT (verified against the built lib):
+//   ['12-review-VERIFICATION.md', '999-VERIFICATION.md'] resolves to
+//     '12-review-VERIFICATION.md' for phase token '12' (was '999-…').
+//   ['03-CORRECTION-VERIFICATION.md', '04-VERIFICATION.md'] resolves to
+//     '04-VERIFICATION.md' for phase token '04' (was '03-CORRECTION-…').
+// resolveVerificationFile is the single resolver findStaleVerificationSummary,
+// readVerificationStatus, commands.cts's determinePhaseStatus, and both
+// init.cts verification_path projectors all call, every one pinned to its own
+// phaseDir's token (#3473 F2 / #3492).
+//
+// These resolveVerificationFile unit tests are the RELIABLE ANCHORS for the
+// phase-pinned rule (a real `phaseToken` string, no filesystem/readdir order
+// involved). The readVerificationStatus/findStaleVerificationSummary
+// behavioral tests further down are illustrative only — their outcome
+// additionally depends on the temp directory's basename tokenizing the way
+// the test expects.
+describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple candidates exist', () => {
+
+  test('#3492 regression counterexample 1: a sentinel-numbered stray file does not outrank this phase\'s own non-canonical report', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['12-review-VERIFICATION.md', '999-VERIFICATION.md'],
+        { phaseToken: '12-review' },
+      ),
+      '12-review-VERIFICATION.md',
+      'this phase (token "12-review") owns 12-review-VERIFICATION.md; 999-VERIFICATION.md is a different phase and must not win',
+    );
+  });
+
+  test('#3492 regression counterexample 2: a cross-phase CORRECTION worksheet does not outrank this phase\'s own canonical report', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['03-CORRECTION-VERIFICATION.md', '04-VERIFICATION.md'],
+        { phaseToken: '04' },
+      ),
+      '04-VERIFICATION.md',
+      'this phase (token "04") owns 04-VERIFICATION.md; the 03-CORRECTION worksheet belongs to a different phase',
+    );
+  });
+
+  test('exact phase-token match wins over an ad-hoc -CORRECTION- worksheet for the SAME phase', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['03-CORRECTION-VERIFICATION.md', '03-VERIFICATION.md'],
+        { phaseToken: '03' },
+      ),
+      '03-VERIFICATION.md',
+      'the phase\'s own 03-VERIFICATION.md must win over its CORRECTION worksheet, not lose alphabetically',
+    );
+  });
+
+  test('order-independence: same candidates reversed → same answer', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['03-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md'],
+        { phaseToken: '03' },
+      ),
+      '03-VERIFICATION.md',
+      'input order must not change which file is selected',
+    );
+  });
+
+  test('decimal phase token: 35.1-VERIFICATION.md wins over a -CORRECTION- sibling', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['35.1-CORRECTION-VERIFICATION.md', '35.1-VERIFICATION.md'],
+        { phaseToken: '35.1' },
+      ),
+      '35.1-VERIFICATION.md',
+    );
+  });
+
+  test('letter-suffixed phase token: 03A-VERIFICATION.md wins over a -CORRECTION- sibling', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['03A-CORRECTION-VERIFICATION.md', '03A-VERIFICATION.md'],
+        { phaseToken: '03A' },
+      ),
+      '03A-VERIFICATION.md',
+    );
+  });
+
+  test('multi-canonical tiebreak: no exact phase-token match among several canonically-shaped candidates → alphabetically first', () => {
+    // Neither candidate's token is "50" — this is the (b) fallback tier, and
+    // it must stay a plain alphabetical pick (not a second, separate
+    // "canonical-shaped" preference — that concept no longer exists; #3492
+    // removed it because it was exactly the regression mechanism above).
+    assert.equal(
+      resolveVerificationFile(
+        ['12-VERIFICATION.md', '999-VERIFICATION.md'],
+        { phaseToken: '50' },
+      ),
+      '12-VERIFICATION.md',
+      '"12-VERIFICATION.md" sorts before "999-VERIFICATION.md" and neither matches phase token "50"',
+    );
+  });
+
+  test('fallback: only a non-canonical file present → that file is still returned', () => {
+    // Load-bearing: a phase whose only report is non-canonically named must
+    // keep resolving to it, not to null — even when the phase token is known
+    // and does not exactly match.
+    assert.equal(
+      resolveVerificationFile(['01-review-VERIFICATION.md'], { phaseToken: '01' }),
+      '01-review-VERIFICATION.md',
+    );
+  });
+
+  test('fallback determinism: several non-canonical files, no phase token given → alphabetically first (unchanged)', () => {
+    assert.equal(
+      resolveVerificationFile(['02-b-VERIFICATION.md', '01-a-VERIFICATION.md']),
+      '01-a-VERIFICATION.md',
+    );
+  });
+
+  test('no phaseToken and no exact match → falls back to alphabetically-first, never null, when candidates exist', () => {
+    // #3492: an undeliverable/absent phase token must degrade to the original
+    // pre-#3357 behavior (alphabetically-first), not to null.
+    assert.equal(
+      resolveVerificationFile(['999-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md']),
+      '03-CORRECTION-VERIFICATION.md',
+      'with no phaseToken, plain alphabetical order decides — "03-…" sorts before "999-…"',
+    );
+  });
+
+  test('no matches → null', () => {
+    assert.equal(resolveVerificationFile(['03-PLAN.md', '03-SUMMARY.md'], { phaseToken: '03' }), null);
+  });
+
+  test('unrelated files are not miscounted as candidates', () => {
+    // 03-PLAN.md / 03-SUMMARY.md never end in "-VERIFICATION.md". A bare
+    // "VERIFICATION.md" (no leading phase-token dash) is also never a
+    // candidate — it fails the very `.endsWith('-VERIFICATION.md')` filter
+    // that builds the candidate list in the first place (the string is one
+    // character too short to end with a leading-dash suffix).
+    assert.equal(
+      resolveVerificationFile(['03-PLAN.md', '03-SUMMARY.md', 'VERIFICATION.md'], { phaseToken: '03' }),
+      null,
+      'a bare VERIFICATION.md is never a dashed candidate',
+    );
+  });
+
+  // #3511 reconciliation: resolveVerificationFile's fallback now scopes to
+  // isPhaseArtifact(fileName, phaseDirName), so a stray cross-phase file can
+  // no longer win the alphabetical-first fallback tier either — closing the
+  // gap isPhaseArtifact's own docblock (src/phase-id.cts) used to flag as
+  // open. The two pure cases below are the reliable anchors; the behavioral
+  // test after them pins the same contract through the real CLI-facing
+  // readVerificationStatus call path.
+  test('#3511: a cross-phase stray is excluded from the fallback → null, not the stray', () => {
+    assert.equal(
+      resolveVerificationFile(['04-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      null,
+      '04-VERIFICATION.md belongs to phase 04, not the "03-foo" directory\'s phase 03 — must not be returned',
+    );
+  });
+
+  test('#3511: a non-canonically-named report OF THIS phase still wins the fallback (the #3357 guarantee survives)', () => {
+    // The more important of the two #3511 cases: isPhaseArtifact scopes by
+    // phase-number membership, not by canonical shape, so this file still
+    // passes and the #3357 "non-canonical report still resolves" guarantee
+    // is not disturbed by the #3511 scoping.
+    assert.equal(
+      resolveVerificationFile(['03-CORRECTION-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      '03-CORRECTION-VERIFICATION.md',
+      '03-CORRECTION-VERIFICATION.md names phase 03, same as directory "03-foo" — must still resolve',
+    );
+  });
+
+  test('#3511: cross-phase stray alongside this phase\'s own non-canonical report → own report wins, stray excluded (not merely outsorted)', () => {
+    // Distinguishes "excluded from the fallback" from "just happens to sort
+    // after" — candidates are sorted at verification.cts's own call site
+    // before reaching resolveVerificationFile, and '01-VERIFICATION.md'
+    // sorts BEFORE '03-CORRECTION-VERIFICATION.md' alphabetically, so an
+    // UNSCOPED (alphabetical-first) fallback would wrongly pick the stray
+    // here. Scoping must actively exclude it for '03-CORRECTION-…' to win.
+    assert.equal(
+      resolveVerificationFile(
+        ['01-VERIFICATION.md', '03-CORRECTION-VERIFICATION.md'],
+        { phaseDirName: '03-foo' },
+      ),
+      '03-CORRECTION-VERIFICATION.md',
+    );
+  });
+
+  // WARNING-2/5/INFO-2 note (#3511 review): the only fallback test above uses
+  // a token-LESS dir ("03-foo" isn't token-less — this refers to the earlier
+  // `multiple *-VERIFICATION.md files, none matching the phase token` test,
+  // which passes no derivable-token distinguishing fixture and so passes
+  // identically pre-#3511-fix). This test uses a dir WITH a derivable token
+  // (`03-foo` → token "03") and TWO candidates that BOTH belong to that same
+  // phase (`03-a-…`/`03-b-…`, no exact `03-VERIFICATION.md`), so scoping
+  // excludes nothing and the alphabetical-first tie-break still decides —
+  // pinning that scoping does not disturb the ordinary same-phase-multi-file
+  // case.
+  test('#3511: alphabetical fallback when BOTH candidates are this phase\'s own (derivable token, no exact match)', () => {
+    assert.equal(
+      resolveVerificationFile(['03-a-VERIFICATION.md', '03-b-VERIFICATION.md'], { phaseDirName: '03-foo' }),
+      '03-a-VERIFICATION.md',
+      'both candidates belong to phase 03 (same as dir "03-foo"); alphabetically-first must still win',
+    );
+  });
+
+  test('behavioral (readVerificationStatus): a phase dir holding only a cross-phase stray reports missing, not the stray\'s status (#3511)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-stray-only-'));
+    const dir = path.join(baseDir, '03-foo');
+    fs.mkdirSync(dir);
+    try {
+      // Only a stray belonging to phase 04 sits in phase 03's directory. Give
+      // it a status that would NOT read as missing if it were (wrongly) picked,
+      // so a regression here is loud rather than accidentally matching.
+      writeVerificationMd(dir, '04-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'missing',
+        'a phase dir holding only another phase\'s report must report missing, not passed',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+  test('behavioral (readVerificationStatus): a phase dir holding only its own non-canonically-named report still resolves it (#3357 guarantee survives #3511 scoping)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-own-noncanon-'));
+    const dir = path.join(baseDir, '03-foo');
+    fs.mkdirSync(dir);
+    try {
+      writeVerificationMd(dir, '03-CORRECTION-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'passed',
+        'the phase\'s own non-canonically-named report must still resolve, not read as missing',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+  test('behavioral (readVerificationStatus): a phase with both its own report and a cross-phase stray reports the OWN report\'s status, not the stray\'s', () => {
+    // The directory basename is "03-canonical-test" so extractPhaseToken
+    // derives token "03" — the exact same derivation readVerificationStatus
+    // performs internally, so this exercises the real production call path
+    // (not just the pure resolver), pinned to counterexample 2's shape.
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3492-parent-'));
+    const dir = path.join(baseDir, '03-canonical-test');
+    fs.mkdirSync(dir);
+    try {
+      // A stray cross-phase canonical file with a DIFFERENT status — must not
+      // be picked for THIS (token "03") phase.
+      writeVerificationMd(dir, '99-VERIFICATION.md', 'gaps_found');
+      // This phase's own (non-canonical, ad-hoc) report — must win.
+      writeVerificationMd(dir, '03-CORRECTION-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'passed',
+        'the phase must report its OWN report\'s status, not a cross-phase stray\'s',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+  test('behavioral (readVerificationStatus): a phase with both its own canonical report and an ad-hoc worksheet reports the canonical report\'s status, not missing (#3357 original regression)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3357-parent-'));
+    const dir = path.join(baseDir, '03-canonical-test');
+    fs.mkdirSync(dir);
+    try {
+      // The ad-hoc worksheet has no frontmatter `status:` at all — this is
+      // the exact original #3357 failure mode: 'C' < 'V' picked this file
+      // first and the phase read 'missing' despite the passing report sitting
+      // right next to it.
+      fs.writeFileSync(
+        path.join(dir, '03-CORRECTION-VERIFICATION.md'),
+        '# Ad-hoc correction worksheet\n\nNo frontmatter status here.\n',
+      );
+      writeVerificationMd(dir, '03-VERIFICATION.md', 'passed');
+
+      const result = readVerificationStatus(dir);
+      assert.equal(
+        result.status,
+        'passed',
+        'the phase must report the canonical report\'s status, not missing',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+  test('behavioral (findStaleVerificationSummary): staleness is checked against THIS phase\'s own report, not a cross-phase stray', () => {
+    // A stray cross-phase file ("99-VERIFICATION.md") is alphabetically AFTER
+    // this phase's own "03-VERIFICATION.md", so this also demonstrates the
+    // pin is not merely riding on alphabetical luck.
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3492-stale-parent-'));
+    const dir = path.join(baseDir, '03-stale-pin-test');
+    fs.mkdirSync(dir);
+    try {
+      writeVerificationMd(dir, '03-VERIFICATION.md', 'passed');
+      writeVerificationMd(dir, '99-VERIFICATION.md', 'passed');
+      setMtime(path.join(dir, '03-VERIFICATION.md'), '2020-01-01T00:00:00Z');
+      setMtime(path.join(dir, '99-VERIFICATION.md'), '2020-01-01T00:00:00Z');
+
+      // Root-style summary placement (mirrors the #2348 fixtures above) —
+      // scanPhasePlans's nested-layout matcher requires `SUMMARY-<NN>...md`
+      // inside a `plans/` subdir; a root-named `03-01-SUMMARY.md` dropped into
+      // `plans/` matches neither isRootSummaryFile (wrong directory) nor
+      // isNestedSummaryFile (wrong filename shape), so summaryFiles reads
+      // empty and the phase is never stale — not what this test means to
+      // exercise.
+      const summaryPath = path.join(dir, '03-01-SUMMARY.md');
+      fs.writeFileSync(summaryPath, '# summary\n');
+      setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+      // Force the mtime path (no git clock) by injecting an empty resolver —
+      // mirrors the existing #2348 test pattern elsewhere in this file.
+      const result = findStaleVerificationSummary(dir, fs, () => new Map());
+      assert.equal(result.determined, true);
+      assert.equal(result.stale, true, 'the phase\'s own 03-VERIFICATION.md is older than its summary');
+      assert.equal(
+        result.verificationFile,
+        '03-VERIFICATION.md',
+        'staleness must be computed against the phase\'s own report, not the cross-phase 99-VERIFICATION.md stray',
+      );
+    } finally {
+      cleanup(baseDir);
+    }
+  });
+
+});
+
+// ─── #3473 F2: resolveVerificationFile allowBare option ──────────────────────
+//
+// commands.cts (determinePhaseStatus) and two verification_path projectors in
+// init.cts each hand-rolled a fourth variant of this same selection: they
+// additionally accept a BARE `VERIFICATION.md`, which this module's own two
+// callers (findStaleVerificationSummary, readVerificationStatus) never have.
+// `allowBare` threads that one behavioral difference through the single
+// resolver instead of leaving a fourth hand-rolled implementation behind
+// (#3473 F2). A bare match is ranked BELOW any dashed candidate — canonical
+// or not — because a dashed file names its phase and a bare one does not.
+describe('#3473 F2: resolveVerificationFile allowBare option', () => {
+
+  test('allowBare defaults to false — a bare-only list returns null without the option', () => {
+    assert.equal(resolveVerificationFile(['VERIFICATION.md']), null);
+  });
+
+  test('allowBare:true, bare-only candidate → bare file returned', () => {
+    assert.equal(
+      resolveVerificationFile(['VERIFICATION.md'], { allowBare: true }),
+      'VERIFICATION.md',
+    );
+  });
+
+  test('allowBare:true, bare + non-canonical dashed → the dashed fallback wins', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['VERIFICATION.md', '01-review-VERIFICATION.md'],
+        { allowBare: true },
+      ),
+      '01-review-VERIFICATION.md',
+      'a dashed non-canonical file names its phase and must win over a bare match',
+    );
+  });
+
+  test('allowBare:true, bare + canonical → the canonical file wins', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['VERIFICATION.md', '03-VERIFICATION.md'],
+        { allowBare: true },
+      ),
+      '03-VERIFICATION.md',
+    );
+  });
+
+  // #3511: allowBare must still fall through to the bare match when the ONLY
+  // dashed candidate is excluded by phaseDirName scoping (a cross-phase
+  // stray) — the fallback tier finding nothing phase-owned is the same
+  // "no dashed candidate at all" case allowBare was always reached from.
+  test('#3511: allowBare:true, bare + a cross-phase dashed stray scoped out by phaseDirName → the bare file wins', () => {
+    assert.equal(
+      resolveVerificationFile(
+        ['VERIFICATION.md', '04-VERIFICATION.md'],
+        { allowBare: true, phaseDirName: '03-foo' },
+      ),
+      'VERIFICATION.md',
+      '04-VERIFICATION.md belongs to a different phase and is excluded, so bare VERIFICATION.md is the only remaining candidate',
+    );
+  });
+
+});
+
+// ─── #3518: resolveUatFile — phase-pinned, deterministic *-UAT.md pick ───────
+//
+// Both uat_path projectors in src/init.cts picked the phase's UAT artifact
+// with a bare `.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md')` over an
+// unsorted readdir listing: no phase-membership check, no ordering. A stray
+// cross-phase 04-UAT.md in phase 03's directory could become phase 03's
+// uat_path, and WHICH file won was filesystem-dependent (creation order on
+// APFS, hash order on ext4/XFS) — two machines on the same commit could emit
+// different uat_path values for the same phase (#3518).
+//
+// resolveUatFile is the UAT counterpart of resolveVerificationFile, sharing
+// the identical selection rule via the resolvePhaseArtifactFile core: the
+// phase's own <token>-UAT.md always wins; otherwise alphabetically-first
+// dashed candidate (deterministic on every filesystem); a bare UAT.md only
+// when allowBare is set and no dashed candidate exists at all.
+//
+// These unit tests are the RELIABLE ANCHORS for the rule (a real phaseToken
+// string, no readdir order involved). The end-to-end red/green repro for the
+// two init.cts projector call sites lives in tests/init.test.cjs (#3518).
+describe('#3518: resolveUatFile — phase-pinned *-UAT.md resolution', () => {
+
+  test('#3518 regression: a stray cross-phase -UAT.md does not outrank this phase\'s own UAT file', () => {
+    assert.equal(
+      resolveUatFile(
+        ['04-UAT.md', '03-UAT.md'],
+        { phaseToken: '03' },
+      ),
+      '03-UAT.md',
+      'this phase (token "03") owns 03-UAT.md; the stray 04-UAT.md belongs to a different phase',
+    );
+  });
+
+  test('order-independence: same candidates reversed → same answer', () => {
+    assert.equal(
+      resolveUatFile(
+        ['03-UAT.md', '04-UAT.md'],
+        { phaseToken: '03' },
+      ),
+      '03-UAT.md',
+      'input order must not change which file is selected',
+    );
+  });
+
+  test('fallback: only a stray cross-phase file present → still returned, never null', () => {
+    // Load-bearing: a phase whose only UAT artifact is not its own
+    // canonically-named file must keep resolving to SOMETHING, not to null —
+    // deterministically (alphabetically-first) rather than by readdir order.
+    assert.equal(
+      resolveUatFile(['04-UAT.md', '02-UAT.md'], { phaseToken: '03' }),
+      '02-UAT.md',
+      '"02-UAT.md" sorts before "04-UAT.md" — deterministic even when the phase\'s own file is absent',
+    );
+  });
+
+  test('fallback determinism: several candidates, no phase token given → alphabetically first', () => {
+    assert.equal(resolveUatFile(['02-UAT.md', '01-a-UAT.md']), '01-a-UAT.md');
+  });
+
+  test('allowBare defaults to false — a bare-only list returns null without the option', () => {
+    assert.equal(resolveUatFile(['UAT.md']), null);
+  });
+
+  test('allowBare:true, bare + dashed → the dashed candidate wins', () => {
+    assert.equal(
+      resolveUatFile(['UAT.md', '03-UAT.md'], { allowBare: true, phaseToken: '03' }),
+      '03-UAT.md',
+      'a dashed file names its phase and must win over a bare match',
+    );
+  });
+
+  test('allowBare:true, bare-only candidate → bare file returned', () => {
+    assert.equal(resolveUatFile(['UAT.md'], { allowBare: true }), 'UAT.md');
+  });
+
+  test('no matches → null', () => {
+    assert.equal(resolveUatFile(['03-PLAN.md', '03-SUMMARY.md'], { phaseToken: '03' }), null);
+  });
+});
+
+// ─── #3518: call-site guard — no hand-rolled *-UAT.md single-pick survives ────
+//
+// The "Partial Fix Across Call Sites" regression class: a future contributor
+// adding a NEW uat_path-style projection (or reverting one of the two fixed
+// init.cts sites) would hand-roll `.find((f) => f.endsWith('-UAT.md') ||
+// f === 'UAT.md')` again — reintroducing the readdir-order,
+// no-phase-check pick #3518 closed. This scans src/ for that literal shape
+// and fails on any site outside src/verification.cts, whose
+// resolvePhaseArtifactFile core is the single owner of the pattern.
+// (src/commands.cts's scaffold WRITER builds `${padded}-UAT.md` directly —
+// a canonical-name construction, not a discovery pick — and does not match.)
+describe('#3518: call-site guard — every *-UAT.md single-pick routes through resolveUatFile', () => {
+
+  test('no hand-rolled -UAT.md discovery pick exists outside src/verification.cts', () => {
+    const srcDir = path.join(__dirname, '..', 'src');
+    const owner = path.join(srcDir, 'verification.cts');
+    // The two shapes the pre-#3518 bug appeared as: an endsWith('-UAT.md')
+    // predicate, or a bare `=== 'UAT.md'` equality, anywhere in src/.
+    const HAND_ROLLED_RE = /endsWith\(['"`]-UAT\.md['"`]\)|===\s*['"`]UAT\.md['"`]/;
+    const offenders = [];
+    for (const file of fs.readdirSync(srcDir)) {
+      if (!file.endsWith('.cts')) continue;
+      const fullPath = path.join(srcDir, file);
+      if (fullPath === owner) continue;
+      // CRLF-tolerant split (local/no-crlf-fragile-split): Windows
+      // git-autocrlf checkouts yield \r\n line endings.
+      const lines = fs.readFileSync(fullPath, 'utf-8').split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (HAND_ROLLED_RE.test(line)) offenders.push(`src/${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      'hand-rolled *-UAT.md single-pick(s) — route through resolveUatFile '
+        + '(src/verification.cts, issue #3518):\n'
+        + offenders.join('\n'),
+    );
+  });
 });
 
 // ─── #3057 B3: findStaleVerificationSummary — indeterminate vs not-stale ─────

@@ -1,12 +1,8 @@
-// allow-test-rule: source-text-is-the-product (see #2481, #2615)
-// The final describe block asserts on gsd-core/workflows/review.md's text. A
-// workflow .md IS what the runtime loads — its literal command lines are the
-// deployed contract, and there is no runtime seam that executes review.md here.
-// The #2615 matrix-parity block below is the same kind of contract assertion:
-// docs/reference/host-integration-capability-matrix.md IS the cited source of
-// truth for every descriptor axis (ADR-1239), so asserting a shipped axis
-// value appears there and matches is a contract assertion, not a source grep.
-// Every other block in this file is behavioral (CLI + module surface).
+// #2615 the matrix-parity block below (the file's final describe block) is a
+// contract assertion, not a source grep: docs/reference/host-integration-capability-matrix.md
+// IS the cited source of truth for every descriptor axis (ADR-1239), so asserting a shipped
+// axis value appears there and matches is a contract assertion. Every other block in this file
+// is behavioral (CLI + module surface).
 
 /**
  * #2481 — ADR-1239 `effortSurface` axis + ADR-443 path (a).
@@ -23,6 +19,8 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
+const cp = require('node:child_process');
 const fc = require('fast-check');
 
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
@@ -92,6 +90,94 @@ function projectWithEffort(effort) {
   );
   return dir;
 }
+
+describe('#3534 resolve-execution reports resolved AND effective effort', () => {
+  function agentHome(t, agentFileBody) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3534-home-'));
+    t.after(() => cleanup(home));
+    if (agentFileBody !== null) {
+      fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'agents', 'gsd-executor.md'), agentFileBody);
+    }
+    return home;
+  }
+
+  function resolveExecution(dir, agent = 'gsd-executor', extra = [], env = {}) {
+    return JSON.parse(
+      runGsdTools(`query resolve-execution ${agent} ${extra.join(' ')}`, dir, env).output,
+    );
+  }
+
+  test('10a: effective effort reads the installed frontmatter (claude)', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, '---\nname: gsd-executor\neffort: low\ndescription: x\n---\nBody.\n');
+    // #3534: pass the fixture home as the CHILD env argument — testEnvBase()
+    // blanks CLAUDE_CONFIG_DIR after the process.env spread, so a process.env
+    // mutation never reaches the child (and a dev's real ~/.claude would).
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort, 'high', 'resolved cascade value unchanged');
+    assert.equal(out.effort_effective, 'low', 'the installed frontmatter value');
+    assert.equal(out.effort_effective_source, 'frontmatter');
+    // Existing keys all still present, unchanged shape.
+    for (const k of ['model', 'profile', 'effort', 'effort_rendered', 'effort_param', 'effort_propagation', 'fast_mode', 'fast_mode_supported']) {
+      assert.ok(k in out, `existing key ${k} must remain`);
+    }
+  });
+
+  test('10a: absent frontmatter reports inherit as the effective state (the 10a repro)', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, '---\nname: gsd-executor\ndescription: x\n---\nBody.\n');
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort, 'high');
+    assert.equal(out.effort_effective, 'inherit', 'absent key = follows the session');
+    assert.equal(out.effort_effective_source, 'frontmatter-absent');
+  });
+
+  test('10a: missing agent file falls back to resolved with the flag', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, null);
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, out.effort);
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+  test('10a: runtimes without an install-time channel report resolved', (t) => {
+    const dir = createTempProject();
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      // #3531+#3534 combined: pin the AGENT — a bare effort.default no longer
+      // reaches a tiered agent under the merged tier ladder.
+      JSON.stringify({ runtime: 'codex', effort: { agent_overrides: { 'gsd-executor': 'medium' } } }, null, 2),
+    );
+    const out = resolveExecution(dir);
+    assert.equal(out.effort, 'medium');
+    assert.equal(out.effort_effective, 'medium');
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+  test('10a: CRLF frontmatter is read', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, ['---', 'name: gsd-executor', 'effort: xhigh', 'description: x', '---', 'Body.', ''].join('\r\n'));
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, 'xhigh');
+    assert.equal(out.effort_effective_source, 'frontmatter');
+  });
+
+  test('10a: frontmatter-less agent file degrades to resolved', (t) => {
+    const dir = projectWithEffort('high');
+    t.after(() => cleanup(dir));
+    const home = agentHome(t, 'No frontmatter here at all.\n');
+    const out = resolveExecution(dir, 'gsd-executor', [], { CLAUDE_CONFIG_DIR: home });
+    assert.equal(out.effort_effective, out.effort);
+    assert.equal(out.effort_effective_source, 'resolved');
+  });
+
+});
 
 describe('#2481 effortSurface — closed vocabulary', () => {
   test('is exactly argv|none — no config-file member', () => {
@@ -325,6 +411,23 @@ describe('#2481 live path — resolve-execution carries invocation-time effort',
   });
 });
 
+describe('#3533 inherit renders no host argv argument', () => {
+  test('a project configuring inherit resolves effort inherit and renders NO argv', (t2) => {
+    const dir = createTempProject();
+    t2.after(() => cleanup(dir));
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } }, null, 2),
+    );
+    const out = JSON.parse(
+      runGsdTools('query resolve-execution gsd-planner --host claude', dir).output,
+    );
+    assert.equal(out.effort, 'inherit');
+    assert.deepEqual(out.effort_argv, [], 'inherit must render no argument');
+    assert.equal(out.effort_propagation, null);
+  });
+});
+
 describe('#2481 — the escalation surface renders argv (CLI-level, not a workflow claim)', () => {
   // NAMING IS DELIBERATE. This exercises `resolve-execution --attempt` directly,
   // which is the CLI surface ADR-443's blocker explicitly EXCLUDES when it asks
@@ -339,7 +442,10 @@ describe('#2481 — the escalation surface renders argv (CLI-level, not a workfl
     fs.writeFileSync(
       path.join(dir, '.planning', 'config.json'),
       JSON.stringify({
-        effort: { default: 'low' },
+        // #3531: pin the heavy tier rather than effort.default — a bare default
+        // no longer answers for gsd-planner (heavy) now that the config block
+        // merges over the built-in tier ladder.
+        effort: { routing_tier_defaults: { heavy: 'low' } },
         dynamic_routing: { enabled: true, escalate_on_failure: true, max_escalations: 3 },
       }, null, 2),
     );
@@ -418,18 +524,97 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
 });
 
 describe('#2481 review workflow resolves effort per reviewer', () => {
-  test('shipped orchestration invokes resolve-execution — the grep ADR-443 said returned zero hits', () => {
+  test('shipped orchestration: the live claude lane genuinely receives --effort <level> in its spawned argv', () => {
     // Phase 5b (#2799) moved the call out of review.md's per-lane bash and into the review-lane
-    // route, which resolves effort once per selected lane through the SAME surface. ADR-443's
-    // invariant is about shipped orchestration calling resolve-execution at all, not about which
-    // file it lives in — so the assertion follows the call rather than pinning the old location.
-    const toolsSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs'), 'utf-8',
-    );
-    assert.ok(
-      toolsSrc.includes('resolve-execution'),
-      'ADR-443 blocks on no shipped orchestration calling resolve-execution',
-    );
+    // route's `effortFor()`, which SPAWNS `query resolve-execution … --pick effort_argv_string`
+    // once per selected lane and folds the result into that lane's argv template. A text grep for
+    // the string "resolve-execution" in gsd-tools.cjs would pass even if effortFor's result were
+    // silently dropped before reaching the spawned reviewer, or if the call were dead code. This
+    // drives the REAL `review-lane invoke` route end-to-end — real cp.spawnSync, a real project
+    // config, a real claude-shaped shim on PATH — and inspects the argv the shim actually received,
+    // which is the only way to prove the resolved effort reaches the invocation rather than merely
+    // that some file mentions the command name.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2481-orchestration-e2e-'));
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2481-orchestration-project-'));
+    try {
+      const bin = path.join(dir, 'bin');
+      const runDir = path.join(dir, 'run');
+      fs.mkdirSync(bin);
+      fs.mkdirSync(runDir);
+      fs.writeFileSync(path.join(runDir, 'gsd-review-prompt.md'), 'prompt');
+
+      const seenArgv = path.join(dir, 'argv.txt');
+      fs.writeFileSync(
+        path.join(bin, 'claude'),
+        '#!/usr/bin/env bash\n'
+        + 'cat >/dev/null\n'
+        + `printf '%s\\n' "$@" > "${seenArgv}"\n`
+        + 'echo "a review body long enough to clear the empty-output guard."\n',
+        { mode: 0o755 },
+      );
+
+      // An extensionless file with a POSIX shebang is not executable on Windows:
+      // CreateProcess resolves a bare `claude` command against PATHEXT
+      // (.COM;.EXE;.BAT;.CMD;...), and a shebang-only file matches none of them,
+      // so the shim above is invisible there. Ship a second shim recognized by
+      // PATHEXT that writes the SAME newline-per-argv capture format the
+      // assertion below parses. Delegating the actual argv capture to a small
+      // Node script (invoked via `%*`) rather than parsing `%*` in batch avoids
+      // cmd.exe's fragile re-splitting of quoted/spaced arguments — Node parses
+      // the raw Windows command line itself, the same way the real `claude`
+      // binary's argv would be parsed.
+      if (process.platform === 'win32') {
+        const captureScript = path.join(bin, '_claude-capture.cjs');
+        fs.writeFileSync(
+          captureScript,
+          'const fs = require("fs");\n'
+          + 'process.stdin.resume();\n'
+          + 'process.stdin.on("end", () => {\n'
+          + `  fs.writeFileSync(${JSON.stringify(seenArgv)}, process.argv.slice(2).join("\\n") + "\\n");\n`
+          + '  console.log("a review body long enough to clear the empty-output guard.");\n'
+          + '});\n',
+        );
+        fs.writeFileSync(
+          path.join(bin, 'claude.cmd'),
+          `@echo off\r\n"${process.execPath}" "${captureScript}" %*\r\n`,
+        );
+      }
+
+      fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, '.planning', 'config.json'),
+        // #3531: pin every tier so the expected value is agent-independent —
+        // the reviewer lane's tier decides, not effort.default.
+        JSON.stringify({ effort: { routing_tier_defaults: { light: 'xhigh', standard: 'xhigh', heavy: 'xhigh' } } }, null, 2),
+      );
+
+      const r = cp.spawnSync(
+        process.execPath,
+        [
+          path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs'),
+          'review-lane', 'invoke', '--slug', 'claude',
+          '--run-dir', runDir, '--repo-root', REPO_ROOT, '--json',
+        ],
+        {
+          cwd: projectDir,
+          encoding: 'utf8',
+          timeout: 60000,
+          killSignal: 'SIGKILL',
+          env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+        },
+      );
+      assert.equal(r.status, 0, `review-lane invoke failed: ${r.stderr}`);
+      assert.ok(fs.existsSync(seenArgv), `the claude shim never ran; stdout was: ${r.stdout}`);
+
+      const argv = fs.readFileSync(seenArgv, 'utf8').trim().split(/\r?\n/);
+      assert.ok(
+        argv.includes('--effort') && argv.includes('xhigh'),
+        `resolved effort ("xhigh") did not reach the spawned claude reviewer's argv: ${JSON.stringify(argv)}`,
+      );
+    } finally {
+      cleanup(dir);
+      cleanup(projectDir);
+    }
   });
 
   test('each argv-effort reviewer places effort in its resolved command line', () => {

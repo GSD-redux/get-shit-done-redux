@@ -623,7 +623,6 @@ describe('bug #3610: fresh upgrade with leftover bundled hooks does not throw', 
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3628-bundled-hook-classifier-whitelist (consolidation epic #1969 B5 #1974)", () => {
-// allow-test-rule: architectural-invariant (see #3628)
 // classifyPromptUserAction returns a typed result object; this test asserts
 // on that typed surface (category + choice fields) for both the positive
 // (shipped) and negative (user-owned / retired) cases. There is no rendered

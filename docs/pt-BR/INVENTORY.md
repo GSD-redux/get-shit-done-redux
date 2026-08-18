@@ -189,7 +189,6 @@ Registro completo em `gsd-core/workflows/*.md`. Workflows são orquestradores en
 | `code-review.md` | Revisa alterações de código-fonte da fase via gsd-code-reviewer; produz REVIEW.md. | `/gsd-code-review` |
 | `complete-milestone.md` | Marca uma versão entregue como concluída — entrada no MILESTONES.md, evolução do PROJECT.md, tag. | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | Orquestra agentes de debug paralelos para investigar lacunas de UAT e encontrar causas raiz. | `/gsd-verify-work` (autodiagnóstico) |
-| `discovery-phase.md` | Executa a descoberta no nível de profundidade apropriado. | `/gsd-new-project` (caminho de descoberta) |
 | `discuss-phase-assumptions.md` | Discuss no modo de premissas — extrai decisões de implementação via análise com base no código primeiro. | `/gsd-discuss-phase` (quando `discuss_mode=assumptions`) |
 | `discuss-phase-power.md` | Discuss para usuário avançado — pré-gera todas as perguntas em um arquivo de estado JSON + UI HTML. | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | Extrai decisões de implementação por meio de discussão iterativa de zonas cinzentas. | `/gsd-discuss-phase` |
@@ -261,7 +260,7 @@ Registro completo em `gsd-core/workflows/*.md`. Workflows são orquestradores en
 | `validate-phase.md` | Audita retroativamente e preenche lacunas de validação Nyquist para uma fase concluída. | `/gsd-validate-phase` |
 | `verify-work.md` | UAT conversacional com autodiagnóstico — produz UAT.md e planos de correção. | `/gsd-verify-work` |
 
-> **Nota:** Alguns workflows não têm comando direto voltado ao usuário (p. ex. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — eles são invocados internamente por workflows orquestradores. `discovery-phase.md` é uma entrada alternativa para `/gsd-new-project`.
+> **Nota:** Alguns workflows não têm comando direto voltado ao usuário (p. ex. `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — eles são invocados internamente por workflows orquestradores.
 
 ---
 
@@ -396,7 +395,7 @@ Listagem completa: `gsd-core/bin/lib/*.cjs`.
 | `decisions.cjs` | Analisa blocos `<decisions>` do CONTEXT.md; aceita IDs numéricos (D-42) e alfanuméricos (D-INFRA-01); retorna `{id, text, category, tags, trackable}` |
 | `docs.cjs` | Inicialização do workflow docs-update, varredura de Markdown, detecção de monorepo |
 | `drift.cjs` | Detector de drift estrutural pós-execução da base de código (#2003): classifica alterações de arquivo em categorias new-dir/barrel/migration/route e faz round-trip do frontmatter `last_mapped_commit` |
-| `fallow-runner.cjs` | Adaptador de auditoria fallow para `/gsd-code-review`: resolução binária (`PATH` depois `node_modules/.bin`), erros acionáveis de binário ausente e normalização de descobertas estruturais |
+| `fallow-runner.cjs` | Adaptador de auditoria fallow para `/gsd-code-review`: resolução binária (`node_modules/.bin` depois `PATH`), erros acionáveis de binário ausente e normalização de descobertas estruturais |
 | `frontmatter.cjs` | Operações CRUD de frontmatter YAML |
 | `gap-checker.cjs` | Análise de lacunas pós-planejamento (#2493): relatório unificado de cobertura de decisões do REQUIREMENTS.md + CONTEXT.md vs PLAN.md (`gsd-tools gap-analysis`) |
 | `graphify.cjs` | Build/consulta/status/diff do grafo de conhecimento para `/gsd-graphify` |

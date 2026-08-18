@@ -1,7 +1,6 @@
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
-// allow-test-rule: structural-regression-guard, see #3186
 // D3 below reads src/plan-scan.cts / gsd-core/bin/lib/plan-scan.cjs and
 // src/verification.cts and regex-tests them for require/import statements.
 // This asserts a DEPENDENCY-DIRECTION invariant (the owner consumes plan
@@ -607,12 +606,14 @@ describe('E12 — shape (d): scanPhasePlans(...).completed read as a completion 
 describe('D3 — dependency direction: plan-scan.cts does not import verification.cts', () => {
   test('the compiled plan-scan.cjs source contains no reference to verification.cjs', () => {
     const compiled = fs.readFileSync(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'plan-scan.cjs'), 'utf-8');
+    // allow-test-rule: structural-regression-guard — D3 reads compiled plan-scan.cjs and regex-tests it for a require() of verification.cjs; asserts a dependency-direction invariant (ADR-3180 §7.4) with no runtime/behavioral surface (see #3186)
     assert.ok(!/require\(['"]\.\/verification(\.cjs)?['"]\)/.test(compiled), 'plan-scan.cjs must not require verification.cjs');
   });
 
   test('the plan-scan.cts source has no import/require of verification.cjs/.cts (a prose comment MENTIONING it, e.g. explaining why a field is not routed through it, is not an import and must not false-positive)', () => {
     const source = fs.readFileSync(path.join(ROOT, 'src', 'plan-scan.cts'), 'utf-8');
     assert.ok(
+      // allow-test-rule: structural-regression-guard — same D3 dependency-direction invariant as above, checked against the .cts source instead of the compiled .cjs (see #3186)
       !/\b(?:require|import)\s*(?:\(|\{|[A-Za-z_$][\w$]*\s*=)[^;\r\n]*verification\.c(?:j|t)s/.test(source),
       'src/plan-scan.cts must not import/require verification.cts/.cjs',
     );
@@ -622,6 +623,7 @@ describe('D3 — dependency direction: plan-scan.cts does not import verificatio
     // Documents the ALLOWED direction so the pair of assertions above reads
     // as a genuine one-way constraint, not an accidental total decoupling.
     const source = fs.readFileSync(path.join(ROOT, 'src', 'verification.cts'), 'utf-8');
+    // allow-test-rule: structural-regression-guard — documents the ALLOWED direction of the D3 dependency invariant: verification.cts consumes plan-scan.cjs (see #3186)
     assert.ok(/require\(['"]\.\/plan-scan\.cjs['"]\)/.test(source), 'src/verification.cts is expected to import plan-scan.cjs (for staleness-check summary listing, pre-existing/unrelated to isPhaseComplete)');
   });
 });

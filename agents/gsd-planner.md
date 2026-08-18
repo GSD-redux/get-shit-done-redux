@@ -485,47 +485,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for a worked example and 
 
 ## Checkpoint Types
 
-**checkpoint:human-verify (90% of checkpoints)**
-Human confirms Claude's automated work works correctly.
-
-Use for: Visual UI checks, interactive flows, functional verification, animation/accessibility.
-
-```xml
-<task type="checkpoint:human-verify" gate="blocking">
-  <what-built>[What Claude automated]</what-built>
-  <how-to-verify>
-    [Exact steps to test - URLs, commands, expected behavior]
-  </how-to-verify>
-  <resume-signal>Type "approved" or describe issues</resume-signal>
-</task>
-```
-
-**checkpoint:decision (9% of checkpoints)**
-Human makes implementation choice affecting direction.
-
-Use for: Technology selection, architecture decisions, design choices.
-
-```xml
-<task type="checkpoint:decision" gate="blocking">
-  <decision>[What's being decided]</decision>
-  <context>[Why this matters]</context>
-  <options>
-    <option id="option-a">
-      <name>[Name]</name>
-      <pros>[Benefits]</pros>
-      <cons>[Tradeoffs]</cons>
-    </option>
-  </options>
-  <resume-signal>Select: option-a, option-b, or ...</resume-signal>
-</task>
-```
-
-**checkpoint:human-action (1% - rare)**
-Action has NO CLI/API and requires human-only interaction.
-
-Use ONLY for: Email verification links, SMS 2FA codes, manual account approvals, credit card 3D Secure flows.
-
-Do NOT use for: Deploying (use CLI), creating webhooks (use API), creating databases (use provider CLI), running builds/tests (use Bash), creating files (use Write).
+Three types: **checkpoint:human-verify (90%)**, **checkpoint:decision (9%)**, **checkpoint:human-action (1% - rare)**. Full "use for" criteria and XML templates for each: @~/.claude/gsd-core/references/checkpoints.md
 
 ## Authentication Gates
 
@@ -696,7 +656,8 @@ Select top 2-4 phases. Skip phases with no relevance signal.
 
 **Step 3 — Read full SUMMARYs for selected phases:**
 ```bash
-cat .planning/phases/{selected-phase}/*-SUMMARY.md
+_SUMMARIES=( .planning/phases/{selected-phase}/*-SUMMARY.md )
+if [ -e "${_SUMMARIES[0]}" ]; then cat "${_SUMMARIES[@]}"; fi
 ```
 
 From full SUMMARYs extract:
@@ -733,9 +694,12 @@ If `features.global_learnings` is `true`: run `gsd_run query learnings.query --t
 Use `phase_dir` from init context (already loaded in load_project_state).
 
 ```bash
-cat "$phase_dir"/*-CONTEXT.md 2>/dev/null   # From /gsd:discuss-phase
-cat "$phase_dir"/*-RESEARCH.md 2>/dev/null   # Research output
-cat "$phase_dir"/*-DISCOVERY.md 2>/dev/null  # From mandatory discovery
+_CTX=( "$phase_dir"/*-CONTEXT.md )
+if [ -e "${_CTX[0]}" ]; then cat "${_CTX[@]}"; fi   # From /gsd:discuss-phase
+_RESEARCH=( "$phase_dir"/*-RESEARCH.md )
+if [ -e "${_RESEARCH[0]}" ]; then cat "${_RESEARCH[@]}"; fi   # Research output
+_DISCOVERY=( "$phase_dir"/*-DISCOVERY.md )
+if [ -e "${_DISCOVERY[0]}" ]; then cat "${_DISCOVERY[@]}"; fi  # From mandatory discovery
 ```
 
 **If CONTEXT.md exists (has_context=true from init):** Honor user's vision, prioritize essential features, respect boundaries. Locked decisions — do not revisit.
@@ -950,6 +914,40 @@ See @~/.claude/gsd-core/references/planner-chunked.md for `## OUTLINE COMPLETE` 
 </critical_rules>
 
 <success_criteria>
+
+## Return Markers
+
+Your orchestrator dispatches on exact marker strings in your final output. Emit exactly one of:
+
+```markdown
+## PLANNING COMPLETE
+```
+(final plans committed, ready for verification)
+
+```markdown
+## OUTLINE COMPLETE
+```
+(outline produced, awaiting confirmation — chunked planning mode)
+
+```markdown
+## PHASE SPLIT RECOMMENDED
+```
+(phase too large to plan as one unit, include the proposed split)
+
+```markdown
+## ⚠ Source Audit
+```
+(unplanned items found in the requirements, include the options)
+
+```markdown
+## CHECKPOINT REACHED
+```
+(paused at a user checkpoint, include resume instructions)
+
+```markdown
+## PLANNING INCONCLUSIVE
+```
+(cannot produce a plan, include exactly what is missing)
 
 ## Standard Mode
 

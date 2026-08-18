@@ -119,6 +119,10 @@
  *     read the physical set. Its ENUMERATION path routes through the owner.
  *   - `src/roadmap-parser.cts` `getMilestonePhaseFilter` and its #3262-extracted
  *     set-building owner `scanMilestonePhaseIds` (the same two heading/
+ *     #3577 `collectTablePhaseRows` — the table-scan sibling feeding the same
+ *     membership set; its local 999-only exclusion mirrors the owner's
+ *     deliberate NOT-isSentinelPhaseId choice (a leading 0 is a real decimal
+ *     phase, #2554), so it cannot route through the sentinel owner either).
  *     bullet scans, lifted verbatim so the `roadmap milestone-scope` probe
  *     reads the identical derivation): both deliberately use the local
  *     `999`-only literal, NOT `isSentinelPhaseId`. That canonical predicate
@@ -168,15 +172,20 @@
  *     inside it to match — not an enumeration of the phases directory at
  *     all; only shaped like one because `phasesDir` is a substring of the
  *     joined path.
- *   - `src/audit.cts` `scanUatGaps`, `scanVerificationGaps`,
- *     `scanContextQuestions`, `scanDeferredItems`: the pre-milestone-close
- *     audit gate (`gsd-tools.cjs audit-open`, called by `/gsd:complete-
- *     milestone`'s pre-close gate). Each deliberately SWEEPS EVERY phase
- *     directory on disk to report open UAT/VERIFICATION/CONTEXT/deferred-item
- *     gaps — the audit's whole purpose is catching stragglers before a
- *     milestone closes, so scoping it to the current milestone's window
- *     would hide exactly the drift (e.g. a still-open item in a phase that
- *     somehow fell outside the window) it exists to surface.
+ *   - `src/audit.cts` `listAuditPhaseTargets` (#3458): the shared active-root
+ *     enumeration for the pre-milestone-close audit gate (`gsd-tools.cjs
+ *     audit-open`, called by `/gsd:complete-milestone`'s pre-close gate).
+ *     `scanUatGaps`, `scanVerificationGaps`, `scanContextQuestions`, and
+ *     `scanDeferredItems` used to each hand-roll this same readdirSync
+ *     independently (four copies of one re-derivation — the very drift class
+ *     this guard exists to catch); #3458 consolidated all four into this one
+ *     function, so the exemption moved with the call site instead of
+ *     multiplying. It deliberately SWEEPS EVERY phase directory on disk to
+ *     report open UAT/VERIFICATION/CONTEXT/deferred-item gaps — the audit's
+ *     whole purpose is catching stragglers before a milestone closes, so
+ *     scoping it to the current milestone's window would hide exactly the
+ *     drift (e.g. a still-open item in a phase that somehow fell outside the
+ *     window) it exists to surface.
  *   - `src/roadmap-upgrade.cts` `computeMigrationPlan`: a legacy-id-to-
  *     milestone-prefixed-id MIGRATION. It must see and rename EVERY existing
  *     phase directory across every milestone in one pass (a legacy phase
@@ -276,12 +285,12 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
-  [path.join('src', 'audit.cts'), new Set(['scanUatGaps', 'scanVerificationGaps', 'scanContextQuestions', 'scanDeferredItems'])],
+  [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
   [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
-  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIds'])],
+  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIds', 'collectTablePhaseRows'])],
   [path.join('src', 'planning-snapshot.cts'), new Set(['buildAllPhaseDirNamesField'])],
 ]);
 

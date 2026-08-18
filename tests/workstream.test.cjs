@@ -167,6 +167,17 @@ describe('session-scoped active workstream routing', () => {
   });
 
   test('clearing one session does not clear another session pointer', () => {
+    // A prior test in this shared-tmpDir block ('session-scoped pointer ignores
+    // legacy shared active-workstream file') writes 'beta' into the shared
+    // .planning/active-workstream marker. Under #3579 semantics, a cleared
+    // session INHERITS that marker instead of resolving flat — so leaving the
+    // marker in place here would make this test assert marker-inheritance
+    // behavior it never intended to cover (that is pinned separately below).
+    // This test's real intent is sibling-pointer isolation, not inheritance,
+    // so remove the marker to make alpha's post-clear resolution independent
+    // of whatever an earlier test in this block left on disk.
+    try { fs.unlinkSync(path.join(tmpDir, '.planning', 'active-workstream')); } catch {}
+
     const clearAlpha = runGsdTools(['workstream', 'set', '--clear', '--raw'], tmpDir, { GSD_SESSION_KEY: 'session-alpha' });
     const alpha = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'session-alpha' });
     const beta = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'session-beta' });
@@ -239,6 +250,220 @@ describe('session resolution hardening', () => {
     assert.ok(!fs.existsSync(markerFile), 'TTY env should be used directly without invoking the tty subprocess');
     assert.strictEqual(get.output, 'beta');
     assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'active-workstream')));
+  });
+});
+
+// #3579: a session that has an identity (session key) but has never run
+// `workstream use` must inherit the repo-wide `.planning/active-workstream`
+// marker instead of resolving to nothing. peekActiveWorkstream has no CLI
+// surface (only the statusline hook calls it), so these tests require the
+// built module directly — same pattern as the planning-workspace.cjs require
+// used elsewhere in this file.
+describe('session inherits shared marker when pointer-less (#3579)', () => {
+  let tmpDir;
+  const {
+    getActiveWorkstream,
+    peekActiveWorkstream,
+  } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+
+    for (const [ws, status] of [['alpha', 'Alpha active'], ['beta', 'Beta active']]) {
+      const wsDir = path.join(tmpDir, '.planning', 'workstreams', ws);
+      fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true });
+      fs.writeFileSync(path.join(wsDir, 'STATE.md'), `# State\n**Status:** ${status}\n`);
+    }
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('session key present, no session pointer, marker names an existing workstream -> inherits the marker', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'alpha\n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'no-pointer-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'alpha');
+  });
+
+  test('peekActiveWorkstream inherits the marker and mutates nothing', (t) => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'alpha\n');
+    const sessionDir = getSessionPointerDir(tmpDir);
+    const savedSessionKey = process.env.GSD_SESSION_KEY;
+    process.env.GSD_SESSION_KEY = 'peek-no-pointer';
+    t.after(() => {
+      if (savedSessionKey !== undefined) process.env.GSD_SESSION_KEY = savedSessionKey;
+      else delete process.env.GSD_SESSION_KEY;
+    });
+
+    const resolved = peekActiveWorkstream(tmpDir);
+    assert.strictEqual(resolved, 'alpha');
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'alpha\n', 'peek must not mutate the shared marker');
+    assert.ok(!fs.existsSync(sessionDir), 'peek must not create a session pointer file');
+  });
+
+  test('session pointer names beta while marker names alpha -> resolves beta, marker untouched (isolation)', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'alpha\n');
+    runGsdTools(['workstream', 'set', 'beta', '--raw'], tmpDir, { GSD_SESSION_KEY: 'has-own-pointer' });
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'has-own-pointer' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'beta');
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'alpha\n', 'session with its own pointer must never repoint the shared marker');
+  });
+
+  test('workstream set --clear with a valid repo marker present -> session returns to inheriting the marker, not flat', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'alpha\n');
+    runGsdTools(['workstream', 'set', 'beta', '--raw'], tmpDir, { GSD_SESSION_KEY: 'clear-then-inherit-session' });
+
+    const clear = runGsdTools(['workstream', 'set', '--clear', '--raw'], tmpDir, { GSD_SESSION_KEY: 'clear-then-inherit-session' });
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'clear-then-inherit-session' });
+
+    assert.ok(clear.success, `clear failed: ${clear.error}`);
+    assert.ok(result.success, `get after clear failed: ${result.error}`);
+    assert.strictEqual(
+      result.output,
+      'alpha',
+      'clearing a session pointer must fall back to inheriting the shared marker (step 4), not resolve to null/flat',
+    );
+  });
+
+  test('no session key, marker present -> resolves the marker (pre-existing path stays green)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'alpha\n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, {});
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'alpha');
+  });
+
+  test('no workstreams/ dir -> flat/null, unchanged', (t) => {
+    // createFixture() only creates .planning/phases, not .planning/workstreams.
+    const flatDir = createFixture();
+    t.after(() => cleanup(flatDir));
+
+    const savedSessionKey = process.env.GSD_SESSION_KEY;
+    process.env.GSD_SESSION_KEY = 'flat-no-workstreams-dir';
+    t.after(() => {
+      if (savedSessionKey !== undefined) process.env.GSD_SESSION_KEY = savedSessionKey;
+      else delete process.env.GSD_SESSION_KEY;
+    });
+
+    assert.strictEqual(getActiveWorkstream(flatDir), null);
+    assert.strictEqual(peekActiveWorkstream(flatDir), null);
+  });
+
+  test('marker names a non-existent workstream, session has no pointer -> resolves null and the marker file is NOT deleted', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'ghost-workstream\n');
+
+    const result = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'stale-marker-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).active, null);
+    assert.ok(fs.existsSync(markerPath), 'a pointer-less session read must never delete the shared marker');
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'ghost-workstream\n');
+  });
+
+  test('session pointer file exists but is whitespace-only -> treated as absent, inherits the marker', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'beta\n');
+
+    runGsdTools(['workstream', 'set', 'alpha', '--raw'], tmpDir, { GSD_SESSION_KEY: 'whitespace-pointer-session' });
+    const sessionDir = getSessionPointerDir(tmpDir);
+    const sessionFile = getSessionPointerFileName('GSD_SESSION_KEY', 'whitespace-pointer-session');
+    fs.writeFileSync(path.join(sessionDir, sessionFile), '   \n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'whitespace-pointer-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'beta');
+  });
+
+  test('shared marker is whitespace-only, session pointer-less -> resolves null', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, '   \n');
+
+    const result = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'whitespace-marker-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).active, null);
+  });
+
+  test('shared marker file is empty, session pointer-less -> resolves null', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, '');
+
+    const result = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'empty-marker-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).active, null);
+  });
+
+  test('session pointer is stale (its workstream is deleted) while marker names a different, still-valid workstream -> resolves null, never falls through to inherit the marker', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'beta\n');
+    runGsdTools(['workstream', 'set', 'alpha', '--raw'], tmpDir, { GSD_SESSION_KEY: 'stale-own-pointer-session' });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- mid-test fault injection: simulates a deleted workstream to exercise stale-pointer self-cleanup
+    fs.rmSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha'), { recursive: true, force: true });
+
+    const result = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'stale-own-pointer-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(
+      JSON.parse(result.output).active,
+      null,
+      'a stale OWNED pointer must self-heal to null — it must not fall through to the shared marker just because it failed to resolve',
+    );
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'beta\n', 'the shared marker must remain untouched');
+  });
+
+  // #3579 item 1: the #1912/#2028 workstream-mode fail-safe guards must
+  // distinguish "no marker/pointer anywhere" from "a marker exists but did
+  // not resolve" — asserted structurally (via --json-errors) per CONTRIBUTING,
+  // not by regexing the human-readable message.
+  test('init.progress fail-safe guard: no marker at all -> reason workstream_mode_none_active', () => {
+    const result = runGsdTools(['--json-errors', 'init', 'progress'], tmpDir);
+
+    assert.equal(result.success, false, 'must still refuse');
+    const payload = JSON.parse(result.error);
+    assert.equal(payload.reason, 'workstream_mode_none_active');
+  });
+
+  test('init.progress fail-safe guard: marker present but names a missing workstream dir -> reason workstream_mode_marker_unresolved, distinct message', () => {
+    const noneResult = runGsdTools(['--json-errors', 'init', 'progress'], tmpDir);
+    const nonePayload = JSON.parse(noneResult.error);
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'ghost-workstream\n');
+    const unresolvedResult = runGsdTools(['--json-errors', 'init', 'progress'], tmpDir);
+
+    assert.equal(unresolvedResult.success, false, 'must still refuse');
+    const unresolvedPayload = JSON.parse(unresolvedResult.error);
+    assert.equal(unresolvedPayload.reason, 'workstream_mode_marker_unresolved');
+    assert.equal(unresolvedPayload.marker_value, 'ghost-workstream');
+    assert.equal(unresolvedPayload.marker_reason, 'missing_workstream_dir');
+    assert.notEqual(
+      unresolvedPayload.message,
+      nonePayload.message,
+      'the marker-present-but-unresolved diagnostic must differ from the no-marker-at-all diagnostic',
+    );
+  });
+
+  test('init.progress fail-safe guard: marker present but names an invalid workstream name -> reason workstream_mode_marker_unresolved, invalid_name', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'bad/name\n');
+
+    const result = runGsdTools(['--json-errors', 'init', 'progress'], tmpDir);
+
+    assert.equal(result.success, false, 'must still refuse');
+    const payload = JSON.parse(result.error);
+    assert.equal(payload.reason, 'workstream_mode_marker_unresolved');
+    assert.equal(payload.marker_value, 'bad/name');
+    assert.equal(payload.marker_reason, 'invalid_name');
   });
 });
 

@@ -3397,3 +3397,48 @@ test('#1463 outdated: npm EXACT-pinned source (@1.2.3) → status pinned (update
   const [rec] = lifecycle.outdatedCapabilities({ runtimeDir: dir, execOverrides: { npm: fakeNpm } });
   assert.strictEqual(rec.status, 'pinned');
 });
+
+// ---------------------------------------------------------------------------
+// #3514 (epic #1900 F21c) — the lifecycle threads integrityPinned from the
+// install opts (and a git #sha: pin) into the trust verdict's disclosure, so
+// the consent prompt the CLI renders distinguishes pinned from unverified.
+// ---------------------------------------------------------------------------
+
+test('#3514: an unpinned executable install aborts with an unverified disclosure', async () => {
+  const dir = runtime();
+  const res = await lifecycle.installCapability('./exec', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    _resolve: fakeResolve(execCap('exec', '1.0.0')),
+  });
+  assert.strictEqual(res.status, 'aborted');
+  assert.strictEqual(res.disclosure.integrityStatus, 'unverified');
+});
+
+test('#3514: an install with a supplied --integrity pin aborts with a pinned disclosure', async () => {
+  const dir = runtime();
+  const res = await lifecycle.installCapability('./exec', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    integrity: 'sha512-AAAA',
+    _resolve: fakeResolve(execCap('exec', '1.0.0'), { integrity: 'sha512-AAAA' }),
+  });
+  assert.strictEqual(res.status, 'aborted');
+  assert.strictEqual(res.disclosure.integrityStatus, 'pinned');
+});
+
+test('#3514: a git #sha:<hex-commit> source renders commit-pinned; a #sha:<mutable-ref> does not', async () => {
+  const dir = runtime();
+  const shaPin = await lifecycle.installCapability('https://example.com/repo.git#sha:0123456789abcdef0123456789abcdef01234567', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    _resolve: fakeResolve(execCap('exec', '1.0.0')),
+  });
+  assert.strictEqual(shaPin.status, 'aborted');
+  assert.strictEqual(shaPin.disclosure.integrityStatus, 'commit-pinned');
+
+  const mutable = await lifecycle.installCapability('https://example.com/repo.git#sha:main', {
+    runtimeDir: dir, hostVersion: '1.6.0', consentGranted: false,
+    _resolve: fakeResolve(execCap('exec', '1.0.0')),
+  });
+  assert.strictEqual(mutable.status, 'aborted');
+  assert.strictEqual(mutable.disclosure.integrityStatus, 'unverified',
+    'a #sha:<non-hex> ref is a moving ref and must not render as pinned');
+});

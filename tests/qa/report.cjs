@@ -21,12 +21,14 @@
  * different documents, which defeats diffing/reviewing a report in CI.
  *
  * REPRO LINES ARE ALWAYS STRINGS: `step.repro` is either a real,
- * copy-pasteable `cd <dir> && node gsd-core/bin/gsd-tools.cjs ...` command,
- * or a string clearly prefixed `NOT RUNNABLE: ...` explaining why (the tree
- * was not preserved, or the step declared no CLI invocation at all). A
- * repro line that *looks* runnable but points at a directory that was
- * already deleted is worse than no repro line, so the two cases are never
- * conflated into one shape that "sometimes has a command".
+ * copy-pasteable `cd <dir> && node <absolute path to gsd-tools.cjs> ...`
+ * command (plus a trailing `#` shell-comment note about the pinned clock and
+ * cleared env — see `buildRepro`), or a string clearly prefixed
+ * `NOT RUNNABLE: ...` explaining why (the tree was not preserved, or the
+ * step declared no CLI invocation at all). A repro line that *looks*
+ * runnable but points at a directory that was already deleted is worse than
+ * no repro line, so the two cases are never conflated into one shape that
+ * "sometimes has a command".
  */
 
 const fs = require('node:fs');
@@ -38,6 +40,12 @@ const REPORT_VERSION = 1;
 /**
  * Build a single copy-pasteable repro command/explanation for one step.
  *
+ * The emitted `node` path is ABSOLUTE (resolved from this file's own
+ * location via `__dirname`), never the repo-relative
+ * `gsd-core/bin/gsd-tools.cjs` — `preservedDir` is a temp project directory
+ * unrelated to the repo checkout, so `cd`ing into it first and then
+ * resolving a repo-relative path throws `MODULE_NOT_FOUND` (#3597).
+ *
  * @param {{preservedDir?: string, argv: string[]}} params
  * @returns {string}
  */
@@ -48,7 +56,14 @@ function buildRepro({ preservedDir, argv }) {
   if (!preservedDir) {
     return 'NOT RUNNABLE: the scenario tree was not preserved for this run — re-run with `--keep` (or `GSD_QA_KEEP=1`) to get a reproducible command.';
   }
-  return `cd ${preservedDir} && node gsd-core/bin/gsd-tools.cjs --json-errors ${argv.join(' ')}`;
+  const gsdToolsPath = path.resolve(__dirname, '..', '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+  // The trailing `# ...` is a shell comment, not part of the command: pasting
+  // the whole line (including the note) into a shell still runs correctly,
+  // since everything from `#` to end-of-line is ignored. This keeps the
+  // string a single copy-pasteable line while telling a human reader the
+  // walk also pins a clock and clears ambient env vars this repro cannot.
+  return `cd ${preservedDir} && node ${gsdToolsPath} --json-errors ${argv.join(' ')}`
+    + ' # note: the walk also pins GSD_NOW_MS and clears ambient GSD_* vars, so results may differ slightly';
 }
 
 /**

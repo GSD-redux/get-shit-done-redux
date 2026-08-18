@@ -805,6 +805,62 @@ describe('H. self-consistency — after state sync, STATE.md body and frontmatte
 });
 
 // ═════════════════════════════════════════════════════════════════════════
+// I. #3597 regression — `--ws <name> progress` scope must come from the
+//    WORKSTREAM's own ROADMAP, not the root one.
+//
+// listMilestonePhaseDirs (src/phase-locator.cts) destructured its `ws` option
+// with `= null`, an EXPLICIT "force project root" request, and forwarded that
+// to getMilestonePhaseFilter -> planningDir(cwd, null) -> always the root
+// .planning/ROADMAP.md — while every phasesDir passed in by callers (e.g.
+// cmdProgressRender, src/commands.cts) is derived AMBIENTLY via
+// planningPaths(cwd)/planningDir(cwd) with no explicit ws, i.e. already
+// workstream-scoped. Once `workstream create` migrates the root ROADMAP away,
+// that root read throws, scope collapses to UNREADABLE, and
+// computeProgressPercent correctly (ADR-3180 §7.6 rule 4) withholds the
+// percentage — but only because the numerator (workstream-scoped phase dirs)
+// and the window (root-scoped) were drawn from two different scoped sets
+// (rule 3 violation). The fix defaults `ws` to `undefined` so it inherits the
+// same ambient GSD_WORKSTREAM resolution as phasesDir.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('I. workstream scoping (#3597) — --ws <name> progress reads the WORKSTREAM roadmap, not root', () => {
+  test('I1: workstream with its own ROADMAP and no root ROADMAP.md -> phase_scope COMPLETE, percent numeric', (t) => {
+    const cwd = createTempDir('gsd-3597-i1-');
+    t.after(() => cleanup(cwd));
+
+    // No root .planning/ROADMAP.md at all — mirrors `workstream create`
+    // migrating it away. Only the workstream's own planning tree exists.
+    const wsPlanningDir = path.join(cwd, '.planning', 'workstreams', 'alpha');
+    // The workstream's own STATE.md must assert the milestone (mirrors every
+    // other fixture in this file via writeState) — without it, no milestone
+    // is asserted at all and classifyMilestoneWindow reports UNSCOPED
+    // regardless of the ws-forwarding fix under test here.
+    writeFile(cwd, '.planning/workstreams/alpha/STATE.md', ['---', 'milestone: v1.0', '---', ''].join('\n'));
+    writeFile(cwd, '.planning/workstreams/alpha/ROADMAP.md', [
+      '## v1.0 Current 🚧',
+      '',
+      '### Phase 1: Foo',
+    ].join('\n'));
+    writeFile(cwd, '.planning/workstreams/alpha/phases/01-foo/01-01-PLAN.md', '# Plan\n');
+    writeFile(cwd, '.planning/workstreams/alpha/phases/01-foo/01-01-SUMMARY.md', '# Summary\n');
+    assert.ok(fs.existsSync(wsPlanningDir), 'sanity: workstream planning dir was created');
+    assert.ok(!fs.existsSync(path.join(planningDirOf(cwd), 'ROADMAP.md')), 'sanity: no root ROADMAP.md exists');
+
+    const result = runGsdTools(['--ws', 'alpha', 'progress', '--cwd', cwd, '--raw'], cwd);
+    assert.strictEqual(result.success, true, result.error);
+    const rendered = JSON.parse(result.output);
+
+    // This is the failing-first assertion: pre-fix, `ws` defaulted to `null`
+    // inside listMilestonePhaseDirs, forcing the milestone window to the
+    // (nonexistent) root ROADMAP.md -> phase_scope: "unreadable", percent: null.
+    assert.strictEqual(rendered.phase_scope, SCOPE.COMPLETE);
+    assert.strictEqual(rendered.percent, 100);
+    assert.strictEqual(rendered.total_plans, 1);
+    assert.strictEqual(rendered.total_summaries, 1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
 // The guard — narrow syntactic check considered and DROPPED (documented)
 // ═════════════════════════════════════════════════════════════════════════
 //

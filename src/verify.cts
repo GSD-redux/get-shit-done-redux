@@ -27,9 +27,11 @@ const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 import { execGit, platformReadSync as safeReadFile } from './shell-command-projection.cjs';
+import { validatePath } from './security.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { detectSchemaFiles, checkSchemaDrift } from './schema-detect.cjs';
 import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
+import { compileUserPattern, MAX_USER_PATTERN_LEN } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
 const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
@@ -1221,8 +1223,39 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
       detail: '',
     };
 
-    const fromPath = (link['from'] as string) || '';
-    const sourceContent = safeReadFile(path.join(cwd, fromPath));
+    const fromRaw = link['from'];
+    const fromPath = typeof fromRaw === 'string' ? fromRaw : '';
+    let sourceContent: string | null = null;
+    if (fromPath !== '') {
+      // An empty/missing `from:` is a malformed plan, not a path-confinement
+      // violation — validatePath's traversal check (and path_rejected) only
+      // applies to a non-empty path that actually resolves outside the
+      // project. Leave sourceContent as null so the existing not-found /
+      // pending classification below runs unchanged. Note this guard is
+      // narrower than it may look: `from: "."` is a non-empty string, so it
+      // still reaches validatePath and safeReadFile below, and DOES read the
+      // cwd directory (yielding "Source read failed: EISDIR") — this branch
+      // only short-circuits the true empty-string case.
+      const fromCheck = validatePath(fromPath, cwd);
+      if (!fromCheck.safe) {
+        // Do not echo result.error — it embeds absolute host paths.
+        check['path_rejected'] = 'from';
+        check['detail'] = 'Source path rejected — resolves outside the project directory';
+        results.push(check);
+        continue;
+      }
+      try {
+        sourceContent = safeReadFile(fromCheck.resolved);
+      } catch (err) {
+        // Report the errno only — never the message or path (untrusted `from:`
+        // can trigger EISDIR/EACCES, which platformReadSync re-throws for any
+        // non-ENOENT errno). A single bad link must not abort the whole command.
+        const code = (err as NodeJS.ErrnoException)?.code ?? 'unknown';
+        check['detail'] = `Source read failed: ${code}`;
+        results.push(check);
+        continue;
+      }
+    }
     if (!sourceContent) {
       // Check if the missing file is promised by a plan at the same or later wave.
       const promised = getPromisedFiles();
@@ -1235,22 +1268,71 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
         check['detail'] = 'Source file not found (from: must be a relative file path; describe components/endpoints in via:)';
       }
     } else if (link['pattern']) {
-      try {
-        const regex = new RegExp(link['pattern'] as string);
-        if (regex.test(sourceContent)) {
-          check['verified'] = true;
-          check['detail'] = 'Pattern found in source';
-        } else {
-          const targetContent = safeReadFile(path.join(cwd, (link['to'] as string) || ''));
-          if (targetContent && regex.test(targetContent)) {
-            check['verified'] = true;
-            check['detail'] = 'Pattern found in target';
-          } else {
-            check['detail'] = `Pattern "${link['pattern'] as string}" not found in source or target`;
-          }
+      const pat = compileUserPattern(link['pattern']);
+      if (pat.neutralized !== null) {
+        // A neutralized pattern was refused and never compiled — that is NOT
+        // the check the plan author wrote, so it must never report verified
+        // regardless of what an unrelated fallback might otherwise have
+        // matched (#3477 regression: pattern "(" previously neutralized to a
+        // literal-escaped match that matched nearly any source file,
+        // producing a false verified: true / all_verified: true). The engine
+        // itself now guarantees `test()` returns false for a refused
+        // pattern; this explicit branch exists to produce the good message.
+        // The match-and-report path below is skipped entirely rather than
+        // run and then overwritten, which used to leave a misleading
+        // "Pattern found in source" detail alongside the neutralization note.
+        check['pattern_neutralized'] = pat.neutralized;
+        let reason: string;
+        switch (pat.neutralized) {
+          case 'empty':
+            reason = 'pattern is not a usable string — no match attempted';
+            break;
+          case 'too-long':
+            reason = `pattern exceeded ${MAX_USER_PATTERN_LEN} chars — not evaluated`;
+            break;
+          case 'unsupported':
+            reason = 'pattern is not valid RE2 syntax — backreferences and look-around are not supported';
+            break;
         }
-      } catch {
-        check['detail'] = `Invalid regex pattern: ${link['pattern'] as string}`;
+        check['detail'] = `Pattern not verified (${reason})`;
+      } else {
+        try {
+          if (pat.test(sourceContent)) {
+            check['verified'] = true;
+            check['detail'] = 'Pattern found in source';
+          } else {
+            const toRaw = link['to'];
+            const toPath = typeof toRaw === 'string' ? toRaw : '';
+            let targetContent: string | null = null;
+            if (toPath !== '') {
+              // An empty/missing `to:` is a malformed plan, not a
+              // path-confinement violation — only a non-empty path that
+              // actually resolves outside the project is path_rejected.
+              const toCheck = validatePath(toPath, cwd);
+              if (!toCheck.safe) {
+                // Do not read a rejected `to:` — treat as no target content
+                // and do not echo result.error, which embeds absolute host
+                // paths.
+                check['path_rejected'] = 'to';
+                check['detail'] = `Pattern "${link['pattern'] as string}" not found in source; target path rejected — resolves outside the project directory`;
+              } else {
+                targetContent = safeReadFile(toCheck.resolved);
+              }
+            }
+            if (targetContent && pat.test(targetContent)) {
+              check['verified'] = true;
+              check['detail'] = 'Pattern found in target';
+            } else if (!check['path_rejected']) {
+              check['detail'] = `Pattern "${link['pattern'] as string}" not found in source or target`;
+            }
+          }
+        } catch (err) {
+          // Report the errno only — never the full error/message, which for a
+          // re-thrown non-ENOENT platformReadSync failure (e.g. EISDIR from an
+          // untrusted `to:` like "../..") embeds an absolute filesystem path.
+          const code = (err as NodeJS.ErrnoException)?.code ?? 'unknown';
+          check['detail'] = `Pattern check failed: ${code}`;
+        }
       }
     } else {
       if (sourceContent.includes((link['to'] as string) || '')) {

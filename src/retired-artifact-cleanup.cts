@@ -12,6 +12,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// #2874 (ADR-58 cleanup phase): pruneRetiredRuntimeArtifacts is the first
+// thing installRuntimeArtifacts calls, so its fs calls are routed through
+// the injectable seam too — see install-fs-adapter.cts's module doc.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installerMigrations = require('./installer-migrations.cjs');
 import { isPathConfined } from './external-descriptor-trust.cjs';
@@ -68,8 +74,8 @@ function pruneRetiredRuntimeArtifacts(runtime: string, configDir: string): Clean
     const destDir = path.resolve(configDir, destSubpath);
     let entries: fs.Dirent[];
     try {
-      if (!fs.existsSync(destDir) || fs.lstatSync(destDir).isSymbolicLink()) continue;
-      entries = fs.readdirSync(destDir, { withFileTypes: true });
+      if (!installFs().existsSync(destDir) || installFs().lstatSync(destDir).isSymbolicLink()) continue;
+      entries = installFs().readdirSync(destDir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -83,7 +89,7 @@ function pruneRetiredRuntimeArtifacts(runtime: string, configDir: string): Clean
         continue;
       }
       try {
-        fs.unlinkSync(path.join(destDir, entry.name));
+        installFs().unlinkSync(path.join(destDir, entry.name));
         result.removed.push(relPath);
       } catch {
         result.preserved.push(relPath);
@@ -91,7 +97,7 @@ function pruneRetiredRuntimeArtifacts(runtime: string, configDir: string): Clean
     }
 
     try {
-      if (fs.readdirSync(destDir).length === 0) fs.rmdirSync(destDir);
+      if (installFs().readdirSync(destDir).length === 0) installFs().rmdirSync(destDir);
     } catch {
       // Non-empty, unreadable, or concurrently changed: preserve the directory.
     }

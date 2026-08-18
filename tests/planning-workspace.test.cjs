@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, toPosixPath } = require('./helpers.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
 
 const planningWorkspaceDirect = require('../gsd-core/bin/lib/planning-workspace.cjs');
@@ -370,7 +370,7 @@ describe('withPlanningLock PID-liveness staleness + EEXIST safety (audit M1+M2)'
   __foldDescribe("folded:bug-3739-gap-checker-padded-prefix-context (consolidation epic #1969 B3 #1972)", () => {
 /**
  * Bug #3739: gap-analysis silently skips CONTEXT.md decisions when the file
- * uses the padded-prefix convention (e.g. 01-CONTEXT.md, 02.1-CONTEXT.md).
+ * uses the padded-prefix convention (e.g. 01-CONTEXT.md, 01.1-CONTEXT.md).
  *
  * Verifies:
  *   1. Padded-prefix CONTEXT.md (NN-CONTEXT.md) decisions ARE included in the
@@ -481,10 +481,10 @@ describe('bug #3739 — gap-analysis padded-prefix CONTEXT.md', () => {
     assert.strictEqual(d05.status, 'Covered', 'D-05 must be Covered');
   });
 
-  // ── Test 4: deeper padded prefix (02.1-CONTEXT.md) ───────────────────────
+  // ── Test 4: deeper padded prefix (01.1-CONTEXT.md) ───────────────────────
 
-  test('multi-segment padded prefix (02.1-CONTEXT.md) decisions appear in gap report', () => {
-    writeContextAs('02.1-CONTEXT.md', [
+  test('multi-segment padded prefix (01.1-CONTEXT.md) decisions appear in gap report', () => {
+    writeContextAs('01.1-CONTEXT.md', [
       { id: 'D-03', text: 'Use postgres' },
     ]);
     writePlan('01', '# Plan\n\nImplements D-03.\n');
@@ -494,7 +494,7 @@ describe('bug #3739 — gap-analysis padded-prefix CONTEXT.md', () => {
     const out = JSON.parse(r.output);
 
     const d03 = out.rows.find(x => x.item === 'D-03');
-    assert.ok(d03, 'D-03 must appear from 02.1-CONTEXT.md');
+    assert.ok(d03, 'D-03 must appear from 01.1-CONTEXT.md');
     assert.strictEqual(d03.status, 'Covered');
   });
 
@@ -652,5 +652,45 @@ describe('bug #1883 — findContextMdIn distinguishes a permission error from em
       'array path matches padded form');
     assert.strictEqual(findContextMdIn(['PLAN.md']), null,
       'array path returns null when no match');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2142: quick task workspace path (planningPaths().quick)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2142: quick task workspace path (planningPaths().quick)', () => {
+  const cwd = '/fake/repo';
+  let savedProject;
+  let savedWorkstream;
+
+  beforeEach(() => {
+    savedProject = process.env.GSD_PROJECT;
+    savedWorkstream = process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+    delete process.env.GSD_WORKSTREAM;
+  });
+
+  afterEach(() => {
+    if (savedProject !== undefined) process.env.GSD_PROJECT = savedProject;
+    else delete process.env.GSD_PROJECT;
+    if (savedWorkstream !== undefined) process.env.GSD_WORKSTREAM = savedWorkstream;
+    else delete process.env.GSD_WORKSTREAM;
+  });
+
+  test('exposesQuickDirectoryPath: planningPaths(cwd).quick ends with .planning/quick', () => {
+    const paths = planningPaths(cwd, null);
+    assert.strictEqual(toPosixPath(paths.quick), toPosixPath(path.join(cwd, '.planning', 'quick')));
+    assert.ok(toPosixPath(paths.quick).endsWith('.planning/quick'));
+  });
+
+  test('resolvesQuickPathUnderWorkstream: quick resolves under the workstream base like phases', () => {
+    const paths = planningPaths(cwd, 'feature-x');
+    assert.strictEqual(
+      toPosixPath(paths.quick),
+      toPosixPath(path.join(cwd, '.planning', 'workstreams', 'feature-x', 'quick')),
+    );
+    // Same parent directory as `phases` — quick is workstream-aware exactly like phases.
+    assert.strictEqual(path.dirname(paths.quick), path.dirname(paths.phases));
   });
 });

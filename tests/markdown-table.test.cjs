@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
 
-const { parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const { parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow, resetQuickTaskRows, QUICK_TASKS_SECTION_ABSENT } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { buildHeader, normalize } = require('../scripts/lint-table-schema-drift.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -319,7 +319,7 @@ describe('appendQuickTaskRow (#2133)', () => {
     const noSection = '# STATE\n\n### Blockers/Concerns\nNone\n';
     const result = appendQuickTaskRow(noSection, { description: 'x', date: '2026-07-13', commit: 'abc' });
     assert.equal(result.ok, false);
-    assert.match(result.reason, /no Quick Tasks Completed section/);
+    assert.equal(result.reason, QUICK_TASKS_SECTION_ABSENT);
   });
 
   test('boundary: next row number is 1 with zero data rows, 3 with two data rows', () => {
@@ -987,5 +987,192 @@ describe('TABLE_SCHEMAS parity: registry headers must appear verbatim in their s
     for (const variant of TABLE_SCHEMAS.Security) {
       assertHeaderInFile('gsd-core/templates/SECURITY.md', variant);
     }
+  });
+});
+
+// ─── resetQuickTaskRows (#2142) ─────────────────────────────────────────────
+
+describe('resetQuickTaskRows (#2142)', () => {
+  const noStatusState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+    '| 2 | bump version | 2026-01-02 | def5678 | — |',
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+
+  const withStatusState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed',
+    '',
+    '| # | Description | Date | Commit | Status | Directory |',
+    '|---|-------------|------|--------|--------|-----------|',
+    '| 1 | fix typo | 2026-01-01 | abc1234 | Pass | — |',
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+
+  const emptyNoStatusState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+
+  test('reset clears all rows in a 5-col no-status table; header/delimiter byte-identical, variant no-status, cleared=2', () => {
+    const beforeLines = noStatusState.split('\n');
+    const result = resetQuickTaskRows(noStatusState);
+    assert.equal(result.ok, true);
+    assert.equal(result.value.cleared, 2);
+    assert.equal(result.value.variant, 'no-status');
+
+    const afterLines = result.value.content.split('\n');
+    assert.equal(afterLines[4], beforeLines[4], 'header row byte-identical');
+    assert.equal(afterLines[5], beforeLines[5], 'delimiter row byte-identical');
+    assert.ok(!result.value.content.includes('fix typo'));
+    assert.ok(!result.value.content.includes('bump version'));
+
+    const section = result.value.content.split('### Blockers/Concerns')[0];
+    const reparsed = parseMarkdownTable(section);
+    assert.equal(reparsed.ok, true);
+    assert.equal(reparsed.value.rows.length, 0);
+  });
+
+  test('reset preserves the 6-col with-status header; variant with-status', () => {
+    const result = resetQuickTaskRows(withStatusState);
+    assert.equal(result.ok, true);
+    assert.equal(result.value.variant, 'with-status');
+    assert.equal(result.value.cleared, 1);
+    assert.ok(!result.value.content.includes('fix typo'));
+
+    const headerLine = withStatusState.split('\n')[4];
+    assert.ok(result.value.content.includes(headerLine), 'the 6-col header must survive verbatim');
+  });
+
+  test('reset is a no-op on an already-empty Quick Tasks table', () => {
+    const result = resetQuickTaskRows(emptyNoStatusState);
+    assert.equal(result.ok, true);
+    assert.equal(result.value.cleared, 0);
+    assert.equal(result.value.content, emptyNoStatusState, 'content must be byte-identical when there were zero rows');
+  });
+
+  test('refuses to reset an unrecognized Quick Tasks schema, leaving rows intact', () => {
+    const garbled = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed',
+      '',
+      '| # | Thing | When |',
+      '|---|-------|------|',
+      '| 1 | fix typo | 2026-01-01 |',
+    ].join('\n');
+    const before = garbled;
+
+    const result = resetQuickTaskRows(garbled);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /unrecognized/);
+    // The caller-owned content must never be mutated on a refused write.
+    assert.equal(garbled, before);
+    assert.ok(garbled.includes('| 1 | fix typo | 2026-01-01 |'), 'the original row must still be present — no write occurred');
+  });
+
+  test('empty input and non-string input both return a typed failure, never throw', () => {
+    let r1;
+    let r2;
+    assert.doesNotThrow(() => { r1 = resetQuickTaskRows(''); });
+    assert.equal(r1.ok, false);
+    assert.doesNotThrow(() => { r2 = resetQuickTaskRows(42); });
+    assert.equal(r2.ok, false);
+  });
+
+  test('fails loud with a reason when the Quick Tasks Completed section is absent', () => {
+    const noSection = '# STATE\n\n### Blockers/Concerns\nNone\n';
+    const result = resetQuickTaskRows(noSection);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, QUICK_TASKS_SECTION_ABSENT);
+  });
+
+  test('CRLF input keeps \\r\\n in the touched section (no mixed EOL)', () => {
+    const crlfState = noStatusState.replace(/\n/g, '\r\n');
+    const result = resetQuickTaskRows(crlfState);
+    assert.equal(result.ok, true);
+
+    const section = result.value.content.split('### Blockers/Concerns')[0];
+    assert.ok(!/(?<!\r)\n/.test(section), 'expected no bare \\n (mixed EOL) in the touched section');
+    assert.ok(section.includes('\r\n'), 'expected \\r\\n to be preserved');
+  });
+
+  test('an unrelated preceding table (different schema) is untouched; only the quick table is cleared', () => {
+    const doc = [
+      '# STATE',
+      '',
+      '## Roadmap Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- |',
+      '| 1. Alpha | 2/2 | Complete | ✅ |',
+      '',
+      '### Quick Tasks Completed',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+      '',
+      '### Blockers/Concerns',
+      'None',
+    ].join('\n');
+
+    const result = resetQuickTaskRows(doc);
+    assert.equal(result.ok, true);
+    assert.equal(result.value.cleared, 1);
+    assert.ok(
+      result.value.content.includes('| 1. Alpha | 2/2 | Complete | ✅ |'),
+      'the unrelated RoadmapProgress row must survive untouched',
+    );
+    assert.ok(!result.value.content.includes('fix typo'));
+  });
+
+  test('property: reset always clears exactly the input row count and never touches the header line', () => {
+    const rowCountArb = fc.integer({ min: 0, max: 50 });
+    fc.assert(
+      fc.property(rowCountArb, (n) => {
+        const rows = [];
+        for (let i = 1; i <= n; i++) {
+          rows.push(`| ${i} | task ${i} | 2026-01-01 | abc${String(i).padStart(4, '0')} | — |`);
+        }
+        const state = [
+          '# STATE',
+          '',
+          '### Quick Tasks Completed',
+          '',
+          '| # | Description | Date | Commit | Directory |',
+          '|---|-------------|------|--------|-----------|',
+          ...rows,
+          '',
+          '### Blockers/Concerns',
+          'None',
+        ].join('\n');
+        const headerLine = state.split('\n')[4];
+
+        const result = resetQuickTaskRows(state);
+        assert.equal(result.ok, true, `expected ok:true, got ${JSON.stringify(result)}`);
+        assert.equal(result.value.cleared, n);
+        assert.ok(result.value.content.includes(headerLine), 'header line must be unchanged');
+      }),
+      { seed: 20260817, numRuns: 50 },
+    );
   });
 });

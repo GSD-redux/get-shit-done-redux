@@ -285,11 +285,13 @@ test('UPGRADE 2: a corrupted/undeclared dispatch still fails closed to inline (s
 // docs/reference/host-integration-capability-matrix.md's kimi EoS-status
 // paragraph) — the installer's deliverable stops at the Agent-tool grant plus
 // the negotiated backgroundDispatch axis asserted above.
-test('UPGRADE 2 (installer-testable proxy): kimi --global install with subagents present grants kimi_cli.tools.agent:Agent on the root agent', (t) => {
-  const { root } = runMinimalInstall({ runtime: 'kimi', scope: 'global' });
-  t.after(() => cleanup(root));
+  test('UPGRADE 2 (installer-testable proxy): kimi --global install with subagents present grants kimi_cli.tools.agent:Agent on the root agent', (t) => {
+    const { configDir, root } = runMinimalInstall({ runtime: 'kimi', scope: 'global' });
+    t.after(() => cleanup(root));
 
-  const rootYamlPath = path.join(root, 'agents', 'gsd.yaml');
+    // #3547 — the root agent lives under the runtime's real global config
+    // home (<root>/.config/agents), not the sandbox HOME itself.
+    const rootYamlPath = path.join(configDir, 'agents', 'gsd.yaml');
   assert.ok(fs.existsSync(rootYamlPath), 'kimi: agents/gsd.yaml must exist');
   const rootYaml = fs.readFileSync(rootYamlPath, 'utf8');
 
@@ -420,8 +422,11 @@ describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
 
     assert.ok(hasGsdHooksBlock(path.join(altHome, 'config.toml')),
       'KIMI_CODE_HOME must redirect the hooks block');
-    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
-      'the default kimi-code root must not be used when the env var is set');
+    // #3547 — <root>/.kimi-code legitimately exists as kimi-code's GSD config
+    // home in the harness's real global shape; what must NOT happen is the
+    // DEFAULT hooks root receiving the GSD block while the override is set.
+    assert.ok(!hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'the default kimi-code hooks root must not receive the GSD hooks block when the env var is set');
     assert.ok(!fs.existsSync(path.join(root, '.kimi')),
       "Kimi CLI's root must not be touched either");
   });
@@ -488,8 +493,10 @@ describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
     assert.ok(hasGsdHooksBlock(path.join(codeAlt, 'config.toml')),
       'kimi-code must honor KIMI_CODE_HOME while KIMI_SHARE_DIR is also set');
     assert.ok(!fs.existsSync(path.join(root, '.kimi')),
-      'neither default root may be used when both overrides are set');
-    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
-      'neither default root may be used when both overrides are set');
+      'neither default hooks root may be used when both overrides are set');
+    // #3547 — <root>/.kimi-code is kimi-code's GSD config home now; assert the
+    // hooks BLOCK stayed off the default root instead of directory absence.
+    assert.ok(!hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'neither default hooks root may receive the GSD block when both overrides are set');
   });
 });

@@ -29,6 +29,14 @@
           "recursive": false,
           "converter": "convertClaudeCommandToCodexSkill",
           "home": ".agents"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToCodexAgent"
         }
       ],
       "local": [
@@ -39,6 +47,14 @@
           "nesting": "flat",
           "recursive": false,
           "converter": "convertClaudeCommandToCodexSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToCodexAgent"
         }
       ]
     },

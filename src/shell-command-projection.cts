@@ -643,15 +643,277 @@ export function execNpm(args: string[], opts: { cwd?: string; timeout?: number }
   return _spawnResult(result, 'npm');
 }
 
+/**
+ * Default PATHEXT when Windows does not supply one. Matches the value
+ * `gsd-tools.cjs`'s `resolveSpawnBinary` shipped in #3275; kept identical so the
+ * delegation is a behavior-preserving move rather than a redefinition.
+ */
+const DEFAULT_PATHEXT = '.EXE;.CMD;.BAT;.COM';
+
+/** Windows extensions that must be mediated through cmd.exe rather than spawned. */
+const CMD_MEDIATED_EXT = /\.(cmd|bat)$/i;
+
+function _isFile(candidate: string, requireExecutable = false, platform: string = process.platform): boolean {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (requireExecutable && platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    // Missing, unreadable (EACCES), a broken link, or (when requireExecutable
+    // is set) not executable — all mean "not this one".
+    return false;
+  }
+}
+
+/**
+ * Read an environment variable by name, case-insensitively.
+ *
+ * Windows environment variable names are case-insensitive and conventionally
+ * cased `Path` / `ComSpec`, and `process.env` is a case-insensitive proxy that
+ * hides the difference. Spreading it (`{ ...process.env, ...opts.env }`, which
+ * `execTool` does whenever a caller supplies `opts.env`) produces a PLAIN object
+ * that keeps the OS's actual casing and loses the proxy — so an exact-case
+ * `env['PATH']` lookup returns undefined there and the PATH scan silently sees
+ * nothing. Caught by the Windows CI lane on #3617; the #3445 tests never hit it
+ * because they pass uppercase keys explicitly.
+ *
+ * Exact match wins when present, so a caller who sets the canonical name pays
+ * no scan.
+ */
+function _envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const exact = env[name];
+  if (exact !== undefined) return exact;
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === lower) return env[key];
+  }
+  return undefined;
+}
+
+/** cmd.exe's own quoting rule inside a `/c` string: a literal quote is doubled. */
+function _cmdQuoteToken(token: string): string {
+  return `"${token.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Build a single verbatim command-line string for `cmd.exe /c` where every
+ * token is force-quoted, then wrap the whole thing in one more outer pair.
+ * cmd.exe strips exactly one outer quote pair when the string begins with a
+ * quote and contains at least two — so the outer wrap disappears and what's
+ * left is a sequence of individually-quoted tokens. Force-quoting is the
+ * point: an unquoted `a&b` is split by cmd's own metacharacter parsing, but a
+ * quoted `"a&b"` is one literal argument.
+ */
+function _buildVerbatimCmdLine(target: string, args: string[]): string {
+  return `"${[target, ...args].map(_cmdQuoteToken).join(' ')}"`;
+}
+
+/**
+ * #3411: resolve a DECLARED command name to the file a spawn can actually start.
+ * The single canonical answer to "where is this binary?" for the whole tree.
+ *
+ * This is the seam `CONTEXT.md` declares as "All OS-facing I/O; single platform
+ * seam". Four divergent implementations of this logic existed (#3411): `execNpm`'s
+ * `shell:true`, `execTool`'s absence of any handling, `gsd-tools.cjs`'s private
+ * scan, and `fallow-runner.cts`'s own candidate array. #3275 folded two of them
+ * together in `bin/`; this lifts that resolver into the seam so `bin/` delegates
+ * instead of owning a copy.
+ *
+ * **win32** tries PATHEXT entries ONLY — never the bare name. npm global installs
+ * drop an EXTENSIONLESS POSIX sh shim (`...\npm\codex`) next to `codex.CMD`; a
+ * bare-name-first scan resolves to it, the cmd.exe mediation gate sees no `.cmd`,
+ * and the ENOENT returns unchanged (field-reported on Windows 11 — see #3275).
+ * A name that ALREADY carries a PATHEXT-listed extension is tried as-is first, so
+ * `foo.exe` resolves to `foo.exe` rather than being probed as `foo.exe.EXE`; a
+ * suffix that is not in PATHEXT (`foo.txt`) is not an extension and only feeds the
+ * append loop.
+ *
+ * **POSIX** answers EXISTENCE by scanning PATH for the bare name. `execTool` does
+ * NOT consult this on POSIX — the bare name goes to spawnSync unchanged and Node's
+ * own PATH search does the work, so macOS/Linux behavior is untouched (#3275
+ * acceptance contract).
+ *
+ * Path-like names (any `/` or `\`) bypass the PATH scan: the name is already an
+ * address, so it passes through when it names an existing file.
+ *
+ * **`opts.prependPaths`** — directories searched BEFORE `env.PATH`, in array
+ * order (e.g. a project-local `node_modules/.bin`). Defaults to `[]`, so
+ * Phase 1's callers (`execTool`, and `gsd-tools.cjs`'s `resolveSpawnBinary` /
+ * `deps.spawn` / `hasBinary`), which set neither new option, are byte-identical
+ * to today. The existing per-directory candidate logic (win32 as-is-then-append-
+ * PATHEXT; POSIX bare name) applies to prepended directories exactly as it does
+ * to `PATH` segments — there is no special-casing.
+ *
+ * **`opts.requireExecutable`** — when `true` and the platform is not `win32`,
+ * a candidate must additionally pass `fs.accessSync(candidate, fs.constants.X_OK)`
+ * to count as a match. On `win32` this is a no-op (mode bits do not mean
+ * execute on Windows — the same carve-out `fallow-runner`'s prior private
+ * resolver already had). Defaults to `false`, so `accessSync` is never called
+ * unless a caller opts in. It is opt-in rather than the default because making
+ * `X_OK` unconditional would break #3445's suite: those tests stage candidates
+ * with plain `fs.writeFileSync` and never set an exec bit (the repo bans
+ * `chmod` in tests), so every one of them would resolve to `null` on POSIX.
+ *
+ * @returns the resolved path, or `null` when nothing matched. Callers fall back to
+ *   the declared name on `null` so a genuine ENOENT still surfaces (#3086).
+ */
+export function resolveExecutableBinary(
+  name: string | null | undefined,
+  opts: { platform?: string; env?: NodeJS.ProcessEnv; prependPaths?: string[]; requireExecutable?: boolean } = {},
+): string | null {
+  if (!name) return null;
+  const requireExecutable = opts.requireExecutable ?? false;
+  const platform = opts.platform ?? process.platform;
+  if (name.includes('/') || name.includes('\\')) {
+    return _isFile(name, requireExecutable, platform) ? name : null;
+  }
+  const env = opts.env ?? process.env;
+  const pathSegments = String(_envGet(env, 'PATH') || '').split(path.delimiter).filter(Boolean);
+  const segments = [...(opts.prependPaths ?? []), ...pathSegments];
+
+  if (platform !== 'win32') {
+    for (const dir of segments) {
+      const candidate = path.join(dir, name);
+      if (_isFile(candidate, requireExecutable, platform)) return candidate;
+    }
+    return null;
+  }
+
+  const exts = String(_envGet(env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').filter(Boolean);
+  // A name already ending in a PATHEXT-listed extension is an address, not a stem:
+  // probing `foo.exe` as `foo.exe.EXE` would miss the file sitting right there.
+  // Compared case-insensitively because PATHEXT casing is not guaranteed.
+  const lower = name.toLowerCase();
+  const carriesKnownExt = exts.some((ext) => lower.endsWith(ext.toLowerCase()));
+
+  for (const dir of segments) {
+    if (carriesKnownExt) {
+      const asIs = path.join(dir, name);
+      if (_isFile(asIs, requireExecutable, platform)) return asIs;
+    }
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      if (_isFile(candidate, requireExecutable, platform)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * #3411: project a declared `(command, args)` into the pair `spawnSync` can
+ * actually execute on this platform.
+ *
+ * Resolution alone does not make Windows work: `CreateProcess` cannot execute a
+ * `.cmd`/`.bat` at all, so the cmd.exe mediation is inseparable from the lookup.
+ * Exporting only the resolver would leave every caller to re-derive that half —
+ * which is precisely how #3411's four copies accumulated.
+ *
+ * cmd.exe is invoked as an ordinary program with an EXPLICIT argv array, never via
+ * `shell: true`. `shell:true` on Windows is the mechanism behind CVE-2024-27980
+ * (argument injection through `.bat`/`.cmd`), and Node 26 deprecates it with an
+ * args array (DEP0190) because arguments are concatenated rather than escaped.
+ *
+ * Mediation fires when the target — the resolved path, or the declared name when
+ * resolution found nothing — carries a `.cmd`/`.bat` extension. A BARE name that
+ * resolved to nothing is passed through verbatim so the spawn fails with ENOENT;
+ * mediating it would turn `{exitCode:127, 'foo: not found'}` into cmd.exe's exit
+ * 9009 and silently change the not-found contract callers depend on.
+ *
+ * POSIX is a strict no-op: the declared command is returned unchanged and the
+ * environment is never consulted.
+ *
+ * The mediated command line is built VERBATIM rather than left to libuv: libuv's
+ * `quote_cmd_arg` only force-quotes an argument that contains a space, tab, or
+ * quote — it does not know about cmd.exe metacharacters (`&`, `|`, `>`, `<`,
+ * `^`, ...) at all, so an argument like `a&calc` reaches cmd.exe unquoted and
+ * gets re-parsed as two commands (the CVE-2024-27980 argument-injection class).
+ * Node's own CVE-2024-27980 escaping does not help here because it only fires
+ * when the spawned FILE itself is a `.bat`/`.cmd` — in this seam the spawned
+ * file is `cmd.exe`, not the target. Building the line ourselves and passing
+ * `windowsVerbatimArguments: true` (the shape Rust's std uses for the sibling
+ * CVE-2024-24576) means every token is force-quoted inside one outer pair, so
+ * a metacharacter inside a quoted token can never split the command line.
+ *
+ * KNOWN LIMIT: `%VAR%` still expands inside a cmd `/c` string, and there is no
+ * escape for `%` outside a batch file — an argument containing `%FOO%` is
+ * substituted with the environment value regardless of quoting. That is an
+ * information-disclosure limit, not arbitrary execution, and it's the same
+ * limit Rust's std documents for its own `CommandExt::raw_arg` escape hatch.
+ *
+ * CALLER CHOICE: this function's return value carries two independently
+ * adoptable pieces of information, and a caller may take either, both, or
+ * neither. `windowsVerbatimArguments: true` marks the cases where mediation
+ * was REQUIRED — the caller MUST adopt `command`+`args` together, since a
+ * `.cmd`/`.bat` genuinely cannot be spawned any other way. A merely-resolved
+ * `.exe` path (no mediation flag set) is only an OFFER: a caller may decline
+ * it and keep spawning the declared name instead, to hold its own observable
+ * contract stable. `execTool` (this file, below) is exactly such a caller —
+ * it adopts the mediated pair when `windowsVerbatimArguments` is set, but
+ * otherwise passes the declared `program`/`args` through untouched.
+ */
+export function projectSpawnInvocation(
+  command: string,
+  args: string[] = [],
+  opts: { platform?: string; env?: NodeJS.ProcessEnv } = {},
+): { command: string; args: string[]; resolved: string | null; windowsVerbatimArguments?: boolean } {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== 'win32') return { command, args, resolved: null };
+
+  const env = opts.env ?? process.env;
+  const resolved = resolveExecutableBinary(command, { platform, env });
+  // Mediate against the resolved path when we have one, else against the declared
+  // name. An unresolved name is mediated ONLY when it already declares .cmd/.bat:
+  // PATH-only resolution misses a batch file sitting in the current directory,
+  // which `cmd.exe /c` still finds — the behavior gsd-tools.cjs shipped before
+  // this consolidation, preserved here rather than silently narrowed.
+  const target = resolved ?? command;
+  if (!CMD_MEDIATED_EXT.test(path.basename(target))) {
+    // A BARE name that resolved to nothing is passed through untouched so the
+    // spawn fails with ENOENT. Mediating it would turn {exitCode:127,
+    // '<name>: not found'} into cmd.exe's exit 9009 and silently change the
+    // not-found contract `_spawnResult` and its 53 dependent files rely on.
+    return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
+  }
+  // A CR/LF cannot be represented inside a Windows command line at all — cmd.exe
+  // treats it as a line terminator, so mediating it would silently truncate the
+  // argument rather than pass it through. Fail visibly instead: fall back to the
+  // unmediated shape so the spawn either fails with ENOENT (bare unresolved name)
+  // or hands the raw string to CreateProcess, whichever the caller was already
+  // prepared to see for a non-.cmd/.bat target.
+  if (/[\r\n]/.test(target) || args.some((a) => /[\r\n]/.test(a))) {
+    return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
+  }
+  return {
+    command: String(_envGet(env, 'ComSpec') || 'cmd.exe'),
+    args: ['/d', '/s', '/c', _buildVerbatimCmdLine(target, args)],
+    resolved,
+    windowsVerbatimArguments: true,
+  };
+}
+
 export function execTool(program: string, args: string[], opts: { cwd?: string; env?: Record<string, string>; timeout?: number } = {}): SpawnResultOutput {
-  const result = childProcess.spawnSync(program, args, {
+  // #3411: Windows cannot spawn a .cmd/.bat at all — CreateProcess refuses it —
+  // so those are mediated through cmd.exe. Everything else keeps the DECLARED
+  // program name: libuv's CreateProcess path already performs PATH + PATHEXT
+  // search, so resolving a .exe here would buy nothing and would change what
+  // this seam's 167 dependents observe being spawned. `tests/graphify.test.cjs`
+  // pins that contract by spying on spawnSync's first argument. POSIX never
+  // reaches the mediation branch at all.
+  const spawnEnv = opts.env ? { ...process.env, ...opts.env } : undefined;
+  const invocation = projectSpawnInvocation(program, args, { env: spawnEnv ?? process.env });
+  const mediated = invocation.windowsVerbatimArguments === true;
+  const result = childProcess.spawnSync(mediated ? invocation.command : program, mediated ? invocation.args : args, {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : undefined,
+    env: spawnEnv,
     encoding: 'utf-8',
     stdio: 'pipe',
     timeout: opts.timeout ?? 30_000,
     windowsHide: true,
+    ...(mediated ? { windowsVerbatimArguments: true } : {}),
   });
+  // Stamp the DECLARED name, never the resolved path: `_spawnResult` renders
+  // `${program}: not found`, and callers across 53 files match on the string they
+  // passed. Resolution must not leak an absolute path into that message.
   return _spawnResult(result, program);
 }
 

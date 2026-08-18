@@ -8,12 +8,12 @@ Canonical domain terms for the concepts named below live in [CONTEXT.md](../../C
 
 | File | Purpose | Loaded by |
 |---|---|---|
-| `references/planner-mvp-mode.md` | **Rules.** Vertical-slice planning rules, slice ordering, Walking Skeleton constraints. | `gsd-planner` agent when `MVP_MODE=true` |
-| `references/skeleton-template.md` | **Template.** Shape of `SKELETON.md` for new-project Phase 1 under `--mvp`. | `gsd-planner` agent when the Walking Skeleton gate fires |
-| `references/user-story-template.md` | **Template.** Format and slot definitions for `As a / I want to / So that`. | `gsd-mvp-phase` workflow during interactive prompting; `gsd-planner` when emitting the `## Phase Goal` header |
-| `references/spidr-splitting.md` | **Splitting discipline.** Five-axis decomposition (Spike, Paths, Interfaces, Data, Rules) for stories too large for one phase. | `gsd-mvp-phase` workflow when the user story exceeds size threshold |
-| `references/execute-mvp-tdd.md` | **Gate.** MVP+TDD runtime gate semantics: when it fires, what it checks, halt-and-report protocol, end-of-phase blocking escalation, Behavior-Adding Task definition. | `gsd-executor` agent when `MVP_MODE=true && TDD_MODE=true` |
-| `references/verify-mvp-mode.md` | **UAT framing.** Three-section UAT structure (user-flow → technical → coverage), anti-patterns, `User Flow Coverage` section in VERIFICATION.md. | `gsd-verifier` agent when the phase under verification has `mode: mvp` |
+| `gsd-core/references/planner-mvp-mode.md` | **Rules.** Vertical-slice planning rules, slice ordering, Walking Skeleton constraints. | `gsd-planner` agent when `MVP_MODE=true` |
+| `gsd-core/references/skeleton-template.md` | **Template.** Shape of `SKELETON.md` for new-project Phase 1 under `--mvp`. | `gsd-planner` agent when the Walking Skeleton gate fires |
+| `gsd-core/references/user-story-template.md` | **Template.** Format and slot definitions for `As a / I want to / So that`. | `gsd-mvp-phase` workflow during interactive prompting; `gsd-planner` when emitting the `## Phase Goal` header |
+| `gsd-core/references/spidr-splitting.md` | **Splitting discipline.** Five-axis decomposition (Spike, Paths, Interfaces, Data, Rules) for stories too large for one phase. | `gsd-mvp-phase` workflow when the user story exceeds size threshold |
+| `gsd-core/references/execute-mvp-tdd.md` | **Gate.** MVP+TDD runtime gate semantics: when it fires, what it checks, halt-and-report protocol, end-of-phase blocking escalation, Behavior-Adding Task definition. | `gsd-executor` agent when `MVP_MODE=true && TDD_MODE=true` |
+| `gsd-core/references/verify-mvp-mode.md` | **UAT framing.** Three-section UAT structure (user-flow → technical → coverage), anti-patterns, `User Flow Coverage` section in VERIFICATION.md. | `gsd-verifier` agent when the phase under verification has `mode: mvp` |
 
 ## Concept-to-file map
 
@@ -22,10 +22,10 @@ If you're looking for the canonical statement of a concept, this is where to fin
 - **MVP Mode resolution chain** — `workflows/plan-phase.md` Step 1 (CLI flag → roadmap → config → false). Mirrored in `execute-phase.md` and `verify-work.md`.
 - **`**Mode:** mvp` parser** — `gsd-core/bin/lib/roadmap.cjs` (`searchPhaseInContent` + `cmdRoadmapAnalyze`). Workflows compare against the parser output, never re-parse.
 - **User Story regex** — `/^As a .+, I want to .+, so that .+\.$/` — applied at runtime by `gsd-verifier` (the user-story-format guard) and `gsd-mvp-phase` (interactive validation).
-- **Behavior-Adding Task predicate** — `references/execute-mvp-tdd.md` (the canonical three-check definition). Applied at runtime by `gsd-executor`.
+- **Behavior-Adding Task predicate** — `gsd-core/references/execute-mvp-tdd.md` (the canonical three-check definition). Applied at runtime by `gsd-executor`.
 - **Walking Skeleton gate condition** — `workflows/plan-phase.md` (Phase 1 + new project + `--mvp` + no prior summaries → emit `SKELETON.md`).
-- **MVP+TDD Gate** (RED→GREEN enforcement) — `references/execute-mvp-tdd.md`.
-- **MVP-mode UAT framing** (user-flow first, technical deferred) — `references/verify-mvp-mode.md`.
+- **MVP+TDD Gate** (RED→GREEN enforcement) — `gsd-core/references/execute-mvp-tdd.md`.
+- **MVP-mode UAT framing** (user-flow first, technical deferred) — `gsd-core/references/verify-mvp-mode.md`.
 - **Per-phase mode authoring** — `workflows/mvp-phase.md` (writes `**Mode:** mvp` to ROADMAP.md after collecting the user story).
 - **Project-wide mode prompt at init** — `workflows/new-project.md` (Vertical MVP vs Horizontal Layers question).
 

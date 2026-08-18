@@ -1,7 +1,3 @@
-// allow-test-rule: source-text-is-the-product
-// Reads .md/.json/.yml product files whose deployed text IS what the
-// runtime loads — testing text content tests the deployed contract.
-
 /**
  * Installer Module — Sections 9–11 + 13.
  *
@@ -38,6 +34,7 @@ const {
   writeManifest,
   GSD_UNINSTALL_HOOKS,
   resolveSharedHooksDirName,
+  stripStaleGsdHookBlocks,
 } = require('../bin/install.js');
 
 const {
@@ -973,10 +970,20 @@ describe('uninstall settings cleanup preserves user hooks', () => {
 });
 
 describe('Codex legacy gsd-update-check migration', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'bin', 'install.js'), 'utf8');
-
+  // #3508: behavioral replacement for a source-grep that used to check
+  // install.js's own text for the literal strings 'gsd-update-check' and
+  // 'replace(' -- i.e. it asserted characteristics of the SOURCE CODE, not
+  // an observable effect. `stripStaleGsdHookBlocks` (bin/install.js) is the
+  // REAL exported function that performs this migration; drive it directly
+  // with a legacy Shape-1 config.toml block (same shape the two tests below
+  // already exercise) and assert the stale hook block is actually removed.
   test('install.js strips legacy gsd-update-check hook blocks', () => {
-    assert.ok(src.includes('gsd-update-check') && src.includes('replace('));
+    const legacyToml = ['[features]', 'codex_hooks = true', '',
+      '# GSD Hooks', '[[hooks]]', 'event = "SessionStart"',
+      'command = "node /old/path/gsd-update-check.js"', ''].join('\n');
+    const stripped = stripStaleGsdHookBlocks(legacyToml);
+    assert.ok(!stripped.includes('gsd-update-check'), 'legacy gsd-update-check hook block must be stripped');
+    assert.ok(stripped.includes('[features]'), 'unrelated config content must survive stripping');
   });
 
   test('migration regex removes LF legacy hook block', () => {
@@ -1021,104 +1028,110 @@ describe('Codex legacy gsd-update-check migration', () => {
  *
  * The .sh hooks already had fs.existsSync() guards (added in #1817). This
  * test verifies the same defensive pattern exists for all .js hooks.
+ *
+ * Behavioral (#3466): drives the real `applySettingsJsonHooks` (the exported
+ * function `bin/install.js` calls at finishInstall time) against a temp
+ * target dir, rather than grepping install.js's source text for
+ * `fs.existsSync`. A missing hook file must produce NO settings.json entry
+ * plus a skip warning; a present hook file (positive control) must be
+ * registered — proving the guard discriminates per-file, not wholesale.
  */
 
 'use strict';
 
-const { describe, test, before } = require('node:test');
+const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-
-const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
-// ADR-857 phase 5f-1b: settings-json hook registration moved to runtime-hooks-surface.cts.
-const HOOKS_SURFACE_SRC = path.join(__dirname, '..', 'src', 'runtime-hooks-surface.cts');
+const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const JS_HOOKS = [
-  { name: 'gsd-check-update.js',      registrationAnchor: 'hasGsdUpdateHook' },
-  { name: 'gsd-context-monitor.js',   registrationAnchor: 'hasContextMonitorHook' },
-  { name: 'gsd-prompt-guard.js',      registrationAnchor: 'hasPromptGuardHook' },
-  { name: 'gsd-read-guard.js',        registrationAnchor: 'hasReadGuardHook' },
-  { name: 'gsd-workflow-guard.js',    registrationAnchor: 'hasWorkflowGuardHook' },
-  { name: 'gsd-worktree-path-guard.js', registrationAnchor: 'hasWorktreePathGuardHook' },
-  { name: 'gsd-write-guard.js',         registrationAnchor: 'hasWriteGuardHook' },
+  'gsd-check-update.js',
+  'gsd-context-monitor.js',
+  'gsd-prompt-guard.js',
+  'gsd-read-guard.js',
+  'gsd-workflow-guard.js',
+  'gsd-worktree-path-guard.js',
+  'gsd-write-guard.js',
 ];
 
-describe('bug #1754: .js hook registration guards', () => {
-  let src;
-
-  before(() => {
-    // ADR-857 phase 5f-1b: hook registration moved to runtime-hooks-surface.cts.
-    // Concatenate both sources so structural assertions find patterns in either file.
-    const installSrc = fs.readFileSync(INSTALL_SRC, 'utf-8');
-    let hooksSurfaceSrc = '';
-    try { hooksSurfaceSrc = fs.readFileSync(HOOKS_SURFACE_SRC, 'utf-8'); } catch { /* ok */ }
-    src = installSrc + '\n' + hooksSurfaceSrc;
+// Drives the real guarded registration function directly (local-install
+// shape: isGlobal=false routes every *Command through the supplied
+// localCmd/localShellCmd, so no real node/bash-path resolution is needed).
+// `presentHooks` controls which hook basenames actually exist on disk under
+// targetDir/hooks/ before the call — every other referenced hook file is
+// left absent, exercising the fs.existsSync guard for that hook.
+function runApplySettingsJsonHooks(targetDir, presentHooks) {
+  fs.mkdirSync(path.join(targetDir, 'hooks'), { recursive: true });
+  for (const hook of presentHooks) {
+    fs.writeFileSync(path.join(targetDir, 'hooks', hook), '// stub\n');
+  }
+  const settings = {};
+  const localCmd = (hookFile) => `node ${path.join(targetDir, 'hooks', hookFile)}`;
+  const localShellCmd = (hookFile) => `bash ${path.join(targetDir, 'hooks', hookFile)}`;
+  const { stdout, stderr } = captureConsole(() => {
+    applySettingsJsonHooks(settings, {
+      runtime: 'claude',
+      isGlobal: false,
+      targetDir,
+      postToolEvent: 'PostToolUse',
+      hookEvents: 'claude',
+      extendedHookEvents: [],
+      hooksSurface: 'settings-json',
+      updateCheckCommand: localCmd('gsd-check-update.js'),
+      contextMonitorCommand: localCmd('gsd-context-monitor.js'),
+      promptGuardCommand: localCmd('gsd-prompt-guard.js'),
+      readGuardCommand: localCmd('gsd-read-guard.js'),
+      readInjectionScannerCommand: localCmd('gsd-read-injection-scanner.js'),
+      configReloadCommand: null,
+      hookOpts: { portableHooks: false, runtime: 'claude' },
+      localCmd,
+      localShellCmd,
+    });
   });
+  return { settings, stdout, stderr };
+}
 
-  for (const { name, registrationAnchor } of JS_HOOKS) {
-    describe(`${name} registration`, () => {
-      test(`install.js checks file existence before registering ${name}`, () => {
-        // Find the registration block by locating the "has...Hook" variable
-        const anchorIdx = src.indexOf(registrationAnchor);
-        assert.ok(
-          anchorIdx !== -1,
-          `${registrationAnchor} variable not found in install.js`
+function settingsReferencesHook(settings, hookBaseName) {
+  const events = Object.values(settings.hooks || {});
+  return events.some((entries) =>
+    Array.isArray(entries) && entries.some((entry) =>
+      Array.isArray(entry.hooks) && entry.hooks.some((h) => h.command && h.command.includes(hookBaseName))
+    )
+  );
+}
+
+describe('bug #1754: .js hook registration guards', () => {
+  let targetDir;
+  beforeEach(() => { targetDir = createTempDir('gsd-hook-guard-js-'); });
+  afterEach(() => { cleanup(targetDir); });
+
+  for (const hookName of JS_HOOKS) {
+    test(`${hookName} is NOT registered in settings.json when its file is missing at the target path`, () => {
+      // Every OTHER JS hook is present (positive control keeps the guard
+      // honest — a wholesale skip of all hooks would falsely satisfy the
+      // negative assertion below).
+      const present = JS_HOOKS.filter((h) => h !== hookName);
+      const { settings, stderr } = runApplySettingsJsonHooks(targetDir, present);
+
+      assert.equal(
+        settingsReferencesHook(settings, hookName), false,
+        `settings.json must NOT register ${hookName} when its file was never copied (root cause of #1754)`,
+      );
+      assert.ok(
+        stderr.includes(hookName.replace('.js', '')),
+        `install must emit a skip warning naming ${hookName} when it is missing (stderr: ${stderr})`,
+      );
+
+      for (const otherHook of present) {
+        assert.equal(
+          settingsReferencesHook(settings, otherHook), true,
+          `${otherHook} (present on disk) must still be registered — the guard must be per-file, not wholesale`,
         );
-
-        // Extract a window around the registration block to find the guard
-        const blockStart = anchorIdx;
-        const blockEnd = Math.min(src.length, anchorIdx + 1200);
-        const block = src.slice(blockStart, blockEnd);
-
-        // The block must contain an fs.existsSync check for the hook file
-        assert.ok(
-          block.includes('fs.existsSync') || block.includes('existsSync'),
-          `install.js must call fs.existsSync on the target path before registering ${name} ` +
-          `in settings.json. Without this guard, hooks are registered even when the .js file ` +
-          `was never copied (the root cause of #1754).`
-        );
-      });
-
-      test(`install.js emits a warning when ${name} is missing`, () => {
-        // The hook file name (without extension) should appear in a warning message
-        const hookBaseName = name.replace('.js', '');
-        const warnPattern = `Skipped`;
-        const anchorIdx = src.indexOf(registrationAnchor);
-        const block = src.slice(anchorIdx, Math.min(src.length, anchorIdx + 1200));
-
-        assert.ok(
-          block.includes(warnPattern) && block.includes(hookBaseName),
-          `install.js must emit a skip warning when ${name} is not found at the target path`
-        );
-      });
+      }
     });
   }
-
-  test('all .js hooks use the same guard pattern as .sh hooks', () => {
-    // Count existsSync calls in the hook registration section.
-    // There should be guards for all JS hooks plus the existing SH hooks.
-    // This test ensures new hooks added in the future follow the same pattern.
-    // ADR-857 phase 5f-1b: registration moved to runtime-hooks-surface.cts so scan the
-    // full concatenated source (install.js + runtime-hooks-surface.cts) rather than slicing.
-    const registrationSection = src;
-
-    // Count unique hook file existence checks (pattern: path.join(targetDir, 'hooks', 'gsd-*.js'))
-    const jsGuards = (registrationSection.match(/gsd-[\w-]+\.js.*not found at target/g) || []);
-    const shGuards = (registrationSection.match(/gsd-[\w-]+\.sh.*not found at target/g) || []);
-
-    assert.ok(
-      jsGuards.length >= JS_HOOKS.length,
-      `Expected at least ${JS_HOOKS.length} .js hook guards, found ${jsGuards.length}. ` +
-      `Every .js hook registration must check file existence before registering.`
-    );
-
-    assert.ok(
-      shGuards.length >= 3,
-      `Expected at least 3 .sh hook guards (validate-commit, session-state, phase-boundary), ` +
-      `found ${shGuards.length}.`
-    );
-  });
 });
   });
 }
@@ -1142,61 +1155,95 @@ describe('bug #1754: .js hook registration guards', () => {
  * Defensive guard: before registering each .sh hook in settings.json,
  * install.js must verify the target file exists. If it doesn't, skip
  * registration and emit a warning.
+ *
+ * Behavioral (#3466): see the bug-1754 block above — same
+ * `applySettingsJsonHooks` seam, applied to the three opt-in `.sh` hooks.
  */
 
 'use strict';
 
-const { describe, test } = require('node:test');
+const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-
-const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
-// ADR-857 phase 5f-1b: settings-json hook registration moved to runtime-hooks-surface.cts.
-const HOOKS_SURFACE_SRC = path.join(__dirname, '..', 'src', 'runtime-hooks-surface.cts');
+const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const SH_HOOKS = [
-  { name: 'gsd-validate-commit.sh', settingsVar: 'validateCommitCommand' },
-  { name: 'gsd-session-state.sh',   settingsVar: 'sessionStateCommand' },
-  { name: 'gsd-phase-boundary.sh',  settingsVar: 'phaseBoundaryCommand' },
+  'gsd-validate-commit.sh',
+  'gsd-session-state.sh',
+  'gsd-phase-boundary.sh',
 ];
 
-describe('bug #1817: .sh hook registration guards', () => {
-  let src;
-
-  // Read once — all tests in this suite share the same source snapshot.
-  // ADR-857 phase 5f-1b: hook registration moved to runtime-hooks-surface.cts.
-  // Concatenate both sources so structural assertions find patterns in either file.
-  try {
-    const installSrc = fs.readFileSync(INSTALL_SRC, 'utf-8');
-    let hooksSurfaceSrc = '';
-    try { hooksSurfaceSrc = fs.readFileSync(HOOKS_SURFACE_SRC, 'utf-8'); } catch { /* ok */ }
-    src = installSrc + '\n' + hooksSurfaceSrc;
-  } catch {
-    src = '';
+// Same seam as the bug-1754 block above, duplicated locally rather than
+// imported across the fold boundary — each folded block is a standalone
+// module scope (see the __foldDescribe wrapper), matching this file's
+// existing folding convention.
+function runApplySettingsJsonHooksForSh(targetDir, presentHooks) {
+  fs.mkdirSync(path.join(targetDir, 'hooks'), { recursive: true });
+  for (const hook of presentHooks) {
+    fs.writeFileSync(path.join(targetDir, 'hooks', hook), '#!/bin/sh\n');
   }
+  const settings = {};
+  const localCmd = (hookFile) => `node ${path.join(targetDir, 'hooks', hookFile)}`;
+  const localShellCmd = (hookFile) => `bash ${path.join(targetDir, 'hooks', hookFile)}`;
+  const { stdout, stderr } = captureConsole(() => {
+    applySettingsJsonHooks(settings, {
+      runtime: 'claude',
+      isGlobal: false,
+      targetDir,
+      postToolEvent: 'PostToolUse',
+      hookEvents: 'claude',
+      extendedHookEvents: [],
+      hooksSurface: 'settings-json',
+      updateCheckCommand: localCmd('gsd-check-update.js'),
+      contextMonitorCommand: localCmd('gsd-context-monitor.js'),
+      promptGuardCommand: localCmd('gsd-prompt-guard.js'),
+      readGuardCommand: localCmd('gsd-read-guard.js'),
+      readInjectionScannerCommand: localCmd('gsd-read-injection-scanner.js'),
+      configReloadCommand: null,
+      hookOpts: { portableHooks: false, runtime: 'claude' },
+      localCmd,
+      localShellCmd,
+    });
+  });
+  return { settings, stdout, stderr };
+}
 
-  for (const { name, settingsVar } of SH_HOOKS) {
-    describe(`${name} registration`, () => {
-      test(`install.js checks file existence before registering ${name}`, () => {
-        // Find the block where this .sh hook is registered.
-        // Each registration block is preceded by the command variable declaration
-        // and followed by the next hook or end of registration section.
-        const varIdx = src.indexOf(settingsVar);
-        assert.ok(varIdx !== -1, `${settingsVar} variable not found in install.js`);
+function shSettingsReferencesHook(settings, hookBaseName) {
+  const events = Object.values(settings.hooks || {});
+  return events.some((entries) =>
+    Array.isArray(entries) && entries.some((entry) =>
+      Array.isArray(entry.hooks) && entry.hooks.some((h) => h.command && h.command.includes(hookBaseName))
+    )
+  );
+}
 
-        // Extract ~900 chars around the variable to find the registration block
-        const blockStart = Math.max(0, varIdx - 50);
-        const blockEnd = Math.min(src.length, varIdx + 900);
-        const block = src.slice(blockStart, blockEnd);
+describe('bug #1817: .sh hook registration guards', () => {
+  let targetDir;
+  beforeEach(() => { targetDir = createTempDir('gsd-hook-guard-sh-'); });
+  afterEach(() => { cleanup(targetDir); });
 
-        assert.ok(
-          block.includes('fs.existsSync') || block.includes('existsSync'),
-          `install.js must call fs.existsSync on the target path before registering ${name} in settings.json. ` +
-          `Without this guard, hooks are registered even when the .sh file was never copied ` +
-          `(the root cause of #1817).`
+  for (const hookName of SH_HOOKS) {
+    test(`${hookName} is NOT registered in settings.json when its file is missing at the target path`, () => {
+      const present = SH_HOOKS.filter((h) => h !== hookName);
+      const { settings, stderr } = runApplySettingsJsonHooksForSh(targetDir, present);
+
+      assert.equal(
+        shSettingsReferencesHook(settings, hookName), false,
+        `settings.json must NOT register ${hookName} when its file was never copied (root cause of #1817)`,
+      );
+      assert.ok(
+        stderr.includes(hookName.replace('.sh', '')),
+        `install must emit a skip warning naming ${hookName} when it is missing (stderr: ${stderr})`,
+      );
+
+      for (const otherHook of present) {
+        assert.equal(
+          shSettingsReferencesHook(settings, otherHook), true,
+          `${otherHook} (present on disk) must still be registered — the guard must be per-file, not wholesale`,
         );
-      });
+      }
     });
   }
 });
@@ -1245,7 +1292,7 @@ before(() => {
   ensureHooksDist();
 });
 
-const { applySettingsJsonHooks } = require('../bin/install.js');
+const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -185,7 +185,8 @@ self-test. Separately, `scripts/qa-smell-ratchet.cjs` drives that same harness
 end to end against the real `gsd-tools` binary and turns its findings into a
 CI gate — run it with `npm run lint:qa-smells`.
 
-The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
+The gate has three independent inputs. The harness's oracles
+(`tests/qa/oracles.cjs`) supply the first two:
 
 - A **violation** is the engine breaking a documented contract. It always
   fails the build — baseline or no baseline, acknowledged or not.
@@ -195,6 +196,34 @@ The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
   `tests/qa/smell-baseline.json` (one that stopped firing — the baseline is
   shrink-only, so a fixed or changed scenario must be pruned, not left
   behind).
+
+The third comes from the scenarios themselves, not from an oracle:
+
+- A **scenario expectation failure** is a step's declared `expect` not
+  holding — the scenario asserted `percent: 100` and the engine returned
+  something else. Like a violation, it is **never acknowledgeable**: it
+  carries no fingerprint, so there is no `key` to put in a baseline entry or
+  an ack fragment. Fix the engine, or correct the expectation.
+
+Expectation failures were invisible to the gate until
+[#3597](https://github.com/open-gsd/gsd-core/issues/3597): `buildReport`
+counted them in `totals.violations` while `collectFindings` read only oracle
+violations, so a failing scenario printed `0 violations` and exited 0. The
+`multi-workstream` scenario failed on every CI run for three weeks without
+reddening a build. The invariant that keeps the two honest — asserted in
+`tests/loop-walk.qa.test.cjs` — is:
+
+```
+collectFindings().violations.length
+  + collectFindings().expectationFailures.length
+  === report.totals.violations
+```
+
+Note also that `scripts/qa-smell-ratchet.cjs` only invokes its own `main()`
+under `require.main === module`. That guard is what lets the QA suite
+`require()` the script to test `collectFindings` without kicking off a real
+20-scenario walk as an import side effect — the reason the gate's own logic
+had no test before #3597.
 
 Every smell must terminate in exactly one of TWO states — there is no third
 "accepted with a good explanation" state:

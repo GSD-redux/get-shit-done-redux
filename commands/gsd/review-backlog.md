@@ -18,7 +18,8 @@ milestone sequence or remove stale entries.
 
 1. **List backlog items:**
    ```bash
-   ls -d .planning/phases/999* 2>/dev/null || echo "No backlog items found"
+   _BACKLOG=( .planning/phases/999* )
+   if [ -e "${_BACKLOG[0]}" ]; then ls -d "${_BACKLOG[@]}"; else echo "No backlog items found"; fi
    ```
 
 2. **Read ROADMAP.md** and extract all 999.x phase entries:

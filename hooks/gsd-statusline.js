@@ -9,6 +9,24 @@ const os = require('os');
 // Namespace (not destructured) so tests can inject spawn failures by
 // monkeypatching childProcess.execFileSync.
 const childProcess = require('child_process');
+// #3582: gsd-core/bin/lib/*.cjs (semver-compare.cjs, state-document.cjs,
+// active-workstream-store.cjs, planning-workspace.cjs — required below) and
+// package-identity.cjs are tsc build artifacts (ADR-457), gitignored and
+// absent on a raw plugin-marketplace / git-clone install that never ran
+// `npm run build:lib`. The statusline renders on EVERY prompt, so a build
+// failure here must DEGRADE (print nothing, exit 0) rather than crash
+// Claude Code's per-render statusline hook. Scoped to the spawned-as-a-script
+// path (`require.main === module`) — a test `require()` of this module for
+// its pure helpers assumes a built tree, same as every other hook test.
+if (require.main === module) {
+  try {
+    const { ensureRuntimeBuild } = require('../gsd-core/bin/ensure-runtime-build.cjs');
+    ensureRuntimeBuild();
+  } catch (e) {
+    process.stdout.write('');
+    process.exit(0);
+  }
+}
 const { isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs');
 const { PACKAGE_NAME, updateCacheFileName } = require('../gsd-core/bin/lib/package-identity.cjs');
 const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');

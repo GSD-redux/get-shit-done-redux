@@ -191,18 +191,22 @@ const HOOK_CONFIG_FILES = new Set(['settings.json', 'settings.local.json', 'hook
 // platform-stable `[features] hooks = true` flag — the real hook commands
 // live in Codex's separate hooks.json, already excluded above). Blanket-
 // excluding the 'config.toml' basename would silently blind Codex's fixture
-// to any future regression there. Kimi's config.toml instead lives OUTSIDE
-// its GSD configDir at runtime (resolveKimiHooksTomlDir resolves ~/.kimi, a
-// sibling of the configDir ~/.config/agents) — it only appears inside this
-// harness's walked tree at all because runMinimalInstall sets HOME to the
-// same temp root used as --config-dir, collapsing the two into one directory
-// for the isolated test run. So it is excluded by its exact relative path
-// under that collapsed root, not by basename.
-// Both Kimi products' native config.toml embeds a platform-varying node-runner
-// command, so neither belongs in the golden-tracked emitted manifest. kimi-code
-// resolves its own root since #2755 — listing only `.kimi/config.toml` here made
-// kimi-code's config.toml newly manifest-visible and unattributable.
-const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml', '.kimi-code/config.toml']);
+// to any future regression there — and it would blind kimi-code's too: since
+// #3547 the harness installs into each runtime's REAL global subdirectory, so
+// kimi-code's hooks config.toml sits at its configDir root (rel `config.toml`)
+// and is legitimately manifest-visible. Tracking it is safe now: the
+// install-tree fixture carries paths only, and the ADR-2719 differential
+// compares base-vs-current on the same machine, so the platform-varying
+// node-runner command embedded in the TOML never crosses platforms inside a
+// gate (that was a golden-content-era hazard, and the goldens are gone).
+// Kimi CLI's config.toml (KIMI_SHARE_DIR root ~/.kimi) lives OUTSIDE its GSD
+// configDir (~/.config/agents) and never enters the walk. The pre-#3547
+// relative-path exclusions ('.kimi/config.toml', '.kimi-code/config.toml')
+// existed only for the collapsed shape — where the walked root was the HOME
+// itself and those HOME-level siblings were inside it; with no walker rooting
+// at HOME anymore they matched nothing and were removed (#3547). kimi-code
+// resolves its own root since #2755.
+const HOOK_CONFIG_RELATIVE_PATHS = new Set();
 
 // Path prefixes excluded from the parity manifest. `gsd-core/bin/lib/` holds the
 // tsc-built runtime artifacts (compiled from src/*.cts) that the install COPIES
@@ -570,8 +574,31 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
     let cwd = process.cwd();
     const args = [installScript, `--${runtime}`];
     if (scope === 'global') {
-      args.push('--global', '--config-dir', root);
-      configDir = root;
+      // #3547 — install into the runtime's REAL global config home: the strict
+      // subdirectory of the sandbox HOME a genuine global install resolves
+      // (RUNTIME_META.globalSuffix mirrors the registry's getGlobalConfigDir
+      // for every runtime). The previous `--config-dir <root>` collapsed
+      // configDir onto HOME, so computePathPrefix emitted bare `$HOME/`
+      // prefixes and the emitted bytes referenced `$HOME/gsd-core/…` — a path
+      // no real install produces — leaving every emitted-artifact gate
+      // (ADR-2719 differential, install-tree fixtures, the 19-family baseline)
+      // blind to drift confined to the real global shape (#3544 evidence: 54
+      // includes rewritten on live installs, zero manifest/fixture diffs). The
+      // explicit flag stays: hermeticity-by-override is immune to ambient
+      // redirect envs (CI runners export XDG_CONFIG_HOME, which redefines the
+      // opencode/kilo XDG descriptors' resolution when no explicit dir wins).
+      const globalMeta = RUNTIME_META[runtime];
+      if (!globalMeta || !globalMeta.globalSuffix) {
+        // #3023 lesson: a silent `path.join(root, undefined)` here throws a
+        // bare TypeError naming neither the runtime nor the map at fault; a
+        // runtime without a known global home must fail loudly before any
+        // install spawns.
+        throw new Error(
+          `runMinimalInstall: no RUNTIME_META.globalSuffix for runtime "${runtime}" — refusing to guess a global config dir (#3547)`,
+        );
+      }
+      configDir = path.join(root, globalMeta.globalSuffix);
+      args.push('--global', '--config-dir', configDir);
     } else {
       args.push('--local');
       cwd = root;

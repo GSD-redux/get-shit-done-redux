@@ -63,7 +63,11 @@ On `checkpoint:human-verify` / `checkpoint:decision` tasks, `gate="blocking"`
 `<checkpoint_protocol>` (`agents/gsd-executor.md`), and `checkpoints.md` (the
 full gate table) is embedded in the dispatch `<execution_context>` verbatim.
 Only `gate="blocking-human"` always surfaces to a human, regardless of
-auto-mode.
+auto-mode. An unmet `<precondition>` checkpoint (executor step 0, `Blocked by:
+Precondition not met` — unmet `user_setup` step, missing env var, absent
+prior-phase artifact) reports `blocking-human` and therefore always surfaces
+to a human, in every mode (#3210): the missing prerequisite is a fact only a
+human can establish, not a verification step to rubber-stamp.
 
 When composing the `Agent()` prompt, do NOT add text refusing or overriding
 auto-approval for a `blocking` gate. Orchestrator-composed instructions that contradict the

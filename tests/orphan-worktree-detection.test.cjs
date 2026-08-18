@@ -1,4 +1,3 @@
-// allow-test-rule: architectural-invariant
 // Structural checks verify the health seam exports worktree inspection capability.
 // Behavioral tests cover detection flow via validate health output.
 

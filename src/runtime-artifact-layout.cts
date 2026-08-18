@@ -16,6 +16,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+// #2874 (ADR-58 cleanup phase): route this module's fs calls through the
+// installRuntimeArtifacts call tree's injectable seam — see
+// install-fs-adapter.cts's module doc. Resolves to real `node:fs` (the
+// `fs` import above stays for type-only references, e.g. `fs.Dirent`)
+// unless the top-level installRuntimeArtifacts call injected a `deps.fs`.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs, mkInstallTempDir } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installProfiles = require('./install-profiles.cjs');
 const {
@@ -29,6 +37,11 @@ import runtimeArtifactConversion = require('./runtime-artifact-conversion.cjs');
 const conversionExports = runtimeArtifactConversion as Record<string, unknown> & {
   readGsdCommandNames?: () => string[];
 };
+// #2875 Part 2 (J8): shared model-override precedence resolver — see its
+// module doc for why kilo/opencode MUST resolve through this ONE function
+// rather than re-deriving the chain per runtime.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installModelOverrideResolver = require('./install-model-override-resolver.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 // #2870: `isGlobalScope` centralizes the `scope === 'global'` boolean
 // projection both kind-builder closures below need at the converters'
@@ -83,6 +96,11 @@ interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
+  /** #2875 Part 2 (row I1-I3): install root, threaded through to the
+   *  frontmatter-extensions step and (for kilo/opencode's converters) the
+   *  per-agent model-override resolution below. Mirrors install-profiles.cts's
+   *  identically-named AgentCtx field — see its doc comment. */
+  targetDir?: string | null;
 }
 
 interface ArtifactKind {
@@ -124,22 +142,49 @@ interface Layout {
  * 3. Throw a descriptive error if neither succeeds.
  */
 function findInstallSourceRoot(runtimeConfigDir?: string): string {
-  // Step 1: marker check
+  // Step 1: marker check — reads `<runtimeConfigDir>/.gsd-source`, a path
+  // under the INSTALL DESTINATION, so this probe goes through the injected
+  // adapter (installFs()).
   if (runtimeConfigDir) {
     const markerPath = path.join(runtimeConfigDir, '.gsd-source');
-    if (fs.existsSync(markerPath)) {
+    if (installFs().existsSync(markerPath)) {
       try {
-        const src = fs.readFileSync(markerPath, 'utf8').trim();
-        if (src && fs.existsSync(src)) return src;
+        const src = installFs().readFileSync(markerPath, 'utf8').trim();
+        if (src && installFs().existsSync(src)) return src;
       } catch { /* fall through */ }
     }
   }
 
-  // Step 2: walk up from __dirname
+  // Step 2: walk up from __dirname to locate the GSD PACKAGE'S OWN source
+  // tree (commands/gsd/) — this resolves where the installer's own code is
+  // running FROM, not anything under the install destination, so it is
+  // deliberately NOT routed through the injected fs adapter (#2874): a fake
+  // "destination" adapter has no reason to know about the real package's own
+  // on-disk layout (an injected adapter's store starts empty and is never
+  // seeded with real repo paths), and routing it through would make this
+  // resolution unconditionally throw rather than gracefully staging nothing.
+  //
+  // Uses `fs.statSync` in a try/catch rather than `fs.existsSync` — this is
+  // LOAD-BEARING, not a style choice: tests/executed-plan.test.cjs's F2 cases
+  // poison every method on the ROUTED fs surface (including `existsSync`,
+  // since installFs()'s REAL_ADAPTER also calls it) to prove nothing on the
+  // installRuntimeArtifacts call tree reaches real fs. The F2 "nativePlugin
+  // runtime: pi" test calls this function (via findInstallSourceRoot()) AFTER
+  // installing that poison, specifically to resolve the pi nativePlugin
+  // source path against this repo's own real layout — an operation this
+  // function must still be able to perform even while `existsSync` is
+  // poisoned, because this Step 2 walk is real-fs-only by design and was
+  // never meant to be covered by that poison list. `statSync` is not on the
+  // poisoned surface, so this probe survives; switching back to `existsSync`
+  // makes that F2 test throw (verified: reverting this to `existsSync` trips
+  // the poison and breaks the pi nativePlugin case).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'commands', 'gsd');
-    if (fs.existsSync(candidate)) return candidate;
+    try {
+      fs.statSync(candidate);
+      return candidate;
+    } catch { /* not here — keep walking up */ }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -157,26 +202,33 @@ function findInstallSourceRoot(runtimeConfigDir?: string): string {
  * 3. Throw a descriptive error if neither succeeds.
  */
 function findAgentsSourceRoot(runtimeConfigDir?: string): string {
-  // Step 1: marker check
+  // Step 1: marker check (destination-relative — routed through installFs()).
   if (runtimeConfigDir) {
     const markerPath = path.join(runtimeConfigDir, '.gsd-source');
-    if (fs.existsSync(markerPath)) {
+    if (installFs().existsSync(markerPath)) {
       try {
-        const src = fs.readFileSync(markerPath, 'utf8').trim();
-        if (src && fs.existsSync(src)) {
+        const src = installFs().readFileSync(markerPath, 'utf8').trim();
+        if (src && installFs().existsSync(src)) {
           // Marker points to commands/gsd; agents/ is a sibling of commands/
           const agentsCandidate = path.resolve(path.dirname(src), '..', 'agents');
-          if (fs.existsSync(agentsCandidate)) return agentsCandidate;
+          if (installFs().existsSync(agentsCandidate)) return agentsCandidate;
         }
       } catch { /* fall through */ }
     }
   }
 
-  // Step 2: walk up from __dirname
+  // Step 2: walk up from __dirname — locates THIS package's own agents/
+  // source tree, not the install destination. See findInstallSourceRoot's
+  // Step 2 comment (#2874) for why this stays unrouted, real-fs-only, and why
+  // it uses `statSync` rather than `existsSync` (load-bearing against F2's
+  // poison of the routed fs surface, not a style choice).
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'agents');
-    if (fs.existsSync(candidate)) return candidate;
+    try {
+      fs.statSync(candidate);
+      return candidate;
+    } catch { /* not here — keep walking up */ }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -213,12 +265,60 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
     // inline agent loop, and installCodexConfig's per-agent .toml writer. The
     // exhaustive per-runtime sweep in tests/agent-fragments-emission.install.test.cjs
     // is what keeps a fourth from appearing uncomposed.
-    stage: (resolved) => stageAgentsForRuntimeWithConverter(
+    // #2875 Part 2 (row I2): agentCtx threaded through so a runtime using this
+    // converter:null builder (claude, plus any future identity-copy runtime)
+    // ALSO gets path-rewrites/attribution/frontmatter-extensions/normalize
+    // when a caller supplies agentCtx (createRuntimeArtifactInstallPlan /
+    // applySurface's agentCtx build). Previously this closure's `(resolved) =>`
+    // signature silently dropped the second arg every caller already passed —
+    // a caller with NO agentCtx in scope is unaffected (row I2: converter-only,
+    // as today), matching stageAgentsForRuntimeWithConverter's own contract.
+    stage: (resolved, agentCtx) => stageAgentsForRuntimeWithConverter(
       findAgentsSourceRoot(configDir),
       resolved,
       (content: string) => content,
+      false,
+      agentCtx,
     ),
   };
+}
+
+/**
+ * Runtime allowlist check for a descriptor-declared `converter` name, applied
+ * at DISPATCH time (security fix). `VALID_CONVERTER_NAMES` (capability-
+ * validator.cjs) is otherwise enforced ONLY at lint/build time
+ * (`check:contract-drift`) — every `conversionExports[converterName]`
+ * dynamic-property read below trusted that a `capability.json` reaching this
+ * far had already passed that check. It had not, in general: a hand-edited
+ * or malformed descriptor naming an Object-prototype member (`"constructor"`,
+ * `"toString"`, `"hasOwnProperty"`, ...) resolves to that member instead of
+ * throwing, producing garbage staged content rather than a loud failure —
+ * pre-existing, but promoted from the `/gsd-surface`-only path to the real
+ * install path for seven runtimes by #2875 Part 2's agents-bypass closure.
+ * Required lazily (call-time, not module-top) to avoid a load-time circular
+ * require, the same pattern install-engine.cts's `_hostBehaviors` already
+ * uses for `capability-registry.cjs`. Fails CLOSED: any error loading the
+ * allowlist itself (missing module, exotic bundling) is treated as "nothing
+ * is allowed", never as "skip the check".
+ */
+function _resolveNamedConverter(converterName: string, kindLabel: string): (...args: unknown[]) => unknown {
+  let validNames: Set<string> | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    validNames = (require('./capability-validator.cjs') as { VALID_CONVERTER_NAMES: Set<string> }).VALID_CONVERTER_NAMES;
+  } catch {
+    validNames = undefined;
+  }
+  if (!validNames || !validNames.has(converterName)) {
+    throw new Error(
+      `Unknown converter "${converterName}" declared for a ${kindLabel} kind — refusing to dispatch (not in capability-validator.cjs's VALID_CONVERTER_NAMES allowlist).`,
+    );
+  }
+  const fn = conversionExports[converterName];
+  if (typeof fn !== 'function') {
+    throw new Error(`Converter "${converterName}" is allowlisted but is not an exported function of runtime-artifact-conversion.cjs.`);
+  }
+  return fn as (...args: unknown[]) => unknown;
 }
 
 /**
@@ -232,27 +332,80 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
  * Agent filenames are preserved verbatim (the prefix is already embedded in the
  * agent stem — e.g. `gsd-planner.md`).
  *
- * #1173 SCOPE — plumbing only (real install still elsewhere): this provides
- * the converter dispatch + `isGlobal` scope threading for the descriptor's
- * `agents` kind. As of #2092, 8 non-Claude runtimes DO declare a converted
- * `agents` kind in their `capability.json` — qwen (`convertClaudeAgentToQwenAgent`)
- * plus the 7 that already declared one before it (antigravity, augment,
- * codebuddy, copilot, cursor, trae, windsurf) — so the descriptor-level
- * declaration is no longer deferred. What IS still deferred is wiring
- * `resolveRuntimeArtifactLayout`'s `agents` kind into the REAL install:
- * `bin/install.js`'s agent-staging loop does not consume this module's
- * `convertedAgentsKind` resolution at all — it dispatches the very same
- * converter functions directly via `_hostBehaviors(runtime)` checks
- * (`frontmatterDialect`, `brandingRewrites`, `isCopilot`/`isAntigravity`/…),
- * duplicating the mapping declared here. That duplication is deliberate until
- * the second `layout.kinds` consumer — `applySurface` / `/gsd:surface` /
- * `--materialize` (`src/surface.cts`) — mirrors the legacy agent pipeline
- * (Copilot's `.agent.md` filename rename, the cross-cutting path-prefix
- * rewrite + attribution, stale-file cleanup, config-reading steps); declaring
- * `bin/install.js` itself against this resolver before then would risk
- * regressing the surface path. Until that follow-up lands, `bin/install.js`
- * remains authoritative for the real install, and this `convertedAgentsKind`
- * is exercised only by `/gsd:surface` and synthetic-descriptor seam tests.
+ * #1173 SCOPE, updated by #2875 Part 2 (the agents-bypass closure) — measured
+ * against the tree, not the ADR-3574 framing that preceded it:
+ *
+ * Of the four blockers this comment used to name for wiring `bin/install.js`'s
+ * inline agent loop against this resolver, THREE were already stale by the
+ * time #2875 measured them and are not re-litigated here: Copilot's
+ * `.agent.md` rename (the loop's own `destName = entry.name` comment records
+ * the ternary dropped in #2099; the descriptor fold applies it via
+ * `hostBehaviors.agentFileExtension`), the cross-cutting path-prefix rewrite +
+ * attribution (`stageAgentsForRuntimeWithConverter` already applies
+ * `applyAgentPathRewrites` -> `processAttribution` when `agentCtx` is
+ * present), and stale-file cleanup (`_removeGsdEntries` prunes every
+ * `gsd-`-prefixed entry in a kind's destSubpath, broader than the loop's own
+ * extension-gated check).
+ *
+ * The fourth — config-reading steps — was the real gap, and #2875 Part 2
+ * closed it: `stageAgentsForRuntimeWithConverter` now takes a per-file
+ * `agentName` (`agentCtx.agentName`, ADR-1235 §1) and a `targetDir`
+ * (`agentCtx.targetDir`), which together let it (a) run a post-converter
+ * frontmatter-extensions step (`applyAgentFrontmatterExtensions`, driven by
+ * `hostBehaviors.agentFrontmatterExtensions` — Claude's `effort` +
+ * `disallowedTools` injection) and (b) let THIS function resolve a per-agent
+ * model override (`installModelOverrideResolver.resolveAgentModelOverride`,
+ * `model_overrides[agent]` > `model_profile_overrides.<rt>.<tier>` > omit)
+ * before invoking a converter that needs it (kilo/opencode). Both pieces —
+ * plus a data-driven Hermes branding converter
+ * (`convertClaudeAgentToHermesAgent`, reading `hostBehaviors.brandingRewrites`
+ * rather than a hardcoded string table) — are single-sourced: `bin/install.js`
+ * requires the SAME functions this module does, so its inline loop and the
+ * descriptor path can no longer independently drift (the CLAUDE.md
+ * "Generative Fix Divergence" class the prior duplication risked).
+ *
+ * `tests/agent-descriptor-parity.test.cjs` proves byte-identical output
+ * between the inline loop and a SYNTHETIC descriptor registry (the same
+ * override seam `resolveRuntimeArtifactLayoutFromRegistry` exposes) for all
+ * six runtimes the inline loop still served: claude, cline, codex, hermes,
+ * kilo, opencode.
+ *
+ * Both findings the prior revision of this comment named as STILL deferred
+ * are now CLOSED (#2875 Part 2 Task A/B/C), measured against the real
+ * `capability.json` entries and the real production entry points, not
+ * argued from this module alone:
+ *
+ * 1. **kilo/opencode reaching `layout.kinds`.** `installEngine.
+ *    installAgentsKindStandalone` (install-engine.cts) is called from inside
+ *    `installOpencodeFamilyArtifacts` and resolves the agents kind through
+ *    THIS SAME `resolveRuntimeArtifactLayout`/`convertedAgentsKind` path —
+ *    `installOpencodeFamilyArtifacts` no longer stages only `commands` +
+ *    `skills`. `bin/install.js`'s legacy-flat local path (claude-local,
+ *    `hostBehaviors.localInstallStyle === 'legacy-flat'`) reaches the SAME
+ *    generic loop only via `installRuntimeArtifacts`'s conditional
+ *    `_isSkillsRuntime` branch; a call to `installAgentsKindStandalone` was
+ *    added at claude-local's own call site to cover that scope too — the
+ *    install-tree golden fixture (`tests/fixtures/install-tree/claude-local.json`)
+ *    is what caught the gap when it was first missed.
+ * 2. **`/gsd:surface` / `applySurface` activation.** Confirmed convergent,
+ *    not merely non-broken: for all six runtimes (claude, cline, codex,
+ *    hermes, kilo, opencode), staging via `applySurface` into a freshly
+ *    wiped `agents/` directory produces byte-identical output (including
+ *    filenames) to `installRuntimeArtifacts`'s own write — verified directly
+ *    against the built registry, not inferred.
+ *
+ * The inline loop (`_DESCRIPTOR_AGENTS_RUNTIMES` and the `bin/install.js`
+ * agent-staging block it gated) is DELETED — every runtime the registry
+ * declares an `agents` kind for is descriptor-driven now, including a
+ * seventh runtime (`kimi-code`) this comment's own prior measurement missed
+ * (it fell through the inline loop's generic `else if` branch, same as
+ * claude, with no dedicated dialect arm — caught by the same golden fixture).
+ *
+ * Codex's `config.toml [agents.gsd-*]` strip (`bin/install.js`, under
+ * `isMinimalMode` + `hostBehaviors.tomlConfigInstall`) remains the one
+ * genuinely out-of-scope constraint: it mutates a host config file, not the
+ * agents directory, and no descriptor kind models host-config mutation. It
+ * stays exactly where it is.
  *
  * Mirrors the `convertedCommandsKind` pattern (#785).
  *
@@ -273,16 +426,42 @@ function convertedAgentsKind(
     destSubpath,
     prefix,
     stage: (resolved, agentCtx) => {
-      // isGlobal is threaded so scope-aware agent converters (copilot, antigravity)
-      // choose global-home vs workspace-relative paths; converters that only take
-      // (content) ignore the extra positional arg. Mirrors skillsKind's scope
-      // threading (#1173).
       // #2870: `scope` is this function's own parameter (default `'global'`,
       // so it is never undefined here), sourced upstream from the Install
       // Scope Module's resolved id. `isGlobalScope` projects it to the
       // boolean `stageAgentsForRuntimeWithConverter`'s positional API
       // requires — see its doc comment in install-scope.cts.
-      const converter = conversionExports[converterName] as (content: string, isGlobal?: boolean) => string;
+      const rawConverter = _resolveNamedConverter(converterName, 'agents') as
+        (content: string, arg2?: boolean | { isAgent?: boolean; modelOverride?: string | null }) => string;
+
+      // #2875 Part 2 (J5-J8): kilo/opencode agent converters take an options
+      // bag (`{isAgent, modelOverride}`), not the `isGlobal` boolean every
+      // other agent converter's 2nd positional arg means — mirrors the
+      // inline loop's per-runtime `frontmatterDialect === 'opencode' | 'kilo'`
+      // branches (bin/install.js), which resolve model_overrides[agent] >
+      // model_profile_overrides.<runtime>.<tier> > omit BEFORE calling the
+      // converter. Resolved ONCE per stage() call (not per file — a pure
+      // function of configDir/targetDir) via the single shared precedence
+      // resolver so kilo and opencode can never diverge (J8).
+      const needsModelOverride = converterName === 'convertClaudeToOpencodeFrontmatter' || converterName === 'convertClaudeToKiloFrontmatter';
+      let converter: (content: string, isGlobal?: boolean, meta?: { agentName: string }) => string;
+      if (needsModelOverride) {
+        const overrideTargetDir = agentCtx?.targetDir ?? configDir;
+        const modelOverrides = installModelOverrideResolver.readGsdEffectiveModelOverrides(overrideTargetDir);
+        const runtimeResolver = installModelOverrideResolver.readGsdRuntimeProfileResolver(overrideTargetDir);
+        converter = (content, _isGlobal, meta) => {
+          const modelOverride = meta
+            ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver)
+            : null;
+          return rawConverter(content, { isAgent: true, modelOverride });
+        };
+      } else {
+        // isGlobal is threaded so scope-aware agent converters (copilot, antigravity)
+        // choose global-home vs workspace-relative paths; converters that only take
+        // (content) ignore the extra positional arg. Mirrors skillsKind's scope
+        // threading (#1173).
+        converter = (content) => rawConverter(content, isGlobalScope(scope));
+      }
       // ADR-1235 §1: when agentCtx is provided (by createRuntimeArtifactInstallPlan
       // for descriptor-driven runtimes), thread it through so stageAgentsForRuntimeWithConverter
       // can apply the full pre-converter + post-converter sequence in the correct order.
@@ -318,28 +497,28 @@ function kimiAgentsKind(destSubpath: string, prefix: string, configDir: string):
         (content: string) => content,
       );
       const subagents: Array<{ path: string; content: string }> = [];
-      if (fs.existsSync(stagedAgents)) {
-        for (const entry of fs.readdirSync(stagedAgents, { withFileTypes: true })) {
+      if (installFs().existsSync(stagedAgents)) {
+        for (const entry of installFs().readdirSync(stagedAgents, { withFileTypes: true })) {
           if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
           const agentPath = path.join(stagedAgents, entry.name);
           subagents.push({
             path: posixNormalize(path.join('agents', entry.name)),
-            content: fs.readFileSync(agentPath, 'utf8'),
+            content: installFs().readFileSync(agentPath, 'utf8'),
           });
         }
       }
 
       const rootAgent = `---\nname: gsd\ndescription: Run GSD workflows in Kimi CLI.\ntools: Agent\n---\n\n# GSD for Kimi CLI\n\nCoordinate installed /skill:gsd-* workflows and route work to generated GSD subagents when a workflow requires an agent handoff.\n`;
       const artifacts = buildKimiAgentArtifacts({ rootAgent, subagents });
-      const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-agents-'));
+      const stageDir = mkInstallTempDir('gsd-kimi-agents-');
       installProfiles.STAGED_DIRS.add(stageDir);
-      fs.writeFileSync(path.join(stageDir, 'gsd.yaml'), artifacts.root.yaml);
-      fs.writeFileSync(path.join(stageDir, 'gsd.md'), artifacts.root.prompt);
+      installFs().writeFileSync(path.join(stageDir, 'gsd.yaml'), artifacts.root.yaml);
+      installFs().writeFileSync(path.join(stageDir, 'gsd.md'), artifacts.root.prompt);
       const subagentsDir = path.join(stageDir, 'subagents');
-      fs.mkdirSync(subagentsDir, { recursive: true });
+      installFs().mkdirSync(subagentsDir, { recursive: true });
       for (const artifact of artifacts.subagents) {
-        fs.writeFileSync(path.join(subagentsDir, `${artifact.name}.yaml`), artifact.yaml);
-        fs.writeFileSync(path.join(subagentsDir, `${artifact.name}.md`), artifact.prompt);
+        installFs().writeFileSync(path.join(subagentsDir, `${artifact.name}.yaml`), artifact.yaml);
+        installFs().writeFileSync(path.join(subagentsDir, `${artifact.name}.md`), artifact.prompt);
       }
       return stageDir;
     },
@@ -380,7 +559,7 @@ function skillsKind(
     prefix,
     converter: converterName,
     stage: (resolved) => {
-      const realConverter = conversionExports[converterName] as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
+      const realConverter = _resolveNamedConverter(converterName, 'skills') as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
       // Compute cmdNames once per stage call for performance (#3583).
       // Extra trailing args are ignored by converters that don't need them. The
       // isGlobal flag is the 5th positional (NOT the 3rd): the 3rd positional is
@@ -395,6 +574,16 @@ function skillsKind(
       // undefined here); `isGlobalScope` projects it to the boolean
       // `realConverter`'s positional `isGlobal` arg requires.
       const isGlobal = isGlobalScope(scope);
+      // #2873 (4b): spec-root reachability is applied LATER in the pipeline —
+      // see `rewriteStagedSkillBodies` in runtime-artifact-conversion.cts, not
+      // here. This stage() closure runs BEFORE the staged directory's generic
+      // path-prefix rewrite pass (`applyRuntimeContentRewritesInPlace`'s
+      // `case 'claude'`), which unconditionally rewrites any bare (non-`@`)
+      // `~/.claude/` substring to the undocumented `$HOME/.claude/` form and
+      // only restores the `@`-prefixed form. Emitting the imperative
+      // tilde-path prose here would get silently mangled by that later pass;
+      // it must run AFTER it instead, once the `@`-include is in its final
+      // rewritten shape.
       const wrappedConverter = (content: string, skillName: string): string =>
         realConverter(content, skillName, runtime, cmdNames, isGlobal);
       return stageSkillsForRuntimeAsSkills(findInstallSourceRoot(configDir), resolved, wrappedConverter, prefix, nested, capabilityRegistry);
@@ -429,7 +618,7 @@ function convertedCommandsKind(
     destSubpath,
     prefix,
     stage: (resolved) => {
-      const converter = conversionExports[converterName] as (content: string, commandName: string) => string;
+      const converter = _resolveNamedConverter(converterName, 'commands') as (content: string, commandName: string) => string;
       return stageCommandsForRuntimeFlat(findInstallSourceRoot(configDir), resolved, converter, prefix);
     },
   };

@@ -43,6 +43,14 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToKiloSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToKiloFrontmatter"
         }
       ],
       "local": [
@@ -61,6 +69,14 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToKiloSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToKiloFrontmatter"
         }
       ]
     },

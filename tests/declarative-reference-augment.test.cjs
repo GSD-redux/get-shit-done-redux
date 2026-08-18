@@ -202,7 +202,45 @@ test('legitimate isAugment destructure/enumeration sites survive (not eliminated
   const file = path.join(__dirname, '..', 'bin', 'install.js');
   const src = fs.readFileSync(file, 'utf8');
   assert.ok(/isAugment/.test(src), 'isAugment must still be destructured from runtimeFlags() for non-conversion uses');
-  // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded bin/install.js source, not adversarial input
-  assert.ok(/_DESCRIPTOR_AGENTS_RUNTIMES\s*=\s*new Set\(\[[^\]]*'augment'/.test(src),
-    'augment must remain in _DESCRIPTOR_AGENTS_RUNTIMES (descriptor-driven agent layout)');
+});
+
+// #2875 Part 2 (the agents-bypass closure): `_DESCRIPTOR_AGENTS_RUNTIMES` — the
+// allow-list this test previously asserted augment's membership in — was
+// deleted along with the inline agent-staging loop it gated. EVERY runtime is
+// now descriptor-driven for agents, so allow-list membership is no longer the
+// property that guarantees it; the property that DOES now guarantee it is
+// that augment's OWN capability.json declares a real `agents` artifact kind
+// (consumed by installRuntimeArtifacts/installAgentsKindStandalone) whose
+// converter is augment's real converter function, not `null` (a `null`
+// converter would raw-copy Claude-shaped agent bodies instead of converting
+// them) and not a placeholder/typo'd name (capability-registry.test.cjs's
+// VALID_CONVERTER_NAMES closed-enum guard already rejects an unknown name at
+// load time; this test additionally pins that the RIGHT name is used).
+test('augment capability.json declares a real, converter-bearing agents kind for both scopes (descriptor-driven agent layout)', () => {
+  const capFile = path.join(__dirname, '..', 'capabilities', 'augment', 'capability.json');
+  const cap = JSON.parse(fs.readFileSync(capFile, 'utf8'));
+  const layout = cap.runtime.artifactLayout;
+  for (const scope of ['global', 'local']) {
+    const entries = layout[scope] || [];
+    const agentsKind = entries.find((e) => e.kind === 'agents');
+    assert.ok(agentsKind, `augment capability.json artifactLayout.${scope} must declare an 'agents' kind`);
+    assert.strictEqual(
+      agentsKind.converter,
+      'convertClaudeAgentToAugmentAgent',
+      `augment ${scope} agents kind must use the real convertClaudeAgentToAugmentAgent converter, not null/unset`,
+    );
+  }
+});
+
+test('_DESCRIPTOR_AGENTS_RUNTIMES no longer exists as a live declaration — the descriptor is authoritative for every runtime, not an allow-listed subset', () => {
+  const file = path.join(__dirname, '..', 'bin', 'install.js');
+  const src = fs.readFileSync(file, 'utf8');
+  // A residual mention in a historical // comment (documenting the #2875
+  // deletion itself) is fine; a live `const _DESCRIPTOR_AGENTS_RUNTIMES =`
+  // declaration means the allow-list crept back in.
+  assert.ok(
+    !/(?:const|let|var)\s+_DESCRIPTOR_AGENTS_RUNTIMES\s*=/.test(src),
+    '_DESCRIPTOR_AGENTS_RUNTIMES was deleted by #2875 Part 2 — a live re-declaration means a runtime-specific ' +
+      'agents allow-list crept back in, undoing the migration this test guards',
+  );
 });

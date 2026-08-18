@@ -130,6 +130,15 @@ function resolveSentinelRoot(cwd) {
     if (fs.existsSync(path.join(cwd, '.planning'))) {
       return cwd;
     }
+    // #3582: worktree-safety.cjs / project-root.cjs are tsc build artifacts
+    // (ADR-457), gitignored and absent on a raw plugin-marketplace / git-clone
+    // install that never ran `npm run build:lib`. Self-heal before either
+    // require below; a RuntimeBuildError (or any other failure) falls through
+    // to the existing catch's degrade-to-raw-`cwd` — unchanged behavior, just
+    // now attempted-healed-first rather than silently degrading on the first
+    // cold-tree encounter.
+    const { ensureRuntimeBuild } = require('../../gsd-core/bin/ensure-runtime-build.cjs');
+    ensureRuntimeBuild();
     const { resolveWorktreeRoot } = require('../../gsd-core/bin/lib/worktree-safety.cjs');
     const { root } = resolveWorktreeRoot(cwd);
     const { findProjectRoot } = require('../../gsd-core/bin/lib/project-root.cjs');

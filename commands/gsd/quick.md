@@ -46,7 +46,7 @@ Granular flags are composable: `--discuss --research --validate` gives the same 
 <context>
 $ARGUMENTS
 
-Context files are resolved inside the workflow (`init quick`) and delegated via `<files_to_read>` blocks.
+Context files are resolved inside the workflow (`init quick`) and delegated via `<required_reading>` blocks.
 </context>
 
 <process>

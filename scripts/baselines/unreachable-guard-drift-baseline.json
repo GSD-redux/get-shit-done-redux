@@ -1,0 +1,4 @@
+{
+  "$comment": "#3409 unreachable-shell-guard ratchet. See scripts/lint-unreachable-guard-drift.cjs. SHRINK-ONLY: entries are removed as sites migrate off the unreachable-arm shape; new or changed entries fail lint:ci. `count` is the number of byte-identical (file, text) occurrences acknowledged at this site — a run producing fewer fails as a partial migration, more fails as an unacknowledged new copy.",
+  "entries": []
+}

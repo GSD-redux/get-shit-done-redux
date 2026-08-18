@@ -91,11 +91,11 @@ Conduct evaluation coverage audit of Phase {phase_number}: {phase_name}
 {If no AI-SPEC: "Audit against general AI eval best practices."}
 </objective>
 
-<files_to_read>
+<required_reading>
 - {summary_paths}
 - {plan_paths}
 - {ai_spec_path if exists}
-</files_to_read>
+</required_reading>
 
 <input>
 ai_spec_path: {ai_spec_path or "none"}
@@ -143,10 +143,8 @@ Read the written EVAL-REVIEW.md. Extract:
 
 ## 6. Commit
 
-**If `commit_docs` is true:**
 ```bash
-git add "${EVAL_REVIEW_FILE}"
-git commit -m "docs({phase_slug}): add EVAL-REVIEW.md — score {overall_score}/100 ({verdict})"
+gsd_run query commit "docs({phase_slug}): add EVAL-REVIEW.md — score {overall_score}/100 ({verdict})" --files "${EVAL_REVIEW_FILE}"
 ```
 
 </process>

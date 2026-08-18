@@ -505,6 +505,80 @@ If none match, the starting directory is returned unchanged. Explicit `--project
 
 If `.planning/` is in `.gitignore`, `commit_docs` is automatically `false` regardless of config.json. This prevents git errors.
 
+#### Caveat: `.gitignore` does not affect files git already tracks
+
+Adding `.planning/` to `.gitignore` stops git from picking up **new** files there. It has no effect
+on files already committed — git keeps tracking those, so `git add -A` keeps staging them even
+though `commit_docs` now resolves to `false`. Because GSD's default is `commit_docs: true`, most
+existing projects have already committed `.planning/`, which makes this the common case rather than
+the edge case.
+
+`/gsd-health` reports this contradiction as **`W029`**:
+
+```
+W029  .planning/ is gitignored but N file(s) are still tracked by git
+      Fix: git rm -r --cached .planning/ && git commit -m "chore: stop tracking planning docs"
+```
+
+The warning is advisory. GSD never untracks files for you — `--repair` deliberately will not act on
+`W029`, because removing files from the index is destructive and the timing is yours to choose.
+
+Once you run the `git rm -r --cached` above, `.planning/` is untracked, the ignore rule takes full
+effect, and the warning clears.
+
+Note: a file deliberately force-added under an otherwise-ignored `.planning/` (`git add -f
+.planning/keep.md`) triggers this same warning — there is no reliable way to distinguish an
+intentional force-add from the accidental case above, so `W029` is expected in that situation too.
+
+### Per-Phase Override (`phase_commit_docs`)
+
+`commit_docs` is a single project-wide switch by default, but a tech lead may want to commit one
+phase's artifacts (e.g. an architecture or ADR phase) while keeping execution phases local. Set a
+dynamic key of the form `phase_commit_docs.<phase-id>` to override `commit_docs` for that phase only:
+
+```bash
+gsd-tools config-set phase_commit_docs.03 true
+gsd-tools config-set phase_commit_docs.07 false
+```
+
+```json
+{
+  "commit_docs": false,
+  "phase_commit_docs": {
+    "03": true,
+    "07": false
+  }
+}
+```
+
+The `<phase-id>` segment accepts the same phase-number shapes GSD uses elsewhere (`3`, `03`,
+`12A`, `3.2` — a project-code prefix like `PROJ-03` is normalized to the bare phase number before
+lookup), so `phase_commit_docs.3` and `phase_commit_docs.03` refer to the same entry.
+
+**Resolution order** (highest wins) when `gsd-tools commit` / `query commit` resolves the phase from
+the committed `--files` paths:
+
+1. `phase_commit_docs.<phase-id>` for the phase being committed
+2. explicit `commit_docs` / `planning.commit_docs` in config.json
+3. `.gitignore` auto-detect (see [Auto-Detection](#auto-detection) above)
+4. the manifest default (`true`)
+
+A per-phase value must be a real boolean — `"true"` (string), `1`, or `null` are never coerced and
+fall through to the next tier. A value set for a different phase than the one being committed never
+applies (no cross-phase leak). A commit that names no phase-scoped file (e.g. a project-wide
+`ROADMAP.md`-only commit) has no phase to look up, so tier 1 is inapplicable and resolution starts
+at tier 2 — unchanged from pre-#3587 behavior.
+
+When tier 1 suppresses a commit, the skip envelope's `reason` is
+`skipped_commit_docs_phase_false` — distinct from the project-wide `skipped_commit_docs_false` —
+so a caller is never told "commit_docs is false" when the project setting is actually `true`.
+
+A commit spanning multiple phases resolves the override against the first phase in the `--files`
+list, so scope `--files` to one phase when using the override.
+
+See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md#per-phase-override)
+for a worked example.
+
 ---
 
 ## Hook Settings
@@ -512,7 +586,7 @@ If `.planning/` is in `.gitignore`, `commit_docs` is automatically `false` regar
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `hooks.context_warnings` | boolean | `true` | Show context window usage warnings via context monitor hook |
-| `hooks.workflow_guard` | boolean | `false` | Warn when file edits happen outside GSD workflow context (advises using `/gsd-quick` or `/gsd-fast`) |
+| `hooks.workflow_guard` | boolean | `false` | Warn when file edits happen outside GSD workflow context (advises using `/gsd-quick` or `/gsd-fast`). When enabled, the hook's one hard block — `git add -f` on `agent-*`/`worktree-agent-*` branches — also fails closed on internal error (see `docs/explanation/security-model.md`, #3504) |
 | `statusline.show_last_command` | boolean | `false` | Append `last: /<cmd>` suffix to the statusline showing the most recently invoked slash command. Opt-in; reads the active session transcript to extract the latest `<command-name>` tag (closes #2538) |
 | `statusline.context_position` | string | `"end"` | Position of the context-window meter. `"end"` (default) renders at line tail; `"front"` renders immediately after the model name so the meter stays visible in narrow terminals. Closes #2937 |
 | `statusline.show_context_tokens` | boolean | `false` | Append the absolute token count (e.g. `(156k)`) after the context meter's percentage. Sums input, cache-creation, cache-read, and output tokens from the hook payload — a broader basis than the meter's percentage (which excludes output tokens), so the two figures can diverge slightly. Opt-in; the meter is unchanged when the flag is absent |
@@ -523,7 +597,34 @@ The prompt injection guard hook (`gsd-prompt-guard.js`) is always active and can
 
 ### Private Planning Setup
 
-When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artefacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Configure private planning](how-to/configure-model-profiles.md) for setup steps.
+When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artifacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md) for the full setup, including untracking files git is already tracking.
+
+### `commit_docs` Pre-Commit Guard (opt-in)
+
+`planning.commit_docs: false` only stops GSD's own `gsd-tools commit`/`gsd-tools state`
+write path from committing `.planning/`. It does **not** stop a plain `git add -A` +
+`git commit` run by hand, or by a script outside GSD's own tooling, from staging and
+committing `.planning/` anyway.
+
+`gsd-tools commit-docs-guard enable` closes that gap by writing a `.git/hooks/pre-commit`
+hook into the **current repository** that refuses any commit staging `.planning/` files
+while `commit_docs` resolves to `false`. Resolution goes through the same
+[per-phase precedence chain](#per-phase-override-phase_commit_docs) `gsd-tools commit`/`query commit`
+use — a `phase_commit_docs.<phase-id>` override for the staged phase is honored here too, so the
+hook cannot contradict them. It is entirely opt-in — no install path wires it
+automatically:
+
+```bash
+gsd-tools commit-docs-guard enable   # write the hook (refuses to clobber an existing pre-commit hook)
+gsd-tools commit-docs-guard disable  # remove it (refuses to remove a hook GSD didn't write)
+```
+
+The hook is identified by a stable `# gsd-core:commit-docs-guard` marker line, so `enable`/
+`disable` detect it by presence of that marker rather than by byte-for-byte content — editing
+the file afterward does not make it unrecognizable. `enable` refuses (rather than silently
+writing an inert file) when `core.hooksPath` is already configured, since a hook written to
+`.git/hooks/pre-commit` would never run in that case; wire the guard into the configured hooks
+path by hand instead. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md#pre-commit-guard-hook-optional) for the full walkthrough, including the linked-worktree case.
 
 ---
 
@@ -1384,7 +1485,10 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 **Precedence (highest → lowest):**
 1. Invocation override (e.g. `--effort` flag on `resolve-execution`)
 2. `effort.agent_overrides[<agent-id>]`
-3. `effort.routing_tier_defaults[<light|standard|heavy>]`
+3. `effort.routing_tier_defaults[<light|standard|heavy>]`, **merged per-tier over the
+   built-in tier defaults** (`light: low`, `standard: high`, `heavy: xhigh`) — a partial
+   block fills its gaps from the built-ins instead of discarding them, and an invalid
+   value falls back to that tier's built-in ([#3531](https://github.com/open-gsd/gsd-core/issues/3531))
 4. `effort.default`
 5. `"high"` (Anthropic Opus 4.8 universal default)
 
@@ -1414,7 +1518,28 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 | `effort.routing_tier_defaults.heavy` | enum | `"xhigh"` | Effort for heavy-tier agents (deep reasoning). |
 | `effort.agent_overrides.<agent-id>` | enum | (none) | Per-agent effort override. Beats tier defaults. |
 
-Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `inherit` ([#3533](https://github.com/open-gsd/gsd-core/issues/3533)).
+
+`inherit` means "follow the session/host default" — it is a declarable choice, not a level:
+at install time the agent's `effort:` frontmatter key (claude) or `model_reasoning_effort`
+pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort sync` treats
+an absent key as the correct in-sync state and strips a present one; no runtime ever receives
+the literal. An explicit `inherit` also never escalates on failed attempts — your choice
+outranks the automatic ladder.
+
+Where you set `inherit` matters: every GSD agent has a routing tier, and the merged tier
+ladder (#3531) answers for tiered agents before `effort.default` is consulted — so a bare
+`effort.default: "inherit"` only affects agents **without** a catalog tier. To make tiered
+agents follow the session, set `effort.routing_tier_defaults` (per tier, or all three) or the
+agent's `agent_overrides` entry to `"inherit"`. `query resolve-execution` shows both views.
+
+`query resolve-execution --json` reports two effort views ([#3534](https://github.com/open-gsd/gsd-core/issues/3534)):
+`effort` is the **resolved** config-cascade value; `effort_effective` is what the installed
+agent will actually run at — read from the installed agent's `effort:` frontmatter for the
+claude runtime (`effort_effective_source: "frontmatter"`), reported as `"inherit"` when the
+key is absent (`"frontmatter-absent"` — the agent follows the session effort), and equal to
+the resolved value with source `"resolved"` when there is no install-time channel or no
+agent file to read. `--pick effort` still returns the resolved value.
 
 #### Where effort actually reaches — added in v1.8.0
 
@@ -1743,6 +1868,22 @@ Save settings as global defaults for future projects:
 **Location:** `~/.gsd/defaults.json`
 
 When `/gsd-new-project` creates a new `config.json`, it reads global defaults and merges them as the starting configuration. Per-project settings always override globals.
+
+### What a global file can and cannot set at runtime
+
+Two different rules apply, and the difference is deliberate ([#3532](https://github.com/open-gsd/gsd-core/issues/3532)):
+
+- **In a directory with no `.planning/` at all**, `~/.gsd/defaults.json` is the active
+  configuration — model resolution reads it directly.
+- **In a real project (`.planning/config.json` present, even if empty)**, the global file is
+  **not read for model resolution** — every model-side key it sets (`model_profile`,
+  `model_overrides`, `models`, `dynamic_routing`, `runtime`, and the rest of the resolution
+  set) is inert there. GSD prints a one-time stderr warning naming the shadowed keys when it
+  detects this, instead of failing silently. To apply a global model setting to a project,
+  put it in that project's `.planning/config.json`.
+- **`effort` is the exception**: the install-time effort channel always merges
+  `~/.gsd/defaults.json` with the project config (that is how `effort sync` works), so a
+  global `effort` block keeps working in projects and does not trigger the warning.
 
 ---
 

@@ -209,6 +209,18 @@ signature is a stable, key-order-independent encoding, so any later add or chang
 to a surface — including an env or cwd change — deactivates the capability until
 the user re-consents, while a harmless key reorder does not.
 
+One asymmetry the summary now names explicitly
+([#3515](https://github.com/open-gsd/gsd-core/issues/3515)): hook commands are
+*confined to the capability bundle*, but an MCP server's `command`, `args`,
+`env`, and `cwd` are written **verbatim** and may point anywhere on the machine.
+That is intentional — most real MCP servers legitimately resolve to global
+or `npx` installs outside the bundle, and confining them would break every
+such server — so the prompt says "intentionally NOT confined to the bundle"
+for every spawned server rather than letting the asymmetry go unstated. The
+re-consent signature covers this surface completely: any change to a
+server's command, argv, env, cwd, or any other declared field forces
+re-consent (above).
+
 For everything else the bundle carries, the disclosure note explains what the
 artifact does and consent is lighter. But "everything else" is not one class, and
 treating it as one was a mistake this document made until ADR-2363 — see the next
@@ -275,6 +287,37 @@ Two things worth stating so you do not infer them:
 An `integrity` field in `capability.json` carries a `sha512-<base64>` digest
 of the capability bundle. When present, GSD verifies this digest before
 extracting any files. A mismatch aborts the install.
+
+When NO pin is supplied, the consent prompt says so plainly: a
+`content: NO PINNED HASH — staged unverified` line distinguishes an install
+whose bytes were verified against a commitment from one that was not
+([#3514](https://github.com/open-gsd/gsd-core/issues/3514)). A computed
+sha512 of what was actually fetched is still recorded in the ledger at
+install, so a later `trust` inspection shows exactly which bytes landed.
+Prompt claims are exact per kind: a sha512 `--integrity` pin renders as
+*supplied and verified*, a git source checked out at a `#sha:<commit>` ref
+renders as *pinned to a git commit* (never as a sha512 pin — none was
+supplied), and a mutable `#sha:<branch>` ref is not a pin at all.
+
+### Fetch-host denylist
+
+The URL importer's fetch transport refuses, before any bytes leave
+([#3514](https://github.com/open-gsd/gsd-core/issues/3514)):
+
+- **loopback, link-local, and unspecified hosts** — `127.0.0.0/8`,
+  `169.254.0.0/16` (which contains the cloud metadata addresses), `0.0.0.0/8`,
+  `::1`, `fe80::/10`, `::`, their IPv4-mapped IPv6 spellings, and
+  `localhost`/`*.localhost` names. No legitimate capability install fetches
+  these.
+- **plaintext `http://` URLs** — the transport is `https`-only; an `http://`
+  tarball spec still *classifies* (so an internal-mirror workflow fails with a
+  clear, named reason instead of a raw protocol error) but never fetches.
+
+Deliberate limits: RFC1918 private ranges (`10/8`, `172.16/12`,
+`192.168/16`) are **not** denied — an internal https mirror is a legitimate
+install source, and the denylist is not an allowlist. The check is on the
+URL's host literal; a public hostname that *resolves* via DNS to a denied
+range (rebinding) is out of scope.
 
 What integrity pinning defends against: a capability hosted at a URL or in a
 registry that is later replaced with a different bundle (whether by an attacker
