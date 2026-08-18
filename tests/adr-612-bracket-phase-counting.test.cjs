@@ -1485,9 +1485,13 @@ describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator,
     const r = runGsdTools(['state', 'json'], tmpDir);
     assert.ok(r.success, `state json failed: ${r.error}`);
     const progress = JSON.parse(r.output).progress;
-    assert.equal(progress?.total_phases, 2, 'pinned 4 before this fix');
-    assert.equal(progress?.completed_phases, 2, 'pinned 3 before this fix');
-    assert.equal(progress?.percent, undefined, 'percent is withheld when the asserted version cannot scope a version-less roadmap');
+    assert.equal(progress?.total_phases, 2, 'pinned 4 before this fix (whole-doc fallback)');
+    assert.equal(progress?.completed_phases, 2, 'both real GSD.02 phases are complete — scoping, not the whole disk, is what this fixture pins');
+    // Upstream #3573 threads STATE's stored `milestone: v2.0` into this read.
+    // A version-less ROADMAP cannot resolve that version, so the scope remains
+    // UNSCOPED and the percent is withheld even though the bracket-scoped
+    // totals above are correct.
+    assert.equal(progress?.percent, undefined, 'percent is withheld (upstream #3573 x version-less-bracket-document interaction) — disclosed, not a scoping regression');
   });
 
   test('mechanism (repro7): extractCurrentMilestone actually scopes a level-3 milestone, not the whole document', () => {
@@ -1672,11 +1676,13 @@ Docs for authors:
     );
   });
 
-  test('UPSTREAM COMPOSITION (repro12 LEGACY control): the rebased state path keeps the correct total of 2', () => {
+  test('UPSTREAM COMPOSITION (repro12 LEGACY control): #3573 scopes the fenced-example fixture to total 2', () => {
     // This bracket-only fix still does not widen the LEGACY
     // `anyMilestonePattern` raw-match path. Upstream's newer state derivation,
-    // however, no longer exposes the old whole-disk total of 4 on this fixture.
-    // Pin the improved base behavior instead of resurrecting that overcount.
+    // however, routes this read through fence-aware `sliceMilestoneWindow`
+    // using STATE's stored milestone. The fixture therefore no longer reaches
+    // the blind path and must pin the improved scoped result, not the old
+    // whole-document total of 4.
     writeProject(`# Roadmap
 
 Authoring guide:
@@ -1693,7 +1699,7 @@ Authoring guide:
 ### Phase 02: Two
 **Goal:** c
 `, undefined, [['03-stray', true], ['01-one', true], ['02-two', false], ['04-stray', true]]);
-    assert.equal(readTotal(), 2, 'upstream/next no longer exposes the old whole-disk total of 4');
+    assert.equal(readTotal(), 2, 'upstream #3573 now scopes this read via sliceMilestoneWindow instead of the fence-blind anyMilestonePattern path');
   });
 
   test('PIN (repro10 A3): a fenced heading INSIDE the current section still must not terminate it', () => {
