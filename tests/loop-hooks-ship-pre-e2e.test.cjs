@@ -8,9 +8,13 @@
  *   - frontmatter get CLI subprocess (threats_open field contract)
  *   - resolveLoopHooks pure-function with realRegistry (predicate.equals integer contract)
  *
- * NOTE: ship:pre has NO runnable predicate evaluator — enforcement is ship.md prose only.
- * The check.predicate shape is asserted here to pin the Hyrum's-law contract for downstream
- * consumers (workflow prose, manual ship gate). This is a known robustness gap (kerckhoffs).
+ * NOTE (updated #3559): ship:pre now HAS a runnable evaluator. #2008/ADR-2008 shipped
+ * evaluatePredicate behind `gsd_run check predicate`, and #3559 wired ship.md's preflight
+ * onto it with a generic kind=="gate" dispatch loop, so a third-party capability's gate is
+ * evaluated instead of resolved-then-dropped. The check.predicate shape is still asserted
+ * here to pin the Hyrum's-law contract for downstream consumers. The former "prose only /
+ * known robustness gap (kerckhoffs)" note described the pre-#2008 state and is retired —
+ * section 5 below covers the dispatch contract and the evaluator it drives.
  *
  * Follows RULESET.TESTS (no source-grep, BVA at thresholds, genuine assertions).
  */

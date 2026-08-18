@@ -1,6 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "ship.md": "#2783: the ship-note protocol adds a bounded merge-state poll and an empty recovery commit when a skip token leaves a PR blocked with no checks."
+    "ship.md": "#2783: the ship-note protocol adds a bounded merge-state poll and an empty recovery commit when a skip token leaves a PR blocked with no checks. #3559: the ship:pre preflight replaced two hardcoded capId arms (security, broken-windows) with a single generic loop over every active kind==\"gate\" entry, dispatching by check shape through the generic predicate evaluator (ADR-2008/#2008) and honoring each gate's own blocking/onError — the same dispatch contract execute:wave:post, execute:post and plan:post already implement and references/loop-hook-dispatch.md already specifies. Before this, a third-party capability's blocking ship:pre gate was resolved and evaluable and then silently dropped, so a phase shipped past its own declared gate with no warning. Growth is the generic two-step contract (command-failure routed per onError, then the block decision routed per blocking), the every-other-capId evaluator arm, and the empty-activeHooks and unsupported-check-shape arms; the two named branches are retained verbatim inside the loop so their fail-closed semantics are unchanged and no gate is enforced twice. 33726 -> 36267 bytes (+2541), DEFAULT tier, cap 40960."
   }
 }
