@@ -483,6 +483,32 @@ describe('projectSpawnInvocation (#3411)', () => {
       cleanup(dir);
     }
   });
+
+  test('P9: unresolved name declaring .cmd still mediates', () => {
+    const dir = createTempDir();
+    try {
+      const env = { PATH: dir, PATHEXT: '.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const result = projectSpawnInvocation('missing.cmd', ['a'], { platform: 'win32', env });
+      assert.deepEqual(result, {
+        command: 'C:\\Windows\\System32\\cmd.exe',
+        args: ['/d', '/s', '/c', 'missing.cmd', 'a'],
+        resolved: null,
+      });
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('P10: unresolved BARE name still does not mediate', () => {
+    const dir = createTempDir();
+    try {
+      const env = { PATH: dir, PATHEXT: '.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' };
+      const result = projectSpawnInvocation('missing', ['a'], { platform: 'win32', env });
+      assert.deepEqual(result, { command: 'missing', args: ['a'], resolved: null });
+    } finally {
+      cleanup(dir);
+    }
+  });
 });
 
 // ─── execTool (#3411 windows resolution) ────────────────────────────────────
@@ -513,6 +539,66 @@ describe('execTool (#3411 windows resolution)', () => {
 
     execTool('some-declared-name', []);
     assert.equal(receivedCommand, 'some-declared-name');
+  });
+
+  test('E1: posix execTool still runs a real subprocess', () => {
+    const result = execTool(process.execPath, ['-e', 'process.stdout.write("ok")']);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'ok');
+  });
+
+  test('E2: posix ENOENT contract', (t) => {
+    if (process.platform === 'win32') { t.skip('posix ENOENT shape'); return; }
+
+    const result = execTool('gsd-definitely-absent-binary-9f3a', []);
+    assert.equal(result.exitCode, 127);
+    assert.equal(result.stderr, 'gsd-definitely-absent-binary-9f3a: not found');
+  });
+
+  test('E3: execTool mediates a .cmd through cmd.exe on win32', (t) => {
+    const dir = createTempDir();
+    fs.writeFileSync(path.join(dir, 'foo.CMD'), '');
+    const resolved = path.join(dir, 'foo.CMD');
+
+    let received = null;
+    mock.method(childProcess, 'spawnSync', (command, args) => {
+      received = { command, args };
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    });
+    t.after(() => {
+      mock.restoreAll();
+      cleanup(dir);
+    });
+
+    execTool('foo', ['x'], { env: { PATH: dir, PATHEXT: '.CMD', ComSpec: 'C:\\Windows\\System32\\cmd.exe' } });
+
+    if (process.platform === 'win32') {
+      assert.deepEqual(received, {
+        command: 'C:\\Windows\\System32\\cmd.exe',
+        args: ['/d', '/s', '/c', resolved, 'x'],
+      });
+    } else {
+      // Non-win32: projectSpawnInvocation is a strict no-op (process.platform
+      // drives it, not the injected env), so execTool must hand spawnSync the
+      // bare declared name unchanged — the POSIX no-op contract.
+      assert.deepEqual(received, { command: 'foo', args: ['x'] });
+    }
+  });
+
+  test('E5: options survive mediation', (t) => {
+    let receivedOptions = null;
+    mock.method(childProcess, 'spawnSync', (_command, _args, options) => {
+      receivedOptions = options;
+      return { status: 0, stdout: '', stderr: '', signal: null, error: null };
+    });
+    t.after(() => mock.restoreAll());
+
+    execTool('some-tool', [], { cwd: '/tmp/x', env: { FOO: 'bar' }, timeout: 1234 });
+
+    assert.equal(receivedOptions.cwd, '/tmp/x');
+    assert.equal(receivedOptions.timeout, 1234);
+    assert.equal(receivedOptions.env.FOO, 'bar');
+    assert.equal('PATH' in receivedOptions.env, true);
   });
 });
 

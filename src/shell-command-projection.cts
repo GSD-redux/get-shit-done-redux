@@ -747,10 +747,11 @@ export function resolveExecutableBinary(
  * (argument injection through `.bat`/`.cmd`), and Node 26 deprecates it with an
  * args array (DEP0190) because arguments are concatenated rather than escaped.
  *
- * Mediation fires ONLY when resolution produced a real on-disk path. An unresolved
- * name is passed through verbatim so the spawn fails with ENOENT — mediating it
- * would turn `{exitCode:127, 'foo: not found'}` into cmd.exe's exit 9009, silently
- * changing the not-found contract that `_spawnResult` and its callers depend on.
+ * Mediation fires when the target — the resolved path, or the declared name when
+ * resolution found nothing — carries a `.cmd`/`.bat` extension. A BARE name that
+ * resolved to nothing is passed through verbatim so the spawn fails with ENOENT;
+ * mediating it would turn `{exitCode:127, 'foo: not found'}` into cmd.exe's exit
+ * 9009 and silently change the not-found contract callers depend on.
  *
  * POSIX is a strict no-op: the declared command is returned unchanged and the
  * environment is never consulted.
@@ -765,13 +766,22 @@ export function projectSpawnInvocation(
 
   const env = opts.env ?? process.env;
   const resolved = resolveExecutableBinary(command, { platform, env });
-  if (!resolved) return { command, args, resolved: null };
-  if (!CMD_MEDIATED_EXT.test(path.basename(resolved))) {
-    return { command: resolved, args, resolved };
+  // Mediate against the resolved path when we have one, else against the declared
+  // name. An unresolved name is mediated ONLY when it already declares .cmd/.bat:
+  // PATH-only resolution misses a batch file sitting in the current directory,
+  // which `cmd.exe /c` still finds — the behavior gsd-tools.cjs shipped before
+  // this consolidation, preserved here rather than silently narrowed.
+  const target = resolved ?? command;
+  if (!CMD_MEDIATED_EXT.test(path.basename(target))) {
+    // A BARE name that resolved to nothing is passed through untouched so the
+    // spawn fails with ENOENT. Mediating it would turn {exitCode:127,
+    // '<name>: not found'} into cmd.exe's exit 9009 and silently change the
+    // not-found contract `_spawnResult` and its 53 dependent files rely on.
+    return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
   }
   return {
     command: String(env['ComSpec'] || 'cmd.exe'),
-    args: ['/d', '/s', '/c', resolved, ...args],
+    args: ['/d', '/s', '/c', target, ...args],
     resolved,
   };
 }
