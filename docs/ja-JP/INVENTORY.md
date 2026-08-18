@@ -395,7 +395,7 @@
 | `decisions.cjs` | CONTEXT.md の `<decisions>` ブロックを解析。数値（D-42）と英数字（D-INFRA-01）の ID を受け付け。`{id, text, category, tags, trackable}` を返す |
 | `docs.cjs` | docs-update ワークフロー初期化、Markdown スキャン、モノリポ検出 |
 | `drift.cjs` | 実行後のコードベース構造ドリフト検出器（#2003）: ファイル変更を new-dir/barrel/migration/route カテゴリに分類し、`last_mapped_commit` フロントマターをラウンドトリップ |
-| `fallow-runner.cjs` | `/gsd-code-review` 向けのファロー監査アダプター: バイナリ解決（`PATH` 次に `node_modules/.bin`）、アクション可能なバイナリ欠落エラー、構造的な調査結果の正規化 |
+| `fallow-runner.cjs` | `/gsd-code-review` 向けのファロー監査アダプター: バイナリ解決（`node_modules/.bin` 次に `PATH`）、アクション可能なバイナリ欠落エラー、構造的な調査結果の正規化 |
 | `frontmatter.cjs` | YAML フロントマター CRUD 操作 |
 | `gap-checker.cjs` | 計画後のギャップ分析（#2493）: REQUIREMENTS.md + CONTEXT.md 決定事項 vs PLAN.md カバレッジレポート（`gsd-tools gap-analysis`）の統合 |
 | `graphify.cjs` | `/gsd-graphify` 向けのナレッジグラフビルド/クエリ/ステータス/差分 |

@@ -499,7 +499,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `eval.cjs` | Deterministic eval scoring (compiled from `src/eval.cts`, gitignored) — `computeEvalScore` (coverage*0.6 + infra*0.4, bands 80/60/40) + `cmdEvalScore` CLI domain guard; moves the gsd-eval-auditor's weighted arithmetic out of the prompt into code (#10 / #1579) |
 | `estimate-cli.cjs` | I/O seam over `phase-estimation.cjs` — the `estimate-check` and `estimate-calibration` query verbs; reads the `workflow.smart_zone_tokens` budget and `.planning/estimation-calibration.json`, both degrading to defaults rather than failing planning (#2630) |
 | `observability/event.cjs` | DispatchEvent shape factory for every Hub dispatch — traceId/parentTraceId/command/result/timestamp record consumed by DispatchLogger (#177, ADR-0174 P1.3/P1.4) |
-| `fallow-runner.cjs` | Fallow audit adapter for `/gsd-code-review`: binary resolution (`PATH` then `node_modules/.bin`), actionable missing-binary errors, and structural findings normalization |
+| `fallow-runner.cjs` | Fallow audit adapter for `/gsd-code-review`: binary resolution (`node_modules/.bin` then `PATH`), actionable missing-binary errors, and structural findings normalization |
 | `federated-config.cjs` | Defensive merge of capability-declared config slices into the loadConfig return value — ADR-857 phase 3b; exports `mergeFederatedConfig({ configSchema, isCentralKey, userConfig })` → `{ values, validKeys, warnings }`; live for migrated Capability keys that are atomically removed from the central config schema |
 | `frontmatter.cjs` | YAML frontmatter CRUD operations |
 | `gap-checker.cjs` | Post-planning gap analysis (#2493): unified REQUIREMENTS.md + CONTEXT.md decisions vs PLAN.md coverage report (`gsd-tools gap-analysis`) |
