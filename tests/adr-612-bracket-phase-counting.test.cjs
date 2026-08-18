@@ -83,6 +83,13 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
   }
 }
 
+/**
+ * Name each fixture's verification report for that phase's own padded token,
+ * matching cmdScaffold. A hardcoded `01-VERIFICATION.md` turns every other
+ * "complete" phase into a cross-phase stray once artifact scans are scoped.
+ * Prefix stripping stays fixture-local because these cases intentionally model
+ * the unqualified artifact layout; padding comes from the production owner.
+ */
 function verificationNameFor(dir) {
   const rest = dir.replace(/^[A-Z][A-Z0-9_]*\.\d+-/i, '');
   const token = [];
@@ -90,7 +97,7 @@ function verificationNameFor(dir) {
     if (/^\d+(?:\.\d+)*$/.test(segment)) token.push(segment);
     else break;
   }
-  assert.ok(token.length > 0, `fixture dir ${dir} carries no phase token`);
+  assert.ok(token.length > 0, `fixture dir ${dir} carries no phase token to name its verification`);
   return `${phaseIdHelpers.normalizePhaseName(token.join('-'))}-VERIFICATION.md`;
 }
 
@@ -2591,7 +2598,7 @@ describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the br
 
 ### Phase 02: Two
 **Goal:** b
-`, 'bracket', [['00-bootstrap', false], ['01-one', true], ['02-two', true]]);
+`, 'bracket', [['00-bootstrap', true], ['01-one', true]]);
     assert.equal(readTotal(), 3, 'pinned 2 before this fix — "undefined-00" read as a sentinel');
     poisonTotalPhasesR5(tmpDir);
     assert.equal(syncedTotal(), 3);
@@ -2630,7 +2637,7 @@ describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the br
 
 ### [GSD.02] 02: Two
 **Goal:** b
-`, 'bracket', [['00-bootstrap', false], ['GSD.02-01-one', true], ['GSD.02-02-two', true]]);
+`, 'bracket', [['00-bootstrap', true], ['GSD.02-01-one', true]]);
     assert.equal(readTotal(), 3, 'pinned 2 before this fix');
     poisonTotalPhasesR5(tmpDir);
     assert.equal(syncedTotal(), 3);
@@ -2931,7 +2938,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 
 ### Phase 02: Two
 **Goal:** b
-`, 'bracket', [['0-bootstrap', false], ['01-one', true], ['02-two', true]]);
+`, 'bracket', [['0-bootstrap', true], ['01-one', true]]);
     assert.equal(readTotal(), 3, 'pinned 2 before this fix — "0" read as a sentinel with no bracketId guard');
     poisonTotalPhasesR6(tmpDir);
     assert.equal(syncedTotal(), 3);
@@ -2968,7 +2975,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 
 ### Phase 02: Two
 **Goal:** b
-`, 'bracket', [['0.5-bootstrap', false], ['01-one', true], ['02-two', true]]);
+`, 'bracket', [['0.5-bootstrap', true], ['01-one', true]]);
     assert.equal(readTotal(), 3, 'pinned 2 before this fix');
     poisonTotalPhasesR6(tmpDir);
     assert.equal(syncedTotal(), 3);
@@ -3051,7 +3058,11 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
       'GSD.02-01-setup',
       'GSD.02-05-real-work',
       'GSD.02-06-follow-up',
-      'not-a-declared-phase',
+      // Incomplete: the decoy carries no phase token, so it cannot be named
+      // by verificationNameFor's production-derived scheme (see its
+      // docstring) — and completeness is irrelevant to what this test pins,
+      // which is exclusion from would_archive.phases regardless.
+      ['not-a-declared-phase', false],
     ]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
@@ -3084,7 +3095,7 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
 
 ### Phase 06: Follow-up
 **Goal:** c
-`, undefined, ['01-setup', '05-real-work', '06-follow-up', 'not-a-declared-phase']);
+`, undefined, ['01-setup', '05-real-work', '06-follow-up', ['not-a-declared-phase', false]]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
     assert.ok(r.success, `milestone complete --dry-run failed: ${r.error}`);
