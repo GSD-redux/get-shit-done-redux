@@ -8689,184 +8689,198 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
 // else is left untouched.
 // ────────────────────────────────────────────────────────────────────────
 describe('bug #3584: update-plan-progress leaves non-count Plans text untouched', () => {
-  test('case 1 — freeform prose with no count token is preserved verbatim', () => {
+  test('case 1 — freeform prose with no count token is preserved verbatim', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c1-'));
-    try {
-      const prose = 'This phase intentionally has no plan count yet.';
-      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${prose}`);
-      const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, `**Plans**: ${prose}`, `freeform prose must survive verbatim; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const prose = 'This phase intentionally has no plan count yet.';
+    const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${prose}`);
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, `**Plans**: ${prose}`, `freeform prose must survive verbatim; got: ${line}`);
   });
 
-  test('case 2 — a sentence wrapping onto a second line never orphans the continuation', () => {
+  test('case 2 — a sentence wrapping onto a second line never orphans the continuation', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c2-'));
-    try {
-      const planningDir = path.join(tmp, '.planning');
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: This phase needs additional scoping before');
-      const before = fs.readFileSync(roadmapPath, 'utf-8');
-      const withContinuation = before.replace(
-        '**Plans**: This phase needs additional scoping before\n',
-        '**Plans**: This phase needs additional scoping before\nthe plan count can be finalized.\n'
-      );
-      fs.writeFileSync(roadmapPath, withContinuation);
-      const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
-      const after = fs.readFileSync(roadmapPath, 'utf-8');
-      assert.ok(
-        after.includes('**Plans**: This phase needs additional scoping before\nthe plan count can be finalized.'),
-        `both wrapped lines must survive intact; got:\n${after}`
-      );
-      void planningDir;
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const planningDir = path.join(tmp, '.planning');
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: This phase needs additional scoping before');
+    const before = fs.readFileSync(roadmapPath, 'utf-8');
+    const withContinuation = before.replace(
+      '**Plans**: This phase needs additional scoping before\n',
+      '**Plans**: This phase needs additional scoping before\nthe plan count can be finalized.\n'
+    );
+    fs.writeFileSync(roadmapPath, withContinuation);
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.ok(
+      after.includes('**Plans**: This phase needs additional scoping before\nthe plan count can be finalized.'),
+      `both wrapped lines must survive intact; got:\n${after}`
+    );
+    void planningDir;
   });
 
-  test('case 3 — `TBD — <annotation>` survives with the annotation intact', () => {
+  test('case 3 — `TBD — <annotation>` survives with the annotation intact', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c3-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: TBD — awaiting scoping decision');
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, '**Plans**: TBD — awaiting scoping decision', `TBD annotation must survive; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: TBD — awaiting scoping decision');
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: TBD — awaiting scoping decision', `TBD annotation must survive; got: ${line}`);
   });
 
-  test('case 4 — the fresh-template bracketed placeholder is still replaced with the computed count', () => {
+  test('case 4 — the fresh-template bracketed placeholder is still replaced with the computed count', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c4-'));
-    try {
-      // Exact shape shipped by gsd-core/templates/roadmap.md.
-      const placeholder = '[Number of plans, e.g., "3 plans" or "TBD"]';
-      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${placeholder}`);
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, '**Plans**: 1/1 plans complete', `placeholder must still be replaced; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    // Exact shape shipped by gsd-core/templates/roadmap.md.
+    const placeholder = '[Number of plans, e.g., "3 plans" or "TBD"]';
+    const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${placeholder}`);
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: 1/1 plans complete', `placeholder must still be replaced; got: ${line}`);
   });
 
-  test('case 5 — canonical token with no annotation is rewritten', () => {
+  test('case 5 — canonical token with no annotation is rewritten', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c5-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 0/1 plans');
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, '**Plans**: 1/1 plans complete', `token must be rewritten; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 0/1 plans');
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: 1/1 plans complete', `token must be rewritten; got: ${line}`);
   });
 
-  test('case 6 — canonical token WITH a hand-written annotation (#2853): token rewritten, annotation preserved', () => {
+  test('case 6 — canonical token WITH a hand-written annotation (#2853): token rewritten, annotation preserved', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c6-'));
-    try {
-      const annotation = '(11-16 are gap closure from VERIFICATION)';
-      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: 0/1 plans executed ${annotation}`);
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, `**Plans**: 1/1 plans complete ${annotation}`, `#2853 arm must be unchanged; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const annotation = '(11-16 are gap closure from VERIFICATION)';
+    const { roadmapPath } = setupFixture2853(tmp, `**Plans**: 0/1 plans executed ${annotation}`);
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, `**Plans**: 1/1 plans complete ${annotation}`, `#2853 arm must be unchanged; got: ${line}`);
   });
 
-  test('case 7 — bare `N plans` form (no slash) is rewritten', () => {
+  test('case 7 — bare `N plans` form (no slash) is rewritten', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c7-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 3 plans');
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, '**Plans**: 1/1 plans complete', `bare form must be rewritten; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 3 plans');
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: 1/1 plans complete', `bare form must be rewritten; got: ${line}`);
   });
 
-  test('case 8a — CRLF variant, preserving arm: `\\r` neither stranded nor duplicated', () => {
+  test('case 8a — CRLF variant, preserving arm: `\\r` neither stranded nor duplicated', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c8a-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: TBD — pending decision', { eol: '\r\n' });
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const after = fs.readFileSync(roadmapPath, 'utf-8');
-      const plansIdx = after.indexOf('**Plans**');
-      const nlIdx = after.indexOf('\n', plansIdx);
-      const restOfLine = after.slice(plansIdx, nlIdx === -1 ? after.length : nlIdx);
-      // Exactly the text plus at most a single trailing \r — never two, never none-when-expected.
-      assert.ok(
-        restOfLine === '**Plans**: TBD — pending decision' || restOfLine === '**Plans**: TBD — pending decision\r',
-        `CRLF preserving arm must not strand/duplicate \\r; got: ${JSON.stringify(restOfLine)}`
-      );
-      assert.equal((restOfLine.match(/\r/g) || []).length <= 1, true, 'must not duplicate \\r');
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: TBD — pending decision', { eol: '\r\n' });
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    const plansIdx = after.indexOf('**Plans**');
+    const nlIdx = after.indexOf('\n', plansIdx);
+    const restOfLine = after.slice(plansIdx, nlIdx === -1 ? after.length : nlIdx);
+    // Exactly the text plus at most a single trailing \r — never two, never none-when-expected.
+    assert.ok(
+      restOfLine === '**Plans**: TBD — pending decision' || restOfLine === '**Plans**: TBD — pending decision\r',
+      `CRLF preserving arm must not strand/duplicate \\r; got: ${JSON.stringify(restOfLine)}`
+    );
+    assert.equal((restOfLine.match(/\r/g) || []).length <= 1, true, 'must not duplicate \\r');
   });
 
-  test('case 8b — CRLF variant, rewriting arm: `\\r` neither stranded nor duplicated', () => {
+  test('case 8b — CRLF variant, rewriting arm: `\\r` neither stranded nor duplicated', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c8b-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 0/1 plans', { eol: '\r\n' });
-      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const after = fs.readFileSync(roadmapPath, 'utf-8');
-      const plansIdx = after.indexOf('**Plans**');
-      const nlIdx = after.indexOf('\n', plansIdx);
-      const restOfLine = after.slice(plansIdx, nlIdx === -1 ? after.length : nlIdx);
-      assert.ok(
-        restOfLine === '**Plans**: 1/1 plans complete' || restOfLine === '**Plans**: 1/1 plans complete\r',
-        `CRLF rewriting arm must not strand/duplicate \\r; got: ${JSON.stringify(restOfLine)}`
-      );
-      assert.equal((restOfLine.match(/\r/g) || []).length <= 1, true, 'must not duplicate \\r');
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 0/1 plans', { eol: '\r\n' });
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    const plansIdx = after.indexOf('**Plans**');
+    const nlIdx = after.indexOf('\n', plansIdx);
+    const restOfLine = after.slice(plansIdx, nlIdx === -1 ? after.length : nlIdx);
+    assert.ok(
+      restOfLine === '**Plans**: 1/1 plans complete' || restOfLine === '**Plans**: 1/1 plans complete\r',
+      `CRLF rewriting arm must not strand/duplicate \\r; got: ${JSON.stringify(restOfLine)}`
+    );
+    assert.equal((restOfLine.match(/\r/g) || []).length <= 1, true, 'must not duplicate \\r');
   });
 
-  test('case 9 — leaving the Plans line untouched does not turn the verb into a no-op', () => {
+  test('case 9 — leaving the Plans line untouched does not turn the verb into a no-op', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c9-'));
-    try {
-      const prose = 'Scoping still pending — do not touch.';
-      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${prose}`);
-      const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      assert.ok(result.ok, `run must exit 0; stderr: ${result.stderr}`);
-      const parsed = JSON.parse(result.stdout);
-      assert.equal(parsed.updated, true, 'updated must be true even when the Plans line is left alone');
-      assert.equal(parsed.plan_count, 1, 'plan_count must still be computed correctly');
-      assert.equal(parsed.summary_count, 1, 'summary_count must still be computed correctly');
-      assert.equal(parsed.complete, true, 'complete must still be computed correctly');
+    t.after(() => cleanup(tmp));
+    const prose = 'Scoping still pending — do not touch.';
+    const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${prose}`);
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must exit 0; stderr: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.updated, true, 'updated must be true even when the Plans line is left alone');
+    assert.equal(parsed.plan_count, 1, 'plan_count must still be computed correctly');
+    assert.equal(parsed.summary_count, 1, 'summary_count must still be computed correctly');
+    assert.equal(parsed.complete, true, 'complete must still be computed correctly');
 
-      const after = fs.readFileSync(roadmapPath, 'utf-8');
-      // Plans line itself untouched.
-      assert.ok(after.includes(`**Plans**: ${prose}`), 'Plans line must remain untouched');
-      // Phase checkbox in the phase list must still flip.
-      assert.match(after, /- \[x\] \*\*Phase 10: Test Phase\*\* \(completed \d{4}-\d{2}-\d{2}\)/, 'phase checkbox must still be checked');
-      // Progress table Status/Completed cells must still update.
-      assert.match(after, /\|\s*10 Test Phase\s*\|\s*0\/1\s*\|\s*Complete\s*\|\s*\d{4}-\d{2}-\d{2}\s*\|/, 'progress table row must still update');
-      // Plan checklist row must still be checked.
-      assert.match(after, /- \[x\] 10-01-PLAN\.md/, 'plan checklist row must still be checked');
-    } finally {
-      cleanup(tmp);
-    }
+    const after = fs.readFileSync(roadmapPath, 'utf-8');
+    // Plans line itself untouched.
+    assert.ok(after.includes(`**Plans**: ${prose}`), 'Plans line must remain untouched');
+    // Phase checkbox in the phase list must still flip.
+    assert.match(after, /- \[x\] \*\*Phase 10: Test Phase\*\* \(completed \d{4}-\d{2}-\d{2}\)/, 'phase checkbox must still be checked');
+    // Progress table Status/Completed cells must still update.
+    assert.match(after, /\|\s*10 Test Phase\s*\|\s*0\/1\s*\|\s*Complete\s*\|\s*\d{4}-\d{2}-\d{2}\s*\|/, 'progress table row must still update');
+    // Plan checklist row must still be checked.
+    assert.match(after, /- \[x\] 10-01-PLAN\.md/, 'plan checklist row must still be checked');
   });
 
-  test('case 10 — empty value after the label is left alone, no fabricated count', () => {
+  test('case 10 — empty value after the label is left alone, no fabricated count', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c10-'));
-    try {
-      const { roadmapPath } = setupFixture2853(tmp, '**Plans**:');
-      const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
-      assert.equal(line, '**Plans**:', `empty value must be left alone with no fabricated count; got: ${line}`);
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**:');
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**:', `empty value must be left alone with no fabricated count; got: ${line}`);
+  });
+
+  // Finding A (adversarial review): a bracketed HUMAN annotation is
+  // structurally identical to the bracketed template placeholder but carries
+  // none of its wording — it must be preserved, not destroyed.
+  test('case 11 — a bracketed human annotation is preserved verbatim, not mistaken for the template placeholder', (t) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c11-'));
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: [Deferred pending re-scope]');
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: [Deferred pending re-scope]', `human bracketed note must survive verbatim; got: ${line}`);
+  });
+
+  // The shorter template placeholder shape (gsd-core/templates/roadmap.md
+  // lines 51/75/88) must still be replaced.
+  test('case 12 — the short template placeholder `[Number of plans]` is still replaced', (t) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c12-'));
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: [Number of plans]');
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: 1/1 plans complete', `short placeholder must still be replaced; got: ${line}`);
+  });
+
+  // Finding B (adversarial review): the singular bare `N plan` form is the
+  // tool's own documented one-plan-phase grammar (templates/roadmap.md:62)
+  // and must be recognised as a real count token, not frozen forever.
+  test('case 13 — bare singular `1 plan` form (no `s`) is rewritten to the computed count', (t) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c13-'));
+    t.after(() => cleanup(tmp));
+    const { roadmapPath } = setupFixture2853(tmp, '**Plans**: 1 plan');
+    const result = run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    assert.ok(result.ok, `run must succeed; stderr: ${result.stderr}`);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, '**Plans**: 1/1 plans complete', `singular token must be rewritten; got: ${line}`);
+  });
+
+  test('case 14 — bare singular `1 plan` WITH a hand-written annotation: token rewritten, annotation preserved', (t) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3584-c14-'));
+    t.after(() => cleanup(tmp));
+    const annotation = '(scope confirmed small)';
+    const { roadmapPath } = setupFixture2853(tmp, `**Plans**: 1 plan ${annotation}`);
+    run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+    const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+    assert.equal(line, `**Plans**: 1/1 plans complete ${annotation}`, `singular token must be rewritten with annotation preserved; got: ${line}`);
   });
 });
   });

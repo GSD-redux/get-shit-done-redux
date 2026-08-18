@@ -878,49 +878,63 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     // hand-written prose a human placed on the line. Group $1 = phase header →
     // `Plans:` label + trailing whitespace (unchanged). Group $2 = the existing
     // count token to replace: matches `N/N plans complete`, `N/N plans executed`,
-    // or the bare template `N plans` form. Group $3 = whatever else is on the
-    // line (`[^\r\n]*`, so a CRLF `\r` is never part of the match and rides along
-    // untouched in the unmatched remainder of the string — never stranded, never
-    // duplicated).
+    // or the bare template `N plan(s)` form — singular is part of the tool's OWN
+    // grammar (gsd-core/templates/roadmap.md:62 ships `**Plans**: 1 plan` as the
+    // documented one-plan-phase shape), so the `s` is optional there (bug #3584
+    // Finding B; pre-fix a bare `1 plan` fell into the drop-everything path and
+    // was accidentally overwritten with the correct count — post-fix it must be
+    // recognised as a token in its own right or it freezes stale forever). Group
+    // $3 = whatever else is on the line (`[^\r\n]*`, so a CRLF `\r` is never part
+    // of the match and rides along untouched in the unmatched remainder of the
+    // string — never stranded, never duplicated).
     //
     // Three arms, in order:
     //   1. $2 present (a real count token) → rewrite the token, preserve $3
     //      verbatim (an annotation a human wrote after a real count; #2853).
-    //   2. $2 absent AND $3, trimmed, is the fresh-template BRACKETED
-    //      PLACEHOLDER (`[Number of plans, e.g., "3 plans" or "TBD"]`, per
-    //      gsd-core/templates/roadmap.md) → replace it with the computed count.
-    //      Detected POSITIVELY (trimmed value is wholly wrapped in `[...]`),
-    //      never as "anything that isn't a count".
-    //   3. Anything else (freeform prose, `TBD` / `TBD — annotation`, the first
-    //      line of a wrapped sentence, an empty value) → leave the whole matched
-    //      line untouched by returning `_match` unchanged. An untouched first
-    //      line cannot orphan its own continuation on the next line, since the
-    //      pattern never spans past `\n` in the first place.
+    //   2. $2 absent AND $3, trimmed, is the fresh-template PLACEHOLDER shipped
+    //      by gsd-core/templates/roadmap.md — either
+    //      `[Number of plans, e.g., "3 plans" or "TBD"]` (line 37) or
+    //      `[Number of plans]` (lines 51/75/88) → replace it with the computed
+    //      count. Detected POSITIVELY on the distinctive `Number of plans`
+    //      wording (anchored, case-insensitive), NEVER on "wholly bracketed" —
+    //      a bracketed HUMAN annotation such as `[Deferred pending re-scope]`
+    //      is structurally identical but must be arm-3 preserved (bug #3584
+    //      Finding A).
+    //   3. Anything else (freeform prose, `TBD` / `TBD — annotation`, a
+    //      bracketed human note, the first line of a wrapped sentence, an
+    //      empty value) → leave the whole matched line untouched by returning
+    //      `_match` unchanged. An untouched first line cannot orphan its own
+    //      continuation on the next line, since the pattern never spans past
+    //      `\n` in the first place.
     const planCountPattern = new RegExp(
-      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans)?([^\\r\\n]*)`,
+      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`,
       'i'
     );
     const planCountText = isComplete
       ? `${summaryCount}/${planCount} plans complete`
       : `${summaryCount}/${planCount} plans executed`;
-    // Positive detector for the fresh-template placeholder: the trimmed trailing
-    // value is wholly wrapped in a single pair of brackets (e.g.
-    // `[Number of plans, e.g., "3 plans" or "TBD"]`, `[Number of plans]`).
-    const isBracketedPlaceholder = (value: string): boolean => {
+    // Positive detector for the fresh-template placeholder ONLY (bug #3584
+    // Finding A). Anchored to the distinctive `Number of plans` wording that
+    // gsd-core/templates/roadmap.md actually ships, not to "anything in
+    // brackets" — a bracketed human annotation like `[Deferred pending
+    // re-scope]` is structurally bracketed too but carries none of this
+    // wording, so it correctly falls through to arm 3 untouched.
+    const isTemplatePlaceholder = (value: string): boolean => {
       const trimmed = value.trim();
-      return trimmed.length >= 2 && trimmed.startsWith('[') && trimmed.endsWith(']');
+      return /^\[\s*Number of plans\b[\s\S]*\]$/i.test(trimmed);
     };
     roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, (_match, label, existingCount, trailing) => {
       if (existingCount) {
         // Arm 1: real count token — rewrite it, preserve the trailing annotation.
         return `${label}${planCountText}${trailing}`;
       }
-      if (isBracketedPlaceholder(trailing)) {
-        // Arm 2: fresh-template bracketed placeholder — replace with the count.
+      if (isTemplatePlaceholder(trailing)) {
+        // Arm 2: fresh-template placeholder — replace with the count.
         return `${label}${planCountText}`;
       }
-      // Arm 3: freeform prose, TBD, a wrapped sentence's first line, or an empty
-      // value — leave the line exactly as it was.
+      // Arm 3: freeform prose, TBD, a bracketed human annotation, a wrapped
+      // sentence's first line, or an empty value — leave the line exactly as
+      // it was.
       return _match;
     });
 
