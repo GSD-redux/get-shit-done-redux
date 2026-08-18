@@ -599,6 +599,30 @@ The prompt injection guard hook (`gsd-prompt-guard.js`) is always active and can
 
 When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artifacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md) for the full setup, including untracking files git is already tracking.
 
+### `commit_docs` Pre-Commit Guard (opt-in)
+
+`planning.commit_docs: false` only stops GSD's own `gsd-tools commit`/`gsd-tools state`
+write path from committing `.planning/`. It does **not** stop a plain `git add -A` +
+`git commit` run by hand, or by a script outside GSD's own tooling, from staging and
+committing `.planning/` anyway.
+
+`gsd-tools commit-docs-guard enable` closes that gap by writing a `.git/hooks/pre-commit`
+hook into the **current repository** that refuses any commit staging `.planning/` files
+while `commit_docs` resolves to `false`. It is entirely opt-in — no install path wires it
+automatically:
+
+```bash
+gsd-tools commit-docs-guard enable   # write the hook (refuses to clobber an existing pre-commit hook)
+gsd-tools commit-docs-guard disable  # remove it (refuses to remove a hook GSD didn't write)
+```
+
+The hook is identified by a stable `# gsd-core:commit-docs-guard` marker line, so `enable`/
+`disable` detect it by presence of that marker rather than by byte-for-byte content — editing
+the file afterward does not make it unrecognizable. `enable` refuses (rather than silently
+writing an inert file) when `core.hooksPath` is already configured, since a hook written to
+`.git/hooks/pre-commit` would never run in that case; wire the guard into the configured hooks
+path by hand instead. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md#pre-commit-guard-hook-optional) for the full walkthrough, including the linked-worktree case.
+
 ---
 
 ## Agent Skills Injection

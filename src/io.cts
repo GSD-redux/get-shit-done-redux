@@ -197,6 +197,10 @@ const ERROR_REASON = Object.freeze({
   GRAPHIFY_INVALID_QUERY: 'graphify_invalid_query',
   // hooks
   HOOKS_OPT_OUT: 'hooks_opt_out',
+  // commit-docs-guard (#3588)
+  COMMIT_DOCS_GUARD_NOT_A_REPO: 'commit_docs_guard_not_a_repo',
+  COMMIT_DOCS_GUARD_FOREIGN_HOOK: 'commit_docs_guard_foreign_hook',
+  COMMIT_DOCS_GUARD_HOOKS_PATH_SET: 'commit_docs_guard_hooks_path_set',
   // security-scan
   SECURITY_SCAN_FAILED: 'security_scan_failed',
   // generic

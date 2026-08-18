@@ -8,11 +8,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeEol } from './text-lines.cjs';
 import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, ERROR_REASON } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, isGitIgnored } = configLoaderMod;
@@ -2457,6 +2458,179 @@ function cmdCheckCommit(cwd: string, raw: boolean): void {
   output({ allowed: true, reason: 'no_planning_files_staged' }, raw, 'allowed');
 }
 
+// ─── commit-docs-guard: opt-in pre-commit hook (#3588) ─────────────────────
+
+/**
+ * Stable sentinel line identifying a `.git/hooks/pre-commit` file as ours.
+ * Detection is by PRESENCE of this line, not byte-equality (design "Identifying
+ * 'our' hook") — a user who appends a line to a GSD-written hook must not make
+ * it unrecognizable, and a hook lacking this line must never be overwritten or
+ * deleted by `commit-docs-guard enable`/`disable`.
+ */
+const COMMIT_DOCS_GUARD_MARKER = '# gsd-core:commit-docs-guard';
+
+/**
+ * Locate `gsd-core/workflows/_runtime-launcher.snippet.sh` — the SAME
+ * gsd-tools-resolution chain every shipped workflow/agent bash block uses
+ * (scripts/sync-runtime-launcher.cjs) — by walking up from this module's own
+ * compiled location rather than a fixed literal `../..` join, so the walk
+ * tolerates the module living at a different depth under an alternate build
+ * or bundling layout (same defensive shape as
+ * runtime-artifact-layout.cts#findInstallSourceRoot).
+ */
+function findRuntimeLauncherSnippet(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, 'workflows', '_runtime-launcher.snippet.sh');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(`commit-docs-guard: could not locate workflows/_runtime-launcher.snippet.sh from ${__dirname}`);
+}
+
+/**
+ * Build the literal `.git/hooks/pre-commit` content `commit-docs-guard enable`
+ * writes. Reuses the canonical gsd_run resolution preamble byte-for-byte
+ * (read from disk, never hand-copied — see findRuntimeLauncherSnippet) so this
+ * hook resolves `gsd-tools` exactly the way every other shipped workflow bash
+ * block does, and cannot drift from it.
+ *
+ * LF-only (#3588 A2): the snippet file and every literal line here are joined
+ * with `\n`; platformWriteSync additionally normalizes CRLF→LF on write, so a
+ * CRLF shebang — which is not executable under Git Bash — cannot reach disk.
+ */
+function buildCommitDocsGuardHookScript(): string {
+  const snippetPath = findRuntimeLauncherSnippet();
+  const preamble = normalizeEol(fs.readFileSync(snippetPath, 'utf8')).replace(/\n+$/, '');
+  const lines = [
+    '#!/usr/bin/env bash',
+    COMMIT_DOCS_GUARD_MARKER,
+    '# Refuses a commit that stages .planning/ files when `commit_docs` resolves',
+    '# false (honoring any per-phase override). Installed by',
+    '# `gsd-tools commit-docs-guard enable`; remove with',
+    '# `gsd-tools commit-docs-guard disable`. See',
+    '# docs/how-to/keep-planning-docs-private.md.',
+    'set -euo pipefail',
+    '',
+    preamble,
+    '',
+    'gsd_run check-commit --raw',
+  ];
+  return lines.join('\n') + '\n';
+}
+
+interface HooksDirResolution {
+  ok: boolean;
+  dir?: string;
+  reason?: string;
+}
+
+/**
+ * Resolve the real git hooks directory for `cwd` via `git rev-parse
+ * --git-path hooks` — never a literal `.git/hooks` join (#3588 row 8: a
+ * linked worktree or submodule's `.git` is a FILE pointing elsewhere, and
+ * this is the one git-native call that already resolves that correctly).
+ */
+function resolveCommitDocsGuardHooksDir(cwd: string): HooksDirResolution {
+  const gitDirResult = execGit(['rev-parse', '--git-dir'], { cwd });
+  if (gitDirResult.exitCode !== 0) {
+    return { ok: false, reason: 'not_a_git_repo' };
+  }
+  const hooksPathResult = execGit(['rev-parse', '--git-path', 'hooks'], { cwd });
+  if (hooksPathResult.exitCode !== 0) {
+    return { ok: false, reason: 'not_a_git_repo' };
+  }
+  const hooksDirRaw = hooksPathResult.stdout.trim();
+  const hooksDir = path.isAbsolute(hooksDirRaw) ? hooksDirRaw : path.join(cwd, hooksDirRaw);
+  return { ok: true, dir: hooksDir };
+}
+
+/** Marker presence, not byte-equality (#3588 row B10). */
+function isCommitDocsGuardHook(content: string): boolean {
+  return content.includes(COMMIT_DOCS_GUARD_MARKER);
+}
+
+/**
+ * `gsd-tools commit-docs-guard enable` — write `.git/hooks/pre-commit`.
+ * Behavior table (40-design.md rows 1-3, 8-9): refuses to clobber a foreign
+ * hook, refuses when `core.hooksPath` would make our own write inert, and is
+ * idempotent when already enabled.
+ */
+function cmdCommitDocsGuardEnable(cwd: string, raw: boolean): void {
+  const hooksDir = resolveCommitDocsGuardHooksDir(cwd);
+  if (!hooksDir.ok || !hooksDir.dir) {
+    error('not a git repository (or any of the parent directories)', ERROR_REASON.COMMIT_DOCS_GUARD_NOT_A_REPO);
+    return;
+  }
+
+  // core.hooksPath already set: our .git/hooks/pre-commit would be inert —
+  // git would never invoke it. Silently writing an ignored file is worse
+  // than refusing (design row 9).
+  const hooksPathConfig = execGit(['config', '--get', 'core.hooksPath'], { cwd });
+  if (hooksPathConfig.exitCode === 0 && hooksPathConfig.stdout.trim() !== '') {
+    const configuredPath = hooksPathConfig.stdout.trim();
+    error(
+      `core.hooksPath is set to "${configuredPath}"; a hook written to ${path.join(hooksDir.dir, 'pre-commit')} ` +
+      `would never run. Wire commit-docs-guard into "${configuredPath}" manually, or unset core.hooksPath first.`,
+      ERROR_REASON.COMMIT_DOCS_GUARD_HOOKS_PATH_SET,
+    );
+  }
+
+  const hookPath = path.join(hooksDir.dir, 'pre-commit');
+  const existing = platformReadSync(hookPath);
+  if (existing !== null) {
+    if (!isCommitDocsGuardHook(existing)) {
+      error(
+        `refusing to overwrite an existing pre-commit hook at ${hookPath} that GSD did not write. ` +
+        `Remove or rename it, or wire commit-docs-guard into it by hand.`,
+        ERROR_REASON.COMMIT_DOCS_GUARD_FOREIGN_HOOK,
+      );
+    }
+    // Already ours — idempotent no-op (row 3). Leave any user edits intact;
+    // just make sure the executable bit survived.
+    try { fs.chmodSync(hookPath, 0o755); } catch { /* best-effort */ }
+    output({ enabled: true, action: 'already_enabled', path: hookPath }, raw, 'already_enabled');
+    return;
+  }
+
+  platformWriteSync(hookPath, buildCommitDocsGuardHookScript());
+  fs.chmodSync(hookPath, 0o755);
+  output({ enabled: true, action: 'written', path: hookPath }, raw, 'enabled');
+}
+
+/**
+ * `gsd-tools commit-docs-guard disable` — remove `.git/hooks/pre-commit`
+ * ONLY when it is the hook we wrote (marker presence). Never deletes a
+ * foreign hook (design row 5); a missing hook is a no-op success, not an
+ * error (row 6).
+ */
+function cmdCommitDocsGuardDisable(cwd: string, raw: boolean): void {
+  const hooksDir = resolveCommitDocsGuardHooksDir(cwd);
+  if (!hooksDir.ok || !hooksDir.dir) {
+    error('not a git repository (or any of the parent directories)', ERROR_REASON.COMMIT_DOCS_GUARD_NOT_A_REPO);
+    return;
+  }
+
+  const hookPath = path.join(hooksDir.dir, 'pre-commit');
+  const existing = platformReadSync(hookPath);
+  if (existing === null) {
+    output({ disabled: true, action: 'noop', path: hookPath }, raw, 'noop');
+    return;
+  }
+  if (!isCommitDocsGuardHook(existing)) {
+    error(
+      `refusing to remove the pre-commit hook at ${hookPath}: it does not carry the ` +
+      `${COMMIT_DOCS_GUARD_MARKER} marker, so GSD did not write it.`,
+      ERROR_REASON.COMMIT_DOCS_GUARD_FOREIGN_HOOK,
+    );
+  }
+
+  fs.unlinkSync(hookPath);
+  output({ disabled: true, action: 'removed', path: hookPath }, raw, 'disabled');
+}
+
 export = {
   groupFilesBySubrepo,
   determinePhaseStatus,
@@ -2488,5 +2662,9 @@ export = {
   cmdScaffold,
   cmdStats,
   cmdCheckCommit,
+  COMMIT_DOCS_GUARD_MARKER,
+  buildCommitDocsGuardHookScript,
+  cmdCommitDocsGuardEnable,
+  cmdCommitDocsGuardDisable,
   _wsParseRetryAfter,
 };

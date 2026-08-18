@@ -134,8 +134,52 @@ Full precedence order (highest wins): `phase_commit_docs.<phase-id>` → explici
 [Configuration reference — per-phase override](../CONFIGURATION.md#per-phase-override-phase_commit_docs)
 for the complete rules, including how a non-boolean value is handled.
 
+## Pre-commit guard hook (optional)
+
+Steps 1-4 stop **GSD's own** commit path from writing `.planning/`. They do not stop a plain
+`git add -A` + `git commit` — run by hand, by a teammate, or by a script outside GSD's own
+tooling — from staging and committing `.planning/` anyway. `gsd-tools commit-docs-guard enable`
+closes that specific gap by installing a `.git/hooks/pre-commit` hook that refuses any commit
+staging `.planning/` files while `commit_docs` resolves to `false`.
+
+This is opt-in only — no GSD install path wires it in for you:
+
+```bash
+gsd-tools commit-docs-guard enable
+```
+
+If a commit would violate `commit_docs`, the hook blocks it and names the staged files and the
+`git reset` command to unstage them, matching `gsd-tools check-commit`'s own message. Remove it
+with:
+
+```bash
+gsd-tools commit-docs-guard disable
+```
+
+**Enable refuses rather than guesses** in three situations, each reported with a reason:
+
+- **An existing `pre-commit` hook you didn't get from GSD.** The file is left byte-for-byte
+  unchanged; wire the guard into it by hand (`gsd-tools check-commit --raw` is the check to add).
+- **`core.hooksPath` is already configured.** A hook written to `.git/hooks/pre-commit` would
+  never run in that case, so nothing is written; add the same check to whatever hook lives at the
+  configured path instead.
+- **The current directory is not a git repository.**
+
+`enable`/`disable` are idempotent and safe to script: a second `enable` is a no-op that reports
+success rather than duplicating content, and `disable` on a repo with no hook installed succeeds
+rather than erroring. The hook is identified by a stable `# gsd-core:commit-docs-guard` marker
+line inside the file, checked by presence rather than exact content — appending your own line to
+the installed hook afterward does not make GSD stop recognizing it as its own. In a linked
+worktree or submodule (where `.git` is a file, not a directory), `enable` resolves the real,
+shared hooks directory via git itself rather than assuming a literal `.git/hooks` path.
+
+Windows note: the hook runs under Git Bash, same as any other git hook. GSD's own remote test
+matrix is Linux-only, so this specific behavior is verified on Linux/macOS plus code review, not
+by an automated Windows run.
+
 ## Related
 
 - [Configuration reference — `planning.commit_docs`](../CONFIGURATION.md#planning-settings)
 - [Configuration reference — auto-detection and the tracked-files caveat](../CONFIGURATION.md#auto-detection)
 - [Configuration reference — per-phase override](../CONFIGURATION.md#per-phase-override-phase_commit_docs)
+- [Configuration reference — the pre-commit guard hook](../CONFIGURATION.md#commit_docs-pre-commit-guard-opt-in)
