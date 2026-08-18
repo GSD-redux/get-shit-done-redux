@@ -97,7 +97,7 @@ const {
   planningDir,
   planningRoot,
   listAvailableWorkstreams,
-  getActiveWorkstream,
+  peekActiveWorkstream,
   diagnoseUnresolvedActiveWorkstream,
   describeUnresolvedWorkstreamReason,
   findContextMdIn,
@@ -1374,7 +1374,13 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
   // source as `cmdInitTransition`: `GSD_WORKSTREAM` env, falling back to the
   // stored active-workstream pointer (mirrors `cmdInitProgress`'s own
   // resolution above).
-  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  //
+  // #3579 root-cause fix: this is a read-only informational field (no write
+  // follows), so use the non-mutating peek — getActiveWorkstream's self-heal
+  // would otherwise silently delete a stale/invalid pointer as a side effect
+  // of building a JSON report field, and (per #3579) could change what a
+  // LATER resolution in the same process observes.
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   const workstreamActive = !!resolvedWorkstream;
   const flatMode = !workstreamActive;
 
@@ -2819,7 +2825,9 @@ function cmdInitUpdate(cwd: string, raw: boolean, options: Record<string, unknow
  * pure JSON consumer with no `gsd_run` call of its own.
  */
 function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
-  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  // #3579 root-cause fix: read-only informational field — peek, don't
+  // self-heal (see cmdInitNewMilestone's identical rationale above).
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   const workstreamActive = !!resolvedWorkstream;
 
   const result: Record<string, unknown> = {
@@ -2916,7 +2924,11 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   // Mirror planningDir's resolution (GSD_WORKSTREAM env > stored active pointer) so
   // an explicit --ws (which sets GSD_WORKSTREAM) satisfies the check.
   const _availableWorkstreams = listAvailableWorkstreams(cwd);
-  const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  // #3579 root-cause fix: this is a check, not a consuming read — use the
+  // non-mutating peek so an unresolvable pointer isn't self-healed (cleared)
+  // here and then found "absent" by diagnoseUnresolvedActiveWorkstream below,
+  // which would misreport a present-but-bad marker as no marker at all.
+  const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
   if (_availableWorkstreams.length > 0 && !_resolvedWorkstream) {
     // #3579: getActiveWorkstream now inherits a pointer-less session's read
     // from the shared .planning/active-workstream marker, so reaching this

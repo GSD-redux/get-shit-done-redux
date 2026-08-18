@@ -25,6 +25,7 @@ const {
   createSessionScopedPointerAdapter,
   createMemoryPointerAdapter,
   getActiveWorkstream: getStoredActiveWorkstream,
+  peekActiveWorkstream: peekStoredActiveWorkstream,
   setActiveWorkstream: setStoredActiveWorkstream,
   clearActiveWorkstream: clearStoredActiveWorkstream,
   diagnoseUnresolvedActiveWorkstream: diagnoseUnresolvedStoredActiveWorkstream,
@@ -392,6 +393,21 @@ function getActiveWorkstream(cwd: string): string | null {
   return getStoredActiveWorkstream(cwd);
 }
 
+// #3579 root-cause fix: read-only sibling of getActiveWorkstream, thin
+// pass-through to active-workstream-store's non-mutating peek. Callers that
+// only need to KNOW whether a workstream resolves (a guard's initial check,
+// a bootstrap that will re-derive the answer anyway) must use this instead
+// of getActiveWorkstream — the mutating variant self-heals (clears) a
+// present-but-unresolvable chain[0] value, and a later read in the SAME
+// process (another getActiveWorkstream call, or diagnoseUnresolvedActiveWorkstream)
+// would then observe already-cleared state instead of the original evidence,
+// silently changing the answer or losing the diagnostic reason. Self-heal
+// still happens — exactly once, wherever the real consuming call site invokes
+// getActiveWorkstream — this sibling just avoids triggering it prematurely.
+function peekActiveWorkstream(cwd: string): string | null {
+  return peekStoredActiveWorkstream(cwd);
+}
+
 function setActiveWorkstream(cwd: string, name: string): void {
   setStoredActiveWorkstream(cwd, name);
 }
@@ -464,6 +480,7 @@ export = {
   quickDirFrom,
   withPlanningLock,
   getActiveWorkstream,
+  peekActiveWorkstream,
   setActiveWorkstream,
   diagnoseUnresolvedActiveWorkstream,
   describeUnresolvedWorkstreamReason,
