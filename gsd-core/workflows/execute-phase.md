@@ -154,7 +154,12 @@ When `CONTEXT_WINDOW < 200000` (sub-200K models), subagent prompts are thinned t
 When `parallelization` is false, plans within a wave execute sequentially.
 
 **Runtime detection for Copilot:**
-If Copilot (detected via `@gsd-executor` pattern or absent `Agent()` API), force sequential inline execution regardless of `parallelization` (unreliable subagent signals). Set `COPILOT_SEQUENTIAL=true` and use `check_interactive_mode`'s inline path for each plan.
+Check if the current runtime is Copilot by testing for the `@gsd-executor` agent pattern
+or absence of the `Agent()` subagent API. If running under Copilot, force sequential inline
+execution regardless of the `parallelization` setting — Copilot's subagent completion
+signals are unreliable (see `<runtime_compatibility>`). Set `COPILOT_SEQUENTIAL=true`
+internally and skip the `execute_waves` step in favor of `check_interactive_mode`'s
+inline path for each plan.
 
 **REQUIRED — Sync chain flag with intent.** If user invoked manually (no `--auto`), clear the ephemeral chain flag from any previous interrupted `--auto` chain. This prevents stale `_auto_chain_active: true` from causing unwanted auto-advance. This does NOT touch `workflow.auto_advance` (the user's persistent settings preference). You MUST execute this bash block before any config reads:
 ```bash
@@ -273,11 +278,15 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 </step>
 
 <step name="handle_branching">
-**"none":**
+Check `branching_strategy` from init:
+
+**"none":** Skip, continue on current branch. Before the first commit, warn if already on the base branch:
 ```bash
-B=$(gsd_run query git.base-branch||echo main);C=$(git branch --show-current);[ "$C" = "$B" ]&&echo "WARNING: base branch $B" >&2
+B=$(gsd_run query git.base-branch||echo main);C=$(git branch --show-current);[ "$C" = "$B" ]&&echo "WARNING: currently on base branch '$B' — switch to a feature branch, or these commits will land on $B (#3158)." >&2||true
 ```
-**"phase" or "milestone":**
+
+**"phase" or "milestone":** Use pre-computed `branch_name` from init.
+
 Fork the new phase branch off `origin/HEAD` (the project's default branch), not the current HEAD — otherwise consecutive phases compound and stay unpushed (#2916). If `$BRANCH_NAME` already exists locally, reuse it as-is.
 
 ```bash

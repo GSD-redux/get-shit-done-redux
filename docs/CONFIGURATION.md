@@ -1011,7 +1011,7 @@ All four fields are **optional and additive** — STATE.md files without them ke
 | `phase` | At `execute-phase` start | One phase | User merges after phase | Code review per phase, granular rollback |
 | `milestone` | At first `execute-phase` | All phases in milestone | At `complete-milestone` | Release branches, PR per version |
 
-When `git.branching_strategy` is `none`, GSD keeps using the current branch. Before phase commits begin, it warns if that branch is the configured `git.base_branch`; switch to a feature branch first if those commits do not belong on the integration branch.
+When `git.branching_strategy` is `none`, GSD keeps using the current branch. Before phase commits begin, it warns if that branch is the resolved base branch — `git.base_branch` if configured, otherwise the detected repository default (`origin/HEAD`, then `main`/`master`); switch to a feature branch first if those commits do not belong on the integration branch.
 
 ### Template Variables
 

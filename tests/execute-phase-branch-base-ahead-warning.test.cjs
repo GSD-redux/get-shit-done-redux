@@ -55,4 +55,34 @@ describe('#3158 — handle_branching warns before committing on the base branch'
     assert.match(noneBranch[1], /WARNING:.*base branch/i, 'none strategy must warn before commits land on the base branch');
     assert.doesNotMatch(noneBranch[1], /exit\s+1|refus/i, 'none strategy must warn rather than reject the documented current-branch behavior');
   });
+
+  test('the base-branch comparison exits 0 on both paths (warn-only, never gates the step)', () => {
+    // Regression for a real bug: `[ "$C" = "$B" ] && echo … >&2` as the LAST
+    // command in the block makes the block's own exit status track the test's
+    // result — exit 1 when safe (no match), exit 0 when unsafe (on the base
+    // branch). A regex assertion on the text can't catch this; only running
+    // the extracted shell actually exercises the exit code.
+    assert.ok(text.length > 0, 'execute-phase.md must exist');
+    const noneBranch = text.match(/\*\*"none":\*\*([\s\S]*?)(?=\*\*"phase" or "milestone":\*\*)/);
+    assert.ok(noneBranch, 'handle_branching must retain a dedicated none-strategy branch');
+    const bashBlock = noneBranch[1].match(/```bash\n([\s\S]*?)```/);
+    assert.ok(bashBlock, 'none strategy must contain a fenced bash block');
+    const script = bashBlock[1];
+
+    const { spawnSync } = require('node:child_process');
+    for (const [branch, expectWarning] of [['feature-x', false], ['main', true]]) {
+      const wrapped = `gsd_run() { echo main; }\ngit() { echo "${branch}"; }\n${script}`;
+      const result = spawnSync('bash', ['-c', wrapped], { encoding: 'utf8' });
+      assert.equal(
+        result.status, 0,
+        `block must exit 0 when current branch is "${branch}" — a nonzero exit here would ` +
+        `abort any caller running under \`set -e\`, and it must not do so on either path`,
+      );
+      if (expectWarning) {
+        assert.match(result.stderr, /WARNING/, 'must warn when the current branch is the base branch');
+      } else {
+        assert.doesNotMatch(result.stderr, /WARNING/, 'must not warn when the current branch is not the base branch');
+      }
+    }
+  });
 });
