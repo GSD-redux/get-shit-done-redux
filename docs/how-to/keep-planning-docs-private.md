@@ -140,7 +140,10 @@ Steps 1-4 stop **GSD's own** commit path from writing `.planning/`. They do not 
 `git add -A` + `git commit` — run by hand, by a teammate, or by a script outside GSD's own
 tooling — from staging and committing `.planning/` anyway. `gsd-tools commit-docs-guard enable`
 closes that specific gap by installing a `.git/hooks/pre-commit` hook that refuses any commit
-staging `.planning/` files while `commit_docs` resolves to `false`.
+staging `.planning/` files while `commit_docs` resolves to `false`. Resolution honors the full
+precedence chain above — including a `phase_commit_docs.<phase-id>` override for the phase the
+staged `.planning/` files belong to — the same resolution `gsd-tools commit`/`query commit` uses,
+so the hook never contradicts them.
 
 This is opt-in only — no GSD install path wires it in for you:
 

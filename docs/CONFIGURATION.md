@@ -608,7 +608,10 @@ committing `.planning/` anyway.
 
 `gsd-tools commit-docs-guard enable` closes that gap by writing a `.git/hooks/pre-commit`
 hook into the **current repository** that refuses any commit staging `.planning/` files
-while `commit_docs` resolves to `false`. It is entirely opt-in — no install path wires it
+while `commit_docs` resolves to `false`. Resolution goes through the same
+[per-phase precedence chain](#per-phase-override-phase_commit_docs) `gsd-tools commit`/`query commit`
+use — a `phase_commit_docs.<phase-id>` override for the staged phase is honored here too, so the
+hook cannot contradict them. It is entirely opt-in — no install path wires it
 automatically:
 
 ```bash

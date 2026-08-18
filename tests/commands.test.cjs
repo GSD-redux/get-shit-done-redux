@@ -2648,55 +2648,57 @@ describe('check-commit command', () => {
     assert.ok(result.error.includes('unstage'), 'error should suggest unstage command');
   });
 
-  // #3588 C7 finding: the test matrix specifies `backslashPlanningPathIsDetected`
-  // — a `.planning\`-prefixed staged path should hit cmdCheckCommit's
-  // `f.startsWith('.planning\\')` branch (src/commands.cts:2367), mirroring
-  // detectPhaseNumberFromFiles's Windows-separator defense. Empirically that
-  // branch is UNREACHABLE through cmdCheckCommit's only real input source:
-  // `git diff --cached --name-only` C-style-quotes ANY path containing a
-  // backslash (git's quote_c_style, independent of core.quotepath, which only
-  // governs non-ASCII bytes) — the reported line is `".planning\\STATE.md"`
-  // (quoted, doubled backslash), which starts with `"`, not `.planning\`.
-  // This holds on every platform: git's plumbing output is always
-  // `/`-normalized, even natively on Windows, so a real Windows checkout
-  // cannot produce an unquoted `.planning\` line here either. This test locks
-  // that reachability boundary as evidence rather than fabricating the
-  // matrix's original expectation as a pass. Not fixed here — cmdCheckCommit
-  // edits are out of this dispatch's scope (Part 1 is deferred pending
-  // #3601); flagged to the orchestrator as a matrix-row finding.
-  test("C7 (#3588) finding: '.planning\\\\'-prefix detection is unreachable via git's own quoted output", () => {
+  // #3588 F1: cmdCheckCommit must resolve the SAME phase_commit_docs.<phase-id>
+  // tier `gsd-tools query commit` (cmdCommit) already honors (#3587/#3601).
+  // Before this fix, cmdCheckCommit read only project-level `commit_docs`, so
+  // a phase with `phase_commit_docs.<n>: true` under project `commit_docs:
+  // false` was ALLOWED by `query commit` and BLOCKED by this guard — the
+  // hook shipped in this same branch shells out to check-commit, so that
+  // contradiction was live. C4/C5 exercise both directions of the override;
+  // both fail against the pre-fix tree (project-level-only check).
+  test('C4 (#3588/#3587): project commit_docs:false + per-phase true ALLOWS the commit', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify({ commit_docs: false })
+      JSON.stringify({ commit_docs: false, phase_commit_docs: { '03': true } })
     );
-    const backslashName = '.planning\\STATE.md';
-    fs.writeFileSync(path.join(tmpDir, backslashName), '# State');
-    gitOrThrow(['add', backslashName], { cwd: tmpDir });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-widgets'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '03-widgets', 'SUMMARY.md'), '# Three');
+    gitOrThrow(['add', '.planning/phases/03-widgets/SUMMARY.md'], { cwd: tmpDir });
 
-    const staged = gitOrThrow(['diff', '--cached', '--name-only'], { cwd: tmpDir }).trim();
-    assert.ok(staged.startsWith('"'), `git must C-style-quote a backslash-bearing path; got: ${staged}`);
-
-    // Because of that quoting, check-commit's filter never sees a line
-    // starting with the literal `.planning\` prefix, so it currently ALLOWS
-    // this commit — the opposite of a naive reading of the matrix row.
     const result = runGsdTools('check-commit', tmpDir);
-    assert.ok(result.success, `expected the (currently unreachable) backslash guard to leave this allowed: ${result.error}`);
+    assert.ok(
+      result.success,
+      `phase_commit_docs.03:true must allow the commit even though project commit_docs is false: ${result.error || ''}`,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.allowed, true);
   });
 
-  // #3588 C6: staged paths spanning two phase directories. cmdCheckCommit is
-  // still phase-BLIND at this point in the epic (Part 1 — teaching it the
-  // per-phase `phase_commit_docs` tier from #3587/PR#3601 — is deferred until
-  // that PR merges to `next`; see 40-design.md "Known limits"). This test
-  // locks the current, honest baseline instead of asserting the eventual
-  // first-match-phase-pinning behavior it cannot yet have: with no per-phase
-  // tier in play, a project-level `commit_docs: false` blocks EVERY staged
-  // `.planning/` path regardless of which phase directory it lives under,
-  // and the refusal names all of them. C4/C5 (the actual Phase-3-contract
-  // rows) are deferred alongside Part 1.
-  test('C6 (#3588): staged paths spanning two phase directories are all named in the refusal', () => {
+  test('C5 (#3588/#3587): project commit_docs:true + per-phase false BLOCKS the commit', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
-      JSON.stringify({ commit_docs: false })
+      JSON.stringify({ commit_docs: true, phase_commit_docs: { '03': false } })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-widgets'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '03-widgets', 'SUMMARY.md'), '# Three');
+    gitOrThrow(['add', '.planning/phases/03-widgets/SUMMARY.md'], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'phase_commit_docs.03:false must block the commit even though project commit_docs is true');
+    assert.ok(result.error.includes('03-widgets/SUMMARY.md'), result.error);
+  });
+
+  // #3588 C6: staged paths spanning two phase directories with DIFFERENT
+  // phase_commit_docs values must resolve against the FIRST phase (in
+  // detectPhaseNumberFromFiles's staged-path order) — the same first-match
+  // rule cmdCommit is pinned to (see the folded #3587 `multiPhaseFilesResolves
+  // AgainstFirstPhase` test above). This replaces the pre-fix baseline test,
+  // which could only assert the phase-blind "blocks everything" behavior
+  // because the per-phase tier did not exist here yet.
+  test('C6 (#3588): staged paths spanning two phase directories resolve against the FIRST phase, matching cmdCommit', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false, phase_commit_docs: { '01': true, '02': false } })
     );
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-first'), { recursive: true });
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-second'), { recursive: true });
@@ -2708,9 +2710,89 @@ describe('check-commit command', () => {
     );
 
     const result = runGsdTools('check-commit', tmpDir);
-    assert.ok(!result.success, 'commit_docs:false with no per-phase override must still block both phases');
-    assert.ok(result.error.includes('01-first/SUMMARY.md'), result.error);
-    assert.ok(result.error.includes('02-second/SUMMARY.md'), result.error);
+    assert.ok(
+      result.success,
+      `phase 01 (first match) resolves phase_commit_docs.01:true, so the commit must be allowed despite phase 02:false: ${result.error || ''}`,
+    );
+  });
+
+  // #3588 F2: `git diff --cached --name-only` (no `-z`) C-style-quotes any
+  // path containing a non-ASCII byte or another special character — a staged
+  // `.planning/café.md` is reported as `".planning/caf\303\251.md"`, which
+  // does not start with `.planning/`, so the pre-fix guard MISSED it and
+  // allowed the commit — a false negative in the harm direction this guard
+  // exists to prevent. These MUST fail against the pre-fix (LF, no `-z`)
+  // tree and pass once `-z` + NUL-split lands.
+  test('F2 (#3588): a staged .planning/ file with a non-ASCII name is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const unicodeName = '.planning/café.md';
+    fs.writeFileSync(path.join(tmpDir, unicodeName), '# State');
+    gitOrThrow(['add', unicodeName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/café.md must be detected and block the commit');
+    assert.ok(result.error.includes('café.md'), result.error);
+  });
+
+  test('F2 (#3588): a staged .planning/ file with a space in its name is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const spacedName = '.planning/with space.md';
+    fs.writeFileSync(path.join(tmpDir, spacedName), '# State');
+    gitOrThrow(['add', spacedName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/ file with a space in its name must be detected and block the commit');
+    assert.ok(result.error.includes('with space.md'), result.error);
+  });
+
+  test('F2 (#3588): a staged .planning/ file with a quote character in its name is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const quotedName = '.planning/with"quote.md';
+    fs.writeFileSync(path.join(tmpDir, quotedName), '# State');
+    gitOrThrow(['add', quotedName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/ file with a quote character in its name must be detected and block the commit');
+    assert.ok(result.error.includes('quote.md'), result.error);
+  });
+
+  // #3588 C7 (flipped): the earlier pass's C7 test pinned a synthetic
+  // top-level filename (`.planning\STATE.md`, backslash as a literal
+  // character in a single path component, not a real nested directory — git
+  // never uses backslash as a tree separator, on any platform) as evidence
+  // that `f.startsWith('.planning\\')` was unreachable, and left the assertion
+  // at "currently allowed" pending a fix. That branch is now removed as dead
+  // code (git's plumbing output is always `/`-normalized, so a real Windows
+  // `.planning\<file>` path never reaches this filter as a `.planning\`
+  // prefix). This replaces it with the REAL analog of the same class of bug:
+  // a genuine `.planning/` file whose name merely CONTAINS a literal
+  // backslash character. Without `-z` that name is also C-style-quoted
+  // (`".planning/back\\slash.md"`) and missed; with `-z` it is read as raw,
+  // unquoted bytes and correctly detected via the plain `.planning/` prefix
+  // check alone — no backslash-specific branch needed.
+  test('C7 (#3588, flipped): a staged .planning/ file whose name contains a backslash character is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const backslashInName = '.planning/back\\slash.md';
+    fs.writeFileSync(path.join(tmpDir, backslashInName), '# State');
+    gitOrThrow(['add', backslashInName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(
+      !result.success,
+      'a staged .planning/ file whose name contains a backslash character must be detected and block the commit',
+    );
   });
 });
 

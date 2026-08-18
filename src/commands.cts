@@ -2427,33 +2427,62 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 }
 
 /**
- * Check whether a commit should be allowed based on commit_docs config.
- * When commit_docs is false, rejects commits that stage .planning/ files.
- * Intended for use as a pre-commit hook guard.
+ * Check whether a commit should be allowed based on the `commit_docs`
+ * precedence chain, INCLUDING any `phase_commit_docs.<phase-id>` override
+ * (#3587/#3601). Rejects commits that stage `.planning/` files when the
+ * resolved policy is false. Intended for use as a pre-commit hook guard —
+ * see `commit-docs-guard enable` above.
+ *
+ * The phase is derived from the STAGED `.planning/` paths via the single-
+ * owner `detectPhaseNumberFromFiles` (the same helper `cmdCommit` uses), and
+ * the policy itself is resolved via the single-owner `resolveCommitDocsPolicy`
+ * (also shared with `cmdCommit`) — this function never re-derives phase
+ * detection or precedence, so it cannot diverge from `cmdCommit`'s decision
+ * for the same staged tree (#3588 Part 1: this guard was previously
+ * phase-blind, reading only project-level `commit_docs` and directly
+ * contradicting `gsd-tools query commit`'s phase-aware resolution).
+ *
+ * Staged paths are read via `git diff --cached --name-only -z`, NUL-
+ * delimited, rather than the LF-delimited default. Without `-z`, git
+ * C-style-quotes (wraps in double quotes, octal-escapes) any path containing
+ * a non-ASCII byte, a space-adjacent special character, or a literal quote —
+ * `.planning/café.md` is reported as `".planning/caf\303\251.md"`, which
+ * does not start with `.planning/`, so the old LF-based filter silently
+ * missed it and allowed the commit (#3588 F2: a false negative in the harm
+ * direction this guard exists to prevent). `-z` disables that quoting
+ * entirely and NUL-terminates each path instead, so every staged path is
+ * read as literal, unquoted bytes and no unquoting logic is needed.
  */
 function cmdCheckCommit(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
 
-  // If commit_docs is true (or not set), allow all commits
-  if (config['commit_docs'] !== false) {
-    output({ allowed: true, reason: 'commit_docs_enabled' }, raw, 'allowed');
-    return;
-  }
-
-  // commit_docs is false — check if any .planning/ files are staged
-  const stagedResult = execGit(['diff', '--cached', '--name-only'], { cwd });
+  const stagedResult = execGit(['diff', '--cached', '--name-only', '-z'], { cwd });
   if (stagedResult.exitCode === 0) {
-    const planningFiles = stagedResult.stdout.split('\n').filter(f => f.startsWith('.planning/') || f.startsWith('.planning\\'));
+    const files = stagedResult.stdout.split('\0').filter(Boolean);
+    const planningFiles = files.filter(f => f.startsWith('.planning/'));
 
     if (planningFiles.length > 0) {
-      error(
-        `commit_docs is false but ${planningFiles.length} .planning/ file(s) are staged:\n` +
-        planningFiles.map(f => `  ${f}`).join('\n') +
-        `\n\nTo unstage: git reset HEAD ${planningFiles.join(' ')}`
+      const policy = resolveCommitDocsPolicy(
+        config,
+        detectPhaseNumberFromFiles(planningFiles),
+        () => isGitIgnored(cwd, '.planning'),
       );
+      if (!policy.resolved) {
+        error(
+          `commit_docs is false but ${planningFiles.length} .planning/ file(s) are staged:\n` +
+          planningFiles.map(f => `  ${f}`).join('\n') +
+          `\n\nTo unstage: git reset HEAD ${planningFiles.join(' ')}`
+        );
+      }
+      output(
+        { allowed: true, reason: policy.source === 'phase' ? 'phase_commit_docs_true' : 'commit_docs_enabled' },
+        raw,
+        'allowed',
+      );
+      return;
     }
   }
-  // exitCode !== 0 → no staged files or not a git repo — allow
+  // exitCode !== 0 (no staged files / not a git repo) or no .planning/ files staged — allow
 
   output({ allowed: true, reason: 'no_planning_files_staged' }, raw, 'allowed');
 }
