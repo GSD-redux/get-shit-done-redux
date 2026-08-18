@@ -78,7 +78,7 @@ const {
   listCodebaseMapFiles,
 } = onboardProjection;
 
-const { output, error } = io;
+const { output, error, ERROR_REASON } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
@@ -98,6 +98,8 @@ const {
   planningRoot,
   listAvailableWorkstreams,
   getActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
+  describeUnresolvedWorkstreamReason,
   findContextMdIn,
 } = planningWorkspace;
 
@@ -2916,10 +2918,27 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   const _availableWorkstreams = listAvailableWorkstreams(cwd);
   const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
   if (_availableWorkstreams.length > 0 && !_resolvedWorkstream) {
+    // #3579: getActiveWorkstream now inherits a pointer-less session's read
+    // from the shared .planning/active-workstream marker, so reaching this
+    // branch with a marker actually present means the marker EXISTED but
+    // didn't resolve (invalid name, or its workstream dir is gone) — a
+    // materially different situation from "nothing was ever set" and one
+    // that deserves its own diagnostic instead of the generic message below.
+    const _diagnosis = diagnoseUnresolvedActiveWorkstream(cwd);
+    if (_diagnosis.present) {
+      error(
+        `init.progress requires a workstream in workstream mode — the active-workstream marker names '${_diagnosis.value}', but it did not resolve: ${describeUnresolvedWorkstreamReason(_diagnosis.reason)}. Root STATE.md (likely stale) would be reported otherwise. ` +
+          `Pass --ws <name> or run ${formatGsdSlash('workstream set', _slashRuntime) as string} to point it at an existing workstream. ` +
+          `Available workstreams: ${_availableWorkstreams.join(', ')}`,
+        ERROR_REASON.WORKSTREAM_MODE_MARKER_UNRESOLVED,
+        { marker_value: _diagnosis.value, marker_reason: _diagnosis.reason },
+      );
+    }
     error(
       `init.progress requires a workstream in workstream mode — no active workstream is set, so root STATE.md (likely stale) would be reported. ` +
         `Pass --ws <name> or run ${formatGsdSlash('workstream set', _slashRuntime) as string} first. ` +
         `Available workstreams: ${_availableWorkstreams.join(', ')}`,
+      ERROR_REASON.WORKSTREAM_MODE_NONE_ACTIVE,
     );
   }
 

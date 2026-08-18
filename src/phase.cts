@@ -82,8 +82,10 @@ const { readVerificationStatus } = verificationMod;
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
 const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
 
-const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
-  planningWorkspace;
+const {
+  planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason,
+} = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
 import milestoneLockMod = require('./milestone-lock.cjs');
 const { extractFrontmatter } = frontmatterMod;
@@ -2210,10 +2212,27 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   const availableWorkstreams = listAvailableWorkstreams(cwd);
   const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
   if (availableWorkstreams.length > 0 && !resolvedWorkstream) {
+    // #3579: getActiveWorkstream now inherits a pointer-less session's read
+    // from the shared .planning/active-workstream marker, so reaching this
+    // branch with a marker actually present means the marker EXISTED but
+    // didn't resolve (invalid name, or its workstream dir is gone) — a
+    // materially different situation from "nothing was ever set" and one
+    // that deserves its own diagnostic instead of the generic message below.
+    const diagnosis = diagnoseUnresolvedActiveWorkstream(cwd);
+    if (diagnosis.present) {
+      error(
+        `phase.complete requires a workstream in workstream mode — the active-workstream marker names '${diagnosis.value}', but it did not resolve: ${describeUnresolvedWorkstreamReason(diagnosis.reason)}. Root STATE.md/ROADMAP.md (likely stale) would be written otherwise. ` +
+          `Pass --ws <name> or run ${formatGsdSlash('workstream set', resolveRuntime(cwd)) as string} to point it at an existing workstream. ` +
+          `Available workstreams: ${availableWorkstreams.join(', ')}`,
+        ERROR_REASON.WORKSTREAM_MODE_MARKER_UNRESOLVED,
+        { marker_value: diagnosis.value, marker_reason: diagnosis.reason },
+      );
+    }
     error(
       `phase.complete requires a workstream in workstream mode — no active workstream is set, so root STATE.md/ROADMAP.md (likely stale) would be written. ` +
         `Pass --ws <name> or run ${formatGsdSlash('workstream set', resolveRuntime(cwd)) as string} first. ` +
         `Available workstreams: ${availableWorkstreams.join(', ')}`,
+      ERROR_REASON.WORKSTREAM_MODE_NONE_ACTIVE,
     );
   }
 

@@ -192,6 +192,12 @@ const ERROR_REASON = Object.freeze({
   PHASE_VERIFICATION_INCOMPLETE: 'phase_verification_incomplete',
   PHASE_PLAN_COVERAGE_INCOMPLETE: 'phase_plan_coverage_incomplete',
   SUMMARY_NO_PLANNING: 'summary_no_planning',
+  // #3579: workstream-mode fail-safe guards (init.progress, phase.complete) —
+  // distinguishes "no marker/pointer anywhere" from "a marker exists but
+  // didn't resolve" so a JSON-error-mode caller can branch on `reason`
+  // instead of regexing the human message.
+  WORKSTREAM_MODE_NONE_ACTIVE: 'workstream_mode_none_active',
+  WORKSTREAM_MODE_MARKER_UNRESOLVED: 'workstream_mode_marker_unresolved',
   // graphify
   GRAPHIFY_NO_GRAPH: 'graphify_no_graph',
   GRAPHIFY_INVALID_QUERY: 'graphify_invalid_query',

@@ -244,19 +244,45 @@ function pickActiveWorkstreamAdapterChain(cwd: string, opts: ActiveWorkstreamOpt
     return [opts.activeWorkstreamAdapter];
   }
 
+  // #3579 item 3: when a caller supplies `opts.activeWorkstreamAdapters` at
+  // all, honor ONLY what it provides. The prior `|| createXPointerAdapter(...)`
+  // fallback synthesized a REAL filesystem adapter for whichever half a test
+  // double omitted — so a test injecting only `{ session }` silently touched
+  // the real shared marker file, and one injecting only `{ shared }` silently
+  // touched the real session-scoped tmp file. A missing half now gets a
+  // no-op in-memory adapter (always reads null) instead — this preserves the
+  // chain[0]-is-owned / rest-are-fallback shape resolveFromChain relies on
+  // without ever reaching disk. A caller that wants a real adapter for one
+  // half can still construct and pass it explicitly.
+  const injected = opts.activeWorkstreamAdapters;
   const sessionKey = getWorkstreamSessionKey();
+
   if (!sessionKey) {
-    const shared = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.shared)
-      || createSharedPointerAdapter(cwd);
+    const shared = injected
+      ? (injected.shared ?? createMemoryPointerAdapter(null))
+      : createSharedPointerAdapter(cwd);
     return [shared];
   }
 
-  const session = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.session)
-    || createSessionScopedPointerAdapter(cwd, sessionKey);
-  const shared = (opts.activeWorkstreamAdapters && opts.activeWorkstreamAdapters.shared)
-    || createSharedPointerAdapter(cwd);
+  const session = injected
+    ? (injected.session ?? createMemoryPointerAdapter(null))
+    : createSessionScopedPointerAdapter(cwd, sessionKey);
+  const shared = injected
+    ? (injected.shared ?? createMemoryPointerAdapter(null))
+    : createSharedPointerAdapter(cwd);
 
   return session ? [session, shared] : [shared];
+}
+
+/**
+ * Shared "does this stored name resolve" predicate — format-valid AND its
+ * workstream directory exists. Factored out so resolveFromChain's owned/
+ * fallback arms (and diagnoseUnresolvedActiveWorkstream, #3579 item 1) share
+ * one definition of "resolvable" instead of re-deriving the same two checks.
+ */
+function resolvesToExistingWorkstream(cwd: string, name: string | null): name is string {
+  if (!name || !validateWorkstreamName(name)) return false;
+  return fs.existsSync(path.join(planningRoot(cwd), 'workstreams', name));
 }
 
 /**
@@ -277,12 +303,7 @@ function resolveFromChain(cwd: string, chain: WorkstreamPointerAdapter[], selfHe
 
   const ownedName = owned.read();
   if (ownedName) {
-    if (!validateWorkstreamName(ownedName)) {
-      if (selfHeal) owned.clear();
-      return null;
-    }
-    const ownedWsDir = path.join(planningRoot(cwd), 'workstreams', ownedName);
-    if (!fs.existsSync(ownedWsDir)) {
+    if (!resolvesToExistingWorkstream(cwd, ownedName)) {
       if (selfHeal) owned.clear();
       return null;
     }
@@ -291,13 +312,47 @@ function resolveFromChain(cwd: string, chain: WorkstreamPointerAdapter[], selfHe
 
   for (const adapter of fallbacks) {
     const name = adapter.read();
-    if (!name || !validateWorkstreamName(name)) continue;
-    const wsDir = path.join(planningRoot(cwd), 'workstreams', name);
-    if (!fs.existsSync(wsDir)) continue;
-    return name;
+    if (resolvesToExistingWorkstream(cwd, name)) return name;
   }
 
   return null;
+}
+
+/**
+ * Diagnostic sibling of resolveFromChain (#3579 item 1). getActiveWorkstream/
+ * peekActiveWorkstream collapse EVERY unresolvable case to `null`, which is
+ * exactly right for routing — but a fail-safe guard reporting "no active
+ * workstream is set" to an operator needs to distinguish two very different
+ * situations that both produce that same `null`:
+ *
+ *   (a) no marker/pointer exists anywhere in the chain at all, vs.
+ *   (b) a marker/pointer EXISTS (names a value) but that value didn't
+ *       resolve — either the name fails validateWorkstreamName, or it's a
+ *       well-formed name whose `workstreams/<name>` directory is missing.
+ *
+ * Walks the same chain resolveFromChain uses and, for the first adapter that
+ * held a non-empty raw value, reports why it didn't resolve. Read-only: never
+ * calls adapter.clear() (mirrors peekActiveWorkstream, not getActiveWorkstream
+ * — a diagnostic read must not have side effects). Reuses
+ * resolvesToExistingWorkstream so this can never disagree with the actual
+ * resolution predicate above.
+ */
+function diagnoseUnresolvedActiveWorkstream(
+  cwd: string,
+  opts: ActiveWorkstreamOpts = {},
+): { present: boolean; value: string | null; reason: 'invalid_name' | 'missing_workstream_dir' | null } {
+  const chain = pickActiveWorkstreamAdapterChain(cwd, opts);
+  for (const adapter of chain) {
+    const raw = adapter.read();
+    if (!raw) continue;
+    if (resolvesToExistingWorkstream(cwd, raw)) continue;
+    return {
+      present: true,
+      value: raw,
+      reason: validateWorkstreamName(raw) ? 'missing_workstream_dir' : 'invalid_name',
+    };
+  }
+  return { present: false, value: null, reason: null };
 }
 
 function getActiveWorkstream(cwd: string, opts: ActiveWorkstreamOpts = {}): string | null {
@@ -440,6 +495,7 @@ export = {
   pickActiveWorkstreamAdapterChain,
   getActiveWorkstream,
   peekActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
   setActiveWorkstream,
   clearActiveWorkstream,
   parseCliWorkstream,

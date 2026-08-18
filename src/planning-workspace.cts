@@ -27,6 +27,7 @@ const {
   getActiveWorkstream: getStoredActiveWorkstream,
   setActiveWorkstream: setStoredActiveWorkstream,
   clearActiveWorkstream: clearStoredActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream: diagnoseUnresolvedStoredActiveWorkstream,
 } = activeWorkstreamStore;
 
 // Track .planning/.lock files held by this process so they can be removed on exit.
@@ -395,6 +396,28 @@ function setActiveWorkstream(cwd: string, name: string): void {
   setStoredActiveWorkstream(cwd, name);
 }
 
+// #3579 item 1: read-only diagnostic sibling of getActiveWorkstream, thin
+// pass-through to active-workstream-store's chain walk. Lets the #1912/#2028
+// fail-safe guards (init.progress, phase.complete) distinguish "no marker at
+// all" from "a marker exists but didn't resolve" without duplicating the
+// resolution predicate.
+function diagnoseUnresolvedActiveWorkstream(cwd: string): {
+  present: boolean;
+  value: string | null;
+  reason: 'invalid_name' | 'missing_workstream_dir' | null;
+} {
+  return diagnoseUnresolvedStoredActiveWorkstream(cwd);
+}
+
+// #3579 item 1: human-readable clause for diagnoseUnresolvedActiveWorkstream's
+// `reason`, shared by the init.progress and phase.complete fail-safe guards so
+// the two error messages describe the same failure the same way instead of
+// drifting (CLAUDE.md's Generative Fix Divergence anti-pattern).
+function describeUnresolvedWorkstreamReason(reason: 'invalid_name' | 'missing_workstream_dir' | null): string {
+  if (reason === 'invalid_name') return 'the name is not a valid workstream name';
+  return "its workstream directory doesn't exist (it may have been renamed or removed)";
+}
+
 /**
  * Locate the CONTEXT.md file in a phase directory, handling both the bare
  * form (`CONTEXT.md`) and the padded-prefix convention (`NN-CONTEXT.md`,
@@ -442,6 +465,8 @@ export = {
   withPlanningLock,
   getActiveWorkstream,
   setActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
+  describeUnresolvedWorkstreamReason,
   findContextMdIn,
   // Test seam (audit M1): inject a deterministic isPidAlive so the liveness-gated
   // steal decision is exercised without real pids. Mirrors capability-lock.cts.

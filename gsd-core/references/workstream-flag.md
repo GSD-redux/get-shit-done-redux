@@ -57,7 +57,13 @@ routing hot path.
 
 Session-scoped pointers are intentionally lightweight and best-effort:
 
-- Clearing a workstream for one session removes only that session's pointer file
+- Clearing a workstream for one session removes only that session's pointer file.
+  This returns that session to step 4 of Resolution Priority above — it goes back
+  to **inheriting** `.planning/active-workstream` (if a marker exists there), not
+  to flat mode. A cleared session with no marker present resolves to `null`; a
+  cleared session with a marker present resolves to whatever that marker names.
+  To force flat mode for a cleared session, remove the shared marker file, or use
+  an explicit override such as `--ws` / `GSD_WORKSTREAM` on the command in question.
 - If that was the last pointer for the repo, GSD also removes the now-empty
   per-project temp directory
 - If sibling session pointers still exist, the temp directory is left in place
