@@ -240,6 +240,21 @@ The key suffix is **not** always the lane slug. Each lane declares the config ke
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
 | `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
+### Resolved model recording (#2295)
+
+Every `/gsd-review` run records the resolved model per reviewer in the `REVIEWS.md` frontmatter as `models:` and `model_sources:`, whether or not the lane was pinned via the keys above.
+
+| `model_sources` value | Meaning |
+|---|---|
+| `pinned` | `review.models.<slug>` (or an ADR-1517 reviewer-instance `--model`) that really reached the invocation |
+| `served` | An OpenAI-compatible server echoed the model it actually ran. Most authoritative |
+| `requested` | openai-http: discovered from `/v1/models`, or the lane's declared `fallbackModel`; the server did not echo one |
+| `banner` | The CLI's own startup banner named it. File-output lanes only (`codex` today) |
+| `transcript` | The lane handler's own on-disk session log named it (`agy`'s `transcript_full.jsonl`) |
+| `unknown` | Nothing recoverable |
+
+A `models:` value reads `unknown` if and only if its `model_sources:` entry is `unknown`.
+
 **Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
 config schema — `review.models.ollama` belongs to the `ollama` capability, `review.ollama_host`
 to the same, and so on. Key names and existing `.planning/config.json` files are unchanged; only
