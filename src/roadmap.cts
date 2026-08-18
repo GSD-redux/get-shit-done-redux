@@ -874,18 +874,28 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     //   `**Plans:** N plans`  — bold "Plans:" (colon inside bold)
     //   `Plans: N plans`      — plain text header
     //
-    // #2853: the verb owns the count token ONLY — it must not destroy hand-written
-    // prose a human placed after the count (e.g. "(11-16 are gap closure ...)").
-    // Group $1 = phase header → `Plans:` label + trailing whitespace (unchanged).
-    // Group $2 = the existing count token to replace: matches `N/N plans complete`,
-    // `N/N plans executed`, or the bare template `N plans` form. Group $3 = whatever
-    // else is on the line (`[^\r\n]*`, so CRLF `\r` is preserved).
+    // #2853 / #3584: the verb owns the count token ONLY — it must not destroy
+    // hand-written prose a human placed on the line. Group $1 = phase header →
+    // `Plans:` label + trailing whitespace (unchanged). Group $2 = the existing
+    // count token to replace: matches `N/N plans complete`, `N/N plans executed`,
+    // or the bare template `N plans` form. Group $3 = whatever else is on the
+    // line (`[^\r\n]*`, so a CRLF `\r` is never part of the match and rides along
+    // untouched in the unmatched remainder of the string — never stranded, never
+    // duplicated).
     //
-    // Trailing text is preserved ONLY when a real count token ($2) was present —
-    // i.e. an annotation a human wrote after a real count. When $2 is absent the
-    // line is the fresh-template bracketed placeholder (`[Number of plans…]`) or
-    // other freeform guidance, not user prose: the count replaces the whole token,
-    // preserving the pre-#2853 clean-output behaviour on the template path.
+    // Three arms, in order:
+    //   1. $2 present (a real count token) → rewrite the token, preserve $3
+    //      verbatim (an annotation a human wrote after a real count; #2853).
+    //   2. $2 absent AND $3, trimmed, is the fresh-template BRACKETED
+    //      PLACEHOLDER (`[Number of plans, e.g., "3 plans" or "TBD"]`, per
+    //      gsd-core/templates/roadmap.md) → replace it with the computed count.
+    //      Detected POSITIVELY (trimmed value is wholly wrapped in `[...]`),
+    //      never as "anything that isn't a count".
+    //   3. Anything else (freeform prose, `TBD` / `TBD — annotation`, the first
+    //      line of a wrapped sentence, an empty value) → leave the whole matched
+    //      line untouched by returning `_match` unchanged. An untouched first
+    //      line cannot orphan its own continuation on the next line, since the
+    //      pattern never spans past `\n` in the first place.
     const planCountPattern = new RegExp(
       `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans)?([^\\r\\n]*)`,
       'i'
@@ -893,10 +903,25 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     const planCountText = isComplete
       ? `${summaryCount}/${planCount} plans complete`
       : `${summaryCount}/${planCount} plans executed`;
+    // Positive detector for the fresh-template placeholder: the trimmed trailing
+    // value is wholly wrapped in a single pair of brackets (e.g.
+    // `[Number of plans, e.g., "3 plans" or "TBD"]`, `[Number of plans]`).
+    const isBracketedPlaceholder = (value: string): boolean => {
+      const trimmed = value.trim();
+      return trimmed.length >= 2 && trimmed.startsWith('[') && trimmed.endsWith(']');
+    };
     roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, (_match, label, existingCount, trailing) => {
-      // Preserve trailing text only when a real count preceded it.
-      const suffix = existingCount ? trailing : '';
-      return `${label}${planCountText}${suffix}`;
+      if (existingCount) {
+        // Arm 1: real count token — rewrite it, preserve the trailing annotation.
+        return `${label}${planCountText}${trailing}`;
+      }
+      if (isBracketedPlaceholder(trailing)) {
+        // Arm 2: fresh-template bracketed placeholder — replace with the count.
+        return `${label}${planCountText}`;
+      }
+      // Arm 3: freeform prose, TBD, a wrapped sentence's first line, or an empty
+      // value — leave the line exactly as it was.
+      return _match;
     });
 
     // If complete: check checkbox
