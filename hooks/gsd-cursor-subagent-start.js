@@ -62,6 +62,7 @@ const os = require('os');
 // writeCursorHooksJson so the require always resolves post-install.
 const { resolveStatePath } = require('./lib/cursor-workspace.js');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+const { REASON_CODE } = require('./lib/isolation-deny-reason.js');
 // #3582: gsd-core/bin/lib/*.cjs (runtime-homes.cjs, worktree-safety.cjs,
 // runtime-name-policy.cjs, capability-registry.cjs — required below, inside
 // resolveIsolationEvidence and resolveFallbackIsolation) are tsc build
@@ -484,6 +485,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `${err instanceof RuntimeBuildError ? err.message : String(err && err.message || err)} ` +
         `Refusing to allow this subagent to spawn until the runtime library is built — a guard ` +
         `that cannot verify must not answer "safe" (#3050).`,
+      reasonCode: REASON_CODE.RUNTIME_BUILD_FAILED,
     };
   }
 
@@ -507,6 +509,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `Refusing to allow this subagent to spawn without being able to verify whether ` +
         `isolation is required — a guard that cannot verify must not answer "safe" (#3050). ` +
         `Retry once the project configuration is readable.`,
+      reasonCode: REASON_CODE.CONFIG_UNREADABLE,
     };
   }
 
@@ -523,6 +526,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `"harness-worktree", but the subagentStart payload for this dispatch carries no usable ` +
         `subagent_type. Refusing to allow it to spawn without being able to confirm whether it ` +
         `is a GSD executor — a guard that cannot verify must not answer "safe" (#3050).`,
+      reasonCode: REASON_CODE.NO_SUBAGENT_TYPE,
     };
   }
 
@@ -539,6 +543,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
         `could not be determined (git did not respond). Refusing to allow subagent_type=` +
         `"${subagentType}" to spawn without being able to verify isolation — a guard that ` +
         `cannot verify must not answer "safe" (#3050). Retry once git is responsive.`,
+      reasonCode: REASON_CODE.CANNOT_DETERMINE_ISOLATION,
     };
   }
 
@@ -551,6 +556,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
       `directly, with no consent and no warning. Start an isolated session first (the ` +
       `"--worktree" CLI flag or the "/worktree" chat command; Cursor manages these worktrees ` +
       `under "~/.cursor/worktrees/") and retry.`,
+    reasonCode: REASON_CODE.NOT_ISOLATED_WORKTREE,
   };
 }
 
@@ -600,7 +606,7 @@ function main() {
         decision = { action: 'allow' };
       }
       if (decision.action === 'deny') {
-        const out = { permission: 'deny', user_message: decision.reason };
+        const out = { permission: 'deny', user_message: decision.reason, reason_code: decision.reasonCode };
         if (additionalContext !== null) out.additional_context = additionalContext;
         process.stdout.write(JSON.stringify(out));
         return;

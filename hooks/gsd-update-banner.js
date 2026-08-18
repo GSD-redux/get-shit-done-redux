@@ -24,6 +24,9 @@ const os = require('os');
 // (`!cache.package_name || cache.package_name !== PACKAGE_NAME`) always
 // treats the cache as untrusted, so main() falls through to its existing
 // silent "print nothing" path below — no separate degrade branch needed.
+// This try/require/ensureRuntimeBuild/require/catch shape is deliberately
+// duplicated (not extracted to hooks/lib/) — see
+// gsd-check-update-worker.js's identical #3582 comment for why.
 let PACKAGE_NAME = null;
 let updateCacheFileName = 'gsd-update-check.json';
 try {

@@ -29,6 +29,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
+const { REASON_CODE } = require('../hooks/lib/isolation-deny-reason.js');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { gitOrThrow, toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -1033,14 +1034,14 @@ describe('gsd-cursor-subagent-start.js: #3582 cold tree — RuntimeBuildError su
     assert.equal(r.status, 0, `this hook always exits 0; stdout: ${r.stdout} stderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
-    assert.match(out.user_message, /runtime library failed to self-build/);
-    assert.match(out.user_message, /tsconfig\.build\.json not found/);
-    assert.match(out.user_message, /npm run build:lib/);
-    assert.match(out.user_message, /#3050/);
-    assert.doesNotMatch(
-      out.user_message,
-      /could not read or resolve this project's dispatch-isolation configuration \(/,
-      'a build failure must not be misreported as an unreadable config.json',
-    );
+    // Typed reason code (CONTRIBUTING.md "Prohibited: Raw Text Matching on
+    // Test Outputs" — assert the stable code, not the free-form
+    // `user_message` prose). RUNTIME_BUILD_FAILED and CONFIG_UNREADABLE are
+    // distinct codes, so this equality check itself proves the build
+    // failure is NOT misreported as the generic unreadable-config case.
+    assert.equal(out.reason_code, REASON_CODE.RUNTIME_BUILD_FAILED);
+    // `user_message` remains free-form operator-facing text — not asserted here.
+    assert.equal(typeof out.user_message, 'string');
+    assert.ok(out.user_message.length > 0);
   });
 });

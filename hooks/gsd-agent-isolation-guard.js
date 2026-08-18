@@ -64,6 +64,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+const { REASON_CODE } = require('./lib/isolation-deny-reason.js');
 // #3582: gsd-core/bin/lib/*.cjs (runtime-name-policy.cjs, capability-registry.cjs
 // below) are tsc build artifacts (ADR-457), gitignored and absent on a raw
 // plugin-marketplace / git-clone install that never ran `npm run build:lib`.
@@ -440,7 +441,8 @@ function evaluateDispatch(data, { clock = Date } = {}) {
     // "could not read or resolve ... configuration" text (the exact #3050
     // misreport this issue exists to fix). Both cases still fail closed
     // (block); only the message differs.
-    const reason = state.error instanceof RuntimeBuildError
+    const isBuildFailure = state.error instanceof RuntimeBuildError;
+    const reason = isBuildFailure
       ? `Agent isolation guard: cannot resolve this project's dispatch-isolation ` +
         `configuration because the GSD runtime library failed to self-build. ` +
         `${state.error.message} Refusing to dispatch subagent_type="${subagentType}" until ` +
@@ -451,7 +453,8 @@ function evaluateDispatch(data, { clock = Date } = {}) {
         `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
         `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
         `project configuration is readable.`;
-    return { action: 'block', reason };
+    const reasonCode = isBuildFailure ? REASON_CODE.RUNTIME_BUILD_FAILED : REASON_CODE.CONFIG_UNREADABLE;
+    return { action: 'block', reason, reasonCode };
   }
 
   if (state.isolation !== 'harness-worktree') return { action: 'allow' };
@@ -467,7 +470,7 @@ function evaluateDispatch(data, { clock = Date } = {}) {
     `${parsed.param}="${parsed.value}". Add ${parsed.param}="${parsed.value}" to the Agent() ` +
     `call so the executor runs in an isolated worktree instead of the primary checkout ` +
     `(gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md).`;
-  return { action: 'block', reason };
+  return { action: 'block', reason, reasonCode: REASON_CODE.HARNESS_FLAG_MISSING };
 }
 
 /* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
@@ -482,7 +485,7 @@ function main() {
       const data = JSON.parse(input);
       const decision = evaluateDispatch(data);
       if (decision.action === 'block') {
-        const out = { decision: 'block', reason: decision.reason };
+        const out = { decision: 'block', reason: decision.reason, reason_code: decision.reasonCode };
         process.stdout.write(JSON.stringify(out));
         // Kimi feeds stderr (not stdout) back to the model on exit 2.
         process.stderr.write(decision.reason);

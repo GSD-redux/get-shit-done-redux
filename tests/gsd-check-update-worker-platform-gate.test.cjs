@@ -839,6 +839,58 @@ describe('gsd-update-banner.js end-to-end', () => {
   });
 });
 
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — degrade, not crash ─────
+//
+// gsd-core/bin/lib/package-identity.cjs is a tsc build artifact (ADR-457),
+// gitignored and absent on a raw plugin-marketplace / git-clone install that
+// never ran `npm run build:lib`. This is an opt-in SessionStart hook — a
+// build failure must degrade (PACKAGE_NAME stays null), not crash session
+// start. The DEGRADED VERDICT this locks: buildBannerOutput's own lineage
+// guard (`!cache.package_name || cache.package_name !== PACKAGE_NAME`)
+// unconditionally distrusts ANY cache once PACKAGE_NAME is null, so even a
+// cache written by a healthy worker (real package_name, update_available:
+// true) must be suppressed rather than surfaced — the hook stays SILENT
+// (exit 0, empty stdout), never a crash and never a stale/wrong banner.
+// Simulated hermetically via tests/helpers/cold-runtime-lib-fixture.cjs — the
+// REAL gsd-core/bin/lib/ is never touched.
+describe('gsd-update-banner.js: #3582 cold tree — degrades to silent, never crashes', () => {
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  test('missing compiled runtime library -> exits 0 with empty stdout even for an otherwise-valid update-available cache', (t) => {
+    const cold = buildColdInstallTree();
+    t.after(cold.cleanup);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-banner-cold-home-'));
+    t.after(() => cleanup(home));
+    fs.mkdirSync(path.join(home, '.cache', 'gsd'), { recursive: true });
+    // The generic fallback filename the hook's own #3582 degrade uses when
+    // package-identity.cjs cannot be built (mirrors gsd-check-update.js's
+    // identical fallback literal) — this is the SAME cache path a degraded
+    // worker would also have written to.
+    fs.writeFileSync(
+      path.join(home, '.cache', 'gsd', 'gsd-update-check.json'),
+      JSON.stringify({
+        update_available: true,
+        installed: '1.39.0',
+        latest: '1.40.0',
+        package_name: '@opengsd/gsd-core',
+      }),
+    );
+
+    const r = seamRunHook(path.join(cold.hooksDir, 'gsd-update-banner.js'), [], {
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+      timeoutMs: 10_000,
+    });
+
+    assert.equal(r.exitCode, 0, `hook must exit 0 on a build failure; stderr: ${r.stderr}`);
+    assert.equal(
+      r.stdout.trim(),
+      '',
+      'a cold tree must silently suppress the banner (PACKAGE_NAME degrades to null, ' +
+        'so the lineage guard distrusts every cache) rather than crash or print stale content',
+    );
+  });
+});
+
 // ─── Install.js wiring: prompt + SessionStart entry registration ────────────
 //
 // These tests load bin/install.js as a module via GSD_TEST_MODE and assert on

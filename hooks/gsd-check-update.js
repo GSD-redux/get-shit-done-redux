@@ -15,7 +15,9 @@ const { spawn } = require('child_process');
 // start. gsd-check-update-worker.js — the process this hook spawns — degrades
 // identically and independently, so the shared fallback literal keeps the
 // cache path consistent between writer and reader even in the (rare)
-// doubly-degraded case.
+// doubly-degraded case. This try/require/ensureRuntimeBuild/require/catch
+// shape is deliberately duplicated (not extracted to hooks/lib/) — see
+// gsd-check-update-worker.js's identical #3582 comment for why.
 let updateCacheFileName = 'gsd-update-check.json';
 try {
   const { ensureRuntimeBuild } = require('../gsd-core/bin/ensure-runtime-build.cjs');

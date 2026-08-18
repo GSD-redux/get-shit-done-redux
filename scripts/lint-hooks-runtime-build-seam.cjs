@@ -66,6 +66,31 @@
  * - A hook that requires a compiled `gsd-core/bin/lib/*.cjs` module but never
  *   requires `ensure-runtime-build.cjs`, or requires it but never calls
  *   `ensureRuntimeBuild(...)`.
+ *
+ * ## Known limitations (documented, not defects — read before trusting a green run)
+ *
+ * - **Literal-string matching only.** `REQUIRE_RE` matches `require(...)`
+ *   called with a single- OR double-quoted string literal argument. A
+ *   concatenated/computed path (`require(base + '/gsd-core/bin/lib/x.cjs')`),
+ *   a template literal (`` require(`${dir}/x.cjs`) ``), or `createRequire(...)`
+ *   / `require.resolve` used indirectly all evade `isCompiledLibRequire` and
+ *   `isSeamRequire` — none of them appear as a literal quoted `require(...)`
+ *   call, so a file using one of these forms scans as "requires nothing",
+ *   even if it genuinely needs the seam.
+ * - **`hooks/` only.** `scanRepo`'s `walk()` only descends `SCAN_ROOT`
+ *   (`hooks/`, minus `hooks/dist/`). A compiled `gsd-core/bin/lib/*.cjs`
+ *   require sitting inside a NON-hooks helper module that a hook file then
+ *   requires (directly or transitively) is invisible to this scan — the scan
+ *   only ever reads the hook file's OWN text, never follows its require
+ *   graph. Deliberate: this is a same-file drift ratchet ("did the hook wire
+ *   the seam in at all"), not a whole-program static analyzer.
+ *
+ * Because of both limits, a file that passes this lint is not a
+ * correctness proof — it is a co-occurrence heuristic that catches the
+ * exact regression shape #3582 fixed (a bare literal compiled-lib require
+ * with no seam call anywhere in the same hook file). Anything routed around
+ * a literal require or around `hooks/` needs a code-review check, not this
+ * script, to catch a missing self-heal.
  */
 
 const fs = require('fs');

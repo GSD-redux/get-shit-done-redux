@@ -54,6 +54,7 @@ const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempProject, runGsdTools, cleanup } = require('./helpers.cjs');
 const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS, readSentinel } = require('../hooks/lib/isolation-sentinel.js');
+const { REASON_CODE } = require('../hooks/lib/isolation-deny-reason.js');
 const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-agent-isolation-guard.js');
@@ -1309,16 +1310,14 @@ describe('gsd-agent-isolation-guard.js: #3582 cold tree — RuntimeBuildError su
     assert.equal(result.status, 2, `expected fail-closed DENY; stdout: ${result.stdout} stderr: ${result.stderr}`);
     const out = JSON.parse(result.stdout);
     assert.equal(out.decision, 'block');
-    // The seam's own message (ensure-runtime-build.cjs), not the generic
-    // "could not read or resolve ... configuration" text rows 8/12 assert on.
-    assert.match(out.reason, /runtime library failed to self-build/);
-    assert.match(out.reason, /tsconfig\.build\.json not found/);
-    assert.match(out.reason, /npm run build:lib/);
-    assert.match(out.reason, /#3050/);
-    assert.doesNotMatch(
-      out.reason,
-      /could not read or resolve this project's dispatch-isolation configuration \(/,
-      'a build failure must not be misreported as an unreadable config.json',
-    );
+    // Typed reason code (CONTRIBUTING.md "Prohibited: Raw Text Matching on
+    // Test Outputs" — assert the stable code, not the free-form `reason`
+    // prose). RUNTIME_BUILD_FAILED and CONFIG_UNREADABLE are distinct codes,
+    // so this equality check itself proves the build failure is NOT
+    // misreported as the generic unreadable-config case (rows 8/12 above).
+    assert.equal(out.reason_code, REASON_CODE.RUNTIME_BUILD_FAILED);
+    // `reason` remains free-form operator-facing text — not asserted here.
+    assert.equal(typeof out.reason, 'string');
+    assert.ok(out.reason.length > 0);
   });
 });
