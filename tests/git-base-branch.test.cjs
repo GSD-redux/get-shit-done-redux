@@ -402,6 +402,152 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
   });
 });
 
+// ─── #3552: protected-branch policy and execute-phase warning ────────────────
+
+function extractProtectedBranchWarningBash() {
+  const content = readFileNormalized(path.join(WORKFLOW_DIR, 'execute-phase.md'));
+  const lines = content.split('\n');
+  const blocks = [];
+  let inStep = false;
+  let inBash = false;
+  let buffer = [];
+
+  for (const line of lines) {
+    if (!inStep && /^<step\s+name="handle_branching">\s*$/.test(line)) {
+      inStep = true;
+      continue;
+    }
+    if (inStep && /^<\/step>\s*$/.test(line)) break;
+    if (inStep && !inBash && /^```bash\s*$/.test(line)) {
+      inBash = true;
+      buffer = [];
+      continue;
+    }
+    if (inBash && /^```\s*$/.test(line)) {
+      blocks.push(buffer.join('\n'));
+      inBash = false;
+      continue;
+    }
+    if (inBash) buffer.push(line);
+  }
+
+  const block = blocks.find((candidate) => candidate.includes('--is-protected'));
+  if (!block) throw new Error('handle_branching has no protected-branch warning bash block');
+  return block;
+}
+
+describe('#3552: configured protected branches', () => {
+  const configuredRead = () => JSON.stringify({
+    git: {
+      base_branch: 'main',
+      protected_branches: ['develop', 'next', 'develop'],
+    },
+  });
+
+  test('#3552 configured match and unrelated branch produce opposite results', () => {
+    const match = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
+      readFile: configuredRead,
+    });
+    const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', {
+      readFile: configuredRead,
+    });
+
+    assert.deepStrictEqual(match, {
+      baseBranch: 'main',
+      protectedBranches: ['main', 'develop', 'next'],
+      isProtected: true,
+      verified: true,
+    });
+    assert.strictEqual(control.isProtected, false);
+    assert.notStrictEqual(match.isProtected, control.isProtected,
+      'negative control must disagree with the configured protected-branch match');
+  });
+
+  test('#3552 absent list retains resolved-base protection and unrelated control', () => {
+    const deps = { readFile: () => '{"git":{"base_branch":"main"}}' };
+    const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', deps);
+    const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', deps);
+
+    assert.deepStrictEqual(base.protectedBranches, ['main']);
+    assert.strictEqual(base.isProtected, true);
+    assert.strictEqual(control.isProtected, false);
+    assert.notStrictEqual(base.isProtected, control.isProtected,
+      'negative control must disagree with the resolved-base match');
+  });
+
+  test('#3552 malformed direct edit contributes no names but retains resolved base', () => {
+    const malformedValues = [
+      'develop',
+      [],
+      ['develop', 42],
+      ['develop', '   '],
+    ];
+
+    for (const protectedBranches of malformedValues) {
+      const readFile = () => JSON.stringify({
+        git: { base_branch: 'main', protected_branches: protectedBranches },
+      });
+      const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { readFile });
+      const configuredName = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { readFile });
+
+      assert.deepStrictEqual(base.protectedBranches, ['main']);
+      assert.strictEqual(base.isProtected, true);
+      assert.strictEqual(configuredName.isProtected, false);
+    }
+  });
+
+  test('#3552 --is-protected CLI mode writes exact opposite booleans', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3552-cli-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    setGsdConfig(dir, 'git.protected_branches', ['develop', 'next']);
+
+    const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
+    const control = runGsdTools(['query', 'git.base-branch', '--is-protected', 'topic/3552'], dir);
+
+    assert.ok(match.success, match.error);
+    assert.ok(control.success, control.error);
+    assert.strictEqual(match.output, 'true\n');
+    assert.strictEqual(control.output, 'false\n');
+    assert.notStrictEqual(match.output, control.output,
+      'CLI negative control must disagree with the configured protected-branch match');
+  });
+
+  test('#3552 execute-phase warns on true, stays silent on false, and continues both', (t) => {
+    const bash = extractProtectedBranchWarningBash();
+    const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3552-execute-'));
+    t.after(() => cleanup(scriptDir));
+    const scriptPath = path.join(scriptDir, 'warning.sh');
+    fs.writeFileSync(scriptPath, [
+      '#!/usr/bin/env bash',
+      'set -u',
+      'git() { printf "%s\\n" "$CURRENT_BRANCH_VALUE"; }',
+      'gsd_run() { printf "%s\\n" "$PROTECTED_RESULT"; }',
+      bash,
+      'printf "continued\\n"',
+    ].join('\n'), { mode: 0o755 });
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.strictEqual(match.exitCode, 0, match.stderr);
+    assert.strictEqual(control.exitCode, 0, control.stderr);
+    assert.strictEqual(match.stdout, 'continued\n');
+    assert.strictEqual(control.stdout, 'continued\n');
+    assert.match(match.stderr, /protected branch/i);
+    assert.doesNotMatch(control.stderr, /protected branch/i);
+    assert.notStrictEqual(match.stderr, control.stderr,
+      'warning negative control must disagree with the protected-branch match');
+  });
+});
+
 // ─── #3057 W3: negative-space coverage for the resolver's failure arms ───────
 //
 // Everything below drives the *unhappy* halves of git-base-branch: malformed
