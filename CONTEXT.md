@@ -836,6 +836,8 @@ Invariants:
 
 Migration: Phases 1-4 (#3465-#3468) shipped 2026-05-13 — seam additions, subprocess-dispatch migration (6 files), fs migration (15 files / 215 call sites), and core.cjs compat-export removal are all complete; see ADR-0009's 2026-05-13 Update section.
 
+Dependency posture: this seam OWNS its Windows binary resolution and cmd.exe mediation rather than delegating to `cross-spawn`, `nano-spawn`, or `execa` — evaluated and decided in ADR-3625 (#3625). Do not re-litigate it in a PR; read the ADR. Headlines: `nano-spawn` is async-only and cannot back a `spawnSync` seam; `cross-spawn` is the only structurally-eligible candidate and independently arrives at the SAME escaping mechanism this seam uses (`cmd.exe /d /s /c` + pre-escaped line + `windowsVerbatimArguments`), which validates the approach rather than superseding it — but it resolves `process.cwd()` FIRST on Windows even when an explicit PATH is supplied (a binary-planting surface), calls `process.chdir()` during resolution, and keys its escape depth on a `node_modules/.bin/*.cmd` path regex of the same fragile shape #3411 was filed to delete. Adoption would also break `execTool`'s observable not-found contract across 53 dependent files. The decision carries revisit-if conditions (notably: if the seam ever needs an async dispatch shape, re-run the comparison — the honest sync→async ripple is 14 symbols / 7 files upstream, NOT the 167/53 figure, which is a `direction:both` measurement inflated by downstream callees).
+
 ---
 
 ## Session log (chronological, append-only, one line per session)
