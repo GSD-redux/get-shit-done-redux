@@ -242,6 +242,124 @@ describe('session resolution hardening', () => {
   });
 });
 
+// #3579: a session that has an identity (session key) but has never run
+// `workstream use` must inherit the repo-wide `.planning/active-workstream`
+// marker instead of resolving to nothing. peekActiveWorkstream has no CLI
+// surface (only the statusline hook calls it), so these tests require the
+// built module directly — same pattern as the planning-workspace.cjs require
+// used elsewhere in this file.
+describe('session inherits shared marker when pointer-less (#3579)', () => {
+  let tmpDir;
+  const {
+    getActiveWorkstream,
+    peekActiveWorkstream,
+  } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+
+    for (const [ws, status] of [['alpha', 'Alpha active'], ['beta', 'Beta active']]) {
+      const wsDir = path.join(tmpDir, '.planning', 'workstreams', ws);
+      fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true });
+      fs.writeFileSync(path.join(wsDir, 'STATE.md'), `# State\n**Status:** ${status}\n`);
+    }
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('session key present, no session pointer, marker names an existing workstream -> inherits the marker', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'alpha\n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'no-pointer-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'alpha');
+  });
+
+  test('peekActiveWorkstream inherits the marker and mutates nothing', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'alpha\n');
+    const sessionDir = getSessionPointerDir(tmpDir);
+    const savedSessionKey = process.env.GSD_SESSION_KEY;
+    process.env.GSD_SESSION_KEY = 'peek-no-pointer';
+    try {
+      const resolved = peekActiveWorkstream(tmpDir);
+      assert.strictEqual(resolved, 'alpha');
+      assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'alpha\n', 'peek must not mutate the shared marker');
+      assert.ok(!fs.existsSync(sessionDir), 'peek must not create a session pointer file');
+    } finally {
+      if (savedSessionKey !== undefined) process.env.GSD_SESSION_KEY = savedSessionKey;
+      else delete process.env.GSD_SESSION_KEY;
+    }
+  });
+
+  test('session pointer names beta while marker names alpha -> resolves beta, marker untouched (isolation)', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'alpha\n');
+    runGsdTools(['workstream', 'set', 'beta', '--raw'], tmpDir, { GSD_SESSION_KEY: 'has-own-pointer' });
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'has-own-pointer' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'beta');
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'alpha\n', 'session with its own pointer must never repoint the shared marker');
+  });
+
+  test('no session key, marker present -> resolves the marker (pre-existing path stays green)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'alpha\n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, {});
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'alpha');
+  });
+
+  test('no workstreams/ dir -> flat/null, unchanged', () => {
+    // createFixture() only creates .planning/phases, not .planning/workstreams.
+    const flatDir = createFixture();
+    try {
+      const savedSessionKey = process.env.GSD_SESSION_KEY;
+      process.env.GSD_SESSION_KEY = 'flat-no-workstreams-dir';
+      try {
+        assert.strictEqual(getActiveWorkstream(flatDir), null);
+        assert.strictEqual(peekActiveWorkstream(flatDir), null);
+      } finally {
+        if (savedSessionKey !== undefined) process.env.GSD_SESSION_KEY = savedSessionKey;
+        else delete process.env.GSD_SESSION_KEY;
+      }
+    } finally {
+      cleanup(flatDir);
+    }
+  });
+
+  test('marker names a non-existent workstream, session has no pointer -> resolves null and the marker file is NOT deleted', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'ghost-workstream\n');
+
+    const result = runGsdTools(['workstream', 'get'], tmpDir, { GSD_SESSION_KEY: 'stale-marker-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).active, null);
+    assert.ok(fs.existsSync(markerPath), 'a pointer-less session read must never delete the shared marker');
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf-8'), 'ghost-workstream\n');
+  });
+
+  test('session pointer file exists but is whitespace-only -> treated as absent, inherits the marker', () => {
+    const markerPath = path.join(tmpDir, '.planning', 'active-workstream');
+    fs.writeFileSync(markerPath, 'beta\n');
+
+    runGsdTools(['workstream', 'set', 'alpha', '--raw'], tmpDir, { GSD_SESSION_KEY: 'whitespace-pointer-session' });
+    const sessionDir = getSessionPointerDir(tmpDir);
+    const sessionFile = getSessionPointerFileName('GSD_SESSION_KEY', 'whitespace-pointer-session');
+    fs.writeFileSync(path.join(sessionDir, sessionFile), '   \n');
+
+    const result = runGsdTools(['workstream', 'get', '--raw'], tmpDir, { GSD_SESSION_KEY: 'whitespace-pointer-session' });
+
+    assert.ok(result.success, `get failed: ${result.error}`);
+    assert.strictEqual(result.output, 'beta');
+  });
+});
+
 describe('pointer lifecycle hardening', () => {
   let tmpDir;
 
