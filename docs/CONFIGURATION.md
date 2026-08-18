@@ -255,6 +255,10 @@ Every `/gsd-review` run records the resolved model per reviewer in the `REVIEWS.
 
 A `models:` value reads `unknown` if and only if its `model_sources:` entry is `unknown`.
 
+When GSD applies a reasoning effort to a lane, the recorded value carries it as a
+`(reasoning=<level>)` suffix (for example `gpt-5.6-sol (reasoning=high)`) — the level is GSD's
+own resolved effort, not the CLI's default.
+
 **Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
 config schema — `review.models.ollama` belongs to the `ollama` capability, `review.ollama_host`
 to the same, and so on. Key names and existing `.planning/config.json` files are unchanged; only

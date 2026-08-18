@@ -109,6 +109,8 @@ If a reviewer's entry reads `unknown`, pin it: set `review.models.<slug>` for th
 
 Some `unknown` values are expected, not a bug to chase: lanes that accept no model at all (`cursor`, `qwen`, `coderabbit`), and any lane whose CLI didn't disclose one on this run. `pinned` is a certain value; `banner` and `transcript` are recovered from third-party CLI output and can degrade to `unknown` after an upstream release changes that output.
 
+A `models:` entry like `gpt-5.6-sol (reasoning=high)` is not a formatting quirk: the `(reasoning=<level>)` suffix reflects a reasoning effort GSD itself applied to that lane, driven by your `effort.*` config — not the CLI's own default.
+
 ---
 
 ## Incorporate feedback into the plan

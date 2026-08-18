@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "review.md": {
+      "reason": "#2295: the write_reviews step gained a models:/model_sources: render instruction plus a frontmatter example, teaching it to surface the per-lane resolved model recorded by resolveSpawnModel/runOpenAiCompatible (src/review-lane-runner.cts). Deliberate growth in runtime-loaded workflow text for the new feature, not converter drift."
+    }
+  }
+}

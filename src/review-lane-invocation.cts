@@ -90,6 +90,16 @@ export interface SpawnPlan {
    * really expanded to something.
    */
   model: string | null;
+  /**
+   * The reasoning effort GSD ACTUALLY APPLIED to this invocation, or `null` (#2295).
+   *
+   * Shares the same applied-not-merely-configured rule `model` above documents. A lane whose
+   * `effortChannel` is not `argv` receives no effort argument at all — the placeholder's
+   * expansion is structurally empty for that lane — and recording an effort level in that case
+   * would attribute the review to a setting that never reached the tool. So this is set only
+   * when the effort argv really expanded into this invocation's argv.
+   */
+  effort: string | null;
   /** Prompt delivered on stdin, or `null` for `argv`/`argv-file-ref`/`none` lanes. */
   stdin: string | null;
   /**
@@ -172,6 +182,14 @@ export interface ResolveInput {
   repoRoot: string;
   /** Effort argv for lanes whose `effortChannel` is `argv`; empty when the host declares none. */
   effortArgs?: readonly string[];
+  /**
+   * The bare reasoning-effort level (`'low'`) GSD resolved for this lane's host, or `undefined`
+   * (#2295). The per-host ARGV RENDERING of this same level arrives separately in `effortArgs` —
+   * `'low'` renders as `--effort low` for one host and `-c model_reasoning_effort=low` for
+   * another, and the runner needs the bare level (for the recorded model suffix) independently
+   * of whichever rendering actually reached argv.
+   */
+  effortValue?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -525,6 +543,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       binary,
       argv,
       model: modelExpansion.length > 0 ? model : null,
+      effort: effortExpansion.length > 0 ? (configString(input.effortValue) ?? null) : null,
       stdin,
       promptPath,
       outputTarget,

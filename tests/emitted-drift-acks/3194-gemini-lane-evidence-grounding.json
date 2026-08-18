@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "review.md": "#3194: the Consensus Summary step gained one sentence teaching it to recognize the new [reviewed-without-source-citations] marker, exactly alongside its existing [reviewed-without-repo-access] recognition (#2176). The marker is prepended by stampUngroundedReview (src/review-lane-runner.cts) when a lane that declares source-grounded evidence delivers a review with zero file:line citations, so the consensus step must know it or the down-weight the fix exists to deliver never happens. Net growth +288 bytes (29,587 -> 29,875). Replaces the spent #2994 fragment (also keyed on review.md; deleted in this PR — two acks naming one path is a hard error)."
-  }
-}

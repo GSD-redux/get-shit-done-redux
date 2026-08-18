@@ -166,6 +166,25 @@ function recordedModel(raw: unknown, source: ModelSource): ResolvedModel {
   return value === null ? UNRESOLVED_MODEL : { value, source };
 }
 
+/**
+ * The reasoning effort GSD applied to this invocation, folded into the recorded value (#2295).
+ *
+ * The issue asks for `gpt-5.6-sol (reasoning=high)`, and the Antigravity lane already reports its
+ * own tier the same way (`Gemini 3.5 Flash (Medium)`) — so effort belongs in the model designation
+ * a human compares, not in a separate field they would have to join by hand.
+ *
+ * The source is GSD's OWN resolved execution policy, not the CLI's config or banner, so this arm
+ * is certain in a way the banner and transcript arms are not. `MODEL_VALUE_MAX` bounds the model
+ * id the suffix is appended to; the suffix itself is GSD-owned and bounded, so it is deliberately
+ * outside that cap rather than able to push a legitimate id over it.
+ */
+function withEffort(resolved: ResolvedModel, effort: string | null): ResolvedModel {
+  if (resolved.value === null) return resolved;
+  const normalized = normalizeModelValue(effort);
+  if (normalized === null) return resolved;
+  return { value: `${resolved.value} (reasoning=${normalized})`, source: resolved.source };
+}
+
 /** A line that IS a `model:` declaration — leading banner chrome allowed, trailing prose not. */
 const BANNER_LINE_RE = /^[\s>*|-]*model\s*:\s*(.+)$/i;
 
@@ -744,7 +763,7 @@ export function resolveSpawnModel(
   repoRoot: string,
 ): ResolvedModel {
   try {
-    if (plan.model) return recordedModel(plan.model, MODEL_SOURCE.PINNED);
+    if (plan.model) return withEffort(recordedModel(plan.model, MODEL_SOURCE.PINNED), plan.effort);
 
     if (plan.handler === 'antigravity') {
       let transcript: string | null;
@@ -753,12 +772,12 @@ export function resolveSpawnModel(
       } catch {
         return UNRESOLVED_MODEL;
       }
-      return recordedModel(transcript, MODEL_SOURCE.TRANSCRIPT);
+      return withEffort(recordedModel(transcript, MODEL_SOURCE.TRANSCRIPT), plan.effort);
     }
 
     if (plan.outputTarget.kind === 'file') {
       const banner = parseModelBanner(out.stdout ?? '') ?? parseModelBanner(out.stderr ?? '');
-      return recordedModel(banner, MODEL_SOURCE.BANNER);
+      return withEffort(recordedModel(banner, MODEL_SOURCE.BANNER), plan.effort);
     }
 
     return UNRESOLVED_MODEL;
