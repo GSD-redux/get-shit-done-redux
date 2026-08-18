@@ -133,11 +133,37 @@ export const BANNER_SCAN_LINES = 40;
 /** Longest plausible model identifier. Anything past this is not a model name, it is a payload. */
 export const MODEL_VALUE_MAX = 200;
 
-/** A recovered model value, or `null`. Shares `configString`'s unset-shape rule, then length-caps it. */
+/**
+ * C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F). A model identifier never
+ * legitimately contains one, and a newline in particular is the frontmatter-injection vector
+ * this guards against — a recorded model value is written verbatim into REVIEWS.md YAML
+ * frontmatter, so a value carrying `\n` could forge arbitrary sibling keys. Deliberately does
+ * NOT include `:` — `llama3:70b` and `qwen2.5:7b` are legitimate model ids.
+ */
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F-\u009F]/;
+
+/**
+ * A recovered model value, or `null`. Shares `configString`'s unset-shape rule, length-caps it,
+ * then REJECTS (never strips or escapes) a value carrying a control character — see
+ * `CONTROL_CHAR_RE`. Rejecting rather than sanitizing means an anomalous value is recorded as
+ * `unknown` rather than silently rewritten into something that merely looks safe.
+ */
 function normalizeModelValue(raw: unknown): string | null {
   const value = configString(raw);
   if (value === null) return null;
-  return value.length <= MODEL_VALUE_MAX ? value : null;
+  if (value.length > MODEL_VALUE_MAX) return null;
+  return CONTROL_CHAR_RE.test(value) ? null : value;
+}
+
+/**
+ * The one place a `ResolvedModel` is built. Normalizing here rather than per-arm is what makes
+ * the `value !== null` ⟺ `source !== 'unknown'` invariant structural instead of a convention
+ * five call sites have to remember — and it is the single choke point where a hostile value is
+ * refused before it can reach the REVIEWS.md frontmatter a lane's result is rendered into.
+ */
+function recordedModel(raw: unknown, source: ModelSource): ResolvedModel {
+  const value = normalizeModelValue(raw);
+  return value === null ? UNRESOLVED_MODEL : { value, source };
 }
 
 /** A line that IS a `model:` declaration — leading banner chrome allowed, trailing prose not. */
@@ -485,19 +511,25 @@ interface TranscriptEntry {
  * site every caller already has to make — a second watermark function would just be a second thing
  * to remember to call before the spawn.
  */
-export function antigravityWatermark(
-  workspace: string,
-  deps: RunnerDeps,
-): { convId: string; lines: number; unreadable?: boolean; fullLines: number; fullUnreadable?: boolean } {
-  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
-  if (!deps.exists(cachePath)) return { convId: '', lines: 0, fullLines: 0 };
-  let cache: Record<string, unknown>;
-  try {
-    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
-  } catch {
-    return { convId: '', lines: 0, fullLines: 0 };
-  }
-  const convId = resolveConvId(cache, workspace);
+export interface TranscriptWatermark {
+  /** The `agy` conversation id this watermark was taken against, or `''` when none resolved. */
+  convId: string;
+  /** Line count of `transcript.jsonl` (the review body log) at watermark time. */
+  lines: number;
+  /** `true` when `transcript.jsonl` existed but could not be read (#3118 fail-closed shape). */
+  unreadable?: boolean;
+  /**
+   * Line count of `transcript_full.jsonl` (the settings/model log) at watermark time.
+   * DIFFERENT FILE, DIFFERENT LINE COUNT than `lines` — the review body and the model live in
+   * two files that grow independently, so one count is never a valid offset into the other.
+   */
+  fullLines: number;
+  /** `true` when `transcript_full.jsonl` existed but could not be read (#3118 fail-closed shape). */
+  fullUnreadable?: boolean;
+}
+
+export function antigravityWatermark(workspace: string, deps: RunnerDeps): TranscriptWatermark {
+  const convId = resolveWorkspaceConvId(workspace, deps);
   if (!convId) return { convId: '', lines: 0, fullLines: 0 };
 
   const tx = transcriptPath(deps.homeDir, convId);
@@ -552,6 +584,32 @@ function resolveConvId(cache: unknown, workspace: string): string {
   return '';
 }
 
+/**
+ * The `agy` conversation id for this workspace, or `''` when the cache is absent, unreadable or
+ * names none.
+ *
+ * Reads and parses `last_conversations.json` once, so `antigravityWatermark`,
+ * `antigravityTranscriptFallback` and `antigravityModel` — three callers as of #2295 — share one
+ * lookup instead of each hand-rolling the same exists/readFile/JSON.parse/resolveConvId sequence.
+ *
+ * #3118: a successful `JSON.parse` does not by itself make the payload a usable object —
+ * `JSON.parse('null')` succeeds and returns `null`, so a truncated/zeroed cache file slips past a
+ * parse-only try/catch; `resolveConvId`'s own guard handles the object-shape half of that trap.
+ * Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides — which
+ * `resolveConvId` implements.
+ */
+function resolveWorkspaceConvId(workspace: string, deps: RunnerDeps): string {
+  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
+  if (!deps.exists(cachePath)) return '';
+  let cache: Record<string, unknown>;
+  try {
+    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
+  } catch {
+    return '';
+  }
+  return resolveConvId(cache, workspace);
+}
+
 function transcriptPath(homeDir: string, convId: string): string {
   return `${homeDir}/.gemini/antigravity-cli/brain/${convId}/.system_generated/logs/transcript.jsonl`;
 }
@@ -573,15 +631,7 @@ export function antigravityTranscriptFallback(
   mark: { convId: string; lines: number; unreadable?: boolean },
   deps: RunnerDeps,
 ): string {
-  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
-  if (!deps.exists(cachePath)) return '';
-  let cache: Record<string, unknown>;
-  try {
-    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
-  } catch {
-    return '';
-  }
-  const convId = resolveConvId(cache, workspace);
+  const convId = resolveWorkspaceConvId(workspace, deps);
   if (!convId) return '';
   // #3118: the watermark could not read this conversation's transcript, so there is no trustworthy
   // skip for it. Declining is the fail-closed answer; skipping 0 would replay a prior run's review.
@@ -635,18 +685,10 @@ export function antigravityTranscriptFallback(
  */
 export function antigravityModel(
   workspace: string,
-  mark: { convId: string; lines: number; fullLines: number; fullUnreadable?: boolean },
+  mark: TranscriptWatermark,
   deps: RunnerDeps,
 ): string | null {
-  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
-  if (!deps.exists(cachePath)) return null;
-  let cache: Record<string, unknown>;
-  try {
-    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  const convId = resolveConvId(cache, workspace);
+  const convId = resolveWorkspaceConvId(workspace, deps);
   if (!convId) return null;
   // #3118, applied to the model arm: a file that indisputably exists but could not be read is not
   // the same fact as an absent one — decline rather than guess.
@@ -697,12 +739,12 @@ export function antigravityModel(
 export function resolveSpawnModel(
   plan: SpawnPlan,
   out: { stdout?: string; stderr?: string },
-  mark: { convId: string; lines: number; fullLines: number; fullUnreadable?: boolean },
+  mark: TranscriptWatermark,
   deps: RunnerDeps,
   repoRoot: string,
 ): ResolvedModel {
   try {
-    if (plan.model) return { value: plan.model, source: MODEL_SOURCE.PINNED };
+    if (plan.model) return recordedModel(plan.model, MODEL_SOURCE.PINNED);
 
     if (plan.handler === 'antigravity') {
       let transcript: string | null;
@@ -711,12 +753,12 @@ export function resolveSpawnModel(
       } catch {
         return UNRESOLVED_MODEL;
       }
-      return transcript !== null ? { value: transcript, source: MODEL_SOURCE.TRANSCRIPT } : UNRESOLVED_MODEL;
+      return recordedModel(transcript, MODEL_SOURCE.TRANSCRIPT);
     }
 
     if (plan.outputTarget.kind === 'file') {
       const banner = parseModelBanner(out.stdout ?? '') ?? parseModelBanner(out.stderr ?? '');
-      return banner !== null ? { value: banner, source: MODEL_SOURCE.BANNER } : UNRESOLVED_MODEL;
+      return recordedModel(banner, MODEL_SOURCE.BANNER);
     }
 
     return UNRESOLVED_MODEL;
@@ -924,9 +966,7 @@ export async function runOpenAiCompatible(
     }
   }
   if (!model) model = plan.fallbackModel;
-  const requestedValue = normalizeModelValue(model);
-  const requested: ResolvedModel =
-    requestedValue !== null ? { value: requestedValue, source: MODEL_SOURCE.REQUESTED } : UNRESOLVED_MODEL;
+  const requested: ResolvedModel = recordedModel(model, MODEL_SOURCE.REQUESTED);
 
   const body = JSON.stringify({ model, messages: [{ role: 'user', content: promptText }] });
   const res = await deps.httpJson(plan.url, { method: 'POST', body, timeoutMs: plan.timeoutMs });
@@ -948,8 +988,8 @@ export async function runOpenAiCompatible(
           `Review may be from a different model.`,
       );
     }
-    const servedValue = normalizeModelValue(parsed.model);
-    if (servedValue !== null) served = { value: servedValue, source: MODEL_SOURCE.SERVED };
+    const servedModel = recordedModel(parsed.model, MODEL_SOURCE.SERVED);
+    if (servedModel.source !== MODEL_SOURCE.UNKNOWN) served = servedModel;
     const content = parsed.choices?.[0]?.message?.content;
     if (typeof content === 'string') review = content;
   } catch {

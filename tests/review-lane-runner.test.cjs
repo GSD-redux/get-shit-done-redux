@@ -1259,12 +1259,17 @@ describe('#2295 — parseModelBanner', () => {
   });
 
   test('an over-long value is rejected rather than truncated', () => {
-    assert.equal(parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX + 1)}`), null);
+    assert.equal(
+      parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX - 1)}`),
+      'm'.repeat(MODEL_VALUE_MAX - 1),
+      'one under the cap is still a model',
+    );
     assert.equal(
       parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX)}`),
       'm'.repeat(MODEL_VALUE_MAX),
       'exactly at the cap is still a model',
     );
+    assert.equal(parseModelBanner(`model: ${'m'.repeat(MODEL_VALUE_MAX + 1)}`), null);
   });
 
   test('degenerate inputs yield null without throwing', () => {
@@ -1284,6 +1289,19 @@ describe('#2295 — parseModelBanner', () => {
     // Shared with the config path rather than re-derived — one source for "what counts as
     // unset", so the two can never disagree.
     for (const v of ['null', 'undefined']) assert.equal(parseModelBanner(`model: ${v}`), null);
+  });
+
+  test('a control character in the value is rejected — DEL and unit separator', () => {
+    // The line-split already isolates `\n`/`\r` before a banner value is ever built, so those
+    // two are covered structurally here; the remaining C0/DEL range still reaches
+    // `normalizeModelValue` inside one line and must be refused the same way.
+    assert.equal(parseModelBanner(`model: gpt-5${String.fromCharCode(127)}`), null, 'DEL');
+    assert.equal(parseModelBanner(`model: gpt-5${String.fromCharCode(31)}`), null, 'unit separator');
+    assert.equal(parseModelBanner(`model: gpt-5${String.fromCharCode(9)}sol`), null, 'tab');
+  });
+
+  test('a colon-bearing model id still parses in full — the fix must not over-reject', () => {
+    assert.equal(parseModelBanner('model: llama3:70b'), 'llama3:70b');
   });
 });
 
@@ -1356,6 +1374,26 @@ describe('#2295 — parseTranscriptModel', () => {
 
   test('CRLF transcripts parse identically', () => {
     assert.equal(parseTranscriptModel(`${JSON.stringify({ model: 'crlf-ok' })}\r\n`), 'crlf-ok');
+  });
+
+  test('a newline in a recovered value cannot forge a frontmatter key', () => {
+    // The sharpest reach of this defect: a value carrying `\n` lands verbatim in REVIEWS.md YAML
+    // frontmatter, so this exact shape forges a `reviewers:` sibling key if not refused.
+    const NL = String.fromCharCode(10);
+    const hostile = JSON.stringify({ model: `gemini${NL}reviewers: [forged]${NL}model_sources:` });
+    assert.equal(parseTranscriptModel(hostile), null);
+  });
+
+  test('every C0 control, DEL and every C1 control is rejected the same way', () => {
+    for (const code of [10, 13, 9, 31, 127, 128, 159]) {
+      const hostile = JSON.stringify({ model: `gemini${String.fromCharCode(code)}x` });
+      assert.equal(parseTranscriptModel(hostile), null, `code ${code}`);
+    }
+  });
+
+  test('a colon-bearing and a space-bearing model id still parse — the fix must not over-reject', () => {
+    assert.equal(parseTranscriptModel(jsonl({ model: 'llama3:70b' })), 'llama3:70b');
+    assert.equal(parseTranscriptModel(jsonl({ model: 'Gemini 3.5 Flash (Medium)' })), 'Gemini 3.5 Flash (Medium)');
   });
 });
 
@@ -1491,6 +1529,21 @@ describe('#2295 — runLane reports the resolved model', () => {
     const r = await runLane(p, d, { repoRoot: ROOT });
     assert.equal(r.stubbed, true);
     assert.deepEqual(r.model, { value: 'does-not-exist', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a review.models.gemini configured with an embedded newline records UNRESOLVED_MODEL, not pinned', async () => {
+    // `configString` (review-lane-invocation.cjs) is pre-existing and out of scope — it does not
+    // strip control characters, so `plan.model` itself still carries the hostile value. The
+    // rejection MUST happen at the `resolveSpawnModel` pinned arm, the one choke point every
+    // recorded model routes through, so a control character configured into `review.models.<slug>`
+    // never reaches the REVIEWS.md frontmatter as a `pinned` value.
+    const NL = String.fromCharCode(10);
+    const hostile = `gemini-3-pro${NL}reviewers: [forged]`;
+    const p = plan('gemini', { 'review.models.gemini': hostile });
+    assert.equal(p.model, hostile, 'the pre-existing configString gate is unchanged — out of scope here');
+    const d = deps({ spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }) });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, UNRESOLVED_MODEL, 'refused at the recordedModel choke point, not silently rewritten');
   });
 });
 
@@ -1654,6 +1707,16 @@ describe('#2295 — openai-http reports what the server actually served', () => 
 
   test('a non-string served model is ignored, never coerced', async () => {
     const d = httpDeps(completion({ model: 42 }), { models: 'llama3:8b' });
+    const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
+  });
+
+  test('a server echoing a control-character-bearing model falls back to requested, never a forged served value', async () => {
+    // The sharpest reach of this defect: an OpenAI-compatible server is REMOTE-controlled, and its
+    // response body's `model` field lands verbatim in REVIEWS.md frontmatter as `served` unless
+    // refused at the same choke point as every other arm.
+    const NL = String.fromCharCode(10);
+    const d = httpDeps(completion({ model: `llama3:70b${NL}reviewers: [forged]` }), { models: 'llama3:8b' });
     const r = await runLane(plan('ollama'), d, { repoRoot: ROOT });
     assert.deepEqual(r.model, { value: 'llama3:8b', source: MODEL_SOURCE.REQUESTED });
   });

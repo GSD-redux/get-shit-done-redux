@@ -429,7 +429,10 @@ its `value` and `model_sources:` from its `source`. Both maps carry exactly one 
 reviewer that appears in `reviewers:` — the two key sets always match. Write the literal
 `unknown` rather than omitting a key: an omitted key is indistinguishable from the feature
 not having run, and a reader must be able to tell *no model recorded* from *nothing to
-look at*.
+look at*. Emit every `models:`/`model_sources:` value as a DOUBLE-QUOTED YAML scalar — a
+legitimate model id can contain `:` (`llama3:70b`, `qwen2.5:7b`), which is unquotable as a
+bare scalar; a control character is already refused at the recording seam, so quoting is
+what closes the remaining `:`/`#`/leading-`-` cases.
 
 ```markdown
 ---
@@ -438,11 +441,11 @@ reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, antigravi
 reviewed_at: {ISO timestamp}
 plans_reviewed: [{list of PLAN.md files}]
 models:                   # resolved model per reviewer; `unknown` when not recoverable
-  codex: gpt-5.6-sol
-  antigravity: unknown
+  codex: "gpt-5.6-sol"
+  antigravity: "unknown"
 model_sources:            # how each value above was determined
-  codex: banner
-  antigravity: unknown
+  codex: "banner"
+  antigravity: "unknown"
 trimmed_reviewers:        # only present if at least one reviewer was trimmed
   ollama:
     budget: 6000

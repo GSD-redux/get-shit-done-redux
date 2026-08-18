@@ -1614,6 +1614,8 @@ Reviewers reached through `--all` or `review.default_reviewers` behave different
 
 **Produces:** `{phase}-REVIEWS.md` — consumable by `/gsd-plan-phase --reviews`
 
+Its frontmatter records the model each reviewer resolved to, as `models:` (the model id, or `unknown`) and `model_sources:` (how each value was determined — `pinned`, `served`, `requested`, `banner`, `transcript`, or `unknown`). See [Resolved model recording](CONFIGURATION.md#resolved-model-recording-2295).
+
 ```bash
 # set project default reviewers for no-flag /gsd-review runs
 gsd config-set review.default_reviewers '["gemini","codex"]'
