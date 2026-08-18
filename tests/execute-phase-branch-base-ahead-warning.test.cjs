@@ -65,14 +65,14 @@ describe('#3158 — handle_branching warns before committing on the base branch'
     assert.ok(text.length > 0, 'execute-phase.md must exist');
     const noneBranch = text.match(/\*\*"none":\*\*([\s\S]*?)(?=\*\*"phase" or "milestone":\*\*)/);
     assert.ok(noneBranch, 'handle_branching must retain a dedicated none-strategy branch');
-    const bashBlock = noneBranch[1].match(/```bash\n([\s\S]*?)```/);
+    const bashBlock = noneBranch[1].match(/```bash\r?\n([\s\S]*?)```/);
     assert.ok(bashBlock, 'none strategy must contain a fenced bash block');
     const script = bashBlock[1];
 
     const { spawnSync } = require('node:child_process');
     for (const [branch, expectWarning] of [['feature-x', false], ['main', true]]) {
       const wrapped = `gsd_run() { echo main; }\ngit() { echo "${branch}"; }\n${script}`;
-      const result = spawnSync('bash', ['-c', wrapped], { encoding: 'utf8' });
+      const result = spawnSync('bash', ['-c', wrapped], { encoding: 'utf8', timeout: 5000 });
       assert.equal(
         result.status, 0,
         `block must exit 0 when current branch is "${branch}" — a nonzero exit here would ` +
