@@ -2296,7 +2296,35 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
     if (pctMatch) progressPercent = parseInt(pctMatch[1], 10);
   }
 
-  const normalizedStatus = normalizeStateStatus(status, pausedAt);
+  let normalizedStatus = normalizeStateStatus(status, pausedAt);
+  // #3578: normalizeStateStatus matches 'complete' as a case-insensitive
+  // SUBSTRING, so the phase-completion prose cmdStateCompletePhase writes to
+  // the body (`Phase ${N} complete`) collapses to the milestone-level
+  // 'completed' status even when other phases remain open. Phase-level
+  // prose must never decide milestone-level status — completedPhases /
+  // totalPhases / diskScope, already derived above from a disk scan, are
+  // the authority on whether the MILESTONE is actually done. Only override
+  // when: (a) normalizeStateStatus actually landed on 'completed'; (b) the
+  // raw prose is UNAMBIGUOUSLY phase-completion prose — the anchored
+  // pattern below deliberately excludes "All phases complete" (no `\S+`
+  // phase token) and milestone-close prose like "v1.0 milestone complete"
+  // (no leading "phase"); and (c) the counters are trustworthy (a COMPLETE
+  // disk scope, both counts are finite numbers, and a positive
+  // denominator) and affirmatively disagree with 'completed'. In every
+  // other case normalizedStatus is left exactly as normalizeStateStatus
+  // returned it.
+  if (
+    normalizedStatus === 'completed' &&
+    typeof status === 'string' &&
+    /^\s*phase\s+\S+\s+complete\s*$/i.test(status) &&
+    diskScope === SCOPE.COMPLETE &&
+    typeof completedPhases === 'number' && Number.isFinite(completedPhases) &&
+    typeof totalPhases === 'number' && Number.isFinite(totalPhases) &&
+    totalPhases > 0 &&
+    completedPhases < totalPhases
+  ) {
+    normalizedStatus = 'executing';
+  }
 
   const fm: Record<string, unknown> = { gsd_state_version: '1.0' };
 
