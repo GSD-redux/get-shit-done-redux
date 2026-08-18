@@ -466,19 +466,20 @@ function writeProtectedBranchWarningScript(prefix, bash) {
 }
 
 describe('#3552: configured protected branches', () => {
-  const configuredRead = () => JSON.stringify({
-    git: {
+  const configuredLoad = (requestedCwd) => {
+    assert.strictEqual(requestedCwd, '/repo');
+    return {
       base_branch: 'main',
       protected_branches: ['develop', 'next', 'develop'],
-    },
-  });
+    };
+  };
 
   test('#3552 configured match and unrelated branch produce opposite results', () => {
     const match = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
-      readFile: configuredRead,
+      loadConfig: configuredLoad,
     });
     const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', {
-      readFile: configuredRead,
+      loadConfig: configuredLoad,
     });
 
     assert.deepStrictEqual(match, {
@@ -493,7 +494,7 @@ describe('#3552: configured protected branches', () => {
   });
 
   test('#3552 absent list retains resolved-base protection and unrelated control', () => {
-    const deps = { readFile: () => '{"git":{"base_branch":"main"}}' };
+    const deps = { loadConfig: () => ({ base_branch: 'main' }) };
     const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', deps);
     const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', deps);
 
@@ -513,11 +514,9 @@ describe('#3552: configured protected branches', () => {
     ];
 
     for (const protectedBranches of malformedValues) {
-      const readFile = () => JSON.stringify({
-        git: { base_branch: 'main', protected_branches: protectedBranches },
-      });
-      const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { readFile });
-      const configuredName = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { readFile });
+      const loadConfig = () => ({ base_branch: 'main', protected_branches: protectedBranches });
+      const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { loadConfig });
+      const configuredName = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
 
       assert.deepStrictEqual(base.protectedBranches, ['main']);
       assert.strictEqual(base.isProtected, true);
@@ -525,25 +524,50 @@ describe('#3552: configured protected branches', () => {
     }
   });
 
-  test('#3552 --is-protected CLI mode writes exact opposite booleans', (t) => {
+  test('#3552 active workstream CLI uses configured list and excludes root-only names', (t) => {
     const dir = createGitRepo({ prefix: 'gsd-3552-cli-', defaultBranch: 'main' });
     t.after(() => cleanup(dir));
     addPlanning(dir);
-    setGsdConfig(dir, 'git.protected_branches', ['develop', 'next']);
+    setGsdConfig(dir, 'git.protected_branches', ['root-only']);
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    const workstreamEnv = { GSD_WORKSTREAM: 'alpha', HOME: dir };
 
-    const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
-    const control = runGsdTools(['query', 'git.base-branch', '--is-protected', 'topic/3552'], dir);
+    const setResult = runGsdTools(
+      ['config-set', 'git.protected_branches', '["develop","next"]'],
+      dir,
+      workstreamEnv,
+    );
+    assert.ok(setResult.success, setResult.error);
+    const workstreamConfig = JSON.parse(fs.readFileSync(
+      path.join(dir, '.planning', 'workstreams', 'alpha', 'config.json'),
+      'utf8',
+    ));
+    assert.deepStrictEqual(workstreamConfig.git.protected_branches, ['develop', 'next']);
+
+    const match = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'develop'], dir, workstreamEnv,
+    );
+    const control = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'topic/3552'], dir, workstreamEnv,
+    );
+    const rootOnly = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'root-only'], dir, workstreamEnv,
+    );
 
     assert.ok(match.success, match.error);
     assert.ok(control.success, control.error);
+    assert.ok(rootOnly.success, rootOnly.error);
     assert.strictEqual(match.output, 'true');
     assert.strictEqual(control.output, 'false');
+    assert.strictEqual(rootOnly.output, 'false');
     assert.notStrictEqual(match.output, control.output,
       'CLI negative control must disagree with the configured protected-branch match');
+    assert.notStrictEqual(match.output, rootOnly.output,
+      'workstream override must replace the root-only configured name');
 
     let written = '';
     const returned = gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
-      readFile: configuredRead,
+      loadConfig: configuredLoad,
       write: (text) => { written += text; },
     });
     assert.strictEqual(returned, 'true');

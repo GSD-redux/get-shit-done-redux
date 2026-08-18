@@ -32,17 +32,24 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import configLoader = require('./config-loader.cjs');
 import { execGit as execGitSeam } from './shell-command-projection.cjs';
+
+const { loadConfig: loadConfigSeam } = configLoader;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ExecGitFn = typeof execGitSeam;
+type LoadConfigFn = typeof loadConfigSeam;
 
 export interface BaseBranchDeps {
   /** Override the git runner (default: execGit from shell-command-projection) */
   execGit?: ExecGitFn;
   /** Override filesystem reads (default: fs.readFileSync / fs.existsSync) */
   readFile?: (p: string) => string | null;
+  /** Override effective configuration loading (default: config-loader.loadConfig) */
+  loadConfig?: LoadConfigFn;
   /** Inject the write function used by cmdGitBaseBranch (default: process.stdout.write) */
   write?: (s: string) => void;
   /**
@@ -114,6 +121,59 @@ export function readConfigProtectedBranches(
   if (!Array.isArray(configured) || configured.length === 0) return [];
   if (!configured.every((branch) => typeof branch === 'string' && branch.trim() !== '')) return [];
   return configured as string[];
+}
+
+interface EffectiveGitConfig {
+  baseBranch: string | null;
+  protectedBranches: string[];
+}
+
+/**
+ * Read the effective root/workstream configuration once for branch policy.
+ * The readFile branch preserves the historical low-level test seam; production
+ * uses config-loader's canonical root+workstream merge.
+ */
+function readEffectiveGitConfig(
+  cwd: string,
+  deps?: Pick<BaseBranchDeps, 'loadConfig' | 'readFile'>
+): EffectiveGitConfig {
+  let config: Record<string, unknown> = {};
+
+  if (deps?.readFile && !deps.loadConfig) {
+    const raw = deps.readFile(path.join(cwd, '.planning', 'config.json'));
+    if (raw) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const top = parsed as Record<string, unknown>;
+          const git = top.git && typeof top.git === 'object' && !Array.isArray(top.git)
+            ? top.git as Record<string, unknown>
+            : {};
+          config = {
+            base_branch: git.base_branch ?? top.base_branch,
+            protected_branches: git.protected_branches,
+          };
+        }
+      } catch { /* malformed direct edit contributes no policy values */ }
+    }
+  } else {
+    try {
+      config = (deps?.loadConfig ?? loadConfigSeam)(cwd);
+    } catch { /* configuration loading is fail-soft for branch resolution */ }
+  }
+
+  const rawBaseBranch = config.base_branch;
+  const baseBranch = typeof rawBaseBranch === 'string' && rawBaseBranch.trim()
+    ? rawBaseBranch.trim()
+    : null;
+  const rawProtectedBranches = config.protected_branches;
+  const protectedBranches = Array.isArray(rawProtectedBranches)
+    && rawProtectedBranches.length > 0
+    && rawProtectedBranches.every((branch) => typeof branch === 'string' && branch.trim() !== '')
+    ? rawProtectedBranches as string[]
+    : [];
+
+  return { baseBranch, protectedBranches };
 }
 
 /**
@@ -230,9 +290,10 @@ export interface ResolvedBaseBranch {
  * Consults the full precedence ladder and always returns a non-empty string.
  * Never throws.
  */
-export function resolveBaseBranchDiagnostics(
+function resolveBaseBranchDiagnosticsWithConfig(
   cwd: string,
-  deps?: BaseBranchDeps
+  configured: string | null,
+  deps?: BaseBranchDeps,
 ): ResolvedBaseBranch {
   const rawExecGit: ExecGitFn = deps?.execGit ?? execGitSeam;
   // A genuine execGit failure (timeout, or the call could not even spawn —
@@ -249,11 +310,7 @@ export function resolveBaseBranchDiagnostics(
     return r;
   };
 
-  // Derive .planning dir relative to cwd (mirrors planningDir() in planning-workspace.cjs)
-  const planningDir = path.join(cwd, '.planning');
-
   // 1. Config override
-  const configured = readConfigBaseBranch(planningDir, deps);
   if (configured) return { branch: configured, verified: true };
 
   // 2. symbolic-ref (fast, no network)
@@ -273,6 +330,14 @@ export function resolveBaseBranchDiagnostics(
   // checked against this repository, it is just what's left after git could
   // not answer (#3057 B4).
   return { branch: 'main', verified: !anyGitFailure };
+}
+
+export function resolveBaseBranchDiagnostics(
+  cwd: string,
+  deps?: BaseBranchDeps
+): ResolvedBaseBranch {
+  const { baseBranch } = readEffectiveGitConfig(cwd, deps);
+  return resolveBaseBranchDiagnosticsWithConfig(cwd, baseBranch, deps);
 }
 
 /**
@@ -302,10 +367,13 @@ export function resolveProtectedBranchStatus(
   currentBranch: string,
   deps?: BaseBranchDeps
 ): ProtectedBranchStatus {
-  const { branch: baseBranch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
-  const planningDir = path.join(cwd, '.planning');
-  const configured = readConfigProtectedBranches(planningDir, deps);
-  const protectedBranches = [...new Set([baseBranch, ...configured])];
+  const effectiveConfig = readEffectiveGitConfig(cwd, deps);
+  const { branch: baseBranch, verified } = resolveBaseBranchDiagnosticsWithConfig(
+    cwd,
+    effectiveConfig.baseBranch,
+    deps,
+  );
+  const protectedBranches = [...new Set([baseBranch, ...effectiveConfig.protectedBranches])];
   return {
     baseBranch,
     protectedBranches,
