@@ -11,18 +11,40 @@
 
 const fs = require('fs');
 const path = require('path');
-const { isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs');
-// Latest-version lookup is delegated to the single deterministic adapter
-// (#498). checkLatestVersion() owns the npm-view call, the timeout/semver
-// policy, and the package name — sourced from the baked Package Identity seam.
-// The previous `require('../package.json').name` (#378) never yielded a name in
-// the installed tree — at the time it resolved to the synthetic
-// {"type":"commonjs"} marker GSD wrote at the config root, which has no `.name`,
-// so the background check never reported updates. Since #2544 GSD writes no
-// marker there at all, so that require would now fail to resolve outright.
-// Either way the name must come from the baked seam, never a walk-up.
-const { checkLatestVersion } = require('../gsd-core/bin/check-latest-version.cjs');
-const { PACKAGE_NAME } = require('../gsd-core/bin/lib/package-identity.cjs');
+
+// #3582: gsd-core/bin/lib/semver-compare.cjs and package-identity.cjs (and,
+// transitively, check-latest-version.cjs's own gsd-core/bin/lib/cli-exit.cjs
+// + shell-command-projection.cjs) are tsc build artifacts (ADR-457),
+// gitignored and absent on a raw plugin-marketplace / git-clone install that
+// never ran `npm run build:lib`. This worker is a DETACHED SessionStart
+// background process (spawned with stdio: 'ignore') — a build failure here
+// must DEGRADE to the no-signal fallbacks below (mirroring the
+// managed-hooks-registry.cjs degrade just below) so the worker still runs to
+// completion and writes a result cache record, rather than dying silently
+// with no visible signal and no cache-file write at all.
+let isSemverNewer = () => false;
+let checkLatestVersion = () => ({ ok: false });
+let PACKAGE_NAME = null;
+try {
+  const { ensureRuntimeBuild } = require('../gsd-core/bin/ensure-runtime-build.cjs');
+  ensureRuntimeBuild();
+  ({ isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs'));
+  // Latest-version lookup is delegated to the single deterministic adapter
+  // (#498). checkLatestVersion() owns the npm-view call, the timeout/semver
+  // policy, and the package name — sourced from the baked Package Identity seam.
+  // The previous `require('../package.json').name` (#378) never yielded a name in
+  // the installed tree — at the time it resolved to the synthetic
+  // {"type":"commonjs"} marker GSD wrote at the config root, which has no `.name`,
+  // so the background check never reported updates. Since #2544 GSD writes no
+  // marker there at all, so that require would now fail to resolve outright.
+  // Either way the name must come from the baked seam, never a walk-up.
+  ({ checkLatestVersion } = require('../gsd-core/bin/check-latest-version.cjs'));
+  ({ PACKAGE_NAME } = require('../gsd-core/bin/lib/package-identity.cjs'));
+} catch (e) {
+  // Runtime library missing/broken and could not self-build — degrade to the
+  // no-signal fallbacks declared above; the worker still writes a result
+  // cache record (package_name: null, update_available: false).
+}
 // Authoritative list of managed hooks — shared with tests to retire source-grep
 // assertions (pending-migration-to-typed-ir [#455]).
 // NOTE: managed-hooks-registry.cjs must be in HOOKS_TO_COPY (scripts/build-hooks.js)

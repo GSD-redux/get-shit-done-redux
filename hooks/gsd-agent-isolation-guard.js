@@ -64,6 +64,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+// #3582: gsd-core/bin/lib/*.cjs (runtime-name-policy.cjs, capability-registry.cjs
+// below) are tsc build artifacts (ADR-457), gitignored and absent on a raw
+// plugin-marketplace / git-clone install that never ran `npm run build:lib`.
+// Self-heal before the first such require (resolveRegistryIsolation, below) —
+// see ensureRuntimeBuild's own header for the full rationale. This module
+// itself (gsd-core/bin/ensure-runtime-build.cjs) depends on nothing under
+// ./lib, so requiring it here is always safe.
+const { ensureRuntimeBuild, RuntimeBuildError } = require('../gsd-core/bin/ensure-runtime-build.cjs');
 
 // No other executor-shaped subagent_type exists in agents/ today
 // (verified: only agents/gsd-executor.md). A Set, not a bare string compare,
@@ -239,6 +247,15 @@ function resolveHarnessFlag(runtimeId, runtimes) {
  * run, e.g. a manual Agent() call before any sentinel has been written).
  */
 function resolveRegistryIsolation(cwd, configPath) {
+  // #3582: self-heal the compiled runtime library BEFORE either require
+  // below — this is the only reaching path to both (resolveRegistryIsolation
+  // is the sole caller of each), so one call here covers both. Throws
+  // RuntimeBuildError on an unbuildable tree; the caller (resolveIsolationState)
+  // already wraps this whole function in try/catch and folds any error into
+  // its fail-closed `error` result — evaluateDispatch below distinguishes a
+  // RuntimeBuildError there so it surfaces this seam's actionable message
+  // instead of being misreported as an unreadable config.json (#3050 lesson).
+  ensureRuntimeBuild();
   const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
   const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
@@ -416,12 +433,24 @@ function evaluateDispatch(data, { clock = Date } = {}) {
   if (!state.gsdProject) return { action: 'allow' };
 
   if (state.error) {
-    const reason =
-      `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
-      `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
-      `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
-      `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
-      `project configuration is readable.`;
+    // #3582: a missing/unbuildable compiled runtime library (RuntimeBuildError,
+    // thrown by ensureRuntimeBuild in resolveRegistryIsolation) is a DIFFERENT,
+    // actionable failure from an unreadable/unparsable config.json — surface
+    // its own message instead of misreporting it as the generic
+    // "could not read or resolve ... configuration" text (the exact #3050
+    // misreport this issue exists to fix). Both cases still fail closed
+    // (block); only the message differs.
+    const reason = state.error instanceof RuntimeBuildError
+      ? `Agent isolation guard: cannot resolve this project's dispatch-isolation ` +
+        `configuration because the GSD runtime library failed to self-build. ` +
+        `${state.error.message} Refusing to dispatch subagent_type="${subagentType}" until ` +
+        `the runtime library is built — a guard that cannot verify must not answer "safe" ` +
+        `(#3050).`
+      : `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
+        `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
+        `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
+        `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
+        `project configuration is readable.`;
     return { action: 'block', reason };
   }
 

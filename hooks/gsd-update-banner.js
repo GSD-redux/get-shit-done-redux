@@ -15,7 +15,25 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { PACKAGE_NAME, updateCacheFileName } = require('../gsd-core/bin/lib/package-identity.cjs');
+
+// #3582: gsd-core/bin/lib/package-identity.cjs is a tsc build artifact
+// (ADR-457), gitignored and absent on a raw plugin-marketplace / git-clone
+// install that never ran `npm run build:lib`. This is an opt-in SessionStart
+// hook — a build failure here must DEGRADE, not crash session start. With
+// PACKAGE_NAME left null, buildBannerOutput's own lineage guard
+// (`!cache.package_name || cache.package_name !== PACKAGE_NAME`) always
+// treats the cache as untrusted, so main() falls through to its existing
+// silent "print nothing" path below — no separate degrade branch needed.
+let PACKAGE_NAME = null;
+let updateCacheFileName = 'gsd-update-check.json';
+try {
+  const { ensureRuntimeBuild } = require('../gsd-core/bin/ensure-runtime-build.cjs');
+  ensureRuntimeBuild();
+  ({ PACKAGE_NAME, updateCacheFileName } = require('../gsd-core/bin/lib/package-identity.cjs'));
+} catch (e) {
+  // Runtime library missing/broken and could not self-build — degrade to the
+  // fallbacks above rather than crash the SessionStart hook.
+}
 
 // Suppress repeat parse-error banners for 24 hours so a genuinely broken
 // cache file doesn't nag the user every session.

@@ -62,6 +62,14 @@ const os = require('os');
 // writeCursorHooksJson so the require always resolves post-install.
 const { resolveStatePath } = require('./lib/cursor-workspace.js');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
+// #3582: gsd-core/bin/lib/*.cjs (runtime-homes.cjs, worktree-safety.cjs,
+// runtime-name-policy.cjs, capability-registry.cjs — required below, inside
+// resolveIsolationEvidence and resolveFallbackIsolation) are tsc build
+// artifacts (ADR-457), gitignored and absent on a raw plugin-marketplace /
+// git-clone install that never ran `npm run build:lib`. Self-heal once, in
+// evaluateRootIsolation, before any of those four requires run — see the
+// call site below. This module itself depends on nothing under ./lib.
+const { ensureRuntimeBuild, RuntimeBuildError } = require('../gsd-core/bin/ensure-runtime-build.cjs');
 
 const MSG_PRESENT =
   'GSD: Subagent session started — review .planning/STATE.md for the current phase and any blockers before acting.';
@@ -457,6 +465,27 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
     isGsdProject = false;
   }
   if (!isGsdProject) return { action: 'allow' };
+
+  // #3582: self-heal the compiled runtime library BEFORE any of its four
+  // downstream requires (resolveFallbackIsolation's two, resolveIsolationEvidence's
+  // two — reached only below this point). Checked separately from the
+  // sentinel/fallback try block below so a build failure surfaces its own
+  // actionable RuntimeBuildError message rather than being folded into the
+  // generic "could not read or resolve ... configuration" deny reason (the
+  // #3050 misreport this issue exists to fix). Still fails closed either way.
+  try {
+    ensureRuntimeBuild();
+  } catch (err) {
+    return {
+      action: 'deny',
+      reason:
+        `GSD subagent isolation guard: cannot resolve this project's dispatch-isolation ` +
+        `configuration because the GSD runtime library failed to self-build. ` +
+        `${err instanceof RuntimeBuildError ? err.message : String(err && err.message || err)} ` +
+        `Refusing to allow this subagent to spawn until the runtime library is built — a guard ` +
+        `that cannot verify must not answer "safe" (#3050).`,
+    };
+  }
 
   let declaredIsolation;
   try {
