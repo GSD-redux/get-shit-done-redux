@@ -98,10 +98,14 @@ Two scoping consequences worth recording, because both were arrived at rather th
 - **`eslint-rules/**` is outside this rule's surface** — `lib/portability-vocab.cjs` owns the
   extension set per rule 4 and would otherwise flag itself. This is expressed by *not linting that
   tree*, never by an exemption, so rule 3 holds.
-- **The seam exemption is path-suffix-anchored**, matching exactly
-  `src/shell-command-projection.cts`. A substring match would also exempt
-  `tests/shell-command-projection-dispatch.test.cjs` and any future sibling; case I9 of the rule's
-  `RuleTester` suite pins this.
+- **The seam exemption is path-suffix-anchored**, matching `src/shell-command-projection.cts`
+  or any path ending in `/src/shell-command-projection.cts` — not a substring match. The rule's
+  own configured surface is `src/**/*.cts`, `gsd-core/bin/**/*.cjs`, `scripts/**/*.cjs`, and
+  `hooks/**/*.js`; `tests/**` is deliberately outside that surface, because test setup
+  legitimately assigns `process.env.PATHEXT` (`tests/fallow-runner.test.cjs`'s P3 case does this).
+  So the suffix-vs-substring distinction is proven only by case I9 of the rule's `RuleTester`
+  suite, which feeds the rule a synthetic filename directly — not by real-world linting of
+  `tests/shell-command-projection-dispatch.test.cjs`, which this rule never scans.
 
 The rule started **green** with nothing suppressed and nothing grandfathered — Phases 1 and 2 had
 already removed every private resolver, which is what made a strict ratchet possible at all.

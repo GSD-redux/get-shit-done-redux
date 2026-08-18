@@ -138,6 +138,30 @@ describe('no-private-binary-resolution: valid cases', () => {
       invalid: [],
     });
   });
+
+  test('V9: const { PATH } = process.env; — PATH is not the signal', () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [
+        {
+          code: `const { PATH } = process.env;`,
+          filename: OUTSIDE_SEAM_FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('V10: const { [key]: v } = process.env; — computed key is not statically decidable', () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [
+        {
+          code: `const { [key]: v } = process.env;`,
+          filename: OUTSIDE_SEAM_FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
 });
 
 // ─── INVALID cases (I1-I9) ──────────────────────────────────────────────────
@@ -257,6 +281,58 @@ describe('no-private-binary-resolution: invalid cases', () => {
         {
           code: `const ext = process.env.PATHEXT;`,
           filename: 'tests/shell-command-projection-dispatch.test.cjs',
+          errors: [{ messageId: 'pathextRead' }],
+        },
+      ],
+    });
+  });
+
+  test('I10: const { PATHEXT } = process.env; — destructuring evades a MemberExpression-only check', () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: `const { PATHEXT } = process.env;`,
+          filename: OUTSIDE_SEAM_FILE,
+          errors: [{ messageId: 'pathextRead' }],
+        },
+      ],
+    });
+  });
+
+  test('I11: const { PATHEXT: exts } = process.env; — renamed destructuring', () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: `const { PATHEXT: exts } = process.env;`,
+          filename: OUTSIDE_SEAM_FILE,
+          errors: [{ messageId: 'pathextRead' }],
+        },
+      ],
+    });
+  });
+
+  test('I12: const { Pathext } = opts.env; — casing plus non-process receiver', () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: `const { Pathext } = opts.env;`,
+          filename: OUTSIDE_SEAM_FILE,
+          errors: [{ messageId: 'pathextRead' }],
+        },
+      ],
+    });
+  });
+
+  test("I13: const { 'PATHEXT': v } = env; — string-key destructuring", () => {
+    ruleTester.run('no-private-binary-resolution', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: `const { 'PATHEXT': v } = env;`,
+          filename: OUTSIDE_SEAM_FILE,
           errors: [{ messageId: 'pathextRead' }],
         },
       ],

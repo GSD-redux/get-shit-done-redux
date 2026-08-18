@@ -16,7 +16,10 @@ const { PATHEXT_VAR_NAME, countWindowsExecutableExtensions } = require('./lib/po
  *
  *   1. Reading PATHEXT from any object, any casing — Windows environment
  *      variable names are case-insensitive, and nothing reads PATHEXT for a
- *      reason other than locating an executable.
+ *      reason other than locating an executable. This covers both member
+ *      access (`env.PATHEXT`, `env['Pathext']`) and destructuring
+ *      (`const { PATHEXT } = env`, `const { PATHEXT: exts } = env`), from
+ *      any source object.
  *   2. A hardcoded Windows executable-extension list (an ArrayExpression or
  *      a single string literal) carrying two or more of .exe/.cmd/.bat/.com
  *      — the exact shape both deleted implementations had. A SINGLE
@@ -25,11 +28,14 @@ const { PATHEXT_VAR_NAME, countWindowsExecutableExtensions } = require('./lib/po
  *      (`scriptPath.replace(/\.js$/, '.cmd')`), not a candidate list, and
  *      the tree has legitimate instances of both.
  *
- * The seam exemption is PATH-ANCHORED, not substring-matched: only the file
- * whose repo-relative path is exactly `src/shell-command-projection.cts` is
- * exempt. A file that merely contains that string as a substring in its own
- * path (e.g. a test file named after the seam) is NOT exempt — a substring
- * exemption would be the obvious wrong implementation here.
+ * The seam exemption is PATH-SUFFIX ANCHORED, not substring-matched: a file
+ * is exempt only when its repo-relative path IS `src/shell-command-projection.cts`
+ * or ENDS WITH `/src/shell-command-projection.cts` — so a file nested under
+ * any parent directory at that suffix (e.g. `foo/src/shell-command-projection.cts`)
+ * is exempt too, but a file that merely contains that string as a substring
+ * elsewhere in its own path, or as a `.bak` / `.test.cts` variant of the
+ * filename itself, is NOT exempt (case I9 pins this distinction) — a
+ * substring exemption would be the obvious wrong implementation here.
  *
  * See .gsd/phase/chore-3619-no-bare-binary-spawn/40-design.md for the full
  * behavior table and rejected alternatives.
@@ -76,6 +82,24 @@ function memberExpressionReadsPathext(node) {
   return isPathextStringLiteral(property) || isPathextIdentifier(property);
 }
 
+/**
+ * True when an ObjectPattern `Property`'s key resolves to PATHEXT, any casing —
+ * regardless of what is being destructured (`process.env`, `env`, `opts.env`,
+ * anything) and regardless of renaming (`const { PATHEXT: exts } = ...`):
+ *   - non-computed key: an Identifier (`{ PATHEXT }`, `{ Pathext: v }`) or a
+ *     string Literal (`{ 'PATHEXT': v }`)
+ *   - computed key (`{ [expr]: v }`): only a string Literal is statically
+ *     decidable (`{ ['PATHEXT']: v }`); a variable expression like `{ [key]: v }`
+ *     is NOT decidable and must not be reported (an Identifier that happens to
+ *     be *named* PATHEXT is still accepted, mirroring the MemberExpression
+ *     computed case above and its accepted false-positive risk).
+ */
+function objectPatternPropertyReadsPathext(property) {
+  if (!property || property.type !== 'Property') return false;
+  const key = property.key;
+  return isPathextIdentifier(key) || isPathextStringLiteral(key);
+}
+
 /** @type {import('eslint').Rule.RuleModule} */
 const rule = {
   meta: {
@@ -103,6 +127,14 @@ const rule = {
       MemberExpression(node) {
         if (memberExpressionReadsPathext(node)) {
           context.report({ node, messageId: 'pathextRead' });
+        }
+      },
+
+      ObjectPattern(node) {
+        for (const property of node.properties) {
+          if (objectPatternPropertyReadsPathext(property)) {
+            context.report({ node: property, messageId: 'pathextRead' });
+          }
         }
       },
 
