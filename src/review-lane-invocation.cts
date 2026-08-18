@@ -79,6 +79,17 @@ export interface SpawnPlan {
   binary: string;
   /** Fully resolved argv — model, effort and prompt already folded in, in leg order. */
   argv: string[];
+  /**
+   * The configured model that was ACTUALLY APPLIED to this invocation, or `null` (#2295).
+   *
+   * Not merely "what `review.models.<slug>` says". A lane can declare a `modelConfigKey` and no
+   * `modelArg` — a shape a third-party overlay body can reach — and then the configured value
+   * never enters argv and the CLI reviews under its own default. Recording the config value in
+   * that case would attribute the review to a model that never ran, which is the inverse of the
+   * failure #2295 exists to end. So this mirrors the argv expansion: set only when `{{model}}`
+   * really expanded to something.
+   */
+  model: string | null;
   /** Prompt delivered on stdin, or `null` for `argv`/`argv-file-ref`/`none` lanes. */
   stdin: string | null;
   /**
@@ -180,8 +191,11 @@ export interface ResolveInput {
  *
  * A non-string (number, bool, object, array) is NOT coerced. `String(0)` would put `"0"` into argv
  * as a model name; a wrong model silently reviewed is worse than no model override.
+ *
+ * Exported and shared with the runner's model-recovery arms (#2295) — "what counts as unset" has
+ * ONE source, so the plan resolver and the runner's recovered-model normalization cannot disagree.
  */
-function configString(raw: unknown): string | null {
+export function configString(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') return null;
@@ -510,6 +524,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       slug,
       binary,
       argv,
+      model: modelExpansion.length > 0 ? model : null,
       stdin,
       promptPath,
       outputTarget,

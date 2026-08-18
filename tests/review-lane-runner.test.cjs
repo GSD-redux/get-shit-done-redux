@@ -1714,6 +1714,7 @@ describe('#2295 — properties (pinned seed, bounded runs)', () => {
             { stdout, stderr: '' },
             { convId: '', lines: 0, fullLines: 0 },
             deps(),
+            ROOT,
           );
           const isUnknown = reported.source === MODEL_SOURCE.UNKNOWN;
           return isUnknown === (reported.value === null) && wellFormed(reported.value);
