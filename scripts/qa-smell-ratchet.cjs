@@ -428,18 +428,27 @@ function fragmentSkeleton(finding) {
  * red run present a green-looking summary; a backtick breaks out of the
  * code span it is rendered inside; an ANSI escape repaints the CI log.
  *
+ * The 300-char truncation is a SEPARATE concern from the neutralization
+ * above and is controllable via `maxLen`: every existing caller keeps the
+ * default (a long `detail`/`scenario`/`at` value is fine to summarize), but
+ * the `repro` field is a copy-pasteable command — truncating it produces a
+ * string that *looks* like a complete, runnable command but silently isn't
+ * (it dies mid-argv or mid-path), which is worse than no repro at all. Pass
+ * `{ maxLen: Infinity }` at those call sites to lift the cap while keeping
+ * every other neutralization (newlines/control chars/backticks) intact.
+ *
  * @param {unknown} value
+ * @param {{maxLen?: number}} [opts]
  * @returns {string}
  */
-function flattenUntrusted(value) {
-  const MAX_LEN = 300;
+function flattenUntrusted(value, { maxLen = 300 } = {}) {
   let s = String(value)
     // eslint-disable-next-line no-control-regex -- deliberately stripping C0/C1 control chars (incl. CR/LF/ANSI escapes)
     .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
     .replace(/`/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
-  if (s.length > MAX_LEN) s = `${s.slice(0, MAX_LEN)}…`;
+  if (s.length > maxLen) s = `${s.slice(0, maxLen)}…`;
   return s;
 }
 
@@ -515,7 +524,9 @@ function buildStepSummaryMarkdown({ smells, violations, expectationFailures, new
     lines.push('```sh');
     // Backticks are replaced with `'` by flattenUntrusted, so the flattened
     // value can never contain a ``` run that would close this fence early.
-    lines.push(flattenUntrusted(firstFailingRepro));
+    // maxLen: Infinity — a truncated repro looks runnable and isn't, which
+    // is worse than no repro at all (see flattenUntrusted's JSDoc).
+    lines.push(flattenUntrusted(firstFailingRepro, { maxLen: Infinity }));
     lines.push('```');
     lines.push('');
   }
@@ -734,7 +745,8 @@ function printViolations(violations) {
     console.error(`  scenario: ${flattenUntrusted(v.scenario)}`);
     console.error(`  argv:     ${flattenUntrusted(v.argv.join(' '))}`);
     console.error(`  detail:   ${flattenUntrusted(v.detail)}`);
-    console.error(`  repro:    ${flattenUntrusted(v.repro)}`);
+    // maxLen: Infinity — a truncated repro looks runnable and isn't.
+    console.error(`  repro:    ${flattenUntrusted(v.repro, { maxLen: Infinity })}`);
   }
 }
 
@@ -749,7 +761,8 @@ function printExpectationFailures(expectationFailures) {
     console.error(`  at:       ${flattenUntrusted(f.at)}`);
     console.error(`  argv:     ${flattenUntrusted(f.argv.join(' '))}`);
     console.error(`  detail:   ${flattenUntrusted(f.detail)}`);
-    console.error(`  repro:    ${flattenUntrusted(f.repro)}`);
+    // maxLen: Infinity — a truncated repro looks runnable and isn't.
+    console.error(`  repro:    ${flattenUntrusted(f.repro, { maxLen: Infinity })}`);
   }
 }
 

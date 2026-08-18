@@ -749,15 +749,23 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   let totalTasks = 0;
   const accomplishments: string[] = [];
 
-  try {
-    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
-    // CURRENT milestone" — routed through the canonical owner (with the
-    // explicit `version` this command already resolved) instead of a
-    // hand-rolled readdirSync + isDirInMilestone filter, which also never
-    // excluded sentinels, unlike the owner.
-    const dirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
+  // #3597 (ADR-3180 Decision 2): SINGLE resolution of "which phase
+  // directories belong to the current milestone" AND the SCOPE discriminator
+  // that resolution came from — shared verbatim by the read-only stats loop
+  // immediately below, the --dry-run preview, and the real archive pass, so
+  // none of the three can ever disagree. `listMilestonePhaseDirs` never
+  // throws (its own doc comment), so this is safe to call unguarded ahead of
+  // the try/catch that scopes the stats roll-up below.
+  //
+  // The stats loop's own ENUMERATION behavior is intentionally left
+  // unaffected by a non-COMPLETE scope — it reports what is actually on
+  // disk, same as before #3597. Only the destructive archive pass (and its
+  // --dry-run preview) refuses to act on a non-COMPLETE (non-answer) scope;
+  // see the guard built from `milestonePhaseScope` further down.
+  const { value: milestonePhaseDirs, scope: milestonePhaseScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version });
 
-    for (const dir of dirs) {
+  try {
+    for (const dir of milestonePhaseDirs) {
       phaseCount++;
       // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
       // from the single owner, rather than a root-only hand-rolled readdirSync
@@ -803,15 +811,41 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
      * accomplishments=[] rather than crash `milestone complete`. */
   }
 
+  // #3597 (ADR-3180 Decision 2): `SCOPE.UNREADABLE` is the ONE classification
+  // where `getMilestonePhaseFilter` throws (no workstream ROADMAP of its
+  // own), leaves `milestonePhaseNums` empty, and the window degrades to a
+  // pass-all fallback — that fallback is what silently WIDENS the archive
+  // set past the single-derivation guarantee this block exists to protect
+  // (confirmed empirically: a workstream with phase dirs but no workstream
+  // ROADMAP.md reports UNREADABLE and used to enumerate every directory on
+  // disk). `SCOPE.TRUNCATED` already refuses the WHOLE command above.
+  // `SCOPE.UNSCOPED` is a DIFFERENT, pre-existing classification — e.g. a
+  // root project with no milestone asserted in STATE.md — whose
+  // `listMilestonePhaseDirs` resolution is a real (non-degraded) answer, and
+  // its rollover archive behavior predates this branch and must not change.
+  // The guard therefore refuses ONLY on UNREADABLE, not on "not COMPLETE" —
+  // widening to every non-COMPLETE scope was itself a regression (a root
+  // project with no active workstream resolves UNSCOPED, and refusing to
+  // archive there broke the ordinary `milestone complete` -> `phases clear`
+  // rollover). Computed once here from the single
+  // `milestonePhaseDirs`/`milestonePhaseScope` resolution above, so the
+  // --dry-run preview below and the real archive pass further down can never
+  // disagree about whether (or what) to archive.
+  const phasesArchiveSkippedForScope = options.archivePhases !== false && milestonePhaseScope === SCOPE.UNREADABLE;
+  const phasesArchiveSkipReason = phasesArchiveSkippedForScope
+    ? `milestone window scope is "${milestonePhaseScope}" — refusing to archive phase directories until the window can be resolved (ADR-3180)`
+    : null;
+
   // #2118: --dry-run preview — compute what WOULD happen without mutating.
   // The stats above are read-only; all mutations start at the archive section below.
   if (options.dryRun) {
     const phaseDirsToArchive: string[] = [];
-    if (options.archivePhases !== false) {
-      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats loop
-      // above — the dry-run preview must list exactly what the real archive
-      // pass below would move.
-      phaseDirsToArchive.push(...listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value);
+    if (options.archivePhases !== false && !phasesArchiveSkippedForScope) {
+      // #3185 (ADR-3180 Decision 1) / #3597: same single routed derivation as
+      // the stats loop above — the dry-run preview must list exactly what
+      // the real archive pass below would move, including refusing to list
+      // anything when the window scope is not COMPLETE.
+      phaseDirsToArchive.push(...milestonePhaseDirs);
     }
     // #2142 MAJOR 5 (review): dry-run preview of quick-task archival —
     // read-only, routed through the SAME `listQuickTaskDirsForArchive`
@@ -838,6 +872,8 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
           ? { source: path.relative(cwd, path.join(planningBase, `${version}-MILESTONE-AUDIT.md`)).split(path.sep).join('/'), target: path.relative(cwd, path.join(archiveDir, `${version}-MILESTONE-AUDIT.md`)).split(path.sep).join('/') }
           : null,
         phases: phaseDirsToArchive,
+        phases_archive_skipped: phasesArchiveSkippedForScope,
+        phases_archive_skip_reason: phasesArchiveSkipReason,
         quick: quickDirsToArchive,
       },
       would_update: {
@@ -1051,7 +1087,15 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // Archive phase directories if requested
   let phasesArchived = false;
   // #1871: archive phase dirs by default on milestone complete (opt out via --no-archive-phases).
-  if (options.archivePhases !== false) {
+  // #3597: `phasesArchiveSkippedForScope` (computed once, above, from the SAME
+  // `milestonePhaseDirs`/`milestonePhaseScope` resolution the --dry-run preview
+  // consumed) refuses this destructive rename loop entirely when the window
+  // scope is UNREADABLE — the one scope whose resolution degrades to a
+  // pass-all fallback (ADR-3180). UNSCOPED/TRUNCATED are real, pre-existing
+  // answers and archive exactly as they did before this branch.
+  // `phasesArchived` stays false and the refusal is surfaced on `result` below;
+  // nothing on disk moves, and `phaseArchiveDir` is never even created.
+  if (options.archivePhases !== false && !phasesArchiveSkippedForScope) {
     // #2245 audit (was ERROR-HIDING): retryRenameSync moves one phase dir at a
     // time — a mid-loop failure (e.g. the Nth rename) used to leave
     // `phasesArchived` at its `false` default even though the first N-1 dirs
@@ -1064,12 +1108,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       const phaseArchiveDir = path.join(archiveDir, `${version}-phases`);
       platformEnsureDir(phaseArchiveDir);
 
-      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats
-      // loop above — only the CURRENT milestone's phase directories move,
-      // never a sentinel or an out-of-window directory left for a later
-      // milestone.
-      const phaseDirNames = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
-      for (const dir of phaseDirNames) {
+      // #3185 (ADR-3180 Decision 1) / #3597: same single routed derivation as
+      // the stats loop and the --dry-run preview above — only the CURRENT
+      // milestone's phase directories move, never a sentinel or an
+      // out-of-window directory left for a later milestone, and never a
+      // pass-all degrade from a non-COMPLETE scope (refused above).
+      for (const dir of milestonePhaseDirs) {
         retryRenameSync(path.join(phasesDir, dir), path.join(phaseArchiveDir, dir));
         archivedCount++;
       }
@@ -1095,6 +1139,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       requirements: fs.existsSync(path.join(archiveDir, `${version}-REQUIREMENTS.md`)),
       audit: fs.existsSync(path.join(archiveDir, `${version}-MILESTONE-AUDIT.md`)),
       phases: phasesArchived,
+      // #3597: machine-readable refusal signal — distinguishes "nothing to
+      // archive because the milestone genuinely has no phase directories"
+      // (phases: false, phases_archive_skipped: false) from "refused to
+      // archive because the milestone window scope was not COMPLETE"
+      // (phases: false, phases_archive_skipped: true, with a reason).
+      phases_archive_skipped: phasesArchiveSkippedForScope,
+      phases_archive_skip_reason: phasesArchiveSkipReason,
       quick: !!quickArchiveResult && quickArchiveResult.archived > 0,
     },
     milestones_updated: true,

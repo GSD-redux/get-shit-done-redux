@@ -27,6 +27,7 @@ const { ORACLES, runOracles, SEVERITY } = require('./qa/oracles.cjs');
 const { LoopWalk } = require('./qa/loop-walk.cjs');
 const { MUTATIONS, apply, NOOP } = require('./qa/mutations.cjs');
 const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario.cjs');
+const { buildReport } = require('./qa/report.cjs');
 const { resolveRef } = require('./qa/fixtures/index.cjs');
 const { resolveWithin, resolveForCompare } = require('./qa/paths.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
@@ -1479,6 +1480,43 @@ describe('qa-smell-ratchet gate (#3597)', () => {
     };
   }
 
+  /**
+   * Build a report via the REAL `buildReport()` (tests/qa/report.cjs) rather
+   * than hand-computing `totals.violations`. Every other PARITY case above
+   * hardcodes `expectFailures.length + violations.length` itself — the same
+   * formula `buildReport` uses internally — so a change to `buildReport`'s
+   * own violation-counting formula would leave those cases green while the
+   * gate silently drifted from the report it reads (exactly the #3597
+   * defect class). Routing at least one case through the real builder is
+   * what makes this test capable of catching that drift.
+   *
+   * @param {Array<{name: string, steps: Array<{at?: string, argv?: string[], kind?: string, oracleFailures?: object[], expectFailures?: string[], smells?: object[]}>}>} scenarioDefs
+   * @returns {object} a real report document produced by `buildReport()`
+   */
+  function realBuiltReport(scenarioDefs) {
+    const scenarioReports = scenarioDefs.map((s) => ({
+      name: s.name,
+      ok: true,
+      fixture: 'greenfield',
+      steps: s.steps.map((step) => ({
+        at: step.at || 'execute:post',
+        argv: step.argv || ['--ws', 'alpha', 'progress'],
+        kind: step.kind || 'json',
+        expectFailures: step.expectFailures || [],
+        oracleFailures: step.oracleFailures || [],
+        smells: step.smells || [],
+        mutation: null,
+        mutationNoop: false,
+        mutationObserved: false,
+      })),
+    }));
+    return buildReport(scenarioReports, {
+      nodeVersion: 'v24.0.0',
+      platform: 'linux',
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+  }
+
   test('requiring the ratchet does NOT run a full walk — proven by running require() to completion in a CHILD PROCESS (#3597)', () => {
     // WHY AN IN-PROCESS ELAPSED-TIME CHECK IS INSUFFICIENT (and banned):
     // `runMain` (`scripts/lib/cli-exit.cjs:38`) defers through
@@ -1517,15 +1555,17 @@ describe('qa-smell-ratchet gate (#3597)', () => {
       `child process exited non-zero (status=${result.status}): stdout=${result.stdout} stderr=${result.stderr}`,
     );
     const combined = `${result.stdout || ''}${result.stderr || ''}`;
+    // This is the discriminating assertion: `jsonOut` defaults to `null` in
+    // `parseArgs` (scripts/qa-smell-ratchet.cjs), so no report is written
+    // even under the unguarded pre-fix shape run via `node -e` — asserting
+    // the ABSENCE of qa-report.json would be vacuously true either way. The
+    // presence/absence of the "qa-smell-ratchet:" summary line is the only
+    // thing that actually distinguishes a guarded require() from an
+    // unguarded one (see the WHY comments above).
     assert.strictEqual(
       combined.includes('qa-smell-ratchet:'),
       false,
       'require()ing the ratchet printed main()\'s summary line in a child process — the require.main guard did not prevent a full walk',
-    );
-    assert.strictEqual(
-      fs.existsSync(path.join(repoRoot, 'qa-report.json')),
-      false,
-      'require()ing the ratchet must not write qa-report.json as a side effect',
     );
 
     // `collectFindings` remains reachable in-process, as documented.
@@ -1612,6 +1652,19 @@ describe('qa-smell-ratchet gate (#3597)', () => {
       ),
       // A scenario whose steps array is EMPTY.
       reportWithScenarios([{ name: 'empty-steps-scenario', steps: [] }], 0),
+      // Built via the REAL buildReport() (see realBuiltReport's doc comment
+      // above for why this case, specifically, is load-bearing).
+      realBuiltReport([{ name: 'real-scenario', steps: [{ expectFailures: ['a'] }] }]),
+      realBuiltReport([
+        {
+          name: 'real-scenario-one',
+          steps: [
+            { expectFailures: ['a'] },
+            { oracleFailures: [{ id: 'exit-contract', detail: 'boom' }] },
+          ],
+        },
+        { name: 'real-scenario-two', steps: [{ expectFailures: ['b', 'c'] }] },
+      ]),
     ];
     for (const report of cases) {
       const found = collectFindings(report);

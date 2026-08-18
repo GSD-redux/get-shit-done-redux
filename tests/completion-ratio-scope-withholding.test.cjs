@@ -831,6 +831,11 @@ describe('I. workstream scoping (#3597) — --ws <name> progress reads the WORKS
     // No root .planning/ROADMAP.md at all — mirrors `workstream create`
     // migrating it away. Only the workstream's own planning tree exists.
     const wsPlanningDir = path.join(cwd, '.planning', 'workstreams', 'alpha');
+    // The workstream's own STATE.md must assert the milestone (mirrors every
+    // other fixture in this file via writeState) — without it, no milestone
+    // is asserted at all and classifyMilestoneWindow reports UNSCOPED
+    // regardless of the ws-forwarding fix under test here.
+    writeFile(cwd, '.planning/workstreams/alpha/STATE.md', ['---', 'milestone: v1.0', '---', ''].join('\n'));
     writeFile(cwd, '.planning/workstreams/alpha/ROADMAP.md', [
       '## v1.0 Current 🚧',
       '',

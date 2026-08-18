@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
+const { seedWorkstream } = require('./fixtures/index.cjs');
 const { findTableBySchema } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { buildQuickArchiveIndex } = require('../gsd-core/bin/lib/milestone.cjs');
 
@@ -1189,5 +1190,165 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
     } finally {
       cleanup(outsideDir);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3597: milestone complete refuses to archive phase directories when the
+// milestone window's scope is not SCOPE.COMPLETE (ADR-3180 "a non-answer must
+// not be acted on"). Regression coverage for the specific widening #3597
+// introduced when listMilestonePhaseDirs stopped forcing `ws: null` — a
+// workstream with phase directories but NO workstream-local ROADMAP.md now
+// resolves its milestone window against the ACTIVE workstream (fixing --ws
+// progress), but getMilestonePhaseFilter throws internally when it cannot
+// read that workstream's ROADMAP.md, degrading scope to SCOPE.UNREADABLE with
+// a pass-all directory fallback. Before this guard, `milestone complete`
+// archived every phase directory on disk in that shape; after it, the archive
+// step refuses and reports why, while the surrounding command (ROADMAP/
+// REQUIREMENTS archival, STATE.md closure) still completes — matching the
+// pre-existing UNREADABLE/UNSCOPED "legitimately handled" posture documented
+// at the TRUNCATED-only whole-command refusal above it in src/milestone.cts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3597: milestone complete refuses to archive on a non-COMPLETE window scope', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function seedUnreadableWorkstream(cwd) {
+    // Root ROADMAP.md declares only phase 1 — irrelevant to the workstream's
+    // OWN window once the workstream is active, but included to mirror the
+    // exact reproduction shape (a root ROADMAP that could otherwise mislead a
+    // naive root-scoped read).
+    fs.writeFileSync(
+      path.join(cwd, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Root\n\n**Goal:** Root-only work.\n',
+    );
+    // Workstream `alpha`: STATE.md declares milestone v1.0, but NO
+    // ROADMAP.md of its own — this is what makes getMilestonePhaseFilter
+    // throw internally and degrade to SCOPE.UNREADABLE for this workstream's
+    // window.
+    seedWorkstream(cwd, {
+      name: 'alpha',
+      state: '---\nmilestone: v1.0\n---\n\n# GSD State\n',
+      active: true,
+    });
+    const alphaPhases = path.join(cwd, '.planning', 'workstreams', 'alpha', 'phases');
+    for (const dir of ['01-a', '02-b', '03-c']) {
+      fs.mkdirSync(path.join(alphaPhases, dir), { recursive: true });
+    }
+    return alphaPhases;
+  }
+
+  test('archives NOTHING and leaves every phase dir on disk when the workstream has no ROADMAP.md', () => {
+    const alphaPhases = seedUnreadableWorkstream(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete should still succeed (UNREADABLE is not a whole-command refusal): ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, false, 'phases must NOT be reported as archived');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, true, 'the refusal must be surfaced as machine-readable');
+    assert.ok(
+      typeof result.data.archived.phases_archive_skip_reason === 'string'
+        && result.data.archived.phases_archive_skip_reason.length > 0,
+      `expected a non-empty skip reason, got: ${JSON.stringify(result.data.archived.phases_archive_skip_reason)}`,
+    );
+
+    const onDisk = fs.readdirSync(alphaPhases, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    assert.deepStrictEqual(onDisk, ['01-a', '02-b', '03-c'], 'all three phase directories must still be on disk, untouched');
+
+    // Negative proof: no phase-archive directory was even created.
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha', 'milestones', 'v1.0-phases')),
+      false,
+      'the archive destination must never be created on a refused archive pass',
+    );
+  });
+
+  test('--dry-run previews an empty archive list and the same refusal on the unreadable-window workstream', () => {
+    seedUnreadableWorkstream(tmpDir);
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--dry-run'], tmpDir);
+    assert.ok(result.success, `milestone.complete --dry-run should succeed: ${result.error}`);
+    assert.deepStrictEqual(result.data.would_archive.phases, [], 'dry-run must preview an EMPTY archive list');
+    assert.strictEqual(result.data.would_archive.phases_archive_skipped, true);
+    assert.ok(
+      typeof result.data.would_archive.phases_archive_skip_reason === 'string'
+        && result.data.would_archive.phases_archive_skip_reason.length > 0,
+    );
+  });
+
+  test('the guard is not a blanket refusal — a normal COMPLETE-scope workstream still archives exactly its in-window phase dirs', () => {
+    // Workstream `beta` HAS its own ROADMAP.md declaring phase 1 only — a
+    // real, resolvable (SCOPE.COMPLETE) window. `02-out-of-window` has no
+    // matching ROADMAP entry and must NOT be archived, proving this exercises
+    // real window scoping and not merely "archive everything present".
+    seedWorkstream(tmpDir, {
+      name: 'beta',
+      state: '---\nmilestone: v1.0\n---\n\n# GSD State\n',
+      // #3597: a versioned `## v1.0 ...` heading is required for the window
+      // to resolve SCOPE.COMPLETE against the explicit `version` argument —
+      // a free-form roadmap (no versioned heading at all) resolves UNSCOPED
+      // instead once an explicit version is requested (verified empirically
+      // against the built CLI), which would silently defeat this "guard is
+      // not a blanket refusal" proof.
+      roadmap: '# Roadmap\n\n## v1.0 Current\n\n### Phase 1: Foo\n\n**Goal:** Do foo.\n',
+      active: true,
+    });
+    const betaPhases = path.join(tmpDir, '.planning', 'workstreams', 'beta', 'phases');
+    fs.mkdirSync(path.join(betaPhases, '01-foo'), { recursive: true });
+    fs.mkdirSync(path.join(betaPhases, '02-out-of-window'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, true, 'phases must be reported as archived');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, false, 'a resolvable (COMPLETE) window must not be reported as skipped');
+    assert.strictEqual(result.data.archived.phases_archive_skip_reason, null);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'workstreams', 'beta', 'milestones', 'v1.0-phases');
+    assert.ok(fs.existsSync(path.join(archiveDir, '01-foo')), 'the in-window phase dir must be archived');
+    assert.ok(!fs.existsSync(path.join(archiveDir, '02-out-of-window')), 'the out-of-window phase dir must NOT be archived');
+    assert.ok(fs.existsSync(path.join(betaPhases, '02-out-of-window')), 'the out-of-window phase dir must remain on disk, untouched');
+  });
+
+  // #3597 regression: the guard originally shipped as "refuse whenever scope
+  // !== SCOPE.COMPLETE", which also caught SCOPE.UNSCOPED — a DIFFERENT,
+  // pre-existing classification whose archive behavior predates this branch.
+  // A root project (no active workstream) with a free-form ROADMAP.md (no
+  // versioned `## vX.Y` heading) resolves UNSCOPED once an explicit version
+  // is requested — exactly the `milestone-rollover` QA scenario shape
+  // (tests/qa/scenarios/milestone-rollover.json, fixture "greenfield":
+  // .planning/ROADMAP.md from @roadmap/three-phase, no workstreams at all).
+  // Under the too-broad guard, `milestone complete 1.0 --force` refused to
+  // archive `01-parser`, leaving it on disk and causing the QA walk's
+  // following `phases clear --confirm` step to abort on the #1447
+  // uncommitted-change safety check. Narrowing the guard to UNREADABLE-only
+  // must restore this exact rollover: the phase directories archive.
+  test('a root project with an unscoped (non-versioned) roadmap still archives phase dirs like before the guard', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Parser\n**Goal:** Parse input.\n\n### Phase 2: Printable Output\n**Goal:** Render output.\n',
+    );
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    fs.mkdirSync(path.join(phasesDir, '01-parser'), { recursive: true });
+    fs.mkdirSync(path.join(phasesDir, '02-printable-output'), { recursive: true });
+
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--force'], tmpDir);
+    assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
+
+    assert.strictEqual(result.data.archived.phases, true, 'phases must still be archived for an UNSCOPED (not UNREADABLE) window');
+    assert.strictEqual(result.data.archived.phases_archive_skipped, false, 'UNSCOPED must not trigger the refusal — only UNREADABLE does');
+    assert.strictEqual(result.data.archived.phases_archive_skip_reason, null);
+
+    const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases');
+    assert.ok(fs.existsSync(path.join(archiveDir, '01-parser')), '01-parser must be archived');
+    assert.ok(fs.existsSync(path.join(archiveDir, '02-printable-output')), '02-printable-output must be archived');
+    assert.ok(!fs.existsSync(path.join(phasesDir, '01-parser')), '01-parser must no longer be on disk at its original location');
+    assert.ok(!fs.existsSync(path.join(phasesDir, '02-printable-output')), '02-printable-output must no longer be on disk at its original location');
   });
 });
