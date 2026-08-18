@@ -839,6 +839,16 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
     }
   }
 
+  if (kp === 'git.protected_branches') {
+    if (
+      !Array.isArray(parsedValue) ||
+      parsedValue.length === 0 ||
+      parsedValue.some((branch) => typeof branch !== 'string' || branch.trim().length === 0)
+    ) {
+      error(`Invalid git.protected_branches '${val}'. Must be a non-empty array of non-empty branch names.`);
+    }
+  }
+
   if (kp === 'ship.pr_body_sections') {
     validateShipPrBodySections(parsedValue);
   }
