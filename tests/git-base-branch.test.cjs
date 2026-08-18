@@ -507,10 +507,18 @@ describe('#3552: configured protected branches', () => {
 
     assert.ok(match.success, match.error);
     assert.ok(control.success, control.error);
-    assert.strictEqual(match.output, 'true\n');
-    assert.strictEqual(control.output, 'false\n');
+    assert.strictEqual(match.output, 'true');
+    assert.strictEqual(control.output, 'false');
     assert.notStrictEqual(match.output, control.output,
       'CLI negative control must disagree with the configured protected-branch match');
+
+    let written = '';
+    const returned = gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      readFile: configuredRead,
+      write: (text) => { written += text; },
+    });
+    assert.strictEqual(returned, 'true');
+    assert.strictEqual(written, 'true\n', 'direct command contract must remain newline-terminated');
   });
 
   test('#3552 execute-phase warns on true, stays silent on false, and continues both', (t) => {

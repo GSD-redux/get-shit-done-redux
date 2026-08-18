@@ -89,6 +89,34 @@ export function readConfigBaseBranch(
 }
 
 /**
+ * Safely read `git.protected_branches` from the project's config.json.
+ * Invalid direct edits contribute no branches; callers still retain the
+ * resolved base branch in their protected set.
+ */
+export function readConfigProtectedBranches(
+  planningDir: string,
+  deps?: Pick<BaseBranchDeps, 'readFile'>
+): string[] {
+  const readFile: (p: string) => string | null = deps?.readFile ??
+    ((p: string) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } });
+
+  const raw = readFile(path.join(planningDir, 'config.json'));
+  if (!raw) return [];
+
+  let cfg: unknown;
+  try { cfg = JSON.parse(raw); } catch { return []; }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return [];
+
+  const gitSection = (cfg as Record<string, unknown>).git;
+  if (!gitSection || typeof gitSection !== 'object' || Array.isArray(gitSection)) return [];
+
+  const configured = (gitSection as Record<string, unknown>).protected_branches;
+  if (!Array.isArray(configured) || configured.length === 0) return [];
+  if (!configured.every((branch) => typeof branch === 'string' && branch.trim() !== '')) return [];
+  return configured as string[];
+}
+
+/**
  * Try `git symbolic-ref --short refs/remotes/origin/HEAD` (no network).
  * Strips the `origin/` prefix to return just the branch name.
  * Returns null if unset or on error/timeout.
@@ -261,6 +289,31 @@ export function resolveBaseBranch(
   return resolveBaseBranchDiagnostics(cwd, deps).branch;
 }
 
+export interface ProtectedBranchStatus {
+  baseBranch: string;
+  protectedBranches: string[];
+  isProtected: boolean;
+  verified: boolean;
+}
+
+/** Resolve the base branch plus configured protected-branch extensions. */
+export function resolveProtectedBranchStatus(
+  cwd: string,
+  currentBranch: string,
+  deps?: BaseBranchDeps
+): ProtectedBranchStatus {
+  const { branch: baseBranch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
+  const planningDir = path.join(cwd, '.planning');
+  const configured = readConfigProtectedBranches(planningDir, deps);
+  const protectedBranches = [...new Set([baseBranch, ...configured])];
+  return {
+    baseBranch,
+    protectedBranches,
+    isProtected: protectedBranches.includes(currentBranch),
+    verified,
+  };
+}
+
 // ─── gitWorktreeInfoInternal (moved from core.cjs, ADR-857 T0 #1268) ─────────
 
 export interface GitWorktreeInfo {
@@ -413,9 +466,16 @@ export function changedFilesSince(
  */
 export function cmdGitBaseBranch(
   cwd: string,
-  _args: string[],
+  args: string[],
   deps?: BaseBranchDeps
 ): string {
+  if (args[0] === '--is-protected') {
+    const rendered = String(resolveProtectedBranchStatus(cwd, args[1] ?? '', deps).isProtected);
+    const write = deps?.write ?? ((s: string) => process.stdout.write(s));
+    write(rendered + '\n');
+    return rendered;
+  }
+
   const { branch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
   if (!verified) {
     const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
