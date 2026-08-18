@@ -3382,7 +3382,11 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
         tmpDir,
       );
-      const ids = rp3.scanMilestonePhaseIds(scoped.value);
+      // #612: scanMilestonePhaseIds now requires `convention` (resolved value,
+      // never inferred) and returns `{ ids, qualifiedIds }` instead of a bare
+      // Set — this repo is legacy, so `undefined` is the correct convention
+      // and `ids` is the set this test actually wants.
+      const { ids } = rp3.scanMilestonePhaseIds(scoped.value, undefined);
       a3.ok(ids.has('20') || [...ids].some((i) => i.replace(/^0+/, '') === '20'), `ids must contain 20; got ${[...ids]}`);
       a3.ok(ids.has('21') || [...ids].some((i) => i.replace(/^0+/, '') === '21'), `ids must contain 21; got ${[...ids]}`);
     });
@@ -3416,7 +3420,8 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
         tmpDir,
       );
-      const ids = [...rp3.scanMilestonePhaseIds(scoped.value)].map((i) => i.replace(/^0+/, ''));
+      // #612: same signature/shape update as the table-declared-ids test above.
+      const ids = [...rp3.scanMilestonePhaseIds(scoped.value, undefined).ids].map((i) => i.replace(/^0+/, ''));
       a3.ok(!ids.includes('3'), `a RoadmapProgress row is a progress marker, not a declaration; got ${ids}`);
       a3.ok(!ids.includes('77'), `a fenced table example must not count; got ${ids}`);
       const p77 = rp3.getRoadmapPhaseInternal(tmpDir, '77');

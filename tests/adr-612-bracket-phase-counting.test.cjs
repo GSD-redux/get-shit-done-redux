@@ -27,6 +27,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const phaseIdHelpers = require('../gsd-core/bin/lib/phase-id.cjs');
 
 let tmpDir;
 
@@ -85,9 +86,40 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
     if (complete) {
       fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
       fs.writeFileSync(
-        path.join(dir, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+        path.join(dir, verificationNameFor(d)), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
     }
   }
+}
+
+/**
+ * The verification filename cmdScaffold writes into `dir` when the phase is
+ * named by its unqualified token — `${normalizePhaseName(phase)}-VERIFICATION.md`
+ * (`src/commands.cts`): the PHASE'S OWN padded token.
+ *
+ * #2761 round-12: every earlier fixture in this file hardcoded
+ * `01-VERIFICATION.md` for every "complete" dir regardless of that dir's real
+ * phase number. That was harmless while nothing scoped a phase directory's
+ * listing by filename, but it means every non-phase-01 "complete" fixture was
+ * actually modeling a phase whose verification report belongs to a DIFFERENT
+ * phase — a cross-phase stray, not a completed phase. These fixtures mean "a
+ * COMPLETE phase", so they must write what the scaffolder actually writes:
+ * the report named for the phase's own token.
+ *
+ * The padding comes from the production `normalizePhaseName` itself (single
+ * owner, no fixture drift). What stays fixture-local is the bracket-prefix
+ * strip below — deliberately: production does NOT strip `{CODE}.` prefixes,
+ * so a repo's artifact layout is unqualified or qualified depending on how
+ * phases were scaffolded; this file's fixtures model the UNQUALIFIED layout.
+ */
+function verificationNameFor(dir) {
+  const rest = dir.replace(/^[A-Z][A-Z0-9_]*\.\d+-/i, '');
+  const token = [];
+  for (const seg of rest.split('-')) {
+    if (/^\d+(?:\.\d+)*$/.test(seg)) token.push(seg);
+    else break;
+  }
+  assert.ok(token.length > 0, `fixture dir ${dir} carries no phase token to name its verification`);
+  return `${phaseIdHelpers.normalizePhaseName(token.join('-'))}-VERIFICATION.md`;
 }
 
 /** total_phases as the READ path derives it. */
@@ -3194,7 +3226,11 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
       'GSD.02-01-setup',
       'GSD.02-05-real-work',
       'GSD.02-06-follow-up',
-      'not-a-declared-phase',
+      // Incomplete: the decoy carries no phase token, so it cannot be named
+      // by verificationNameFor's production-derived scheme (see its
+      // docstring) — and completeness is irrelevant to what this test pins,
+      // which is exclusion from would_archive.phases regardless.
+      ['not-a-declared-phase', false],
     ]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
@@ -3227,7 +3263,7 @@ describe('#2761 round-11 BLOCKER: cmdMilestoneComplete enumerates the bracket-sc
 
 ### Phase 06: Follow-up
 **Goal:** c
-`, undefined, ['01-setup', '05-real-work', '06-follow-up', 'not-a-declared-phase']);
+`, undefined, ['01-setup', '05-real-work', '06-follow-up', ['not-a-declared-phase', false]]);
 
     const r = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--raw'], tmpDir);
     assert.ok(r.success, `milestone complete --dry-run failed: ${r.error}`);
