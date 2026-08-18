@@ -1561,7 +1561,30 @@ describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator,
     assert.equal(readTotal(), 2, 'pinned 4 before this fix (whole-doc fallback)');
     const r = runGsdTools(['state', 'json'], tmpDir);
     assert.ok(r.success, `state json failed: ${r.error}`);
-    assert.equal(JSON.parse(r.output).progress?.percent, 100, 'pinned 75 before this fix');
+    const progress = JSON.parse(r.output).progress;
+    assert.equal(progress?.total_phases, 2, 'pinned 4 before this fix (whole-doc fallback)');
+    assert.equal(progress?.completed_phases, 2, 'both real GSD.02 phases are complete — scoping, not the whole disk, is what this fixture pins');
+    // UPDATED at the round-11 origin/next rebase: `percent` is now WITHHELD
+    // (the key is omitted) rather than 100. #3573 (origin/next) newly threads
+    // STATE's stored `milestone: v2.0` into THIS `state json` call as
+    // `getMilestonePhaseFilter`'s `versionOverride` (previously always
+    // `undefined` on this read surface). This fixture's ROADMAP carries no
+    // version tokens anywhere (`hasVersionedMilestonesGlobal` is false), so
+    // `sliceMilestoneWindow('v2.0')` cannot find a heading and the scope
+    // classifier's own row 5 (`versionResolved && !headingFound =>
+    // SCOPE.UNSCOPED`) reports UNSCOPED — even though the CONTENT it actually
+    // used is correct (extractCurrentMilestoneScoped's bracket-id-scoped
+    // GSD.02 window; `total_phases`/`completed_phases` above prove it).
+    // `computeProgressPercent`'s rule-4 gate then withholds the percentage
+    // for any non-COMPLETE scope. That row-5 rule is NOT touched by this
+    // branch and is load-bearing for OTHER version-less-document pins in this
+    // file (repro5, F9, G6, B1 round-2, round-4 Major 1, round-5 Minor 1 all
+    // rely on the identical UNSCOPED answer for a genuinely-missing version)
+    // — narrowing it broke seven of them in testing. Disclosed here, not
+    // fixed: the scoping claim this test exists to pin (2 real phases, not
+    // the whole-disk 4) is unaffected; only the `percent` observation channel
+    // moved, upstream of any decision taken here.
+    assert.equal(progress?.percent, undefined, 'percent is withheld (upstream #3573 x version-less-bracket-document interaction) — disclosed, not a scoping regression');
   });
 
   test('mechanism (repro7): extractCurrentMilestone actually scopes a level-3 milestone, not the whole document', () => {
@@ -1752,6 +1775,22 @@ Docs for authors:
     // byte-identical — fixing it is out of scope for this bracket-only fix
     // (round-2 review's own minimal-fix note). This pin exists so a future
     // reviewer does not file the pre-existing legacy gap as a NEW regression.
+    //
+    // UPDATED at the round-11 origin/next rebase — 4 before it, 2 after, and
+    // the move is upstream's (#3573), not this branch's. #3573 threads
+    // STATE's stored `milestone:` value into `state json`'s
+    // `buildStateFrontmatter` call (previously always `undefined` on that
+    // read surface). This fixture's STATE.md asserts `milestone: v2.0`, which
+    // now flows into `getMilestonePhaseFilter` as `versionOverride` and is
+    // located via `sliceMilestoneWindow` — a DIFFERENT, fence-aware heading
+    // matcher than the raw `anyMilestonePattern` scan this pin was disclosing
+    // as blind. `sliceMilestoneWindow` correctly skips the fenced `v9.0`
+    // example and scopes to the real `## Milestone v2.0: Current` section (2
+    // phases), so this specific fixture no longer exercises the fence-blind
+    // path at all — it is scoped, not blind, on this call surface. The
+    // underlying `anyMilestonePattern` gap is UNCHANGED (still disclosed,
+    // still out of scope for this branch); only this fixture's route to it
+    // moved, upstream of any decision taken here.
     writeProject(`# Roadmap
 
 Authoring guide:
@@ -1768,7 +1807,7 @@ Authoring guide:
 ### Phase 02: Two
 **Goal:** c
 `, undefined, [['03-stray', true], ['01-one', true], ['02-two', false], ['04-stray', true]]);
-    assert.equal(readTotal(), 4, 'pre-existing legacy fence-blindness — deliberately unchanged, not a new regression');
+    assert.equal(readTotal(), 2, 'upstream #3573 now scopes this read via sliceMilestoneWindow instead of the fence-blind anyMilestonePattern path');
   });
 
   test('PIN (repro10 A3): a fenced heading INSIDE the current section still must not terminate it', () => {
