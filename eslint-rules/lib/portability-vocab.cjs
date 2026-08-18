@@ -22,6 +22,14 @@
  * deeper nesting (e.g. `String(path.join(...)).toLowerCase().replace(/\\/g,'/')`)
  * is not covered — only the outermost call and one level of String() cast are
  * visible to the rule.
+ *
+ * countWindowsExecutableExtensions matches by spelling (case-insensitive)
+ * against the fixed WINDOWS_EXECUTABLE_EXTENSIONS set below — it does not
+ * parse the string as a PATHEXT-style delimited list, so it also matches a
+ * bare substring occurrence (e.g. `.exe` inside `.exeFoo`). That is
+ * deliberate: the rule this feeds (local/no-private-binary-resolution) only
+ * needs "does this string carry two-or-more of these extensions", the same
+ * shape both deleted private resolvers had, not a strict grammar.
  */
 
 /**
@@ -73,6 +81,60 @@ const PATH_RETURNING_FNS = [
   'normalizeInstallRelativePath',
   'toPosixPath',
 ];
+
+/**
+ * Windows executable extensions (lowercase canonical). This is the fixed
+ * candidate-extension set both deleted private resolvers (`fallow-runner`'s
+ * `['fallow.exe','fallow.cmd','fallow.bat','fallow']` and `gsd-tools`'
+ * `'.EXE;.CMD;.BAT;.COM'`) hardcoded; local/no-private-binary-resolution
+ * flags a re-occurrence of two-or-more of these outside the seam.
+ */
+const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.cmd', '.bat', '.com'];
+
+/**
+ * The Windows PATHEXT environment variable name. Windows environment variable
+ * names are case-insensitive, so a read of ANY casing of this name (`Pathext`,
+ * `pathext`, ...) is the signal local/no-private-binary-resolution matches on.
+ */
+const PATHEXT_VAR_NAME = 'PATHEXT';
+
+/**
+ * Boundary-aware match for each WINDOWS_EXECUTABLE_EXTENSIONS entry, in the
+ * same order. A plain substring test misfires on ordinary prose/event-name
+ * tokens that merely start with the same three letters — e.g. `.execute`
+ * contains the substring `.exe`, and `.compacting` contains `.com`, neither
+ * of which is a Windows executable extension (a real false positive this
+ * caught in src/host-integration.cts's OPENCODE_EXTENSION_EVENTS list). The
+ * negative lookahead requires the match NOT be immediately followed by
+ * another letter, so `.exe` at the end of a token or before a delimiter
+ * (`;`, `.`, `'`, whitespace, end-of-string) still matches, but `.exe` inside
+ * `.execute` does not. Hand-written RegExp literals (not built from a
+ * runtime string) so this itself is not an adhoc-regex-escape construction.
+ */
+const WINDOWS_EXECUTABLE_EXTENSION_PATTERNS = [
+  /\.exe(?![a-zA-Z])/i,
+  /\.cmd(?![a-zA-Z])/i,
+  /\.bat(?![a-zA-Z])/i,
+  /\.com(?![a-zA-Z])/i,
+];
+
+/**
+ * Returns how many DISTINCT entries of WINDOWS_EXECUTABLE_EXTENSIONS appear
+ * (case-insensitively, boundary-aware) in `str`. Used by
+ * local/no-private-binary-resolution to apply its two-or-more threshold —
+ * see the "Known boundaries" note above for the matching semantics.
+ *
+ * @param {string} str
+ * @returns {number}
+ */
+function countWindowsExecutableExtensions(str) {
+  if (typeof str !== 'string' || str.length === 0) return 0;
+  let count = 0;
+  for (const pattern of WINDOWS_EXECUTABLE_EXTENSION_PATTERNS) {
+    if (pattern.test(str)) count += 1;
+  }
+  return count;
+}
 
 /**
  * Returns true when `node` is a CallExpression whose callee matches one of the
@@ -337,6 +399,9 @@ function unwrapNonNormalizerMethodChain(node) {
 
 module.exports = {
   PATH_RETURNING_FNS,
+  WINDOWS_EXECUTABLE_EXTENSIONS,
+  PATHEXT_VAR_NAME,
+  countWindowsExecutableExtensions,
   isPathReturningCall,
   isPosixSlashStringLiteral,
   isPosixNormalizerCall,

@@ -76,6 +76,35 @@ Replace all three with a single coherent mechanism: **AST-based ESLint rules in 
 | `require-userprofile-with-home` | `DEFECT.WINDOWS-TEST-PORTABILITY` (G6) | tests |
 | `normalize-path-in-content` | `DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT` (`RULESET.CONTENT-PATH-NORMALIZATION`) | `src/**/*.cts` |
 | `require-fs-op-fallback` | `DEFECT.WINDOWS-FS-OPS` | `src/**/*.cts`, build/install |
+| `no-private-binary-resolution` | `DEFECT.WINDOWS-PRIVATE-BINARY-RESOLUTION` | `src/**/*.cts`, `gsd-core/bin/**`, `scripts/**`, `hooks/**` |
+
+**Amendment (2026-08-18, epic #3411 Phase 3 / #3619).** `no-private-binary-resolution` is the
+first catalog entry added after the original seven, and it extends this architecture to a
+**production** Windows-runtime class rather than a test-portability one. It flags the two
+unambiguous signals of re-implementing Windows binary resolution outside the platform seam:
+reading `PATHEXT` (in any casing, from any object), and a hardcoded list containing two or more of
+`.exe`/`.cmd`/`.bat`/`.com`. Both are exactly the shapes the four resolvers that epic #3411 deleted
+actually had.
+
+It deliberately does **not** flag a bare-name `spawn`, which is what #3411's own text asked for:
+~30 such call sites exist and none is a defect (`git`, `gh`, `npm` ship native `.exe` on Windows),
+so under rules 2 and 3 above a literal rule would be unsuppressable and would force rewriting
+correct code. It also does not flag a `PATH` scan, which is used for legitimate membership checks
+(`bin/install.js`) and cannot be soundly distinguished from a resolution scan. An unsound rule in a
+zero-escape-hatch architecture is worse than no rule.
+
+Two scoping consequences worth recording, because both were arrived at rather than assumed:
+
+- **`eslint-rules/**` is outside this rule's surface** — `lib/portability-vocab.cjs` owns the
+  extension set per rule 4 and would otherwise flag itself. This is expressed by *not linting that
+  tree*, never by an exemption, so rule 3 holds.
+- **The seam exemption is path-suffix-anchored**, matching exactly
+  `src/shell-command-projection.cts`. A substring match would also exempt
+  `tests/shell-command-projection-dispatch.test.cjs` and any future sibling; case I9 of the rule's
+  `RuleTester` suite pins this.
+
+The rule started **green** with nothing suppressed and nothing grandfathered — Phases 1 and 2 had
+already removed every private resolver, which is what made a strict ratchet possible at all.
 
 **Taxonomy coverage.** This catalog addresses every `DEFECT.WINDOWS-*` class plus
 `DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE` in `CONTEXT.md`, to the extent each is *statically*
