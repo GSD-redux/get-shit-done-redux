@@ -367,17 +367,17 @@ describe('runner — antigravity handler (#2073 / #2176)', () => {
   // entirely in that gap.
   describe('antigravityWatermark — the mark a real run actually produces', () => {
     test('returns an empty mark when the conversation cache is absent', () => {
-      assert.deepEqual(antigravityWatermark(ROOT, deps()), { convId: '', lines: 0 });
+      assert.deepEqual(antigravityWatermark(ROOT, deps()), { convId: '', lines: 0, fullLines: 0 });
     });
 
     test('returns an empty mark when the cache is not valid JSON', () => {
       const d = deps({ files: { [CACHE]: 'NOT JSON' } });
-      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0, fullLines: 0 });
     });
 
     test('returns an empty mark when the workspace has no conversation', () => {
       const d = deps({ files: { [CACHE]: JSON.stringify({ '/somewhere/else': 'c9' }) } });
-      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0, fullLines: 0 });
     });
 
     for (const [label, body] of [
@@ -390,7 +390,7 @@ describe('runner — antigravity handler (#2073 / #2176)', () => {
       test(`a conversation cache that is ${label} yields an empty mark`, () => {
         // Valid JSON that is not an object still reaches hasOwnProperty / Object.entries.
         const d = deps({ files: { [CACHE]: body } });
-        assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+        assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0, fullLines: 0 });
       });
     }
 
@@ -412,12 +412,32 @@ describe('runner — antigravity handler (#2073 / #2176)', () => {
     test('keeps the conversation id when the transcript does not exist yet', () => {
       // Distinct from the cases above: the conversation is KNOWN, it simply has no transcript.
       const d = deps({ files: { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }) } });
-      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: 'c1', lines: 0 });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: 'c1', lines: 0, fullLines: 0 });
     });
 
     test('counts the non-blank transcript lines', () => {
       const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: [entry('a'), entry('b')].join('\n') };
       assert.equal(antigravityWatermark(ROOT, deps({ files })).lines, 2);
+    });
+
+    test('fullLines counts transcript_full.jsonl independently of lines (#2295)', () => {
+      // ONE MARK COVERS TWO FILES, and the whole reason a second field exists is that one count
+      // cannot substitute for the other — assert that directly rather than merely locking a shape.
+      const FULL_TX = (id) => `/home/u/.gemini/antigravity-cli/brain/${id}/.system_generated/logs/transcript_full.jsonl`;
+      const files = {
+        [CACHE]: JSON.stringify({ [ROOT]: 'c1' }),
+        [TX('c1')]: [entry('a'), entry('b')].join('\n'), // 2 non-blank lines
+        [FULL_TX('c1')]: [
+          JSON.stringify({ model: 'x' }),
+          '',
+          JSON.stringify({ model: 'y' }),
+          JSON.stringify({ model: 'z' }),
+        ].join('\n'), // 3 non-blank lines
+      };
+      const mark = antigravityWatermark(ROOT, deps({ files }));
+      assert.equal(mark.lines, 2, 'transcript.jsonl count must be unaffected by transcript_full.jsonl');
+      assert.equal(mark.fullLines, 3, 'transcript_full.jsonl count must be unaffected by transcript.jsonl');
+      assert.notEqual(mark.lines, mark.fullLines, 'the two counts must be free to diverge');
     });
 
     test('an empty transcript is zero lines, not an unreadable one', () => {
@@ -1544,6 +1564,118 @@ describe('#2295 — runLane reports the resolved model', () => {
     const d = deps({ spawn: () => ({ status: 0, stdout: 'a review citing src/x.ts:10', stderr: '' }) });
     const r = await runLane(p, d, { repoRoot: ROOT });
     assert.deepEqual(r.model, UNRESOLVED_MODEL, 'refused at the recordedModel choke point, not silently rewritten');
+  });
+});
+
+describe('#2295 — resolveLanePlan records effort only when it actually expanded', () => {
+  test('effortArgs + effortValue on an argv-effort-channel lane sets plan.effort', () => {
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'codex');
+    assert.equal(lane.invoke.effortChannel, 'argv');
+    const r = resolveLanePlan({
+      lane,
+      configGet: () => undefined,
+      runDir: RUN,
+      repoRoot: ROOT,
+      effortArgs: ['-c', 'model_reasoning_effort=low'],
+      effortValue: 'low',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.effort, 'low');
+  });
+
+  test('the same lane with an empty effortArgs records no effort', () => {
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'codex');
+    const r = resolveLanePlan({
+      lane,
+      configGet: () => undefined,
+      runDir: RUN,
+      repoRoot: ROOT,
+      effortArgs: [],
+      effortValue: 'low',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.effort, null);
+  });
+
+  test('a lane whose effortChannel is not argv records no effort, even with an effortValue passed', () => {
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'gemini');
+    assert.equal(lane.invoke.effortChannel, 'none', 'gemini must declare no argv effort channel for this test to be meaningful');
+    const r = resolveLanePlan({
+      lane,
+      configGet: () => undefined,
+      runDir: RUN,
+      repoRoot: ROOT,
+      effortArgs: ['-c', 'model_reasoning_effort=low'],
+      effortValue: 'low',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.effort, null);
+  });
+});
+
+describe('#2295 — the recorded model carries an applied reasoning effort', () => {
+  /** A plan with an effort really expanded into argv, built the same way `resolveLanePlan` is in production. */
+  function planWithEffort(slug, config, effortValue) {
+    const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+    const r = resolveLanePlan({
+      lane,
+      configGet: (k) => config[k],
+      runDir: RUN,
+      repoRoot: ROOT,
+      effortArgs: ['--effort', effortValue],
+      effortValue,
+    });
+    assert.equal(r.ok, true, `${slug} failed to resolve`);
+    return r.plan;
+  }
+
+  test('a lane with no applied effort records the bare model id, unchanged (regression guard)', async () => {
+    const p = plan('gemini', { 'review.models.gemini': 'gemini-3-pro' });
+    assert.equal(p.effort, null);
+    const d = deps({ spawn: () => ({ status: 0, stdout: 'a review with src/x.ts:10 evidence', stderr: '' }) });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'gemini-3-pro', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a pinned codex model plus an applied effort records "o4-mini (reasoning=low)"', async () => {
+    const p = planWithEffort('codex', { 'review.models.codex': 'o4-mini' }, 'low');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: '', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'o4-mini (reasoning=low)', source: MODEL_SOURCE.PINNED });
+  });
+
+  test('a banner-recovered model plus an applied effort records "gpt-5.6-sol (reasoning=low)"', async () => {
+    const p = planWithEffort('codex', {}, 'low');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: 'model: gpt-5.6-sol', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'gpt-5.6-sol (reasoning=low)', source: MODEL_SOURCE.BANNER });
+  });
+
+  test('an applied effort with no recoverable model still records UNRESOLVED_MODEL — never a bare (reasoning=low)', async () => {
+    const p = planWithEffort('codex', {}, 'low');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: 'no banner line here', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, UNRESOLVED_MODEL);
+  });
+
+  test('an effort value carrying a control character is refused — bare model id, no suffix', async () => {
+    const NL = String.fromCharCode(10);
+    const p = planWithEffort('codex', { 'review.models.codex': 'o4-mini' }, `low${NL}evil`);
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: '', stderr: '' }),
+      files: { [p.outputTarget.path]: 'a review citing src/x.ts:10' },
+    });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.deepEqual(r.model, { value: 'o4-mini', source: MODEL_SOURCE.PINNED });
   });
 });
 
