@@ -1,5 +1,5 @@
 ---
 type: Added
-pr: 0
+pr: 3609
 ---
 **Opt-in `.git/hooks/pre-commit` guard for `commit_docs`** — `gsd-tools commit-docs-guard enable`/`disable` writes (or removes) a pre-commit hook that shells out to the existing `check-commit` verb, refusing a commit that stages `.planning/` files while `commit_docs` resolves to `false`. Closes the one bypass earlier phases of epic #2292 could not reach: a plain `git add -A && git commit` run by hand or by a script outside GSD's own tooling. Fully opt-in by maintainer narrowing — no install path wires it in by default (regression-locked by `tests/commands.test.cjs`'s E2 row); `enable` refuses rather than overwrites an existing foreign `pre-commit` hook, refuses when `core.hooksPath` would make the written hook inert, and resolves the real hooks directory via `git rev-parse --git-path hooks` so a linked worktree or submodule (where `.git` is a file) is handled correctly rather than assuming a literal `.git/hooks` path. The hook is identified by a stable `# gsd-core:commit-docs-guard` marker line, checked by presence rather than byte-equality. (#3588)
