@@ -3671,7 +3671,7 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
     const result = runGsdTools(
       ['state', 'planned-phase', '--phase', '1', '--plans', '3'],
       tmpDir,
-      { GSD_NOW_MS: String(Date.parse('2020-09-10T15:00:00.000Z')) },
+      { GSD_TEST_MODE: '1', GSD_NOW_MS: String(Date.parse('2020-09-10T15:00:00.000Z')) },
     );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -3745,6 +3745,13 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
   }
 
+  // One builder for every synthetic STATE.md below — the frontmatter + heading shape was
+  // being rebuilt independently in three tests. `eol` is a parameter because the CRLF
+  // behavior of currentPositionBlock is a claim under test, not an assumption.
+  function stateDoc({ iso = PINNED_INSTANT, lines = [], eol = '\n' }) {
+    return ['---', `last_updated: "${iso}"`, '---', '', '## Current Position', '', ...lines, ''].join(eol);
+  }
+
   // The issue's repro shape: frontmatter already carries the correct decimal
   // sub-phase, but the body's `## Current Position` still describes the
   // PREVIOUS phase's completion prose.
@@ -3800,8 +3807,6 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
-    // Without GSD_TEST_MODE this reads a live wall-clock instant instead, which is the
-    // whole mechanism behind the intermittent Windows red.
     assert.ok(fm.includes(PINNED_INSTANT),
       `last_updated must be the pinned instant ${PINNED_INSTANT} — GSD_NOW_MS is only honored when GSD_TEST_MODE is set too (src/clock.cts _pinnedNowMs); frontmatter was:\n${fm}`);
   });
@@ -3826,28 +3831,28 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
   });
 
   test('control: the narrowed scan still catches genuinely stale phase prose in the body', () => {
-    const stale = [
-      '---',
-      `last_updated: "${PINNED_INSTANT}"`,
-      '---',
-      '',
-      '# Project State',
-      '',
-      '## Current Position',
-      '',
-      'Phase: 35.1 (unattended-launch-prerequisites) — COMPLETE (4/4 plans)',
-      '',
-      '## Next',
-      '',
-      'unrelated 35.1 mention outside the block',
-      '',
-    ].join('\n');
-    // Narrowing must not defang the check the fix exists to keep.
-    assert.ok(currentPositionBlock(stale).includes('35.1'),
-      'genuinely stale phase prose inside ## Current Position must still be reported');
-    // The slice stops at the next heading, so the trailing mention is out of scope.
-    assert.ok(!currentPositionBlock(stale).includes('unrelated'),
-      'the block must end at the next ## heading');
+    // Both line endings, and both WITH a following `## ` heading — that combination is the
+    // one the helper's CRLF claim actually rests on (`\n## ` matches inside `\r\n## `
+    // because the `\r` precedes the newline). Testing CRLF only on a single-heading
+    // document would leave exactly that claim unexercised.
+    for (const eol of ['\n', '\r\n']) {
+      const stale = stateDoc({
+        lines: [
+          'Phase: 35.1 (unattended-launch-prerequisites) — COMPLETE (4/4 plans)',
+          '',
+          '## Next',
+          '',
+          'unrelated 35.1 mention outside the block',
+        ],
+        eol,
+      });
+      // Narrowing must not defang the check the fix exists to keep.
+      assert.ok(currentPositionBlock(stale).includes('35.1'),
+        `genuinely stale phase prose inside ## Current Position must still be reported (eol=${JSON.stringify(eol)})`);
+      // The slice stops at the next heading, so the trailing mention is out of scope.
+      assert.ok(!currentPositionBlock(stale).includes('unrelated'),
+        `the block must end at the next ## heading (eol=${JSON.stringify(eol)})`);
+    }
     // Missing-input class: no heading at all yields an empty block, never a throw.
     assert.strictEqual(currentPositionBlock('# Project State\n\nno position heading\n'), '');
   });
@@ -3865,16 +3870,7 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     ];
     for (const { iso, collides, why } of cases) {
       for (const eol of ['\n', '\r\n']) {
-        const doc = [
-          '---',
-          `last_updated: "${iso}"`,
-          '---',
-          '',
-          '## Current Position',
-          '',
-          'Phase: 35.3 — READY TO EXECUTE',
-          '',
-        ].join(eol);
+        const doc = stateDoc({ iso, lines: ['Phase: 35.3 — READY TO EXECUTE'], eol });
         assert.strictEqual(doc.includes('35.1'), collides,
           `whole-document scan for ${iso} (${why}, eol=${JSON.stringify(eol)})`);
         assert.ok(!currentPositionBlock(doc).includes('35.1'),
@@ -3899,8 +3895,7 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
       fc.integer({ min: 1, max: 9 }),
       (when, major, minor) => {
         const iso = when.toISOString();
-        const header = ['---', `last_updated: "${iso}"`, '---', '', '## Current Position', ''];
-        const clean = [...header, `Phase: ${major}.${minor} — READY TO EXECUTE`, ''].join('\n');
+        const clean = stateDoc({ iso, lines: [`Phase: ${major}.${minor} — READY TO EXECUTE`] });
         // Deterministic guard: the frontmatter instant is NEVER inside the block. If the
         // helper ever widened back to the whole document this fails on every run, not
         // only on the runs where the generated timestamp happens to spell a phase id.
@@ -3909,7 +3904,7 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
         const staleId = `${major}.${minor}9`;
         assert.ok(!currentPositionBlock(clean).includes(staleId));
         // Arm 2: inject genuinely stale prose and it is always reported.
-        const dirty = [...header, `Phase: ${staleId} (x) — COMPLETE`, ''].join('\n');
+        const dirty = stateDoc({ iso, lines: [`Phase: ${staleId} (x) — COMPLETE`] });
         assert.ok(currentPositionBlock(dirty).includes(staleId));
         return true;
       },
