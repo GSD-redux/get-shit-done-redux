@@ -122,7 +122,7 @@
     {
       "id": "GSD-RESEARCH.MODULE.research-provider",
       "klass": "GSD-RESEARCH",
-      "value": "single source of truth PROVIDER_WATERFALL (docs Context7->Ref->Jina->websearch; web Exa->Tavily->Perplexity->Brave->websearch; scrape Firecrawl->Jina); planResearch returns cache-hits+fetch-plan; classifyConfidence stamps HIGH|MEDIUM|LOW by provider AUTHORITY + verification EVIDENCE (HIGH requires code-computed ground-truth corroboration e.g. legitimacyVerdict OK; provider authority alone caps at MEDIUM; SLOP caps at LOW); Firecrawl is scrape-only (not in docs/web discovery)"
+      "value": "single source of truth PROVIDER_WATERFALL (docs Context7->Ref->Jina->websearch; web Exa->Tavily->Perplexity->Brave->websearch; scrape Firecrawl->Jina); planResearch returns cache-hits+fetch-plan; classifyConfidence stamps HIGH|MEDIUM|LOW by provider AUTHORITY + verification EVIDENCE (HIGH requires code-computed ground-truth corroboration e.g. legitimacyVerdict OK; provider authority alone caps at MEDIUM; SLOP caps at LOW); Firecrawl is scrape-only (not in the web-discovery docs)"
     },
     {
       "id": "GSD-RESEARCH.MODULE.research-store",
@@ -692,7 +692,7 @@
     {
       "id": "PROHIB.enforce.adr",
       "klass": "PROHIB",
-      "value": "docs/adr/1606 (verify-time enforcement seam) + docs/adr/550 (spec-phase contract)"
+      "value": "docs/adr/1606-prohibition-enforcement-verify-seam.md (verify-time enforcement seam) + docs/adr/550-spec-phase-probe-contract.md (spec-phase contract)"
     },
     {
       "id": "PROHIB.enforce.causation",
@@ -1317,7 +1317,7 @@
     {
       "id": "WORKTREE.SEAM.test-anchor-w017",
       "klass": "WORKTREE",
-      "value": "tests/orphan-worktree-detection.test.cjs + tests/worktree-safety-policy.test.cjs"
+      "value": "tests/orphan-worktree-detection.test.cjs + tests/worktree-safety.test.cjs"
     },
     {
       "id": "WORKTREE.SEAM.test-anchors",
