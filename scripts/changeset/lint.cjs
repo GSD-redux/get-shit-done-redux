@@ -36,8 +36,6 @@ const USER_FACING_PREFIXES = [
   'agents/',
   'commands/',
   'hooks/',
-  'sdk/src/',
-  'sdk/prompts/',
 ];
 
 // Exact-match user-facing files. Any direct edit to one of these without a

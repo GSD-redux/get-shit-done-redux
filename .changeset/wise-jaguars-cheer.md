@@ -1,5 +1,0 @@
----
-type: Fixed
-pr: 3629
----
-**Executor dispatch no longer blocks on a plugin-marketplace install** — the compiled runtime library is a build artifact produced at publish time and gitignored, so a plugin or git-clone install materializes a tree that never has it. Every hook that required one of those modules did so without the existing self-heal build seam that the CLI entrypoint already calls, so the agent-isolation guard's missing-module error landed in its fail-closed catch and was reported as `could not read or resolve dispatch-isolation configuration` — blocking every `gsd-executor` dispatch from the first dispatch of a session, while the statusline and update-check worker crashed at module load on the same tree. All seven affected hook files now self-heal first: the isolation guards surface the build seam's own actionable error instead of a misleading config message and stay fail-closed, and the cosmetic hooks degrade quietly rather than taking down the prompt. The guards also now emit a machine-readable `reason_code` alongside the human message. Installs from npm are unaffected — the seam's already-built fast path returns immediately. (#3582)

@@ -16,7 +16,7 @@
 | `adaptive` | Opus | Sonnet | Sonnet | Sonnet | 런타임 간 자주 전환할 때 사용; 다른 티어와 동일하게 런타임 인식 프로파일로 해결됨 |
 | `inherit` | (세션 모델) | (세션 모델) | (세션 모델) | (세션 모델) | 비 Anthropic 프로바이더(OpenRouter, 로컬 모델) — 모든 에이전트가 현재 세션 모델을 따름 |
 
-위 테이블은 대표적인 하위 집합을 보여줍니다. 출시된 33개 에이전트 모두 `sdk/shared/model-catalog.json`에 명시적인 프로파일별 티어 할당이 있습니다. 전체 테이블은 설정 참조의 [모델 프로파일](../CONFIGURATION.md#model-profiles)을 참고하세요.
+위 테이블은 대표적인 하위 집합을 보여줍니다. 출시된 33개 에이전트 모두 `gsd-core/bin/shared/model-catalog.json`에 명시적인 프로파일별 티어 할당이 있습니다. 전체 테이블은 설정 참조의 [모델 프로파일](../CONFIGURATION.md#model-profiles)을 참고하세요.
 
 **명령으로 빠르게 전환:**
 

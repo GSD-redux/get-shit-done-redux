@@ -1,6 +1,0 @@
----
-type: Fixed
-pr: 3526
----
-
-**`/gsd:code-review` now derives the phase diff base from GSD's own commit scopes instead of a prose phrase, ending silently wrong review scopes** — the diff base fed to the reviewer file-list fallback, the SUMMARY↔diff cross-check union, the reviewer agent's `diff_base`, and the fallow `--changed-since` structural pass was greped from commit messages for the literal "Phase N" and kept the oldest match, so any prose mention anywhere in history (a planning commit deferring work "to Phase N per D-09", a doc commit using "### Phase N" as a format example) silently set the base months before the phase existed — on a real repo ~4 phases too early, inflating the reviewer's reading list ~78% with no warning — while GSD's own commits (`docs(phase-N):`, `feat(N-MM):`, `docs(N):`), which never contain the literal phrase, were never matched at all. All three derivations now anchor on the subject-line conventional-commit phase scope (both padded `06` and unpadded `6` spellings, since workflows emit the unpadded roadmap number), commit bodies can no longer capture the base, and a history with no scope-style commits fails loudly with the existing no-base warning and `--files` escape hatch instead of silently picking an arbitrary commit. (#3503)

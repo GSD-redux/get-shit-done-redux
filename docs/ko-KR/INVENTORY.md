@@ -6,7 +6,7 @@
 
 - 여기의 수량은 v1.36.0 핀 기준 파일시스템에서 도출된 것으로, 릴리스 사이에 변동될 수 있습니다. 최신 수량을 확인하려면 체크아웃에서 `ls commands/gsd/*.md | wc -l`, `ls agents/gsd-*.md | wc -l` 등을 실행하세요.
 - 이 파일은 6개 패밀리(에이전트, 명령어, 워크플로우, 레퍼런스, CLI 모듈, 훅) 전반에 걸쳐 출시된 모든 표면을 열거합니다. 광범위 문서는 내러티브 또는 엄선된 하위 집합을 렌더링할 수 있습니다. 파일시스템과 불일치할 경우 이 파일과 디렉터리 목록이 권위 있는 출처입니다.
-- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-counts.test.cjs`, `tests/commands-doc-parity.test.cjs`, `tests/agents-doc-parity.test.cjs`, `tests/cli-modules-doc-parity.test.cjs`, `tests/hooks-doc-parity.test.cjs`, `tests/architecture-counts.test.cjs`, `tests/command-count-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 수량 및 목록 내용을 고정합니다.
+- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-manifest-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 로스터 내용을 고정합니다.
 
 이것은 출시된 모든 GSD Core 표면의 공식 목록입니다. 주제별 탐색은 [문서 색인](README.md)을 참조하세요.
 

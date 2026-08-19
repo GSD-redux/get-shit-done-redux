@@ -15,8 +15,9 @@
  * project ledger — `'' === ''` is no binding) NOR to the `disclosureSignature` alone (which covers
  * only executable surfaces, so a declarative-only cap has a constant signature and a repo-write
  * attacker could swap `capability.json` for a malicious gate/contribution while consent still
- * matched). `bundleContentHash` is recomputed by the loader at load over EVERY file in the bundle
- * (manifest AND artifacts AND identity), so any tamper — declarative-only swap, hook-script edit,
+ * matched). `bundleContentHash` is recomputed by the loader at load over the bundle (manifest AND
+ * artifacts AND identity), excluding only derived Python bytecode/cache noise (#3631 — see
+ * `bundleContentHash`'s own doc comment), so any tamper — declarative-only swap, hook-script edit,
  * empty-integrity local install — changes the hash and leaves the cap inactive. `integrity` and
  * `disclosureSignature` remain on the record for the human disclosure + re-consent-on-executable-
  * change UX (TRUST-2); they are NO LONGER the security binding.
@@ -265,10 +266,31 @@ function normalizeSepBytes(rel: Buffer): Buffer {
 
 /**
  * Recursively collect every REGULAR file AND every DIRECTORY under `absDir` as RAW-BYTE POSIX-relative
- * paths (`rel`, relative to the bundle root), refusing to follow symlinks out of the bundle. Bounded:
- * throws if the entry count or total byte size exceeds the caps (fail closed — a hostile/runaway tree
- * never hashes unbounded content). A non-regular entry encountered IN the tree (FIFO/device) is a
- * fail-closed throw — a bundle must be plain files and directories.
+ * paths (`rel`, relative to the bundle root), refusing to follow symlinks out of the bundle. Two
+ * NARROW, RECURSION-PRESERVING exclusions apply (#3631, amended after two orthogonal reviews found the
+ * original wholesale-skip UNSAFE — see the doc comment on `bundleContentHash` for the full rationale
+ * and the accepted residual risk):
+ *
+ *   1. A DIRECTORY whose basename is exactly `__pycache__` or `.pytest_cache`: its own TAG_DIR marker
+ *      is SUPPRESSED (not pushed), but it is STILL RECURSED INTO — every child that is not itself
+ *      excluded is still hashed. Suppressing only the marker is what keeps an empty/all-excluded such
+ *      directory from moving the digest; recursing is what closes the original hole (H1): skipping
+ *      recursion made an excluded directory an unbounded, permanently-unhashed region a manifest could
+ *      point a hook `script` at (`__pycache__/run.js`) to install benign, then rewrite freely post-consent.
+ *   2. A FILE whose name ends `.pyc` or `.pyo` is excluded ONLY when its PARENT directory's basename is
+ *      exactly `__pycache__` (checked byte-exact, never `.pytest_cache`) — a `.pyc`/`.pyo` anywhere else
+ *      (bundle root, `scripts/`, a directory literally named `cache.pyc`, etc.) is hashed normally,
+ *      because a sourceless legacy `.pyc` there IS importable and executable (H2).
+ *
+ * A regular FILE literally named `__pycache__` or `.pytest_cache` is NOT excluded (only a DIRECTORY of
+ * that basename gets marker-suppression) — it is hashed like any other file. A DIRECTORY literally
+ * named `x.pyc` is NOT excluded either — the suffix rule only ever applies to files. All exclusion
+ * checks run strictly AFTER the lstat-backed symlink/non-regular rejections below, so a symlink or
+ * device masquerading under an excluded name is still fail-closed rejected rather than silently
+ * skipped. Bounded: throws if the entry count or total byte size exceeds the caps (fail closed — a
+ * hostile/runaway tree never hashes unbounded content); an excluded entry still counts toward BOTH
+ * caps (the caps guard the walk itself, not the digest). A non-regular entry encountered IN the tree
+ * (FIFO/device) is a fail-closed throw — a bundle must be plain files and directories.
  *
  * #1459 finding 2 (MED/HIGH, ROUND 6): the enumeration ITSELF is bounded. Instead of
  * `fs.readdirSync` (which loads + sorts a WHOLE directory before the count cap — so a malicious bundle
@@ -287,11 +309,76 @@ function normalizeSepBytes(rel: Buffer): Buffer {
  * abs/rel paths are concatenated at the BYTE level, so an invalid-UTF-8 filename is never lossily
  * decoded — two filenames that differ only in invalid bytes produce distinct rel byte strings.
  *
- * @param absDir  the absolute directory to scan, as RAW BYTES (Buffer).
- * @param relDir  the relpath of `absDir` from the bundle root, as RAW BYTES (Buffer; empty at the root).
- * @param count   the CUMULATIVE entry counter shared across the whole recursive walk (fail-closed at the cap).
+ * @param absDir       the absolute directory to scan, as RAW BYTES (Buffer).
+ * @param relDir       the relpath of `absDir` from the bundle root, as RAW BYTES (Buffer; empty at the root).
+ * @param dirBasename  the basename of `absDir` itself, as RAW BYTES (Buffer) — the PARENT basename every
+ *                      entry collected at this level shares. Threaded down so a `.pyc`/`.pyo` FILE can be
+ *                      excluded only when ITS parent is exactly `__pycache__` (empty at the bundle root).
+ * @param count        the CUMULATIVE entry counter shared across the whole recursive walk (fail-closed at the cap).
  */
-function collectBundleEntries(absDir: Buffer, relDir: Buffer, acc: BundleEntry[], total: { bytes: number }, count: { n: number }): void {
+// #3631 (amended — see bundleContentHash's doc comment for the H1/H2 rationale and accepted residual
+// risk): basename rules for what is excluded FROM THE DIGEST. They are NOT excluded from the walk's
+// resource caps — see the count.n / total.bytes accounting below, which still sees every excluded
+// entry.
+//
+// Exact byte comparison, case-sensitive, deliberately: CPython always writes a lowercase
+// `__pycache__` directory, so byte-exact matching keeps the digest identical across case-insensitive
+// filesystems (e.g. default macOS/Windows) instead of varying with how a name happens to be spelled
+// on disk.
+//
+// DELIBERATELY NOT on this list: node_modules, dist, build, or similar. Those hold code that is
+// actually required/executed at runtime, so excluding them from the digest would stop consent from
+// binding executable content — turning a usability bug (noisy re-consent prompts) into a
+// supply-chain hole (a swapped dependency that never re-triggers consent).
+
+/** Directory basenames whose TAG_DIR marker is suppressed — but the directory is STILL RECURSED INTO. */
+const PYCACHE_DIR_BASENAMES: readonly Buffer[] = [
+  Buffer.from('__pycache__'),
+  Buffer.from('.pytest_cache'),
+];
+/** FILE-name suffixes excluded ONLY when the file's parent directory basename is `__pycache__` (see below). */
+const PYCACHE_FILE_SUFFIXES: readonly Buffer[] = [
+  Buffer.from('.pyc'),
+  Buffer.from('.pyo'),
+];
+/** The one parent directory basename that gates the `.pyc`/`.pyo` FILE-suffix exclusion — never `.pytest_cache`. */
+const PYCACHE_PARENT_BASENAME = Buffer.from('__pycache__');
+
+/**
+ * True when `name` (a raw-byte dirent basename) is a DIRECTORY whose TAG_DIR marker must be
+ * suppressed — `__pycache__` or `.pytest_cache`, exact byte match. The caller still recurses into it;
+ * this predicate answers ONLY "skip the marker", never "skip the subtree".
+ */
+function isPycacheDirBasename(name: Buffer): boolean {
+  for (const exact of PYCACHE_DIR_BASENAMES) {
+    if (Buffer.compare(name, exact) === 0) return true;
+  }
+  return false;
+}
+
+/** True when raw-byte basename `name` ends in `.pyc` or `.pyo` (byte-suffix match, never utf8-decoded). */
+function hasPycacheFileSuffix(name: Buffer): boolean {
+  for (const suffix of PYCACHE_FILE_SUFFIXES) {
+    if (name.length >= suffix.length && Buffer.compare(name.subarray(name.length - suffix.length), suffix) === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when a FILE with basename `name`, inside a directory whose OWN basename is `dirBasename`, must
+ * be excluded from the digest: a `.pyc`/`.pyo` suffix whose parent directory basename is exactly
+ * `__pycache__` (byte-exact — never `.pytest_cache`, so a `.pyc` sitting directly inside a
+ * `.pytest_cache` dir is still hashed). A `.pyc`/`.pyo` file anywhere else — bundle root, `scripts/`,
+ * a directory literally named `cache.pyc`, etc. — is NOT excluded (H2): a sourceless legacy `.pyc`
+ * there is importable and executable, so it must stay bound to consent.
+ */
+function isExcludedFileBasename(name: Buffer, dirBasename: Buffer): boolean {
+  return hasPycacheFileSuffix(name) && Buffer.compare(dirBasename, PYCACHE_PARENT_BASENAME) === 0;
+}
+
+function collectBundleEntries(absDir: Buffer, relDir: Buffer, dirBasename: Buffer, acc: BundleEntry[], total: { bytes: number }, count: { n: number }): void {
   let dir: fs.Dir;
   try {
     // RAW-BYTE streaming open: dirent names are Buffers (encoding: 'buffer'), so an invalid-UTF-8
@@ -344,19 +431,34 @@ function collectBundleEntries(absDir: Buffer, relDir: Buffer, acc: BundleEntry[]
       throw new Error(`bundleContentHash: refusing to hash a symlink in the bundle: "${abs.toString('utf8')}"`);
     }
     if (st.isDirectory()) {
+      // #3631 (amended, H1): exclusion is checked HERE — after the symlink fail-closed throw above —
+      // so a symlink named e.g. "__pycache__" or "x.pyc" is never silently skipped; only a REAL
+      // (lstat-confirmed) dir/file can be excluded. An excluded directory's own dirent was already
+      // counted toward count.n above (the cap guards the walk itself). Only the TAG_DIR MARKER is
+      // suppressed for `__pycache__`/`.pytest_cache` — the directory is ALWAYS recursed into so every
+      // non-excluded child underneath is still hashed (closing H1: no unbounded unhashed region).
+      if (isPycacheDirBasename(name)) {
+        collectBundleEntries(abs, rel, name, acc, total, count);
+        continue;
+      }
       // Emit a typed DIR marker for THIS directory (so an empty dir is bound), then recurse into it.
       acc.push({ abs, rel, kind: 'dir' });
-      collectBundleEntries(abs, rel, acc, total, count);
+      collectBundleEntries(abs, rel, name, acc, total, count);
       continue;
     }
     if (!st.isFile()) {
       throw new Error(`bundleContentHash: refusing to hash a non-regular file in the bundle: "${abs.toString('utf8')}"`);
     }
-    acc.push({ abs, rel, kind: 'file' });
+    // #3631: an excluded FILE (a __pycache__/*.pyc or *.pyo) still counts its bytes toward the
+    // total-size cap below — exclusion answers "does this bind the digest?", not "is this safe to
+    // read unbounded?" — so it must never become a way to smuggle unbounded bytes past
+    // BUNDLE_MAX_TOTAL_BYTES.
     total.bytes += st.size;
     if (total.bytes > BUNDLE_MAX_TOTAL_BYTES) {
       throw new Error(`bundleContentHash: bundle size exceeds ${BUNDLE_MAX_TOTAL_BYTES} bytes (refusing)`);
     }
+    if (isExcludedFileBasename(name, dirBasename)) continue;
+    acc.push({ abs, rel, kind: 'file' });
   }
 }
 
@@ -383,8 +485,39 @@ const TAG_DIR = Buffer.from([0x02]);
 
 /**
  * The recomputed full-bundle content hash (#1459 CB-1/CB-2/TRUST2-5) — the SECURITY BINDING. A
- * `sha512-<base64>` over a DETERMINISTIC, INJECTIVE, LOSSLESS serialization of EVERY regular file
- * AND directory under `capDir` (recursively).
+ * `sha512-<base64>` over a DETERMINISTIC, INJECTIVE, LOSSLESS serialization of every regular file
+ * AND directory under `capDir` (recursively), with two NARROW exclusions (#3631, amended after two
+ * orthogonal reviews found the original wholesale directory-skip UNSAFE):
+ *   - A `__pycache__` or `.pytest_cache` DIRECTORY's own TAG_DIR marker is suppressed, but it is
+ *     ALWAYS recursed into — every non-excluded child underneath is still hashed.
+ *   - A `.pyc`/`.pyo` FILE is excluded ONLY when its immediate parent directory's basename is exactly
+ *     `__pycache__`; a `.pyc`/`.pyo` anywhere else (bundle root, `scripts/`, etc.) is hashed normally,
+ *     since a sourceless legacy `.pyc` there is importable and executable.
+ * `node_modules`, `dist`, `build`, and similar are deliberately NOT excluded: their contents are
+ * executed/required at runtime, so dropping them from the digest would stop consent from binding
+ * executable content.
+ *
+ * ACCEPTED RESIDUAL RISK (documented, not a defect to re-litigate): CPython's default `.pyc`
+ * invalidation (timestamp-based) validates a cached bytecode file against its SOURCE's mtime and size
+ * only — NOT against the source's content — and both mtime and size are attacker-settable by whoever
+ * can already write to the bundle. So a forged `__pycache__/mod.cpython-3XX.pyc` whose header mtime/size
+ * were copied from an unmodified, still-hashed `mod.py` will execute without moving this digest. Before
+ * this exclusion existed that write was detected (any file under `__pycache__` moved the hash); after
+ * it, it is not, for files matching the narrow `__pycache__/*.pyc` shape above. This is accepted
+ * deliberately — the alternative (H1's original wholesale skip, or hashing every regenerated bytecode
+ * file) either reopens an unbounded unhashed region or makes consent fire on routine bytecode caching —
+ * and is bounded by: (1) the attacker must already have POST-CONSENT write access to the bundle; (2)
+ * everything outside `__pycache__/*.pyc` — including sourceless legacy `.pyc`/`.pyo` files anywhere
+ * else — remains hashed. NOT a bound, despite `isSafeHookScriptPath` (capability-lifecycle.cts /
+ * capability-validator.cjs) rejecting a manifest-declared hook `script` that names a
+ * `__pycache__`/`.pytest_cache` segment or ends `.pyc`/`.pyo`: the excluded region is still reachable
+ * by ONE HOP of indirection from any hashed, consent-covered script — a `require`/`import` of a
+ * `__pycache__/*.pyc` module path is not itself a declared script and the validator never sees it —
+ * so a hashed `hooks/run.js` can load a `__pycache__/mod.pyc` whose bytes are then free to change
+ * post-consent with the digest unmoved. The validator guard raises the bar for DECLARED surfaces; it
+ * does not contain the risk. KNOWN LIMITATION: `.pytest_cache`'s CONTENTS still change the digest as
+ * normal files — only its directory marker is suppressed, so this residual risk does NOT extend to
+ * `.pytest_cache`.
  *
  * Canonicalization (#1459 findings 1 + 4 — the prior `relpath + NUL + content + NUL` over utf8-decoded
  * STRINGS was non-injective, lossy in CONTENT, AND lossy in the PATH component):
@@ -412,8 +545,12 @@ const TAG_DIR = Buffer.from([0x02]);
 function bundleContentHash(capDir: string): string {
   // Resolve to an absolute path, then carry it as RAW BYTES so the walk never lossily decodes a name.
   const rootBytes = Buffer.from(path.resolve(capDir));
+  // The root's own basename is threaded as the initial `dirBasename` so the parent-basename check for
+  // a `.pyc`/`.pyo` FILE applies even to a file placed DIRECTLY at the bundle root (root literally
+  // named `__pycache__` is the only case this matters for, and it is a correct, if exotic, match).
+  const rootBasename = Buffer.from(path.basename(path.resolve(capDir)));
   const entries: BundleEntry[] = [];
-  collectBundleEntries(rootBytes, Buffer.alloc(0), entries, { bytes: 0 }, { n: 0 });
+  collectBundleEntries(rootBytes, Buffer.alloc(0), rootBasename, entries, { bytes: 0 }, { n: 0 });
   // Sort by the raw-byte (separator-normalized) relpath so the digest is identical on Windows and POSIX,
   // and is independent of the on-disk creation/readdir order. Tie-break on kind so a (degenerate, never
   // produced on a real fs) file-and-dir same-relpath pair still has a stable order.
