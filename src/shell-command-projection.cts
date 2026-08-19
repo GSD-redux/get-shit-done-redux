@@ -754,12 +754,26 @@ function _buildVerbatimCmdLine(target: string, args: string[]): string {
  * with plain `fs.writeFileSync` and never set an exec bit (the repo bans
  * `chmod` in tests), so every one of them would resolve to `null` on POSIX.
  *
+ * **`opts.pathOverride`** — "search THIS PATH, but read everything else —
+ * PATHEXT included — from the ambient environment." When set (`!== undefined`),
+ * the PATH search segments come from splitting `pathOverride` on `path.delimiter`
+ * instead of from `env.PATH`; `pathOverride: ''` means an explicit EMPTY search
+ * path (zero segments), never a fallback to `env.PATH` — use `!== undefined`,
+ * not truthiness, to tell "caller supplied a PATH string" apart from "caller
+ * supplied nothing". `opts.prependPaths` still comes first. PATHEXT resolution
+ * is UNAFFECTED by this option — it still reads from `env` (which defaults to
+ * `process.env`) exactly as it does when `pathOverride` is omitted. This exists
+ * so a caller that already has its own search path in hand (e.g.
+ * `resolveFallowBinary`'s `envPath`) does not have to hand-thread PATHEXT
+ * alongside it — a private PATHEXT read is the very shape
+ * `local/no-private-binary-resolution` forbids outside this seam.
+ *
  * @returns the resolved path, or `null` when nothing matched. Callers fall back to
  *   the declared name on `null` so a genuine ENOENT still surfaces (#3086).
  */
 export function resolveExecutableBinary(
   name: string | null | undefined,
-  opts: { platform?: string; env?: NodeJS.ProcessEnv; prependPaths?: string[]; requireExecutable?: boolean } = {},
+  opts: { platform?: string; env?: NodeJS.ProcessEnv; prependPaths?: string[]; requireExecutable?: boolean; pathOverride?: string } = {},
 ): string | null {
   if (!name) return null;
   const requireExecutable = opts.requireExecutable ?? false;
@@ -768,7 +782,8 @@ export function resolveExecutableBinary(
     return _isFile(name, requireExecutable, platform) ? name : null;
   }
   const env = opts.env ?? process.env;
-  const pathSegments = String(_envGet(env, 'PATH') || '').split(path.delimiter).filter(Boolean);
+  const rawPath = opts.pathOverride !== undefined ? opts.pathOverride : (_envGet(env, 'PATH') || '');
+  const pathSegments = String(rawPath).split(path.delimiter).filter(Boolean);
   const segments = [...(opts.prependPaths ?? []), ...pathSegments];
 
   if (platform !== 'win32') {

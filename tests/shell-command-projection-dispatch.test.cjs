@@ -635,6 +635,125 @@ describe('resolveExecutableBinary seam options (#3618)', () => {
   });
 });
 
+// ─── resolveExecutableBinary pathOverride (#3619, epic #3411 Phase 3) ──────
+// "Search THIS PATH, but read everything else — PATHEXT included — from the
+// ambient environment." Added so resolveFallowBinary can hand the seam a
+// search path without also hand-threading PATHEXT (a private PATHEXT read
+// is exactly the shape local/no-private-binary-resolution forbids outside
+// this seam). See .gsd/phase/chore-3619-no-bare-binary-spawn/50-test-matrix.md (O1-O7).
+
+describe('resolveExecutableBinary pathOverride (#3619)', () => {
+  test('O1: pathOverride omitted — identical to today, env.PATH is used', () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', { platform: 'linux', env: { PATH: dir } });
+      assert.equal(resolved, path.join(dir, 'foo'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('O2: pathOverride set, binary in the pathOverride dir, env.PATH points elsewhere — resolves via pathOverride, env.PATH ignored', () => {
+    const dirA = createTempDir();
+    const dirElsewhere = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirA, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dirElsewhere },
+        pathOverride: dirA,
+      });
+      assert.equal(resolved, path.join(dirA, 'foo'));
+    } finally {
+      cleanup(dirA);
+      cleanup(dirElsewhere);
+    }
+  });
+
+  test("O3: pathOverride: '' with a populated env.PATH — null; empty means empty, not a fallback to env.PATH", () => {
+    const dir = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dir },
+        pathOverride: '',
+      });
+      assert.equal(resolved, null);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('O4: pathOverride + prependPaths — prepended dirs still come first', () => {
+    const dirPrepend = createTempDir();
+    const dirOverride = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirPrepend, 'foo'), '');
+      fs.writeFileSync(path.join(dirOverride, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        pathOverride: dirOverride,
+        prependPaths: [dirPrepend],
+      });
+      assert.equal(resolved, path.join(dirPrepend, 'foo'));
+      assert.notEqual(resolved, path.join(dirOverride, 'foo'));
+    } finally {
+      cleanup(dirPrepend);
+      cleanup(dirOverride);
+    }
+  });
+
+  test('O5: pathOverride set, opts.env omitted, win32 — PATHEXT still comes from the ambient process.env, not DEFAULT_PATHEXT', () => {
+    const dir = createTempDir();
+    const originalPathext = process.env.PATHEXT;
+    try {
+      process.env.PATHEXT = '.XYZ';
+      fs.writeFileSync(path.join(dir, 'foo.XYZ'), '');
+      const resolved = resolveExecutableBinary('foo', { platform: 'win32', pathOverride: dir });
+      assert.equal(resolved, path.join(dir, 'foo.XYZ'));
+    } finally {
+      if (originalPathext === undefined) delete process.env.PATHEXT; else process.env.PATHEXT = originalPathext;
+      cleanup(dir);
+    }
+  });
+
+  test('O6: pathOverride AND env.PATH both set — pathOverride wins (assert WHICH path resolved, not merely that something resolved)', () => {
+    const dirOverride = createTempDir();
+    const dirEnvPath = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dirOverride, 'foo'), '');
+      fs.writeFileSync(path.join(dirEnvPath, 'foo'), '');
+      const resolved = resolveExecutableBinary('foo', {
+        platform: 'linux',
+        env: { PATH: dirEnvPath },
+        pathOverride: dirOverride,
+      });
+      assert.equal(resolved, path.join(dirOverride, 'foo'));
+      assert.notEqual(resolved, path.join(dirEnvPath, 'foo'));
+    } finally {
+      cleanup(dirOverride);
+      cleanup(dirEnvPath);
+    }
+  });
+
+  test('O7: multi-segment pathOverride, binary in the second segment — first-match wins, in order', () => {
+    const dir1 = createTempDir();
+    const dir2 = createTempDir();
+    try {
+      fs.writeFileSync(path.join(dir2, 'foo'), '');
+      const pathOverride = [dir1, dir2].join(path.delimiter);
+      const resolved = resolveExecutableBinary('foo', { platform: 'linux', pathOverride });
+      assert.equal(resolved, path.join(dir2, 'foo'));
+      assert.notEqual(resolved, path.join(dir1, 'foo'));
+    } finally {
+      cleanup(dir1);
+      cleanup(dir2);
+    }
+  });
+});
+
 // ─── projectSpawnInvocation (#3411) ─────────────────────────────────────────
 
 // Mirrors the seam's own `_cmdQuoteToken` (a literal `"` is doubled) so
