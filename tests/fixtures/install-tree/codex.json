@@ -308,6 +308,7 @@
   "gsd-core/workflows/execute-phase/steps/post-merge-gate.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate-run.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate.md",
+  "gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md",
   "gsd-core/workflows/execute-phase/steps/worktree-recovery-policy.md",
   "gsd-core/workflows/execute-plan.md",
   "gsd-core/workflows/explore.md",
