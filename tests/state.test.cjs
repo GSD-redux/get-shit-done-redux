@@ -3662,9 +3662,12 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
     );
 
     // GSD_TEST_MODE is required alongside GSD_NOW_MS or the pin is silently dropped
-    // (src/clock.cts `_pinnedNowMs`). Without it `last_activity` is stamped with the real
-    // today, so this test — whose entire subject is the SAME-date conflict — quietly
-    // exercised the DIFFERENT-date path instead and passed for the wrong reason.
+    // (src/clock.cts `_pinnedNowMs`). Measured: this test's `last_activity` is derived
+    // from the BODY's `**Last Activity:**` line, so the same-date branch it exercises is
+    // reached either way — only `last_updated` was being stamped from the live wall
+    // clock. Pinning it is hygiene rather than a live-defect fix: a declared pin that
+    // silently does nothing is still wrong, and leaving it here teaches the pattern that
+    // put a wall-clock timestamp into the #3395 block below.
     const result = runGsdTools(
       ['state', 'planned-phase', '--phase', '1', '--plans', '3'],
       tmpDir,
@@ -3677,10 +3680,6 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
-    // Precondition this test's name depends on: with the clock pinned the write really
-    // does land on 2020-09-10, so the SAME-date branch is the one under test.
-    assert.match(frontmatter, /last_activity:\s*'?2020-09-10'?/,
-      `pinned clock must make this a same-date conflict; frontmatter was:\n${frontmatter}`);
     assert.ok(
       frontmatter.includes('authoritative description'),
       'frontmatter last_activity_desc must be preserved when same-date body prose conflicts',
@@ -3720,7 +3719,7 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
   // assertion to `## Current Position` below is what makes it HARMLESS even when a pinned
   // value does collide. Both are needed: either alone leaves the defect latent.
   const PINNED_INSTANT = '2026-08-14T15:00:00.000Z';
-  const PINNED_ENV = { GSD_NOW_MS: String(Date.parse(PINNED_INSTANT)) };
+  const PINNED_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(Date.parse(PINNED_INSTANT)) };
 
   // An instant chosen to sit INSIDE that collision window on purpose, so the regression
   // below reproduces the CI failure deterministically instead of 1-in-600.
@@ -3785,8 +3784,8 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     // The stale body source must not survive the transition that just
     // declared 35.3 planned — it is the source every body-derived consumer
     // (state json included) re-reads.
-    assert.ok(!stateContent.includes('35.1'),
-      `the stale 35.1 phase prose must be refreshed away; STATE.md was:\n${stateContent}`);
+    assert.ok(!currentPositionBlock(stateContent).includes('35.1'),
+      `the stale 35.1 phase prose must be refreshed away from ## Current Position; STATE.md was:\n${stateContent}`);
     assert.ok(/Phase: 35\.3 — READY TO EXECUTE/m.test(stateContent),
       `Current Position Phase line must read "Phase: 35.3 — READY TO EXECUTE"; STATE.md was:\n${stateContent}`);
     // The read path must agree with the write path.
@@ -3888,7 +3887,14 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     // Two arms against the SAME generated inputs. Arm 1 alone would be satisfied by a
     // helper that always returns ''; arm 2 is what makes that impossible.
     fc.assert(fc.property(
-      fc.date({ min: new Date('2000-01-01T00:00:00.000Z'), max: new Date('2099-12-31T23:59:59.999Z') }),
+      // noInvalidDate is load-bearing: without it fc.date() emits an Invalid Date about
+      // 1 sample in 300 and `.toISOString()` throws RangeError. Verified on fast-check
+      // 4.8.0 — 0 invalid in 300 samples with the flag, 1 without.
+      fc.date({
+        min: new Date('2000-01-01T00:00:00.000Z'),
+        max: new Date('2099-12-31T23:59:59.999Z'),
+        noInvalidDate: true,
+      }),
       fc.integer({ min: 1, max: 99 }),
       fc.integer({ min: 1, max: 9 }),
       (when, major, minor) => {
