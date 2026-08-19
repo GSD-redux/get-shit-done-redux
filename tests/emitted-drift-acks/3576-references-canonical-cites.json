@@ -1,7 +1,7 @@
 {
   "version": 1,
   "paths": {
-    "import.md": "#3576: four bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+36 bytes, 4 \u00d7 9). Dead-pointer fix; no content change.",
+    "import.md": "#3576: four bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+36 bytes, 4 \u00d7 9). Dead-pointer fix; no content change. \u2014 #3602 append: gains a CHECKER_MODEL resolve-model binding, the #2517 marker + rule block, and model=\"{CHECKER_MODEL}\" on the gsd-plan-checker Agent block so the checker honors dynamic_routing/model_profile tiers.",
     "gsd-doc-synthesizer.md": "#3576: two bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+18 bytes, 2 \u00d7 9). Dead-pointer fix; no content change."
   }
 }
