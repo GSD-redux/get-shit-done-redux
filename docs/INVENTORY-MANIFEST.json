@@ -518,7 +518,6 @@
       "vendor/re2js.cjs",
       "verification-command-router.cjs",
       "verification.cjs",
-      "verify-command-grounding.cjs",
       "verify-command-router.cjs",
       "verify.cjs",
       "workflow-fragments.cjs",
