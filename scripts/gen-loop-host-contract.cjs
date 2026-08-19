@@ -492,21 +492,41 @@ const HOOK_KINDS = ['contribution', 'step', 'gate'];
  */
 function coveredKindsInRegion(region) {
   const covered = new Set();
-  const narrowingRe = /ref\.(?:skill|agent|command)\s*={2,3}/;
+  // Same-SEGMENT narrowing to ONE hook voids credit: `ref.skill ==`, `capId ==`,
+  // and `into ==` each special-case a subset, not the kind generally
+  // (plan-phase's `kind == "contribution" and capId == "security"` is the
+  // hand-rolled shape; `into == "planner"` covers only planner-targeted
+  // contributions). Segments, not lines: execute-phase legitimately writes
+  // "dispatch `kind == "step"` hooks per … . `ref.skill == "code-review"`:" —
+  // the deferral is one sentence, the specialization the next; narrowing in a
+  // DIFFERENT segment must not void the deferral's credit.
+  const narrowingRe = /(?:ref\.(?:skill|agent|command)|capId|into)\s*={2,3}/;
+  // Negated mentions describe an absence, not a dispatch ("Branch 1 — no active
+  // step hooks (`activeHooks` has no entry with `kind == "step"`)" — ship.md).
+  const negationRe = /\b(?:no|without|absent|lacks?|missing)\b[^.|]*kind\s*={2,3}/;
   const deferralRe = /@\S*loop-hook-dispatch\.md/;
   for (const line of region.split(/\r?\n/)) {
-    const kindDiscriminators = [];
-    for (const kind of HOOK_KINDS) {
-      if (new RegExp(`kind\\s*={2,3}\\s*["']${kind}["']`).test(line)) kindDiscriminators.push(kind);
-    }
-    if (deferralRe.test(line)) {
-      for (const kind of kindDiscriminators.length > 0 ? kindDiscriminators : HOOK_KINDS) {
-        covered.add(kind);
+    // Sentence segments: a `.`/`;` followed by whitespace ends a segment. A
+    // period NOT followed by whitespace (the `.md` inside a deferral path,
+    // `ref.skill`) is not a boundary.
+    for (const segment of line.split(/(?<=[.;])\s+/)) {
+      const kindDiscriminators = [];
+      for (const kind of HOOK_KINDS) {
+        if (new RegExp(`kind\\s*={2,3}\\s*["']${kind}["']`).test(segment)) kindDiscriminators.push(kind);
       }
-      continue;
-    }
-    for (const kind of kindDiscriminators) {
-      if (!narrowingRe.test(line)) covered.add(kind);
+      if (kindDiscriminators.length === 0) {
+        // A deferral with no kind discriminator ("apply each entry per …")
+        // still covers every kind.
+        if (deferralRe.test(segment)) for (const kind of HOOK_KINDS) covered.add(kind);
+        continue;
+      }
+      if (negationRe.test(segment)) continue;
+      if (deferralRe.test(segment)) {
+        // Deferral naming kinds ("dispatch `kind == "step"` hooks per …").
+        if (!narrowingRe.test(segment)) for (const kind of kindDiscriminators) covered.add(kind);
+        continue;
+      }
+      if (!narrowingRe.test(segment)) for (const kind of kindDiscriminators) covered.add(kind);
     }
   }
   return covered;

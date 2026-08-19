@@ -33,7 +33,7 @@ const CONFIG_SCHEMA_PATH = path.join(ROOT, 'gsd-core', 'bin', 'shared', 'config-
 // registry generator and the loop-host-contract generator share one source of truth.
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
 
-// Wired-points helper — tells us which points actually have render-hooks call sites.
+// Wired-kinds helper — per point, which hook kinds the render-hooks call sites' dispatch text covers.
 const { getWiredKinds } = require('./gen-loop-host-contract.cjs');
 
 // Capability validator — shared runtime-callable module extracted per ADR-1244 D2.

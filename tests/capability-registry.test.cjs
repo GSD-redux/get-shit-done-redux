@@ -4973,7 +4973,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       assert.ok(errs.length > 0, 'must reject discuss:pre against a set that lacks it');
     });
 
-    test('boundary: cap declaring discuss:pre is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
+    test('boundary: cap declaring discuss:pre is accepted against real getWiredKinds(ROOT) post-fix', () => {
       const cap = makeCapWithStep('discuss:pre');
       const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
       const realWired = getWiredKinds(ROOT);
@@ -4984,7 +4984,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       );
     });
 
-    test('boundary: cap declaring discuss:post is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
+    test('boundary: cap declaring discuss:post is accepted against real getWiredKinds(ROOT) post-fix', () => {
       const cap = makeCapWithContribution('discuss:post');
       const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
       const realWired = getWiredKinds(ROOT);
@@ -5179,6 +5179,60 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         ['gate', 'step'],
         'two call sites at one point accumulate their coverage',
       );
+    });
+
+    test('capId == and into == narrowing void contribution credit (#3606 adversarial finding)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const capIdNarrowed = 'Resolve hooks where `kind == "contribution"` and `capId == "security"`.\n';
+      assert.deepEqual([...coveredKindsInRegion(capIdNarrowed)], [],
+        'a one-capability hand-roll is not generic contribution coverage');
+      const intoNarrowed = 'For each entry where `kind == "contribution"` and `into == "planner"`: inject.\n';
+      assert.deepEqual([...coveredKindsInRegion(intoNarrowed)], [],
+        'planner-targeted-only injection leaves orchestrator-targeted contributions dispatched by no one');
+    });
+
+    test('a negated kind mention describes an absence, not a dispatch', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Branch 1 — no active `ship:post` step hooks (`activeHooks` has no entry with `kind == "step"`): Skip.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], [],
+        '"has no entry with kind == step" must not count as step coverage');
+    });
+
+    test('a deferral sentence keeps its credit when the NEXT sentence specializes (segment split)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md. `ref.skill == "code-review"`:\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['step'],
+        'the generic deferral and the one-hook specialization are separate sentences');
+    });
+
+    test('a deferral path with a period (loop-hook-dispatch.md) is not split into segments', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Apply each entry per @~/.claude/gsd-core/references/loop-hook-dispatch.md\n';
+      assert.deepEqual([...coveredKindsInRegion(region)].sort(), ['contribution', 'gate', 'step'],
+        'the .md inside the deferral path is not a sentence boundary');
+    });
+
+    test('a site whose consumers are all narrowed yields the zero-coverage error, not "not wired"', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'verify:post', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = new Map([['verify:post', new Set()]]); // sites exist, all narrowed
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'all-narrowed consumers must fail');
+      const joined = errs.join(' ');
+      assert.match(joined, /covers NO hook kind/i, 'error must name the zero-coverage diagnosis');
+      assert.doesNotMatch(joined, /not wired/i, 'the site EXISTS — misdiagnosing it as unwired points at the wrong remedy');
+    });
+
+    test('HOOK_KINDS vocabulary parity: scanner kinds match the validator group->kind mapping', () => {
+      const { HOOK_KINDS } = require('../scripts/gen-loop-host-contract.cjs');
+      assert.deepEqual([...HOOK_KINDS].sort(), ['contribution', 'gate', 'step'],
+        "the scanner vocabulary must stay in lock-step with validateHooksWired's steps/contributions/gates -> step/contribution/gate mapping");
     });
   });
 

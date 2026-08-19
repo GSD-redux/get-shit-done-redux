@@ -3451,6 +3451,13 @@ function topoSortContributions(entries) {
  * are already caught by validateStep/validateContribution/validateGate — do not
  * double-report.
  *
+ * KNOWN LIMITATION (#3606): coverage is the UNION across all call sites for a
+ * point in the five STEP_WORKFLOWS host files. Consumers outside that universe
+ * (quick.md, autonomous.md, code-review*.md, audit-milestone.md,
+ * secure-phase.md, validate-phase.md) are not per-file checked — a narrowed
+ * consumer there passes as long as one host file covers the point. Per-file
+ * coverage maps are the tightening path.
+ *
  * @param {object}   cap       Validated capability object.
  * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the
  *   host workflows' call-site dispatch text covers (getWiredKinds). A point
@@ -3465,14 +3472,23 @@ function validateHooksWired(cap, wiredKinds) {
   function checkPoint(point, groupName, kind, idx) {
     // Only flag valid points that are unwired — invalid points are schema-validator's job.
     if (!VALID_LOOP_POINTS.has(point)) return;
-    const covered = wiredKinds.get(point);
-    if (!covered || covered.size === 0) {
+    if (!wiredKinds.has(point)) {
       errors.push(
         'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
         '" is declared but not wired in any host-loop workflow ' +
         '(no `loop render-hooks ' + point + '` call site). ' +
         'Wire the call site in the host workflow ' +
         '(see scripts/gen-loop-host-contract.cjs STEP_WORKFLOWS) or remove the hook.',
+      );
+      return;
+    }
+    const covered = wiredKinds.get(point);
+    if (covered.size === 0) {
+      errors.push(
+        'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
+        '" has `loop render-hooks ' + point + '` call site(s), but their dispatch text covers NO ' +
+        'hook kind — every consumer is narrowed to specific hooks. Dispatch every registered kind ' +
+        'per gsd-core/references/loop-hook-dispatch.md.',
       );
       return;
     }

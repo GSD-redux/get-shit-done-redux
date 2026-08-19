@@ -593,6 +593,7 @@
       "execute-phase/steps/post-merge-gate.md",
       "execute-phase/steps/regression-gate-run.md",
       "execute-phase/steps/regression-gate.md",
+      "execute-phase/steps/wave-post-gate-hooks.md",
       "execute-phase/steps/worktree-recovery-policy.md",
       "new-milestone/steps/project-md-milestone-write.md",
       "new-milestone/steps/reset-phase-safety.md",
