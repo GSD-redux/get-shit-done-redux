@@ -80,11 +80,15 @@ const TRACKED_EXACT = new Set(['bin/install.js', 'package.json']);
  *
  * The emitted-attribution family (`tests/fixtures/golden-install-parity`,
  * `tests/golden-install-parity.test.cjs`, `scripts/gen-golden-install-parity-zcode.cjs`,
- * `tests/agent-size-baseline.json`, `tests/workflow-size-baseline.json`) was RETIRED
+ * `tests/agent-size-baseline.json`, `tests/workflow-size-baseline.json`,
+ * `scripts/git-merge-regen-driver.cjs`, `scripts/update-size-baseline.cjs`) was RETIRED
  * by the #2724 cutover — the differential attribution check replaced the committed
- * baselines. CONTEXT.md's RULESET.EMITTED_ATTRIBUTION predicate documents that
- * retirement ("Historically …"), so the mentions are history, not live claims, and
- * their absence is exactly the healthy state the retirement produced.
+ * baselines and their generator/bridge tooling. CONTEXT.md's RULESET.EMITTED_ATTRIBUTION
+ * predicate documents that retirement ("Historically …"), so the mentions are history,
+ * not live claims, and their absence is exactly the healthy state the retirement
+ * produced. The whole documented family is listed, not just the members today's tick
+ * parity happens to hide — the two tooling paths were invisible only because of where
+ * line 585's inner backticks sat, which is the #2778 luck this gate must not rely on.
  *
  * `scripts/eslint-rules` appears only inside a CONTRASTIVE mention ("the local
  * plugin lives at `eslint-rules/` (repo root, NOT `scripts/eslint-rules/`)") — the
@@ -107,6 +111,8 @@ const INTENTIONALLY_ABSENT = new Set([
   'scripts/gen-golden-install-parity-zcode.cjs',
   'tests/agent-size-baseline.json',
   'tests/workflow-size-baseline.json',
+  'scripts/git-merge-regen-driver.cjs',
+  'scripts/update-size-baseline.cjs',
   'scripts/eslint-rules',
 ]);
 
@@ -164,8 +170,11 @@ function extractTrackedRefs(text) {
   const tokens = new Set();
   const add = (raw) => {
     if (!PATH_TOKEN_RE.test(raw)) return;
-    if (!/[A-Za-z0-9_]$/.test(raw)) return;
     const token = raw.replace(/:\d+$/, '');
+    // Fragment guard, on the EMITTED token (after the :line strip, so
+    // `src/foo-:12` is judged on `src/foo-`): glob/template remnants end in `-`
+    // or `.`, a real path in this repo never does.
+    if (!/[A-Za-z0-9_]$/.test(token)) return;
     if (token.includes('NNNN')) return;
     if (!isTracked(token)) return;
     if (!isWithinRoot(token)) return;

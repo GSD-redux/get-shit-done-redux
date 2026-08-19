@@ -296,12 +296,15 @@ test('glob and NNNN template mentions are not drift (#3604)', (t) => {
   // `scripts/gen-*.cjs`-style globs and the documented ADR filename template
   // (`docs/adr/NNNN-*.md`, CONTRIBUTING's "Do not compute a next number
   // locally") are legitimate mentions. A fragment ending in `-` or `.` is a
-  // glob/template remnant, never a real path; `NNNN` is the template token.
+  // glob/template remnant, never a real path. The bare template shape
+  // (`docs/adr/NNNN.md`, no dash-star) ends in a word char and ends the
+  // final-char guard's reach — only the NNNN skip covers it.
   const context = [
     '# Context',
     '',
     '`RULESET.AUDIT.demo=search src/*.cts OR the scripts/gen-*.cjs generator`',
     '`RULESET.ADR-HEADER=every docs/adr/NNNN-*.md must open with Status and Date`',
+    'A fresh ADR starts from `docs/adr/NNNN.md`.',
     'Retired scanners were `scripts/lint-*.cjs`.',
     '',
     `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
@@ -318,11 +321,18 @@ test('retired-path exemptions are exact, not a blanket hole (#3604)', (t) => {
   // in CONTEXT.md as HISTORY ("Historically tests/fixtures/...") — absence is
   // the healthy steady state, the same semantics as the #2778 entry. But the
   // exemption must stay exact: a sibling missing tests/ path still fails.
+  //
+  // The NOT-mention must ride a PREDICATE span, mirroring CONTEXT.md's real
+  // shape (RULESET.TESTS.eslint-harness): inside a predicate value the
+  // sub-scan harvests `scripts/eslint-rules` WITHOUT the trailing slash, so
+  // it is tracked-prefix-shaped and only the exemption saves it. Standalone
+  // spans with trailing slashes never reach the exemption (PATH_TOKEN_RE
+  // rejects them), which is exactly the vacuity this test must not have.
   const context = [
     '# Context',
     '',
     'Historically `tests/golden-install-parity.test.cjs` and `tests/workflow-size-baseline.json`.',
-    'The plugin lives at `eslint-rules/`, NOT `scripts/eslint-rules/`.',
+    '`RULESET.TESTS.harness=local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/)`',
     'A typo sibling `tests/golden-install-parity-typo.test.cjs` is real drift.',
     '',
     `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
@@ -334,7 +344,7 @@ test('retired-path exemptions are exact, not a blanket hole (#3604)', (t) => {
   assert.equal(res.status, 1, 'the sibling typo must still be a finding');
   assert.match(`${res.stdout}${res.stderr}`, /golden-install-parity-typo/);
   assert.doesNotMatch(`${res.stdout}${res.stderr}`, /scripts\/eslint-rules/,
-    'the contrastive NOT-mention must be exempt');
+    'the contrastive NOT-mention inside a predicate value must be exempt');
   assert.doesNotMatch(`${res.stdout}${res.stderr}`, /workflow-size-baseline/,
     'the retired-path mention must be exempt');
 });
