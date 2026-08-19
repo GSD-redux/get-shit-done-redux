@@ -166,9 +166,17 @@ Display: "✓ Sampled N messages from M projects"
 
 Display: "◆ Analyzing patterns..."
 
+```bash
+PROFILER_MODEL=$(gsd_run query resolve-model gsd-user-profiler --raw)
+```
+
+<!-- #2517 model-omit-on-inherit -->
+
+> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`PROFILER_MODEL`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
+
 **Spawn gsd-user-profiler agent using Task tool:**
 
-Use the Task tool to spawn the `gsd-user-profiler` agent. Provide it with:
+Use the Task tool to spawn the `gsd-user-profiler` agent, passing `model="{PROFILER_MODEL}"` (omit the parameter per the rule above when the value is `"inherit"` or empty). Provide it with:
 - The sampled JSONL file path from profile-sample output
 - The user-profiling reference doc at `$HOME/.claude/gsd-core/references/user-profiling.md`
 

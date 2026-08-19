@@ -34,12 +34,15 @@
  *       gsd-core/bin/shared/config-schema.manifest.json, docs/CONFIGURATION.md
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, mock } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
-const { runNode } = require('./helpers/process-seam.cjs');
+// Required as a MODULE OBJECT, not destructured, so `mock.method(processSeam, 'runHook', …)`
+// can observe what runBashScript actually passes to the seam. tests/helpers.cjs:221-224
+// documents this same pattern for runNode.
+const processSeam = require('./helpers/process-seam.cjs');
+const { runNode, OUTCOME } = processSeam;
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -156,15 +159,45 @@ function extractStallHelpersBash() {
  * @param {string[]} [args]  positional args passed to the script (become
  *   $1, $2, ... inside it) — empty when the caller embeds values directly
  *   into the script text instead (e.g. via JSON.stringify).
- * @param {object} [opts]  extra spawnSync options (e.g. `{ timeout }`),
- *   merged over the `{ encoding: 'utf-8' }` default.
+ * @param {object} [opts]  extra process-seam options (`{ timeoutMs, cwd, env, input,
+ *   killSignal }`), merged over the defaults below. NOTE the key is `timeoutMs`, not
+ *   spawnSync's `timeout` — the seam reads only its own documented options, so a stray
+ *   `timeout` key is silently ignored rather than honoured.
  */
 function runBashScript(script, args = [], opts = {}) {
   const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-sh-'));
   try {
     const scriptPath = path.join(scriptDir, 'script.sh');
     fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
-    return spawnSync('bash', [scriptPath, ...args], { encoding: 'utf-8', timeout: 10000, ...opts });
+    // Through the process seam, never a hand-rolled spawnSync (CONTRIBUTING.md:
+    // "Anything that shells out goes through tests/helpers/process-seam.cjs"). Two
+    // things that buys, both of which the raw call lacked:
+    //
+    //   1. HOOK_FANOUT_TIMEOUT_MS — the class norm for a bash invocation that FANS OUT
+    //      to nested subprocesses. This script does exactly that: the extracted fence
+    //      opens with the runtime-launcher preamble, which resolves gsd-tools.cjs and
+    //      really runs two `gsd_run query config-get` lines, i.e. two Node spawns
+    //      (measured 236ms vs 2ms for the fallback shape). The old hard-coded 10000ms
+    //      was sized for a cheap probe and was exceeded at 10006ms on
+    //      `full test (windows-latest, 24, shard 1/3)`. timeouts.cjs records the same
+    //      failure mode on PR #3285: a bound sized for the wrong class, not a slow machine.
+    //
+    //   2. A typed `outcome`. spawnSync reports a kill as `status: null`, so an exceeded
+    //      bound reached the call sites as `null !== 0` — naming neither the timeout nor
+    //      the bound. OUTCOME.TIMED_OUT names itself.
+    //
+    // Looked up on the module object (`processSeam.runHook`) rather than destructured, so
+    // a test can observe the options actually passed — same rationale as
+    // tests/helpers.cjs:221-224 for runNode.
+    const result = processSeam.runHook(scriptPath, args, {
+      interpreter: 'bash',
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+      ...opts,
+    });
+    // `status` is aliased from `exitCode` by toLegacyResult so the existing assertions in
+    // this file keep reading the shape they were written against; `outcome`/`timedOut`
+    // are additive, and are what make a bound failure self-describing.
+    return { ...toLegacyResult(result), outcome: result.outcome, timedOut: result.timedOut };
   } finally {
     cleanup(scriptDir);
   }
@@ -263,11 +296,19 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pur
 });
 
 describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real execution, not just the pure classifier)', () => {
-  // Sourcing the extracted script without `gsd_run` defined naturally exercises
-  // the `|| echo "<default>"` fallback already in the config-get lines (command
-  // lookup fails -> non-zero exit -> the `||` branch fires), so
-  // PLANNER_STALL_INTERVAL_MINUTES/PLANNER_STALL_THRESHOLD_MINUTES start at their
-  // real defaults (5/10) here; each test overrides them afterward for speed.
+  // CORRECTION (#2650 follow-up): an earlier version of this comment claimed the
+  // extracted script runs WITHOUT `gsd_run` defined, so the `|| echo "<default>"`
+  // fallback in the config-get lines fires. That is false, and it is why the spawn
+  // bound below was mis-sized. extractStallHelpersBash slices the ENTIRE ```bash
+  // fence, which opens with the runtime-launcher preamble; that preamble finds
+  // gsd-core/bin/gsd-tools.cjs from the repo root and DEFINES gsd_run, so both
+  // config-get lines really spawn Node. Verified: `gsd_run defined: function`,
+  // GSD_TOOLS=<repo>/gsd-core/bin/gsd-tools.cjs. The resolved values are then
+  // discarded anyway — runWatch overrides both PLANNER_STALL_* vars right after the
+  // helpers, and runShouldRecover passes them as arguments — so the two spawns are
+  // dead cost that the bound must nonetheless accommodate. They are deliberately NOT
+  // removed here: dropping them would change what the extracted script executes and
+  // weaken the "the shipped fence is runnable end to end" property these tests carry.
   let helpersBash;
   let tmp;
 
@@ -287,7 +328,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     const call = `gsd_stall_watch ${JSON.stringify(String(dispatchTs))} ${JSON.stringify(outputFile)} ${JSON.stringify(artifactGlob)}` +
       markers.map((m) => ` ${JSON.stringify(m)}`).join('');
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    return runBashScript(script, [], { timeout: 10000 });
+    return runBashScript(script, []);
   }
 
   test('marker present in the real output file (via real grep, interval=0 so sleep is instant) -> marker_received', (t) => {
@@ -374,7 +415,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     const call = `gsd_stall_watch ${JSON.stringify(String(now))} ${JSON.stringify(missingOutputFile)} ${JSON.stringify(glob)}` +
       ` ${JSON.stringify('## PLANNING COMPLETE')}`;
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    const result = runBashScript(script, [], { timeout: 10000 });
+    const result = runBashScript(script, []);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'active');
   });
@@ -596,5 +637,84 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const patternMapperSection = workflow.slice(patternMapperIdx, workflow.indexOf('## 7.9. Regenerate API-SURFACE.md'));
     assert.doesNotMatch(researcherSection, /gsd_stall_watch/, 'researcher spawn must remain a plain blocking call (out of scope per Agent Brief)');
     assert.doesNotMatch(patternMapperSection, /gsd_stall_watch/, 'pattern-mapper spawn must remain a plain blocking call (out of scope per Agent Brief)');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2650 follow-up: the spawn bound was sized for the wrong CLASS of call.
+//
+// runBashScript hard-coded `timeout: 10000`. The script it runs is not a cheap
+// probe: extractStallHelpersBash slices the ENTIRE ```bash fence, whose runtime-launcher
+// preamble resolves gsd-tools.cjs and really runs two `gsd_run query config-get` lines —
+// two full Node spawns (measured 236ms vs 2ms for the fallback the old comment claimed
+// fires: 118x). On `full test (windows-latest, 24, shard 1/3)` that bound was exceeded at
+// 10006ms and spawnSync's kill surfaced as `status: null`, which the call site asserted
+// as `null !== 0` — a message naming neither the timeout nor the bound.
+//
+// tests/helpers/timeouts.cjs already owns this exact class (HOOK_FANOUT_TIMEOUT_MS), and
+// its comment records the identical failure on PR #3285: "a bound sized for the wrong
+// class, not a slow machine."
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2650 follow-up: runBashScript bounds and reports a bash fan-out correctly', () => {
+  test('bounds the fan-out with the class norm, and an explicit override still wins', (t) => {
+    t.after(() => mock.restoreAll());
+    const seen = [];
+    mock.method(processSeam, 'runHook', (target, args, opts) => {
+      seen.push(opts);
+      return { outcome: OUTCOME.EXITED, exitCode: 0, stdout: '', stderr: '', timedOut: false, signal: null, killed: false, code: null };
+    });
+
+    runBashScript('echo hi\n');
+    assert.equal(seen.length, 1,
+      'runBashScript must route through the process seam (CONTRIBUTING.md: never a hand-rolled spawnSync in a suite)');
+    assert.equal(seen[0].timeoutMs, HOOK_FANOUT_TIMEOUT_MS,
+      `default bound must be the bash-fan-out class norm (${HOOK_FANOUT_TIMEOUT_MS}ms), not a probe-sized literal; got ${seen[0].timeoutMs}`);
+    assert.equal(seen[0].interpreter, 'bash', 'the seam must be told to run the script under bash');
+
+    runBashScript('echo hi\n', [], { timeoutMs: 1234 });
+    assert.equal(seen[1].timeoutMs, 1234, 'an explicit timeoutMs must override the class norm');
+  });
+
+  test('an exceeded bound reports TIMED_OUT, not a bare null status', () => {
+    // A real sleep against a deliberately tiny bound. The assertion is on the
+    // CLASSIFICATION, never on elapsed time.
+    const result = runBashScript('sleep 5\n', [], { timeoutMs: 250 });
+    assert.equal(result.outcome, OUTCOME.TIMED_OUT,
+      `an exceeded bound must name itself; got outcome=${result.outcome} status=${result.status}`);
+    assert.equal(result.timedOut, true, 'timedOut must be true when the bound is exceeded');
+  });
+
+  test('a genuine non-zero exit is EXITED, never confused with a timeout', () => {
+    const result = runBashScript('exit 3\n');
+    assert.equal(result.outcome, OUTCOME.EXITED,
+      'a prompt non-zero exit is an EXITED outcome, not a timeout');
+    assert.equal(result.status, 3, 'the real exit code must survive');
+    assert.equal(result.timedOut, false, 'a real exit must not be reported as timed out');
+  });
+
+  test('boundary: a non-positive bound is rejected, never silently run unbounded', () => {
+    // limit-1 / limit / limit+1 on the VALUE DOMAIN of the bound, not on wall-clock
+    // timing — the previous test already covers the exceeded-bound classification, and
+    // an exact-millisecond timing edge would be a race, not a boundary.
+    //
+    // Zero is the load-bearing case: spawnSync reads `timeout: 0` as "no timeout at
+    // all", which is precisely the unbounded-spawn hazard local/no-unbounded-spawn
+    // exists to prevent (CONTRIBUTING.md: "`timeout: 0` — Node reads zero as *no
+    // timeout*"). The seam rejects it instead of honouring it.
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: 0 }), TypeError,
+      'limit: zero must be rejected, never read as unbounded');
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: -1 }), TypeError,
+      'limit-1: a negative bound must be rejected');
+    assert.doesNotThrow(() => runBashScript('exit 0\n', [], { timeoutMs: 1 }),
+      'limit+1: the smallest positive bound is valid and must be accepted');
+
+    // The helper must still clean up its temp dir when the seam throws — the throw
+    // escapes through runBashScript's `finally`, which is what makes the rejection safe
+    // to rely on rather than a resource leak.
+    const before = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('gsd-2650-sh-')).length;
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: 0 }), TypeError);
+    const after = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('gsd-2650-sh-')).length;
+    assert.equal(after, before, 'a rejected bound must not leak the script temp dir');
   });
 });
