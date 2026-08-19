@@ -509,6 +509,14 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
    * `[^\r\n]*` keeps the call and the flag on ONE line, so a `resolve-execution` on one line and an
    * unrelated `--effort` on the next is not a false hit. The trailing `(?:[\s=]|$)` is what stops
    * `--effortless` from matching: the character after `--effort` must be a delimiter or nothing.
+   *
+   * The unbounded quantifier is deliberate and safe here: the corpus scanned is maintainer-authored
+   * workflow, reference, and agent markdown — bounded prose, not adversarial input.
+   *
+   * DIVERGENCE RISK. This predicate independently models `gsd-tools.cjs`'s own argument parser; the
+   * two are not derived from one shared constant. If that parser ever accepts a THIRD spelling of
+   * `--effort`, this regex is the surface that must follow it — otherwise ADR-443's ratifying
+   * invariant silently stops holding while the guard still reports green.
    */
   const EFFORT_CALLER_RE = /resolve-execution[^\r\n]*--effort(?:[\s=]|$)/;
   const hasEffortCaller = (text) => EFFORT_CALLER_RE.test(String(text ?? ''));
