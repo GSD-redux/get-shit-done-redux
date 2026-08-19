@@ -289,23 +289,78 @@ function cmdVerifySummary(
  * verify gate fails on the comment echo rather than a real regression. Conservative:
  * errors only on a confidently-extracted QUOTED literal; ambiguous (bareword) → warning.
  */
+/**
+ * Decode entity-escaped ampersands (&amp; → &) — #3611. Planners emit
+ * <automated> bodies with `&amp;&amp;` as the chain operator (66 occurrences
+ * vs 0 literal in the reporting repo), and the executing agent reads the
+ * decoded (rendered) form. Every downstream scan — segment split,
+ * zero-comparison, literal harvest, echo matching — must operate on the same
+ * decoded text or a negative clause (`= 0`) poisons the literals of a
+ * POSITIVE clause (-ge 3) joined to it. Shared by both plan-discipline
+ * scanners so the two gates cannot drift apart again.
+ */
+function decodeEntityAmps(s: string): string {
+  return s.replace(/&amp;/g, '&');
+}
+
+/**
+ * Split one shell line into &&/|| segments, QUOTE-AWARE (#3611 adversarial
+ * review): an operator inside a quoted literal (`grep -c 'a&&b'`) is part of
+ * the pattern, not a chain operator — a quote-blind split destroys the
+ * literal and silently disarms the gate for exactly the plans that spell
+ * patterns with ampersands. Backslash escapes count inside double quotes
+ * (POSIX single quotes have none, and over-staying a single-quoted span can
+ * only miss a split, never invent one).
+ */
+function splitShellSegments(line: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\') {
+        current += ch + (line[i + 1] ?? '');
+        i++;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if ((ch === '&' && line[i + 1] === '&') || (ch === '|' && line[i + 1] === '|')) {
+      segments.push(current.trim());
+      current = '';
+      i++;
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current.trim());
+  return segments.filter((s) => s !== '');
+}
+
 function scanNegativeGrepCommentEcho(content: string): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   // Normalize newlines; join backslash line-continuations so a verify command wrapped
   // across lines (grep ... \ <newline> == 0) is still seen as one segment.
-  // #3611: decode entity-escaped ampersands (&amp; → &) before any downstream
-  // scanning. Planners emit <automated> bodies with `&amp;&amp;` as the chain
-  // operator (66 occurrences vs 0 literal `&&` in the reporting repo), and the
-  // shell itself only ever sees the decoded form — the segment split, the
-  // zero-comparison, the count-grep literal harvest, and the action-echo scan
-  // must all operate on the same decoded text or a negative clause (`= 0`)
-  // poisons the literals of a POSITIVE clause (-ge 3) joined to it.
-  const text = (content || '')
+  // #3611: decode entity-escaped ampersands (see decodeEntityAmps) so every
+  // downstream scan reads the same decoded text the executing agent reads.
+  const text = decodeEntityAmps((content || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/\\\n/g, ' ')
-    .replace(/&amp;/g, '&');
+    .replace(/\\\n/g, ' '));
 
   // 1. Allowlisted literals: <!-- planner-discipline-allow: LIT -->
   const allow = new Set<string>();
@@ -356,7 +411,7 @@ function scanNegativeGrepCommentEcho(content: string): { errors: string[]; warni
   //    poisoning a negative gate (`== 0`) sharing the same physical line.
   const seenErr = new Set<string>();
   const seenWarn = new Set<string>();
-  const segments = text.split('\n').flatMap((line) => line.split(/\s*(?:&&|\|\|)\s*/));
+  const segments = text.split('\n').flatMap(splitShellSegments);
   for (const seg of segments) {
     if (!/grep(?:\s+-{1,2}[A-Za-z])/.test(seg) || !zeroCmp(seg)) continue;
     countGrepRe.lastIndex = 0;
@@ -404,10 +459,13 @@ function scanFileWideNegativeGateConflict(content: string): { warnings: string[]
   const warnings: string[] = [];
 
   // Normalize newlines; join backslash line-continuations (same as #429).
-  const text = (content || '')
+  // #3611: the SAME entity decode as the #429 scanner — the two gates share
+  // the caller and the input; a decode on one side only let an entity-escaped
+  // chain poison this detector's harvest exactly the same way.
+  const text = decodeEntityAmps((content || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/\\\n/g, ' ');
+    .replace(/\\\n/g, ' '));
 
   // Allowlisted patterns: <!-- planner-region-allow: PAT -->
   const allow = new Set<string>();
@@ -555,10 +613,8 @@ function scanFileWideNegativeGateConflict(content: string): { warnings: string[]
   for (let ai = 0; ai < tasks.length; ai++) {
     const taskA = tasks[ai];
 
-    // Split gate text into shell segments (split on && / || within lines).
-    const segments = taskA.gateText.split('\n').flatMap(line =>
-      line.split(/\s*(?:&&|\|\|)\s*/),
-    );
+    // Split gate text into shell segments (quote-aware, shared with #429 — #3611).
+    const segments = taskA.gateText.split('\n').flatMap(splitShellSegments);
 
     for (const seg of segments) {
       if (!/grep/.test(seg)) continue;
