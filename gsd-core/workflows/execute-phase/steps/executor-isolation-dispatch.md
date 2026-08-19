@@ -220,7 +220,11 @@ grep -qF '<provenance>plan {plan_number} of phase {phase_number} at '"$ORCH_ROOT
 #     wave manifest is initialized at wave start, so any prompt composed for
 #     THIS wave is newer than it — an older file is a stale leftover whose
 #     plan text, skills, or contract paths may have changed since.
-[ "$PROMPT_FILE" -nt "$WAVE_WORKTREE_MANIFEST" ] || {
+# `! -ot` (not OLDER than), not `-nt` (strictly newer): composition can land in
+# the same filesystem timestamp tick as the manifest on a coarse-granularity
+# filesystem, and a strict comparison would then reject a perfectly fresh
+# prompt. Equal is fine; only a genuinely older file is the leftover.
+[ ! "$PROMPT_FILE" -ot "$WAVE_WORKTREE_MANIFEST" ] || {
   echo "FATAL: executor prompt at $PROMPT_FILE predates this wave's manifest — a leftover from a previous attempt. Re-compose it." >&2; exit 1; }
 
 # 2. Structure: every contract block present AND closed — a truncated compose

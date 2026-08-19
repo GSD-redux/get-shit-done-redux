@@ -7021,7 +7021,12 @@ describe('#3637 — orchestrator-worktree dispatch carries the executor contract
     t.after(() => cleanup(dir));
     fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
     makeContractFiles(dir);
-    composePrompt(dir, opts); // written AFTER the manifest -> fresh by mtime
+    composePrompt(dir, opts);
+    // Backdate the MANIFEST explicitly rather than relying on write order:
+    // both files land in the same filesystem tick on a fast Linux runner, and
+    // a fixture whose freshness depends on tick luck is a flake, not a test.
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(dir, 'manifest.json'), past, past);
     return dir;
   }
 
@@ -7058,6 +7063,8 @@ describe('#3637 — orchestrator-worktree dispatch carries the executor contract
     fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
     makeContractFiles(dir);
     composePrompt(dir, { crlf: true });
+    const past0 = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(dir, 'manifest.json'), past0, past0);
     const raw = fs.readFileSync(path.join(dir, 'executor-prompt-p7.md'), 'utf8');
     assert.ok(raw.includes('\r\n'), 'fixture must actually be CRLF or it proves nothing');
     const r = runValidation(dir);
@@ -7076,8 +7083,27 @@ describe('#3637 — orchestrator-worktree dispatch carries the executor contract
     const spacey = path.join(dir, 'gsd  core');
     makeContractFilesIn(spacey);
     composePrompt(dir, { contractDir: spacey });
+    const past1 = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(dir, 'manifest.json'), past1, past1);
     const r = runValidation(dir);
     assert.equal(r.status, 0, `a path with consecutive spaces must pass; stderr: ${r.stderr}`);
+    assert.match(r.stdout, /VALIDATED/);
+  });
+
+  test('EXECUTABLE: an equal-mtime prompt is fresh, not stale (coarse-granularity filesystems)', (t) => {
+    // The CI-caught case: on a fast Linux runner the manifest and the prompt
+    // land in the same timestamp tick, and a strict `-nt` rejects a perfectly
+    // fresh prompt. Pin the boundary explicitly rather than leaving it to luck.
+    const dir = createTempDir('prohib-3637-');
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
+    makeContractFiles(dir);
+    composePrompt(dir, {});
+    const same = new Date(Date.now() - 5_000);
+    fs.utimesSync(path.join(dir, 'manifest.json'), same, same);
+    fs.utimesSync(path.join(dir, 'executor-prompt-p7.md'), same, same);
+    const r = runValidation(dir);
+    assert.equal(r.status, 0, `equal mtimes must be treated as fresh; stderr: ${r.stderr}`);
     assert.match(r.stdout, /VALIDATED/);
   });
 
