@@ -16,7 +16,7 @@ Defina `model_profile` em `.planning/config.json` ou via `/gsd-config --profile 
 | `adaptive` | Opus | Sonnet | Sonnet | Sonnet | Resolve da mesma forma que os outros níveis em perfis cientes de runtime; use ao alternar entre runtimes com frequência |
 | `inherit` | (modelo da sessão) | (modelo da sessão) | (modelo da sessão) | (modelo da sessão) | Provedores não-Anthropic (OpenRouter, modelos locais) — todos os agentes seguem o modelo atual da sessão |
 
-A tabela acima mostra um subconjunto representativo. Todos os 33 agentes incluídos possuem atribuições de nível explícitas por perfil em `sdk/shared/model-catalog.json`. Para a tabela completa, consulte [Perfis de Modelo](../CONFIGURATION.md#model-profiles) na referência de configuração.
+A tabela acima mostra um subconjunto representativo. Todos os 33 agentes incluídos possuem atribuições de nível explícitas por perfil em `gsd-core/bin/shared/model-catalog.json`. Para a tabela completa, consulte [Perfis de Modelo](../CONFIGURATION.md#model-profiles) na referência de configuração.
 
 **Troca rápida via comando:**
 

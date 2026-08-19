@@ -16,7 +16,7 @@ Set `model_profile` in `.planning/config.json` or via `/gsd-config --profile <na
 | `adaptive` | Opus | Sonnet | Sonnet | Sonnet | Resolves the same way as the other tiers under runtime-aware profiles; use when switching between runtimes frequently |
 | `inherit` | (session model) | (session model) | (session model) | (session model) | Non-Anthropic providers (OpenRouter, local models) — all agents follow your current session model |
 
-The table above shows a representative subset. All 33 shipped agents have explicit per-profile tier assignments in `sdk/shared/model-catalog.json`. For the full table see [Model Profiles](../CONFIGURATION.md#model-profiles) in the configuration reference.
+The table above shows a representative subset. All 33 shipped agents have explicit per-profile tier assignments in `gsd-core/bin/shared/model-catalog.json`. For the full table see [Model Profiles](../CONFIGURATION.md#model-profiles) in the configuration reference.
 
 **Quick switch via command:**
 
