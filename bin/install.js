@@ -6280,15 +6280,21 @@ function mergeCodexConfig(configPath, gsdBlock) {
 
     // #3610: top-level keys that survived BELOW the marker were file-scoped
     // before this merge; the regenerated block opens with the `[agents]` table
-    // header, so they must be hoisted above it or TOML re-scopes them into
-    // [agents] and post-write schema validation aborts the install.
+    // header, so they must be hoisted to FILE scope or TOML re-scopes them
+    // into a table. File scope means BEFORE the first table header of the
+    // pre-marker region too — appending them after a pre-marker table (the
+    // default real-world layout: user tables precede the marker) would merely
+    // capture them into THAT table instead of [agents], and the schema
+    // validator is blind to non-agents tables.
+    const beforeSplit = before ? splitTopLevelKeys(before) : { topLevel: '', rest: '' };
     const { topLevel: afterTopLevel, rest: afterTables } = splitTopLevelKeys(afterUser);
 
     const parts = [];
-    const beforeParts = [];
-    if (before) beforeParts.push(before);
-    if (afterTopLevel) beforeParts.push(afterTopLevel);
-    if (beforeParts.length > 0) parts.push(beforeParts.join(eol + eol));
+    const topParts = [];
+    if (beforeSplit.topLevel) topParts.push(beforeSplit.topLevel);
+    if (afterTopLevel) topParts.push(afterTopLevel);
+    if (topParts.length > 0) parts.push(topParts.join(eol + eol));
+    if (beforeSplit.rest) parts.push(beforeSplit.rest);
     parts.push(normalizedGsdBlock);
     if (afterTables) parts.push(afterTables);
     atomicWriteFileSync(configPath, parts.join(eol + eol) + eol);
