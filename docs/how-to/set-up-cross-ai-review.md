@@ -99,6 +99,17 @@ The `{padded_phase}-REVIEWS.md` file contains:
 - Individual reviews from each reviewer with severity-classified concerns
 - A **Consensus Summary** section that synthesises concerns raised by two or more reviewers — start here for the highest-priority signal
 - A **Divergent Views** section for areas where reviewers disagreed
+- `models:` and `model_sources:` frontmatter maps — the resolved model each reviewer actually ran under, and how that value was determined
+
+### Which model produced a review
+
+Compare two reviewers' verdicts only after checking what actually produced each one — `models:` in the frontmatter gives the model per reviewer, and `model_sources:` gives the mechanism that recovered it.
+
+If a reviewer's entry reads `unknown`, pin it: set `review.models.<slug>` for that lane (the key suffix is not always the lane's slug — Antigravity's is `review.models.agy`) so the next run records `pinned`. See [Code-review CLI routing](../CONFIGURATION.md#code-review-cli-routing) for the full key table.
+
+Some `unknown` values are expected, not a bug to chase: lanes that accept no model at all (`cursor`, `qwen`, `coderabbit`), and any lane whose CLI didn't disclose one on this run. `pinned` is a certain value; `banner` and `transcript` are recovered from third-party CLI output and can degrade to `unknown` after an upstream release changes that output.
+
+A `models:` entry like `gpt-5.6-sol (reasoning=high)` is not a formatting quirk: the `(reasoning=<level>)` suffix reflects a reasoning effort GSD itself applied to that lane, driven by your `effort.*` config — not the CLI's own default.
 
 ---
 

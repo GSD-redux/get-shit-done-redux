@@ -6,7 +6,7 @@
 
 - As contagens aqui são derivadas do sistema de arquivos no pino v1.36.0 e podem divergir entre versões. Para contagens ao vivo, execute `ls commands/gsd/*.md | wc -l`, `ls agents/gsd-*.md | wc -l`, etc. na cópia local do repositório.
 - Este arquivo enumera toda superfície entregue em todas as seis famílias (agentes, comandos, workflows, referências, módulos de CLI, hooks). Documentações amplas podem apresentar narrativas ou subconjuntos curados; quando discordarem do sistema de arquivos, este arquivo e as listagens de diretório são autoritativos.
-- Novas superfícies adicionadas após v1.36.0 devem aparecer aqui primeiro, depois propagar para as documentações amplas. Os testes de controle de drift em `tests/inventory-counts.test.cjs`, `tests/commands-doc-parity.test.cjs`, `tests/agents-doc-parity.test.cjs`, `tests/cli-modules-doc-parity.test.cjs`, `tests/hooks-doc-parity.test.cjs`, `tests/architecture-counts.test.cjs` e `tests/command-count-sync.test.cjs` ancoram as contagens e o conteúdo do registro ao sistema de arquivos.
+- Novas superfícies adicionadas após v1.36.0 devem aparecer aqui primeiro, depois propagar para as documentações amplas. O teste de controle de drift em `tests/inventory-manifest-sync.test.cjs` ancora o conteúdo do registro ao sistema de arquivos.
 
 Este é o registro autoritativo de toda superfície do GSD Core entregue. Veja o [índice de documentação](README.md) para navegar por tópico.
 

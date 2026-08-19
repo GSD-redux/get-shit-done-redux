@@ -1307,30 +1307,45 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return;
     }
 
-    // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
-    // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
-    // simply gets none.
-    // Resolved through the SAME `resolve-execution` surface the bash legs used
-    // (`--host <slug> --pick effort_argv_string`), so the host's negotiated effortSurface still
-    // decides whether an argument is emitted and the catalog still owns the syntax (ADR-1239 #2481,
-    // ADR-443's escalation ladder). `cmdResolveExecution` writes to stdout and exits, so it cannot
-    // be called in-process for a value — this spawns the same bounded query the legs did, once per
-    // selected lane. A lane whose slug is not a known host resolves to no effort argument at all.
+    // Effort argv is resolved per lane by the host's own execution policy, through the SAME
+    // `resolve-execution` surface the bash legs used (`--host <slug>`), so the host's negotiated
+    // effortSurface still decides whether an argument is emitted and the catalog still owns the
+    // syntax (ADR-1239 #2481, ADR-443's escalation ladder). `cmdResolveExecution` writes to
+    // stdout and exits, so it cannot be called in-process for a value — this spawns the same
+    // bounded query the legs did, once per selected lane. A lane whose slug is not a known host
+    // resolves to no effort argument at all.
+    //
+    // NOT `--raw` and NOT `--pick` (#2295). `--raw` prints only the resolved EFFORT ('low') with
+    // no host-specific rendering at all. `--pick effort_argv_string` used to be the answer — the
+    // rendered array re-joined into a string ('-c model_reasoning_effort=low') — but the caller
+    // then had to `.split(/\s+/)` that string back apart to get an argv array, and re-splitting a
+    // string the callee just joined is a lossy round trip: any argv element that legitimately
+    // contains a space would come back split into two argv elements, corrupting the very argv it
+    // was rendered to preserve. Reading the UNPICKED object instead gives both `effort_argv` (a
+    // real string array, used verbatim, no re-splitting) and `effort_argv_value` (the bare level,
+    // #2295's `plan.effort`) from the one spawn.
+    const EMPTY_EFFORT = { argv: [], value: null };
     const effortFor = (slug) => {
       try {
         const r = cp.spawnSync(
           process.execPath,
-          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker',
-            // NOT `--raw`: that prints the resolved EFFORT ('low'), ignoring --pick. The picked
-            // field is what carries the host-specific syntax ('--effort low' for claude,
-            // '-c model_reasoning_effort=low' for codex), which is the whole point of asking.
-            '--host', slug, '--pick', 'effort_argv_string'],
+          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker', '--host', slug],
           { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
         );
-        if (r.status !== 0) return [];
-        const s = String(r.stdout || '').trim();
-        return s ? s.split(/\s+/).filter(Boolean) : [];
-      } catch { return []; }
+        if (r.status !== 0) return EMPTY_EFFORT;
+        let parsed;
+        try {
+          parsed = JSON.parse(String(r.stdout || ''));
+        } catch { return EMPTY_EFFORT; }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return EMPTY_EFFORT;
+        const argv = Array.isArray(parsed.effort_argv)
+          ? parsed.effort_argv.filter((a) => typeof a === 'string' && a !== '')
+          : [];
+        const value = typeof parsed.effort_argv_value === 'string' && parsed.effort_argv_value
+          ? parsed.effort_argv_value
+          : null;
+        return { argv, value };
+      } catch { return EMPTY_EFFORT; }
     };
 
     /**
@@ -1363,7 +1378,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // so losing all of them to one bad manifest is strictly worse. Belt and braces on purpose.
       let r;
       try {
-        r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
+        const effort = effortFor(slug);
+        r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effort.argv, effortValue: effort.value });
       } catch (e) {
         return { slug, ok: false, reason: 'malformed_lane', detail: `resolver threw: ${e && e.message ? e.message : String(e)}` };
       }
@@ -1522,12 +1538,14 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           `model override (it declares no modelConfigKey). The review will use the CLI's own default.\n`,
         );
       }
+      const instanceEffort = effortFor(entry.slug);
       const overridden = resolveLanePlan({
         lane,
         configGet: (k) => (key && k === key ? instanceModel : configGet(k)),
         runDir,
         repoRoot,
-        effortArgs: effortFor(entry.slug),
+        effortArgs: instanceEffort.argv,
+        effortValue: instanceEffort.value,
       });
       if (overridden.ok) {
         // Preserve any instance retargeting already applied above.

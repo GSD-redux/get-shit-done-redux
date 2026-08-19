@@ -985,4 +985,337 @@ test('WIN-3: roots containing spaces are keyed unambiguously on disk (no collisi
   }
 });
 
+// ---------------------------------------------------------------------------
+// #3631: bundleContentHash excludes Python bytecode-cache noise from the DIGEST, so that
+// running a Python-backed capability's own test suite — which writes __pycache__ inside
+// the bundle — does not flip the recomputed hash and silently deactivate consent.
+//
+// The exclusion is deliberately NARROW, because this digest is a consent binding and every
+// excluded byte is a byte that can change post-consent without detection:
+//   - a DIRECTORY named __pycache__ / .pytest_cache has only its TAG_DIR marker suppressed;
+//     the walk STILL RECURSES and hashes every non-excluded child (so __pycache__/run.js
+//     stays bound). Skipping recursion would make it a permanently unhashed region that a
+//     declared hook script could point into.
+//   - a FILE ending .pyc/.pyo is excluded ONLY when its parent basename is exactly
+//     __pycache__. Elsewhere it stays bound: a legacy sourceless .pyc IS importable.
+//   - a regular FILE named __pycache__, and a DIRECTORY named x.pyc, are ordinary content
+//     and stay bound — marker suppression is directory-only, the suffix rule file-only.
+// Exclusion applies AFTER the lstat/symlink fail-closed rejection, and excluded entries
+// still count toward BUNDLE_MAX_FILES / BUNDLE_MAX_TOTAL_BYTES.
+//
+// Deliberately NOT excluded: node_modules, dist, build — their contents ARE executed, so
+// excluding them would break the consent binding for real executable surfaces.
+// ACCEPTED RESIDUAL RISK (see the ADR-2363 amendment): CPython's default timestamp
+// invalidation checks a cached pyc only against its source's mtime+size, both forgeable by
+// anyone who can already write to the bundle — so a forged __pycache__/mod.pyc matching an
+// unmodified mod.py executes without moving the digest. Accepted knowingly; NOT excused by
+// any claim that CPython validates bytecode against source content (it does not).
+// ---------------------------------------------------------------------------
+
+test('#3631: an EMPTY __pycache__/ directory does not change the bundle hash', (t) => {
+  // This is the TAG_DIR-marker trigger: collectBundleEntries pushes a {kind:'dir'} entry for EVERY
+  // directory (including empty ones) and bundleContentHash emits a TAG_DIR marker for it. A fix that
+  // only filters *.pyc file CONTENT and still emits the DIR marker for an empty __pycache__/ leaves
+  // this red — the exclusion must be by basename, applied to the dir entry itself, not just its files.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '__pycache__'), { recursive: true }); // EMPTY — no .pyc inside yet
+  const after = consent.bundleContentHash(dir);
+  assert.strictEqual(after, before, 'an empty __pycache__ directory must not change the hash');
+});
+
+test('#3631: hooks/__pycache__/check.cpython-313.pyc does not change the hash', (t) => {
+  const dir = makeBundle({ manifest: { id: 'cap', role: 'feature', version: '1.0.0', hooks: [{ event: 'PostToolUse', script: 'hooks/check.js' }] }, script: 'console.log(1)' });
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, 'hooks', '__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'hooks', '__pycache__', 'check.cpython-313.pyc'), Buffer.from([5, 6, 7]));
+  const after = consent.bundleContentHash(dir);
+  assert.strictEqual(after, before, '__pycache__ nested under hooks/ must not change the hash');
+});
+
+test('#3631: __pycache__ under an existing tests/ dir does not change the hash (isolated from the tests/-dir-creation variable)', (t) => {
+  // Creating the NEW tests/ dir itself legitimately changes the hash (it is not excluded), so tests/ is
+  // pre-created WITH a real file BEFORE the baseline snapshot — only the __pycache__ add is under test.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tests', 'test_x.py'), 'def test_x():\n    assert True\n', 'utf8');
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, 'tests', '__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tests', '__pycache__', 'test_x.pyc'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.strictEqual(after, before, '__pycache__ under an already-present tests/ dir must not change the hash');
+});
+
+test('#3631 (post-hardening): .pytest_cache/CACHEDIR.TAG DOES change the hash — only the dir MARKER is suppressed', (t) => {
+  // Hardened semantics: exclusion suppresses the TAG_DIR marker for a __pycache__/.pytest_cache
+  // directory, but the walk still RECURSES into it and hashes every non-excluded child. Suppressing
+  // the whole subtree would create an unhashed region a declared surface could point into (the HIGH
+  // finding closed below) — this is a deliberate, documented limitation, not a gap.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '.pytest_cache'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.pytest_cache', 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, '.pytest_cache/CACHEDIR.TAG content is still bound to the hash even though the dir marker is suppressed');
+});
+
+test('#3631 (post-hardening): .DS_Store at the bundle root DOES change the hash — deliberately NOT excluded', (t) => {
+  // .DS_Store is deliberately NOT on the exclusion list. Excluding a filename means a permanently
+  // unhashed name that a declared hook `script` could point into (e.g. `hooks/.DS_Store`, which the
+  // validator's __pycache__/.pytest_cache/.pyc/.pyo rejection does not cover), and it is unrelated to
+  // #3631's reported symptom (Python bytecode caching from a test run). Stays bound like any other file.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, '.DS_Store'), Buffer.from([0, 0, 0, 1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, '.DS_Store must still change the hash — it is not excluded');
+});
+
+test('#3631 (post-hardening): a REGULAR FILE literally named __pycache__ at the bundle root DOES change the hash', (t) => {
+  // Marker suppression applies to DIRECTORIES only. A file wearing the __pycache__ name is ordinary
+  // content — the walk must still bind it, and must not choke on the kind mismatch.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, '__pycache__'), 'not actually a directory', 'utf8');
+  let after;
+  assert.doesNotThrow(() => { after = consent.bundleContentHash(dir); }, 'a file named __pycache__ must not throw');
+  assert.notStrictEqual(after, before, 'a regular FILE named __pycache__ is ordinary content and must change the hash');
+});
+
+test('#3631 (post-hardening): stray.pyc at the bundle ROOT (not under any __pycache__) DOES change the hash', (t) => {
+  // A legacy sourceless .pyc outside __pycache__ IS importable by CPython, so it must stay bound to
+  // the digest. Only __pycache__-resident bytecode (whose parent dir basename is exactly
+  // __pycache__) is excluded by suffix; a stray .pyc elsewhere is hashed like any other file.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, 'stray.pyc'), Buffer.from([9, 9, 9]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a root-level .pyc file (not under __pycache__) must still change the hash — it is legacy-importable content');
+});
+
+test('#3631: a bundle whose ONLY added content is __pycache__/mod.pyc hashes IDENTICALLY to before that dir existed, and does not throw', (t) => {
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '__pycache__', 'mod.pyc'), Buffer.from([1, 2, 3, 4]));
+  let after;
+  assert.doesNotThrow(() => { after = consent.bundleContentHash(dir); }, 'adding only __pycache__/mod.pyc must not throw');
+  assert.strictEqual(after, before, 'adding only __pycache__/mod.pyc must be a full no-op on the digest');
+});
+
+test('#3631 (GREEN — must stay green: anti-regression control): modifying a REAL source file still changes the hash', (t) => {
+  // Proves the fix NARROWS the hash rather than gutting it — an actual code-content edit must still be
+  // observable to the binding once the __pycache__/.pyc noise is excluded.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'm.py'), 'print("v1")\n', 'utf8');
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, 'scripts', 'm.py'), 'print("v2")\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a real source-file content edit must still change the hash');
+});
+
+test('#3631 (GREEN — must stay green): adding node_modules/pkg/index.js changes the hash (node_modules is deliberately NOT excluded)', (t) => {
+  // node_modules holds code that is actually executed/required at runtime — excluding it would break the
+  // consent binding for real executable content. Only __pycache__/.pytest_cache/*.pyc/*.pyo (the latter
+  // two only when nested directly under __pycache__) are excluded; node_modules, dist, and build are NOT
+  // on that list and must keep binding the hash.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1;\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'node_modules content must still bind the hash');
+});
+
+test('#3631 (GREEN — must stay green, boundary): excluded .pyc entries still count toward BUNDLE_MAX_FILES (limit-1 / limit / limit+1)', (t) => {
+  // The digest excludes __pycache__/*.pyc CONTENT, but the walk's entry-count cap must still see every
+  // entry (excluded or not) BEFORE exclusion is applied — the caps guard the walk itself (DoS/memory
+  // bound), the digest answers a separate question. Padding must be GENUINELY excluded to prove that
+  // property: a ROOT-level f{i}.pyc is NOT excluded (its parent is not __pycache__ — see the sibling
+  // "stray.pyc at the bundle ROOT" test above), so it would prove nothing about excluded entries. The
+  // padding here lives under __pycache__/f{i}.pyc, which the digest never binds, while the count cap
+  // still sees it. The real cap is BUNDLE_MAX_FILES (default BUNDLE_MAX_FILES_DEFAULT = 100_000 in
+  // src/capability-consent.cts:117) — too large to materialize cheaply in a test, so this drives the
+  // exported `_setBundleMaxFilesForTest` seam (the same seam the existing "finding 2" cap tests above
+  // use) down to a small CAP and proves the exact boundary.
+  //
+  // Entry arithmetic (confirmed by executing the built lib, not by reasoning): a bundle built from
+  // capability.json + an empty __pycache__/ dir + N excluded .pyc files inside it has
+  // 1 [capability.json] + 1 [the __pycache__ DIRECTORY dirent itself — its marker is suppressed but the
+  // walk still counts the dirent and still recurses] + N [f{i}.pyc files] = N + 2 total entries.
+  const CAP = 5;
+  const restore = consent._setBundleMaxFilesForTest(CAP);
+  t.after(restore);
+
+  const build = (pycCount) => {
+    const bdir = makeBundle({});
+    fs.mkdirSync(path.join(bdir, '__pycache__'), { recursive: true });
+    for (let i = 0; i < pycCount; i++) {
+      fs.writeFileSync(path.join(bdir, '__pycache__', `f${i}.pyc`), Buffer.from([i]));
+    }
+    return bdir;
+  };
+
+  const dirBelow = build(CAP - 3); // total entries = 1 + 1 + (CAP-3) = CAP-1
+  t.after(() => cleanup(dirBelow));
+  assert.doesNotThrow(() => consent.bundleContentHash(dirBelow), 'limit-1 total entries (capability.json + __pycache__ dir + genuinely-excluded .pyc padding) must not throw');
+
+  const dirAt = build(CAP - 2); // total entries = 1 + 1 + (CAP-2) = CAP
+  t.after(() => cleanup(dirAt));
+  assert.doesNotThrow(() => consent.bundleContentHash(dirAt), 'exactly-limit total entries (capability.json + __pycache__ dir + genuinely-excluded .pyc padding) must not throw');
+
+  const dirOver = build(CAP - 1); // total entries = 1 + 1 + (CAP-1) = CAP+1
+  t.after(() => cleanup(dirOver));
+  assert.throws(
+    () => consent.bundleContentHash(dirOver),
+    /exceeds|refusing/i,
+    'limit+1 total entries must still throw even though every .pyc padding entry is excluded from the digest — caps guard the WALK, not the digest',
+  );
+});
+
+test('#3631 (GREEN — must stay green, boundary): an EXCLUDED __pycache__/*.pyc file still trips BUNDLE_MAX_TOTAL_BYTES', (t) => {
+  // Exclusion answers "does this bind the digest?", never "is this safe to read unbounded?" — an
+  // excluded file's bytes must still count toward BUNDLE_MAX_TOTAL_BYTES (src/capability-consent.cts:105,
+  // 16 MiB), or exclusion becomes an unbounded-bytes DoS hole. Uses a SPARSE file (fs.truncateSync) well
+  // beyond any plausible cap so the assertion never hardcodes the exact byte constant — it costs no real
+  // disk or CPU time (no 32 MiB buffer is ever written).
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, '__pycache__'), { recursive: true });
+  const bigPath = path.join(dir, '__pycache__', 'big.pyc');
+  fs.writeFileSync(bigPath, Buffer.alloc(0));
+  fs.truncateSync(bigPath, 32 * 1024 * 1024); // sparse — well past the 16 MiB cap, no real bytes written
+  assert.throws(
+    () => consent.bundleContentHash(dir),
+    /bundle size exceeds \d+ bytes \(refusing\)/,
+    'an EXCLUDED __pycache__/*.pyc file must still trip BUNDLE_MAX_TOTAL_BYTES even though its content never reaches the digest',
+  );
+});
+
+test('#3631 (security pin — parent-threading precision): __pycache__/sub/x.pyc stays HASHED — its parent is "sub", not "__pycache__"', (t) => {
+  // The single most valuable missing pin (isolated review finding): the .pyc/.pyo suffix exclusion is
+  // gated on the IMMEDIATE parent directory basename, threaded down one level at a time through the
+  // recursive walk. A .pyc two levels under __pycache__ must NOT be excluded — only a .pyc whose direct
+  // parent is __pycache__ itself is.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '__pycache__', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '__pycache__', 'sub', 'x.pyc'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, '__pycache__/sub/x.pyc must still change the hash — its parent basename is "sub", not "__pycache__"');
+});
+
+test('#3631 (security pin): .pytest_cache/y.pyc stays HASHED — the .pyc suffix rule never gates on .pytest_cache', (t) => {
+  // The PYCACHE_PARENT_BASENAME gate for the .pyc/.pyo suffix rule is exactly "__pycache__", never
+  // ".pytest_cache" — a .pyc sitting directly inside a .pytest_cache dir is ordinary content.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, '.pytest_cache'), { recursive: true });
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, '.pytest_cache', 'y.pyc'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, '.pytest_cache/y.pyc must still change the hash — the .pyc suffix rule only ever gates on a __pycache__ parent');
+});
+
+test('#3631 (security pin — closes the untested .pyo mutant): __pycache__/m.pyo is excluded exactly like a .pyc sibling', (t) => {
+  // .pyo is on PYCACHE_FILE_SUFFIXES alongside .pyc but was never independently exercised anywhere in
+  // the suite — a surviving mutant could delete the ".pyo" entry with nothing failing. Pins both halves:
+  // excluded under __pycache__/, and still bound everywhere else.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, '__pycache__'), { recursive: true });
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, '__pycache__', 'm.pyo'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.strictEqual(after, before, '__pycache__/m.pyo must be excluded from the digest exactly like __pycache__/m.pyc');
+});
+
+test('#3631 (security pin — closes the untested .pyo mutant): a root-level m.pyo DOES change the hash', (t) => {
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, 'm.pyo'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a root-level m.pyo (not under __pycache__) must still change the hash — it is legacy-importable content, same as a stray .pyc');
+});
+
+test('#3631 (GREEN — already passes today, pins ordering post-fix): a SYMLINK named x.pyc still makes bundleContentHash THROW (fail-closed)', { skip: process.platform === 'win32' }, (t) => {
+  // Pins that the exclusion match must be applied AFTER the existing lstat/symlink rejection, never
+  // before — a symlinked *.pyc is exactly the shape a naive "skip by suffix before lstat" fix would
+  // silently pass through instead of rejecting.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.symlinkSync('/etc/passwd', path.join(dir, 'x.pyc'));
+  assert.throws(() => consent.bundleContentHash(dir), /symlink/i, 'a symlinked *.pyc must still be rejected fail-closed');
+});
+
+// ---------------------------------------------------------------------------
+// #3631 hardening — security regression pins. Two independent reviews found holes in the original
+// exclusion: (HIGH) suppressing recursion into an excluded dir left it a permanently-unhashed region a
+// declared surface could point into, and (the sourceless-legacy-.pyc vector) a bare .pyc anywhere was
+// excluded by suffix alone even though CPython can import a sourceless .pyc outside __pycache__. Both
+// holes are now closed: marker suppression is directory-only and never stops recursion, and the .pyc/
+// .pyo suffix exclusion applies ONLY when the parent directory basename is exactly __pycache__.
+// ---------------------------------------------------------------------------
+
+test('#3631 (security pin — closes HIGH: excluded-dir recursion skip): __pycache__/run.js DOES change the hash', (t) => {
+  // Pins the HIGH finding: skipping recursion into __pycache__ made it a permanently-unhashed region
+  // that a declared hook script could point into. A non-.pyc file inside __pycache__ must still bind.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '__pycache__', 'run.js'), 'module.exports = 1;\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a non-.pyc file inside __pycache__ must still change the hash');
+});
+
+test('#3631 (security pin — closes sourceless-legacy-.pyc vector): scripts/x.pyc DOES change the hash', (t) => {
+  // A .pyc whose parent is NOT __pycache__ is a legacy sourceless bytecode file CPython can still
+  // import directly — it must stay bound to the digest, regardless of how deep it is nested.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  const before = consent.bundleContentHash(dir);
+  fs.writeFileSync(path.join(dir, 'scripts', 'x.pyc'), Buffer.from([1, 2, 3]));
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'scripts/x.pyc (parent is not __pycache__) must still change the hash');
+});
+
+test('#3631 (security pin — suffix rule is file-only): a DIRECTORY named cache.pyc/ containing inner.js DOES change the hash', (t) => {
+  // Pins that the .pyc/.pyo suffix rule never applies to directories — a directory literally named
+  // cache.pyc gets no marker suppression and no exclusion; its contents bind normally.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, 'cache.pyc'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'cache.pyc', 'inner.js'), 'module.exports = 1;\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a directory named cache.pyc must be hashed normally (marker + recursion), not excluded');
+});
+
+test('#3631 (security pin — recursion is unbounded depth): __pycache__/sub/deep.js DOES change the hash', (t) => {
+  // Proves recursion into an excluded dir goes all the way down, not just one level — a nested
+  // non-.pyc file several directories under __pycache__ must still bind.
+  const dir = makeBundle({});
+  t.after(() => cleanup(dir));
+  const before = consent.bundleContentHash(dir);
+  fs.mkdirSync(path.join(dir, '__pycache__', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '__pycache__', 'sub', 'deep.js'), 'module.exports = 1;\n', 'utf8');
+  const after = consent.bundleContentHash(dir);
+  assert.notStrictEqual(after, before, 'a nested non-.pyc file under __pycache__ must still change the hash, at any depth');
+});
+
 void crypto; // reserved import; keep explicit.

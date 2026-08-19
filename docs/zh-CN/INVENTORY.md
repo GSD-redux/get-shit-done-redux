@@ -6,7 +6,7 @@
 
 - 本文件中的数量基于 v1.36.0 快照，版本之间可能存在偏差。如需实时数量，请在检出目录中运行 `ls commands/gsd/*.md | wc -l`、`ls agents/gsd-*.md | wc -l` 等命令。
 - 本文件列举了所有六大类别（代理、命令、工作流、参考资料、CLI 模块、钩子）中的每个已发布功能面。广义文档可能呈现叙述性内容或精选子集；当其与文件系统不一致时，本文件及目录清单为准。
-- v1.36.0 之后新增的功能面应首先在此处记录，再传播到广义文档中。`tests/inventory-counts.test.cjs`、`tests/commands-doc-parity.test.cjs`、`tests/agents-doc-parity.test.cjs`、`tests/cli-modules-doc-parity.test.cjs`、`tests/hooks-doc-parity.test.cjs`、`tests/architecture-counts.test.cjs` 和 `tests/command-count-sync.test.cjs` 中的漂移控制测试将数量和清单内容锚定到文件系统。
+- v1.36.0 之后新增的功能面应首先在此处记录，再传播到广义文档中。`tests/inventory-manifest-sync.test.cjs` 中的漂移控制测试将清单内容锚定到文件系统。
 
 这是所有已发布 GSD Core 功能面的权威目录。请参阅 [文档索引](README.md) 按主题导航。
 

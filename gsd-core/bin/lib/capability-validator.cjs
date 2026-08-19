@@ -210,10 +210,35 @@ const SHA512_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
 // hard validation error — fail closed so the capability install/load is rejected loudly.
 const SAFE_HOOK_SCRIPT_RE = /^[A-Za-z0-9._/-]+$/;
 
+// #3631 (defense-in-depth, mirrors capability-lifecycle.cts — KEEP BOTH IN SYNC): a declared script
+// path must not point into the space bundleContentHash (capability-consent.cts) excludes from the
+// consent-binding digest. A file whose basename ends `.pyc`/`.pyo` can contain perfectly valid
+// JavaScript and would be executed by `node` regardless of extension, and a `__pycache__`/
+// `.pytest_cache` segment marks a directory whose digest marker is suppressed — so a MANIFEST-DECLARED
+// executable surface must never be able to reach either, or the exclusion becomes reachable from a
+// path an attacker fully controls at declare-time rather than only via post-consent tamper.
+// Regex asymmetry is DELIBERATE, KEEP BOTH RULES IN SYNC WITH capability-lifecycle.cts (byte-identical
+// text, verified by the isSafeHookScriptPath parity test in tests/capability-registry.test.cjs):
+//   (i)   PYCACHE_SUFFIX_RE is case-INSENSITIVE (`/i`) on purpose — a validator should be STRICTER than
+//         the digest it defends, so it rejects `x.PYC` too even though bundleContentHash's own suffix
+//         match (hasPycacheFileSuffix, capability-consent.cts) is byte-exact and would still hash it.
+//   (ii)  The __pycache__/.pytest_cache SEGMENT match is case-SENSITIVE to match the digest's own
+//         byte-exact, case-sensitive directory-basename comparison (CPython always writes a lowercase
+//         `__pycache__`) — a validator segment match looser than the digest here would reject paths the
+//         digest would still hash, which is over-strict in the wrong direction for a defense-in-depth
+//         check layered on top of an already-correct digest.
+//   (iii) The `[/\\]` backslash alternations in both regexes are defensive/UNREACHABLE in practice:
+//         SAFE_HOOK_SCRIPT_RE (above) already rejects any backslash character outright, so a script
+//         string containing `\` never reaches either PYCACHE_*_RE check.
+const PYCACHE_SEGMENT_RE = /(?:^|[/\\])(__pycache__|\.pytest_cache)(?:[/\\]|$)/;
+const PYCACHE_SUFFIX_RE = /\.(pyc|pyo)$/i;
+
 /**
  * #1460 (R): true when a relative hook-script path is shell-safe (see SAFE_HOOK_SCRIPT_RE).
  * Rejects absolute paths, `..` segments, a leading `-` on any path segment, and any char
- * outside the allowlist (whitespace / shell metacharacters / control / NUL).
+ * outside the allowlist (whitespace / shell metacharacters / control / NUL). #3631: also rejects a
+ * path with a `__pycache__`/`.pytest_cache` segment or a `.pyc`/`.pyo` basename suffix (defense in
+ * depth — keeps a declared executable surface out of the digest-excluded space).
  */
 function isSafeHookScriptPath(script) {
   if (typeof script !== 'string' || script.length === 0) return false;
@@ -225,6 +250,8 @@ function isSafeHookScriptPath(script) {
   for (const seg of segments) {
     if (seg.startsWith('-')) return false;
   }
+  if (PYCACHE_SEGMENT_RE.test(script)) return false;
+  if (PYCACHE_SUFFIX_RE.test(path.basename(script))) return false;
   return true;
 }
 

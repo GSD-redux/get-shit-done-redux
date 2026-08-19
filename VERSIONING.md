@@ -80,12 +80,12 @@ Hotfixes are dispatched via the **Release workflow (`release.yml`)** with a patc
    - Branches `hotfix/1.27.1` from `BASE_TAG`.
    - Auto-cherry-picks every `fix:`/`chore:` commit on `origin/main` not already in the base, oldest-first. Patch-equivalents are skipped via `git cherry`. `feat:`/`refactor:` are **never** auto-included.
    - On conflict the workflow halts with the offending SHA. Resolve manually on the branch, then re-run finalize with `auto_cherry_pick=false`.
-   - Bumps `package.json` (and `sdk/package.json`), pushes the branch, and lists every included SHA in the run summary.
+   - Bumps `package.json`, pushes the branch, and lists every included SHA in the run summary.
 2. (Optional) push additional manual commits to `hotfix/1.27.1`.
 3. Trigger `release.yml` with `action=finalize`. The workflow:
    - Runs `install-smoke` cross-platform gate.
    - Runs full test suite + coverage.
-   - Builds SDK, bundles `sdk-bundle/gsd-sdk.tgz` inside the CC tarball.
+   - Promotes CHANGELOG from merged fragments.
    - Tags `v1.27.1`, publishes to `@latest`, re-points `@next → v1.27.1`.
    - Opens merge-back PR against `main`.
 
@@ -142,7 +142,7 @@ they are included in the release commit alongside `package.json`.
 To add a new manifest that must track the package version, register its path
 (and, if its version field is not top-level, its dotted `versionKey`) in the
 `VERSIONED_MANIFESTS` array in `scripts/sync-manifest-versions.cjs`. A
-regression test (`tests/issue-844-manifest-version-sync.test.cjs`) enforces this:
+regression test (`tests/manifest-version-sync.test.cjs`) enforces this:
 it scans all committed JSON files for a matching `version` field and fails if any
 are missing from the registry.
 

@@ -49,20 +49,14 @@ This is not a skills root. Discovery code only checks whether it exists so inven
 
 ## Scanner Behavior
 
-### `sdk/src/query/skills.ts`
-
-- Returns a de-duplicated list of discovered skill names.
-- Scans project roots plus managed global roots.
-- Does not scan the deprecated import-only root.
-
-### `gsd-core/bin/lib/profile-output.cjs`
+### `src/profile-output.cts`
 
 - Builds the project `CLAUDE.md` skills section.
 - Scans project roots only.
 - Skips `gsd-*` directories so the project section stays focused on user/project skills.
 - Adds `.codex/skills/` to the project discovery set.
 
-### `gsd-core/bin/lib/init.cjs`
+### `src/init.cts`
 
 - Generates the skill inventory object for `skill-manifest`.
 - Reports `skills`, `roots`, `installation`, and `counts`.
