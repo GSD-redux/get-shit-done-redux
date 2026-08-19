@@ -186,8 +186,9 @@ Per-spawn prompt fields:
 - `OUTPUT_DIR` — `{intel_dir}/classifications` (absolute — from `init ingest-docs`; #2376: a spawned classifier's own cwd may differ from the orchestrator's)
 - `MANIFEST_TYPE` — the type from the manifest if present, else omit
 - `MANIFEST_PRECEDENCE` — the precedence integer from the manifest if present, else omit
-- `model="{CLASSIFIER_MODEL}"` — passed as the `model` parameter on each classifier spawn, so `dynamic_routing`/`model_profile` tiers apply instead of the caller's session model (#3602); omit the parameter per the rule above when the value is `"inherit"` or empty
 - `<required_reading>` — `agents/gsd-doc-classifier.md` (the agent definition itself)
+
+**Model on every classifier spawn (#3602):** `model="{CLASSIFIER_MODEL}"` is a parameter of each Task/Agent call — not a prompt field, never folded into the prompt text — so `dynamic_routing`/`model_profile` tiers apply instead of the caller's session model. Omit the parameter per the rule above when the value is `"inherit"` or empty.
 
 Collect the one-line confirmations from each classifier. If any classifier errors out, surface the error and abort without touching `.planning/` further.
 

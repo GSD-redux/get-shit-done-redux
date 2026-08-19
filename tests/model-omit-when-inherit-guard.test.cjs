@@ -436,7 +436,22 @@ test('#2684: an unknown agent type resolves to an empty model, so dispatch must 
 // file's spawns as a group; that is the same altitude the issue's own audit
 // operated at, and it is what lets this guard adopt without touching the
 // ~20 compliant init-route workflows.
+//
+// Documented residuals (isolated adversarial review, #3602 PR):
+// - Group coverage means a file binding ONE agent's model could later gain a
+//   SECOND, unbound spawn and still pass. Direct per-agent resolution (route a)
+//   is what this PR shipped for every file it touched; a per-site guard would
+//   need delimited Agent-block parsing the corpus's prose spawns don't have.
+// - The prose collector misses "Delegate to `gsd-x`", "Invoke the gsd-x agent",
+//   and mid-sentence "then spawn `gsd-x`" shapes; every live instance of those
+//   today is also collected via a dispatch shape in the same combined body.
+// - readWorkflowCombined inlines only <wf>/steps/ fragments, so dispatches in
+//   e.g. discuss-phase/modes/*.md are invisible here (all currently compliant).
 // ---------------------------------------------------------------------------
+
+/** Init-surface resolver for synthetic bodies: no surfaces, so binding must come
+ * from the text sources (shell assignment / parse line) alone. */
+const noInit = () => null;
 
 /** gsd-* agent types this workflow spawns, by any spawn shape the corpus uses.
  *
@@ -487,11 +502,11 @@ function uncoveredSpawnedAgents(content, resolveInit = initPayloadKeys) {
   // key) carries model resolution even when its dispatch sites live in an inline child
   // workflow — plan-review-convergence.md parses planner_model/checker_model and runs
   // plan-phase inline; plan-phase.md owns the model= sites.
-  const hasModelBinding =
+  const fileCarriesModelResolution =
     modelRefNames(content).some((n) => bound.has(n)) || [...bound].some((n) => /_model$/i.test(n));
   return agents.filter((a) => {
     const direct = new RegExp(`resolve-model\\s+["'\`]?${escapeRegex(a)}["'\`]?`).test(content);
-    return !(direct || hasModelBinding);
+    return !(direct || fileCarriesModelResolution);
   });
 }
 
@@ -531,7 +546,6 @@ test('#3602: every workflow that spawns a gsd-* subagent resolves a model for it
 });
 
 test('#3602: prose mentions that are not spawns are not flagged', () => {
-  const noInit = () => null;
   const body = [
     '## Anti-Patterns',
     '',
@@ -555,7 +569,6 @@ test('#3602: prose mentions that are not spawns are not flagged', () => {
 });
 
 test('#3602: a literal model= value is not a binding', () => {
-  const noInit = () => null;
   const literal = [
     'Agent(',
     '  prompt="fix it",',
@@ -610,7 +623,6 @@ test('#3602: spawn-site extraction round-trips (property)', () => {
 });
 
 test('#3602: spawn coverage detection is CRLF-safe', () => {
-  const noInit = () => null;
 
   const unbound = [
     'For each doc, spawn `gsd-doc-classifier` in parallel.',

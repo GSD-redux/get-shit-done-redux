@@ -9,6 +9,9 @@
     },
     "profile-user.md": {
       "reason": "#3602: same class via a Task-tool prose spawn the issue's Agent()-shaped audit could not see. Gains a PROFILER_MODEL resolve-model binding, the #2517 marker + rule block, and a model=\"{PROFILER_MODEL}\" pass/omit instruction on the Task-tool spawn. Deliberate growth, not converter drift."
+    },
+    "docs-update.md": {
+      "reason": "#3602 (isolated adversarial review finding): the --verify-only step's gsd-doc-verifier spawn had no model resolution — doc_writer_model covers only the writer spawns, and docs-init emits no verifier field. Gains a DOC_VERIFIER_MODEL resolve-model assignment in the init block, a model=\"{DOC_VERIFIER_MODEL}\" pass/omit instruction at the verifier spawn, and the #2517 blockquote's variable list extended. Deliberate growth, not converter drift."
     }
   }
 }
