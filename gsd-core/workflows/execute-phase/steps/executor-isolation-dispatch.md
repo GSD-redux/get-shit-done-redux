@@ -130,37 +130,144 @@ Run the loop below once per runnable plan in the wave, **one plan at a time** (`
 
 **Before running the bash block, substitute the plan's identifiers into it** exactly as you do for the `Agent()` prompt on the harness path: replace `{plan_number}` and `{phase_number}` with this plan's values. They are template placeholders, not shell variables. `$ORCH_ROOT` and `$EXPECTED_BASE` are real shell variables, already assigned earlier in this step; `$WAVE_WORKTREE_MANIFEST` was initialized above.
 
-First build the executor prompt. It is the **same prompt text the harness path's `Agent()` call uses**, with the harness-only framing removed — drop the `<worktree_branch_check>` build-time embed note and the `<parallel_execution>` harness block, keep `<objective>`, the execution context, and `<success_criteria>` verbatim. The checkpoint gate rule (#3370, in `per-plan-executor-routing.md`) applies here too: add no prompt text refusing or overriding auto-approval for the default `gate="blocking"` — only `blocking-human` always surfaces. Assign it to a shell variable so it can be passed as one argument:
+First compose the executor prompt — **to a file, not a shell literal**. A process spawn has no `subagent_type`, so nothing on this transport loads the `gsd-executor` role for the child (#3637): everything the harness dispatch delivers through the agent definition and its `<execution_context>` embed must instead ride in this prompt, or the spawned process starts as a generic model that reconstructs its role by inference. Two transport constraints shape the composition: the prompt travels as a single argv argument (Windows caps a command line at ~32 KiB, so the multi-hundred-KiB build-time embeds the harness path inlines cannot ride along), and a shell-literal assignment cannot carry arbitrary file content. So: the small, contract-critical text goes INLINE; the large execution-context files are listed as MANDATORY first reads with resolvable paths — a process-spawned executor, unlike an `Agent()` prompt (#3324), can and must Read files.
 
-```bash
-# Compose the executor prompt for THIS plan. Single-quoted multi-line
-# assignment (NOT a heredoc): these blocks are indented inside the workflow,
-# and a heredoc terminator must sit at column 0 — `<<-` strips only tabs, not
-# the leading spaces, so a heredoc here would never terminate. Single quotes
-# also stop the shell expanding anything in the prompt body.
-EXECUTOR_PROMPT='<objective>
+First ensure the destination directory exists (do not rely on any runtime's Write tool creating intermediate directories): run `mkdir -p "${ORCH_ROOT}/.claude/worktrees"`. Then write the composed prompt with your Write tool to exactly this path (the file is the inspectable provenance of what this dispatch injected, and it survives worktree cleanup):
+
+`${ORCH_ROOT}/.claude/worktrees/executor-prompt-p{plan_number}.md`
+
+Compose it from the template below, substituting every `{placeholder}` — leave NO unexpanded template text behind; the spawn block validates this and halts. Two substitutions need care:
+
+- `{EXECUTOR_ROLE_FILE}` — the absolute path of the INSTALLED `gsd-executor` agent definition on this runtime (the same file `query agent-skills` reads for its persona fallback). This, not an inline embed, is how the role's full substance (deviation rules, destructive-git prohibitions, the final-commit SDK contract) reaches the child: the prompt must stay a single small argv argument (Windows caps a command line at ~32 KiB), and the installed agent alone is ~49 KiB. The spawn block verifies the path is readable before anything launches.
+- `{AGENT_SKILLS_BLOCK}` — ONLY the configured custom-skills block (when `.planning/config.json` configures `agent_skills` for `gsd-executor`). When it is not configured, substitute the EMPTY string — on AGENTS-native runtimes the unconfigured `query agent-skills` falls back to injecting the full installed persona (#2454), which would blow the argv cap this design exists to respect; the persona already rides `{EXECUTOR_ROLE_FILE}` above. The spawn block enforces this with a hard byte cap.
+
+```text
+<provenance>plan {plan_number} of phase {phase_number} at {ORCH_ROOT}</provenance>
+
+<role>
+You are the gsd-executor agent, dispatched by the GSD execute-phase orchestrator
+into a git worktree it created for you. No agent file is loaded on this
+transport, so this prompt plus the files below ARE your role. Before ANY other
+work, read every file in <required_reading> with your file-reading tool — the
+gsd-executor definition and execute-plan.md are your execution contract
+(deviation rules, commit protocol, checkpoint gates, destructive-git
+prohibitions, the final-commit SDK contract). If any listed file cannot be
+read, STOP and report the failure — do not improvise the contract.
+</role>
+
+<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
+Plan file: {ORCH_ROOT}/{phase_dir}/{plan_file}
 Commit each task atomically. Create SUMMARY.md.
 Do NOT update STATE.md or ROADMAP.md — the orchestrator owns those writes after all worktree agents in the wave complete.
 </objective>
 
+<required_reading>
+Read these BEFORE starting, in this order. Paths under {GSD_ROOT} are the
+installed GSD tree (outside your worktree — readable; your sandbox restricts
+writes, not reads). Paths under {ORCH_ROOT} are the orchestrator's checkout.
+- {EXECUTOR_ROLE_FILE}                            (your role definition)
+- {GSD_ROOT}/workflows/execute-plan.md            (your execution contract)
+- {GSD_ROOT}/templates/summary.md                 (SUMMARY.md structure)
+- {GSD_ROOT}/references/checkpoints.md            (checkpoint + tracer gate rules)
+- {GSD_ROOT}/references/tdd.md                    (TDD execution)
+- {GSD_ROOT}/references/worktree-path-safety.md   (cwd-drift and path guards)
+- {ORCH_ROOT}/{phase_dir}/{plan_file}             (your plan)
+- {ORCH_ROOT}/.planning/PROJECT.md                (project context)
+- {ORCH_ROOT}/.planning/STATE.md                  (state)
+- {ORCH_ROOT}/.planning/config.json               (config, if it exists)
+- {ORCH_ROOT}/CLAUDE.md or AGENTS.md              (project instructions, if either exists)
+</required_reading>
+
 <execution_context>
-You are running as an executor in a git worktree GSD created for you. Your
-working directory IS that worktree. Do not cd elsewhere, and do not run any
-git command that targets the main checkout. Use normal git commits WITH hooks.
-Do NOT use --no-verify.
+Your working directory IS the worktree GSD created. Do not cd elsewhere, and do
+not run any git command that targets the main checkout. Use normal git commits
+WITH hooks; do NOT pass --no-verify. execute-plan.md auto-detects worktree mode
+(`.git` is a file) and skips shared-file updates automatically.
 REQUIRED ORDER: Write SUMMARY.md, commit, then any narration.
 </execution_context>
+
+{AGENT_SKILLS_BLOCK}
 
 <success_criteria>
 - [ ] All tasks executed
 - [ ] Each task committed individually
-- [ ] SUMMARY.md created AND committed in the plan directory
-</success_criteria>'
-[ -n "$EXECUTOR_PROMPT" ] || { echo "FATAL: executor prompt is empty for plan {plan_number}." >&2; exit 1; }
+- [ ] SUMMARY.md created in the plan directory, and committed via execute-plan.md's
+      git_commit_metadata step. When that SDK step reports
+      `skipped_gitignored` or `skipped_commit_docs_false`, the skip IS success —
+      record it and move on. NEVER force-stage planning artifacts
+      (`git add -f .planning/...` is forbidden, #3678); an uncommitted SUMMARY.md
+      is rescued by the orchestrator at merge (#2070), not by you.
+</success_criteria>
 ```
 
-The prompt body must contain no single-quote character, since the assignment above is single-quoted; keep apostrophes out of it when editing.
+Substitute `{GSD_ROOT}` with the installed gsd-core root this workflow itself was loaded from (the directory containing `workflows/execute-phase.md`), as an absolute path. The checkpoint gate rule (#3370, in `per-plan-executor-routing.md`) applies here too: add no prompt text refusing or overriding auto-approval for the default `gate="blocking"` — only `blocking-human` always surfaces.
+
+Then load and validate the prompt file — **fail closed on any gap** rather than spawning a reduced-context executor (#3637):
+
+```bash
+PROMPT_FILE="${ORCH_ROOT}/.claude/worktrees/executor-prompt-p{plan_number}.md"
+[ -s "$PROMPT_FILE" ] || { echo "FATAL: executor prompt file missing or empty for plan {plan_number}: $PROMPT_FILE" >&2; exit 1; }
+
+# 1. Identity: the provenance stamp must name THIS plan, phase, and root — a
+#    surviving file from another phase or run passes every structural check
+#    below, so identity is checked first and exactly.
+grep -qF '<provenance>plan {plan_number} of phase {phase_number} at '"$ORCH_ROOT"'</provenance>' "$PROMPT_FILE" || {
+  echo "FATAL: executor prompt at $PROMPT_FILE is not the prompt for plan {plan_number} of phase {phase_number} (stale or foreign provenance stamp). Re-compose it." >&2; exit 1; }
+
+# 1b. Freshness: the provenance stamp cannot distinguish a leftover from a
+#     PREVIOUS attempt of this same plan (same plan, phase, and root). The
+#     wave manifest is initialized at wave start, so any prompt composed for
+#     THIS wave is newer than it — an older file is a stale leftover whose
+#     plan text, skills, or contract paths may have changed since.
+[ "$PROMPT_FILE" -nt "$WAVE_WORKTREE_MANIFEST" ] || {
+  echo "FATAL: executor prompt at $PROMPT_FILE predates this wave's manifest — a leftover from a previous attempt. Re-compose it." >&2; exit 1; }
+
+# 2. Structure: every contract block present AND closed — a truncated compose
+#    can carry every opening tag and still be missing its tail.
+for TAG in '<provenance>' '<role>' '</role>' '<objective>' '</objective>' '<required_reading>' '</required_reading>' '<execution_context>' '</execution_context>' '<success_criteria>' '</success_criteria>' 'skipped_gitignored'; do
+  grep -qF "$TAG" "$PROMPT_FILE" || { echo "FATAL: executor prompt for plan {plan_number} is missing required block: $TAG (see $PROMPT_FILE)" >&2; exit 1; }
+done
+
+# 3. No surviving template text.
+grep -qE '\{(GSD_ROOT|ORCH_ROOT|EXECUTOR_ROLE_FILE|AGENT_SKILLS_BLOCK|phase_dir|plan_file|plan_number|phase_number|phase_name)\}' "$PROMPT_FILE" && {
+  echo "FATAL: executor prompt for plan {plan_number} still contains unexpanded template placeholders (see $PROMPT_FILE)." >&2; exit 1; }
+
+# 4. Contract files must be READABLE now, before anything spawns — this is the
+#    preflight that makes a wrong {GSD_ROOT} or {EXECUTOR_ROLE_FILE}
+#    substitution fail here instead of inside a half-launched executor.
+# Anchor both range delimiters to WHOLE lines: the <role> prose mentions
+# <required_reading> inline, and an unanchored range would open there, feed
+# prose to the entry grep, and reject every valid prompt. Entries are the
+# "- <path>" lines only; the path ends at the 2+ space gap before the
+# parenthesized comment, so a path containing single spaces survives.
+# `tr -d '\r'` first: a prompt written on Windows (or through a CRLF-normalizing
+# tool) leaves a trailing CR that whole-line sed anchors will not match and that
+# would ride into every extracted path, so a perfectly valid prompt would be
+# rejected. Strip once, parse the clean text.
+PROMPT_LF=$(tr -d '\r' < "$PROMPT_FILE")
+RR_BLOCK=$(printf '%s\n' "$PROMPT_LF" | sed -n '/^<required_reading>$/,/^<\/required_reading>$/p')
+for BASE in gsd-executor execute-plan.md summary.md checkpoints.md tdd.md worktree-path-safety.md; do
+  RR_LINE=$(printf '%s\n' "$RR_BLOCK" | grep -E -- "^- .*$BASE" | head -1)
+  [ -n "$RR_LINE" ] || { echo "FATAL: executor prompt for plan {plan_number} lists no required-reading entry for $BASE." >&2; exit 1; }
+  # Strip the leading bullet and ONLY a trailing parenthesized comment — not
+  # every run of spaces. A path may legitimately contain consecutive spaces,
+  # and truncating at the first such run would reject it as unreadable.
+  RR_PATH=$(printf '%s\n' "$RR_LINE" | sed -E 's/^- +//; s/[[:space:]]+\([^()]*\)[[:space:]]*$//; s/[[:space:]]+$//')
+  [ -r "$RR_PATH" ] || { echo "FATAL: required-reading file for $BASE is not readable at: $RR_PATH — the {GSD_ROOT}/{EXECUTOR_ROLE_FILE} substitution is wrong for this install." >&2; exit 1; }
+done
+PLAN_PATH=$(printf '%s\n' "$PROMPT_LF" | grep -m1 '^Plan file: ' | sed 's/^Plan file: //')
+[ -n "$PLAN_PATH" ] && [ -r "$PLAN_PATH" ] || { echo "FATAL: the prompt's plan path is missing or unreadable: '$PLAN_PATH'." >&2; exit 1; }
+
+# 5. Size: one argv argument on every host — Windows caps a command line at
+#    ~32 KiB, so 24000 bytes leaves headroom for the exec argv around it. This
+#    is also the hard backstop against the #2454 persona fallback being inlined.
+PROMPT_BYTES=$(wc -c < "$PROMPT_FILE" | tr -d ' ')
+[ "$PROMPT_BYTES" -lt 24000 ] || { echo "FATAL: executor prompt is $PROMPT_BYTES bytes (cap 24000) — an inline embed (likely the full agent persona) does not fit a single argv argument; large content belongs in <required_reading>." >&2; exit 1; }
+
+EXECUTOR_PROMPT="$(cat "$PROMPT_FILE")"
+echo "Executor prompt for plan {plan_number}: $PROMPT_FILE (${PROMPT_BYTES} bytes; role + contract via preflighted required reading)"
+```
 
 Then create the worktree and resolve the spawn:
 

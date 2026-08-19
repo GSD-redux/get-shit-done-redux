@@ -6902,6 +6902,276 @@ describe('#3360 — execute-phase fails closed for unsupported worktree isolatio
       'the adapter header must no longer claim Codex has no worktree mapping — #2584 Phase 3 gave it one');
   });
 });
+
+describe('#3637 — orchestrator-worktree dispatch carries the executor contract', () => {
+  // A process spawn has no `subagent_type`, so nothing on this transport loads
+  // the gsd-executor role for the child. The EXECUTOR_PROMPT template is the
+  // ONLY carrier of the executor identity and execution contract — before
+  // #3637 it was a 5-line hand-written paragraph whose <success_criteria>
+  // demanded an unconditional SUMMARY.md commit, which a process-spawned
+  // executor (never having loaded agents/gsd-executor.md) could only satisfy
+  // on a gitignored .planning/ by the forbidden `git add -f` (#3678).
+  //
+  // Behavioral assertions parsed from the fragment, in the style the triage
+  // brief prescribed: each failed against the pre-#3637 fragment.
+  const FRAGMENT_PATH = path.join(
+    ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
+  );
+  const fragment = fs.readFileSync(FRAGMENT_PATH, 'utf8');
+
+  /** Slice a tag-delimited section, refusing to produce accidental content when
+   * either delimiter is absent — indexOf() returning -1 must be a loud failure,
+   * not a slice that still happens to match (review finding on this test's v1). */
+  function section(openTag, closeTag) {
+    // Whole-line anchors: the <role> prose MENTIONS other tags inline, and an
+    // unanchored indexOf opens the section at the mention — the exact
+    // mis-anchoring that made v2's bash preflight reject every valid prompt.
+    const { escapeRegex } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'pattern.cjs'));
+    const openRe = new RegExp(`^${escapeRegex(openTag)}$`, 'm');
+    const closeRe = new RegExp(`^${escapeRegex(closeTag)}$`, 'm');
+    const start = fragment.search(openRe);
+    const endMatch = closeRe.exec(fragment);
+    assert.notEqual(start, -1, `fragment must contain ${openTag} on its own line`);
+    assert.ok(endMatch, `fragment must contain ${closeTag} on its own line — an unclosed block is a truncation, not a section`);
+    assert.ok(endMatch.index > start, `${closeTag} must close ${openTag}, not precede it`);
+    return fragment.slice(start, endMatch.index);
+  }
+
+  // ── Executable harness: run the REAL validation block, not a description of it ──
+  //
+  // v1 and v2 of this suite pinned the fragment's text; both times a live
+  // defect stayed green (a vacuous regex, then a preflight that rejected every
+  // valid prompt). The block up to EXECUTOR_PROMPT uses only shell builtins +
+  // grep/sed/awk/wc, so it runs hermetically: extract it verbatim, substitute
+  // the plan/phase placeholders, point ORCH_ROOT and the manifest at a temp
+  // dir, and assert on real exit codes.
+  const { spawnSync: runBash } = require('node:child_process');
+  const { createTempDir } = require('./helpers.cjs');
+
+  function validationBlock() {
+    // Bounded, line-based extraction (no unbounded [\s\S] over file content —
+    // local/no-unbounded-quantifier, and CRLF-safe via splitLines).
+    const { splitLines } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'text-lines.cjs'));
+    const lines = splitLines(fragment);
+    const anchor = lines.findIndex((l) => l.includes('Then load and validate'));
+    assert.notEqual(anchor, -1, 'the fragment must carry the fail-closed validation section');
+    const open = lines.findIndex((l, i) => i > anchor && l.trim() === '```bash');
+    assert.notEqual(open, -1, 'the validation section must carry a bash block');
+    const close = lines.findIndex((l, i) => i > open && l.trim() === '```');
+    assert.notEqual(close, -1, 'the validation bash block must be closed');
+    const m = [null, lines.slice(open + 1, close).join('\n')];
+    assert.ok(m, 'the fragment must carry the fail-closed validation bash block');
+    return m[1];
+  }
+
+  function makeContractFiles(dir) {
+    const names = ['gsd-executor.md', 'execute-plan.md', 'summary.md', 'checkpoints.md', 'tdd.md', 'worktree-path-safety.md'];
+    for (const n of names) fs.writeFileSync(path.join(dir, n), `stub ${n}\n`);
+    fs.writeFileSync(path.join(dir, 'plan.md'), 'stub plan\n');
+    return names;
+  }
+
+  function makeContractFilesIn(dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const n of ['gsd-executor.md', 'execute-plan.md', 'summary.md', 'checkpoints.md', 'tdd.md', 'worktree-path-safety.md']) {
+      fs.writeFileSync(path.join(dir, n), `stub ${n}\n`);
+    }
+  }
+
+  function composePrompt(dir, { plan = '7', phase = '2', root = dir, breakEntry = null, pad = 0, dropTail = false, leavePlaceholder = false, crlf = false, contractDir = null } = {}) {
+    const cdir = contractDir || dir;
+    const rr = [
+      `- ${breakEntry === 'gsd-executor' ? '/nonexistent-3637/gsd-executor.md' : path.join(cdir, 'gsd-executor.md')}                (your role definition)`,
+      `- ${path.join(cdir, 'execute-plan.md')}            (your execution contract)`,
+      `- ${path.join(cdir, 'summary.md')}                 (SUMMARY.md structure)`,
+      `- ${path.join(cdir, 'checkpoints.md')}             (checkpoint + tracer gate rules)`,
+      `- ${path.join(cdir, 'tdd.md')}                     (TDD execution)`,
+      `- ${path.join(cdir, 'worktree-path-safety.md')}    (cwd-drift and path guards)`,
+    ].join('\n');
+    let body = `<provenance>plan ${plan} of phase ${phase} at ${root}</provenance>\n\n`
+      // The role prose deliberately reproduces the real template's trap: an
+      // INLINE mention of <required_reading> plus the strings gsd-executor and
+      // execute-plan.md in running text. v2's unanchored sed/grep opened the
+      // section at this line and extracted prose as a "path" — a faithful
+      // fixture is what lets this harness catch that class of bug.
+      + `<role>\nYou are the gsd-executor agent. Read every file in <required_reading> below - the\ngsd-executor definition and execute-plan.md are your execution contract.\n</role>\n\n`
+      + `<objective>\nExecute plan ${plan}.\nPlan file: ${path.join(dir, 'plan.md')}\n</objective>\n\n`
+      + `<required_reading>\n${rr}\n</required_reading>\n\n`
+      + `<execution_context>\nworktree rules\n</execution_context>\n\n`
+      + `<success_criteria>\n- [ ] skipped_gitignored is success${leavePlaceholder ? ' at {GSD_ROOT}' : ''}\n</success_criteria>\n`;
+    if (dropTail) body = body.slice(0, body.indexOf('</required_reading>'));
+    if (pad > 0) body += `\n<!-- ${'x'.repeat(pad)} -->\n`;
+    if (crlf) body = body.split('\n').join('\r\n');
+    fs.writeFileSync(path.join(dir, 'executor-prompt-p7.md'), body);
+  }
+
+  function runValidation(dir, { plan = '7', phase = '2' } = {}) {
+    const script = 'set -u\n'
+      + `ORCH_ROOT=${JSON.stringify(dir)}\n`
+      + `WAVE_WORKTREE_MANIFEST=${JSON.stringify(path.join(dir, 'manifest.json'))}\n`
+      + `mkdir -p "$ORCH_ROOT/.claude/worktrees"\n`
+      + `cp -p ${JSON.stringify(path.join(dir, 'executor-prompt-p7.md'))} "$ORCH_ROOT/.claude/worktrees/executor-prompt-p7.md" 2>/dev/null || true\n`
+      + validationBlock().replaceAll('{plan_number}', plan).replaceAll('{phase_number}', phase)
+      + '\nprintf VALIDATED';
+    return runBash('bash', ['-c', script], { encoding: 'utf8', timeout: 15_000 });
+  }
+
+  function freshDir(t, opts) {
+    const dir = createTempDir('prohib-3637-');
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
+    makeContractFiles(dir);
+    composePrompt(dir, opts); // written AFTER the manifest -> fresh by mtime
+    return dir;
+  }
+
+  test('EXECUTABLE: a well-formed prompt passes the real validation block', (t) => {
+    const dir = freshDir(t, {});
+    const r = runValidation(dir);
+    assert.equal(r.status, 0, `valid prompt must pass; stderr: ${r.stderr}`);
+    assert.match(r.stdout, /VALIDATED/, 'the block must fall through to the spawn, not exit early');
+  });
+
+  test('EXECUTABLE: truncation, foreign identity, unreadable root, oversize, and placeholders each fail closed', (t) => {
+    const cases = [
+      ['truncated (no closing tags)', { dropTail: true }, {}],
+      ['foreign provenance (other plan)', { plan: '9' }, {}],
+      ['unreadable role-file root', { breakEntry: 'gsd-executor' }, {}],
+      ['oversized (argv cap)', { pad: 25_000 }, {}],
+      ['surviving template placeholder', { leavePlaceholder: true }, {}],
+    ];
+    for (const [label, composeOpts, runOpts] of cases) {
+      const dir = freshDir(t, composeOpts);
+      const r = runValidation(dir, runOpts);
+      assert.notEqual(r.status, 0, `${label}: must fail closed`);
+      assert.doesNotMatch(r.stdout || '', /VALIDATED/, `${label}: must never reach the spawn`);
+      assert.match(r.stderr || '', /FATAL/, `${label}: must name the failure`);
+    }
+  });
+
+  test('EXECUTABLE: a CRLF prompt is accepted, not rejected as malformed', (t) => {
+    // Windows checkouts / CRLF-normalizing tooling leave a trailing \r that
+    // whole-line sed anchors do not match and that rides into every extracted
+    // path — a valid prompt would be rejected. Regression guard for that.
+    const dir = createTempDir('prohib-3637-');
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
+    makeContractFiles(dir);
+    composePrompt(dir, { crlf: true });
+    const raw = fs.readFileSync(path.join(dir, 'executor-prompt-p7.md'), 'utf8');
+    assert.ok(raw.includes('\r\n'), 'fixture must actually be CRLF or it proves nothing');
+    const r = runValidation(dir);
+    assert.equal(r.status, 0, `a CRLF prompt must pass; stderr: ${r.stderr}`);
+    assert.match(r.stdout, /VALIDATED/);
+  });
+
+  test('EXECUTABLE: a contract path containing consecutive spaces is not truncated', (t) => {
+    // The entry lines pad with 2+ spaces before their parenthesized comment, so
+    // a naive "cut at the first double space" strip silently truncates any path
+    // that legitimately contains one — rejecting a valid install.
+    const dir = createTempDir('prohib-3637-');
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n');
+    makeContractFiles(dir);
+    const spacey = path.join(dir, 'gsd  core');
+    makeContractFilesIn(spacey);
+    composePrompt(dir, { contractDir: spacey });
+    const r = runValidation(dir);
+    assert.equal(r.status, 0, `a path with consecutive spaces must pass; stderr: ${r.stderr}`);
+    assert.match(r.stdout, /VALIDATED/);
+  });
+
+  test('EXECUTABLE: a leftover prompt from a previous attempt fails freshness', (t) => {
+    const dir = createTempDir('prohib-3637-');
+    t.after(() => cleanup(dir));
+    makeContractFiles(dir);
+    composePrompt(dir, {}); // prompt FIRST...
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(dir, 'executor-prompt-p7.md'), past, past);
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{}\n'); // ...manifest AFTER -> prompt is stale
+    const r = runValidation(dir);
+    assert.notEqual(r.status, 0, 'a prompt older than this wave manifest is a stale leftover and must fail');
+    assert.match(r.stderr || '', /predates this wave/, 'the failure must name staleness');
+  });
+
+  test('the prompt template carries a required_reading block that pulls in the role file and execute-plan.md', () => {
+    const rr = section('<required_reading>', '</required_reading>');
+    assert.match(rr, /\{EXECUTOR_ROLE_FILE\}/,
+      'the installed gsd-executor definition is how the full role substance reaches the child — it must lead the required reading');
+    assert.match(rr, /execute-plan\.md/,
+      'execute-plan.md is the self-contained executor contract for paths where the agent file is never loaded — it must be in the required reading');
+  });
+
+  test('the prompt template declares the executor role, not a generic process', () => {
+    const role = section('<role>', '</role>');
+    assert.match(role, /gsd-executor agent/,
+      'the role block must name the gsd-executor identity');
+    const obj = section('<objective>', '</objective>');
+    assert.match(obj, /\{plan_file\}/,
+      'the executor must receive an explicit plan path, not reconstruct it by inference');
+  });
+
+  test('success criteria accommodate skipped_gitignored instead of demanding an unconditional commit', () => {
+    const sc = section('<success_criteria>', '</success_criteria>');
+    assert.match(sc, /skipped_gitignored/,
+      'a process-spawned executor has no other way to know the gitignored-planning skip is sanctioned (#3678)');
+    assert.doesNotMatch(sc, /SUMMARY\.md created AND committed/,
+      'the unconditional commit demand is what drove executors to git add -f — it must not return');
+  });
+
+  test('dispatch fails closed when the composed prompt is reduced, stale, unreadable, or oversized', () => {
+    // The bash validation is the executable half of #3637's fix — pin its
+    // text and its ORDER, not just the English around it. A regression that
+    // restores the old hand-written prompt as the launch input while leaving
+    // the template as prose must fail here (review finding on this test's v1).
+    assert.match(fragment, /\[ -s "\$PROMPT_FILE" \]/,
+      'an absent or empty prompt file must halt the dispatch');
+    // Closing tags in the TAG loop: a truncated compose carries every opening tag.
+    for (const tag of ['<role>', '</role>', '</required_reading>', '</success_criteria>', 'skipped_gitignored']) {
+      assert.ok(fragment.includes(`'${tag}'`),
+        `the fail-closed loop must verify the composed prompt carries ${tag}`);
+    }
+    assert.match(fragment, /<provenance>plan \{plan_number\} of phase \{phase_number\}/,
+      'the identity stamp is what makes a stale prompt from another phase fail instead of pass structurally');
+    assert.match(fragment, /\[ -r "\$RR_PATH" \]/,
+      'every contract file must be preflighted READABLE before spawn — a wrong {GSD_ROOT} fails here, not inside a half-launched executor');
+    assert.match(fragment, /-lt 24000/,
+      'the argv byte cap is the hard backstop for the Windows command-line limit and the #2454 persona-fallback inline');
+    assert.match(fragment, /EXECUTOR_PROMPT="\$\(cat "\$PROMPT_FILE"\)"/,
+      'the spawned prompt must be sourced from the file the validation just checked — nothing else');
+    assert.match(fragment, /unexpanded template placeholders/,
+      'surviving {placeholder} text must halt the dispatch, not ride into the spawn');
+    // ORDER: every validation must run before the worktree is created, so a bad
+    // prompt costs nothing and needs no teardown.
+    const validationAt = fragment.indexOf('[ -s "$PROMPT_FILE" ]');
+    const worktreeCreateAt = fragment.indexOf('worktree.create');
+    assert.ok(validationAt !== -1 && worktreeCreateAt !== -1 && validationAt < worktreeCreateAt,
+      'prompt validation must precede worktree.create');
+  });
+
+  test('the persona fallback cannot be inlined: AGENT_SKILLS_BLOCK is scoped and capped', () => {
+    // On AGENTS-native runtimes an unconfigured `query agent-skills` injects the
+    // full installed persona (#2454, ~49 KiB) — over the Windows argv cap by
+    // itself. The template must scope the block to configured custom skills and
+    // route the persona through {EXECUTOR_ROLE_FILE} in required reading.
+    assert.match(fragment, /\{AGENT_SKILLS_BLOCK\}/,
+      'the skills slot must be the scoped block, not a bare ${AGENT_SKILLS} expansion');
+    assert.doesNotMatch(fragment, /\n\$\{AGENT_SKILLS\}\n/,
+      'a bare ${AGENT_SKILLS} line in the template is the config-dependent silent reduction the review found');
+    assert.match(fragment, /substitute the EMPTY string/,
+      'the unconfigured case must be the empty string, never the persona fallback');
+  });
+
+  test('the fragment no longer claims the prompt is the harness text kept verbatim', () => {
+    // The pre-#3637 prose said the prompt keeps the harness execution context
+    // "verbatim" while shipping a 5-line paraphrase — the claim itself was the
+    // sync-gap's camouflage (triage: inaccurate since 6ad30f74b).
+    assert.doesNotMatch(fragment, /keep .objective., the execution context, and .success_criteria. verbatim/,
+      'the false verbatim claim must not survive');
+    assert.doesNotMatch(fragment, /same prompt text the harness path.s .Agent\(\). call uses/,
+      'the companion claim — that this prompt IS the harness text — must not survive either');
+  });
+});
   });
 }
 
