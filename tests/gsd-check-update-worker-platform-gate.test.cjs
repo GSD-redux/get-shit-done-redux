@@ -163,7 +163,7 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
-  const { buildColdInstallTree, REPO_ROOT } = require('./helpers/cold-runtime-lib-fixture.cjs');
+  const { buildColdInstallTree, REPO_ROOT, shouldCopyHookEntry } = require('./helpers/cold-runtime-lib-fixture.cjs');
   const { cleanup } = require('./helpers.cjs');
 
   describe('cold-runtime-lib-fixture.cjs: #3582 tolerates a concurrent hooks/.dist-staging-<pid> dir', () => {
@@ -198,7 +198,21 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
         path.join(fakeBinDir, 'ensure-runtime-build.cjs'),
       );
 
-      const realHooksBefore = fs.readdirSync(path.join(REPO_ROOT, 'hooks')).sort();
+      // Filtered by shouldCopyHookEntry — the same predicate the fixture
+      // itself uses to decide what to copy. Up to nine other test files'
+      // before() hooks concurrently invoke scripts/build-hooks.js, which
+      // creates/removes hooks/.dist-staging-<pid> at unpredictable times, so
+      // a RAW (unfiltered) before/after listing comparison of the live
+      // hooks/ dir is itself racy — it can observe a sibling build's
+      // transient staging dir appear or vanish between the two snapshots and
+      // fail with no real defect. Filtering both snapshots the same way the
+      // fixture does preserves the actual intent (this test adds/removes no
+      // REAL entry in the repo's hooks/) while tolerating scratch that is
+      // not this test's doing and is excluded from the fixture anyway.
+      const realHooksBefore = fs
+        .readdirSync(path.join(REPO_ROOT, 'hooks'))
+        .filter(shouldCopyHookEntry)
+        .sort();
 
       const cold = buildColdInstallTree({ repoRoot: fakeRepoRoot });
       t.after(cold.cleanup);
@@ -216,11 +230,16 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
         'fixture must still contain the representative hooks/lib/ subdir file',
       );
 
-      const realHooksAfter = fs.readdirSync(path.join(REPO_ROOT, 'hooks')).sort();
+      const realHooksAfter = fs
+        .readdirSync(path.join(REPO_ROOT, 'hooks'))
+        .filter(shouldCopyHookEntry)
+        .sort();
       assert.deepEqual(
         realHooksAfter,
         realHooksBefore,
-        'the real repo hooks/ directory listing must be unchanged by this test',
+        'the real repo hooks/ directory listing, filtered by shouldCopyHookEntry, must be unchanged by ' +
+          'this test (transient hooks/.dist-staging-<pid> entries from concurrent build-hooks.js runs are ' +
+          'excluded from the comparison since this test does not own them)',
       );
     });
   });
