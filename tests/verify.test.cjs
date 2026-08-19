@@ -4204,6 +4204,74 @@ describe('scanNegativeGrepCommentEcho — pure unit tests', () => {
     assert.ok(!result.errors[0].includes('presentTok'), `error must NOT name presentTok, got: ${result.errors[0]}`);
   });
 
+  test('case 12b — mixed gates joined by entity-escaped &amp;&amp;: no false positive for the positive token (#3611)', () => {
+    // #3611: planners emit <automated> bodies with the ampersands entity-escaped
+    // (&amp;&amp;). The literal-only segment splitter did not match that spelling,
+    // so the negative clause's `= 0` poisoned count-grep literals from the
+    // POSITIVE clause in the same chain — a `-ge 3` literal flagged as forbidden.
+    // Identical to case 12 except for the ampersand spelling.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Entity-escaped chain task</name>',
+      '<action>',
+      'Use presentTok for the new pattern.',
+      'Do not use absentTok any more.',
+      '</action>',
+      "<verify><automated>test \"$(grep -c 'absentTok' f)\" = 0 &amp;&amp; test \"$(grep -c 'presentTok' f)\" -ge 3</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `expected exactly 1 error (absentTok only), got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('absentTok'), `error must name absentTok, got: ${result.errors[0]}`);
+    assert.ok(!result.errors[0].includes('presentTok'), `a positively-asserted literal (-ge 3) must never be flagged regardless of ampersand spelling, got: ${result.errors[0]}`);
+  });
+
+  test('case 12c — entity-escaped literals and action echoes decode consistently (#3611)', () => {
+    // A literal that itself contains &amp; (e.g. "a&amp;b" as the grep pattern)
+    // and an action echo carrying the same entity spelling must still match
+    // after the decode — the flag stays correct for entity-bearing literals.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Entity literal task</name>',
+      '<action>',
+      'Remove the old a&amp;b join.',
+      '</action>',
+      "<verify><automated>grep -c 'a&amp;b' f == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `the entity-bearing literal must still flag its action echo, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('a'), `error must carry the decoded literal, got: ${result.errors[0]}`);
+  });
+
   test('case 13 — grep -c -F (separate count+fixed flags) extracts literal', () => {
     // Bug 2: grep -c -F 'LIT' was not extracted by the old regex that required -c
     // immediately before the pattern without intervening flags.
