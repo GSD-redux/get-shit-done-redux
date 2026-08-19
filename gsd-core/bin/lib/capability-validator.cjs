@@ -3437,24 +3437,36 @@ function topoSortContributions(entries) {
 
 /**
  * Validate that every hook point declared by a capability has a corresponding
- * `loop render-hooks <point>` call site in one of the host-loop workflow files.
+ * `loop render-hooks <point>` call site in one of the host-loop workflow files,
+ * AND — #3606 — that the call site's dispatch text covers the hook's KIND.
+ *
+ * A call site proves hooks are rendered, not dispatched: a consumer that
+ * iterates only `kind == "gate"` (or narrows `kind == "step"` to one
+ * `ref.skill`) silently drops every other registered kind — a capability can
+ * be wired, enabled, resolved active, and never run. See
+ * gsd-core/references/loop-hook-dispatch.md ("A point whose workflow
+ * hand-rolls one kind does not implement this contract").
  *
  * Only valid loop points (in VALID_LOOP_POINTS) are checked here. Invalid points
  * are already caught by validateStep/validateContribution/validateGate — do not
  * double-report.
  *
  * @param {object}   cap       Validated capability object.
- * @param {Set<string>} wiredSet  Set of points that have call sites in host workflows.
- * @returns {string[]}          Array of error strings; empty means all points are wired.
+ * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the
+ *   host workflows' call-site dispatch text covers (getWiredKinds). A point
+ *   absent from the map is unwired.
+ * @returns {string[]}          Array of error strings; empty means all points
+ *   are wired and every registered kind is covered.
  */
-function validateHooksWired(cap, wiredSet) {
+function validateHooksWired(cap, wiredKinds) {
   const errors = [];
   const capId = cap.id || '(unknown)';
 
-  function checkPoint(point, groupName, idx) {
+  function checkPoint(point, groupName, kind, idx) {
     // Only flag valid points that are unwired — invalid points are schema-validator's job.
     if (!VALID_LOOP_POINTS.has(point)) return;
-    if (!wiredSet.has(point)) {
+    const covered = wiredKinds.get(point);
+    if (!covered || covered.size === 0) {
       errors.push(
         'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
         '" is declared but not wired in any host-loop workflow ' +
@@ -3462,20 +3474,30 @@ function validateHooksWired(cap, wiredSet) {
         'Wire the call site in the host workflow ' +
         '(see scripts/gen-loop-host-contract.cjs STEP_WORKFLOWS) or remove the hook.',
       );
+      return;
+    }
+    if (!covered.has(kind)) {
+      errors.push(
+        'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
+        '" registers a ' + kind + ' hook, but the host call site\'s dispatch text never ' +
+        'covers `kind == "' + kind + '"` (it covers: ' + [...covered].sort().join(', ') + '). ' +
+        'A hand-rolled single-kind consumer silently never dispatches the other kinds — ' +
+        'dispatch every registered kind per gsd-core/references/loop-hook-dispatch.md.',
+      );
     }
   }
 
   for (let i = 0; i < (cap.steps || []).length; i++) {
     const hook = cap.steps[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'steps', i);
+    if (hook.point !== undefined) checkPoint(hook.point, 'steps', 'step', i);
   }
   for (let i = 0; i < (cap.contributions || []).length; i++) {
     const hook = cap.contributions[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'contributions', i);
+    if (hook.point !== undefined) checkPoint(hook.point, 'contributions', 'contribution', i);
   }
   for (let i = 0; i < (cap.gates || []).length; i++) {
     const hook = cap.gates[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'gates', i);
+    if (hook.point !== undefined) checkPoint(hook.point, 'gates', 'gate', i);
   }
 
   return errors;

@@ -1416,8 +1416,12 @@ PHASE_REQ_IDS=$(gsd_run query init.plan-phase "$PHASE" --pick phase_req_ids 2>/d
 PHASE_REQ_IDS="${PHASE_REQ_IDS:-TBD}"
 ```
 
-Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If the
-`gap-analysis` gate hook is absent (capability inactive), skip this step.
+Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If
+`activeHooks` is empty or absent, skip this step silently — do NOT key the skip
+on any one capability's gate being absent (#3606: that skip silently dropped
+every other registered hook at this point).
+
+**Step and contribution dispatch:** dispatch every `kind == "step"` hook and inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip each kind silently when none), before gate evaluation below.
 
 ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
 

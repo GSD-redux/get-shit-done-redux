@@ -4928,9 +4928,12 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       };
     }
 
+    const kindsMap = (spec) => new Map(Object.entries(spec).map(([pt, ks]) => [pt, new Set(ks)]));
+    const ALL = ['contribution', 'step', 'gate'];
+
     test('returns non-empty error array mentioning "not wired" when step point is not in wiredSet', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const wiredSet = new Set(['plan:pre', 'plan:post']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(Array.isArray(errs), 'must return an array');
       assert.ok(errs.length > 0, 'must return errors when point is unwired');
@@ -4942,7 +4945,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns non-empty error array when contribution point is not in wiredSet', () => {
       const cap = makeCapWithContribution('discuss:pre');
-      const wiredSet = new Set(['plan:pre']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(errs.length > 0, 'must return errors for unwired contribution point');
       assert.match(errs.join(' '), /not wired/i);
@@ -4950,7 +4953,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns non-empty error array when gate point is not in wiredSet', () => {
       const cap = makeCapWithGate('discuss:pre');
-      const wiredSet = new Set(['plan:pre']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(errs.length > 0, 'must return errors for unwired gate point');
       assert.match(errs.join(' '), /not wired/i);
@@ -4958,35 +4961,37 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns empty array when all declared points are in wiredSet', () => {
       const cap = makeCapWithStep('plan:pre');
-      const wiredSet = new Set(['plan:pre', 'plan:post', 'execute:post']);
+      const wiredSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL, 'execute:post': ALL });
       const errs = validateHooksWired(cap, wiredSet);
-      assert.deepEqual(errs, [], 'must return empty array when all points are wired');
+      assert.deepEqual(errs, [], 'must return empty array when all points are wired and kind-covered');
     });
 
     test('boundary: cap declaring discuss:pre is rejected against wiredSet lacking it', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const smallSet = new Set(['plan:pre', 'plan:post']);
+      const smallSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL });
       const errs = validateHooksWired(cap, smallSet);
       assert.ok(errs.length > 0, 'must reject discuss:pre against a set that lacks it');
     });
 
     test('boundary: cap declaring discuss:pre is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const realWired = getWiredLoopPoints(ROOT);
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const realWired = getWiredKinds(ROOT);
       const errs = validateHooksWired(cap, realWired);
       assert.deepEqual(
         errs, [],
-        `discuss:pre must be wired after the fix. Errors: ${errs.join('; ')}`,
+        `discuss:pre must be wired and kind-covered after the fix. Errors: ${errs.join('; ')}`,
       );
     });
 
     test('boundary: cap declaring discuss:post is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
       const cap = makeCapWithContribution('discuss:post');
-      const realWired = getWiredLoopPoints(ROOT);
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const realWired = getWiredKinds(ROOT);
       const errs = validateHooksWired(cap, realWired);
       assert.deepEqual(
         errs, [],
-        `discuss:post must be wired after the fix. Errors: ${errs.join('; ')}`,
+        `discuss:post must be wired and kind-covered after the fix. Errors: ${errs.join('; ')}`,
       );
     });
 
@@ -4999,7 +5004,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         gates: [],
         config: {},
       };
-      const wiredSet = new Set(['plan:pre']); // the invalid point is not here either
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // the invalid point is not here either
       const errs = validateHooksWired(cap, wiredSet);
       // Should NOT flag it — invalid points are the schema validator's job
       const notWiredErrors = errs.filter((e) => /not wired/i.test(e));

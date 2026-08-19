@@ -456,6 +456,112 @@ function scanWiredPoints(text) {
   return result;
 }
 
+// ─── Hook-kind coverage (#3606) ──────────────────────────────────────────────
+
+const HOOK_KINDS = ['contribution', 'step', 'gate'];
+
+/**
+ * The kinds one call site's dispatch text actually covers (#3606).
+ *
+ * A point having a `loop render-hooks <point>` call site proves the hooks are
+ * RENDERED, not that they are DISPATCHED — a consumer that iterates only
+ * `kind == "gate"` (or narrows `kind == "step"` to one `ref.skill`) silently
+ * drops every other registered kind. Coverage rules for the text following a
+ * call site, up to the next call site or the region cap, judged LINE by line:
+ *
+ * - A deferral line (one carrying an `@`-included path to the generic
+ *   contract, e.g. `@gsd-core/references/loop-hook-dispatch.md`) that names a
+ *   kind (`kind == "step"`) covers that kind; a deferral line with no kind
+ *   discriminator ("apply each entry") covers every kind. A bare §-citation
+ *   of the reference (validation guidance only, no `@`) covers nothing —
+ *   plan-phase cites the gate-validation section while dispatching only gates.
+ * - Otherwise a kind is covered when some LINE dispatches it unconditionally:
+ *   a `kind == "<kind>"` discriminator with NO same-line narrowing to one
+ *   hook (`ref.skill ==`, `ref.agent ==`, `ref.command ==`). A narrowed line
+ *   special-cases ONE hook and proves nothing about the kind generally — the
+ *   exact hand-rolled-consumer shape the reference warns about.
+ *
+ * Quote style and spacing vary across the corpus (`kind == "step"`,
+ * `kind === 'gate'`), so the matcher is tolerant of both quote characters and
+ * of `==`/`===`.
+ *
+ * Pure: same input, same output; CRLF-safe (line splitting tolerates \r).
+ *
+ * @param {string} region  Dispatch text following one call site.
+ * @returns {Set<string>}
+ */
+function coveredKindsInRegion(region) {
+  const covered = new Set();
+  const narrowingRe = /ref\.(?:skill|agent|command)\s*={2,3}/;
+  const deferralRe = /@\S*loop-hook-dispatch\.md/;
+  for (const line of region.split(/\r?\n/)) {
+    const kindDiscriminators = [];
+    for (const kind of HOOK_KINDS) {
+      if (new RegExp(`kind\\s*={2,3}\\s*["']${kind}["']`).test(line)) kindDiscriminators.push(kind);
+    }
+    if (deferralRe.test(line)) {
+      for (const kind of kindDiscriminators.length > 0 ? kindDiscriminators : HOOK_KINDS) {
+        covered.add(kind);
+      }
+      continue;
+    }
+    for (const kind of kindDiscriminators) {
+      if (!narrowingRe.test(line)) covered.add(kind);
+    }
+  }
+  return covered;
+}
+
+/**
+ * Scan every `loop render-hooks <point>` call site in `text` and accumulate,
+ * per point, the union of hook kinds its dispatch regions cover (#3606).
+ *
+ * @param {string} text  Content of a workflow file (or any text).
+ * @returns {Map<string, Set<string>>}  point → covered kinds.
+ */
+function scanWiredKinds(text) {
+  const result = new Map();
+  const siteRe = /loop render-hooks\s+([a-z:]+)/g;
+  const sites = [];
+  let m;
+  while ((m = siteRe.exec(text)) !== null) sites.push({ point: m[1], start: m.index });
+  const REGION_CAP = 6000;
+  for (let i = 0; i < sites.length; i++) {
+    const regionEnd = i + 1 < sites.length ? sites[i + 1].start : Math.min(text.length, sites[i].start + REGION_CAP);
+    const region = text.slice(sites[i].start, regionEnd);
+    const covered = coveredKindsInRegion(region);
+    if (!result.has(sites[i].point)) result.set(sites[i].point, new Set());
+    for (const kind of covered) result.get(sites[i].point).add(kind);
+  }
+  return result;
+}
+
+/**
+ * Read every host-loop workflow file and return, per point, the union of hook
+ * kinds its call sites' dispatch text covers (#3606).
+ *
+ * @param {string} [repoRoot]  Path to the repository root. Defaults to ROOT.
+ * @returns {Map<string, Set<string>>}
+ */
+function getWiredKinds(repoRoot) {
+  const resolvedRoot = repoRoot !== undefined ? repoRoot : ROOT;
+  const result = new Map();
+  for (const relPath of HOST_LOOP_FILES) {
+    const absPath = path.join(resolvedRoot, relPath);
+    let content;
+    try {
+      content = fs.readFileSync(absPath, 'utf8');
+    } catch (err) {
+      throw new Error('getWiredKinds: cannot read host-loop file ' + absPath + ': ' + err.message);
+    }
+    for (const [point, kinds] of scanWiredKinds(content)) {
+      if (!result.has(point)) result.set(point, new Set());
+      for (const kind of kinds) result.get(point).add(kind);
+    }
+  }
+  return result;
+}
+
 /**
  * Read every host-loop workflow file and return the union of all wired loop points
  * (i.e. points that have a `loop render-hooks <point>` call site).
@@ -497,6 +603,10 @@ module.exports = {
   ROLE_TO_AGENT,
   scanWiredPoints,
   getWiredLoopPoints,
+  coveredKindsInRegion,
+  scanWiredKinds,
+  getWiredKinds,
+  HOOK_KINDS,
 };
 
 // ─── CLI entry point ──────────────────────────────────────────────────────────

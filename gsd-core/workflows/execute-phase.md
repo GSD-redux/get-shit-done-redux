@@ -644,7 +644,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)
    ```
 
-   If a contribution's `activeHooks` entry provides an alternate wave dispatch, follow it instead of step 3's inline loop; otherwise proceed to step 3.
+   **Contribution dispatch:** inject every `kind == "contribution"` fragment from `WAVE_PRE_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md (skip silently when none). A contribution whose `activeHooks` entry provides an alternate wave dispatch follows it instead of step 3's inline loop; all other contributions inject verbatim. Then proceed to step 3.
 
 3. **Spawn executor agents:**
 
@@ -1013,6 +1013,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    Read the `activeHooks` array from `WAVE_POST_HOOKS_JSON` in-context (do NOT pipe through a shell parser).
 
    **If `activeHooks` is empty or absent:** Skip silently to step 5.8.
+
+   **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip silently when none), before gate evaluation below.
 
    ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
 
