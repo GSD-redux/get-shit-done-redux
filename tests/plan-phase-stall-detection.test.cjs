@@ -693,12 +693,28 @@ describe('#2650 follow-up: runBashScript bounds and reports a bash fan-out corre
     assert.equal(result.timedOut, false, 'a real exit must not be reported as timed out');
   });
 
-  test('bound boundary: comfortably under completes, comfortably over times out', () => {
-    const under = runBashScript('exit 0\n', [], { timeoutMs: 30000 });
-    assert.equal(under.outcome, OUTCOME.EXITED, 'work far inside the bound must complete');
-    assert.equal(under.status, 0);
+  test('boundary: a non-positive bound is rejected, never silently run unbounded', () => {
+    // limit-1 / limit / limit+1 on the VALUE DOMAIN of the bound, not on wall-clock
+    // timing — the previous test already covers the exceeded-bound classification, and
+    // an exact-millisecond timing edge would be a race, not a boundary.
+    //
+    // Zero is the load-bearing case: spawnSync reads `timeout: 0` as "no timeout at
+    // all", which is precisely the unbounded-spawn hazard local/no-unbounded-spawn
+    // exists to prevent (CONTRIBUTING.md: "`timeout: 0` — Node reads zero as *no
+    // timeout*"). The seam rejects it instead of honouring it.
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: 0 }), TypeError,
+      'limit: zero must be rejected, never read as unbounded');
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: -1 }), TypeError,
+      'limit-1: a negative bound must be rejected');
+    assert.doesNotThrow(() => runBashScript('exit 0\n', [], { timeoutMs: 1 }),
+      'limit+1: the smallest positive bound is valid and must be accepted');
 
-    const over = runBashScript('sleep 5\n', [], { timeoutMs: 250 });
-    assert.equal(over.outcome, OUTCOME.TIMED_OUT, 'work far outside the bound must time out');
+    // The helper must still clean up its temp dir when the seam throws — the throw
+    // escapes through runBashScript's `finally`, which is what makes the rejection safe
+    // to rely on rather than a resource leak.
+    const before = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('gsd-2650-sh-')).length;
+    assert.throws(() => runBashScript('exit 0\n', [], { timeoutMs: 0 }), TypeError);
+    const after = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('gsd-2650-sh-')).length;
+    assert.equal(after, before, 'a rejected bound must not leak the script temp dir');
   });
 });
