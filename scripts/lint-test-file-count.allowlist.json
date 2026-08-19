@@ -99,7 +99,6 @@
     },
     "verify": {
       "files": [
-        "verify-command-grounding.test.cjs",
         "verify-health.test.cjs",
         "verify-mvp-uat.test.cjs",
         "verify-npm-publish.test.cjs",
