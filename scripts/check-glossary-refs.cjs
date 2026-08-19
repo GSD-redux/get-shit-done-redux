@@ -65,7 +65,7 @@ const TRACKED_PREFIXES = [
 const TRACKED_EXACT = new Set(['bin/install.js', 'package.json']);
 
 /**
- * Paths CONTEXT.md documents whose ABSENCE is the healthy steady state (#2778).
+ * Paths CONTEXT.md documents whose ABSENCE is the healthy steady state.
  *
  * `TRACKED_PREFIXES` skips claims this gate *cannot* check. This is the narrower
  * third case: a claim it must not check, because "does not exist" is the correct
@@ -78,14 +78,43 @@ const TRACKED_EXACT = new Set(['bin/install.js', 'package.json']);
  * shipping an empty stub. So the file is absent on a healthy `next` and present
  * only inside a PR that needs it, and asserting either way is wrong.
  *
- * Until #2778 this passed only by accident: CONTEXT.md's `RULESET.` entries are
- * themselves backtick-wrapped and contain backticks, so the sequential pairing in
- * `extractTrackedRefs` happened to leave this token outside a code span. Any edit
- * that shifted the parity — such as #2778's own — exposed it. A gate that passes
- * by luck is not passing; naming the exemption makes the intent explicit and
- * survives the next edit.
+ * The emitted-attribution family (`tests/fixtures/golden-install-parity`,
+ * `tests/golden-install-parity.test.cjs`, `scripts/gen-golden-install-parity-zcode.cjs`,
+ * `tests/agent-size-baseline.json`, `tests/workflow-size-baseline.json`,
+ * `scripts/git-merge-regen-driver.cjs`, `scripts/update-size-baseline.cjs`) was RETIRED
+ * by the #2724 cutover — the differential attribution check replaced the committed
+ * baselines and their generator/bridge tooling. CONTEXT.md's RULESET.EMITTED_ATTRIBUTION
+ * predicate documents that retirement ("Historically …"), so the mentions are history,
+ * not live claims, and their absence is exactly the healthy state the retirement
+ * produced. The whole documented family is listed, not just the members today's tick
+ * parity happens to hide — the two tooling paths were invisible only because of where
+ * line 585's inner backticks sat, which is the #2778 luck this gate must not rely on.
+ *
+ * `scripts/eslint-rules` appears only inside a CONTRASTIVE mention ("the local
+ * plugin lives at `eslint-rules/` (repo root, NOT `scripts/eslint-rules/`)") — the
+ * predicate asserts where the directory is NOT, so non-existence is the claim
+ * being made, not drift away from one.
+ *
+ * Until #2778 this set's first entry passed only by accident: CONTEXT.md's
+ * `RULESET.` entries are themselves backtick-wrapped and contain backticks, so the
+ * sequential pairing in `extractTrackedRefs` happened to leave this token outside a
+ * code span. Any edit that shifted the parity — such as #2778's own — exposed it.
+ * A gate that passes by luck is not passing; naming the exemption makes the intent
+ * explicit and survives the next edit. #3604 removed the luck itself (pairing is
+ * per line), which is what surfaced the entries above: each names a path whose
+ * absence is deliberate, so each is exempted by name for the same reason.
  */
-const INTENTIONALLY_ABSENT = new Set(['tests/emitted-drift-ack.json']);
+const INTENTIONALLY_ABSENT = new Set([
+  'tests/emitted-drift-ack.json',
+  'tests/fixtures/golden-install-parity',
+  'tests/golden-install-parity.test.cjs',
+  'scripts/gen-golden-install-parity-zcode.cjs',
+  'tests/agent-size-baseline.json',
+  'tests/workflow-size-baseline.json',
+  'scripts/git-merge-regen-driver.cjs',
+  'scripts/update-size-baseline.cjs',
+  'scripts/eslint-rules',
+]);
 
 /**
  * Shape a backticked token must have to even be considered a path candidate:
@@ -119,18 +148,51 @@ function isWithinRoot(token) {
 /**
  * Every distinct, trackable file-path token referenced in `text`, with any
  * trailing `:<line>` suffix stripped.
+ *
+ * #3604: pairing is per LINE, not over the whole text. A single whole-text pass
+ * `[^`]+` crosses newlines, so one odd-backtick line (the `RULESET.*` predicate
+ * format is backtick-wrapped and its values sometimes contain backticks) shifted
+ * the pairing of every later line — a tracked token's visibility depended on
+ * where it sat, which is how a renamed test file stayed invisible for weeks.
+ *
+ * The fact-store predicate lines (one `CLASS.subkey=value` fact per line,
+ * backtick-wrapped as a whole) carry REAL paths in their values; the span itself
+ * is not path-shaped (spaces, `=`), so a second pass harvests path-shaped tracked
+ * tokens from inside any predicate-shaped span rather than letting the outer
+ * wrapper hide them.
+ *
+ * Fragment guards: a real path in this repo never ends in `-` or `.` — those are
+ * remnants of glob/template mentions (`scripts/gen-*.cjs`, `tests/foo.*.test.cjs`)
+ * split at the `*` — and `NNNN` is the ADR filename template token
+ * (CONTRIBUTING's "Do not compute a next number locally"), never a real path.
  */
 function extractTrackedRefs(text) {
   const tokens = new Set();
-  const re = /`([^`]+)`/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const raw = m[1];
-    if (!PATH_TOKEN_RE.test(raw)) continue;
+  const add = (raw) => {
+    if (!PATH_TOKEN_RE.test(raw)) return;
     const token = raw.replace(/:\d+$/, '');
-    if (!isTracked(token)) continue;
-    if (!isWithinRoot(token)) continue;
+    // Fragment guard, on the EMITTED token (after the :line strip, so
+    // `src/foo-:12` is judged on `src/foo-`): glob/template remnants end in `-`
+    // or `.`, a real path in this repo never does.
+    if (!/[A-Za-z0-9_]$/.test(token)) return;
+    if (token.includes('NNNN')) return;
+    if (!isTracked(token)) return;
+    if (!isWithinRoot(token)) return;
     tokens.add(token);
+  };
+  const subTokenRe = /[\w.-]+(?:\/[\w.-]+)*/g;
+  for (const line of text.split(/\r?\n/)) {
+    const re = /`([^`]+)`/g;
+    let m;
+    while ((m = re.exec(line)) !== null) {
+      const span = m[1];
+      if (PATH_TOKEN_RE.test(span)) {
+        add(span);
+        continue;
+      }
+      if (!/^[A-Z][A-Za-z0-9_.-]*=/.test(span)) continue;
+      for (const sub of span.matchAll(subTokenRe)) add(sub[0]);
+    }
   }
   return tokens;
 }
