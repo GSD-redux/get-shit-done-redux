@@ -25,10 +25,28 @@ const path = require('node:path');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 /**
- * @param {(dir: string) => void} [t.after]  optional node:test `t` for auto-cleanup registration; caller may also ignore and use the returned `cleanup`.
+ * Pure name-filter decision for a single hooks/ top-level entry: should it be
+ * copied into the cold-tree fixture? Excludes the build output dir and any
+ * transient build-hooks.js staging dir (both by NAME ONLY — see the
+ * no-stat-on-a-skipped-name rationale in buildColdInstallTree below).
+ * @param {string} name
+ * @returns {boolean}
+ */
+function shouldCopyHookEntry(name) {
+  return name !== 'dist' && !name.startsWith('.dist-staging');
+}
+
+/**
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot]  TEST-ONLY: source tree root to copy hooks/
+ *   and gsd-core/bin/ensure-runtime-build.cjs from, in place of the real
+ *   REPO_ROOT. Lets a test point this fixture at a hermetic fake tree instead
+ *   of mutating the live repo's hooks/ directory (which other test files may
+ *   be concurrently reading). Defaults to REPO_ROOT.
  * @returns {{ dir: string, hooksDir: string, cleanup: () => void }}
  */
-function buildColdInstallTree() {
+function buildColdInstallTree(opts = {}) {
+  const repoRoot = opts.repoRoot || REPO_ROOT;
   const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-cold-tree-'));
 
   // hooks/ — entire directory (top-level hook scripts + hooks/lib/*.js +
@@ -57,9 +75,9 @@ function buildColdInstallTree() {
   // name has excluded it.
   const hooksDestDir = path.join(dir, 'hooks');
   fs.mkdirSync(hooksDestDir, { recursive: true });
-  for (const entry of fs.readdirSync(path.join(REPO_ROOT, 'hooks'), { withFileTypes: true })) {
-    if (entry.name === 'dist' || entry.name.startsWith('.dist-staging')) continue;
-    fs.cpSync(path.join(REPO_ROOT, 'hooks', entry.name), path.join(hooksDestDir, entry.name), {
+  for (const entry of fs.readdirSync(path.join(repoRoot, 'hooks'), { withFileTypes: true })) {
+    if (!shouldCopyHookEntry(entry.name)) continue;
+    fs.cpSync(path.join(repoRoot, 'hooks', entry.name), path.join(hooksDestDir, entry.name), {
       recursive: true,
     });
   }
@@ -70,7 +88,7 @@ function buildColdInstallTree() {
   // "cannot auto-build" branch fires deterministically).
   fs.mkdirSync(path.join(dir, 'gsd-core', 'bin'), { recursive: true });
   fs.copyFileSync(
-    path.join(REPO_ROOT, 'gsd-core', 'bin', 'ensure-runtime-build.cjs'),
+    path.join(repoRoot, 'gsd-core', 'bin', 'ensure-runtime-build.cjs'),
     path.join(dir, 'gsd-core', 'bin', 'ensure-runtime-build.cjs'),
   );
 
@@ -81,4 +99,4 @@ function buildColdInstallTree() {
   return { dir, hooksDir: path.join(dir, 'hooks'), cleanup };
 }
 
-module.exports = { buildColdInstallTree, REPO_ROOT };
+module.exports = { buildColdInstallTree, REPO_ROOT, shouldCopyHookEntry };
