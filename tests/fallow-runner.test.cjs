@@ -326,4 +326,43 @@ describe('resolveFallowBinary (#3618)', () => {
       cleanup(cwd);
     }
   });
+
+  // P3 (#3619, epic #3411 Phase 3): resolveFallowBinary switched from
+  // `env: { PATH: envPath, PATHEXT: process.env['PATHEXT'] ?? '' }` to
+  // `pathOverride: envPath` so this module never reads PATHEXT itself (the
+  // shape local/no-private-binary-resolution forbids outside the seam). The
+  // seam's `env` param is left unset, so it defaults to `process.env` inside
+  // resolveExecutableBinary — a REAL ambient process.env.PATHEXT must still
+  // govern win32 resolution exactly as it did before the switch. This is the
+  // row the whole switch could have silently broken.
+  //
+  // PATHEXT is meaningless on POSIX (R21), so per F4's pattern above, BOTH
+  // platform contracts are asserted explicitly rather than skipping either:
+  // a `t.skip()`/bare `return` would make this a vacuous pass on that lane.
+  test('P3: a real ambient process.env.PATHEXT still governs win32 resolution after the env -> pathOverride switch', () => {
+    const cwd = createTempDir();
+    const pathDir = createTempDir();
+    const originalPathext = process.env.PATHEXT;
+    try {
+      process.env.PATHEXT = '.XYZ';
+      const distinctiveFixture = path.join(pathDir, 'fallow.XYZ');
+      fs.writeFileSync(distinctiveFixture, '');
+      const resolved = resolveFallowBinary({ cwd, envPath: pathDir });
+      if (process.platform === 'win32') {
+        // win32: ambient process.env.PATHEXT ('.XYZ') is consulted, so the
+        // distinctively-extensioned fixture resolves — proving the pass-through
+        // was preserved by pathOverride, not silently dropped.
+        assert.equal(resolved, distinctiveFixture);
+      } else {
+        // POSIX: PATHEXT plays no role in resolution at all (resolveExecutableBinary
+        // matches the bare name 'fallow' exactly); a file named 'fallow.XYZ' is not
+        // that name, so nothing is found.
+        assert.equal(resolved, null);
+      }
+    } finally {
+      if (originalPathext === undefined) delete process.env.PATHEXT; else process.env.PATHEXT = originalPathext;
+      cleanup(cwd);
+      cleanup(pathDir);
+    }
+  });
 });

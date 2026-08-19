@@ -28,12 +28,14 @@ export interface ResolveFallowOpts {
 export function resolveFallowBinary({ cwd, envPath = process.env['PATH'] ?? '' }: ResolveFallowOpts): string | null {
   return resolveExecutableBinary('fallow', {
     prependPaths: [path.join(cwd, 'node_modules', '.bin')],
-    // PATHEXT is passed through (not spread from the rest of process.env) so
-    // win32 resolution still works, while avoiding the spread-loses-the-
-    // case-insensitive-proxy hazard the Windows lane caught in Phase 1. `?? ''`
-    // is intentional: the seam falls back to its own DEFAULT_PATHEXT when this
-    // is empty/absent, so an empty string here is a safe "let the seam decide".
-    env: { PATH: envPath, PATHEXT: process.env['PATHEXT'] ?? '' },
+    // #3619 (epic #3411 Phase 3): pathOverride carries envPath as the search
+    // path while leaving `env` unset, so the seam falls back to its default
+    // `env` (process.env) for everything else — PATHEXT included. Ambient
+    // PATHEXT therefore still governs win32 resolution exactly as before, but
+    // this file never reads it itself: that's what keeps this module clean
+    // under local/no-private-binary-resolution, which forbids a PATHEXT read
+    // outside the seam.
+    pathOverride: envPath,
     requireExecutable: true,
   });
 }
