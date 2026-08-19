@@ -5010,6 +5010,173 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
     });
   });
 
+  // ─── Defect 3: hook-kind coverage (#3606) ────────────────────────────────────
+  //
+  // A point having a call site proves hooks are RENDERED, not DISPATCHED. A
+  // consumer that iterates only `kind == "gate"` (or narrows `kind == "step"`
+  // to one ref.skill) silently drops every other registered kind — mempalace's
+  // step hooks were wired, active, and never run for five days across
+  // plan:post / execute:wave:post / verify:post / execute:post consumers.
+  // The guard must validate, per registered kind, that the call site's
+  // dispatch text covers that kind.
+
+  describe('Defect 3: validateHooksWired hook-kind coverage (#3606)', () => {
+    const ALL = ['contribution', 'step', 'gate'];
+    /** wiredKinds fixture: Map<point, Set<kind>> */
+    const kindsMap = (spec) => new Map(Object.entries(spec).map(([p, ks]) => [p, new Set(ks)]));
+
+    test('a step hook at a point whose site covers only gate fails with a kind-coverage error', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'plan:post', ref: { skill: 'my-skill' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'plan:post': ['gate'] }); // hand-rolled gate-only consumer
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'a step registered at a gate-only point must fail validation');
+      const joined = errs.join(' ');
+      assert.match(joined, /plan:post/, 'error must name the point');
+      assert.match(joined, /test-cap/, 'error must name the capability id');
+      assert.match(joined, /step/, 'error must name the uncovered kind');
+      assert.doesNotMatch(joined, /not wired/i, 'the point IS wired — this is the coverage error, not the wiring error');
+    });
+
+    test('a contribution hook at a point whose site covers only gate fails', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [],
+        contributions: [{ point: 'execute:wave:post', into: 'orchestrator', fragment: { inline: 'hi' }, produces: [], consumes: [] }],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'execute:wave:post': ['gate'] });
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'a contribution registered at a gate-only point must fail validation');
+      assert.match(errs.join(' '), /contribution/);
+    });
+
+    test('a point covered for exactly the registered kinds passes (boundary: no over-reach)', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'ship:post', ref: { skill: 'my-skill' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'ship:post': ['step'] }); // ship.md's real coverage
+      assert.deepEqual(validateHooksWired(cap, wired), [], 'step at a step-covered point must pass');
+    });
+
+    test('unwired-point errors are unchanged when the arg is a kinds Map', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'discuss:pre', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent entirely
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'unwired point still fails');
+      assert.match(errs.join(' '), /not wired/i, 'the existing unwired error text is preserved');
+    });
+
+    test('boundary: invalid points are not kind-flagged (schema validator owns them)', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'not:a:real:point', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const errs = validateHooksWired(cap, kindsMap({}));
+      assert.deepEqual(errs, [], 'invalid points produce neither wiring nor coverage errors');
+    });
+
+    test('the real tree passes the extended guard for every in-tree registered kind', () => {
+      // Self-enforcement: the repo's own capabilities and host workflows must
+      // satisfy the new check — this is the test that forces consumer fixes.
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const wiredKinds = getWiredKinds(ROOT);
+      const failures = [];
+      for (const capPath of fs.readdirSync(path.join(ROOT, 'capabilities'))) {
+        const manifest = path.join(ROOT, 'capabilities', capPath, 'capability.json');
+        if (!fs.existsSync(manifest)) continue;
+        let cap;
+        try { cap = JSON.parse(fs.readFileSync(manifest, 'utf8')); } catch { continue; }
+        for (const err of validateHooksWired(cap, wiredKinds)) failures.push(`${capPath}: ${err}`);
+      }
+      assert.deepEqual(
+        failures, [],
+        `in-tree capabilities must be fully kind-covered by host workflows:\n  ${failures.join('\n  ')}`,
+      );
+    });
+  });
+
+  describe('coveredKindsInRegion: dispatch-text kind coverage (#3606)', () => {
+    test('deferral line without a kind discriminator covers every kind', () => {
+      const region = 'Apply each entry in `activeHooks` per @gsd-core/references/loop-hook-dispatch.md\n';
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      assert.deepEqual([...coveredKindsInRegion(region)].sort(), ['contribution', 'gate', 'step']);
+    });
+
+    test('deferral line naming one kind covers only that kind', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['step']);
+    });
+
+    test('a bare §-citation of the reference covers nothing (validation guidance, not dispatch)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = '⚠ **Validate `check` before shell use** — `loop-hook-dispatch.md` § `gate`.\n**For each active entry where `kind == "gate"`**\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['gate'], 'gate dispatched unconditionally, step/contribution NOT');
+    });
+
+    test('a narrowed kind line (kind == step AND ref.skill ==) does not cover the kind', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Resolve hooks where `kind == "step"` and `ref.skill == "secure-phase"`.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], [], 'a one-skill special case proves nothing about the kind generally');
+    });
+
+    test('quote and operator variants are tolerated (=== and single quotes)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = "for h in hooks: if h.kind === 'contribution' then inject\n";
+      assert.deepEqual([...coveredKindsInRegion(region)], ['contribution']);
+    });
+
+    test('CRLF input yields the same verdicts as LF', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const lf = 'per @gsd-core/references/loop-hook-dispatch.md\n`kind == "gate"` unconditional\n';
+      const crlf = lf.replace(/\n/g, '\r\n');
+      assert.deepEqual([...coveredKindsInRegion(crlf)].sort(), [...coveredKindsInRegion(lf)].sort());
+    });
+
+    test('scanWiredKinds accumulates per-point unions across multiple call sites', () => {
+      const { scanWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const text = [
+        'X=$(gsd_run loop render-hooks verify:post --raw)',
+        '**For each active entry where `kind == "gate"`**',
+        'Y=$(gsd_run loop render-hooks verify:post --raw)',
+        'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md.',
+        '',
+      ].join('\n');
+      const m = scanWiredKinds(text);
+      assert.ok(m.has('verify:post'), 'point must be present');
+      assert.deepEqual(
+        [...m.get('verify:post')].sort(),
+        ['gate', 'step'],
+        'two call sites at one point accumulate their coverage',
+      );
+    });
+  });
+
   // ─── Anti-pattern parity guards ──────────────────────────────────────────────
 
   describe('Anti-pattern parity: host-file set has a single source of truth', () => {
