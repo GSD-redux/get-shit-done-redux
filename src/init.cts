@@ -1253,11 +1253,14 @@ function cmdInitPlanPhase(
   // throwing; the try/catch is defense-in-depth so init never breaks on this.
   let priorVerifyCommands: unknown[] = [];
   try {
-    const beforePhase = phaseNumberPlan !== null ? Number(phaseNumberPlan) : NaN;
-    if (Number.isFinite(beforePhase)) {
+    // #2401 review fix: harvestPriorVerifyCommands accepts a phase-id token
+    // (string) directly, so a decimal phase like '2.1' is no longer silently
+    // dropped by `Number('2.1')` producing a value the old `number`-only
+    // parameter mishandled for lettered/decimal tokens.
+    if (phaseNumberPlan !== null) {
       priorVerifyCommands = harvestPriorVerifyCommands({
         planningDir: planningPaths(cwd).phases,
-        beforePhase,
+        beforePhase: phaseNumberPlan,
       }).commands;
     }
   } catch {

@@ -28,6 +28,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
+import phaseIdMod = require('./phase-id.cjs');
+const { stripProjectCodePrefix, extractPhaseToken, comparePhaseNum } = phaseIdMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,7 +95,7 @@ interface ProbePhaseOptions {
 }
 
 interface HarvestedCommand {
-  phase: number;
+  phase: string;
   plan: string;
   task: string;
   command: string;
@@ -105,7 +108,13 @@ interface HarvestResult {
 
 interface HarvestOptions {
   planningDir: string;
-  beforePhase: number;
+  /**
+   * A phase-id token (`phase-id.cjs`'s grammar) or a plain number. Accepting
+   * either lets callers pass a decimal/lettered token (`'2.1'`, `'12A'`)
+   * without lossy `Number()` coercion; a plain number is stringified before
+   * comparison via `comparePhaseNum`.
+   */
+  beforePhase: number | string;
   limit?: number;
   lookback?: number;
 }
@@ -179,7 +188,16 @@ function extractAutomatedCommands(planText: unknown): AutomatedCommand[] {
 /** `$`, backtick, `*`, `?`, `~`, or a newline — a path this recognizer refuses to guess at. */
 const DYNAMIC_PATH_RE = /[$`*?~\n]/;
 const CD_SEGMENT_RE = /^cd\s+(.+)$/;
-const PREFIX_FLAG_RE = /(?:^|\s)--prefix(?:=|\s+)(\S+)/;
+/**
+ * Quote-aware `--prefix` value capture (#2401 review Finding 2): a bare
+ * `\S+` capture truncates a quoted path containing a space (`--prefix "my
+ * dir"` → `"my`). Alternation order is double-quoted, single-quoted,
+ * unquoted — the surrounding quote pair (if any) is removed downstream by
+ * the existing `stripQuotes`.
+ */
+const PREFIX_FLAG_RE = /(?:^|\s)--prefix(?:=|\s+)("[^"]*"|'[^']*'|\S+)/;
+/** Same value grammar as `PREFIX_FLAG_RE`, `g`-flagged for stripping (Finding 1). */
+const PREFIX_FLAG_STRIP_RE = /(?:^|\s)--prefix(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g;
 const NEEDS_NPM_RE = /^(npm|npx|pnpm|yarn|bun)\b/;
 const NEEDS_MAKE_RE = /^make\b/;
 const NPM_RUN_SCRIPT_RE = /\bnpm\s+run\s+([\w:@./-]+)/;
@@ -225,6 +243,42 @@ function stripQuotes(s: string): string {
 /** Backslash → forward-slash, applied unconditionally (backslash paths arrive on Linux too). */
 function toSlash(s: string): string {
   return s.replace(/\\/g, '/');
+}
+
+/**
+ * `NPM_RUN_SCRIPT_RE` requires `npm` and `run` adjacent, so `npm --prefix
+ * ./web run lint` (the form this feature's own docs prefer) never matches
+ * (#2401 review Finding 1). Strip the `--prefix <value>` / `--prefix=<value>`
+ * flag (either ordering, quote-aware) before running the script-name match.
+ */
+function stripPrefixFlag(s: string): string {
+  return s.replace(PREFIX_FLAG_STRIP_RE, ' ');
+}
+
+/** Is `raw` (after the same quote-stripping/slash-normalization used elsewhere) an absolute path? */
+function isAbsoluteCdSegment(raw: string): boolean {
+  return path.isAbsolute(toSlash(stripQuotes(raw)));
+}
+
+/**
+ * Fold chained `cd` segments left-to-right with absolute-reset semantics
+ * (#2401 review Finding 3): a relative segment appends onto the
+ * accumulator; an absolute segment discards everything accumulated so far
+ * and becomes the new accumulator (matching real shell `cd` semantics —
+ * `cd sub && cd /abs/path` ends up at `/abs/path`, not `sub//abs/path`).
+ * A single segment (the overwhelmingly common case) always returns that
+ * segment verbatim, byte-identical to the pre-fix `cdArgs[0]` behavior.
+ */
+function foldCdArgs(args: string[]): string {
+  let acc = '';
+  for (const raw of args) {
+    if (acc === '' || isAbsoluteCdSegment(raw)) {
+      acc = raw;
+    } else {
+      acc = `${acc}/${raw}`;
+    }
+  }
+  return acc;
 }
 
 function stripLeadingDotSlash(s: string): string {
@@ -325,7 +379,7 @@ function resolveVerifyCommandTarget(command: unknown, options?: ResolveOptions):
 
   if (cdArgs.length > 0) {
     form = 'cd';
-    rawTarget = cdArgs.length === 1 ? cdArgs[0] : cdArgs.join('/');
+    rawTarget = foldCdArgs(cdArgs);
     rest = segments.slice(i).join(' && ');
   } else {
     const prefixMatch = PREFIX_FLAG_RE.exec(trimmed);
@@ -425,7 +479,7 @@ function resolveVerifyCommandTarget(command: unknown, options?: ResolveOptions):
     return result;
   }
 
-  const scriptMatch = NPM_RUN_SCRIPT_RE.exec(restTrimmed);
+  const scriptMatch = NPM_RUN_SCRIPT_RE.exec(stripPrefixFlag(restTrimmed));
   if (scriptMatch) {
     const scriptName = scriptMatch[1];
     result.script = scriptName;
@@ -559,7 +613,6 @@ function probePhaseVerifyCommands(options: ProbePhaseOptions): ProbePhaseResult 
 
 // ─── Prior-phase harvesting ───────────────────────────────────────────────────
 
-const PHASE_DIR_RE = /^phase-(\d+(?:\.\d+)?)/;
 const DEFAULT_LIMIT = 20;
 const DEFAULT_LOOKBACK = 3;
 
@@ -568,6 +621,17 @@ const DEFAULT_LOOKBACK = 3;
  * directories) looking for the nearest prior phase whose plans carry any
  * `<automated>` command. Returns that phase's commands, deduped by command
  * text (first-seen order) and capped at `limit`. Never throws.
+ *
+ * Phase directories are enumerated and ordered via the canonical grammar in
+ * `phase-id.cjs` (#2401 review fix) rather than a bespoke `phase-N-slug`
+ * regex — real GSD phase directories are `01-foundation`, `3-thing`,
+ * `2.1-thing`, `12A-thing`, or project-code-prefixed (`CK-01-name`), never
+ * `phase-N-slug`. A directory name is treated as a phase directory only when
+ * it (after stripping an optional project-code prefix) starts with a digit;
+ * `notes`, `archive`, etc. are ignored. `extractPhaseToken` reads each
+ * directory's phase token and `comparePhaseNum` both filters (`< beforePhase`)
+ * and orders (descending) so decimal/lettered/sentinel tokens (`2.1`, `12A`,
+ * `999.1`) compare correctly instead of via lossy `Number()` parsing.
  */
 function harvestPriorVerifyCommands(options: HarvestOptions): HarvestResult {
   const { planningDir, beforePhase, limit = DEFAULT_LIMIT, lookback = DEFAULT_LOOKBACK } = options;
@@ -579,7 +643,8 @@ function harvestPriorVerifyCommands(options: HarvestOptions): HarvestResult {
     return { commands: [], readError: toMessage(err) };
   }
 
-  const candidates: Array<{ phase: number; dir: string }> = [];
+  const beforePhaseStr = String(beforePhase);
+  const candidates: Array<{ token: string; dir: string }> = [];
   for (const ent of entries) {
     let isDir = false;
     try {
@@ -588,13 +653,16 @@ function harvestPriorVerifyCommands(options: HarvestOptions): HarvestResult {
       isDir = false;
     }
     if (!isDir) continue;
-    const m = PHASE_DIR_RE.exec(ent.name);
-    if (!m) continue;
-    const phase = Number(m[1]);
-    if (!Number.isFinite(phase)) continue;
-    if (phase < beforePhase) candidates.push({ phase, dir: ent.name });
+    // Not a phase directory at all (e.g. 'notes', 'archive') — no reliable
+    // phase token can be read from a name that doesn't start with a digit
+    // once any project-code prefix ('CK-', 'PROJ-') is stripped.
+    if (!/^\d/.test(stripProjectCodePrefix(ent.name))) continue;
+    const token = extractPhaseToken(ent.name);
+    if (comparePhaseNum(token, beforePhaseStr) < 0) {
+      candidates.push({ token, dir: ent.name });
+    }
   }
-  candidates.sort((a, b) => b.phase - a.phase);
+  candidates.sort((a, b) => comparePhaseNum(b.token, a.token));
 
   const readErrors: string[] = [];
   let examined = 0;
@@ -626,7 +694,7 @@ function harvestPriorVerifyCommands(options: HarvestOptions): HarvestResult {
         if (seen.has(cmd.command)) continue;
         seen.add(cmd.command);
         found.push({
-          phase: candidate.phase,
+          phase: candidate.token,
           plan: path.join(phaseDirPath, file),
           task: cmd.task,
           command: cmd.command,

@@ -277,6 +277,82 @@ describe('resolveVerifyCommandTarget — grounded forms', () => {
   });
 });
 
+describe('#2401 review Finding 1 — script check runs for --prefix form regardless of flag order', () => {
+  test('npm --prefix ./web run <missing-script> is script_missing/warning', () => {
+    const root = fixtureRoot('finding1-prefix-first-missing');
+    writePackageJson(path.join(root, 'web'), { build: 'vite build' });
+    const r = resolveVerifyCommandTarget('npm --prefix ./web run nope', { projectRoot: root });
+    assert.equal(r.reason, 'script_missing');
+    assert.equal(r.severity, 'warning');
+  });
+
+  test('npm run <missing-script> --prefix ./web is script_missing/warning', () => {
+    const root = fixtureRoot('finding1-prefix-trailing-missing');
+    writePackageJson(path.join(root, 'web'), { build: 'vite build' });
+    const r = resolveVerifyCommandTarget('npm run nope --prefix ./web', { projectRoot: root });
+    assert.equal(r.reason, 'script_missing');
+    assert.equal(r.severity, 'warning');
+  });
+
+  test('npm --prefix ./web run <existing-script> is reason:null/severity:none', () => {
+    const root = fixtureRoot('finding1-prefix-first-present');
+    writePackageJson(path.join(root, 'web'), { build: 'vite build' });
+    const r = resolveVerifyCommandTarget('npm --prefix ./web run build', { projectRoot: root });
+    assert.equal(r.reason, null);
+    assert.equal(r.severity, 'none');
+  });
+
+  test('npm run <existing-script> --prefix ./web is reason:null/severity:none', () => {
+    const root = fixtureRoot('finding1-prefix-trailing-present');
+    writePackageJson(path.join(root, 'web'), { build: 'vite build' });
+    const r = resolveVerifyCommandTarget('npm run build --prefix ./web', { projectRoot: root });
+    assert.equal(r.reason, null);
+    assert.equal(r.severity, 'none');
+  });
+});
+
+describe('#2401 review Finding 2 — quoted --prefix paths containing spaces', () => {
+  for (const [label, quote] of [['double-quoted', '"'], ['single-quoted', "'"]]) {
+    test(`npm --prefix ${quote}my dir${quote} run test resolves the ${label} directory`, () => {
+      const root = fixtureRoot(`finding2-present-${label}`);
+      writePackageJson(path.join(root, 'my dir'), { test: 'node --version' });
+      const r = resolveVerifyCommandTarget(`npm --prefix ${quote}my dir${quote} run test`, { projectRoot: root });
+      assert.equal(r.status, 'ok');
+      assert.equal(r.severity, 'none');
+      assert.equal(r.target, path.join(root, 'my dir'));
+    });
+
+    test(`npm --prefix ${quote}my dir${quote} run test is broken/missing_dir when the ${label} dir does not exist`, () => {
+      const root = fixtureRoot(`finding2-absent-${label}`);
+      const r = resolveVerifyCommandTarget(`npm --prefix ${quote}my dir${quote} run test`, { projectRoot: root });
+      assert.equal(r.status, 'broken');
+      assert.equal(r.reason, 'missing_dir');
+    });
+  }
+});
+
+describe('#2401 review Finding 3 — an absolute segment in a chained cd resets, not concatenates', () => {
+  test('cd sub && cd <abs-existing-dir> && npm test resolves to the absolute dir', () => {
+    const root = fixtureRoot('finding3-abs-reset');
+    fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+    const abs = path.join(ROOT, 'finding3-abs-target');
+    writePackageJson(abs, { test: 'node --version' });
+    const r = resolveVerifyCommandTarget(`cd sub && cd ${abs} && npm test`, { projectRoot: root });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.severity, 'none');
+    assert.equal(r.target, abs);
+    assert.equal(r.rawTarget, abs);
+  });
+
+  test('cd a && cd b && npm test (both relative) still resolves to <root>/a/b', () => {
+    const root = fixtureRoot('finding3-relative-chain');
+    writePackageJson(path.join(root, 'a', 'b'), { test: 'node --version' });
+    const r = resolveVerifyCommandTarget('cd a && cd b && npm test', { projectRoot: root });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.target, path.join(root, 'a', 'b'));
+  });
+});
+
 describe('resolveVerifyCommandTarget — refusals and negative space', () => {
   const hostile = [
     ['row 10 — refuses a variable path', 'cd "$FRONTEND" && npm test'],
@@ -477,41 +553,41 @@ describe('harvestPriorVerifyCommands', () => {
 
   test('row 36 — harvests prior phase commands', () => {
     const { planningDir } = planningWithPhases('row36', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run lint']) },
-      'phase-2-beta': { '01-PLAN.md': planWith(['cd nowhere && npm test']) },
+      '01-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run lint']) },
+      '02-beta': { '01-PLAN.md': planWith(['cd nowhere && npm test']) },
     });
     const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
     assert.equal(r.commands.length, 1);
     assert.equal(r.commands[0].command, 'npm --prefix ./web run lint');
-    assert.equal(r.commands[0].phase, 1);
+    assert.equal(r.commands[0].phase, '01');
     assert.ok(r.commands[0].plan.endsWith('01-PLAN.md'));
   });
 
   test('row 37 — no prior phase harvests empty', () => {
     const { planningDir } = planningWithPhases('row37', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm test']) },
+      '01-alpha': { '01-PLAN.md': planWith(['npm test']) },
     });
     assert.deepEqual(harvestPriorVerifyCommands({ planningDir, beforePhase: 1 }).commands, []);
   });
 
   test('row 38 — walks back to the nearest phase with commands', () => {
     const { planningDir } = planningWithPhases('row38', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run build']) },
-      'phase-2-beta': { '01-PLAN.md': '# Plan\n\nno automated blocks\n' },
-      'phase-3-gamma': { '01-PLAN.md': planWith(['cd x && npm test']) },
+      '01-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run build']) },
+      '02-beta': { '01-PLAN.md': '# Plan\n\nno automated blocks\n' },
+      '03-gamma': { '01-PLAN.md': planWith(['cd x && npm test']) },
     });
     const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 3 });
     assert.equal(r.commands.length, 1);
-    assert.equal(r.commands[0].phase, 1);
+    assert.equal(r.commands[0].phase, '01');
   });
 
   test('row 39 — walkback stops at three phases', () => {
     const { planningDir } = planningWithPhases('row39', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run build']) },
-      'phase-2-beta': { '01-PLAN.md': '# Plan\n' },
-      'phase-3-gamma': { '01-PLAN.md': '# Plan\n' },
-      'phase-4-delta': { '01-PLAN.md': '# Plan\n' },
-      'phase-5-epsilon': { '01-PLAN.md': planWith(['cd x && npm test']) },
+      '01-alpha': { '01-PLAN.md': planWith(['npm --prefix ./web run build']) },
+      '02-beta': { '01-PLAN.md': '# Plan\n' },
+      '03-gamma': { '01-PLAN.md': '# Plan\n' },
+      '04-delta': { '01-PLAN.md': '# Plan\n' },
+      '05-epsilon': { '01-PLAN.md': planWith(['cd x && npm test']) },
     });
     assert.deepEqual(harvestPriorVerifyCommands({ planningDir, beforePhase: 5 }).commands, []);
   });
@@ -524,8 +600,8 @@ describe('harvestPriorVerifyCommands', () => {
     ]) {
       const cmds = Array.from({ length: n }, (_, i) => `npm --prefix ./p${i} run build`);
       const { planningDir } = planningWithPhases(`row40-${n}`, {
-        'phase-1-alpha': { '01-PLAN.md': planWith(cmds) },
-        'phase-2-beta': { '01-PLAN.md': '# Plan\n' },
+        '01-alpha': { '01-PLAN.md': planWith(cmds) },
+        '02-beta': { '01-PLAN.md': '# Plan\n' },
       });
       const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
       assert.equal(r.commands.length, expected, `${n} distinct commands → ${expected}`);
@@ -534,8 +610,8 @@ describe('harvestPriorVerifyCommands', () => {
 
   test('row 40b — duplicate commands are deduped before the cap', () => {
     const { planningDir } = planningWithPhases('row40b', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm test', 'npm test', 'npm run lint']) },
-      'phase-2-beta': { '01-PLAN.md': '# Plan\n' },
+      '01-alpha': { '01-PLAN.md': planWith(['npm test', 'npm test', 'npm run lint']) },
+      '02-beta': { '01-PLAN.md': '# Plan\n' },
     });
     const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
     assert.deepEqual(
@@ -546,8 +622,8 @@ describe('harvestPriorVerifyCommands', () => {
 
   test('row 41 — harvest degrades on unreadable planning dir', () => {
     const { planningDir } = planningWithPhases('row41', {
-      'phase-1-alpha': { '01-PLAN.md': planWith(['npm test']) },
-      'phase-2-beta': { '01-PLAN.md': '# Plan\n' },
+      '01-alpha': { '01-PLAN.md': planWith(['npm test']) },
+      '02-beta': { '01-PLAN.md': '# Plan\n' },
     });
     const realReaddir = fs.readdirSync;
     try {
@@ -571,6 +647,82 @@ describe('harvestPriorVerifyCommands', () => {
       beforePhase: 3,
     });
     assert.deepEqual(r.commands, []);
+  });
+
+  // #2401 review fix: production phase directories are NOT named `phase-N-slug`
+  // — they are `01-foundation`, `3-thing`, `2.1-thing`, `12A-thing`, and
+  // optionally project-code-prefixed (`CK-01-name`). The bespoke
+  // `/^phase-(\d+(?:\.\d+)?)/` regex this module previously used matched none
+  // of these, so `harvestPriorVerifyCommands` always returned `[]` in
+  // production. These rows pin every real directory-naming form via the
+  // canonical `phase-id.cjs` grammar.
+
+  test('#2401 — zero-padded phase dir (01-foundation)', () => {
+    const { planningDir } = planningWithPhases('naming-zero-padded', {
+      '01-foundation': { '01-PLAN.md': planWith(['npm --prefix ./web run lint']) },
+      '02-next': { '01-PLAN.md': '# Plan\n' },
+    });
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm --prefix ./web run lint');
+    assert.equal(r.commands[0].phase, '01');
+  });
+
+  test('#2401 — unpadded phase dir (3-thing)', () => {
+    const { planningDir } = planningWithPhases('naming-unpadded', {
+      '3-thing': { '01-PLAN.md': planWith(['npm test']) },
+      '4-next': { '01-PLAN.md': '# Plan\n' },
+    });
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 4 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm test');
+    assert.equal(r.commands[0].phase, '3');
+  });
+
+  test('#2401 — decimal sub-phase (2.1-thing) orders between 2-thing and 3-thing', () => {
+    const { planningDir } = planningWithPhases('naming-decimal', {
+      '2-thing': { '01-PLAN.md': planWith(['npm run build:base']) },
+      '2.1-thing': { '01-PLAN.md': planWith(['npm run build:subphase']) },
+      '3-thing': { '01-PLAN.md': '# Plan\n' },
+    });
+    // beforePhase 3 walks back descending: 3-thing (empty) → 2.1-thing (has
+    // commands, stop) — 2.1 must sort BETWEEN 2 and 3, not after 3 or before 2.
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 3 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm run build:subphase');
+    assert.equal(r.commands[0].phase, '2.1');
+  });
+
+  test('#2401 — variant-suffixed phase dir (12A-thing)', () => {
+    const { planningDir } = planningWithPhases('naming-variant-suffix', {
+      '12A-thing': { '01-PLAN.md': planWith(['npm test']) },
+      '13-next': { '01-PLAN.md': '# Plan\n' },
+    });
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 13 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm test');
+    assert.equal(r.commands[0].phase, '12A');
+  });
+
+  test('#2401 — project-code-prefixed phase dir (CK-01-name)', () => {
+    const { planningDir } = planningWithPhases('naming-project-code', {
+      'CK-01-name': { '01-PLAN.md': planWith(['npm --prefix ./web run lint']) },
+      'CK-02-next': { '01-PLAN.md': '# Plan\n' },
+    });
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm --prefix ./web run lint');
+  });
+
+  test('#2401 — non-phase directories (notes, archive) are ignored, not thrown on', () => {
+    const { planningDir } = planningWithPhases('naming-non-phase-dirs', {
+      '01-alpha': { '01-PLAN.md': planWith(['npm test']) },
+      notes: { 'README.md': '# not a plan\n' },
+      archive: { 'old-PLAN.md': planWith(['npm run stale']) },
+    });
+    const r = harvestPriorVerifyCommands({ planningDir, beforePhase: 2 });
+    assert.equal(r.commands.length, 1);
+    assert.equal(r.commands[0].command, 'npm test');
   });
 });
 
