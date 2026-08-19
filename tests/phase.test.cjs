@@ -3296,6 +3296,52 @@ describe('phase complete canonical verification gate (#1522)', () => {
     assert.match(state, /\*\*Current Phase:\*\* 02/);
   });
 
+  // ─── roadmap_updated / state_updated must reflect an actual content change ──
+  // Same class as #2640 (state_updated on phase remove) and the failure #2012
+  // named: `roadmap_updated` was `fs.existsSync(roadmapPath)`, so it reported
+  // `true` for a ROADMAP the transaction never wrote. A caller cannot then tell
+  // a successful rollup from a silently-skipped one, which is exactly how a
+  // no-op rollup goes unnoticed. `requirements_updated` already had the
+  // diff-tracking treatment (#2316-3); these two now match it.
+
+  test('roadmap_updated and state_updated are true when both files actually change', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+
+    const result = runGsdTools(['phase', 'complete', '1'], tmpDir);
+
+    assert.equal(result.success, true, `phase complete failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.roadmap_updated, true,
+      'roadmap_updated must be true when the checkbox and Progress row were rewritten');
+    assert.strictEqual(output.state_updated, true,
+      'state_updated must be true when STATE.md was advanced to the next phase');
+  });
+
+  test('roadmap_updated is false when the transaction leaves ROADMAP.md byte-identical', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+
+    // First completion does the real work.
+    const first = runGsdTools(['phase', 'complete', '1'], tmpDir);
+    assert.equal(first.success, true, `first phase complete failed: ${first.error}`);
+    assert.strictEqual(JSON.parse(first.output).roadmap_updated, true,
+      'precondition: the first completion must genuinely rewrite ROADMAP.md');
+
+    const afterFirst = fs.readFileSync(roadmapPath, 'utf-8');
+
+    // Re-completing the same phase has nothing left to rewrite: the checkbox is
+    // already [x], the Progress row already Complete, the plan count already
+    // final. The file must come out byte-identical, and the flag must say so.
+    const second = runGsdTools(['phase', 'complete', '1'], tmpDir);
+    assert.equal(second.success, true, `second phase complete failed: ${second.error}`);
+
+    assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), afterFirst,
+      'precondition: re-completing an already-complete phase must not alter ROADMAP.md');
+    assert.strictEqual(JSON.parse(second.output).roadmap_updated, false,
+      'roadmap_updated must be false when ROADMAP.md was not written — '
+      + 'fs.existsSync() reported true here, masking the no-op');
+  });
+
   test('blocks stale passed verification when summaries changed later', () => {
     writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
     const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');

@@ -2258,6 +2258,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     ? (phaseInfo['summaries'] as string[]).length
     : 0;
   let requirementsUpdated = false;
+  // #2316-3 pattern, extended to the other two planning files: each of these
+  // must reflect whether the file's content actually CHANGED in the
+  // transaction, never merely that the file exists on disk. `existsSync` here
+  // reported `true` for a ROADMAP the transaction never touched — e.g. a phase
+  // with no row in the Progress table — which made a silent no-op
+  // indistinguishable from a successful rollup write (the failure mode #2012
+  // named as `roadmap_updated` masking the skip).
+  let roadmapUpdated = false;
+  let stateUpdated = false;
 
   const warnings: string[] = [];
   // ADR-3408 §8.5 / D2 (#3374): "liberal but visible" — when the write-seam
@@ -2668,6 +2677,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           before: originalRoadmapContent,
           after: roadmapContent,
         });
+        roadmapUpdated = roadmapContent !== originalRoadmapContent;
 
         const reqPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
         if (fs.existsSync(reqPath)) {
@@ -3241,6 +3251,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
+        stateUpdated = stateContent !== originalStateContent;
       }
 
       writePlanningFileSet(writes);
@@ -3307,8 +3318,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     next_phase_name: nextPhaseName,
     is_last_phase: isLastPhase,
     date: today,
-    roadmap_updated: fs.existsSync(roadmapPath),
-    state_updated: fs.existsSync(statePath),
+    roadmap_updated: roadmapUpdated,
+    state_updated: stateUpdated,
     requirements_updated: requirementsUpdated,
     auto_pruned: autoPruned,
     warnings,
