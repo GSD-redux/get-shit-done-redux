@@ -34,12 +34,16 @@
  *       gsd-core/bin/shared/config-schema.manifest.json, docs/CONFIGURATION.md
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { runNode } = require('./helpers/process-seam.cjs');
+// Required as a MODULE OBJECT, not destructured, so `mock.method(processSeam, 'runHook', …)`
+// can observe what runBashScript actually passes to the seam. tests/helpers.cjs:221-224
+// documents this same pattern for runNode.
+const processSeam = require('./helpers/process-seam.cjs');
+const { runNode, OUTCOME } = processSeam;
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -596,5 +600,68 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const patternMapperSection = workflow.slice(patternMapperIdx, workflow.indexOf('## 7.9. Regenerate API-SURFACE.md'));
     assert.doesNotMatch(researcherSection, /gsd_stall_watch/, 'researcher spawn must remain a plain blocking call (out of scope per Agent Brief)');
     assert.doesNotMatch(patternMapperSection, /gsd_stall_watch/, 'pattern-mapper spawn must remain a plain blocking call (out of scope per Agent Brief)');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2650 follow-up: the spawn bound was sized for the wrong CLASS of call.
+//
+// runBashScript hard-coded `timeout: 10000`. The script it runs is not a cheap
+// probe: extractStallHelpersBash slices the ENTIRE ```bash fence, whose runtime-launcher
+// preamble resolves gsd-tools.cjs and really runs two `gsd_run query config-get` lines —
+// two full Node spawns (measured 236ms vs 2ms for the fallback the old comment claimed
+// fires: 118x). On `full test (windows-latest, 24, shard 1/3)` that bound was exceeded at
+// 10006ms and spawnSync's kill surfaced as `status: null`, which the call site asserted
+// as `null !== 0` — a message naming neither the timeout nor the bound.
+//
+// tests/helpers/timeouts.cjs already owns this exact class (HOOK_FANOUT_TIMEOUT_MS), and
+// its comment records the identical failure on PR #3285: "a bound sized for the wrong
+// class, not a slow machine."
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#2650 follow-up: runBashScript bounds and reports a bash fan-out correctly', () => {
+  test('bounds the fan-out with the class norm, and an explicit override still wins', (t) => {
+    t.after(() => mock.restoreAll());
+    const seen = [];
+    mock.method(processSeam, 'runHook', (target, args, opts) => {
+      seen.push(opts);
+      return { outcome: OUTCOME.EXITED, exitCode: 0, stdout: '', stderr: '', timedOut: false, signal: null, killed: false, code: null };
+    });
+
+    runBashScript('echo hi\n');
+    assert.equal(seen.length, 1,
+      'runBashScript must route through the process seam (CONTRIBUTING.md: never a hand-rolled spawnSync in a suite)');
+    assert.equal(seen[0].timeoutMs, HOOK_FANOUT_TIMEOUT_MS,
+      `default bound must be the bash-fan-out class norm (${HOOK_FANOUT_TIMEOUT_MS}ms), not a probe-sized literal; got ${seen[0].timeoutMs}`);
+    assert.equal(seen[0].interpreter, 'bash', 'the seam must be told to run the script under bash');
+
+    runBashScript('echo hi\n', [], { timeoutMs: 1234 });
+    assert.equal(seen[1].timeoutMs, 1234, 'an explicit timeoutMs must override the class norm');
+  });
+
+  test('an exceeded bound reports TIMED_OUT, not a bare null status', () => {
+    // A real sleep against a deliberately tiny bound. The assertion is on the
+    // CLASSIFICATION, never on elapsed time.
+    const result = runBashScript('sleep 5\n', [], { timeoutMs: 250 });
+    assert.equal(result.outcome, OUTCOME.TIMED_OUT,
+      `an exceeded bound must name itself; got outcome=${result.outcome} status=${result.status}`);
+    assert.equal(result.timedOut, true, 'timedOut must be true when the bound is exceeded');
+  });
+
+  test('a genuine non-zero exit is EXITED, never confused with a timeout', () => {
+    const result = runBashScript('exit 3\n');
+    assert.equal(result.outcome, OUTCOME.EXITED,
+      'a prompt non-zero exit is an EXITED outcome, not a timeout');
+    assert.equal(result.status, 3, 'the real exit code must survive');
+    assert.equal(result.timedOut, false, 'a real exit must not be reported as timed out');
+  });
+
+  test('bound boundary: comfortably under completes, comfortably over times out', () => {
+    const under = runBashScript('exit 0\n', [], { timeoutMs: 30000 });
+    assert.equal(under.outcome, OUTCOME.EXITED, 'work far inside the bound must complete');
+    assert.equal(under.status, 0);
+
+    const over = runBashScript('sleep 5\n', [], { timeoutMs: 250 });
+    assert.equal(over.outcome, OUTCOME.TIMED_OUT, 'work far outside the bound must time out');
   });
 });
