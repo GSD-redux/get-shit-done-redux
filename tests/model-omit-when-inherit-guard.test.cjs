@@ -438,10 +438,23 @@ test('#2684: an unknown agent type resolves to an empty model, so dispatch must 
 // ~20 compliant init-route workflows.
 // ---------------------------------------------------------------------------
 
-/** gsd-* agent types this workflow spawns, by any spawn shape the corpus uses. */
+/** gsd-* agent types this workflow spawns, by any spawn shape the corpus uses.
+ *
+ * The prose shape collects an instruction ("spawn `gsd-x` in parallel",
+ * "**Spawn gsd-user-profiler agent using Task tool:**") but not a description of
+ * what a NESTED workflow does — plan-review-convergence.md runs plan-phase inline
+ * and its "inline plan-phase can spawn gsd-planner / plan-phase spawn gsd-planner"
+ * mentions describe plan-phase's dispatches, whose bindings live in plan-phase.md.
+ * Discriminator: a descriptive continuation is always preceded by a lowercase word
+ * ("it can spawn", "phase spawn"); an instruction follows a comma, `**`, punctuation,
+ * or line start. Mid-sentence imperatives ("then spawn `gsd-x`") are a known
+ * under-collection — the dispatch shape remains the primary collector.
+ */
 function spawnedAgentTypes(content) {
   const dispatchShaped = [...content.matchAll(/subagent_type[=:]\s*"?(gsd-[a-z0-9-]+)"?/g)].map((m) => m[1]);
-  const proseShaped = [...content.matchAll(/\bspawn(?:s|ing)?\s+`?(gsd-[a-z0-9-]+)/gi)].map((m) => m[1]);
+  const proseShaped = [
+    ...content.matchAll(/(?<![a-z] )\bspawn(?:s|ing)?\s+`?(gsd-[a-z0-9-]+)/gi),
+  ].map((m) => m[1]);
   return [...new Set([...dispatchShaped, ...proseShaped])];
 }
 
@@ -470,10 +483,15 @@ function uncoveredSpawnedAgents(content, resolveInit = initPayloadKeys) {
   const agents = spawnedAgentTypes(content);
   if (agents.length === 0) return [];
   const bound = boundModelNames(content, resolveInit);
-  const hasBoundModelRef = modelRefNames(content).some((n) => bound.has(n));
+  // A file that binds any *_model name (shell assignment, parse line, or init payload
+  // key) carries model resolution even when its dispatch sites live in an inline child
+  // workflow — plan-review-convergence.md parses planner_model/checker_model and runs
+  // plan-phase inline; plan-phase.md owns the model= sites.
+  const hasModelBinding =
+    modelRefNames(content).some((n) => bound.has(n)) || [...bound].some((n) => /_model$/i.test(n));
   return agents.filter((a) => {
     const direct = new RegExp(`resolve-model\\s+["'\`]?${escapeRegex(a)}["'\`]?`).test(content);
-    return !(direct || hasBoundModelRef);
+    return !(direct || hasModelBinding);
   });
 }
 
@@ -593,18 +611,34 @@ test('#3602: spawn-site extraction round-trips (property)', () => {
 
 test('#3602: spawn coverage detection is CRLF-safe', () => {
   const noInit = () => null;
-  const body = [
-    'CLASSIFIER_MODEL=$(gsd_run query resolve-model gsd-doc-classifier --raw)',
+
+  const unbound = [
     'For each doc, spawn `gsd-doc-classifier` in parallel.',
+    'Agent(subagent_type="gsd-doc-synthesizer")',
+    '',
+  ].join('\n');
+  const unboundLf = uncoveredSpawnedAgents(unbound, noInit);
+  assert.deepEqual(
+    [...unboundLf].sort(),
+    ['gsd-doc-classifier', 'gsd-doc-synthesizer'],
+    'with no binding anywhere in the file, both spawn shapes are uncovered',
+  );
+  assert.deepEqual(
+    uncoveredSpawnedAgents(unbound.replace(/\n/g, '\r\n'), noInit),
+    unboundLf,
+    'CRLF input must yield the same verdicts as LF (recurring class: #1658/#1668/#2206/#2449/#2450)',
+  );
+
+  const bound = [
+    'CLASSIFIER_MODEL=$(gsd_run query resolve-model gsd-doc-classifier --raw)',
     'Agent(subagent_type="gsd-doc-synthesizer", model="{CLASSIFIER_MODEL}")',
     '',
   ].join('\n');
-  const lf = uncoveredSpawnedAgents(body, noInit);
-  const crlf = uncoveredSpawnedAgents(body.replace(/\n/g, '\r\n'), noInit);
-  assert.deepEqual(lf, ['gsd-doc-synthesizer']);
+  const boundLf = uncoveredSpawnedAgents(bound, noInit);
+  assert.deepEqual(boundLf, [], 'a file-level binding covers the file\'s spawns as a group');
   assert.deepEqual(
-    crlf,
-    lf,
-    'CRLF input must yield the same verdicts as LF (recurring class: #1658/#1668/#2206/#2449/#2450)',
+    uncoveredSpawnedAgents(bound.replace(/\n/g, '\r\n'), noInit),
+    boundLf,
+    'CRLF input must yield the same verdicts as LF',
   );
 });
