@@ -329,6 +329,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `research-documentation-lookup.md` | Shared documentation-lookup protocol (Context7 MCP + guarded CLI fallback) injected into all researcher agents. |
 | `research-philosophy.md` | Shared research philosophy (training-as-hypothesis, honest reporting, investigation-not-confirmation) injected into researcher agents. |
 | `research-verification-protocol.md` | Shared research verification protocol (4 pitfalls + pre-submission checklist) injected into researcher agents. |
+| `verify-command-path-resolvability.md` | Verify Command Path Resolvability dimension (#2401) loaded by `gsd-plan-checker`: how to consume the `{VERIFY_PATHS}` probe result (never re-run or hand-reason the filesystem), the severity/reason table, and report-never-prescribe rules. |
 
 ### Workflow References
 
@@ -417,6 +418,7 @@ The `gsd-planner` agent is decomposed into a core agent plus reference modules t
 | `planner-graphify-auto-update.md` | How `load_graph_context` surfaces `.last-build-status.json` auto-update state (running / failed / stale head) alongside the existing staleness annotation. Opt-in via `graphify.auto_update` (#3347). |
 | `planner-interface-context.md` | Interface context rules for executors — how to extract key interfaces/types/exports from existing code and document new interfaces that downstream plans will consume. |
 | `planner-load-graph-context.md` | Planner's load_graph_context step: knowledge-graph freshness + dependency-context query via the gsd_run launcher (extracted from gsd-planner.md). |
+| `planner-verify-command-grounding.md` | Verify Command Grounding rules (#2401): inherit `prior_verify_commands` verbatim when the story repeats, prefer `npm --prefix <dir> run <script>` over `cd <dir> && npm run <script>`, and ground every authored path. |
 | `skeleton-template.md` | SKELETON.md template emitted for new-project Walking Skeleton (Phase 1 + `--mvp`). |
 | `user-story-template.md` | User story format for MVP planning — "As a / I want to / So that" structured fields. |
 | `specless-probe-fallback.md` | Spec-less probe fallback protocol — gate (toggle + per-section absence via the shared `spec-section` helper), the deterministic edge probe (mirrors spec-phase 5.5), the in-planner prohibition recall, and the `must_haves` authoring lift; consumed by plan-phase step 7.95 when a phase SPEC omits `## Edge Coverage` / `## Prohibitions` (ADR-857 Phase 6). |
@@ -617,6 +619,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `validate.cjs` | Pure phase variant normalization helpers (`phaseVariants`, `buildRoadmapPhaseVariants`, `buildNotStartedPhaseVariants`) used by `verify.cjs` for W006/W007 checks; no I/O, no async |
 | `verification-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools verification` |
 | `verification.cjs` | Verification-status routing — consolidates pass/gaps_found/human_needed status from phase verifier-emitted VERIFICATION.md frontmatter (#651) |
+| `verify-command-grounding.cjs` | Verify-command path-resolvability probe (#2401) — pure `extractAutomatedCommands` (`<automated>` blocks + owning task, ReDoS-safe), `resolveVerifyCommandTarget` (grounds a leading `cd <literal>` chain or `npm --prefix <literal>` against the project root; three-state `ok`/`broken`/`unresolvable` plus `not_applicable`/`pending_creation`), `probePhaseVerifyCommands` (per-phase report backing `gsd-tools check verify-command-paths`), and `harvestPriorVerifyCommands` (nearest prior phase's commands, surfaced to the planner ungated by `context_window`). Never executes command text — PLAN.md is model-authored — and never prescribes a replacement path. Compiled from `src/verify-command-grounding.cts` |
 | `verify-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools verify` |
 | `verify.cjs` | Plan structure, phase completeness, reference, commit validation |
 | `workflow-fragments.cjs` | In-file `<!-- gsd:section id= when= -->` marker parser/composer for GSD workflow markdown (ADR-1671, #2930) — `parseWorkflowSections` (fence/HTML-comment-aware document partition into explicit/gap sections, fail-closed on malformed/unclosed/nested/duplicate markers or an unknown `when=`), `toFragments` (maps sections to `context-composer.cjs` `verbatim` fragments — non-lossy by construction), and `renderFragments`/`composeWorkflow` (compose-within-budget then join, run BEFORE per-runtime converters so a marker attribute never reaches a path-rewrite regex). `WHEN_VOCABULARY` is a frozen 4-atom applicability set (`always`, `flag:--wave`, `state:gap-closure-phase`, `state:has-prior-phases`); widening it is an ADR amendment, not an organic edit. Compiled from `src/workflow-fragments.cts` |
