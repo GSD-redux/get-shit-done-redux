@@ -77,6 +77,9 @@ const {
   hasPackageFileInternal,
   listCodebaseMapFiles,
 } = onboardProjection;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verify-command-grounding.cjs is an export= CommonJS module
+import verifyCommandGrounding = require('./verify-command-grounding.cjs');
+const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 
 const { output, error, ERROR_REASON } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
@@ -1241,6 +1244,26 @@ function cmdInitPlanPhase(
 
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
   result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options, 'plan-phase');
+
+  // #2401: prior-phase verify commands, surfaced UNGATED — additive field, never
+  // conditioned on context_window. Before this, the planner only inherited
+  // prior-phase verify-command context when context_window >= 500000, so at
+  // lower context windows it re-invented (and mis-resolved) the command. The
+  // harvest already degrades to `{commands: [], readError}` rather than
+  // throwing; the try/catch is defense-in-depth so init never breaks on this.
+  let priorVerifyCommands: unknown[] = [];
+  try {
+    const beforePhase = phaseNumberPlan !== null ? Number(phaseNumberPlan) : NaN;
+    if (Number.isFinite(beforePhase)) {
+      priorVerifyCommands = harvestPriorVerifyCommands({
+        planningDir: planningPaths(cwd).phases,
+        beforePhase,
+      }).commands;
+    }
+  } catch {
+    priorVerifyCommands = [];
+  }
+  result['prior_verify_commands'] = priorVerifyCommands;
 
   output(withProjectRoot(cwd, result), raw);
 }
