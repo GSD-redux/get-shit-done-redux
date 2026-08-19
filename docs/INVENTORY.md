@@ -328,6 +328,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `research-documentation-lookup.md` | Shared documentation-lookup protocol (Context7 MCP + guarded CLI fallback) injected into all researcher agents. |
 | `research-philosophy.md` | Shared research philosophy (training-as-hypothesis, honest reporting, investigation-not-confirmation) injected into researcher agents. |
 | `research-verification-protocol.md` | Shared research verification protocol (4 pitfalls + pre-submission checklist) injected into researcher agents. |
+| `verify-command-path-resolvability.md` | Verify Command Path Resolvability dimension (#2401) loaded by `gsd-plan-checker`: how to consume the `{VERIFY_PATHS}` probe result (never re-run or hand-reason the filesystem), the severity/reason table, and report-never-prescribe rules. |
 
 ### Workflow References
 
@@ -416,6 +417,7 @@ The `gsd-planner` agent is decomposed into a core agent plus reference modules t
 | `planner-graphify-auto-update.md` | How `load_graph_context` surfaces `.last-build-status.json` auto-update state (running / failed / stale head) alongside the existing staleness annotation. Opt-in via `graphify.auto_update` (#3347). |
 | `planner-interface-context.md` | Interface context rules for executors — how to extract key interfaces/types/exports from existing code and document new interfaces that downstream plans will consume. |
 | `planner-load-graph-context.md` | Planner's load_graph_context step: knowledge-graph freshness + dependency-context query via the gsd_run launcher (extracted from gsd-planner.md). |
+| `planner-verify-command-grounding.md` | Verify Command Grounding rules (#2401): inherit `prior_verify_commands` verbatim when the story repeats, prefer `npm --prefix <dir> run <script>` over `cd <dir> && npm run <script>`, and ground every authored path. |
 | `skeleton-template.md` | SKELETON.md template emitted for new-project Walking Skeleton (Phase 1 + `--mvp`). |
 | `user-story-template.md` | User story format for MVP planning — "As a / I want to / So that" structured fields. |
 | `specless-probe-fallback.md` | Spec-less probe fallback protocol — gate (toggle + per-section absence via the shared `spec-section` helper), the deterministic edge probe (mirrors spec-phase 5.5), the in-planner prohibition recall, and the `must_haves` authoring lift; consumed by plan-phase step 7.95 when a phase SPEC omits `## Edge Coverage` / `## Prohibitions` (ADR-857 Phase 6). |

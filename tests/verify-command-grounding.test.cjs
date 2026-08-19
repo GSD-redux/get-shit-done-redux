@@ -827,7 +827,7 @@ describe('property-based invariants', () => {
     });
 
     test('(a) never throws for full-unicode input; always returns a known status/severity/base shape', () => {
-      fc.assert(fc.property(fc.fullUnicodeString(), (s) => {
+      fc.assert(fc.property(fc.string({ unit: 'binary' }), (s) => {
         let result;
         assert.doesNotThrow(() => {
           result = resolveVerifyCommandTarget(s, { projectRoot: os.tmpdir() });
@@ -854,7 +854,7 @@ describe('property-based invariants', () => {
     });
 
     test('(b) a blocker severity is only ever reported for a grounded form (full-unicode)', () => {
-      fc.assert(fc.property(fc.fullUnicodeString(), (s) => {
+      fc.assert(fc.property(fc.string({ unit: 'binary' }), (s) => {
         const result = resolveVerifyCommandTarget(s, { projectRoot: os.tmpdir() });
         if (result.severity === 'blocker') {
           assert.ok(result.form !== null && result.form !== undefined,
