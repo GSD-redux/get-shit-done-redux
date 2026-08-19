@@ -1918,6 +1918,34 @@ describe('C4: description and hooks validation', () => {
     assert.deepEqual(hookErrors, [], 'Expected a normal nested relative script to be accepted, got: ' + JSON.stringify(hookErrors));
   });
 
+  // ─── #3631 (defense-in-depth): a declared hook script path must not point into the space
+  // bundleContentHash excludes from the consent digest. A file named `x.pyc` can contain valid
+  // JavaScript and would be executed by `node` regardless of extension, and a __pycache__/
+  // .pytest_cache path segment marks digest-excluded space — so a manifest-declared executable
+  // surface must never be able to reach either. ───
+  for (const [label, script] of [
+    ['__pycache__ path segment', '__pycache__/run.js'],
+    ['.pytest_cache path segment', '.pytest_cache/run.js'],
+    ['.pyc basename suffix', 'hooks/x.pyc'],
+  ]) {
+    test(`hook script pointing into digest-excluded space is rejected (${label})`, () => {
+      const cap = { ...UI_CAP, hooks: [{ event: 'PostToolUse', script }] };
+      const errors = validateCapability(cap, 'ui');
+      const hookErrors = errors.filter((e) => e.includes('hooks[0].script'));
+      assert.ok(
+        hookErrors.length > 0,
+        `Expected a hooks[0].script rejection for ${label} (script=${JSON.stringify(script)}), got: ` + JSON.stringify(errors),
+      );
+    });
+  }
+
+  test('hook script not pointing into digest-excluded space is still accepted (hooks/check.js)', () => {
+    const cap = { ...UI_CAP, hooks: [{ event: 'PostToolUse', script: 'hooks/check.js' }] };
+    const errors = validateCapability(cap, 'ui');
+    const hookErrors = errors.filter((e) => e.includes('hooks[0].script'));
+    assert.deepEqual(hookErrors, [], 'Expected a normal .js hook script to be accepted, got: ' + JSON.stringify(hookErrors));
+  });
+
   test('description present in UI_CAP passes validation', () => {
     const errors = validateCapability(UI_CAP, 'ui');
     const descErrors = errors.filter((e) => e.includes('description'));

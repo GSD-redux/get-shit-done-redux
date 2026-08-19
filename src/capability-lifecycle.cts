@@ -416,6 +416,15 @@ function confinedSharedFile(runtimeDir: string, relFile: unknown): string | null
 // isSafeHookScriptPath; see confinedBundleScript for why). Only [A-Za-z0-9._/-], no leading
 // `-` segment, no `..`, not absolute.
 const SAFE_HOOK_SCRIPT_RE = /^[A-Za-z0-9._/-]+$/;
+// #3631 (defense-in-depth, mirrors capability-validator.cjs — KEEP BOTH IN SYNC): a declared script
+// path must not point into the space bundleContentHash (capability-consent.cts) excludes from the
+// consent-binding digest. A file whose basename ends `.pyc`/`.pyo` can contain perfectly valid
+// JavaScript and would be executed by `node` regardless of extension, and a `__pycache__`/
+// `.pytest_cache` segment marks a directory whose digest marker is suppressed — so a MANIFEST-DECLARED
+// executable surface must never be able to reach either, or the exclusion becomes reachable from a
+// path an attacker fully controls at declare-time rather than only via post-consent tamper.
+const PYCACHE_SEGMENT_RE = /(?:^|[/\\])(__pycache__|\.pytest_cache)(?:[/\\]|$)/;
+const PYCACHE_SUFFIX_RE = /\.(pyc|pyo)$/i;
 function isSafeHookScriptPath(script: string): boolean {
   if (typeof script !== 'string' || script.length === 0) return false;
   if (!SAFE_HOOK_SCRIPT_RE.test(script)) return false;
@@ -425,6 +434,8 @@ function isSafeHookScriptPath(script: string): boolean {
   for (const seg of segments) {
     if (seg.startsWith('-')) return false;
   }
+  if (PYCACHE_SEGMENT_RE.test(script)) return false;
+  if (PYCACHE_SUFFIX_RE.test(path.basename(script))) return false;
   return true;
 }
 

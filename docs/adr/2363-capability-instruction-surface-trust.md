@@ -162,18 +162,57 @@ The residual-gap section above states that `bundleContentHash` "walks every entr
 bundle with no exclusions." As of #3631 that is no longer literally true, so the sentence is
 corrected here rather than edited in place.
 
-`bundleContentHash` now skips a small, hardcoded, gitignore-independent set of derived-cache
-entries from the DIGEST: basenames `__pycache__`, `.pytest_cache`, `.DS_Store`, and any file
-ending `.pyc`/`.pyo`. The trigger was a usability defect, not a security one — running a
-Python-backed capability's own test suite wrote `__pycache__` inside the bundle (an *empty*
-`__pycache__` directory was enough, because the walk emits a typed DIR marker per directory),
-which changed the recomputed hash and silently deactivated the capability.
+The trigger was a usability defect, not a security one — running a Python-backed capability's
+own test suite wrote `__pycache__` inside the bundle (an *empty* `__pycache__` directory was
+enough, because the walk emits a typed DIR marker per directory), which changed the recomputed
+hash and silently deactivated the capability. The FIRST fix shipped for this (basename-excluded
+`__pycache__`/`.pytest_cache`/`.DS_Store`, plus any `.pyc`/`.pyo` file anywhere, with an excluded
+DIRECTORY skipped from recursion entirely) was itself found UNSAFE by two orthogonal reviews and
+was corrected before merge to next. That draft is not described further here; this section
+describes the shipped exclusion.
+
+`bundleContentHash` now excludes from the DIGEST ONLY:
+- A `__pycache__` or `.pytest_cache` DIRECTORY's own marker (its bare existence no longer moves
+  the hash) — but the directory is ALWAYS recursed into; every non-excluded child underneath is
+  still hashed. (Skipping recursion was the unsafe draft's hole: an excluded directory became an
+  unbounded, permanently-unhashed region a manifest hook `script` could point into —
+  `__pycache__/run.js` — ship benign, get consent, then rewrite freely afterward.)
+- A `.pyc`/`.pyo` FILE, but ONLY when its immediate parent directory's basename is exactly
+  `__pycache__`. A `.pyc`/`.pyo` anywhere else (bundle root, `scripts/`, a directory literally
+  named `cache.pyc`, etc.) stays hashed, because a sourceless legacy `.pyc` there is genuinely
+  importable/executable. (The unsafe draft matched the suffix anywhere in the tree.)
+- `.DS_Store` by exact basename, anywhere — it is never executed and is a file, so excluding it
+  opens no subtree.
+
+Defense in depth: a manifest-declared hook `script` path cannot point into the excluded space at
+all. `isSafeHookScriptPath` (`src/capability-lifecycle.cts` and its mirror
+`gsd-core/bin/lib/capability-validator.cjs`) additionally rejects any declared script path
+containing a `__pycache__`/`.pytest_cache` path segment, or whose basename ends `.pyc`/`.pyo` — a
+file named e.g. `x.pyc` can contain perfectly valid JavaScript and would be executed by `node`
+regardless of extension, so the digest exclusion must not be reachable from a declared,
+attacker-authored surface.
 
 **D4's argument is unaffected.** The claim this ADR rests on is that a single changed byte in a
-skill body deactivates a project-scoped capability until re-consent. Skill bodies are `.md`
-files and are not in the exclusion set, so that still holds exactly as written. The excluded set
-is strictly derived bytecode that CPython regenerates and validates against its sibling source —
-and that source remains hashed, so a real code change still invalidates consent.
+skill body deactivates a project-scoped capability until re-consent. Skill bodies are `.md` files
+and are not in the exclusion set, so that still holds exactly as written.
+
+**ACCEPTED RESIDUAL RISK — stated plainly, not glossed over.** An earlier version of this section
+claimed CPython "validates [a cached `.pyc`] against its sibling source" before trusting it. That
+claim is FALSE and was disproven by execution: CPython's default (timestamp-based) invalidation
+compares the cached `.pyc` header's stored mtime and size against the CURRENT source file's mtime
+and size — it does NOT check source content. Both mtime and size are ordinary file metadata an
+attacker who can already write to the bundle can forge. A forged `__pycache__/mod.cpython-3XX.pyc`
+whose header mtime/size were copied from an unmodified, still-hashed `mod.py` executes without
+moving this digest. Before this change, any write under `__pycache__` (even an empty directory)
+was detected; after it, a `__pycache__/*.pyc` matching that narrow shape is not. This is accepted
+deliberately — it stops routine bytecode caching from silently deactivating capabilities, which is
+the usability defect this exclusion exists to fix — and it is bounded by: (1) the attacker must
+already have POST-CONSENT write access to the bundle (this is not a remote-exploit surface); (2)
+everything outside `__pycache__/*.pyc` — including sourceless legacy `.pyc`/`.pyo` files anywhere
+else in the bundle — remains hashed; (3) a declared executable surface (hook `script`) cannot
+point into the excluded space (the `isSafeHookScriptPath` guard above). KNOWN LIMITATION:
+`.pytest_cache`'s CONTENTS still change the digest as ordinary hashed files — only its directory
+marker is suppressed, so this residual risk does not extend to `.pytest_cache`.
 
 Two properties were preserved deliberately and are pinned by tests: the exclusion is applied
 AFTER the symlink/non-regular fail-closed rejection (so a symlink named `x.pyc` still throws
