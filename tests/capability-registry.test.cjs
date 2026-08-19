@@ -1918,6 +1918,82 @@ describe('C4: description and hooks validation', () => {
     assert.deepEqual(hookErrors, [], 'Expected a normal nested relative script to be accepted, got: ' + JSON.stringify(hookErrors));
   });
 
+  // ─── #3631 (defense-in-depth): a declared hook script path must not point into the space
+  // bundleContentHash excludes from the consent digest. A file named `x.pyc` can contain valid
+  // JavaScript and would be executed by `node` regardless of extension, and a __pycache__/
+  // .pytest_cache path segment marks digest-excluded space — so a manifest-declared executable
+  // surface must never be able to reach either. ───
+  for (const [label, script] of [
+    ['__pycache__ path segment', '__pycache__/run.js'],
+    ['.pytest_cache path segment', '.pytest_cache/run.js'],
+    ['.pyc basename suffix', 'hooks/x.pyc'],
+  ]) {
+    test(`hook script pointing into digest-excluded space is rejected (${label})`, () => {
+      const cap = { ...UI_CAP, hooks: [{ event: 'PostToolUse', script }] };
+      const errors = validateCapability(cap, 'ui');
+      const hookErrors = errors.filter((e) => e.includes('hooks[0].script'));
+      assert.ok(
+        hookErrors.length > 0,
+        `Expected a hooks[0].script rejection for ${label} (script=${JSON.stringify(script)}), got: ` + JSON.stringify(errors),
+      );
+    });
+  }
+
+  test('hook script not pointing into digest-excluded space is still accepted (hooks/check.js)', () => {
+    const cap = { ...UI_CAP, hooks: [{ event: 'PostToolUse', script: 'hooks/check.js' }] };
+    const errors = validateCapability(cap, 'ui');
+    const hookErrors = errors.filter((e) => e.includes('hooks[0].script'));
+    assert.deepEqual(hookErrors, [], 'Expected a normal .js hook script to be accepted, got: ' + JSON.stringify(hookErrors));
+  });
+
+  // ─── Generative-fix-divergence parity: `isSafeHookScriptPath` is duplicated hand-maintained
+  // logic in src/capability-lifecycle.cts (via `confinedBundleScript`, the nearest exported
+  // consumer) and gsd-core/bin/lib/capability-validator.cjs (via `validateCapability`, the
+  // nearest exported consumer). There is no src/capability-validator.cts — the .cjs is hand
+  // -maintained — so this drives BOTH real copies behaviorally (never source-greps either file)
+  // and asserts they agree on every path, catching the two implementations drifting apart. #3631
+  // finding 1 removed the `.DS_Store` DIGEST exclusion, but the validator never rejected
+  // `.DS_Store` on either side — `hooks/.DS_Store` is expected to be ACCEPTED by both.
+  test('isSafeHookScriptPath parity: capability-lifecycle.cts and capability-validator.cjs agree on every path', () => {
+    const { confinedBundleScript } = require('../gsd-core/bin/lib/capability-lifecycle.cjs');
+    // A capDir that does not exist on disk: confinedBundleScript falls into its lexical
+    // (does-not-exist-yet) branch, so the verdict reflects ONLY isSafeHookScriptPath — never a
+    // realpath/confinement side effect unrelated to what is under test here.
+    const fakeCapDir = path.join(os.tmpdir(), 'gsd-parity-probe-nonexistent-cap-dir');
+
+    const cases = [
+      ['hooks/check.js', true],
+      ['__pycache__/run.js', false],
+      ['hooks/__pycache__/run.js', false],
+      ['.pytest_cache/run.js', false],
+      ['hooks/x.pyc', false],
+      ['x.pyo', false],
+      ['hooks/x.PYC', false],
+      ['hooks/.DS_Store', true],
+      ['hooks/../__pycache__/run.js', false],
+      ['hooks/__pycache__./run.js', true],
+      ['__PYCACHE__/run.js', true],
+      ['hooks\\__pycache__\\run.js', false],
+    ];
+
+    for (const [script, expectedAccept] of cases) {
+      const cap = { ...UI_CAP, hooks: [{ event: 'PostToolUse', script }] };
+      const errors = validateCapability(cap, 'ui');
+      const cjsAccept = errors.filter((e) => e.includes('hooks[0].script')).length === 0;
+      const ctsAccept = confinedBundleScript(fakeCapDir, script) !== null;
+      assert.strictEqual(
+        cjsAccept,
+        ctsAccept,
+        `capability-validator.cjs (accept=${cjsAccept}) and capability-lifecycle.cts (accept=${ctsAccept}) disagree on ${JSON.stringify(script)}`,
+      );
+      assert.strictEqual(
+        cjsAccept,
+        expectedAccept,
+        `expected accept=${expectedAccept} for ${JSON.stringify(script)}, both copies returned accept=${cjsAccept}`,
+      );
+    }
+  });
+
   test('description present in UI_CAP passes validation', () => {
     const errors = validateCapability(UI_CAP, 'ui');
     const descErrors = errors.filter((e) => e.includes('description'));

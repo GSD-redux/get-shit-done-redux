@@ -743,17 +743,56 @@ describe('feat-3210: fallow integration module', () => {
     const { resolveFallowBinary } = require('../gsd-core/bin/lib/fallow-runner.cjs');
     // N2: use shared helper
     const baseTmp = getWritableTmp();
-    const tmp = fs.mkdtempSync(path.join(baseTmp, 'gsd-fallow-bin-'));
-    const binDir = path.join(tmp, 'node_modules', '.bin');
-    fs.mkdirSync(binDir, { recursive: true });
-    const fallowPath = path.join(binDir, 'fallow');
-    fs.writeFileSync(fallowPath, '#!/usr/bin/env sh\n');
-    if (process.platform !== 'win32') fs.chmodSync(fallowPath, 0o755);
 
-    const resolved = resolveFallowBinary({ cwd: tmp, envPath: '' });
-    assert.strictEqual(resolved, fallowPath);
+    if (process.platform === 'win32') {
+      // #3618/#3275: npm's Windows install drops `fallow.cmd` in node_modules/.bin
+      // (plus a bare extensionless POSIX `sh` shim beside it — npm's shim for
+      // non-Windows shells, which CreateProcess cannot execute; the seam
+      // deliberately never tries a bare name on win32). Assert BOTH contracts:
+      // the .cmd resolves, and the bare shim ALONE (no .cmd sibling) resolves
+      // to null, so the deliberate win32 carve-out stays pinned.
+      const tmp = fs.mkdtempSync(path.join(baseTmp, 'gsd-fallow-bin-'));
+      try {
+        const binDir = path.join(tmp, 'node_modules', '.bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        const cmdPath = path.join(binDir, 'fallow.cmd');
+        fs.writeFileSync(cmdPath, '@echo off\r\n');
 
-    cleanup(tmp);
+        const resolved = resolveFallowBinary({ cwd: tmp, envPath: '' });
+        // Case-insensitive: PATHEXT casing (ambient env or DEFAULT_PATHEXT) is
+        // conventionally uppercase, so the resolver constructs `fallow.CMD` —
+        // the same file as `fallow.cmd` on case-insensitive NTFS, just a
+        // different string.
+        assert.strictEqual(String(resolved).toLowerCase(), cmdPath.toLowerCase());
+      } finally {
+        cleanup(tmp);
+      }
+
+      const tmpBare = fs.mkdtempSync(path.join(baseTmp, 'gsd-fallow-bin-bare-'));
+      try {
+        const binDir = path.join(tmpBare, 'node_modules', '.bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        const bareOnly = path.join(binDir, 'fallow');
+        fs.writeFileSync(bareOnly, '#!/usr/bin/env sh\n');
+
+        const resolvedBare = resolveFallowBinary({ cwd: tmpBare, envPath: '' });
+        assert.strictEqual(resolvedBare, null, 'win32: bare extensionless fallow alone must not resolve (#3275)');
+      } finally {
+        cleanup(tmpBare);
+      }
+    } else {
+      const tmp = fs.mkdtempSync(path.join(baseTmp, 'gsd-fallow-bin-'));
+      const binDir = path.join(tmp, 'node_modules', '.bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const fallowPath = path.join(binDir, 'fallow');
+      fs.writeFileSync(fallowPath, '#!/usr/bin/env sh\n');
+      fs.chmodSync(fallowPath, 0o755);
+
+      const resolved = resolveFallowBinary({ cwd: tmp, envPath: '' });
+      assert.strictEqual(resolved, fallowPath);
+
+      cleanup(tmp);
+    }
   });
 
   // H6: replaced wholesale win32 skip with platform-adapted assertion
@@ -773,9 +812,14 @@ describe('feat-3210: fallow integration module', () => {
         fs.writeFileSync(bareFile, '@echo off\r\n');
         fs.writeFileSync(cmdFile, '@echo off\r\n');
         const resolved = resolveFallowBinary({ cwd: tmp, envPath: pathDir });
+        // Case-insensitive: PATHEXT casing (ambient env or DEFAULT_PATHEXT) is
+        // conventionally uppercase, so the resolver constructs `fallow.CMD` —
+        // the same file as `fallow.cmd` on case-insensitive NTFS, just a
+        // different string. Comparing exact case here would be over-specifying
+        // a filesystem-level identity as a string identity.
         assert.strictEqual(
-          resolved,
-          cmdFile,
+          String(resolved).toLowerCase(),
+          cmdFile.toLowerCase(),
           'Windows: .cmd candidate must be preferred over bare extensionless file',
         );
       } finally {
@@ -915,22 +959,42 @@ describe('feat-3210: M2 - node_modules/.bin resolution order', () => {
     const baseTmp = getWritableTmp();
     const tmp = fs.mkdtempSync(path.join(baseTmp, 'gsd-fallow-order-'));
     try {
-      // local node_modules/.bin/fallow
       const binDir = path.join(tmp, 'node_modules', '.bin');
       fs.mkdirSync(binDir, { recursive: true });
-      const localFallow = path.join(binDir, 'fallow');
-      fs.writeFileSync(localFallow, '#!/usr/bin/env sh\necho local\n');
-      if (process.platform !== 'win32') fs.chmodSync(localFallow, 0o755);
-
-      // PATH fallow (a different file)
       const pathDir = path.join(tmp, 'pathbin');
       fs.mkdirSync(pathDir, { recursive: true });
-      const pathFallow = path.join(pathDir, 'fallow');
-      fs.writeFileSync(pathFallow, '#!/usr/bin/env sh\necho path\n');
-      if (process.platform !== 'win32') fs.chmodSync(pathFallow, 0o755);
 
-      const resolved = resolveFallowBinary({ cwd: tmp, envPath: pathDir });
-      assert.strictEqual(resolved, localFallow, 'node_modules/.bin/fallow must win over PATH fallow');
+      if (process.platform === 'win32') {
+        // #3618/#3275: exercise precedence against the real Windows candidate
+        // shape (npm's `fallow.cmd`), not the bare extensionless POSIX shim the
+        // resolver deliberately no longer matches on win32.
+        const localFallow = path.join(binDir, 'fallow.cmd');
+        fs.writeFileSync(localFallow, '@echo off\r\necho local\r\n');
+        const pathFallow = path.join(pathDir, 'fallow.cmd');
+        fs.writeFileSync(pathFallow, '@echo off\r\necho path\r\n');
+
+        const resolved = resolveFallowBinary({ cwd: tmp, envPath: pathDir });
+        // Case-insensitive for the same PATHEXT-casing reason as the sibling
+        // tests above (resolver constructs `fallow.CMD`, not `fallow.cmd`).
+        assert.strictEqual(
+          String(resolved).toLowerCase(),
+          localFallow.toLowerCase(),
+          'node_modules/.bin/fallow.cmd must win over PATH fallow.cmd',
+        );
+      } else {
+        // local node_modules/.bin/fallow
+        const localFallow = path.join(binDir, 'fallow');
+        fs.writeFileSync(localFallow, '#!/usr/bin/env sh\necho local\n');
+        fs.chmodSync(localFallow, 0o755);
+
+        // PATH fallow (a different file)
+        const pathFallow = path.join(pathDir, 'fallow');
+        fs.writeFileSync(pathFallow, '#!/usr/bin/env sh\necho path\n');
+        fs.chmodSync(pathFallow, 0o755);
+
+        const resolved = resolveFallowBinary({ cwd: tmp, envPath: pathDir });
+        assert.strictEqual(resolved, localFallow, 'node_modules/.bin/fallow must win over PATH fallow');
+      }
     } finally {
       cleanup(tmp);
     }

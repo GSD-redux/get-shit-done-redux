@@ -6,7 +6,7 @@
 
 - ここに記載された数値は v1.36.0 時点のファイルシステムから導出されており、リリース間で変動する可能性があります。最新の数値を確認するには、チェックアウトに対して `ls commands/gsd/*.md | wc -l`、`ls agents/gsd-*.md | wc -l` などを実行してください。
 - このファイルは出荷済みのすべてのサーフェスを 6 つのファミリー（エージェント、コマンド、ワークフロー、リファレンス、CLI モジュール、フック）にわたって列挙します。広範なドキュメントはナラティブや厳選されたサブセットを提示する場合があります。ファイルシステムと異なる場合は、このファイルとディレクトリ一覧が正式です。
-- v1.36.0 以降に追加された新しいサーフェスはまずここに記載し、その後広範なドキュメントに伝播させてください。`tests/inventory-counts.test.cjs`、`tests/commands-doc-parity.test.cjs`、`tests/agents-doc-parity.test.cjs`、`tests/cli-modules-doc-parity.test.cjs`、`tests/hooks-doc-parity.test.cjs`、`tests/architecture-counts.test.cjs`、`tests/command-count-sync.test.cjs` のドリフト管理テストが、ファイルシステムに対して数値とロスター内容を固定します。
+- v1.36.0 以降に追加された新しいサーフェスはまずここに記載し、その後広範なドキュメントに伝播させてください。`tests/inventory-manifest-sync.test.cjs` のドリフト管理テストが、ファイルシステムに対してロスター内容を固定します。
 
 これは出荷済みのすべての GSD Core サーフェスの正式な一覧です。トピック別のナビゲーションは [docs インデックス](README.md) を参照してください。
 
