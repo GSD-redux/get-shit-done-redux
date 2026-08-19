@@ -2737,6 +2737,24 @@ describe('scanFileWideNegativeGateConflict — pure unit tests', () => {
   });
 
   // Case 2: region-scoped via sed → NO warn
+  test('case 1b — entity-escaped chain: positive clause pattern must not be harvested as a file-wide ban (#3611)', () => {
+    // Task A bans banned_thing file-wide (== 0) AND positively asserts
+    // required_thing (-ge 1), joined by &amp;&amp;. Task B mentions only
+    // required_thing. Pre-fix, the literal-only split kept the chain as ONE
+    // segment: zeroCmp saw the == 0 and the harvest took BOTH patterns,
+    // falsely warning that B conflicts with a file-wide ban on required_thing.
+    const content = makeTwoTaskPlan({
+      taskAGate: "grep -c 'banned_thing' app/page.py == 0 &amp;&amp; grep -c 'required_thing' app/page.py -ge 1",
+      taskBAction: 'Introduce required_thing usage the plan asserts positively.',
+    });
+    const result = scan(content);
+    assert.strictEqual(
+      result.warnings.filter(w => w.includes('#968')).length,
+      0,
+      `a positively-asserted pattern (-ge 1) joined by &amp;&amp; must not warn as a file-wide ban, got: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
   test('case 2 — region-scoped via sed pipe → NO warn', () => {
     const content = makeTwoTaskPlan({
       taskAGate: "! sed -n '12,40p' app/page.py | grep -Eq 'await .*refresh'",
@@ -4269,7 +4287,40 @@ describe('scanNegativeGrepCommentEcho — pure unit tests', () => {
     const verify = require(VERIFY_CJS);
     const result = verify.scanNegativeGrepCommentEcho(lines);
     assert.strictEqual(result.errors.length, 1, `the entity-bearing literal must still flag its action echo, got: ${JSON.stringify(result.errors)}`);
-    assert.ok(result.errors[0].includes('a'), `error must carry the decoded literal, got: ${result.errors[0]}`);
+    assert.ok(result.errors[0].includes('a&b'), `error must carry the decoded literal a&b, got: ${result.errors[0]}`);
+  });
+
+  test('case 12d — a quoted literal CONTAINING && is not shattered by the segment split (#3611 review)', () => {
+    // A negative grep banning a boolean shape (`grep -c 'a&&b' f == 0`) and an
+    // action echo mentioning a&&b. The split must be quote-aware: splitting on
+    // the operator inside the quotes would destroy the literal and silently
+    // disarm the gate — exactly the plans that spell patterns with ampersands.
+    const lines = [
+      '---',
+      'phase: 01-test',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [file.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  - AC1',
+      '---',
+      '',
+      '<task>',
+      '<name>Quoted operator literal task</name>',
+      '<action>',
+      'Remove the a&&b join.',
+      '</action>',
+      "<verify><automated>grep -c 'a&&b' f == 0</automated></verify>",
+      '<done>Done</done>',
+      '</task>',
+    ].join('\n');
+    const verify = require(VERIFY_CJS);
+    const result = verify.scanNegativeGrepCommentEcho(lines);
+    assert.strictEqual(result.errors.length, 1, `the quoted a&&b literal must still flag its action echo, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors[0].includes('a&&b'), `error must carry the intact literal, got: ${result.errors[0]}`);
   });
 
   test('case 13 — grep -c -F (separate count+fixed flags) extracts literal', () => {
