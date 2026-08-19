@@ -113,7 +113,7 @@ Extract from the imported content:
 
 <step name="plan_conflict_detection">
 
-Run conflict checks against the loaded project context. The report format, severity semantics, and safety-gate behavior are defined by `references/doc-conflict-engine.md` — read it and apply it here. Operation noun: `import`.
+Run conflict checks against the loaded project context. The report format, severity semantics, and safety-gate behavior are defined by `gsd-core/references/doc-conflict-engine.md` — read it and apply it here. Operation noun: `import`.
 
 ### BLOCKER checks (any one prevents import):
 
@@ -134,7 +134,7 @@ Run conflict checks against the loaded project context. The report format, sever
 - Plan uses a library not currently in the project tech stack → [INFO]
 - Plan adds a new phase to the ROADMAP.md structure → [INFO]
 
-Render the full Conflict Detection Report using the format in `references/doc-conflict-engine.md`.
+Render the full Conflict Detection Report using the format in `gsd-core/references/doc-conflict-engine.md`.
 
 **If any [BLOCKER] exists:** apply the safety gate from the reference — exit WITHOUT writing any files. No PLAN.md is written when blockers exist.
 
@@ -142,7 +142,7 @@ Render the full Conflict Detection Report using the format in `references/doc-co
 
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 
-Ask via AskUserQuestion using the approve-revise-abort pattern (see `references/gate-prompts.md`):
+Ask via AskUserQuestion using the approve-revise-abort pattern (see `gsd-core/references/gate-prompts.md`):
 - question: "Review the warnings above. Proceed with import?"
 - header: "Approve?"
 - options: Approve | Abort
@@ -256,7 +256,7 @@ Show: plan filename written, phase directory, validation result, next steps.
 ## Anti-Patterns
 
 Do NOT:
-- Violate the shared conflict-engine contract in `references/doc-conflict-engine.md` (no markdown tables, no new severity labels, no bypass of the BLOCKER gate)
+- Violate the shared conflict-engine contract in `gsd-core/references/doc-conflict-engine.md` (no markdown tables, no new severity labels, no bypass of the BLOCKER gate)
 - Write PLAN.md files as `PLAN-01.md` or `plan-01.md` — always use `{NN}-{MM}-PLAN.md`
 - Use `pbr:plan-checker` or `pbr:planner` — use `gsd-plan-checker` and `gsd-planner`
 - Write `.planning/.active-skill` — this is a PBR pattern with no GSD equivalent

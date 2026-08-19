@@ -151,12 +151,14 @@ module is the central security utility. It provides:
 
 **Runtime hook: `gsd-prompt-guard.js`.** This hook fires on every Write or
 Edit call that targets `.planning/` files. It scans the content being written
-for the same injection patterns as `security.cjs` (a subset inlined directly
-into the hook for independence — the hook does not `require()` the module, so
-it runs even if the module path changes). Detection is **advisory-only**: the
-hook logs the finding but does not block the write. The rationale is that a
-false-positive block on a legitimate planning write would be more disruptive
-than a missed injection in a secondary scan layer.
+for injection patterns shared with `gsd-read-injection-scanner.js` through
+`hooks/lib/injection-patterns.js` — one module both hooks `require()`, so the
+two surfaces cannot drift apart (#3504). The set is deliberately a subset of
+`security.cjs`'s patterns: the hooks stay loadable standalone, without the
+compiled lib tree. Detection is **advisory-only**: the hook logs the finding
+but does not block the write. The rationale is that a false-positive block on
+a legitimate planning write would be more disruptive than a missed injection
+in a secondary scan layer.
 
 **Runtime hook: `gsd-read-injection-scanner.js`.** This hook fires on the
 output of every Read, WebFetch, and WebSearch tool call. It scans the *content
@@ -207,6 +209,25 @@ agents provides an additional containment layer: even if an injected string
 reaches an agent, it is structurally separated from the instruction region.
 Together these controls bracket the ingest → store → re-read lifecycle.
 
+**Runtime hook: `gsd-workflow-guard.js` — advisory vs. blocking posture.**
+This hook has two legs with two deliberately different failure postures. The
+edit leg is **advisory**: when `hooks.workflow_guard` is enabled it warns on
+edits made outside a GSD workflow, and on any internal error it fails open
+(exit 0) — a broken advisory must never wedge a session's tool calls. The
+Bash leg carries the hook's one **hard block**: `git add -f` / `git add
+--force` on an `agent-*` or `worktree-agent-*` branch is blocked outright
+(`WORKTREE_AGENT_FORCE_ADD_FORBIDDEN`, exit 2), enforcing the
+skipped-gitignored contract. When the guard is enabled, this block leg
+**fails closed** (#3504): if an internal error strikes before the block
+decision and the blocking context can be re-derived from the payload (a Bash
+tool call, the guard enabled, the branch determinably an agent branch), the
+hook exits 2 rather than silently allowing. What it cannot establish — an
+unparseable payload, a non-Bash tool, the guard disabled, or a branch it
+cannot determine — still fails open. The known trade-off: on an agent branch
+with the guard enabled, a Bash call that trips an internal error is blocked
+even when it was not a force-add; that is the conservative direction for the
+one hard block this hook owns.
+
 ---
 
 ## Layer 3 — Repository and dependency integrity
@@ -231,6 +252,51 @@ suppressions fail CI.
 Unicode homoglyphs, bidirectional override characters, and invisible Unicode —
 the class of attacks documented in CVE-2021-42574 ("Trojan Source") that can
 hide malicious content in diffs.
+
+---
+
+## Layer 4 — Subprocess execution
+
+GSD starts external programs constantly: git, npm, reviewer CLIs declared by
+capabilities, and whatever a gate predicate names. Every one of those is a
+place where an argument could become a command. One module owns the whole
+question — `src/shell-command-projection.cts`, the single platform seam.
+
+**No `shell: true` for binary invocation.** Passing `shell: true` on Windows is
+the mechanism behind CVE-2024-27980: the shell re-parses the argument list, so
+a value containing `&` or `|` stops being data and becomes a second command.
+Node 26 additionally deprecates `shell: true` alongside an argument array
+(DEP0190), because arguments are concatenated rather than escaped. GSD resolves
+binaries explicitly instead.
+
+**Explicit resolution, not shell lookup.** `resolveExecutableBinary` scans
+`PATH` and, on Windows, the `PATHEXT` extensions, and returns the resolved
+path. It never tries the bare name on Windows: npm global installs drop an
+extensionless POSIX `sh` shim beside `foo.CMD`, and resolving to that shim is
+how the reviewer lanes failed with `spawn ENOENT` (#3275). On macOS and Linux
+the bare name goes to `spawnSync` unchanged, so the operating system's own
+lookup keeps doing the work.
+
+**Mediating `.cmd` and `.bat` safely.** Windows `CreateProcess` cannot execute a
+batch file at all, so one must be run through `cmd.exe`. That is where the
+injection risk actually lives, and it is not solved by resolution alone.
+`projectSpawnInvocation` builds the command line itself and passes it through
+verbatim: one outer quote pair that `cmd /c` strips, every token inside
+force-quoted, embedded quotes doubled. Force-quoting is the point — an unquoted
+`a&calc` is split by `cmd` into two commands, while a quoted `"a&calc"` is one
+literal argument. This is the shape Rust's standard library adopted for the
+sibling CVE-2024-24576.
+
+Relying on the default argument escaping would not be enough. Node's own
+CVE-2024-27980 protection fires only when the program being started is itself
+the `.bat` or `.cmd`; once the program is `cmd.exe`, that check no longer
+applies, and the underlying quoting only quotes arguments containing spaces,
+tabs, or quotes — never one containing a bare `&`.
+
+An argument containing a carriage return or newline is refused rather than
+mediated. A newline cannot be represented in a Windows command line, so
+mediating it would silently truncate the argument; failing visibly is the
+safer outcome.
 
 ---
 
@@ -270,6 +336,16 @@ and structurally isolated in-prompt by the `<security_context>` boundary in
 research agents — but novel jailbreaks and low-signal injections may still pass
 undetected. Defence in depth means each layer makes the attack harder, not that
 any single layer makes it impossible.
+
+**What subprocess execution does not eliminate:** `cmd.exe` expands `%VAR%`
+inside a `/c` string, and there is no escape for `%` outside a batch file. An
+argument containing `%FOO%` is therefore substituted with the environment
+value before the target program sees it. That is information disclosure, not
+arbitrary execution — the force-quoting still prevents an argument from
+becoming a second command — and it is the same residual limit Rust's standard
+library documents for its own batch-file handling. Callers that pass untrusted
+text as an argument to a Windows `.cmd` or `.bat` should not assume the value
+arrives byte-identical.
 
 **Reporting vulnerabilities.** Report via private GitHub security advisory at
 `https://github.com/open-gsd/gsd-core/security/advisories/new`. Do not open

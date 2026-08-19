@@ -44,6 +44,38 @@ This correction is also why `windsurf`'s row above reads correctly without amend
 one), which is exactly the case Phase 2's test suite locks in as "windsurf must not report a shadow
 it does not have."
 
+## Amendment (2026-08-17, #2875): `global=[skills]` described the descriptor, not the disk
+
+Phase 6 found that the claude row is wrong even as the *placement* fact the amendment above
+preserved. **A `claude --global` install has always written `agents/gsd-*.md`.** It did so through
+the inline agent-staging loop in `bin/install.js`, which was never scope-gated and never consulted
+the descriptor — claude was not a member of the `_DESCRIPTOR_AGENTS_RUNTIMES` allow-list, so it fell
+through to that loop on every install, at both scopes.
+
+So `global=[skills]` accurately described what claude's `capability.json` *declared*, and did not
+describe what the installer actually wrote. Those two things had silently diverged, and this ADR —
+along with the layout module's own golden tests — recorded the declaration as though it were the
+outcome.
+
+Phase 6 closes the gap from the other side: the inline loop is deleted, the descriptor is
+authoritative for `agents` on every runtime, and claude's descriptor now declares `agents` at global
+scope. The row's true shape is therefore **`global=[skills, agents]`, `local=[commands, agents]`**.
+On-disk bytes are unchanged — the golden install-tree fixtures did not move, which is the evidence
+that the descriptor, not the installer, was the thing that was incomplete.
+
+**#2218 is again unaffected, for the reason the previous amendment established.** `agents` is not
+trigger-bearing, so widening claude's global row to include it changes nothing about the
+`commands`-versus-`skills` collision that #2218 *is*. Anyone re-reading this ADR after Phase 6
+should not infer a new shadowing case from the wider row.
+
+**The generalizable warning.** A descriptor that is merely *incomplete* is invisible: nothing fails,
+because a separate code path is quietly doing the work the descriptor should have declared. It
+surfaces only when something forces the two into agreement — here, deleting the code path. Reviews
+that check "does the descriptor say the right thing?" cannot catch this; only "does anything install
+artifacts this descriptor does not declare?" can. Three separate enumerations in Phase 6 were short
+for a related reason, all recorded in [ADR-3574](3574-install-materialization-primitives.md)'s
+amendment.
+
 No decision in this ADR changes as a result — Phase 2's `resolveTriggerSurface` signature, the
 `triggerPrecedence` axis, and the phase map above were all designed against the corrected model.
 See `.gsd/phase/feat-2871-trigger-resolution/40-design.md` for the full analysis.

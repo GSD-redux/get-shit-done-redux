@@ -19,6 +19,8 @@ const {
   parseMustHavesBlock,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
+const { normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
+
 // ─── extractFrontmatter ─────────────────────────────────────────────────────
 
 describe('extractFrontmatter', () => {
@@ -1236,11 +1238,15 @@ function buildRoadmap(numPhases) {
  */
 function createPhaseDirs(phasesDir, count) {
   for (let i = 1; i <= count; i++) {
-    const dir = path.join(phasesDir, String(i).padStart(2, '0'));
+    const dirName = String(i).padStart(2, '0');
+    const dir = path.join(phasesDir, dirName);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `01-PLAN.md`), `# Plan\n`);
     fs.writeFileSync(path.join(dir, `01-SUMMARY.md`), `# Summary\n`);
-    fs.writeFileSync(path.join(dir, `01-VERIFICATION.md`), '---\nstatus: passed\n---\n# Verification\n');
+    fs.writeFileSync(
+      path.join(dir, `${normalizePhaseName(dirName)}-VERIFICATION.md`),
+      '---\nstatus: passed\n---\n# Verification\n',
+    );
   }
 }
 
@@ -2094,6 +2100,81 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
       // The body prose the transition wrote stays as designed.
       __assert2736.match(stateContent, /Phase: 2 — Closer-ruling measurement \(D1a\)/);
     });
+
+    // ADR-3408 §8.3 Matrix A5 (#3469, regression-critical): the OTHER branch
+    // of phase.cts's #3350 pairing decision — when the body carries NO
+    // Phase:/Current Phase field at all (narrative prose), authoritativeFm
+    // pairs BOTH current_phase and current_phase_name so the two frontmatter
+    // fields never describe different phases. The #2736 re-assertion (applied
+    // after preservation, via the shared syncAndPreserveStateMd composition
+    // this phase introduced) must still win over any restore for BOTH keys.
+    __t2736('A5 (#3469): with no body Phase field, the paired authoritativeFm override wins for BOTH current_phase and current_phase_name', () => {
+      const planningDir = __path2736.join(tmpDir, '.planning');
+      const phase1Dir = __path2736.join(planningDir, 'phases', '01-foundation');
+      __fs2736.mkdirSync(phase1Dir, { recursive: true });
+
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '- [ ] Phase 1: Foundation',
+          `- [ ] Phase 2: ${PAREN_NAME_2736}`,
+          '',
+          '### Phase 1: Foundation',
+          '**Goal:** Setup',
+          '**Plans:** 1 plans',
+          '',
+          `### Phase 2: ${PAREN_NAME_2736}`,
+          '**Goal:** Measure closer rulings',
+          '',
+        ].join('\n'),
+      );
+
+      // Deliberately NO `Phase:` / `Current Phase:` line in the body.
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'current_phase: 1',
+          'current_phase_name: Foundation',
+          'status: executing',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Currently working through Phase 1 setup tasks.',
+          '',
+        ].join('\n'),
+      );
+
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-PLAN.md'), '# Plan\n');
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-SUMMARY.md'), '# Summary\n');
+      __fs2736.writeFileSync(
+        __path2736.join(phase1Dir, '01-VERIFICATION.md'),
+        ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+      );
+
+      const result = __run2736(['phase', 'complete', '1'], tmpDir);
+      __assert2736.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const stateContent = __fs2736.readFileSync(__path2736.join(planningDir, 'STATE.md'), 'utf-8');
+      const fm = extractFrontmatter(stateContent);
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `current_phase_name must be the exact next-phase display name; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+      __assert2736.strictEqual(
+        String(fm.current_phase),
+        '2',
+        '#3350: current_phase must be PAIRED with current_phase_name when the body carries no Phase field, ' +
+        `so the two frontmatter fields never describe different phases; got ${JSON.stringify(fm.current_phase)}`,
+      );
+    });
   });
 
   __d2736('#2736 sibling: state begin-phase preserves a paren-containing name (e2e)', () => {
@@ -2391,8 +2472,16 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
         `first-write population from the (refreshed) body line must keep working; got ${JSON.stringify(fm.stopped_at)}`,
       );
     });
+
   });
 }
+// ADR-3408 §8.3 Matrix A4 (#3469): satisfied by the "AC1 preservation leg"
+// test above ('with no session Stopped at line to refresh, the fresher
+// frontmatter value survives') — that scenario now runs through the ONE
+// write-seam composition (`syncAndPreserveStateMd`) instead of the
+// hand-assembled sync+preserve pair `applyPostSyncPreservation`'s docstring
+// used to describe. No new test added here: duplicating an already-passing,
+// identically-shaped assertion adds no coverage.
 
 
 // ────────────────────────────────────────────────────────────────────────

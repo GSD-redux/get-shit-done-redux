@@ -43,7 +43,7 @@ import { execGit } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 
 const { output, error } = io;
-const { extractPhaseToken } = phaseId;
+const { extractPhaseToken, scopeToPhase } = phaseId;
 const { extractFrontmatter } = frontmatterMod;
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
@@ -282,6 +282,206 @@ function missingResult(runtime: string, phaseArg: string): VerificationStatusRes
   };
 }
 
+interface ResolveVerificationFileOptions {
+  /**
+   * #3473 F2: three OTHER hand-rolled selection sites (`src/commands.cts`
+   * determinePhaseStatus and two `verification_path` projectors in
+   * `src/init.cts`) additionally accept a BARE `VERIFICATION.md` — a form
+   * this module's own two callers (`findStaleVerificationSummary`,
+   * `readVerificationStatus`) have never accepted, because a bare filename
+   * carries no phase token and `.endsWith('-VERIFICATION.md')` structurally
+   * excludes it. Defaults to `false`, which is byte-for-behavior identical to
+   * the pre-existing (non-optioned) resolver — no call-site edit required for
+   * the two callers in THIS module. Set `true` only from a call site whose
+   * pre-fix behavior already accepted a bare match.
+   */
+  allowBare?: boolean;
+  /**
+   * #3492 regression fix: the phase token (`extractPhaseToken` on the phase
+   * directory's own basename — same grammar `src/phase-id.cts` owns via
+   * `PHASE_NUMBER_TOKEN_SOURCE`) THIS call is resolving for. Every call site
+   * knows its own phaseDir, so every call site can derive and pass this.
+   *
+   * Pinning selection to the caller's own phase is load-bearing: preferring
+   * ANY canonically-shaped `<token>-VERIFICATION.md` (regardless of whose
+   * token it carries) let a stray cross-phase or sentinel-numbered file
+   * (`999-VERIFICATION.md`) outrank the phase's own non-canonical report
+   * (`12-review-VERIFICATION.md`) — a regression this option closes.
+   *
+   * Omitted / empty when the token cannot be derived: falls back to plain
+   * alphabetically-first among the SCOPED dashed candidates (see
+   * `phaseDirName` below), never to null.
+   */
+  phaseToken?: string;
+  /**
+   * #3511 reconciliation: the phase directory's own basename (the same value
+   * every call site already passes through `extractPhaseToken` to derive
+   * `phaseToken` above) — needed separately because the fallback below scopes
+   * by `isPhaseArtifact(fileName, phaseDirName)`, not by `phaseToken`.
+   *
+   * Omitted: the fallback degrades to the plain (unscoped) alphabetically-first
+   * pick — the original pre-#3357 behavior — never to null.
+   */
+  phaseDirName?: string;
+}
+
+/**
+ * #3518: `resolveUatFile`'s options — same two knobs, same semantics, as
+ * `ResolveVerificationFileOptions` above (the UAT artifact is selected by the
+ * identical phase-pinned rule the verification report is; see
+ * `resolvePhaseArtifactFile` below for the single shared selection core).
+ */
+type ResolveUatFileOptions = ResolveVerificationFileOptions;
+
+/**
+ * #3518: the shared phase-pinned artifact-selection core BOTH single-pick
+ * resolvers (`resolveVerificationFile` for `*-VERIFICATION.md`,
+ * `resolveUatFile` for `*-UAT.md`) delegate to — one rule, not two grammars
+ * that agree today and drift tomorrow (epic #3473 F2's defect class).
+ *
+ * `bareName` is the artifact filename WITHOUT the leading dash (`'UAT.md'`);
+ * a "dashed" candidate is any entry ending `-${bareName}`.
+ *
+ * Selection order:
+ *   1. `options.phaseToken` given and `<phaseToken>-${bareName}` is among
+ *      the candidates — that exact file always wins: it is THIS phase's own
+ *      artifact, and no other candidate (whichever phase's token it carries)
+ *      can outrank it (#3492 / #3518).
+ *   2. Fallback — no exact phase-token match (or no token given): alphabetically
+ *      first of the dashed candidates that are THIS phase's own, per
+ *      `scopeToPhase(candidates, options.phaseDirName)` (#3511 reconciliation,
+ *      below). Load-bearing: a phase whose only artifact is non-canonically
+ *      named must keep resolving to it, not to null — this fix must not turn
+ *      "found an artifact" into "found nothing" for anyone. A
+ *      non-canonically-named artifact of THIS phase (e.g.
+ *      `03-CORRECTION-VERIFICATION.md` in `03-foo`) still passes
+ *      `isPhaseArtifact` (it names phase 03, same as the directory), so it
+ *      is still returned here.
+ *   3. `options.allowBare` only — a bare `${bareName}`, ranked BELOW both
+ *      of the above. Rationale: a dashed file names its phase, a bare one
+ *      does not, so a dashed file (canonical or not) is always the better
+ *      answer when both exist. Reached when neither (1) nor (2) found any
+ *      candidate — including when (2)'s scoping filtered every dashed
+ *      candidate out as belonging to some OTHER phase.
+ *
+ * #3511 RECONCILIATION with `isPhaseArtifact` (`src/phase-id.cts`): that
+ * predicate's own docblock used to flag this fallback as an open gap — its
+ * aggregate scans exclude a cross-phase stray, but this single-pick resolver
+ * did not, so it could return a stray as THE artifact while the aggregate
+ * scans correctly ignored it. Closed by scoping step (2) above through
+ * `scopeToPhase` (`src/phase-id.cts`, itself built on `isPhaseArtifact`):
+ * `options.phaseDirName` threads the phase directory's basename in, and the
+ * fallback now filters candidates through `scopeToPhase(candidates,
+ * phaseDirName)` before picking alphabetically-first. This does NOT reopen
+ * the #3357 guarantee — that guarantee is "a phase whose only report is
+ * non-canonically named must keep working", and a non-canonically-named
+ * artifact of THIS phase still passes `isPhaseArtifact` (it is membership by
+ * phase number, not by canonical shape), so it is still returned. Only a
+ * file belonging to a DIFFERENT phase is now excluded — and excluding it is
+ * correct: returning another phase's artifact as this phase's own is worse
+ * than reporting none (confidently wrong beats honestly empty).
+ * The fail-safe now lives entirely inside `isPhaseArtifact`, not in
+ * `scopeToPhase` (which is a plain filter with no unfiltered fallback):
+ * (a) when phase-number membership cannot be determined for `phaseDirName` at
+ * all (no reliable token — the zero-token directory case), every candidate is
+ * treated as belonging to the phase; (b) the `firstLetterPrefixed`
+ * bracket-ambiguity case, where a letter-prefixed-decimal dir is
+ * string-indistinguishable from a bracket-dir token, also includes
+ * everything rather than guess; (c) a token-less filename (bare
+ * `${bareName}`) is accepted by directory containment alone. Outside
+ * those cases, when scoping DOES remove every dashed candidate — a real
+ * cross-phase stray, or a phase whose own artifact is genuinely absent — the
+ * fallback below correctly falls through to `allowBare`/`null`: reporting no
+ * artifact, not another phase's. `options.phaseDirName` omitted entirely skips
+ * the filter outright (the ternary below), which is unscoped, pre-#3511
+ * behavior.
+ *
+ * Pure — takes an already-read directory listing and does no I/O of its own,
+ * so every call site keeps its existing `fsImpl` seam and no-throw contract
+ * untouched.
+ */
+function resolvePhaseArtifactFile(
+  entries: string[],
+  bareName: string,
+  options: ResolveVerificationFileOptions = {},
+): string | null {
+  const candidates = entries.filter((f) => f.endsWith(`-${bareName}`)).sort();
+  if (candidates.length > 0) {
+    if (options.phaseToken) {
+      const thisPhaseFile = `${options.phaseToken}-${bareName}`;
+      if (candidates.includes(thisPhaseFile)) return thisPhaseFile;
+    }
+    // #3511: scope the fallback to files that belong to THIS phase, so a
+    // stray cross-phase file can no longer outrank a return of null.
+    // `phaseDirName` omitted, or membership undeterminable for it, →
+    // unscoped `candidates` (pre-#3511 behavior); otherwise strays are
+    // filtered out, and if that leaves nothing the code falls through to
+    // `allowBare`/`null` deliberately.
+    const scoped = options.phaseDirName
+      ? scopeToPhase(candidates, options.phaseDirName)
+      : candidates;
+    if (scoped.length > 0) return scoped[0];
+  }
+  if (options.allowBare && entries.includes(bareName)) return bareName;
+  return null;
+}
+
+/**
+ * Resolve which `*-VERIFICATION.md` entry in a phase directory's listing IS
+ * the phase's verification report, when more than one such file exists.
+ *
+ * #3357: a phase dir can legitimately hold more than one `*-VERIFICATION.md`
+ * — the real per-phase report (`03-VERIFICATION.md`) alongside an ad-hoc plan
+ * worksheet (`03-CORRECTION-VERIFICATION.md`). Picking "alphabetically first"
+ * (`'C' < 'V'`) silently chose the worksheet, which usually has no
+ * frontmatter `status:`, so a phase with a PASSING report read as `missing`.
+ * This was two independent hand-rolled `.sort()[0]` picks
+ * (findStaleVerificationSummary and readVerificationStatus) — this is the
+ * single resolver both now call (#3473 F2).
+ *
+ * Selection order: see `resolvePhaseArtifactFile` (the shared core this
+ * delegates to since #3518, itself phase-scoped since #3511) —
+ * phase-token-pinned, then phase-scoped alphabetically-first dashed
+ * fallback, then (allowBare only) a bare `VERIFICATION.md`. #3518 extracted
+ * this into the shared core without changing behavior; #3511's
+ * `phaseDirName` scoping now lives inside that shared core rather than here.
+ */
+function resolveVerificationFile(
+  entries: string[],
+  options: ResolveVerificationFileOptions = {},
+): string | null {
+  return resolvePhaseArtifactFile(entries, 'VERIFICATION.md', options);
+}
+
+/**
+ * #3518: resolve which `*-UAT.md` entry in a phase directory's listing IS
+ * the phase's UAT artifact, when more than one such file exists — the UAT
+ * counterpart of `resolveVerificationFile`, sharing its exact selection rule
+ * via `resolvePhaseArtifactFile`.
+ *
+ * The bug this closes: both `uat_path` projectors in `src/init.cts` picked
+ * with a bare `.find((f) => f.endsWith('-UAT.md') || f === 'UAT.md')` over an
+ * unsorted `readdir` listing — no phase-membership check and no ordering — so
+ * a stray or cross-phase `04-UAT.md` sitting in phase 03's directory could
+ * become phase 03's `uat_path`, and WHICH file won was filesystem-dependent
+ * (creation order on APFS, hash order on ext4/XFS): two machines on the same
+ * commit could emit different `uat_path` values for the same phase. `uat_path`
+ * is consumed downstream by workflows that then read the named file, so a
+ * wrong path routes UAT state from another phase.
+ *
+ * Deterministic by construction: same answer on every machine. Phase-scoped
+ * (#3511): passing `options.phaseDirName` filters the alphabetically-first
+ * fallback (tier 2) to artifacts that belong to THIS phase — see
+ * `resolvePhaseArtifactFile` for the full selection order and scoping
+ * rationale.
+ */
+function resolveUatFile(
+  entries: string[],
+  options: ResolveUatFileOptions = {},
+): string | null {
+  return resolvePhaseArtifactFile(entries, 'UAT.md', options);
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 interface ReadVerificationStatusOptions {
@@ -337,7 +537,13 @@ function findStaleVerificationSummary(
   // this function only reports what it actually knows.
   try {
     const phaseFiles = fsImpl.readdirSync(phaseDir);
-    const verificationFile = phaseFiles.filter((f) => f.endsWith('-VERIFICATION.md')).sort()[0];
+    // #3492: pin selection to THIS phase's own token so a stray cross-phase
+    // or sentinel-numbered canonically-shaped file cannot outrank this
+    // phase's own (possibly non-canonical) report. #3511: phaseDirName scopes
+    // the fallback path to this same phase (see resolveVerificationFile docs).
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(phaseFiles, { phaseToken, phaseDirName });
     if (!verificationFile) return { determined: true, stale: false };
 
     const summaryFiles = (scanPhasePlans(phaseDir) as { summaryFiles: string[] }).summaryFiles
@@ -378,8 +584,10 @@ function findStaleVerificationSummary(
  * phaseDir and return the routing result.
  *
  * Behavior:
- * 1. Find the first file matching `*-VERIFICATION.md` (sorted, take first).
- *    If none → status 'missing'.
+ * 1. Find the phase's verification report via `resolveVerificationFile`
+ *    (canonical `<phase-token>-VERIFICATION.md` preferred; falls back to the
+ *    alphabetically-first `*-VERIFICATION.md` that belongs to THIS phase when
+ *    none is canonical — #3357/#3511). If none → status 'missing'.
  * 2. Extract `status` from FRONTMATTER ONLY via the shared extractFrontmatter
  *    parser (DEFECT.FRONTMATTER-SCALAR-BROAD-GREP fix — parser anchors at byte 0).
  *    If no frontmatter block or no `status` key → status 'missing'.
@@ -422,8 +630,12 @@ function readVerificationStatus(
   let verificationFile: string | null = null;
   try {
     const entries = fsImpl.readdirSync(phaseDir);
-    const candidates = entries.filter((f) => f.endsWith('-VERIFICATION.md')).sort();
-    verificationFile = candidates.length > 0 ? candidates[0] : null;
+    // #3492: pin selection to THIS phase's own token (already derived above
+    // for the routed command argument) so a stray cross-phase or
+    // sentinel-numbered canonically-shaped file cannot outrank this phase's
+    // own (possibly non-canonical) report. #3511: baseName also scopes the
+    // fallback path to this same phase (see resolveVerificationFile docs).
+    verificationFile = resolveVerificationFile(entries, { phaseToken, phaseDirName: baseName });
   } catch {
     // Directory unreadable → treat as missing
     verificationFile = null;
@@ -600,12 +812,55 @@ function cmdVerificationStatus(cwd: string, phaseDirArg: string | undefined, raw
   output(result, raw);
 }
 
+/**
+ * CLI command handler: resolve which `*-VERIFICATION.md` in `phaseDirArg` is
+ * the phase's own report, via the shared `resolveVerificationFile` seam, and
+ * emit its absolute path.
+ *
+ * #3492 F3: the ONE seam shell callers (verify-work.md's writer, transition.md's
+ * awk reader) route through instead of hand-rolling `ls *-VERIFICATION.md |
+ * head -1` / an awk glob scan — both of which pick alphabetically-first and so
+ * diverge from every JS reader now pinned to the phase's own token.
+ *
+ * Emits `{ verification_file: "<absolute path>" | "" }` (empty when no
+ * candidate resolves, including an unreadable directory). `raw` emits the
+ * bare path string (possibly empty) so `VAR=$(gsd_run query
+ * verification.resolve-file "$PHASE_DIR" --raw)` is directly assignable.
+ *
+ * @param cwd         - Current working directory (used to resolve phaseDirArg).
+ * @param phaseDirArg - Phase directory path (absolute or relative to cwd).
+ * @param raw         - Whether to emit raw (non-JSON) output.
+ */
+function cmdVerificationResolveFile(cwd: string, phaseDirArg: string | undefined, raw: boolean): void {
+  if (!phaseDirArg) {
+    error('phase directory required for verification.resolve-file');
+    return;
+  }
+  const phaseDir = path.resolve(cwd, phaseDirArg);
+  let verificationPath = '';
+  try {
+    const entries = fs.readdirSync(phaseDir);
+    const phaseDirName = path.basename(phaseDir);
+    const phaseToken = extractPhaseToken(phaseDirName);
+    const verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken, phaseDirName });
+    if (verificationFile) {
+      verificationPath = path.join(phaseDir, verificationFile);
+    }
+  } catch {
+    verificationPath = '';
+  }
+  output({ verification_file: verificationPath }, raw, verificationPath);
+}
+
 export = {
   VERIFIER_STATUSES,
   VERIFICATION_ROUTING_TABLE,
   defaultPhaseCleanCommitTimesMs,
+  resolveVerificationFile,
+  resolveUatFile,
   findStaleVerificationSummary,
   readVerificationStatus,
   isPhaseComplete,
   cmdVerificationStatus,
+  cmdVerificationResolveFile,
 };

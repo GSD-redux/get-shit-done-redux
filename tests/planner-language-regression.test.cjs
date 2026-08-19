@@ -114,8 +114,6 @@ const ALLOWLIST = {
   'gsd-debugger.md': ['time_sizing'],
   // Doc-writer uses "15 minutes" in API rate limit example, "2 minutes" for doc quality
   'gsd-doc-writer.md': ['time_sizing'],
-  // Discovery-phase uses time for level descriptions (operational, not scope)
-  'discovery-phase.md': ['time_sizing'],
   // Explore uses "~30 seconds" as operational estimate
   'explore.md': ['time_sizing'],
   // Review uses "up to 5 minutes" for CodeRabbit timeout

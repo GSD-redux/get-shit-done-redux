@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "code-review.md": "#3191: +711 bytes. The two remaining unanchored `git log --grep=\"${PADDED_PHASE}\"` diff-base derivations (spawn_reviewer; Tier-3 was anchored in #2989) now use the anchored '[Pp]hase N([^[:alnum:]_]|$)' with --extended-regexp, and the #2989 site's trailing \\b — not a POSIX ERE token, silently matching nothing on macOS regex(3) — is replaced by the POSIX class; spawn_reviewer also gains Tier-3's parent-exists guard. The fallow structural-pre-pass.md fragment (not size-measured; hash ripple explained by its own committed change) carries the same anchoring. Supersedes the spent 2989-code-review-anchored-diff-base.json fragment."
-  }
-}

@@ -547,6 +547,8 @@ node gsd-tools.cjs verify artifacts <plan-file>
 node gsd-tools.cjs verify key-links <plan-file>
 ```
 
+`verify key-links` confines each link's `from:`/`to:` to the project directory (#3493): a path that resolves outside the project (via `../` traversal, an absolute path, or a symlink) is never read. That link's `links[]` entry reports `path_rejected: "from"` or `path_rejected: "to"` (whichever field was rejected) alongside `verified: false`, without echoing the underlying path-confinement error (which would embed an absolute host path). A rejected link fails independently — it does not abort evaluation of the other links in the same plan, and does not set `path_rejected` on links whose paths resolve inside the project.
+
 ---
 
 ## Validation Commands
@@ -678,7 +680,10 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # Archive milestone
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run]
+node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run] [--archive-quick]
+
+# Archive .planning/quick/* into milestones/<version>-quick/ WITHOUT the milestone complete close-out (#2142)
+node gsd-tools.cjs milestone archive-quick <version> [--dry-run]
 
 # Mark requirements as complete
 node gsd-tools.cjs requirements mark-complete <ids>
@@ -692,12 +697,26 @@ node gsd-tools.cjs requirements mark-complete <ids>
 | `<version>` | Milestone version label to archive (e.g. `v1.0`). |
 | `--name <name>` | Display name for the MILESTONES.md entry. Defaults to `<version>`. |
 | `--no-archive-phases` | Leave phase directories in place instead of moving them into `.planning/milestones/<version>-phases/`. |
+| `--archive-quick` | Opt-in (default OFF, #2142): also move every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`, (re)write that archive directory's `README.md` index, and clear STATE.md's `### Quick Tasks Completed` table rows. See "`milestone archive-quick`" below for the narrower standalone form and the full behavior. |
 | `--force` | Override the unstarted-phase guard (see below). |
-| `--dry-run` | Print the archive plan (roadmap, requirements, phases to move) without mutating anything. |
+| `--dry-run` | Print the archive plan (roadmap, requirements, phases, and — when `--archive-quick` is also passed — quick-task dirs to move) without mutating anything. |
 
 **Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
 **Sentinel directories are never archived.** The phase-directory move performed when `--no-archive-phases` is absent is now filtered through the same canonical sentinel predicate as `phases list` and `phases clear`: `999.*` (backlog) and `0-*` (pre-milestone) directories are left in place rather than moved into `.planning/milestones/<version>-phases/`. Previously this path was scoped only by the milestone window, with no sentinel filter, so a sentinel directory sitting inside the window could be archived along with the milestone's real phases.
+
+**`milestone archive-quick` (#2142 escalation)**
+
+A narrower sibling of `milestone complete --archive-quick`, for callers that need to sweep `.planning/quick/*` WITHOUT the full milestone close-out — chiefly `gsd-core/workflows/cleanup.md`, which runs against milestones that are typically already completed.
+
+| Flag | Description |
+|------|-------------|
+| `<version>` | Milestone version label to archive quick-task directories under (e.g. `v1.0`). Same validation as `milestone complete`'s `<version>` — letters/digits/`.`/`-`/`_` only, no path separators or `..`. |
+| `--dry-run` | List what would move (`would_archive`) without mutating anything. |
+
+It moves every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`, (re)writes that archive directory's `README.md` index, and clears STATE.md's `### Quick Tasks Completed` table rows — the same move/index/reset logic `milestone complete --archive-quick` uses. Unlike `milestone complete`, it never archives `ROADMAP.md`/`REQUIREMENTS.md`, never writes a `MILESTONES.md` entry, and runs neither the unstarted-phase guard nor the milestone-window refusal — so, unlike `milestone complete --archive-quick`, it can be safely re-run against an already-completed milestone. JSON result: `{ version, archived, entries, archive_dir, state_updated, warnings }`.
+
+`milestone archive-quick` is a second subcommand of `milestone` (alongside `complete`) — it is not a separate top-level command.
 
 ---
 
@@ -769,6 +788,8 @@ node gsd-tools.cjs verify-path-exists <path>
 
 # Append a row to STATE.md's "Quick Tasks Completed" table (schema-backed; #2133)
 node gsd-tools.cjs quick-tasks-append --task "<description>"
+# See "Milestone Commands" below for `milestone archive-quick` (#2142) — sweeps .planning/quick/* into
+# milestones/<version>-quick/ and clears this table, without a full `milestone complete`.
 
 # Aggregate all SUMMARY.md data
 node gsd-tools.cjs history-digest
@@ -801,6 +822,12 @@ node gsd-tools.cjs audit-uat
 
 # Cross-artifact audit queue — scan `.planning/` for unresolved audit items
 node gsd-tools.cjs audit-open [--json]
+
+# Suppress one open audit item — writes a self-invalidating `audit_acknowledged`
+# marker; never overwrites the artifact's own `status:` (except `deferred_items`,
+# where the marker IS the entry's `status:`). See docs/COMMANDS.md's
+# `/gsd-complete-milestone` entry for the full per-category identifier flag table.
+node gsd-tools.cjs audit-open acknowledge --category <category> --milestone <version> [--at <date>] <identifier flags…>
 
 # Reverse-migrate a GSD-2 project into the current structure (backs `/gsd-import --from-gsd2`)
 node gsd-tools.cjs from-gsd2 [--path <dir>] [--force] [--dry-run]

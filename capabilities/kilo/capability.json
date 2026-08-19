@@ -1,7 +1,7 @@
 {
   "id": "kilo",
   "role": "runtime",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "title": "Kilo Code",
   "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
   "tier": "core",
@@ -43,6 +43,14 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToKiloSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToKiloFrontmatter"
         }
       ],
       "local": [
@@ -61,10 +69,21 @@
           "nesting": "flat",
           "recursive": true,
           "converter": "convertClaudeCommandToKiloSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeToKiloFrontmatter"
         }
       ]
     },
-    "triggerPrecedence": ["skills", "commands"],
+    "triggerPrecedence": [
+      "skills",
+      "commands"
+    ],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "none",
     "extensionEvents": "kilo",

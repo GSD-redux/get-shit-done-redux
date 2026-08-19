@@ -1254,6 +1254,109 @@ describe('reconstructFrontmatter: strict-YAML round-trip (#1779)', () => {
   });
 });
 
+// #3497 — escape amplification. `escapeDoubleQuoted` escapes `\`/`"`/control
+// chars on every serialize (#1779), but `parseYamlRegion` only stripped the
+// outer quote delimiters and never un-escaped the interior, so parse ∘ serialize
+// was NOT the identity: every read-modify-write cycle doubled the backslashes
+// (b → 2b+1, i.e. 2ⁿ−1 after n round-trips). A `last_activity_desc` containing
+// one embedded quote grew STATE.md to 134 MB in 26 state writes and OOMed
+// state.record-session. These tests pin the lossy-parser round trip (the actual
+// write seam: extractFrontmatter → reconstructFrontmatter/spliceFrontmatter),
+// not the strict-YAML path — the amplification lived in the project's own
+// parse/serialize pair.
+describe('frontmatter round-trip: escape amplification (#3497)', () => {
+  // One full document round trip through the production write seam:
+  // parse the frontmatter out of the document, re-serialize it back in.
+  const roundTripDoc = (content) => {
+    const fm = extractFrontmatter(content);
+    return `---\n${reconstructFrontmatter(fm)}\n---\nbody\n`;
+  };
+
+  test('single round trip is byte-exact for embedded double quotes', () => {
+    const original = 'Fixed "the bug" in parser';
+    const fm = extractFrontmatter(`---\ndesc: "Fixed \\"the bug\\" in parser"\n---\nbody\n`);
+    assert.equal(fm.desc, original);
+    assert.equal(reconstructFrontmatter({ desc: original }), 'desc: "Fixed \\"the bug\\" in parser"');
+  });
+
+  test('single round trip is byte-exact for embedded backslash', () => {
+    const original = 'path a:\\b\\c plus "quote"';
+    const fm = extractFrontmatter(`---\ndesc: "path a:\\\\b\\\\c plus \\"quote\\""\n---\nbody\n`);
+    assert.equal(fm.desc, original);
+    assert.equal(extractFrontmatter(`---\n${reconstructFrontmatter({ desc: original })}\n---\n`).desc, original);
+  });
+
+  test('single round trip is byte-exact for newline/tab/CR/control chars', () => {
+    const original = 'l1\nl2\ttab\rCR\x00NUL\x7fDEL';
+    const serialized = reconstructFrontmatter({ desc: original });
+    assert.equal(extractFrontmatter(`---\n${serialized}\n---\n`).desc, original);
+  });
+
+  test('repeated serialize→parse cycles do not grow (26 cycles, the reported OOM window)', () => {
+    let content = '---\ndesc: "he said \\"hi\\" and \\"bye\\""\n---\nbody\n';
+    const firstPass = roundTripDoc(content);
+    let current = firstPass;
+    for (let i = 0; i < 26; i++) {
+      current = roundTripDoc(current);
+      // After the first cycle the document must be a fixed point: byte-identical
+      // forever. Before the fix, backslashes followed b → 2b+1 and unbounded
+      // cycling hit a 134 M-char line within 26 passes (asserting per cycle,
+      // rather than only after the loop, so the buggy failure is a small clear
+      // diff on cycle 1 instead of a runner OOM).
+      assert.equal(current, firstPass, `cycle ${i + 1} changed the document`);
+    }
+    assert.equal(extractFrontmatter(current).desc, 'he said "hi" and "bye"');
+  });
+
+  test('block array items with quotes/backslashes round-trip and stay stable', () => {
+    // 4 items force the block `- "..."` form (inline caps at 3), which has its
+    // own escape call site and its own quote-strip on parse.
+    const original = ['a: "1"', 'b:\\path "x"', 'c: "3"', 'd: "4"'];
+    const serialized = reconstructFrontmatter({ tags: original });
+    assert.deepEqual(extractFrontmatter(`---\n${serialized}\n---\n`).tags, original);
+    const reparsed = extractFrontmatter(`---\n${serialized}\n---\n`);
+    assert.equal(reconstructFrontmatter(reparsed), serialized);
+  });
+
+  test('nested object subvalue with quotes/backslashes round-trips and stays stable', () => {
+    const original = { meta: { note: 'see: "the \\\\docs\\\\"' } };
+    const serialized = reconstructFrontmatter(original);
+    assert.deepEqual(extractFrontmatter(`---\n${serialized}\n---\n`).meta, original.meta);
+    const reparsed = extractFrontmatter(`---\n${serialized}\n---\n`);
+    assert.equal(reconstructFrontmatter(reparsed), serialized);
+  });
+
+  test('spliceFrontmatter write path is a fixed point under repeated no-op writes', () => {
+    // The state.cjs seam: read file → merge → spliceFrontmatter → write.
+    // Repeating it must not change bytes once the first write lands.
+    let content = `---\ndesc: "he said \\"hi\\""\nphase: executing\n---\nbody\n`;
+    content = spliceFrontmatter(content, { ...extractFrontmatter(content), phase: 'executing' });
+    const firstWrite = content;
+    for (let i = 0; i < 10; i++) {
+      content = spliceFrontmatter(content, { ...extractFrontmatter(content), phase: 'executing' });
+    }
+    assert.equal(content, firstWrite);
+    assert.equal(extractFrontmatter(content).desc, 'he said "hi"');
+  });
+
+  test('plain scalars that never need quoting still round-trip unquoted and unchanged', () => {
+    const obj = { name: 'simple-value', wave: 'W1', count: '42' };
+    const serialized = reconstructFrontmatter(obj);
+    assert.equal(serialized, 'name: simple-value\nwave: W1\ncount: 42');
+    assert.deepEqual(extractFrontmatter(`---\n${serialized}\n---\n`), obj);
+  });
+
+  test('single-quoted scalars keep their existing parse behavior (quotes stripped, no escape processing)', () => {
+    // The writer never emits single-quoted output; hand-authored files keep
+    // the historical strip-only behavior. A single-quoted scalar has no
+    // escape processing in YAML (only '' → '), and changing that is out of
+    // scope for #3497 — this pins the current contract so the unescape fix
+    // cannot silently broaden into single-quote handling.
+    const fm = extractFrontmatter("---\ntitle: 'C:\\real\\path'\n---");
+    assert.equal(fm.title, 'C:\\real\\path');
+  });
+});
+
 describe('extractFrontmatter: boundary — dash at start of file', () => {
   test('--- at byte 0 is treated as frontmatter', () => {
     const result = extractFrontmatter('---\nkey: val\n---\n');

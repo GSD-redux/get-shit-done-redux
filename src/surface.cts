@@ -71,6 +71,10 @@ interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
+  /** #2875 Part 2 (row I1): install root, mirrors
+   *  runtime-artifact-install-plan.cts's identically-named field — see its
+   *  doc comment. */
+  targetDir?: string | null;
 }
 
 interface ArtifactKind {
@@ -389,7 +393,8 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
   const _isWindowsHost = (opts?.platform ?? process.platform) === 'win32';
   const _pathPrefix = runtimeArtifactConversion._computePathPrefix({ isGlobal: _isGlobal, isOpencode: _isOpencode, isWindowsHost: _isWindowsHost, resolvedTarget: _resolvedTarget, homeDir: _homeDir });
   const _attribution = opts?.resolveAttribution ? opts.resolveAttribution(layout.runtime) : undefined;
-  const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix: _pathPrefix, attribution: _attribution };
+  // #2875 Part 2 (row I1): layout.configDir is this call's install root.
+  const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix: _pathPrefix, attribution: _attribution, targetDir: layout.configDir };
 
   const tempDirsToClean: string[] = [];
   // #1575: When the surface has no state modifications AND the base profile is

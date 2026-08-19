@@ -56,7 +56,7 @@ Exit WITHOUT writing any destination files. The gate must hold regardless of WAR
 
 **If only WARNINGS and/or INFO (no blockers):**
 
-Render the full report, then prompt for approval via the `approve-revise-abort` or `yes-no` pattern from `references/gate-prompts.md`. Respect text mode (see the workflow's own text-mode handling). If the user aborts, exit cleanly with a cancellation message.
+Render the full report, then prompt for approval via the `approve-revise-abort` or `yes-no` pattern from `gsd-core/references/gate-prompts.md`. Respect text mode (see the workflow's own text-mode handling). If the user aborts, exit cleanly with a cancellation message.
 
 **If the report is empty (no entries in any bucket):**
 

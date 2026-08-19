@@ -1,5 +1,5 @@
 {
-  "_comment": "ADR-3408 Decision 5 write-seam ratchet baseline (issue #3468, Phase 1). Every entry here is a `writeStateMd(`/`syncStateFrontmatter(` bypass this guard found by a whole-repo scan (Decision 4(a)) — it is ACKNOWLEDGED, not endorsed: acknowledgment is in writing (this file), with the issue owning its removal recorded in the entry's \"owner\" field. This baseline is SHRINK-ONLY — an entry that stops firing goes STALE and fails the plain run until `--baseline` is re-run to drop it (ADR-3180 Decision 4(e)'s \"the baseline may only shrink\", adopted verbatim by ADR-3408). Phase 2 (#3469) removes the `cmdPhaseComplete` and `patchCore` entries when it lands the single write seam. Phase 4 (#3471) drives this baseline to empty and deletes this file. `REGENERATE_STATE` (`src/health-diagnostic.cts`) is a SANCTIONED PERMANENT exception, not debt — it is `/gsd-health --repair`'s factory reset, which rebuilds STATE.md from scratch, so preservation would restore exactly the values it was invoked to discard; do not \"consolidate\" its entry away.",
+  "_comment": "ADR-3408 Decision 5 write-seam ratchet baseline (issue #3468, Phase 1; Phase 2 / #3469 lands the single write seam and Amendment 2). Every entry here is a `writeStateMd(`/`syncStateFrontmatter(`/`applyPostSyncPreservation(` bypass this guard found by a whole-repo scan (Decision 4(a)) — it is ACKNOWLEDGED, not endorsed: acknowledgment is in writing (this file), with the issue owning its removal recorded in the entry's \"owner\" field. This baseline is SHRINK-ONLY — an entry that stops firing goes STALE and fails the plain run until `--baseline` is re-run to drop it (ADR-3180 Decision 4(e)'s \"the baseline may only shrink\", adopted verbatim by ADR-3408). Phase 2 (#3469) removed the `cmdPhaseComplete` (`src/phase.cts`) and `cmdMilestoneComplete` (`src/milestone.cts`) entries by routing both through the single write-seam composition (`syncAndPreserveStateMd`, `src/state.cts`). ADR-3408 Amendment 2: \"0 bypasses\" was never this baseline's target — TWO entries are SANCTIONED PERMANENT, not debt, and Phase 4 (#3471) does NOT drive this file to empty: `cmdStateSync` (`src/state.cts`) exists precisely to let the body win (#905 — `state sync` re-derives frontmatter FROM the body), so routing it through preservation would invert the command rather than fix a bug; `REGENERATE_STATE` (`src/health-diagnostic.cts`) is `/gsd-health --repair`'s factory reset, which rebuilds STATE.md from scratch, so preservation would restore exactly the values it was invoked to discard. Neither entry may be \"consolidated\" away — a guard reporting them is reporting correctly, and a change that removes one is a regression, not progress.",
   "entries": [
     {
       "file": "src/health-diagnostic.cts",
@@ -9,25 +9,11 @@
       "owner": "sanctioned-permanent"
     },
     {
-      "file": "src/milestone.cts",
-      "source": "writeStateMd(statePath, result.content, cwd);",
-      "symbol": "writeStateMd",
-      "count": 1,
-      "owner": "#3471"
-    },
-    {
-      "file": "src/phase.cts",
-      "source": "const synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);",
-      "symbol": "syncStateFrontmatter",
-      "count": 1,
-      "owner": "#3469"
-    },
-    {
       "file": "src/state.cts",
       "source": "writeStateMd(statePath, modified, cwd);",
       "symbol": "writeStateMd",
       "count": 1,
-      "owner": "#3471"
+      "owner": "sanctioned-permanent"
     }
   ]
 }

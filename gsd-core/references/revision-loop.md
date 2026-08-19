@@ -70,7 +70,7 @@ issues. You must reduce the count or the loop will terminate.
 If issues persist after 3 revision cycles:
 
 1. Present remaining issues to the user
-2. Use gate prompt (pattern: yes-no from `references/gate-prompts.md`):
+2. Use gate prompt (pattern: yes-no from `gsd-core/references/gate-prompts.md`):
    question: "Issues remain after 3 revision attempts. Proceed with current output?"
    header: "Proceed?"
    options:

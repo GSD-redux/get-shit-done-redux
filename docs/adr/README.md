@@ -253,6 +253,9 @@ These govern the system as it stands. Cite these.
 | [ADR-3180](3180-planning-semantic-model-single-owner.md) | Planning Semantic Model — Single Owner per Derivation | Accepted | — |
 | [ADR-3212](3212-lexical-seam-consolidation.md) | The Lexical Seam — Safe Pattern Construction, Line-Terminator Normalization, and Tokenizer-First Stateful Grammars | Accepted | — |
 | [ADR-3408](3408-state-write-path-preservation.md) | STATE.md Write Path — One Declared Policy, One Write Seam | Accepted | — |
+| [ADR-3409](3409-unreachable-shell-guard-arms.md) | Shell Guards Must Observe Their Own Failure Arm | Accepted | — |
+| [ADR-3574](3574-install-materialization-primitives.md) | Install materialization shares primitives, not one writer | Accepted | — |
+| [ADR-3625](3625-vetted-spawn-library-evaluation.md) | The platform seam keeps its own Windows binary resolution rather than adopting a spawn library | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
 
 ### Proposed

@@ -137,10 +137,19 @@ The differential attribution check reports the file and the byte delta. To resol
 1. **Justify the growth in your PR** (a sentence in the description is enough) —
    the acknowledgment entry (below) is the review record that the larger size
    was a deliberate, seen decision, not silent drift.
-2. **Add an acknowledgment entry** in `tests/emitted-drift-ack.json` naming the
-   file and the reason, per `CONTEXT.md`'s `### Emitted Artifact Provenance`
-   entry. This is deliberately a committed file, not a flag — the entry appears
-   in your PR diff, so touching it *is* the visible signal.
+2. **Add an acknowledgment fragment** under `tests/emitted-drift-acks/` naming
+   the file and the reason, per `CONTRIBUTING.md`'s "Editing shipped content"
+   section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry. Name the
+   fragment for your issue or PR (something nobody else is using) — the failure
+   output prints a minimal valid document you can paste. This is deliberately a
+   per-PR fragment, not one shared file: fragments can never conflict across
+   PRs, and a fragment appearing in your diff *is* the visible signal. If the
+   failure instead names a path a merged PR already acknowledged (a **spent**
+   entry sitting in an existing fragment), reword that fragment's `reason` in
+   place to explain the new ripple — do not add a duplicate entry for the same
+   path; two ack sources naming the same path is a hard, loudly-reported error.
+   The legacy single `tests/emitted-drift-ack.json` is still read and unioned
+   in for branches that carry it, but new acknowledgments never go there.
 3. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and
@@ -160,7 +169,8 @@ help — that is the signal to extract, per step 3.
 |---|---|
 | `scripts/workflow-size.cjs` | Single source of truth — LF-normalized byte counter (`lfByteCount`) + generic `measureMdFiles(dir, predicate)` (backs both workflows and agents) + workflow enumeration (`listWorkflowStems`, `measureWorkflows`). Imported by both guards and by `tests/helpers/emitted-runtime.cjs`'s `currentSizes()` so they can never measure differently. |
 | `tests/emitted-attribution.test.cjs` + `tests/helpers/emitted-diff.cjs` | The differential attribution check and its size ratchet (ADR-2719). The sole mechanism for both emitted-content propagation AND per-file size growth as of #2724. |
-| `tests/emitted-drift-ack.json` | Committed acknowledgment file for unattributable emitted-content ripples and for size growth. Absent = no acks; its presence is the alarm. |
+| `tests/emitted-drift-acks/` | Per-PR acknowledgment fragments (primary, #2914) for unattributable emitted-content ripples and for size growth. A fragment appearing in your diff *is* the alarm; absence is the healthy steady state. |
+| `tests/emitted-drift-ack.json` | Legacy single acknowledgment file, superseded by the per-PR fragments above. Still read and unioned in for branches that carry it; must never gain new entries and must never persist on `next` (enforced by `guard-no-ack-on-next` via `scripts/lint-emitted-drift-ack.cjs --guard-next`). |
 | `npm run regen:derived` | Runs every remaining generator in dependency order (build → registry → ADR index → capability matrix → inventory manifest → manifest versions → `tests/fixtures/install-tree/*.json`). |
 | `tests/workflow-size-budget.test.cjs` | The workflow tier hard-cap guards, plus the `discuss-phase` progressive-disclosure checks. |
 | `tests/agent-size-budget.test.cjs` | The agent tier hard-cap guards (the agent analog). |
@@ -185,7 +195,8 @@ self-test. Separately, `scripts/qa-smell-ratchet.cjs` drives that same harness
 end to end against the real `gsd-tools` binary and turns its findings into a
 CI gate — run it with `npm run lint:qa-smells`.
 
-The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
+The gate has three independent inputs. The harness's oracles
+(`tests/qa/oracles.cjs`) supply the first two:
 
 - A **violation** is the engine breaking a documented contract. It always
   fails the build — baseline or no baseline, acknowledged or not.
@@ -195,6 +206,34 @@ The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
   `tests/qa/smell-baseline.json` (one that stopped firing — the baseline is
   shrink-only, so a fixed or changed scenario must be pruned, not left
   behind).
+
+The third comes from the scenarios themselves, not from an oracle:
+
+- A **scenario expectation failure** is a step's declared `expect` not
+  holding — the scenario asserted `percent: 100` and the engine returned
+  something else. Like a violation, it is **never acknowledgeable**: it
+  carries no fingerprint, so there is no `key` to put in a baseline entry or
+  an ack fragment. Fix the engine, or correct the expectation.
+
+Expectation failures were invisible to the gate until
+[#3597](https://github.com/open-gsd/gsd-core/issues/3597): `buildReport`
+counted them in `totals.violations` while `collectFindings` read only oracle
+violations, so a failing scenario printed `0 violations` and exited 0. The
+`multi-workstream` scenario failed on every CI run for three weeks without
+reddening a build. The invariant that keeps the two honest — asserted in
+`tests/loop-walk.qa.test.cjs` — is:
+
+```
+collectFindings().violations.length
+  + collectFindings().expectationFailures.length
+  === report.totals.violations
+```
+
+Note also that `scripts/qa-smell-ratchet.cjs` only invokes its own `main()`
+under `require.main === module`. That guard is what lets the QA suite
+`require()` the script to test `collectFindings` without kicking off a real
+20-scenario walk as an import side effect — the reason the gate's own logic
+had no test before #3597.
 
 Every smell must terminate in exactly one of TWO states — there is no third
 "accepted with a good explanation" state:

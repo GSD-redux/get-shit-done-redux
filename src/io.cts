@@ -192,11 +192,21 @@ const ERROR_REASON = Object.freeze({
   PHASE_VERIFICATION_INCOMPLETE: 'phase_verification_incomplete',
   PHASE_PLAN_COVERAGE_INCOMPLETE: 'phase_plan_coverage_incomplete',
   SUMMARY_NO_PLANNING: 'summary_no_planning',
+  // #3579: workstream-mode fail-safe guards (init.progress, phase.complete) —
+  // distinguishes "no marker/pointer anywhere" from "a marker exists but
+  // didn't resolve" so a JSON-error-mode caller can branch on `reason`
+  // instead of regexing the human message.
+  WORKSTREAM_MODE_NONE_ACTIVE: 'workstream_mode_none_active',
+  WORKSTREAM_MODE_MARKER_UNRESOLVED: 'workstream_mode_marker_unresolved',
   // graphify
   GRAPHIFY_NO_GRAPH: 'graphify_no_graph',
   GRAPHIFY_INVALID_QUERY: 'graphify_invalid_query',
   // hooks
   HOOKS_OPT_OUT: 'hooks_opt_out',
+  // commit-docs-guard (#3588)
+  COMMIT_DOCS_GUARD_NOT_A_REPO: 'commit_docs_guard_not_a_repo',
+  COMMIT_DOCS_GUARD_FOREIGN_HOOK: 'commit_docs_guard_foreign_hook',
+  COMMIT_DOCS_GUARD_HOOKS_PATH_SET: 'commit_docs_guard_hooks_path_set',
   // security-scan
   SECURITY_SCAN_FAILED: 'security_scan_failed',
   // generic

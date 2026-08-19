@@ -1170,10 +1170,6 @@ describe('descriptor-driven parity: 13 non-probe registry runtimes × no-env-var
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3126-global-skills-base-runtime-path (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
-// allow-test-rule: structural-implementation-guard (see #3126)
-// Last three tests read init.cjs source to verify delegation contract to
-// runtime-homes.cjs — no behavioral IR exposed yet for this wiring point.
-
 // Regression guard for bug #3126.
 //
 // buildAgentSkillsBlock() in init.cjs hardcoded `globalSkillsBase` to
@@ -1481,39 +1477,93 @@ describe('getGlobalConfigDir — explicitDir override and opencode/kilo file-pat
   });
 });
 
-describe('bug #3126: init.cjs uses runtime-homes not hardcoded .claude', () => {
-  test('init.cjs has no hardcoded globalSkillsBase assignment to ~/.claude/skills', () => {
-    const fs = require('node:fs');
-    const src = fs.readFileSync(
-      path.join(ROOT, 'gsd-core', 'bin', 'lib', 'init.cjs'),
-      'utf8',
-    );
-    assert.ok(
-      !src.includes("const globalSkillsBase = path.join(os.homedir(), '.claude', 'skills')"),
-      'init.cjs still assigns globalSkillsBase to hardcoded ~/.claude/skills — fix not applied',
-    );
+describe('bug #3126: buildAgentSkillsBlock resolves the agent-skills path per runtime (not hardcoded .claude)', () => {
+  // Behavioral replacement (#3466) for the three init.cjs source-grep assertions
+  // ("no hardcoded ~/.claude/skills assignment", "requires runtime-homes",
+  // "warning message no longer hardcodes ~/.claude/skills"). Those proved a
+  // STRING was absent/present in init.cjs's text; they would pass even if
+  // buildAgentSkillsBlock resolved the WRONG path for a non-claude runtime, as
+  // long as the literal old hardcoded expression didn't reappear verbatim. This
+  // drives buildAgentSkillsBlock() itself — the real exported function bug
+  // #3126 fixed — for two DIFFERENT runtimes with real fixture skill files
+  // under real per-runtime config dirs, and asserts each resolves under ITS
+  // OWN runtime's skills dir and never falls back to (or leaks into) the
+  // other's.
+  const fs = require('node:fs');
+  const { buildAgentSkillsBlock } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'init.cjs'));
+
+  /**
+   * Creates a temp config dir with a real `skills/<skillName>/SKILL.md` fixture,
+   * points `configDirEnvKey` at it for the duration of `fn`, and cleans up
+   * (including restoring the env var) afterward.
+   */
+  function withSkillFixture(configDirEnvKey, skillName, fn) {
+    const tmpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3126-skills-'));
+    const skillDir = path.join(tmpConfigDir, 'skills', skillName);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# fixture skill\n');
+    const saved = process.env[configDirEnvKey];
+    process.env[configDirEnvKey] = tmpConfigDir;
+    try {
+      return fn(tmpConfigDir);
+    } finally {
+      if (saved === undefined) delete process.env[configDirEnvKey];
+      else process.env[configDirEnvKey] = saved;
+      cleanup(tmpConfigDir);
+    }
+  }
+
+  test('cursor: resolves under CURSOR_CONFIG_DIR/skills, never falls back to .claude/skills', () => {
+    withSkillFixture('CURSOR_CONFIG_DIR', 'gsd-executor', (tmpConfigDir) => {
+      const diagnostics = { warnings: [] };
+      const block = buildAgentSkillsBlock(
+        { runtime: 'cursor', agent_skills: { 'gsd-executor': 'global:gsd-executor' } },
+        'gsd-executor',
+        tmpConfigDir,
+        diagnostics,
+      );
+      const expectedRef = path.join(tmpConfigDir, 'skills', 'gsd-executor', 'SKILL.md').replace(/\\/g, '/');
+      assert.ok(block.includes(expectedRef), `expected block to include ${expectedRef}, got: ${block}`);
+      assert.ok(!block.includes('.claude/skills'), `cursor resolution must not fall back to .claude/skills, got: ${block}`);
+      assert.deepEqual(diagnostics.warnings, [], `expected no warnings, got: ${JSON.stringify(diagnostics.warnings)}`);
+    });
   });
-  test('init.cjs requires runtime-homes', () => {
-    const fs = require('node:fs');
-    const src = fs.readFileSync(
-      path.join(ROOT, 'gsd-core', 'bin', 'lib', 'init.cjs'),
-      'utf8',
-    );
-    assert.ok(
-      src.includes('runtime-homes'),
-      'init.cjs does not require runtime-homes.cjs',
-    );
+
+  test('claude: resolves under CLAUDE_CONFIG_DIR/skills, never leaks into .cursor/skills', () => {
+    withSkillFixture('CLAUDE_CONFIG_DIR', 'gsd-executor', (tmpConfigDir) => {
+      const diagnostics = { warnings: [] };
+      const block = buildAgentSkillsBlock(
+        { runtime: 'claude', agent_skills: { 'gsd-executor': 'global:gsd-executor' } },
+        'gsd-executor',
+        tmpConfigDir,
+        diagnostics,
+      );
+      const expectedRef = path.join(tmpConfigDir, 'skills', 'gsd-executor', 'SKILL.md').replace(/\\/g, '/');
+      assert.ok(block.includes(expectedRef), `expected block to include ${expectedRef}, got: ${block}`);
+      assert.ok(!block.includes('.cursor/skills'), `claude resolution must not use .cursor/skills, got: ${block}`);
+      assert.deepEqual(diagnostics.warnings, [], `expected no warnings, got: ${JSON.stringify(diagnostics.warnings)}`);
+    });
   });
-  test('init.cjs warning message no longer hardcodes ~/.claude/skills', () => {
-    const fs = require('node:fs');
-    const src = fs.readFileSync(
-      path.join(ROOT, 'gsd-core', 'bin', 'lib', 'init.cjs'),
-      'utf8',
-    );
-    assert.ok(
-      !src.includes("~/.claude/skills/${skillName}/SKILL.md"),
-      'init.cjs warning message still hardcodes ~/.claude/skills path',
-    );
+
+  test('per-runtime resolution: two different runtimes in the same process each resolve into THEIR OWN config dir, never the other\'s', () => {
+    // Proves this isn't a single special-cased runtime — cursor and claude,
+    // driven back-to-back, must never cross-resolve into each other's fixture dir.
+    withSkillFixture('CURSOR_CONFIG_DIR', 'gsd-executor', (cursorDir) => {
+      withSkillFixture('CLAUDE_CONFIG_DIR', 'gsd-executor', (claudeDir) => {
+        const cursorBlock = buildAgentSkillsBlock(
+          { runtime: 'cursor', agent_skills: { x: 'global:gsd-executor' } }, 'x', cursorDir, { warnings: [] },
+        );
+        const claudeBlock = buildAgentSkillsBlock(
+          { runtime: 'claude', agent_skills: { x: 'global:gsd-executor' } }, 'x', claudeDir, { warnings: [] },
+        );
+        const cursorPosix = cursorDir.replace(/\\/g, '/');
+        const claudePosix = claudeDir.replace(/\\/g, '/');
+        assert.ok(cursorBlock.includes(cursorPosix), `cursor block must reference its own config dir, got: ${cursorBlock}`);
+        assert.ok(!cursorBlock.includes(claudePosix), `cursor block must not reference claude's config dir, got: ${cursorBlock}`);
+        assert.ok(claudeBlock.includes(claudePosix), `claude block must reference its own config dir, got: ${claudeBlock}`);
+        assert.ok(!claudeBlock.includes(cursorPosix), `claude block must not reference cursor's config dir, got: ${claudeBlock}`);
+      });
+    });
   });
 });
   });

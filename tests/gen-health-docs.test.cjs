@@ -151,9 +151,9 @@ describe('gen-health-docs.cjs --check / --write (CLI, --target fixture)', () => 
 describe('gen-health-docs.cjs row content (representative codes)', () => {
   const rules = loadRealRules();
 
-  test('produces a 34-row <error_codes> table: 31 rules + 3 pre-checks (E001, E010, I010)', () => {
+  test('produces a 36-row <error_codes> table: 33 rules + 3 pre-checks (E001, E010, I010)', () => {
     const rows = buildErrorCodeRows(rules);
-    assert.equal(rows.length, 34);
+    assert.equal(rows.length, 36);
     const codes = rows.map((r) => r.code);
     for (const precheck of PRECHECK_CODES) {
       assert.ok(codes.includes(precheck.code), `missing pre-check code ${precheck.code}`);

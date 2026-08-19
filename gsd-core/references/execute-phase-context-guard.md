@@ -1,7 +1,7 @@
 0. **Context exhaustion guard — `context_guard` (BEFORE spawning, #1452):**
 
    Before spawning any agents for this wave, self-assess context pressure using the
-   degradation signals in `references/context-budget.md`. Signs of POOR tier (70%+):
+   degradation signals in `gsd-core/references/context-budget.md`. Signs of POOR tier (70%+):
    increasing vagueness, skipped steps, silent partial completion.
 
    Read `workflow.context_guard_mode` from `.planning/config.json` (default `warn`).

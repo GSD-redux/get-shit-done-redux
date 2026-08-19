@@ -31,7 +31,7 @@ import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocator;
@@ -134,8 +134,12 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     const phaseNum = phaseMatch ? phaseMatch[1] : dir;
     const files = fs.readdirSync(phaseDir);
 
-    // Process UAT files
-    for (const file of files.filter(f => f.includes('-UAT') && f.endsWith('.md'))) {
+    // Process UAT files — scoped to THIS phase's own token (#3511) via
+    // scopeToPhase, so a stray, cross-phase, or ad-hoc file cannot be reported
+    // under this phase's audit-uat entry. A phase whose own UAT file is
+    // genuinely absent scopes to empty and contributes nothing — correct, and
+    // the reason scopeToPhase has no unfiltered fallback.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
@@ -153,8 +157,9 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       }
     }
 
-    // Process VERIFICATION files
-    for (const file of files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md'))) {
+    // Process VERIFICATION files — scoped to THIS phase's own token (#3511)
+    // for the same reason as the UAT loop above.
+    for (const file of scopeToPhase(files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), dir)) {
       const verificationFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(verificationFilePath, 'utf-8');
       const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';
@@ -898,7 +903,18 @@ function parseGapsTableItems(sectionBody: string): UatItem[] {
  * one item PER BULLET. A body with no headings keeps the original
  * one-bullet-per-item split unchanged.
  */
-function parseDeferredItems(content: string): UatItem[] {
+/**
+ * One `deferred-items.md` entry with its RAW (un-lowercased) `status:` field
+ * value (`''` when the entry carries no parseable status). #3458 follow-up:
+ * `parseDeferredItems` (below) is now DEFINED IN TERMS OF this — it filters
+ * to `status !== 'resolved'` — and `audit.cts`'s `scanDeferredItems` also
+ * consumes this directly so it can tell `resolved` (fixed for real, never
+ * counted), the newer `acknowledged` (suppressed-but-tallied, #3458
+ * follow-up), and everything else (open) apart WITHOUT a second,
+ * independent entry-boundary/field-extraction pass that could drift from
+ * this one.
+ */
+function parseDeferredItemsWithStatus(content: string): Array<{ name: string; status: string }> {
   const deferredSection = collectSection(
     content,
     (h) => /^deferred\s+items$/i.test(h.text) && h.level === 2,
@@ -906,7 +922,7 @@ function parseDeferredItems(content: string): UatItem[] {
   );
   const sectionBody = deferredSection ? deferredSection.body : content;
 
-  const items: UatItem[] = [];
+  const items: Array<{ name: string; status: string }> = [];
 
   // #3457: heading-delimited shape — an entry's fields live in sibling bullets
   // (`- **Status:** resolved`), so the bullet marker is stripped on EVERY line
@@ -925,25 +941,190 @@ function parseDeferredItems(content: string): UatItem[] {
     }));
 
   for (const { lines: entryLines, fields } of entries) {
-    const rawStatus = fields.status;
-    if (rawStatus && rawStatus.toLowerCase() === 'resolved') continue;
-
     const text = rawGapEntryText(entryLines);
     if (!text) continue;
 
-    items.push({
-      name: text,
-      result: 'unresolved',
-      category: 'deferred',
-    });
+    items.push({ name: text, status: fields.status || '' });
   }
 
   // #2766: union with the table form — see parseDeferredTableItems. Executors
   // write this file by hand with no mandated shape, and a GFM table is a natural
   // choice for the common "test → failing seeds" case, which produced ZERO items.
-  items.push(...parseDeferredTableItems(sectionBody));
+  // Table rows carry no independently-parseable status column in general —
+  // `parseDeferredTableItems` already excludes resolved/done/pass rows at its
+  // own layer (any cell reading exactly one of those three) — so anything it
+  // returns here is inherently open; `acknowledge` (#3458 follow-up) has no
+  // representable field to write for a table row, so those are reported with
+  // status `''` (never `resolved`/`acknowledged`) and remain permanently
+  // un-acknowledgeable via the CLI writer — a known, deliberate limitation
+  // (see `acknowledgeDeferredItem`'s doc comment).
+  items.push(...parseDeferredTableItems(sectionBody).map((item) => ({ name: item.name, status: '' })));
 
   return items;
+}
+
+function parseDeferredItems(content: string): UatItem[] {
+  return parseDeferredItemsWithStatus(content)
+    .filter((entry) => !(entry.status && entry.status.toLowerCase() === 'resolved'))
+    .map((entry) => ({
+      name: entry.name,
+      result: 'unresolved',
+      category: 'deferred',
+    }));
+}
+
+// ─── acknowledgeDeferredItem ───────────────────────────────────────────────────
+
+/** Result of `acknowledgeDeferredItem`. */
+interface AcknowledgeDeferredItemResult {
+  content: string;
+  status: 'ok' | 'not_found' | 'ambiguous' | 'unsupported_heading_shape' | 'already_resolved' | 'match_verification_failed';
+}
+
+/**
+ * CLI-writer half of the #3458 follow-up deferred_items suppression seam.
+ * Sets the ONE deferred entry whose rendered text (`rawGapEntryText`, the
+ * same value `parseDeferredItemsWithStatus`/the audit's JSON output surface
+ * as `name`/`text`) exactly equals `targetText` to `status: acknowledged` —
+ * a NEW terminal value, distinct from the existing `resolved` (which keeps
+ * meaning "actually fixed"). This is the marker for this category: unlike
+ * every other audit category (a sibling `audit_acknowledged` frontmatter map
+ * that never touches the artifact's own `status:`), a deferred-items.md
+ * entry's `status:` field carries no OTHER meaning, so the field itself
+ * doubles as the marker — self-invalidating for free: edit the entry's
+ * `status:` away from `acknowledged` (or delete the field) and it resurfaces
+ * with no separate cleanup step, exactly like every other category's marker.
+ *
+ * Deliberately refuses (`unsupported_heading_shape`) rather than guess when
+ * the section uses the heading-delimited (#3457) entry shape: reliably
+ * mapping a `splitDeferredHeadingEntries` entry back to its EXACT source line
+ * span is not safely derivable without re-deriving that function's
+ * leaf/container walk against a document that may also mix in headless
+ * (`splitGapsEntries`-derived) entries between headings — attempting it risks
+ * writing into the WRONG entry. The bullet-only (headless) shape below is the
+ * primary, documented SCOPE BOUNDARY convention and is handled precisely.
+ *
+ * Also refuses `ambiguous` (2+ entries share the exact same text — status must
+ * be unique to identify one) and `not_found`, and is a no-op
+ * (`already_resolved`) on an entry already carrying `status: resolved` — the
+ * verdict-preserving direction: acknowledging a genuinely-fixed item would
+ * silently downgrade its terminal state.
+ *
+ * SPAN-CARRIED, not re-searched (F1, #3458 follow-up review — see
+ * `splitGapsEntriesWithSpans`'s doc comment): the target entry's location
+ * within `sectionBody` is the (start, end) character span recorded by
+ * `splitGapsEntriesWithSpans` in the SAME pass that produced `entryLines` /
+ * `targetText` above — never re-derived afterwards by searching. The
+ * previous implementation re-found the entry with a regex anchored on its
+ * own (escaped) exact text; that regex necessarily matches the FIRST
+ * occurrence of that text within `sectionBody`, which is not always the
+ * entry that was actually selected (a continuation/quoted line inside an
+ * EARLIER or LATER entry can carry byte-identical text) — and because the
+ * mis-targeted span is byte-identical to `targetText`, no downstream check
+ * on the WRITTEN text could ever distinguish a wrong-entry write from a
+ * correct one. Carrying the span removes the re-derivation step entirely:
+ * there is no second search to mis-target.
+ *
+ * Section-anchored (BLOCKER 1, #3458 follow-up review): the span is
+ * `sectionBody`-relative — the SAME string `matches`/the `ambiguous` guard
+ * were computed over — not `content`-relative, so an identical bullet living
+ * outside `## Deferred Items` (e.g. in an unrelated `# Notes` or a
+ * UAT/VERIFICATION body) can never steal the write. The span is translated
+ * into `content`-relative offsets via `deferredSection.bodyStart` (the
+ * section's own start offset, an invariant `collectSection` guarantees:
+ * `content.slice(bodyStart, bodyEnd) === body`). Before writing, the
+ * spanned text's own raw entry is re-derived and compared against
+ * `targetText` one more time — this is now a GENUINE invariant check (the
+ * span was computed by `splitGapsEntriesCore`'s independent offset
+ * bookkeeping, a different code path than the `entryLines`/`targetText`
+ * comparison above), not a no-op — if it does not match, the write is
+ * refused with `match_verification_failed` rather than risk touching the
+ * wrong span.
+ */
+function acknowledgeDeferredItem(content: string, targetText: string): AcknowledgeDeferredItemResult {
+  const deferredSection = collectSection(
+    content,
+    (h) => /^deferred\s+items$/i.test(h.text) && h.level === 2,
+    { levelBounded: true },
+  );
+  const sectionBody = deferredSection ? deferredSection.body : content;
+
+  if (splitDeferredHeadingEntries(sectionBody) !== null) {
+    return { content, status: 'unsupported_heading_shape' };
+  }
+
+  const entries = splitGapsEntriesWithSpans(sectionBody);
+  const matches = entries
+    .map((entry) => ({ entry, text: rawGapEntryText(entry.lines) }))
+    .filter((e) => e.text === targetText);
+
+  if (matches.length === 0) return { content, status: 'not_found' };
+  if (matches.length > 1) return { content, status: 'ambiguous' };
+
+  const { entry } = matches[0];
+  const { lines: entryLines, start, end } = entry;
+  const fields = extractGapEntryFields(entryLines);
+  if (fields.status && fields.status.toLowerCase() === 'resolved') {
+    return { content, status: 'already_resolved' };
+  }
+
+  // Anchor to the SAME section body `matches`/the `ambiguous` guard above
+  // were computed over (BLOCKER 1) — never the whole `content`, which could
+  // contain an identical bullet elsewhere. `start`/`end` are the entry's own
+  // span, carried directly from `splitGapsEntriesWithSpans` — no re-search.
+  const sectionOffset = deferredSection ? deferredSection.bodyStart : 0;
+  const matchedLines = sectionBody.slice(start, end).split('\n');
+
+  // Genuine invariant re-verification (see doc comment above): the span was
+  // computed by a code path independent of the `entryLines`/`targetText`
+  // comparison that selected this entry — this catches real drift between
+  // the two rather than a regex trivially guaranteed to agree with itself.
+  const strippedForVerify = matchedLines.map((l) => l.replace(/\r$/, ''));
+  if (rawGapEntryText(strippedForVerify) !== targetText) {
+    return { content, status: 'match_verification_failed' };
+  }
+
+  const matchIndexInContent = sectionOffset + start;
+  const statusFieldRe = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
+  const statusLineIdx = matchedLines.findIndex((rawLine) => statusFieldRe.test(rawLine.replace(/\r$/, '')));
+
+  // No CRLF-preservation branch here (WARNING 1, #3458 follow-up review):
+  // every write goes through `platformWriteSync` → `normalizeContent`, which
+  // for a `.md` path unconditionally runs `_normalizeMd` — whole-file
+  // `\r\n` → `\n`, plus blank-line normalization around headings/lists — on
+  // EVERY write, not just this one. That is this codebase's single,
+  // deliberate OS-facing I/O seam (`shell-command-projection.cts`), applied
+  // uniformly to every `.md` writer; carving out one exception here would
+  // fight it rather than follow it, for a guarantee (byte-identical CRLF on
+  // disk) the seam already makes impossible. A marker write on a CRLF
+  // `deferred-items.md` normalizes the WHOLE file to LF, same as any other
+  // `.md` write in this codebase — expected, not a regression to guard
+  // against. Where a source line still carries a trailing `\r` (read from an
+  // on-disk CRLF document before normalization), `String.prototype.replace`
+  // consumes it as part of `.*$` and the replacement text does not
+  // reproduce it, so it is dropped here too — consistent with the eventual
+  // whole-file normalization rather than duplicating it.
+  let newMatchedLines: string[];
+  if (statusLineIdx === -1) {
+    const bulletIndentMatch = matchedLines[0].match(/^(\s*)-\s+/);
+    const continuationIndent = ' '.repeat((bulletIndentMatch ? bulletIndentMatch[1].length : 0) + 2);
+    newMatchedLines = [
+      matchedLines[0],
+      `${continuationIndent}status: acknowledged`,
+      ...matchedLines.slice(1),
+    ];
+  } else {
+    const original = matchedLines[statusLineIdx];
+    const replaced = original.replace(
+      /^(\s*(?:-\s+)?)(\*+status:\*+|status:)(\s*).*$/i,
+      (_m, indent: string, key: string, ws: string) => `${indent}${key}${ws}acknowledged`,
+    );
+    newMatchedLines = matchedLines.slice();
+    newMatchedLines[statusLineIdx] = replaced;
+  }
+
+  const newContent = content.slice(0, matchIndexInContent) + newMatchedLines.join('\n') + content.slice(matchIndexInContent + (end - start));
+  return { content: newContent, status: 'ok' };
 }
 
 /**
@@ -1092,6 +1273,79 @@ function parseDeferredTableItems(sectionBody: string): UatItem[] {
 }
 
 /**
+ * One `splitGapsEntries` entry together with the exact character SPAN it
+ * occupies within the `sectionBody` it was derived from —
+ * `sectionBody.slice(start, end)` is the entry's own original text,
+ * byte-for-byte (CRLF preserved, unlike `lines`, which strips a trailing
+ * `\r` off every line). See `splitGapsEntriesWithSpans`'s doc comment for why
+ * a caller would want this over the plain `lines` shape.
+ */
+interface GapsEntrySpan {
+  lines: string[];
+  start: number;
+  end: number;
+}
+
+/**
+ * Shared walk behind `splitGapsEntries` and `splitGapsEntriesWithSpans` — ONE
+ * pass over `sectionBody` that both groups its lines into entries (see
+ * `splitGapsEntries`'s doc comment for the grouping rule) AND records each
+ * entry's (start, end) character offset within `sectionBody`. Extracted so
+ * the two public shapes can never drift apart on what counts as an entry
+ * boundary — a second, independently-written grouping pass is exactly how a
+ * span-carrying sibling could disagree with the plain-lines version it is
+ * supposed to be span-annotating.
+ */
+function splitGapsEntriesCore(sectionBody: string): GapsEntrySpan[] {
+  const rawLines = sectionBody.split('\n');
+  const lineStarts: number[] = [];
+  const lineEnds: number[] = [];
+  let cursor = 0;
+  for (const rawLine of rawLines) {
+    lineStarts.push(cursor);
+    cursor += rawLine.length;
+    lineEnds.push(cursor);
+    cursor += 1; // the '\n' separator — absent after the final line, but nothing reads past it
+  }
+
+  const entries: GapsEntrySpan[] = [];
+  let current: string[] | null = null;
+  let currentStartLine = -1;
+  let currentEndLine = -1;
+  let baseIndent: number | null = null;
+
+  const flush = (): void => {
+    if (current !== null) {
+      entries.push({ lines: current, start: lineStarts[currentStartLine], end: lineEnds[currentEndLine] });
+    }
+  };
+
+  rawLines.forEach((rawLine, idx) => {
+    const line = rawLine.replace(/\r$/, '');
+    const bulletMatch = line.match(/^(\s*)-\s/);
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length;
+      if (baseIndent === null) baseIndent = indent;
+      if (indent <= baseIndent) {
+        flush();
+        current = [line];
+        currentStartLine = idx;
+        currentEndLine = idx;
+        return;
+      }
+    }
+    if (current !== null) {
+      current.push(line);
+      currentEndLine = idx;
+    }
+    // else: pre-first-bullet content (e.g. the template's HTML comment) — discarded.
+  });
+  flush();
+
+  return entries;
+}
+
+/**
  * Split a `## Gaps` section body into per-entry line groups on TOP-LEVEL
  * `- ` bullet openers.
  *
@@ -1109,29 +1363,27 @@ function parseDeferredTableItems(sectionBody: string): UatItem[] {
  * (heading present, no bullets) returns `[]`.
  */
 function splitGapsEntries(sectionBody: string): string[][] {
-  const lines = sectionBody.split('\n');
-  const entries: string[][] = [];
-  let current: string[] | null = null;
-  let baseIndent: number | null = null;
+  return splitGapsEntriesCore(sectionBody).map((entry) => entry.lines);
+}
 
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/, '');
-    const bulletMatch = line.match(/^(\s*)-\s/);
-    if (bulletMatch) {
-      const indent = bulletMatch[1].length;
-      if (baseIndent === null) baseIndent = indent;
-      if (indent <= baseIndent) {
-        if (current) entries.push(current);
-        current = [line];
-        continue;
-      }
-    }
-    if (current) current.push(line);
-    // else: pre-first-bullet content (e.g. the template's HTML comment) — discarded.
-  }
-  if (current) entries.push(current);
-
-  return entries;
+/**
+ * Sibling of `splitGapsEntries` (F1, #3458 follow-up review) that ADDITIVELY
+ * carries each entry's character span — every existing `splitGapsEntries`
+ * caller (`parseGapsItems`, `parseDeferredItemsWithStatus`,
+ * `splitDeferredHeadingEntries`'s `flushPending`) is unaffected and keeps
+ * using the plain `lines`-only shape. `acknowledgeDeferredItem` is the one
+ * caller that needs a span: it used to select an entry via `splitGapsEntries`
+ * and then RE-FIND that entry's location with a fresh regex search over
+ * `sectionBody` — matching the FIRST occurrence of the entry's exact text,
+ * not necessarily the entry actually selected (a continuation/quoted line
+ * inside a DIFFERENT entry can carry byte-identical text). Because the
+ * mis-targeted span is byte-identical to the target text, no check on the
+ * WRITTEN result could ever tell a wrong-entry write apart from a correct
+ * one. Carrying the span out of THIS same pass — the one that already knows
+ * exactly where the entry lives — removes the re-derivation step entirely.
+ */
+function splitGapsEntriesWithSpans(sectionBody: string): GapsEntrySpan[] {
+  return splitGapsEntriesCore(sectionBody);
 }
 
 /**
@@ -1411,4 +1663,6 @@ export = {
   resolveCheckpointFrame,
   checkpointBoxLine,
   parseDeferredItems,
+  parseDeferredItemsWithStatus,
+  acknowledgeDeferredItem,
 };

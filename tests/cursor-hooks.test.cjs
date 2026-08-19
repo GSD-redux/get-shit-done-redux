@@ -43,14 +43,17 @@ const os = require('node:os');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const {
-  reconcileCursorHooksJson,
-  isManagedCursorHookEntry,
-  buildCursorHookEntry,
-  removeCursorHooksJson,
   GSD_CURSOR_HOOK_MARKER,
   GSD_CURSOR_SESSION_HOOK_SCRIPT,
   GSD_CURSOR_POST_TOOL_HOOK_SCRIPT,
 } = require('../bin/install.js');
+
+const {
+  reconcileCursorHooksJson,
+  isManagedCursorHookEntry,
+  buildCursorHookEntry,
+  removeCursorHooksJson,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const {
   resolveRuntimeConfigIntent,

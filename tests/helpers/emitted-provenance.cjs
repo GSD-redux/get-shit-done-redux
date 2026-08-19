@@ -530,13 +530,17 @@ const PROVENANCE_RULES = [
     pattern: /^(gsd\.md|hooks\/PreToolUse)$/,
     sources: () => [CLINE_BODY_SRC],
   },
-  {
-    id: 'agents-md-code-derived',
-    kind: 'code-derived',
-    roots: ['.agents'],
-    pattern: /^AGENTS\.md$/,
-    sources: () => [CLINE_BODY_SRC],
-  },
+  // #3547 removed `agents-md-code-derived` (roots: ['.agents'],
+  // ^AGENTS\.md$) and `synthesized-gsd-defaults` (^\.gsd/defaults\.json$):
+  // both paths only appeared in a manifest while the harness collapsed
+  // configDir onto the sandbox HOME, walking HOME-level siblings
+  // (cline's ~/.agents/AGENTS.md, every non-Claude runtime's
+  // ~/.gsd/defaults.json). With the harness installing into each runtime's
+  // real global subdirectory those files sit outside the walked configDir,
+  // the rules matched nothing, and the totality guard's dead-rule arm fired
+  // — exactly as designed. The files are still written, still covered by the
+  // existence/config suites (kimi-upgrades, codex-config, install suites);
+  // they are simply no longer manifest members to attribute.
   {
     id: 'hermes-category-description',
     kind: 'code-derived',
@@ -566,13 +570,6 @@ const PROVENANCE_RULES = [
     // each Kimi product's separate hooks root (installSharedHooksBundle; the
     // per-runtime root split is #2755).
     pattern: /^(\.gsd-profile|package\.json|\.kimi(-code)?\/package\.json|gsd-core\/VERSION|gsd-core\/\.gsd-runtime)$/,
-    sources: () => [],
-  },
-  {
-    id: 'synthesized-gsd-defaults',
-    kind: 'synthesized',
-    roots: null,
-    pattern: /^\.gsd\/defaults\.json$/,
     sources: () => [],
   },
   {

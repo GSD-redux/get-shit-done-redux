@@ -53,6 +53,8 @@
  * than re-deriving either rule as a fourth independent copy.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { resolveScope, SCOPE_ORDER, type InstallScope } from './install-scope.cjs';
 import { posixNormalize } from './shell-command-projection.cjs';
 
@@ -68,7 +70,7 @@ const {
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installerMigrationsMod = require('./installer-migrations.cjs');
-const { readInstallManifest } = installerMigrationsMod;
+const { readInstallManifest, MANIFEST_NAME } = installerMigrationsMod;
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -130,6 +132,12 @@ export interface ResolveInstalledSurfacesOptions {
   cwd?: string;
   env?: Record<string, string | undefined>;
   existsSync?: (p: string) => boolean;
+  /** Injected for tests, matching `existsSync` above; defaults to
+   *  `node:fs`'s `lstatSync`. Used to refuse a manifest read when the
+   *  scope's config dir or manifest file is a symlink — see the
+   *  `buildScopeRecord` comment for why this is a deliberate hardening,
+   *  not an oversight. */
+  lstatSync?: (p: string) => { isSymbolicLink(): boolean };
   registry?: unknown;
   /** Injected for tests; defaults to installer-migrations' readInstallManifest. */
   readManifest?: (configDir: string) => {
@@ -253,6 +261,45 @@ function deriveStemsFromManifest(
 }
 
 /**
+ * True when `p` is a symlink. An `lstatSync` throw (ENOENT — nothing at this
+ * path) is NOT evidence of a symlink; it is treated as "not a symlink" here
+ * and left for `readManifest` to classify (it already owns the absent-file
+ * case, per C14 above).
+ */
+function isSymlinkPath(p: string, lstatSync: (p: string) => { isSymbolicLink(): boolean }): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The shared "not installed" degraded shape (C14's EACCES path, and this
+ * phase's new symlink-guard path). A FACTORY, not a module-level constant
+ * object: a `const` object spread at each return site would still share the
+ * same `stems` ARRAY reference across every call (`...` shallow-copies the
+ * object but not the array a property points at), which would violate this
+ * module's own "builds fresh arrays/objects on every call" contract (C15) —
+ * a caller mutating one degraded record's `stems` must never be visible on
+ * another's.
+ */
+function notInstalledScopeRecordFields(): Pick<
+  InstalledScopeRecord,
+  'installed' | 'manifestVersion' | 'declaredRuntime' | 'declaredScope' | 'declaredScopeMatchesProbe' | 'declaredRuntimeMatchesProbe' | 'stems'
+> {
+  return {
+    installed: false,
+    manifestVersion: null,
+    declaredRuntime: null,
+    declaredScope: null,
+    declaredScopeMatchesProbe: null,
+    declaredRuntimeMatchesProbe: null,
+    stems: [],
+  };
+}
+
+/**
  * Build one scope's record. `resolvedConfigHome` has already been probed
  * successfully by the time this is called (a `resolveScope` `TypeError` is
  * handled by the caller, per C8 — it is never this function's concern).
@@ -278,6 +325,26 @@ function buildScopeRecord(
   resolvedConfigHome: string,
   opts: ResolveInstalledSurfacesOptions,
 ): InstalledScopeRecord {
+  // Hardening requirement 2 (#2873 design doc, "Hardening requirements
+  // claimed from #2873's comment"): `readInstallManifest` -> `readJsonIfPresent`
+  // uses `existsSync` + `readFileSync` and therefore FOLLOWS symlinks, and
+  // this module resolves `local` against `process.cwd()` — a directory that,
+  // as of this phase, becomes reachable from an arbitrary cloned repository
+  // (this is the same phase that makes the local scope's manifest a first
+  // read target, not merely a write target). The in-tree precedent is
+  // `getAgentsDir` (`agent-install-check.cts`), which probes with
+  // `fs.lstatSync(...).isDirectory()`/`.isFile()` and deliberately does not
+  // follow. #2872 left this resolver's read un-guarded only because the path
+  // had zero callers at the time; refusing to follow a symlinked config dir
+  // or manifest here closes that asymmetry rather than carrying it forward.
+  // Degrading to `installed: false` reuses the SAME shape the EACCES catch
+  // below already returns — no new failure shape is introduced.
+  const lstatSync = opts.lstatSync ?? fs.lstatSync;
+  const manifestPath = path.join(resolvedConfigHome, MANIFEST_NAME);
+  if (isSymlinkPath(resolvedConfigHome, lstatSync) || isSymlinkPath(manifestPath, lstatSync)) {
+    return { scope: scopeId, configHome: resolvedConfigHome, ...notInstalledScopeRecordFields() };
+  }
+
   let manifest: {
     manifestVersion: number | null;
     runtime: string | null;
@@ -293,17 +360,7 @@ function buildScopeRecord(
     // read failure at all (EACCES, ENOENT-after-race, a corrupt filesystem)
     // legitimately means "cannot tell whether installed" (design row C14), so
     // there is no error TYPE here that should instead propagate.
-    return {
-      scope: scopeId,
-      configHome: resolvedConfigHome,
-      installed: false,
-      manifestVersion: null,
-      declaredRuntime: null,
-      declaredScope: null,
-      declaredScopeMatchesProbe: null,
-      declaredRuntimeMatchesProbe: null,
-      stems: [],
-    };
+    return { scope: scopeId, configHome: resolvedConfigHome, ...notInstalledScopeRecordFields() };
   }
 
   const installed = manifest.manifestVersion !== null; // C9: presence, never the new fields

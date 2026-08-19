@@ -313,12 +313,12 @@ Agent(
 **Directory:** ${QUICK_DIR}
 **Description:** ${DESCRIPTION}
 
-<files_to_read>
+<required_reading>
 - ${STATE_PATH} (Project State)
 - ./CLAUDE.md or ./.claude/CLAUDE.md (if exists — follow project-specific guidelines)
 ${DISCUSS_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-CONTEXT.md (User decisions — locked, do not revisit)' : ''}
 ${RESEARCH_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-RESEARCH.md (Research findings — use to inform implementation choices)' : ''}
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_PLANNER}
 
@@ -446,12 +446,12 @@ fi
 \`\`\`
 ` : ''}
 
-<files_to_read>
+<required_reading>
 - ${QUICK_DIR}/${quick_id}-PLAN.md (Plan)
 - ${STATE_PATH} (Project state)
 - ./CLAUDE.md or ./.claude/CLAUDE.md (Project instructions, if exists)
 - .claude/skills/ or .agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_EXECUTOR}
 

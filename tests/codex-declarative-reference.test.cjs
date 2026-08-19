@@ -34,6 +34,7 @@ const {
 } = require('../gsd-core/bin/lib/host-integration.cjs');
 
 const install = require('../bin/install.js');
+const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const CODEX_CAP = JSON.parse(
@@ -201,9 +202,9 @@ test('upgrade 1 — codex registers all documented hooks.json lifecycle events, 
     fs.writeFileSync(path.join(tmp, 'hooks', 'gsd-context-monitor.js'), '// stub');
     fs.writeFileSync(path.join(tmp, 'hooks', 'gsd-check-update.js'), '// stub');
     for (const ev of install.CODEX_EXTENDED_HOOK_EVENTS) {
-      install.ensureCodexHooksJsonEvent(tmp, ev, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
+      hooksSurface.ensureCodexHooksJsonEvent(tmp, ev, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
     }
-    install.ensureCodexHooksJsonSessionStart(tmp, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
+    hooksSurface.ensureCodexHooksJsonSessionStart(tmp, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
     const hooksJson = JSON.parse(fs.readFileSync(path.join(tmp, 'hooks.json'), 'utf8'));
     const registered = Object.keys(hooksJson.hooks || hooksJson || {});
     for (const ev of ['PreToolUse', 'PermissionRequest', 'PreCompact', 'PostCompact', 'SubagentStop', 'UserPromptSubmit']) {

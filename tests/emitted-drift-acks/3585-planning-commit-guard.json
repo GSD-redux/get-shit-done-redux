@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "paths": {
+    "fast.md": {
+      "reason": "#3585: the commit step ran `git add -A`, sweeping .planning/ into every /gsd:fast commit regardless of commit_docs. Gating it needs `gsd_run` in that block, so the launcher preamble was MOVED from the later log_to_state step into the commit step (moved, not duplicated \u2014 log_to_state now relies on the one-preamble-per-workflow convention every other workflow uses). Growth is the preamble's new position plus four lines of guard; the commit_docs=true path stays byte-identical to the previous unconditional `git add -A`."
+    },
+    "new-milestone.md": {
+      "reason": "#3585: `git add .planning/milestones/ .planning/phases/` was ungated, and the correctly-gated `query commit` that follows it skips under commit_docs:false \u2014 leaving those paths in the index for the next commit to absorb. Growth is the executable commit_docs guard wrapping the stage, plus one sentence recording that the unstaged archive move is deliberate rather than a bug. \u2014 #3576 append: bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+18 bytes, 2 cite(s) \u00d7 9). Dead-pointer fix; no content change."
+    }
+  }
+}

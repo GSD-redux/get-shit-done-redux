@@ -169,7 +169,7 @@ placeholder, not a shell variable.
 
 ```
 Agent(
-  prompt=filled_debug_subagent_prompt + "\n\n" + WORKTREE_GUARD + "\n\n<files_to_read>\n- {phase_dir}/{phase_num}-UAT.md\n- {state_path}\n</files_to_read>\n${AGENT_SKILLS_DEBUGGER}",
+  prompt=filled_debug_subagent_prompt + "\n\n" + WORKTREE_GUARD + "\n\n<required_reading>\n- {phase_dir}/{phase_num}-UAT.md\n- {state_path}\n</required_reading>\n${AGENT_SKILLS_DEBUGGER}",
   subagent_type="gsd-debugger",
   {harnessFlag}
   description="Debug: {truth_short}"

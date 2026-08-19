@@ -19,18 +19,36 @@
 
 process.env.GSD_TEST_MODE = '1';
 
-const { test, describe } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
+const espree = require('espree');
+const { splitLines, joinLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const {
+  INSTALL_SCRIPT,
+  MANIFEST_NAME,
+  installerEnv,
+  stripAnsi,
+  runMinimalInstall,
+} = require('./helpers/install-shared.cjs');
 
 const {
   installRuntimeArtifacts,
   installOpencodeFamilySkills,
+  uninstallRuntimeArtifacts,
+  _resolveUserArtifactStagingRoot,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+const {
+  stageUserArtifacts,
+} = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
 
 const {
   parseRuntimeInput,
@@ -95,7 +113,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     fs.writeFileSync(path.join(sourceDir, 'proof.md'), '# proof\n');
     fs.writeFileSync(path.join(cleanupDir, 'temp.md'), '# cleanup\n');
     let planArgs;
-    const { installer, restore } = loadFreshInstallerWithInstallPlanStub((args) => {
+    const { restore } = loadFreshInstallerWithInstallPlanStub((args) => {
       planArgs = args;
       return {
         ok: true,
@@ -110,7 +128,12 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     t.after(restore);
 
     // Augment has a flat commands kind and prefixes proof.md as gsd-proof.md.
-    installer.installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_CORE);
+    // `installer` above only reloads bin/install.js (needed for OTHER stubs in
+    // this file); installRuntimeArtifacts itself always lived in install-engine.cjs
+    // (bin/install.js's #2876-retired re-export was an alias to the same
+    // singleton), so calling the direct import exercises the identical,
+    // already-monkeypatched module instance.
+    installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_CORE);
 
     assert.strictEqual(planArgs.layout.runtime, 'augment');
     assert.strictEqual(planArgs.layout.configDir, configDir);
@@ -130,7 +153,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     });
 
     fs.writeFileSync(path.join(cleanupDir, 'temp.md'), '# cleanup\n');
-    const { installer, restore } = loadFreshInstallerWithInstallPlanStub(() => ({
+    const { restore } = loadFreshInstallerWithInstallPlanStub(() => ({
       ok: false,
       kind: 'rewrite_failed',
       failedKind: 'commands',
@@ -140,7 +163,7 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     t.after(restore);
 
     assert.throws(
-      () => installer.installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
+      () => installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE),
       /planned failure/,
     );
     assert.ok(!fs.existsSync(cleanupDir), 'failure cleanup dir must be removed');
@@ -730,7 +753,7 @@ describe('uninstallRuntimeArtifacts — consumes Runtime Artifact Uninstall Plan
     fs.writeFileSync(path.join(commandsDir, 'user-custom.md'), '# keep\n');
 
     let planLayout;
-    const { installer, restore } = loadFreshInstallerWithPlanStubs({
+    const { restore } = loadFreshInstallerWithPlanStubs({
       uninstallStub(layout) {
         planLayout = layout;
         return {
@@ -742,7 +765,10 @@ describe('uninstallRuntimeArtifacts — consumes Runtime Artifact Uninstall Plan
     });
     t.after(restore);
 
-    installer.uninstallRuntimeArtifacts('augment', configDir, 'global');
+    // uninstallRuntimeArtifacts always lived in install-engine.cjs (bin/install.js's
+    // #2876-retired re-export was an alias to the same singleton) — the direct
+    // top-level import exercises the identical, already-monkeypatched instance.
+    uninstallRuntimeArtifacts('augment', configDir, 'global');
 
     assert.strictEqual(planLayout.runtime, 'augment');
     assert.strictEqual(planLayout.configDir, configDir);
@@ -759,7 +785,7 @@ describe('uninstallRuntimeArtifacts — removes gsd-owned entries, preserves for
       t.after(() => cleanup(configDir));
       sandboxHome(t, configDir);
 
-      const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+      const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
       assert.strictEqual(typeof uninstallRuntimeArtifacts, 'function');
 
       const layout = resolveRuntimeArtifactLayout(runtime, configDir, 'global');
@@ -913,7 +939,7 @@ describe('installRuntimeArtifacts — legacy migrations run before layout copy',
 
 describe('uninstallRuntimeArtifacts — legacy cleanup runs before layout removal', () => {
   test('hermes: both flat and nested layouts removed (#947: bare-stem dirs cleaned on uninstall)', (t) => {
-    const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+    const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
     const configDir = createTempDir('gsd-legacy-uninstall-hermes-');
     t.after(() => cleanup(configDir));
 
@@ -942,7 +968,7 @@ describe('uninstallRuntimeArtifacts — legacy cleanup runs before layout remova
   });
 
   test('claude: legacy commands/gsd/ cleaned AND new skills/ entries removed', (t) => {
-    const { uninstallRuntimeArtifacts } = require('../bin/install.js');
+    const { uninstallRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
     const configDir = createTempDir('gsd-legacy-uninstall-claude-');
     t.after(() => cleanup(configDir));
 
@@ -1268,10 +1294,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {
-  convertClaudeToWindsurfMarkdown,
   convertClaudeToTraeMarkdown,
-  _applyRuntimeRewrites,
 } = require('../bin/install.js');
+
+const {
+  convertClaudeToWindsurfMarkdown,
+  _applyRuntimeRewrites,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 // ─── Windsurf converter bare-form tests ─────────────────────────────────────
 
@@ -1619,10 +1648,10 @@ const {
   convertClaudeCommandToClineSkill,
   convertClaudeToCliineMarkdown,
   install,
-  _applyRuntimeRewrites,
 } = require('../bin/install.js');
 
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
+const { _applyRuntimeRewrites } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 const {
   resolveRuntimeArtifactLayout,
@@ -2216,21 +2245,40 @@ describe('convertClaudeCommandToClineSkill — code-point-aware truncation (Fix 
 
 // ─── Fix 2 regression: cline local scope emits no skills ─────────────────────
 //
-// resolveRuntimeArtifactLayout('cline', dir, 'local') must return 0 kinds.
+// resolveRuntimeArtifactLayout('cline', dir, 'local') must return no SKILLS
+// kind (local commands are embedded in .clinerules, never materialized as
+// skill files — hostBehaviors.localCommandsViaRules).
 // installRuntimeArtifacts('cline', dir, 'local') must not write any skills.
+//
+// #2875 Part 2 defect fix (cline-local agents-drop regression): local now
+// ALSO declares an `agents` kind (capabilities/cline/capability.json) — the
+// deleted inline agent-staging loop used to serve cline-local's agents/
+// unconditionally; closing it without this local descriptor entry silently
+// dropped them. `kinds.length === 0` was true only by coincidence of the
+// separate skills gap this describe block's title names; it is no longer
+// true now that the actual (agents) regression is fixed. See
+// tests/agent-descriptor-parity.test.cjs's cline (local) H row for the
+// byte-parity proof and tests/cline-install.test.cjs's local-install
+// regression test for the end-to-end proof.
 
 describe('resolveRuntimeArtifactLayout — cline scope-aware (Fix 2)', () => {
-  test('cline local: kinds.length === 0 (no skills for local scope)', () => {
+  test('cline local: no skills kind (skills for local scope are embedded in .clinerules, never materialized)', () => {
     const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
     const layout = resolveRuntimeArtifactLayout('cline', '/tmp/x', 'local');
-    assert.strictEqual(layout.kinds.length, 0, 'cline local must have 0 kinds');
+    const kindNames = layout.kinds.map((k) => k.kind).sort();
+    assert.deepStrictEqual(kindNames, ['agents'], 'cline local must declare only the agents kind — no skills kind');
   });
 
-  test('cline global: kinds.length === 1 (skills kind)', () => {
+  test('cline global: kinds.length === 2 (skills + agents kind, #2875 Part 2)', () => {
     const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
     const layout = resolveRuntimeArtifactLayout('cline', '/tmp/x', 'global');
-    assert.strictEqual(layout.kinds.length, 1, 'cline global must have 1 skills kind');
-    assert.strictEqual(layout.kinds[0].kind, 'skills');
+    // #2875 Part 2 (the agents-bypass closure): cline gained a descriptor-driven
+    // `agents` kind entry (capabilities/cline/capability.json), closing the
+    // inline-agent-loop bypass that used to serve it — see
+    // tests/agent-descriptor-parity.test.cjs's H2 row for the byte-parity proof.
+    assert.strictEqual(layout.kinds.length, 2, 'cline global must have 2 kinds (skills + agents)');
+    const kindNames = layout.kinds.map((k) => k.kind).sort();
+    assert.deepStrictEqual(kindNames, ['agents', 'skills']);
   });
 
   test('installRuntimeArtifacts cline local: no skills/ dir created', (t) => {
@@ -2660,9 +2708,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  readGsdRuntimeProfileResolver,
   install,
 } = require('../bin/install.js');
+const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const makeTmp = (prefix) => createTempDir(`gsd-2794-${prefix}-`);
@@ -4040,6 +4088,123 @@ describe('#443 resolveInstallTimeEffort: invalid tokens fall through to valid ef
   });
 });
 
+// ─── describe 5d: #3533 (10d) — inherit omits the effort key at install ──────
+
+describe('#3533 inherit: install writes NO effort key when the agent resolves to inherit', () => {
+  let tmpDir;
+  let claudeHome;
+  let codexHome;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3533-inherit-');
+    const projectDir = path.join(tmpDir, 'project');
+    claudeHome = path.join(projectDir, '.claude');
+    codexHome = path.join(projectDir, '.codex');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeProjectConfig(config) {
+    const projectDir = path.dirname(claudeHome);
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config, null, 2)
+    );
+  }
+
+  test('claude .md frontmatter has no effort: key for an inherit-resolving agent', () => {
+    writeProjectConfig({ effort: { agent_overrides: { 'gsd-planner': 'inherit' } } });
+    runGlobalInstall('claude', claudeHome);
+    const fm = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-planner.md'));
+    assert.doesNotMatch(fm, /^effort:/m,
+      `an inherit-resolving agent must carry NO effort key\nActual:\n${fm}`);
+    // A non-inherit agent still gets its concrete value.
+    const fmExecutor = readFrontmatter(path.join(claudeHome, 'agents', 'gsd-executor.md'));
+    const m = fmExecutor.match(/^effort:\s*(\S+)$/m);
+    assert.ok(m && m[1] === 'high', `gsd-executor keeps its concrete tier value, got: ${m && m[1]}`);
+  });
+
+  test('codex .toml omits model_reasoning_effort for an inherit-resolving pinned agent', () => {
+    writeProjectConfig({
+      runtime: 'codex',
+      model_overrides: { 'gsd-planner': 'gpt-5.6-sol' },
+      effort: { agent_overrides: { 'gsd-planner': 'inherit' } },
+    });
+    runGlobalInstall('codex', codexHome);
+    const toml = fs.readFileSync(path.join(codexHome, 'agents', 'gsd-planner.toml'), 'utf8');
+    assert.match(toml, /^model\s*=\s*"gpt-5.6-sol"$/m, 'the model pin stays');
+    assert.doesNotMatch(toml, /^model_reasoning_effort\s*=/m,
+      `inherit must not pin a literal effort level\nActual:\n${toml.slice(0, 400)}`);
+  });
+});
+
+// ─── describe 5c: #3531 (10c) — a partial effort block must not discard manifest tier defaults ──
+//
+// Regression fixture from issue #3160: adding four agent_overrides produced a
+// 23-agent dry-run diff that DOWNGRADED xhigh-tier agents to high and UPGRADED
+// low-tier agents to high — because an effort block without
+// routing_tier_defaults disabled the built-in tier ladder (manifest tier
+// defaults were consulted only when the whole effort block was absent).
+
+describe('#3531 resolveInstallTimeEffort: agent_overrides-only effort block keeps manifest tier defaults', () => {
+  let tmpDir;
+  let claudeHome;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir('gsd-3531-tier-merge-');
+    const projectDir = path.join(tmpDir, 'project');
+    claudeHome = path.join(projectDir, '.claude');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeProjectConfig(config) {
+    const projectDir = path.dirname(claudeHome);
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config, null, 2)
+    );
+  }
+
+  function readInstalledEffort(agentFile) {
+    const fm = readFrontmatter(path.join(claudeHome, 'agents', agentFile));
+    const match = fm.match(/^effort:\s*(\S+)$/m);
+    assert.ok(match, `effort: must be present in ${agentFile} frontmatter\nActual:\n${fm}`);
+    return match[1];
+  }
+
+  test('agent_overrides-only block leaves untiered agents on their manifest tier defaults', () => {
+    // The exact #3160 shape: one agent overridden, no routing_tier_defaults.
+    writeProjectConfig({ effort: { agent_overrides: { 'gsd-code-reviewer': 'medium' } } });
+    runGlobalInstall('claude', claudeHome);
+
+    // Before #3531: every non-overridden agent collapsed to the manifest
+    // default 'high' — downgrading planner (xhigh) and upgrading mapper (low).
+    assert.strictEqual(readInstalledEffort('gsd-planner.md'), 'xhigh');
+    assert.strictEqual(readInstalledEffort('gsd-executor.md'), 'high');
+    assert.strictEqual(readInstalledEffort('gsd-codebase-mapper.md'), 'low');
+    // The one agent the user actually named still gets its override.
+    assert.strictEqual(readInstalledEffort('gsd-code-reviewer.md'), 'medium');
+  });
+
+  test('partial routing_tier_defaults fills gaps from the manifest at install', () => {
+    writeProjectConfig({ effort: { routing_tier_defaults: { heavy: 'medium' } } });
+    runGlobalInstall('claude', claudeHome);
+    assert.strictEqual(readInstalledEffort('gsd-planner.md'), 'medium');
+    assert.strictEqual(readInstalledEffort('gsd-executor.md'), 'high');
+    assert.strictEqual(readInstalledEffort('gsd-codebase-mapper.md'), 'low');
+  });
+});
+
 // ─── describe 5: Source stays clean ──────────────────────────────────────────
 
 describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
@@ -4081,8 +4246,10 @@ describe('#443 Source purity: agents/gsd-planner.md has no effort: key', () => {
 // convertClaudeToAugmentMarkdown duplicate dedup is deferred to Phase 2's cleanup
 // (entangled converter cluster; not required to unblock Phase 2).
 // These tests exercise the REAL relocated functions at their new home (the
-// generated .cjs) and assert install.js re-exports the SAME references
-// (Hyrum: existing consumers import these names from bin/install.js).
+// generated .cjs). #2876 (epic #2866 Phase 7) retired install.js's re-export
+// of both names — a repo-wide audit found zero production consumers of the
+// pass-through, so the "existing consumers" beneficiary ADR-1508 cited was
+// the test suite alone. The re-export absence is asserted below instead.
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
@@ -4125,8 +4292,8 @@ describe('getDirName (relocated to runtime-name-policy)', () => {
     assert.strictEqual(runtimeNamePolicy.getDirName(''), '.claude');
   });
 
-  test('bin/install.js re-exports the SAME getDirName reference (no drift)', () => {
-    assert.strictEqual(installer.getDirName, runtimeNamePolicy.getDirName);
+  test('bin/install.js no longer re-exports getDirName (#2876 retired the pass-through)', () => {
+    assert.strictEqual(installer.getDirName, undefined);
   });
 });
 
@@ -4172,10 +4339,8 @@ describe('processAttribution (relocated to runtime-artifact-conversion)', () => 
     );
   });
 
-  test('bin/install.js re-exports the SAME processAttribution reference (no drift)', () => {
-    // processAttribution remains an explicit installer compatibility relay, so
-    // the export must keep pointing at the conversion module's implementation.
-    assert.strictEqual(installer.processAttribution, conversion.processAttribution);
+  test('bin/install.js no longer re-exports processAttribution (#2876 retired the pass-through)', () => {
+    assert.strictEqual(installer.processAttribution, undefined);
   });
 });
   });
@@ -4530,124 +4695,151 @@ describe('layout module no longer exports getInstallExports', () => {
 });
 
 // ---------------------------------------------------------------------------
-// DEFECT.GENERATIVE-FIX: single-owner reference-identity guard (#1511)
-// Proves install.js binds to the conversion module's implementation, not a
-// duplicate local copy. If these fail, a duplicate body was re-introduced.
+// DEFECT.GENERATIVE-FIX: single-owner duplicate-body guard (#1511),
+// re-armed AST-based after #2876 (epic #2866 Phase 7) retired the exports
+// the original reference-identity check compared against.
+//
+// #1511 proved install.js bound to the conversion module's implementation
+// rather than a duplicate local copy — the single-owner property held via
+// `assert.strictEqual(install.X, conversion.X)` (reference identity). #2876
+// retired these names from bin/install.js's module.exports entirely because
+// nothing consumed the re-export. That broke the reference-identity form
+// (there is no `install.X` left to compare), and a same-shaped
+// `install.X === undefined` replacement is NOT an equivalent guard: it only
+// inspects the EXPORT surface, so a duplicate, unexported, re-implemented
+// copy of one of these functions/consts added directly to bin/install.js
+// would satisfy `install.X === undefined` trivially while still being
+// exactly the drift-hazard duplicate this guard exists to catch.
+//
+// Fix: parse bin/install.js's own top-level AST (espree) and assert directly
+// on what is actually declared there, instead of on what is exported.
 // ---------------------------------------------------------------------------
 
-describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2)', () => {
+describe('single-owner duplicate-body guard (ADR-1508 / #1511 Phase 2, AST-based since #2876)', () => {
   let install;
   let conversionCjs;
+  let installTopLevel;
+
+  // Collect every top-level `function <name>(...) {}` declaration and every
+  // top-level `const/let/var <name> = <init>;` declarator in bin/install.js,
+  // keyed by name. A duplicate body re-introduced under EITHER shape (a real
+  // function, or a const bound to something other than a bare
+  // runtimeArtifactConversion.<Y> reference) is visible here regardless of
+  // whether it is ever exported.
+  function collectTopLevelBindings(ast) {
+    const functionNames = new Set();
+    const variableInits = new Map();
+    for (const node of ast.body) {
+      if (node.type === 'FunctionDeclaration' && node.id) {
+        functionNames.add(node.id.name);
+      }
+      if (node.type === 'VariableDeclaration') {
+        for (const decl of node.declarations) {
+          if (decl.type === 'VariableDeclarator' && decl.id && decl.id.type === 'Identifier') {
+            variableInits.set(decl.id.name, decl.init);
+          }
+        }
+      }
+    }
+    return { functionNames, variableInits };
+  }
+
+  // True iff `node` is exactly `<objectName>.<propertyName>` — a bare
+  // single-hop member-expression reference, not a call, not a duplicated
+  // function/object body.
+  function isMemberReferenceTo(node, objectName, propertyName) {
+    return (
+      !!node &&
+      node.type === 'MemberExpression' &&
+      !node.computed &&
+      node.object &&
+      node.object.type === 'Identifier' &&
+      node.object.name === objectName &&
+      node.property &&
+      node.property.type === 'Identifier' &&
+      node.property.name === propertyName
+    );
+  }
+
   before(() => {
     process.env['GSD_TEST_MODE'] = '1';
     install = require('../bin/install.js');
     conversionCjs = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+    // bin/install.js opens with a `#!/usr/bin/env node` shebang line, which
+    // is not valid top-level JS syntax for espree's parser — strip it before
+    // parsing (mirrors how Node's own module loader strips it at runtime).
+    // Uses splitLines() (src/text-lines.cts, the repo's sole `\r?\n` split
+    // seam) rather than a readFileSync-content regex, per
+    // local/no-unbounded-quantifier and local/no-crlf-fragile-split.
+    const installSrcRaw = fs.readFileSync(INSTALL_SCRIPT, 'utf8');
+    const installSrcLines = splitLines(installSrcRaw);
+    if (installSrcLines[0] && installSrcLines[0].startsWith('#!')) {
+      installSrcLines[0] = '';
+    }
+    const installSrc = joinLines(installSrcLines, '\n');
+    const ast = espree.parse(installSrc, { ecmaVersion: 2022, sourceType: 'script', range: true, loc: true });
+    installTopLevel = collectTopLevelBindings(ast);
   });
 
-  test('install.computePathPrefix === conversion._computePathPrefix (single implementation)', () => {
-    assert.strictEqual(
-      install.computePathPrefix,
-      conversionCjs._computePathPrefix,
-      'install.js must bind computePathPrefix from conversion (not a duplicate body)',
-    );
-  });
+  // Names #2876 retired from bin/install.js entirely (no export, no internal
+  // caller). Regression shape this guards against: someone re-adds one of
+  // these as either a real `function NAME(...) {...}` OR a
+  // `const NAME = <anything>;` — under a plain `install.X === undefined`
+  // check, an unexported re-add of either shape passes silently.
+  const RETIRED_NAMES = [
+    ['applyRuntimeContentRewritesInPlace', 'applyRuntimeContentRewritesInPlace'],
+    ['applyRuntimeContentRewritesForCommandsInPlace', 'applyRuntimeContentRewritesForCommandsInPlace'],
+    ['convertClaudeToAugmentMarkdown', 'convertClaudeToAugmentMarkdown'],
+    ['convertClaudeCommandToAugmentSkill', 'convertClaudeCommandToAugmentSkill'],
+    ['convertClaudeAgentToAugmentAgent', 'convertClaudeAgentToAugmentAgent'],
+    ['convertClaudeCommandToWindsurfSkill', 'convertClaudeCommandToWindsurfSkill'],
+    ['convertClaudeCommandToWindsurfWorkflow', 'convertClaudeCommandToWindsurfWorkflow'],
+    ['convertClaudeAgentToWindsurfAgent', 'convertClaudeAgentToWindsurfAgent'],
+  ];
 
-  test('install.applyRuntimeContentRewritesInPlace === conversion.applyRuntimeContentRewritesInPlace (single walk loop)', () => {
-    assert.strictEqual(
-      install.applyRuntimeContentRewritesInPlace,
-      conversionCjs.applyRuntimeContentRewritesInPlace,
-      'install.js must bind applyRuntimeContentRewritesInPlace from conversion (not a duplicate walk loop)',
-    );
-  });
+  for (const [name, conversionProp] of RETIRED_NAMES) {
+    test(`${name}: retired from bin/install.js with zero top-level presence (#2876); conversion.${conversionProp} remains the single implementation`, () => {
+      assert.strictEqual(install[name], undefined, `bin/install.js must no longer export ${name}`);
+      assert.strictEqual(
+        installTopLevel.functionNames.has(name),
+        false,
+        `bin/install.js must not declare a top-level function named ${name} — a re-added unexported copy is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(
+        installTopLevel.variableInits.has(name),
+        false,
+        `bin/install.js must not declare a top-level const/let/var named ${name} — a re-added unexported copy is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(typeof conversionCjs[conversionProp], 'function', `${conversionProp} remains available from the conversion module`);
+    });
+  }
 
-  test('install.applyRuntimeContentRewritesForCommandsInPlace === conversion.applyRuntimeContentRewritesForCommandsInPlace (single copy+rewrite loop)', () => {
-    assert.strictEqual(
-      install.applyRuntimeContentRewritesForCommandsInPlace,
-      conversionCjs.applyRuntimeContentRewritesForCommandsInPlace,
-      'install.js must bind applyRuntimeContentRewritesForCommandsInPlace from conversion (not a duplicate copy+rewrite loop)',
-    );
-  });
+  // Names #2876 kept as a bare single-hop reference (`const X =
+  // runtimeArtifactConversion.<Y>;`) because bin/install.js still calls them
+  // internally (computePathPrefix, _applyRuntimeRewrites,
+  // convertClaudeToWindsurfMarkdown, applyClaudeCodeBrandSwap — #2931). The
+  // regression this half guards against: the reference gets replaced with an
+  // actual re-implemented body instead of staying a pointer to the single
+  // conversion-module owner.
+  const REFERENCE_ONLY_NAMES = [
+    ['computePathPrefix', '_computePathPrefix'],
+    ['_applyRuntimeRewrites', '_applyRuntimeRewrites'],
+    ['convertClaudeToWindsurfMarkdown', 'convertClaudeToWindsurfMarkdown'],
+    ['applyClaudeCodeBrandSwap', 'applyClaudeCodeBrandSwap'],
+  ];
 
-  test('install._applyRuntimeRewrites === conversion._applyRuntimeRewrites (single switch engine)', () => {
-    assert.strictEqual(
-      install._applyRuntimeRewrites,
-      conversionCjs._applyRuntimeRewrites,
-      'install.js must bind _applyRuntimeRewrites from conversion (not a local shim)',
-    );
-  });
-
-  // #1675 (ADR-1508): the augment converter family is single-sourced in the
-  // conversion module. install.js must re-bind (not re-define) these so there
-  // is exactly one body — the generative-drift hazard the dedup removes.
-  test('install.convertClaudeToAugmentMarkdown === conversion.convertClaudeToAugmentMarkdown (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeToAugmentMarkdown,
-      conversionCjs.convertClaudeToAugmentMarkdown,
-      'install.js must bind convertClaudeToAugmentMarkdown from conversion (not a duplicate body)',
-    );
-  });
-
-  test('install.convertClaudeCommandToAugmentSkill === conversion.convertClaudeCommandToAugmentSkill (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeCommandToAugmentSkill,
-      conversionCjs.convertClaudeCommandToAugmentSkill,
-      'install.js must bind convertClaudeCommandToAugmentSkill from conversion (not a duplicate body)',
-    );
-  });
-
-  test('install.convertClaudeAgentToAugmentAgent === conversion.convertClaudeAgentToAugmentAgent (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeAgentToAugmentAgent,
-      conversionCjs.convertClaudeAgentToAugmentAgent,
-      'install.js must bind convertClaudeAgentToAugmentAgent from conversion (not a duplicate body)',
-    );
-  });
-
-  // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
-  // conversion module, same pattern as the #1675 Augment dedup above.
-  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow (single converter)', () => {
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfWorkflow,
-      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
-      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
-    );
-  });
-
-  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter member', () => {
-    assert.strictEqual(
-      install.convertClaudeToWindsurfMarkdown,
-      conversionCjs.convertClaudeToWindsurfMarkdown,
-      'install.js must bind convertClaudeToWindsurfMarkdown from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfSkill,
-      conversionCjs.convertClaudeCommandToWindsurfSkill,
-      'install.js must bind convertClaudeCommandToWindsurfSkill from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeCommandToWindsurfWorkflow,
-      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
-      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
-    );
-    assert.strictEqual(
-      install.convertClaudeAgentToWindsurfAgent,
-      conversionCjs.convertClaudeAgentToWindsurfAgent,
-      'install.js must bind convertClaudeAgentToWindsurfAgent from conversion (not a duplicate body)',
-    );
-  });
-
-  // #2931 (ADR-1508): applyClaudeCodeBrandSwap + RUNTIME_COMPATIBILITY_BLOCK_RE
-  // were duplicated verbatim in install.js (used by the local Cursor/Trae/
-  // CodeBuddy/Cline converters) alongside the conversion module's copy —
-  // exactly the unlinked-duplicate-implementation class this guard exists to
-  // catch. install.js now re-binds (does not re-define) it.
-  test('install.applyClaudeCodeBrandSwap === conversion.applyClaudeCodeBrandSwap (single implementation)', () => {
-    assert.strictEqual(
-      install.applyClaudeCodeBrandSwap,
-      conversionCjs.applyClaudeCodeBrandSwap,
-      'install.js must bind applyClaudeCodeBrandSwap from conversion (not a duplicate body)',
-    );
-  });
+  for (const [local, conversionProp] of REFERENCE_ONLY_NAMES) {
+    test(`${local}: still a bare runtimeArtifactConversion.${conversionProp} reference, not a re-implemented body`, () => {
+      assert.strictEqual(install[local], undefined, `bin/install.js must no longer export ${local}`);
+      const init = installTopLevel.variableInits.get(local);
+      assert.ok(init, `bin/install.js must still declare a top-level const named ${local} (has an internal caller)`);
+      assert.ok(
+        isMemberReferenceTo(init, 'runtimeArtifactConversion', conversionProp),
+        `bin/install.js's ${local} binding must be a bare \`runtimeArtifactConversion.${conversionProp}\` reference — anything else (a real function/object body) is the #1511/#2876 duplicate-body regression this guard exists to catch`
+      );
+      assert.strictEqual(typeof conversionCjs[conversionProp], 'function');
+    });
+  }
 });
   });
 }
@@ -4844,7 +5036,7 @@ describe('Bug #2973: installer migrates existing legacy dev-preferences.md to sk
     // documented signature. End-to-end install testing is covered by
     // tests/install-*.test.cjs which already exercise legacy preservation.
     assert.equal(typeof inst.migrateLegacyDevPreferencesToSkill, 'function',
-      'expected migrateLegacyDevPreferencesToSkill in install.js exports (#2973)');
+      'expected migrateLegacyDevPreferencesToSkill in install-engine.cjs exports (#2973)');
   });
 
   test('migration writes to skills/gsd-dev-preferences/SKILL.md when no skill exists yet', () => {
@@ -6253,3 +6445,809 @@ describe('Gap 2: installer ships the capability registry generator scripts (#192
 });
   });
 }
+
+// ─── #2218 cross-scope shadowing — coexistence gate (C1) + 4b guard pair
+// (E13/E14, #2873, epic #2866 Phase 4a) ────────────────────────────────────
+//
+// Moved here from the now-deleted tests/install-cross-scope-shadowing.test.cjs:
+// `scripts/lint-test-file-count.allowlist.json` grandfathers the `install`
+// prefix at 8 files, and that suite's own `_doc` says adding a 9th file to a
+// capped module is a novel offender, not a fix — this gate is folded into
+// the emitted-artifact suite instead, which is already allowlisted and,
+// per #2873's acceptance criteria, is the correct home ("written against the
+// existing `runMinimalInstall` harness").
+//
+// Implements the coexistence gate (`C1`) and the 4b behavioral pair
+// (`E13`/`E14`) from
+// `.gsd/phase/feat-2873-cross-scope-shadowing/50-test-matrix.md`. Per that
+// matrix's "Red-first order": C1 must go RED against `next` (no
+// `install-shadow-report.cjs` report exists today), E14 must go RED today
+// (the global skill's spec-root include points at the global tree even when
+// a coexisting local install has its own project-local copy of that
+// workflow file), and E13 must stay GREEN both before and after — it is the
+// guard that phase 4b does not break today's global-only case.
+//
+// This section does NOT implement the 4b spec-root emission transform
+// (E1-E12, a separate matrix section) — that transform
+// (`resolveSpecRootReference`, `runtime-artifact-conversion.cts`) landed
+// separately and is exercised here only via its INSTALLED OUTPUT. #2873
+// Task 3 (2026-08-14): re-verified against a real global+local double
+// install — 4b has landed and E14 below is GREEN, not the known-RED case
+// this comment block originally described. The "Red-first order" paragraph
+// above is left as-is: it accurately records the matrix's ORIGINAL red-first
+// plan, not a live claim about E14's current state.
+
+/**
+ * Extract the `@`-include lines from an emitted markdown body — structural
+ * parsing, never substring/regex matching on the whole body (CONTRIBUTING.md
+ * "Prohibited: Raw Text Matching on Test Outputs"). Splits on newlines
+ * (CRLF-tolerant) and keeps only lines whose first character is `@`.
+ *
+ * @param {string} content
+ * @returns {string[]}
+ */
+function extractAtIncludeLines(content) {
+  return content.split(/\r?\n/).filter((line) => line.startsWith('@'));
+}
+
+describe('#2218 cross-scope shadowing', () => {
+  let root;
+  let projectDir;
+  let globalInstallResult;
+  let localInstallResult;
+
+  before(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2218-shadow-'));
+    projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Global half: cannot use runMinimalInstall here — its scope:'global'
+    // path pushes `--config-dir <root>`, which pins the install AT `<root>`
+    // itself (manifest at `<root>/gsd-file-manifest.json`), not at
+    // `<root>/.claude`. That is not the shape #2218 describes: the reporter's
+    // configuration is a HOME-resolved global install (no --config-dir)
+    // sitting alongside a project-local one. Spawn the installer directly,
+    // with HOME=root and no --config-dir, so it resolves its own config home
+    // the way a real global install does. Must run BEFORE the local half —
+    // order matters for this fixture (a separate test covers order-independence).
+    globalInstallResult = runNode([INSTALL_SCRIPT, '--claude', '--global'], {
+      cwd: root,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+    assert.strictEqual(globalInstallResult.exitCode, 0,
+      `global install exited with status ${globalInstallResult.exitCode} ` +
+      `(outcome=${globalInstallResult.outcome})\n` +
+      `stdout: ${globalInstallResult.stdout}\nstderr: ${globalInstallResult.stderr}`);
+
+    // Local half: runMinimalInstall cannot be reused for this either — for
+    // scope:'local' it sets cwd=root, which would install into
+    // `<root>/.claude` and collide with the global install above. Spawn the
+    // installer directly instead, with cwd pinned at the project dir.
+    localInstallResult = runNode([INSTALL_SCRIPT, '--claude', '--local'], {
+      cwd: projectDir,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+    assert.strictEqual(localInstallResult.exitCode, 0,
+      `local install exited with status ${localInstallResult.exitCode} ` +
+      `(outcome=${localInstallResult.outcome})\n` +
+      `stdout: ${localInstallResult.stdout}\nstderr: ${localInstallResult.stderr}`);
+  });
+
+  after(() => {
+    cleanup(root);
+  });
+
+  test('both installs land their own manifest', () => {
+    const globalManifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    const localManifestPath = path.join(projectDir, '.claude', MANIFEST_NAME);
+
+    assert.ok(fs.existsSync(globalManifestPath), 'global manifest should exist');
+    assert.ok(fs.statSync(globalManifestPath).isFile(), 'global manifest should be a file');
+    assert.ok(fs.existsSync(localManifestPath), 'local manifest should exist');
+    assert.ok(fs.statSync(localManifestPath).isFile(), 'local manifest should be a file');
+
+    const globalManifest = JSON.parse(fs.readFileSync(globalManifestPath, 'utf8'));
+    const localManifest = JSON.parse(fs.readFileSync(localManifestPath, 'utf8'));
+
+    assert.strictEqual(globalManifest.scope, 'global');
+    assert.strictEqual(localManifest.scope, 'local');
+  });
+
+  test('the local install reports the shadowing it causes', () => {
+    // #2218/#2873: install-shadow-report.cjs does not exist yet — this
+    // require is the intended RED. buildShadowReport is the pure IR builder
+    // described in .gsd/phase/feat-2873-cross-scope-shadowing/40-design.md
+    // (row 3): claude installed at both G and L reports N triggers shadowed,
+    // winner skills@global, loser commands@local.
+    const { buildShadowReport } = require('../gsd-core/bin/lib/install-shadow-report.cjs');
+    const report = buildShadowReport('claude', { home: root, cwd: projectDir });
+
+    assert.strictEqual(report.shadowed, true);
+    assert.strictEqual(report.winner.kind, 'skills');
+    assert.strictEqual(report.winner.scope, 'global');
+    assert.strictEqual(report.shadowedSide.kind, 'commands');
+    assert.strictEqual(report.shadowedSide.scope, 'local');
+    assert.ok(report.triggers.length > 0, 'expected at least one shadowed trigger');
+  });
+
+  test('global-only install resolves the same spec file it does today', () => {
+    const skillPath = path.join(root, '.claude', 'skills', 'gsd-plan-phase', 'SKILL.md');
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const atLines = extractAtIncludeLines(content);
+
+    assert.ok(
+      atLines.includes('@~/.claude/gsd-core/references/ui-brand.md'),
+      `expected the ui-brand reference @-line among: ${JSON.stringify(atLines)}`,
+    );
+  });
+
+  // #2218 / phase #2873: before 4b, the global SKILL.md's spec-root include
+  // was a static `@~/.claude/gsd-core/workflows/plan-phase.md` reference,
+  // which always resolved against the GLOBAL tree even when a coexisting
+  // local install has its own project-local copy of that workflow file.
+  // Phase 4b (`resolveSpecRootReference`, `runtime-artifact-conversion.cts`)
+  // replaces that static include with a two-step imperative form that names
+  // both candidate paths and lets the runtime prefer the local one when it
+  // exists. #2873 Task 3 (2026-08-14): re-verified GREEN against a real
+  // global+local double install — 4b landed after this test package was
+  // authored, so this is no longer the known-RED case the original comment
+  // above it described.
+  test('the winning global skill points at the project-local spec tree (E14)', () => {
+    const skillPath = path.join(root, '.claude', 'skills', 'gsd-plan-phase', 'SKILL.md');
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const atLines = extractAtIncludeLines(content);
+
+    assert.ok(
+      !atLines.includes('@~/.claude/gsd-core/workflows/plan-phase.md'),
+      `expected the static global workflow @-line to be replaced, but found it among: ${JSON.stringify(atLines)}`,
+    );
+    // The reference @-include (a DIFFERENT spec root, row E4) survives
+    // untouched — structural proof 4b did not over-fire on this file.
+    assert.ok(
+      atLines.includes('@~/.claude/gsd-core/references/ui-brand.md'),
+      `expected the ui-brand reference @-line to survive among: ${JSON.stringify(atLines)}`,
+    );
+
+    const localSpecPath = path.join(projectDir, '.claude', 'gsd-core', 'workflows', 'plan-phase.md');
+    assert.ok(fs.existsSync(localSpecPath), 'local spec-root workflow file should exist on disk');
+
+    // Positive assertion, not just absence-of-the-old-include: the emitted
+    // body must actually NAME the project-local candidate path. Exact-string
+    // presence check on the literal candidate path `resolveSpecRootReference`
+    // emits (never a substring-scan for prose wording — CONTRIBUTING →
+    // "Prohibited: Raw Text Matching on Test Outputs"; this checks for the
+    // PATH token, not sentence phrasing).
+    assert.ok(
+      content.includes('.claude/gsd-core/workflows/plan-phase.md'),
+      `expected the emitted body to name the project-local candidate path, got: ${JSON.stringify(content)}`,
+    );
+  });
+});
+
+// ─── #2873 matrix section C — install-time report (spawned installer) ─────
+//
+// Implements rows C1-C6 from
+// `.gsd/phase/feat-2873-cross-scope-shadowing/50-test-matrix.md`. The
+// `#2218 cross-scope shadowing` suite above calls `buildShadowReport`
+// DIRECTLY — real coverage of the pure IR, but it proves nothing about the
+// INSTALLER'S OWN WIRING at bin/install.js's writeManifest-adjacent
+// try/catch block (the only call site that ever prints a report). These
+// rows instead spawn the real installer and inspect its own stdout/stderr
+// and exit code — the actual product surface #2218 reported a gap in.
+
+describe('#2873 C1-C6 — install-time shadow report (spawned installer wiring)', () => {
+  const { buildShadowReport, renderShadowReport, SHADOW_REASON } = require('../gsd-core/bin/lib/install-shadow-report.cjs');
+  const SHADOW_THROWS_PRELOAD = path.join(__dirname, 'helpers', 'shadow-report-throws-preload.cjs');
+
+  function spawnInstall(args, cwd, root, nodeFlags = []) {
+    return runNode([...nodeFlags, INSTALL_SCRIPT, ...args], {
+      cwd,
+      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
+    });
+  }
+
+  /**
+   * Assert `stderr` (the installer's own `console.warn` shadow-report
+   * output) actually carries `expectedReport`'s rendered lines, verbatim.
+   * `expectedReport`/its lines are computed by CALLING the module's own
+   * pure `buildShadowReport`/`renderShadowReport` against the SAME on-disk
+   * fixture the spawned installer just produced — never a guessed/hardcoded
+   * literal. This is the typed-count-plus-content route the review brief
+   * asks for: structural comparison against a pure function's own computed
+   * output (mirrors this file's own `extractAtIncludeLines`/E14 pattern
+   * above), not prose matching.
+   */
+  function assertReportRendered(stderr, expectedReport) {
+    const lines = renderShadowReport(expectedReport);
+    assert.ok(lines.length > 0,
+      'fixture must actually be shadowed for this to be a meaningful positive assertion');
+    const stripped = stripAnsi(stderr);
+    for (const line of lines) {
+      assert.ok(stripped.includes(line),
+        `expected installer stderr to carry the typed report line ${JSON.stringify(line)}\nstderr: ${stderr}`);
+    }
+  }
+
+  /**
+   * Negative-proof counterpart to `assertReportRendered`, for fixtures where
+   * no report is expected. `expectedReport` is computed by calling the
+   * module's own pure `buildShadowReport` against the SAME on-disk fixture
+   * the spawned installer just produced. Asserts the typed IR itself is
+   * `not_shadowed`, that `renderShadowReport` therefore computes ZERO lines
+   * for it, and then — for every line it WOULD have computed had the IR been
+   * shadowed (structurally empty here) — that none of them appear in
+   * `stderr`. This replaces matching a hardcoded literal fragment
+   * (`' shadowed: the '`) with a structural comparison against
+   * `renderShadowReport`'s own (empty) output, so there is no longer a
+   * guessed string for `local/no-source-grep`/`allow-test-rule` to flag.
+   */
+  function assertReportAbsent(stderr, expectedReport) {
+    assert.strictEqual(expectedReport.shadowed, false,
+      'fixture must not be shadowed for this to be a meaningful negative assertion');
+    assert.strictEqual(expectedReport.reason, SHADOW_REASON.NOT_SHADOWED,
+      `expected reason ${SHADOW_REASON.NOT_SHADOWED}, got ${expectedReport.reason}`);
+    const lines = renderShadowReport(expectedReport);
+    assert.deepStrictEqual(lines, [],
+      'renderShadowReport must compute zero lines for a not_shadowed report');
+    const stripped = stripAnsi(stderr);
+    for (const line of lines) {
+      assert.ok(!stripped.includes(line),
+        `expected installer stderr NOT to carry the typed report line ${JSON.stringify(line)}\nstderr: ${stderr}`);
+    }
+  }
+
+  test('C1: global-then-local double install reports shadowing on the second install, exit 0', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c1-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const l = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l.exitCode, 0, `local install failed: ${l.stdout}\n${l.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(l.stderr, expectedReport);
+  });
+
+  test('C2: local-then-global double install reports shadowing symmetrically, exit 0', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c2-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const l = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l.exitCode, 0, `local install failed: ${l.stdout}\n${l.stderr}`);
+
+    // The global install's own production `buildShadowReport(runtime)` call
+    // (bin/install.js) takes no injected opts — it defaults to
+    // `process.cwd()` to detect a coexisting LOCAL scope. Run it with cwd
+    // INSIDE the already-locally-installed project (the real #2218 shape: a
+    // developer running the global install from inside an existing
+    // project), or it structurally cannot see the local scope at all —
+    // verified empirically: cwd=root (a global install's usual cwd) never
+    // reports, cwd=projectDir does.
+    const g = spawnInstall(['--claude', '--global'], projectDir, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(g.stderr, expectedReport);
+  });
+
+  test('C3: global-only install stays quiet, exit 0 (negative proof)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c3-'));
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    // Typed control: a single-scope fixture can never be shadowed by
+    // construction (buildShadowReport requires two installed scopes) —
+    // confirms this negative-proof fixture is not accidentally shadowed.
+    const controlReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stderr, controlReport);
+  });
+
+  test('C4: an install that fails before writeManifest never emits a report', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c4-'));
+    t.after(() => cleanup(root));
+
+    // Structural failure, never chmod (chmod 0o000 no-ops under root —
+    // CONTRIBUTING.md): pre-create the global config dir's OWN path as a
+    // plain file. installerMigrations' lock-acquisition mkdirSync (which
+    // runs before ANY artifact copy, long before writeManifest at
+    // bin/install.js) then throws ENOTDIR/EEXIST — verified empirically,
+    // and works identically whether or not the test runner is root.
+    fs.writeFileSync(path.join(root, '.claude'), 'blocker');
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.notStrictEqual(g.exitCode, 0,
+      `expected the structural collision to fail the install: ${g.stdout}\n${g.stderr}`);
+
+    const manifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    assert.ok(!fs.existsSync(manifestPath), 'writeManifest must never have run');
+
+    // Same fixture the failed install just left on disk: nothing was ever
+    // written, so the typed IR is not_shadowed by construction — the failure
+    // path never reaches the report call site at all (it runs strictly after
+    // writeManifest).
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stdout + g.stderr, expectedReport);
+  });
+
+  test('C5: a throwing report builder never fails the install, report suppressed', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c5-'));
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root, ['--require', SHADOW_THROWS_PRELOAD]);
+    assert.strictEqual(g.exitCode, 0,
+      `a throwing buildShadowReport must never fail the install: ${g.stdout}\n${g.stderr}`);
+
+    const manifestPath = path.join(root, '.claude', MANIFEST_NAME);
+    assert.ok(fs.existsSync(manifestPath),
+      'writeManifest must still have run — the report call happens strictly after it');
+
+    // Same single-scope fixture as C3 (writeManifest ran, but the report
+    // builder was preloaded to throw): the typed IR built from the real
+    // installer's own scope is still not_shadowed, and — because the
+    // injected throw is caught before renderShadowReport ever runs — no
+    // report text should reach stderr either.
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: root });
+    assertReportAbsent(g.stderr, expectedReport);
+  });
+
+  test('C6: re-running the same scope twice produces the same report', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2873-c6-'));
+    const projectDir = path.join(root, 'myrepo');
+    fs.mkdirSync(projectDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const g = spawnInstall(['--claude', '--global'], root, root);
+    assert.strictEqual(g.exitCode, 0, `global install failed: ${g.stdout}\n${g.stderr}`);
+
+    const l1 = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l1.exitCode, 0, `first local install failed: ${l1.stdout}\n${l1.stderr}`);
+    const l2 = spawnInstall(['--claude', '--local'], projectDir, root);
+    assert.strictEqual(l2.exitCode, 0, `second local install failed: ${l2.stdout}\n${l2.stderr}`);
+
+    const expectedReport = buildShadowReport('claude', { home: root, cwd: projectDir });
+    assert.strictEqual(expectedReport.shadowed, true);
+    assertReportRendered(l1.stderr, expectedReport);
+    assertReportRendered(l2.stderr, expectedReport);
+  });
+});
+
+// ─── #3543: an unverifiable model_profile must bake no tier model ───
+//
+// readGsdRuntimeProfileResolver probes for the project's
+// .planning/config.json by walking up from the install's targetDir. A GLOBAL
+// OpenCode/Kilo install (targetDir ~/.config/<runtime>) can never reach the
+// consuming project, and ~/.gsd/defaults.json never carries model_profile
+// (writeNonClaudeDefaults writes only resolve_model_ids + runtime), so the
+// resolver silently fell back to 'balanced' and baked e.g.
+// anthropic/claude-opus-4-8 into the emitted agent frontmatter — defeating a
+// project's explicit model_profile:"inherit" (OpenCode subagents use the
+// static frontmatter model, which overrides the live /model selection).
+//
+// The contract under test (issue #3543, maintainer Agent Brief):
+//   - "no project config found" is NOT "profile absent": the profile is
+//     UNVERIFIABLE, and an unverifiable profile bakes no model key.
+//   - a found config keeps the documented 'balanced' default (local installs).
+//   - a profile (or model_overrides pin) declared in ~/.gsd/defaults.json is
+//     machine-level and still bakes on a global install.
+//   - Kilo mirrors OpenCode (static-frontmatter twin, #2093).
+{
+  const { describe: __d3543, test: __t3543, beforeEach: __be3543, afterEach: __ae3543 } = require('node:test');
+  const { install: __install3543 } = require('../bin/install.js');
+  const { readGsdRuntimeProfileResolver: __resolver3543 } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+  const { captureConsole: __capture3543 } = require('./helpers.cjs');
+
+  // Installer-written shape for a non-Claude runtime (writeNonClaudeDefaults).
+  const __INSTALLER_DEFAULTS_3543 = { resolve_model_ids: 'omit', runtime: 'opencode' };
+  // Tier ids from gsd-core/bin/shared/model-catalog.json runtimeTierDefaults.
+  // gsd-roadmapper distinguishes profiles: balanced → sonnet, quality → opus.
+  const __SONNET_3543 = 'anthropic/claude-sonnet-5';
+  const __OPUS_3543 = 'anthropic/claude-opus-4-8';
+
+  function __writeJson3543(p, obj) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(obj, null, 2), 'utf-8');
+  }
+
+  function __agentsDir3543(configHome, runtime) {
+    return path.join(configHome, '.config', runtime, 'agents');
+  }
+
+  function __listAgents3543(agentsDir) {
+    return fs.readdirSync(agentsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
+  }
+
+  // Extract the baked model line (or null) — assertions compare it for
+  // equality against the expected literal rather than building a RegExp
+  // from the model id (CodeQL: incomplete backslash escaping).
+  function __modelLine3543(content) {
+    const m = content.match(/^model:.*$/m);
+    return m ? m[0] : null;
+  }
+
+  __d3543('#3543 unverifiable model_profile bakes no tier model', () => {
+    let __root3543;
+    let __home3543;
+    let __project3543;
+    let __prevEnv3543;
+    let __prevCwd3543;
+    // opencode/kilo global config homes resolve through an XDG descriptor whose
+    // env chain is [<RUNTIME>_CONFIG_DIR, <RUNTIME>_CONFIG, XDG_CONFIG_HOME]
+    // before falling back to <HOME>/.config/<name>. CI runners export
+    // XDG_CONFIG_HOME, which would route a "global" install into the runner's
+    // REAL config home (the live-config guard fails the job on exactly that);
+    // clearing the whole chain pins resolution to the isolated HOME fallback.
+    const __XDG_ENV_3543 = [
+      'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG',
+      'KILO_CONFIG_DIR', 'KILO_CONFIG',
+      'XDG_CONFIG_HOME',
+    ];
+
+    __be3543(() => {
+      __root3543 = createTempDir('gsd-3543-');
+      __home3543 = path.join(__root3543, 'home');
+      __project3543 = path.join(__root3543, 'project');
+      fs.mkdirSync(__project3543, { recursive: true });
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), __INSTALLER_DEFAULTS_3543);
+      __writeJson3543(path.join(__project3543, '.planning', 'config.json'), {
+        runtime: 'opencode',
+        model_profile: 'inherit',
+      });
+      __prevEnv3543 = {
+        HOME: process.env.HOME,
+        USERPROFILE: process.env.USERPROFILE,
+        SKIP: process.env.GSD_SKIP_STALE_SDK_CHECK,
+        XDG: Object.fromEntries(__XDG_ENV_3543.map((k) => [k, process.env[k]])),
+      };
+      __prevCwd3543 = process.cwd();
+      process.env.HOME = __home3543;
+      process.env.USERPROFILE = __home3543;
+      process.env.GSD_SKIP_STALE_SDK_CHECK = '1';
+      for (const k of __XDG_ENV_3543) delete process.env[k];
+      process.chdir(__project3543);
+    });
+
+    __ae3543(() => {
+      process.chdir(__prevCwd3543);
+      if (__prevEnv3543.HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = __prevEnv3543.HOME;
+      if (__prevEnv3543.USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = __prevEnv3543.USERPROFILE;
+      if (__prevEnv3543.SKIP === undefined) delete process.env.GSD_SKIP_STALE_SDK_CHECK;
+      else process.env.GSD_SKIP_STALE_SDK_CHECK = __prevEnv3543.SKIP;
+      for (const [k, v] of Object.entries(__prevEnv3543.XDG)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      cleanup(__root3543);
+    });
+
+    function runInstall3543(isGlobal, runtime) {
+      __capture3543(() => __install3543(isGlobal, runtime));
+    }
+
+    // Row 1 — unit half: the resolver as a GLOBAL install invokes it.
+    __t3543('resolver returns null when the only inherit declaration lives in a project the global probe cannot reach', () => {
+      const resolver = __resolver3543(path.join(__home3543, '.config', 'opencode'));
+      assert.equal(resolver, null,
+        'a global install cannot verify a profile — it must not resolve tier models');
+    });
+
+    // Row 1 — install half (criterion 1 + 5): the packaged defaults file
+    // containing only resolve_model_ids + runtime, project declaring inherit.
+    __t3543('global OpenCode install bakes no model line for any gsd-* agent when the profile is unverifiable', () => {
+      runInstall3543(true, 'opencode');
+
+      const agentsDir = __agentsDir3543(__home3543, 'opencode');
+      assert.ok(fs.existsSync(agentsDir), 'global install should create the agents directory');
+      const files = __listAgents3543(agentsDir);
+      assert.ok(files.includes('gsd-planner.md'), `gsd-planner.md should be emitted (found: ${files.slice(0, 5).join(', ')}…)`);
+      for (const f of files) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m,
+          `${f} must carry no baked model — the profile is unverifiable at global scope`);
+      }
+    });
+
+    // Row 2 — control: a LOCAL install's probe reaches the project's inherit.
+    __t3543('local OpenCode install keeps honoring a reachable model_profile inherit', () => {
+      runInstall3543(false, 'opencode');
+
+      const agentsDir = path.join(__project3543, '.opencode', 'agents');
+      assert.ok(fs.existsSync(agentsDir), 'local install should create the agents directory');
+      for (const f of __listAgents3543(agentsDir)) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m, `${f} must carry no baked model under inherit`);
+      }
+    });
+
+    // Row 3 — boundary: a FOUND config with an absent profile key keeps the
+    // documented 'balanced' default ("profile absent" ≠ "not found").
+    __t3543('local install with found config and absent profile key still bakes the balanced default', () => {
+      __writeJson3543(path.join(__project3543, '.planning', 'config.json'), {
+        runtime: 'opencode',
+      });
+      runInstall3543(false, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__project3543, '.opencode', 'agents', 'gsd-roadmapper.md'), 'utf-8');
+      assert.equal(__modelLine3543(roadmapper), `model: ${__SONNET_3543}`,
+        'gsd-roadmapper balanced → sonnet tier must still bake on a local install');
+    });
+
+    // Row 4 — a machine-declared profile is verifiable and still bakes globally.
+    __t3543('global install bakes the tier of a model_profile declared in ~/.gsd/defaults.json', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_profile: 'quality',
+      });
+      runInstall3543(true, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
+      assert.equal(__modelLine3543(roadmapper), `model: ${__OPUS_3543}`,
+        'gsd-roadmapper quality → opus tier must bake when the profile is machine-declared');
+    });
+
+    // Row 5 — explicit model_overrides pins keep working at any scope.
+    __t3543('global install still bakes an explicit model_overrides pin from ~/.gsd/defaults.json', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_overrides: { 'gsd-roadmapper': 'explicit-global-pin-3543' },
+      });
+      runInstall3543(true, 'opencode');
+
+      const roadmapper = fs.readFileSync(
+        path.join(__agentsDir3543(__home3543, 'opencode'), 'gsd-roadmapper.md'), 'utf-8');
+      assert.equal(__modelLine3543(roadmapper), 'model: explicit-global-pin-3543',
+        'explicit model_overrides pins are the highest precedence and must bake');
+    });
+
+    // Row 6 — inherit declared at machine level.
+    __t3543('global install bakes nothing when ~/.gsd/defaults.json itself declares inherit', () => {
+      __writeJson3543(path.join(__home3543, '.gsd', 'defaults.json'), {
+        resolve_model_ids: 'omit',
+        runtime: 'opencode',
+        model_profile: 'inherit',
+      });
+      runInstall3543(true, 'opencode');
+
+      for (const f of __listAgents3543(__agentsDir3543(__home3543, 'opencode'))) {
+        const content = fs.readFileSync(path.join(__agentsDir3543(__home3543, 'opencode'), f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m, `${f} must carry no baked model under inherit`);
+      }
+    });
+
+    // Row 7 — doc contract: targetDir null consults only the global defaults.
+    __t3543('null targetDir with runtime-only home defaults resolves null (unverifiable)', () => {
+      assert.equal(__resolver3543(null), null,
+        'with no project to probe and no declared profile, the resolver must be inert');
+    });
+
+    // Row 8 — falsy home model_profile values count as undeclared, matching
+    // the existing || merge semantics.
+    __t3543('falsy model_profile in ~/.gsd/defaults.json counts as undeclared', () => {
+      const defaultsPath = path.join(__home3543, '.gsd', 'defaults.json');
+      const globalDir = path.join(__home3543, '.config', 'opencode');
+      for (const falsy of ['', null]) {
+        __writeJson3543(defaultsPath, {
+          resolve_model_ids: 'omit',
+          runtime: 'opencode',
+          model_profile: falsy,
+        });
+        assert.equal(__resolver3543(globalDir), null,
+          `model_profile ${JSON.stringify(falsy)} must be treated as undeclared`);
+      }
+    });
+
+    // Row 9 — a local install into a tree with no .planning anywhere is just
+    // as unverifiable as a global one: bake nothing, crash nowhere.
+    __t3543('local install without .planning bakes no model and does not crash', () => {
+      cleanup(path.join(__project3543, '.planning'));
+      runInstall3543(false, 'opencode');
+
+      const agentsDir = path.join(__project3543, '.opencode', 'agents');
+      assert.ok(fs.existsSync(agentsDir), 'local install should create the agents directory');
+      const planner = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf-8');
+      assert.doesNotMatch(planner, /^model:/m,
+        'with no reachable project config the profile is unverifiable — no bake');
+    });
+
+    // Row 10 — Kilo parity (criterion 4): the static-frontmatter twin.
+    __t3543('global Kilo install bakes no model line on an unverifiable profile', () => {
+      runInstall3543(true, 'kilo');
+
+      const agentsDir = __agentsDir3543(__home3543, 'kilo');
+      assert.ok(fs.existsSync(agentsDir), 'global kilo install should create the agents directory');
+      for (const f of __listAgents3543(agentsDir)) {
+        const content = fs.readFileSync(path.join(agentsDir, f), 'utf-8');
+        assert.doesNotMatch(content, /^model:/m,
+          `${f} must carry no baked model — Kilo shares OpenCode's static-frontmatter constraint`);
+      }
+    });
+  });
+}
+
+// ─── #2874 (epic #2866 Phase 5) — G1/G3: the additive-contract guard ────────
+// Governed by ADR-58 (docs/adr/58-runtime-install-policy-module.md).
+// Design:      .gsd/phase/feat-2874-executed-plan-return/40-design.md
+// Test matrix: .gsd/phase/feat-2874-executed-plan-return/50-test-matrix.md
+//
+// G1 and G3 must be GREEN both BEFORE and AFTER the executed-plan return
+// lands — they are the guard proving the return value is additive (AC4),
+// never a behavior change. No production code is touched by this file.
+
+/**
+ * Recursively hash a directory tree into a stable, order-independent digest.
+ * `stripDir`, if given, is textually removed from each UTF-8-decodable
+ * file's content before hashing, so two installs into DIFFERENT temp
+ * directories (whose absolute paths get baked into rewritten skill bodies)
+ * can still be compared for content-identity.
+ *
+ * Both `stripDir` and the file content are normalized to forward slashes
+ * before the strip, unconditionally (never gated on `path.sep`) — production
+ * (`posixNormalize` in shell-command-projection.cts) rewrites `\` -> `/` in
+ * the resolved configDir before baking it into skill bodies, so on Windows
+ * `stripDir` (a raw fs.mkdtempSync path, backslash-separated) would never
+ * match the posix-normalized text actually written, leaving each install's
+ * unique temp-dir suffix embedded and making every file's hash diverge.
+ */
+function hashDirTree(rootDir, stripDir) {
+  const entries = [];
+  const stripDirPosix = stripDir ? stripDir.replace(/\\/g, '/') : stripDir;
+  const walk = (relPath, absPath) => {
+    for (const entry of fs.readdirSync(absPath, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
+      const childAbs = path.join(absPath, entry.name);
+      if (entry.isDirectory()) {
+        walk(childRel, childAbs);
+      } else if (entry.isFile()) {
+        const buf = fs.readFileSync(childAbs);
+        const normalized = stripDirPosix
+          ? buf.toString('utf8').replace(/\\/g, '/').split(stripDirPosix).join('<CONFIGDIR>')
+          : buf;
+        entries.push(`${childRel}:${crypto.createHash('sha256').update(normalized).digest('hex')}`);
+      }
+    }
+  };
+  if (fs.existsSync(rootDir)) walk('', rootDir);
+  return entries.sort().join('\n');
+}
+
+describe('installRuntimeArtifacts — G1: void-ignoring caller is unaffected (AC4)', () => {
+  test('writes are byte-identical whether or not the caller uses the return value', (t) => {
+    const configDirIgnored = createTempDir('gsd-g1-ignored-');
+    const configDirCaptured = createTempDir('gsd-g1-captured-');
+    t.after(() => cleanup(configDirIgnored));
+    t.after(() => cleanup(configDirCaptured));
+
+    // Caller A: discards the return value entirely — today's every call site
+    // (bin/install.js, both existing adapter test doubles).
+    installRuntimeArtifacts('claude', configDirIgnored, 'global', RESOLVED_CORE);
+
+    // Caller B: captures the return value. Its shape is not asserted here —
+    // section E owns that — only that capturing it changes nothing about
+    // what gets written, and that capturing never itself throws.
+    const captured = installRuntimeArtifacts('claude', configDirCaptured, 'global', RESOLVED_CORE);
+    assert.ok(
+      captured === undefined || (captured !== null && typeof captured === 'object'),
+      'G1: the return value, whatever its shape, must be undefined (today) or a plain object ' +
+      '(after) — never something a capturing caller could not safely ignore',
+    );
+
+    assert.strictEqual(
+      hashDirTree(configDirCaptured, configDirCaptured),
+      hashDirTree(configDirIgnored, configDirIgnored),
+      'G1: writes must be byte-identical regardless of whether the caller captures the return value',
+    );
+  });
+});
+
+describe('installRuntimeArtifacts — G3: adapter calling-convention regression guard', () => {
+  // tests/adapter-declarative-equivalence.test.cjs:52 and
+  // tests/adapter-imperative.test.cjs:80 pin their OWN behavior via a
+  // module-ref monkeypatch of installRuntimeArtifacts — neither file ever
+  // invokes the real function, and neither is read or modified here. This
+  // row proves those two files' SUBJECT — the real installRuntimeArtifacts,
+  // called with the exact positional shape each adapter uses — still
+  // behaves: a real, successful, byte-on-disk install.
+
+  test('declarative-adapter call shape (5 positional args, no capabilityRegistry) still installs', (t) => {
+    const configDir = createTempDir('gsd-g3-declarative-');
+    t.after(() => cleanup(configDir));
+
+    // Matches tests/adapter-declarative-equivalence.test.cjs:62-66's
+    // captured shape: [runtime, configDir, scope, resolvedProfile, resolveAttribution].
+    const resolveAttribution = () => 'attr-claude';
+    installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, resolveAttribution);
+
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')),
+      'G3: the declarative adapter\'s calling convention must still produce a real install',
+    );
+  });
+
+  test('imperative-adapter call shape (6 positional args incl. composed capability registry) still installs', (t) => {
+    const configDir = createTempDir('gsd-g3-imperative-');
+    t.after(() => cleanup(configDir));
+
+    // Matches tests/adapter-imperative.test.cjs:88's captured shape:
+    // [runtime, configDir, scope, resolvedProfile, resolveAttribution, capabilityRegistry].
+    const capabilityRegistry = { capabilityClusters: {} };
+    installRuntimeArtifacts('claude', configDir, 'global', RESOLVED_CORE, undefined, capabilityRegistry);
+
+    assert.ok(
+      fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')),
+      'G3: the imperative adapter\'s calling convention must still produce a real install',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2875 (epic #2866 Phase 6): User Artifact Staging — call-site integration.
+// (.gsd/phase/feat-2875-materialization-primitives/50-test-matrix.md)
+//
+// C7 (anti-inertness): recovery must be reachable from a REAL `bin/install.js`
+// run, not merely callable — the #1879-F15 failure mode this whole phase
+// exists to avoid. This spawns the real installer twice against the SAME
+// sandbox HOME, with an orphaned staged artifact manually planted between the
+// two runs (simulating a prior run that died between the wipe and its own
+// restore/discard), and asserts the SECOND real installer invocation recovers
+// it — proving the wiring in bin/install.js's `install()`, not just that the
+// module's own function works when called directly.
+// ---------------------------------------------------------------------------
+
+describe('#2875: user-artifact-staging — call-site integration (C7 anti-inertness)', () => {
+  test('an orphaned USER-PROFILE.md staged under the real gsd-core destDir is recovered by a subsequent real install() run', (t) => {
+    const first = runMinimalInstall({ runtime: 'claude', scope: 'global' });
+    t.after(() => cleanup(first.root));
+
+    const gsdCoreDir = path.join(first.configDir, 'gsd-core');
+    const profilePath = path.join(gsdCoreDir, 'USER-PROFILE.md');
+    const customContent = '# My Profile\n\nOrphaned content from a crashed install run.\n';
+    fs.writeFileSync(profilePath, customContent, 'utf8');
+
+    // Manually plant the orphan: stage USER-PROFILE.md durably (the commit
+    // point — record.json — lands), then simulate the crash by deleting the
+    // file WITHOUT restoring or discarding. This is exactly the state a
+    // process death between the wipe and the restore leaves behind.
+    const stagingRoot = _resolveUserArtifactStagingRoot(first.configDir);
+    const staged = stageUserArtifacts(gsdCoreDir, ['USER-PROFILE.md'], stagingRoot, { runId: '999999' });
+    assert.deepEqual(staged.names, ['USER-PROFILE.md'], 'precondition: the orphan really did stage');
+    fs.unlinkSync(profilePath);
+    assert.ok(!fs.existsSync(profilePath), 'precondition: the file is genuinely gone before the second run');
+
+    // Second REAL install, same HOME. If recovery is wired at a reachable
+    // production entry point, USER-PROFILE.md is repopulated with the
+    // orphaned content BEFORE the ordinary preserve/wipe/restore cycle runs
+    // (which has nothing to preserve on its own — the file was deleted, not
+    // merely staged, before this run started).
+    runMinimalInstall({ runtime: 'claude', scope: 'global', root: first.root });
+
+    assert.ok(fs.existsSync(profilePath), 'C7: USER-PROFILE.md must be recovered by the second real install run');
+    assert.equal(
+      fs.readFileSync(profilePath, 'utf8'),
+      customContent,
+      'recovered content must be byte-identical to the orphaned staged copy',
+    );
+
+    // The staging entry is consumed by the recovery step itself.
+    const entries = fs.existsSync(stagingRoot) ? fs.readdirSync(stagingRoot) : [];
+    assert.equal(entries.length, 0, 'the orphan is discarded once recovered — not left for a third run to find again');
+  });
+});

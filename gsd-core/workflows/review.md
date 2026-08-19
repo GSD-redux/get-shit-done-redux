@@ -423,12 +423,31 @@ names, each gets its own `## <Adapter> Review (<instance>)` section, and ≥2 sa
 instances print a one-line shared-adapter caveat. Format in
 `gsd-core/references/reviewer-instances.md`.
 
+**Resolved model (#2295):** each lane's `review-lane invoke --json` line in
+`{run_dir}/gsd-review-lane-results.jsonl` carries a `model` object; render `models:` from
+its `value` and `model_sources:` from its `source`. Both maps carry exactly one entry per
+reviewer that appears in `reviewers:` — the two key sets always match. Write the literal
+`unknown` rather than omitting a key: an omitted key is indistinguishable from the feature
+not having run, and a reader must be able to tell *no model recorded* from *nothing to
+look at*. Emit every `models:`/`model_sources:` value as a DOUBLE-QUOTED YAML scalar — a
+legitimate model id can contain `:` (`llama3:70b`, `qwen2.5:7b`), which is unquotable as a
+bare scalar; a control character is already refused at the recording seam, so quoting is
+what closes the remaining `:`/`#`/leading-`-` cases. When GSD applied a reasoning effort to
+a lane, its `value` already carries a `(reasoning=<level>)` suffix (e.g.
+`gpt-5.6-sol (reasoning=high)`) — render it as-is, without re-deriving or re-formatting it.
+
 ```markdown
 ---
 phase: {N}
 reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, antigravity, ollama, lm_studio, llama_cpp]  # populate at runtime with only the reviewers actually invoked
 reviewed_at: {ISO timestamp}
 plans_reviewed: [{list of PLAN.md files}]
+models:                   # resolved model per reviewer; `unknown` when not recoverable
+  codex: "gpt-5.6-sol (reasoning=low)"
+  antigravity: "unknown"
+model_sources:            # how each value above was determined
+  codex: "banner"
+  antigravity: "unknown"
 trimmed_reviewers:        # only present if at least one reviewer was trimmed
   ollama:
     budget: 6000

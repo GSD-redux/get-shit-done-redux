@@ -16,7 +16,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -26,7 +26,7 @@ const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings, scanMilestonePhaseIds } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings, scanMilestonePhaseIds, collectTablePhaseRows } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 import { clampPercent } from './phase-lifecycle.cjs';
@@ -114,11 +114,17 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
   let phaseFiles: string[] = [];
   try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+  // #3511: scope the raw listing to this phase dir before the
+  // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
+  // summaryCount above stay on scanPhasePlans's own unscoped listing since a
+  // PLAN/SUMMARY leading number is a plan sequence number, not a phase
+  // number. Mirrors core-utils.cts's getPhaseFileStats.
+  const scopedFiles = scopeToPhase(phaseFiles, path.basename(phaseDir));
   return {
     planCount,
     summaryCount,
-    hasContext: findContextMdIn(phaseFiles) !== null,
-    hasResearch: phaseFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
   };
 }
 
@@ -305,6 +311,22 @@ function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
       if (!malformed) malformed = (milestoneResult?.error ? milestoneResult : (fullResult?.error ? fullResult : null));
     }
 
+    // #3577: no heading or checklist entry matched — fall back to a
+    // markdown-table row declaration (the same last-resort tier
+    // getRoadmapPhaseInternal gained). Zero-pad-tolerant id compare (#3572
+    // lesson: the declared form may be padded).
+    const stripPad = (s: string) => s.replace(/^0+(?=.)/, '');
+    const tableHit = collectTablePhaseRows(milestoneContent).find((tr) => stripPad(tr.id) === stripPad(phaseNum))
+      ?? collectTablePhaseRows(fullContent).find((tr) => stripPad(tr.id) === stripPad(phaseNum));
+    if (tableHit) {
+      output(
+        { found: true, phase_number: phaseNum, phase_name: tableHit.name ?? `Phase ${tableHit.id}`, goal: null, section: tableHit.row.trim() },
+        raw,
+        tableHit.row.trim(),
+      );
+      return;
+    }
+
     if (malformed) {
       output(malformed, raw, '');
       return;
@@ -451,6 +473,41 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
       has_research: hasResearch,
       disk_status: diskStatus,
       roadmap_complete: roadmapComplete,
+    });
+  }
+
+  // #3577: markdown-table row declarations join the enumeration — same
+  // enrichment contract as headings (disk counts when the directory exists),
+  // zero-pad-tolerant duplicate guard so an id declared in BOTH a heading and
+  // a table counts once.
+  const stripPadA = (s: string) => s.replace(/^0+(?=.)/, '');
+  const seen = new Set(phases.map((ph) => stripPadA(ph.number)));
+  for (const tr of collectTablePhaseRows(content)) {
+    if (seen.has(stripPadA(tr.id))) continue;
+    const dirMatchA = matchPhaseDirs(phaseDirNames, normalizePhaseName(tr.id)).matches[0];
+    let tPlanCount = 0;
+    let tSummaryCount = 0;
+    let tHasContext = false;
+    let tHasResearch = false;
+    if (dirMatchA) {
+      const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatchA));
+      tPlanCount = counts.planCount;
+      tSummaryCount = counts.summaryCount;
+      tHasContext = fs.existsSync(path.join(phasesDir, dirMatchA, 'CONTEXT.md'));
+      tHasResearch = fs.existsSync(path.join(phasesDir, dirMatchA, 'RESEARCH.md'));
+    }
+    phases.push({
+      number: tr.id,
+      name: tr.name ?? `Phase ${tr.id}`,
+      goal: null,
+      mode: null,
+      depends_on: null,
+      plan_count: tPlanCount,
+      summary_count: tSummaryCount,
+      has_context: tHasContext,
+      has_research: tHasResearch,
+      disk_status: dirMatchA ? 'ok' : 'no_directory',
+      roadmap_complete: false,
     });
   }
   return phases;
@@ -817,29 +874,68 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     //   `**Plans:** N plans`  — bold "Plans:" (colon inside bold)
     //   `Plans: N plans`      — plain text header
     //
-    // #2853: the verb owns the count token ONLY — it must not destroy hand-written
-    // prose a human placed after the count (e.g. "(11-16 are gap closure ...)").
-    // Group $1 = phase header → `Plans:` label + trailing whitespace (unchanged).
-    // Group $2 = the existing count token to replace: matches `N/N plans complete`,
-    // `N/N plans executed`, or the bare template `N plans` form. Group $3 = whatever
-    // else is on the line (`[^\r\n]*`, so CRLF `\r` is preserved).
+    // #2853 / #3584: the verb owns the count token ONLY — it must not destroy
+    // hand-written prose a human placed on the line. Group $1 = phase header →
+    // `Plans:` label + trailing whitespace (unchanged). Group $2 = the existing
+    // count token to replace: matches `N/N plans complete`, `N/N plans executed`,
+    // or the bare template `N plan(s)` form — singular is part of the tool's OWN
+    // grammar (gsd-core/templates/roadmap.md:62 ships `**Plans**: 1 plan` as the
+    // documented one-plan-phase shape), so the `s` is optional there (bug #3584
+    // Finding B; pre-fix a bare `1 plan` fell into the drop-everything path and
+    // was accidentally overwritten with the correct count — post-fix it must be
+    // recognised as a token in its own right or it freezes stale forever). Group
+    // $3 = whatever else is on the line (`[^\r\n]*`, so a CRLF `\r` is never part
+    // of the match and rides along untouched in the unmatched remainder of the
+    // string — never stranded, never duplicated).
     //
-    // Trailing text is preserved ONLY when a real count token ($2) was present —
-    // i.e. an annotation a human wrote after a real count. When $2 is absent the
-    // line is the fresh-template bracketed placeholder (`[Number of plans…]`) or
-    // other freeform guidance, not user prose: the count replaces the whole token,
-    // preserving the pre-#2853 clean-output behaviour on the template path.
+    // Three arms, in order:
+    //   1. $2 present (a real count token) → rewrite the token, preserve $3
+    //      verbatim (an annotation a human wrote after a real count; #2853).
+    //   2. $2 absent AND $3, trimmed, is the fresh-template PLACEHOLDER shipped
+    //      by gsd-core/templates/roadmap.md — either
+    //      `[Number of plans, e.g., "3 plans" or "TBD"]` (line 37) or
+    //      `[Number of plans]` (lines 51/75/88) → replace it with the computed
+    //      count. Detected POSITIVELY on the distinctive `Number of plans`
+    //      wording (anchored, case-insensitive), NEVER on "wholly bracketed" —
+    //      a bracketed HUMAN annotation such as `[Deferred pending re-scope]`
+    //      is structurally identical but must be arm-3 preserved (bug #3584
+    //      Finding A).
+    //   3. Anything else (freeform prose, `TBD` / `TBD — annotation`, a
+    //      bracketed human note, the first line of a wrapped sentence, an
+    //      empty value) → leave the whole matched line untouched by returning
+    //      `_match` unchanged. An untouched first line cannot orphan its own
+    //      continuation on the next line, since the pattern never spans past
+    //      `\n` in the first place.
     const planCountPattern = new RegExp(
-      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans)?([^\\r\\n]*)`,
+      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`,
       'i'
     );
     const planCountText = isComplete
       ? `${summaryCount}/${planCount} plans complete`
       : `${summaryCount}/${planCount} plans executed`;
+    // Positive detector for the fresh-template placeholder ONLY (bug #3584
+    // Finding A). Anchored to the distinctive `Number of plans` wording that
+    // gsd-core/templates/roadmap.md actually ships, not to "anything in
+    // brackets" — a bracketed human annotation like `[Deferred pending
+    // re-scope]` is structurally bracketed too but carries none of this
+    // wording, so it correctly falls through to arm 3 untouched.
+    const isTemplatePlaceholder = (value: string): boolean => {
+      const trimmed = value.trim();
+      return /^\[\s*Number of plans\b[\s\S]*\]$/i.test(trimmed);
+    };
     roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, (_match, label, existingCount, trailing) => {
-      // Preserve trailing text only when a real count preceded it.
-      const suffix = existingCount ? trailing : '';
-      return `${label}${planCountText}${suffix}`;
+      if (existingCount) {
+        // Arm 1: real count token — rewrite it, preserve the trailing annotation.
+        return `${label}${planCountText}${trailing}`;
+      }
+      if (isTemplatePlaceholder(trailing)) {
+        // Arm 2: fresh-template placeholder — replace with the count.
+        return `${label}${planCountText}`;
+      }
+      // Arm 3: freeform prose, TBD, a bracketed human annotation, a wrapped
+      // sentence's first line, or an empty value — leave the line exactly as
+      // it was.
+      return _match;
     });
 
     // If complete: check checkbox

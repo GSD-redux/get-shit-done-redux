@@ -34,7 +34,8 @@ Read `.planning/ROADMAP.md` to get milestone name and goals.
 
 Check for existing reports:
 ```bash
-ls -la .planning/reports/SESSION_REPORT*.md 2>/dev/null || echo "No previous reports"
+_REPORTS=( .planning/reports/SESSION_REPORT*.md )
+if [ -e "${_REPORTS[0]}" ]; then ls -la "${_REPORTS[@]}"; else echo "No previous reports"; fi
 ```
 </step>
 

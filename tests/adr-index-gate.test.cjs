@@ -687,6 +687,11 @@ test('the ADR path cited by src/plan-drift-guard.cts exists', () => {
   // This module is compiled into the published payload, so a wrong citation
   // here ships to users.
   const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'plan-drift-guard.cts'), 'utf8');
+  // allow-test-rule: source-text-is-the-product — the ADR citation is a comment in src/plan-drift-guard.cts, erased at compile time, so no runtime observation can reach it (#3502)
+  // This site surfaced only after no-source-grep was widened to recognize .cts
+  // reads and .matchAll() (#3502); it is irreducible, not unconverted — there is
+  // no exported value to require() in its place, since a comment leaves no
+  // runtime trace to assert against.
   const cited = [...src.matchAll(/docs\/adr\/([A-Za-z0-9._-]+\.md)/g)].map((m) => m[1]);
   assert.notEqual(cited.length, 0, 'expected plan-drift-guard.cts to cite its governing ADR');
   for (const name of cited) {

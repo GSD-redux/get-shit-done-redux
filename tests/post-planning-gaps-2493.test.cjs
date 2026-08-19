@@ -312,6 +312,26 @@ describe('gap-analysis CLI (#2493)', () => {
     assert.strictEqual(out.rows[0].source, 'REQUIREMENTS.md');
   });
 
+  test('#3511-class: a phase dir holding only ANOTHER phase\'s -CONTEXT.md is treated as CONTEXT-missing', () => {
+    // phaseDir is '01-test' for this describe block's own scenarios; use a
+    // SEPARATE phase 02 directory that holds ONLY a stray artifact whose
+    // filename token ("01-") belongs to phase 01, not to this directory's
+    // own phase (02).
+    const otherPhaseDir = path.join(tmpDir, '.planning', 'phases', '02-other');
+    fs.mkdirSync(otherPhaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(otherPhaseDir, '01-CONTEXT.md'),
+      '# Phase Context\n\n<decisions>\n## Implementation Decisions\n\n- **D-01:** foo\n</decisions>\n',
+    );
+    fs.writeFileSync(path.join(otherPhaseDir, '02-PLAN.md'), '# Plan mentioning D-01\n');
+
+    const r = runGsdTools(['gap-analysis', '--phase-dir', otherPhaseDir], tmpDir);
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.deepStrictEqual(out.rows, [],
+      'phase 02 must not report a CONTEXT.md decision that belongs to phase 01\'s file');
+  });
+
   test('both REQUIREMENTS.md and CONTEXT.md missing → no error, empty rows', () => {
     writePlan('01', '# Plan\n');
     const r = runGsdTools(['gap-analysis', '--phase-dir', phaseDir], tmpDir);

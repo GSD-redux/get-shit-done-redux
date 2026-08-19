@@ -30,6 +30,7 @@ import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
 import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
 import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
 import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
+import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resolution.cjs';
 
 const localPlugin = {
   rules: {
@@ -54,6 +55,7 @@ const localPlugin = {
     'no-duplicate-fold-marker': noDuplicateFoldMarker,
     'require-subprocess-timeout': requireSubprocessTimeout,
     'no-external-require-in-bin': noExternalRequireInBin,
+    'no-private-binary-resolution': noPrivateBinaryResolution,
   },
 };
 
@@ -76,7 +78,16 @@ export default tseslint.config(
       'gsd-core/bin/lib/handshake-serialized.cjs',
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',
+      // #2875 Part 2 (epic #2866 Phase 6): tsc-generated runtime artifact —
+      // lint the src/install-model-override-resolver.cts source, not this.
+      'gsd-core/bin/lib/install-model-override-resolver.cjs',
       'gsd-core/bin/lib/install-engine.cjs',
+      // #2874 (epic #2866 Phase 5): tsc-generated runtime artifact — lint the
+      // src/install-fs-adapter.cts source, not this.
+      'gsd-core/bin/lib/install-fs-adapter.cjs',
+      // #2875 (epic #2866 Phase 6): tsc-generated runtime artifact — lint the
+      // src/user-artifact-staging.cts source, not this.
+      'gsd-core/bin/lib/user-artifact-staging.cjs',
       'gsd-core/bin/lib/commonjs-marker.cjs',
       'gsd-core/bin/lib/capability-loader.cjs',
       'gsd-core/bin/lib/capability-source.cjs',
@@ -159,6 +170,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/milestone-archive-hygiene.cjs',
       'gsd-core/bin/lib/health-diagnostic-rules/consistency.cjs',
+      // #2873 (epic #2866 Phase 4): tsc-generated runtime artifact — lint the
+      // src/health-diagnostic-rules/install-surface-shadowing.cts source.
+      'gsd-core/bin/lib/health-diagnostic-rules/install-surface-shadowing.cjs',
       'gsd-core/bin/lib/shell-command-projection.cjs',
       'gsd-core/bin/lib/security.cjs',
       'gsd-core/bin/lib/command-aliases.cjs',
@@ -200,6 +214,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/runtime-artifact-layout.cjs',
       'gsd-core/bin/lib/install-scope.cjs',
       'gsd-core/bin/lib/installed-surface-resolver.cjs',
+      // #2873 (epic #2866 Phase 4): tsc-generated runtime artifact — lint the
+      // src/install-shadow-report.cts source.
+      'gsd-core/bin/lib/install-shadow-report.cjs',
       'gsd-core/bin/lib/runtime-config-adapter-registry.cjs',
       'gsd-core/bin/lib/runtime-hooks-surface.cjs',
       'gsd-core/bin/lib/command-routing-hub.cjs',
@@ -361,6 +378,11 @@ export default tseslint.config(
       // place a bad external import in an already-migrated module is still
       // visible to lint.
       'local/no-external-require-in-bin': 'error',
+      // #3619 (epic #3411 Phase 3): flag a re-implemented Windows binary
+      // resolver — a PATHEXT read or a hardcoded exe-extension list — outside
+      // the platform seam (src/shell-command-projection.cts, exempt by path).
+      // See .gsd/phase/chore-3619-no-bare-binary-spawn/40-design.md.
+      'local/no-private-binary-resolution': 'error',
     },
   },
 
@@ -472,6 +494,35 @@ export default tseslint.config(
     },
     rules: {
       'local/no-external-require-in-bin': 'error',
+      // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
+      'local/no-private-binary-resolution': 'error',
+    },
+  },
+
+  // ── scripts/**/*.cjs only — no-private-binary-resolution ───────────────────
+  // A NARROWER block than the combined CommonJS glob above, on purpose:
+  // eslint-rules/** is deliberately OUTSIDE this rule's surface, because
+  // eslint-rules/lib/portability-vocab.cjs is the single source of truth for
+  // the Windows executable-extension set (ADR-1703 rule 4) — its own
+  // WINDOWS_EXECUTABLE_EXTENSIONS vocabulary array would trip the rule it
+  // feeds. Registering on the shared `gsd-core/bin/**/*.cjs + scripts/**/*.cjs
+  // + eslint-rules/**/*.cjs + ...` block would flag that file; this block
+  // covers scripts/**/*.cjs only, so the rule still lints every other script
+  // in the tree without the vocabulary file self-flagging.
+  {
+    files: ['scripts/**/*.cjs'],
+    plugins: {
+      local: localPlugin,
+    },
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
+      'local/no-private-binary-resolution': 'error',
     },
   },
 
@@ -490,6 +541,8 @@ export default tseslint.config(
       'n/no-path-concat': 'error',
       // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition.
       'local/no-adhoc-regex-escape': 'error',
+      // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
+      'local/no-private-binary-resolution': 'error',
       // n/no-process-exit is deliberately OFF for hooks ONLY.
       //
       // A hook is a standalone process whose ENTIRE contract is its exit code: the

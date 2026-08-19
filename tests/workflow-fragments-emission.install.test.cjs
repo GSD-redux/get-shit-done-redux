@@ -80,6 +80,12 @@ const RUNTIMES = Object.keys(RUNTIME_META);
  *  assert success — callers decide (row 36 expects failure). */
 function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2930-dest-${runtime}-`));
+  // #3547 — same real config-home shape as runMinimalInstall: the strict
+  // <root>/<globalSuffix> subdirectory, not the collapsed <root>. The size
+  // comparisons below normalize each side's own root out of the text; a
+  // collapsed stub against a real-shape install bakes in a `.claude`-style
+  // suffix delta that has nothing to do with the compose wiring under test.
+  const configDir = path.join(root, RUNTIME_META[runtime].globalSuffix);
   const args = [
     '--preserve-symlinks',
     '--preserve-symlinks-main',
@@ -87,7 +93,7 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
     `--${runtime}`,
     '--global',
     '--config-dir',
-    root,
+    configDir,
     ...extraArgs,
   ];
   const seamResult = runNode(args, {
@@ -96,7 +102,7 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
     timeoutMs: INSTALL_TIMEOUT_MS,
   });
   const result = { status: seamResult.exitCode, stdout: seamResult.stdout, stderr: seamResult.stderr };
-  return { result, configDir: root, root };
+  return { result, configDir, root };
 }
 
 /** Convert native path separators to POSIX forward slashes, unconditionally

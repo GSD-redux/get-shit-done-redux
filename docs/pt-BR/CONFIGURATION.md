@@ -779,7 +779,7 @@ Tokens de flag inválidos são sanitizados e registrados como avisos. Apenas fla
 | gsd-doc-writer | Opus | Sonnet | Haiku | Sonnet | Inherit |
 | gsd-doc-verifier | Sonnet | Sonnet | Haiku | Haiku | Inherit |
 
-> **Todos os 33 agentes incluídos possuem atribuições explícitas de nível por perfil** no catálogo (`sdk/shared/model-catalog.json`). A tabela acima mostra um subconjunto representativo dos agentes mais usados. Para agentes não listados aqui, `model_overrides` aceita qualquer nome de agente incluído. Os dados autoritativos de perfil são derivados de `sdk/shared/model-catalog.json` via `gsd-core/bin/lib/model-catalog.cjs` e `sdk/src/model-catalog.ts`.
+> **Todos os 33 agentes incluídos possuem atribuições explícitas de nível por perfil** no catálogo (`gsd-core/bin/shared/model-catalog.json`). A tabela acima mostra um subconjunto representativo dos agentes mais usados. Para agentes não listados aqui, `model_overrides` aceita qualquer nome de agente incluído. Os dados autoritativos de perfil são derivados de `gsd-core/bin/shared/model-catalog.json` via `src/model-catalog.cts`.
 
 ### Substituições por Agente
 

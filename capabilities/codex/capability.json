@@ -1,7 +1,7 @@
 {
   "id": "codex",
   "role": "runtime",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "title": "OpenAI Codex CLI",
   "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
   "tier": "core",
@@ -29,6 +29,14 @@
           "recursive": false,
           "converter": "convertClaudeCommandToCodexSkill",
           "home": ".agents"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToCodexAgent"
         }
       ],
       "local": [
@@ -39,10 +47,21 @@
           "nesting": "flat",
           "recursive": false,
           "converter": "convertClaudeCommandToCodexSkill"
+        },
+        {
+          "kind": "agents",
+          "destSubpath": "agents",
+          "prefix": "gsd-",
+          "nesting": "flat",
+          "recursive": false,
+          "converter": "convertClaudeAgentToCodexAgent"
         }
       ]
     },
-    "triggerPrecedence": ["skills", "commands"],
+    "triggerPrecedence": [
+      "skills",
+      "commands"
+    ],
     "commandStyle": "shell-var",
     "hooksSurface": "codex-hooks-json",
     "hookEvents": "claude",

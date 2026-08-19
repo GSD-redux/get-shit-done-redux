@@ -6,7 +6,7 @@
 
 - 여기의 수량은 v1.36.0 핀 기준 파일시스템에서 도출된 것으로, 릴리스 사이에 변동될 수 있습니다. 최신 수량을 확인하려면 체크아웃에서 `ls commands/gsd/*.md | wc -l`, `ls agents/gsd-*.md | wc -l` 등을 실행하세요.
 - 이 파일은 6개 패밀리(에이전트, 명령어, 워크플로우, 레퍼런스, CLI 모듈, 훅) 전반에 걸쳐 출시된 모든 표면을 열거합니다. 광범위 문서는 내러티브 또는 엄선된 하위 집합을 렌더링할 수 있습니다. 파일시스템과 불일치할 경우 이 파일과 디렉터리 목록이 권위 있는 출처입니다.
-- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-counts.test.cjs`, `tests/commands-doc-parity.test.cjs`, `tests/agents-doc-parity.test.cjs`, `tests/cli-modules-doc-parity.test.cjs`, `tests/hooks-doc-parity.test.cjs`, `tests/architecture-counts.test.cjs`, `tests/command-count-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 수량 및 목록 내용을 고정합니다.
+- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-manifest-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 로스터 내용을 고정합니다.
 
 이것은 출시된 모든 GSD Core 표면의 공식 목록입니다. 주제별 탐색은 [문서 색인](README.md)을 참조하세요.
 
@@ -189,7 +189,6 @@
 | `code-review.md` | gsd-code-reviewer를 통한 단계 소스 변경 검토; REVIEW.md 생성. | `/gsd-code-review` |
 | `complete-milestone.md` | 출시된 버전을 완료로 표시 — MILESTONES.md 항목, PROJECT.md 발전, 태그. | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | UAT 공백 조사 및 근본 원인 찾기를 위한 병렬 디버그 에이전트 오케스트레이션. | `/gsd-verify-work` (자동 진단) |
-| `discovery-phase.md` | 적절한 깊이 수준에서 탐색 실행. | `/gsd-new-project` (탐색 경로) |
 | `discuss-phase-assumptions.md` | 가정 모드 discuss — 코드베이스 우선 분석을 통한 구현 결정 추출. | `/gsd-discuss-phase` (`discuss_mode=assumptions`일 때) |
 | `discuss-phase-power.md` | 파워 유저 discuss — 모든 질문을 JSON 상태 파일 + HTML UI로 사전 생성. | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | 반복적인 회색 지대 토론을 통한 구현 결정 추출. | `/gsd-discuss-phase` |
@@ -261,7 +260,7 @@
 | `validate-phase.md` | 완료된 단계의 나이퀴스트 검증 공백을 소급 감사 및 채움. | `/gsd-validate-phase` |
 | `verify-work.md` | 자동 진단이 포함된 대화형 UAT — UAT.md 및 수정 계획 생성. | `/gsd-verify-work` |
 
-> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다. `discovery-phase.md`는 `/gsd-new-project`의 대체 진입점입니다.
+> **참고:** 일부 워크플로우는 직접적인 사용자 대면 명령어가 없습니다(예: `execute-plan.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — 이들은 오케스트레이터 워크플로우에 의해 내부적으로 호출됩니다.
 
 ---
 
@@ -396,7 +395,7 @@
 | `decisions.cjs` | CONTEXT.md `<decisions>` 블록 파싱; 숫자형(D-42) 및 영숫자형(D-INFRA-01) ID 허용; `{id, text, category, tags, trackable}` 반환 |
 | `docs.cjs` | 문서 업데이트 워크플로우 초기화, 마크다운 스캔, 모노레포 감지 |
 | `drift.cjs` | 실행 후 코드베이스 구조 드리프트 감지기(#2003): 파일 변경을 new-dir/barrel/migration/route 카테고리로 분류하고 `last_mapped_commit` 프론트매터를 왕복 처리 |
-| `fallow-runner.cjs` | `/gsd-code-review`를 위한 Fallow 감사 어댑터: 바이너리 해석(`PATH` 이후 `node_modules/.bin`), 실행 가능한 누락 바이너리 오류, 구조적 결과 정규화 |
+| `fallow-runner.cjs` | `/gsd-code-review`를 위한 Fallow 감사 어댑터: 바이너리 해석(`node_modules/.bin` 이후 `PATH`), 실행 가능한 누락 바이너리 오류, 구조적 결과 정규화 |
 | `frontmatter.cjs` | YAML 프론트매터 CRUD 작업 |
 | `gap-checker.cjs` | 계획 후 공백 분석(#2493): REQUIREMENTS.md + CONTEXT.md 결정 대 PLAN.md 커버리지 보고서(`gsd-tools gap-analysis`) |
 | `graphify.cjs` | `/gsd-graphify`를 위한 지식 그래프 빌드/쿼리/상태/비교 |

@@ -17,13 +17,16 @@ const {
   convertClaudeToOpencodeFrontmatter,
   convertClaudeToKiloFrontmatter,
   convertClaudeAgentToAntigravityAgent,
-  convertClaudeCommandToOpencodeSkill,
-  convertClaudeCommandToKiloSkill,
   convertClaudeCommandToTraeSkill,
   convertClaudeCommandToKimiSkill,
   buildKimiAgentArtifacts,
   neutralizeAgentReferences,
 } = require('../bin/install.js');
+
+const {
+  convertClaudeCommandToOpencodeSkill,
+  convertClaudeCommandToKiloSkill,
+} = require('../gsd-core/bin/lib/install-engine.cjs');
 
 // Sample Claude agent frontmatter (matches actual GSD agent format)
 const SAMPLE_AGENT = `---

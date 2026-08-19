@@ -36,6 +36,8 @@ npx @opengsd/gsd-core@latest --claude --global
 
 Skills land in `~/.claude/`. Commands appear as `/gsd-*` slash commands in your next Claude Code session. Restart Claude Code to pick them up.
 
+**Installing at both `--global` and `--local`.** This is a supported configuration (different projects sometimes need different customizations), but Claude Code's own trigger-resolution rules — personal scope overrides project scope, and a skill overrides a same-named command — both point the same direction: the global skill always wins the `/gsd-<name>` trigger over the local command. GSD Core detects this and prints which scope is winning right after install completes (and surfaces the identical fact from `/gsd-health` as diagnostic `W028`); it is an advisory, not a failure — the install itself still succeeds. At **global** scope, the winning skill's workflow-spec reference resolves at runtime against your working directory first, so a project with its own `.claude/gsd-core/` still gets its own specs even though the global skill is what Claude Code invokes — see [Interpret install-shadow warnings](interpret-install-shadow-warnings.md) for what the warning means, how to read which scope wins, and the limits of that resolution (it does not extend to the skill's `references/`/`templates/` includes).
+
 **Override the install directory:**
 
 ```bash

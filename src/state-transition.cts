@@ -209,7 +209,7 @@ export type StatePreservationResult = {
  * executor below. `mutated` accumulates across the whole field loop (ADR-3408
  * §8.1 — one executor per policy, sharing one result).
  */
-type PreservationCtx = {
+export type PreservationCtx = {
   preFm: Record<string, unknown> | null;
   postFm: Record<string, unknown>;
   preFmSnapshot: Record<string, unknown>;
@@ -254,8 +254,17 @@ function throwUnwiredRow(field: string): never {
  * current_phase, current_plan, paused_at, last_activity_desc — is honored by
  * this ONE executor; `cls.guard` is the only field-specific variation (the
  * closed vocabulary of ADR-3408 Decision 1).
+ *
+ * Exported (ADR-3408 §8.5 / D3) so `cmdStateJson` (state.cts) — a read-only
+ * path with no transform of its own — can route its stale-vs-fresh decision
+ * through the SAME executor the write path uses, rather than maintaining a
+ * third private copy of this policy. `cmdStateJson` calls this directly
+ * (not the full `applyStatePreservation` dispatch loop) so its read stays
+ * scoped to exactly the fields it has always governed and never touches
+ * `progress` or `milestone*`, which are different policies with their own
+ * read-path rules (`shouldPreserveExistingProgress`, `preserve-if-placeholder`).
  */
-function applyPreserveWhenUnchanged(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
+export function applyPreserveWhenUnchanged(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
   // 1. A declared row with no wired delta is an internal invariant violation
   // — throw (ADR-3408 §8.2). Never reached for a user-document defect: the
   // production caller (readModifyWriteStateMd) wires every preserve-when-
@@ -1694,12 +1703,46 @@ function milestoneCompleteCore(
  * Apply a `patch` transition to STATE.md content.
  *
  * Migrates `cmdStatePatch` (state.cts) onto the substrate. Applies each
- * caller-supplied `{field: value}` pair via `stateReplaceField` over the full
- * content (body + frontmatter — patch can target either), tracking which fields
- * were updated vs. not found.
+ * caller-supplied `{field: value}` pair, resolved BODY-FIRST:
+ *
+ * - A key that resolves against the STRIPPED body (via `stateReplaceField`,
+ *   case-insensitive on the field name) is applied there and reported
+ *   `updated` — this is the legitimate, documented case (display-cased body
+ *   fields — Status, Current Plan, Phase — which are never frontmatter
+ *   keys). It wins deterministically even when the same key also happens to
+ *   exist as a parsed frontmatter key (e.g. `status` matches both the
+ *   frontmatter key and a `Status:` body line) — frontmatter is inert for
+ *   that key.
+ * - Only when the body has no match is the key checked against parsed
+ *   frontmatter (determined structurally, never by a naming heuristic), and
+ *   routed through the seam: `FIELD_CLASSIFICATION` governs it. A CLASSIFIED
+ *   key (has a row, e.g. `current_phase`, `current_phase_name`) is NOT
+ *   writable by an arbitrary patch — policy owns it — and is reported
+ *   `failed`. An UNCLASSIFIED key (no row, e.g. a custom `risk_level`) is a
+ *   pass-through per Phase 1 behavior-table row 19 ("field absent from
+ *   FIELD_CLASSIFICATION → untouched pass-through"): it is applied directly
+ *   to the frontmatter object before reassembly and reported `updated`.
+ * - A key matching neither the body nor the frontmatter is reported `failed`.
+ *
+ * ADR-3408 §8.3(b): this used to run `stateReplaceField` over the FULL
+ * document (body + frontmatter), which — because `field` is an arbitrary,
+ * caller-supplied string, unlike every other `stateReplaceField` call site in
+ * this file, which passes a fixed Title-Case string literal that can never
+ * collide with a lowercase/snake_case YAML key — let a frontmatter-shaped
+ * patch key (e.g. `status`, `current_phase`) match and rewrite the YAML
+ * frontmatter block directly via `stateReplaceField`'s case-insensitive
+ * `^field:` line pattern, entirely outside `FIELD_CLASSIFICATION` and the
+ * write-seam preservation policy: a second, undeclared writer. The fix is
+ * that a CLASSIFIED frontmatter key no longer writes outside the declared
+ * policy table — not that every frontmatter-shaped key stops working.
+ * `.gsd/phase/refactor-3469-one-write-seam/40-design.md` row 9 requires
+ * frontmatter changes to route through the seam (still work, governed by
+ * FIELD_CLASSIFICATION), not to stop working outright. Body-shaped keys
+ * (`Status`, `Current Plan`, `Phase`, ...) are the LEGITIMATE case and are
+ * unaffected — they were always matched against the body text, and still are.
  *
  * The curated-field preservation that fixes #1743/#1695 is NOT in this core —
- * it lives in `readModifyWriteStateMd`'s post-sync delta (table-driven via
+ * it lives in the write seam's post-sync delta (table-driven via
  * `current_phase_name`'s `preserve-when-unchanged` row, ADR-3408 §8.1 —
  * reclassified from `preserve-always` in #3468 to match its long-standing,
  * delta-gated behavior).
@@ -1714,19 +1757,60 @@ function patchCore(
   content: string,
   intent: { kind: 'patch'; patches: Record<string, string> },
 ): StateTransitionResult {
+  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
+  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  let body = stripFrontmatter(content);
+  const fm: Record<string, unknown> = { ...existingFm };
+
   const updated: string[] = [];
   const failed: string[] = [];
-  let result = content;
 
   for (const [field, value] of Object.entries(intent.patches)) {
-    const replaced = stateReplaceField(result, field, value);
+    // Body-first: a key that resolves against a body field is the
+    // legitimate, documented case (display-cased body fields — Status,
+    // Current Plan, Phase — are never frontmatter keys) and wins
+    // deterministically even when the same key also happens to exist as a
+    // frontmatter key (case-insensitively, via stateReplaceField's
+    // `^field:` pattern — e.g. `status` matching both the frontmatter key
+    // and a `Status:` body line). Frontmatter is only consulted when the
+    // body has no match for this key.
+    const replaced = stateReplaceField(body, field, value);
     if (replaced !== null) {
-      result = replaced;
+      body = replaced;
       updated.push(field);
-    } else {
-      failed.push(field);
+      continue;
     }
+
+    if (Object.prototype.hasOwnProperty.call(existingFm, field)) {
+      // Frontmatter-shaped key: route through the seam. A classified field
+      // is policy-owned — a raw patch may not bypass it. An unclassified
+      // field is an untouched pass-through (behavior-table row 19).
+      if (getFieldClassification(field) !== null) {
+        failed.push(field);
+      } else {
+        fm[field] = value;
+        updated.push(field);
+      }
+      continue;
+    }
+
+    failed.push(field);
   }
+
+  if (updated.length === 0) {
+    // No field matched — return `content` VERBATIM (mirrors `updateCore`'s
+    // null-result branch): reassembling via stripFrontmatter/
+    // reconstructFrontmatter even when nothing changed can round-trip the
+    // frontmatter block to different bytes than the original (key order,
+    // formatting), which would falsely defeat `readModifyWriteStateMd`'s
+    // #948 no-op write guard for every patch that updates nothing, not just
+    // a frontmatter-shaped one.
+    return { content, updated, data: { updated, failed } };
+  }
+
+  const result = hasFrontmatter
+    ? `---\n${reconstructFrontmatter(fm as unknown as Frontmatter)}\n---\n\n${body}`
+    : body;
 
   return { content: result, updated, data: { updated, failed } };
 }

@@ -258,6 +258,11 @@ describe('assertValidGranularityOverride', () => {
 
 // ─── resolveEffortInternal ────────────────────────────────────────────────────
 
+// #3531 — the runtime resolver's install-time sibling. Driven directly as a
+// pure function (effortCfg in, effort out) for the parity matrix below.
+const installEffortResolver = require('../gsd-core/bin/lib/install-effort-resolver.cjs');
+const { resolveInstallTimeEffort, readGsdEffectiveEffortConfig } = installEffortResolver;
+
 describe('resolveEffortInternal', () => {
   let tmpDir;
   beforeEach(() => { tmpDir = makeTempProject(); });
@@ -290,10 +295,169 @@ describe('resolveEffortInternal', () => {
   test('VALID_EFFORTS and EFFORT_SET are consistent', () => {
     assert.ok(Array.isArray(VALID_EFFORTS));
     assert.ok(EFFORT_SET instanceof Set);
-    assert.strictEqual(EFFORT_SET.size, VALID_EFFORTS.length);
+    // #3533 (10d): the VOCABULARY (EFFORT_SET) carries one more member than
+    // the LADDER (VALID_EFFORTS) — 'inherit' is a declarable effort choice
+    // but not a level nextEffort may step into.
+    assert.strictEqual(EFFORT_SET.size, VALID_EFFORTS.length + 1);
+    assert.ok(EFFORT_SET.has('inherit'), "EFFORT_SET must accept 'inherit'");
+    assert.ok(!VALID_EFFORTS.includes('inherit'), "the escalation ladder must NOT contain 'inherit'");
     for (const e of VALID_EFFORTS) {
       assert.ok(EFFORT_SET.has(e), `EFFORT_SET missing: ${e}`);
     }
+  });
+});
+
+// ─── #3533 (10d): effort inheritance ──────────────────────────────────────────
+
+describe('#3533 effort inherit: expressible at every layer, never a wire level', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('inherit accepted at every cascade layer (runtime)', () => {
+    writeConfig(tmpDir, { effort: { agent_overrides: { 'gsd-executor': 'inherit' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor'), 'inherit');
+
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: { heavy: 'inherit' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'inherit');
+
+    writeConfig(tmpDir, { effort: { default: 'inherit' } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'completely-unknown-agent-xyz'), 'inherit');
+    // #3531+#3533 combined: a bare effort.default no longer reaches a TIERED
+    // agent — the merged tier layer answers (manifest heavy = xhigh). To
+    // inherit at a tier, pin the tier; the tier-default row above covers that.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
+
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor', { override: 'inherit' }), 'inherit');
+  });
+
+  test('explicit inherit does not escalate', () => {
+    writeConfig(tmpDir, {
+      effort: { routing_tier_defaults: { heavy: 'inherit' } },
+      dynamic_routing: { enabled: true, escalate_on_failure: true, max_escalations: 3 },
+    });
+    assert.strictEqual(resolveEffortForTier(tmpDir, 'gsd-planner', 2), 'inherit');
+  });
+
+  test('renderEffortForRuntime inherit never yields a wire level', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    for (const runtime of ['claude', 'codex', 'something-unknown']) {
+      const r = renderEffortForRuntime(runtime, 'inherit');
+      assert.strictEqual(r.value, 'inherit', `${runtime}: value`);
+      assert.strictEqual(r.param, null, `${runtime}: param`);
+      assert.strictEqual(r.channel, null, `${runtime}: channel`);
+    }
+    // Concrete levels unchanged.
+    assert.strictEqual(renderEffortForRuntime('claude', 'minimal').value, 'low');
+    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'xhigh');
+    assert.strictEqual(renderEffortForRuntime('claude', 'xhigh').value, 'xhigh');
+  });
+});
+
+// ─── #3531 (10c): routing_tier_defaults merges over manifest tier defaults ───
+
+describe('#3531 routing_tier_defaults merge: manifest built-ins survive partial config', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('effort block without routing_tier_defaults keeps manifest tier defaults (runtime)', () => {
+    writeConfig(tmpDir, { effort: { agent_overrides: { 'gsd-executor': 'low' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor'), 'low');
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-codebase-mapper'), 'low');
+  });
+
+  test('partial routing_tier_defaults merges over manifest, gaps filled per-tier (runtime)', () => {
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: { heavy: 'medium' } } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'medium');
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-executor'), 'high');
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-codebase-mapper'), 'low');
+  });
+
+  test('non-object routing_tier_defaults treated as absent (runtime)', () => {
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: ['heavy'] } });
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
+  });
+
+  test('merge never mutates the manifest defaults', () => {
+    const configuration = require('../gsd-core/bin/lib/configuration.cjs');
+    const before = JSON.stringify(configuration.CONFIG_DEFAULTS['effort']);
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: { heavy: 'medium' } } });
+    resolveEffortInternal(tmpDir, 'gsd-planner');
+    resolveInstallTimeEffort({ routing_tier_defaults: { heavy: 'medium' } }, 'gsd-planner');
+    assert.strictEqual(
+      JSON.stringify(configuration.CONFIG_DEFAULTS['effort']), before,
+      'resolving must not mutate CANONICAL_CONFIG_DEFAULTS.effort',
+    );
+  });
+});
+
+describe('#3531 parity: runtime and install-time resolvers agree on the merged tier ladder', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = makeTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const PARITY_AGENTS = ['gsd-planner', 'gsd-executor', 'gsd-codebase-mapper', 'completely-unknown-agent-xyz'];
+  const PARITY_EFFORT_CFGS = [
+    null,
+    {},
+    { default: 'low' },
+    { routing_tier_defaults: { heavy: 'medium' } },
+    { routing_tier_defaults: { light: 'low', standard: 'medium', heavy: 'low' } },
+    { routing_tier_defaults: { heavy: 'turbo' }, default: 'low' },
+    { routing_tier_defaults: 'not-an-object' },
+    { agent_overrides: { 'gsd-executor': 'max' } },
+    { agent_overrides: { 'gsd-executor': 42 }, routing_tier_defaults: { heavy: 'medium' } },
+  ];
+
+  for (const effortCfg of PARITY_EFFORT_CFGS) {
+    for (const agent of PARITY_AGENTS) {
+      test(`parity: effortCfg=${JSON.stringify(effortCfg)} agent=${agent}`, () => {
+        writeConfig(tmpDir, effortCfg === null ? {} : { effort: effortCfg });
+        const runtime = resolveEffortInternal(tmpDir, agent);
+        const installTime = resolveInstallTimeEffort(effortCfg, agent);
+        assert.strictEqual(
+          installTime, runtime,
+          `install-time and runtime resolvers disagree for effortCfg=${JSON.stringify(effortCfg)} agent=${agent}`,
+        );
+      });
+    }
+  }
+});
+
+describe('#3531 readGsdEffectiveEffortConfig: home/project routing_tier_defaults deep-merge', () => {
+  test('project partial tier block unions with home partial tier block per-tier', (t) => {
+    const tmpDir = makeTempProject('gsd-3531-home-merge-');
+    t.after(() => cleanup(tmpDir));
+
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3531-home-'));
+    t.after(() => cleanup(homeDir));
+    fs.mkdirSync(path.join(homeDir, '.gsd'), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, '.gsd', 'defaults.json'),
+      JSON.stringify({ effort: { routing_tier_defaults: { heavy: 'low' } } }),
+    );
+
+    writeConfig(tmpDir, { effort: { routing_tier_defaults: { standard: 'medium' } } });
+
+    const oldHome = process.env.HOME;
+    const oldUserProfile = process.env.USERPROFILE;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir; // os.homedir() is USERPROFILE-driven on win32
+    t.after(() => {
+      process.env.HOME = oldHome;
+      if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = oldUserProfile;
+    });
+
+    const merged = readGsdEffectiveEffortConfig(tmpDir);
+    assert.deepStrictEqual(merged && merged.routing_tier_defaults, { heavy: 'low', standard: 'medium' });
+    // The merged config resolves planner from HOME's heavy (low), executor from
+    // project's standard (medium), mapper from the manifest light (low).
+    assert.strictEqual(resolveInstallTimeEffort(merged, 'gsd-planner'), 'low');
+    assert.strictEqual(resolveInstallTimeEffort(merged, 'gsd-executor'), 'medium');
+    assert.strictEqual(resolveInstallTimeEffort(merged, 'gsd-codebase-mapper'), 'low');
   });
 });
 
@@ -1805,12 +1969,27 @@ describe('#443 integration (f): precedence matrix (property/table-driven)', () =
       expected: 'medium',
     },
     {
-      label: 'layer 4 (effort.default) when no tier default set',
+      // #3531 (10c): an effort block without routing_tier_defaults no longer
+      // discards the manifest tier defaults — gsd-planner (heavy) gets the
+      // manifest 'xhigh', not effort.default. effort.default is still the
+      // layer that answers for an agent with NO catalog tier (see the
+      // unknown-agent row below, which is what this layer actually names).
+      label: 'layer 4 (effort.default) when agent has no catalog tier',
       config: {
         effort: { default: 'low' },
       },
       opts: {},
+      agent: 'completely-unknown-agent-xyz',
       expected: 'low',
+    },
+    {
+      label: '10c: effort block without routing_tier_defaults keeps manifest tier defaults (#3531)',
+      config: {
+        effort: { default: 'low' },
+      },
+      opts: {},
+      agent: 'gsd-planner',
+      expected: 'xhigh',
     },
     {
       label: 'invalid layer 1 (turbo) falls through to layer 2 (agent_override)',
@@ -1832,7 +2011,10 @@ describe('#443 integration (f): precedence matrix (property/table-driven)', () =
       expected: 'high',
     },
     {
-      label: 'invalid tier default (turbo) falls through to effort.default',
+      // #3531 (10c): under the merged tier layer, an invalid config value for
+      // a tier falls back to the MANIFEST value for that same tier (xhigh for
+      // heavy), not to effort.default.
+      label: 'invalid tier default (turbo) falls back to the manifest value for that tier (#3531)',
       config: {
         effort: {
           routing_tier_defaults: { heavy: 'turbo' },
@@ -1840,14 +2022,16 @@ describe('#443 integration (f): precedence matrix (property/table-driven)', () =
         },
       },
       opts: {},
-      expected: 'low',
+      expected: 'xhigh',
     },
   ];
 
   for (const row of effortPrecedenceTable) {
     test(`effort precedence: ${row.label}`, () => {
       writeConfig(tmpDir, row.config);
-      const result = resolveEffortInternal(tmpDir, 'gsd-planner', row.opts);
+      // #3531: rows may pin a specific agent (default keeps the historical
+      // gsd-planner target so existing rows are unchanged in what they assert).
+      const result = resolveEffortInternal(tmpDir, row.agent || 'gsd-planner', row.opts);
       assert.strictEqual(result, row.expected,
         `Expected '${row.expected}', got '${result}' — config: ${JSON.stringify(row.config)}`);
     });
@@ -2170,7 +2354,7 @@ const {
 
 const {
   injectEffortFrontmatter,
-} = require('../bin/install.js');
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function writeConfig(dir, config) {
   const planningDir = path.join(dir, '.planning');
@@ -2247,22 +2431,25 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'medium');
   });
 
-  test('invalid routing_tier_defaults value falls through to effort.default', () => {
+  test('invalid routing_tier_defaults value falls back to the manifest value for that tier (#3531)', () => {
     writeConfig(tmpDir, {
       effort: {
         routing_tier_defaults: { heavy: 'turbo' },
         default: 'low',
       },
     });
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'low');
+    // #3531: the config block merges OVER the manifest built-ins; an invalid
+    // entry is dropped by the merge, so the manifest heavy default surfaces.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
-  test('invalid effort.default falls through to hardcoded "high" (no routing_tier_defaults set)', () => {
+  test('invalid effort.default falls through to the manifest tier default (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { default: 'turbo' },
     });
-    // effortCfg set but no routing_tier_defaults; turbo is invalid; fallback = hardcoded 'high'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'high');
+    // #3531: an effort block without routing_tier_defaults keeps the manifest
+    // tier ladder; the invalid default never answers for a tiered agent.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('unknown agent -> uses effort.default', () => {
@@ -2273,12 +2460,12 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'unknown-agent-xyz'), 'medium');
   });
 
-  test('effort.default numeric value (123) ignored, hardcoded "high" fallback', () => {
+  test('effort.default numeric value (123) ignored, manifest tier default answers (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { default: 123 },
     });
-    // effortCfg set, no routing_tier_defaults -> no tier default; numeric ignored -> 'high'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'high');
+    // #3531: no valid tier override -> manifest heavy default; numeric default ignored.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('effort block missing entirely -> uses tier default', () => {
@@ -2294,11 +2481,12 @@ describe('#443 effort cascade', () => {
     assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
-  test('effort.routing_tier_defaults empty object -> effort.default', () => {
+  test('effort.routing_tier_defaults empty object -> manifest tier default (#3531)', () => {
     writeConfig(tmpDir, {
       effort: { routing_tier_defaults: {}, default: 'low' },
     });
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'low');
+    // #3531: an empty override block leaves the manifest built-ins in force.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 });
 
@@ -2721,8 +2909,9 @@ describe('#443 QA matrix — malformed effort/fast_mode configs', () => {
         default: 'medium',
       },
     });
-    // boolean true is not a valid effort -> falls through to default 'medium'
-    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'medium');
+    // #3531: boolean true is not a valid effort -> the merge drops it and the
+    // manifest heavy default (xhigh) surfaces, not effort.default 'medium'.
+    assert.strictEqual(resolveEffortInternal(tmpDir, 'gsd-planner'), 'xhigh');
   });
 
   test('effort.agent_overrides is non-object -> falls through gracefully', () => {
@@ -5323,9 +5512,10 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
   const prevTestMode = process.env.GSD_TEST_MODE;
   process.env.GSD_TEST_MODE = '1';
   const installMod = require('../bin/install.js');
+  const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
   if (prevTestMode === undefined) delete process.env.GSD_TEST_MODE;
   else process.env.GSD_TEST_MODE = prevTestMode;
-  const { readGsdRuntimeProfileResolver, generateCodexAgentToml } = installMod;
+  const { generateCodexAgentToml } = installMod;
 
   let tmpDir;
   beforeEach(() => { isolateHome(); tmpDir = createTempProject(); resetRuntimeWarningCaches(); });
@@ -5417,6 +5607,75 @@ describe('issue #2517: install end-to-end — per-project config reaches Codex T
     const libDir = path.join(installDir, '..', 'gsd-core', 'bin', 'lib');
     assert.ok(fs.existsSync(path.join(libDir, 'model-catalog.cjs')));
     assert.ok(fs.existsSync(path.join(libDir, 'model-profiles.cjs')));
+  });
+});
+
+// ─── #2875: install-model-override-resolver.cts's `depth < 8` upward-walk ──
+// boundary (CLAUDE.md boundary coverage: a budget limit must be exercised at
+// limit-1/limit/limit+1). The walk starts AT targetDir (checked at depth=0,
+// "0 levels up") and stops after depth=7 ("7 levels up", the LAST reachable
+// ancestor) — a `.planning/config.json` 8 levels up is never reached. Both
+// `readGsdRuntimeProfileResolver` and `readGsdEffectiveModelOverrides` run
+// the identical loop shape; readGsdRuntimeProfileResolver is exercised here
+// since resolver.runtime !== null is a simple, direct found/not-found signal.
+describe('#2875: install-model-override-resolver upward-walk depth boundary (limit-1/limit/limit+1)', () => {
+  const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+
+  beforeEach(() => { isolateHome(); resetRuntimeWarningCaches(); });
+  afterEach(() => { restoreHome(); });
+
+  // Builds an 8-level-deep directory chain under a fresh temp root and
+  // returns { root, leaf }, where leaf is 8 levels below root (root/L1/../L8).
+  // ancestorLevelsUp(leaf, n) === root/L1/../L(8-n).
+  function buildDeepChain() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-depth-walk-'));
+    let dir = root;
+    for (let i = 1; i <= 8; i += 1) {
+      dir = path.join(dir, `L${i}`);
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    return { root, leaf: dir };
+  }
+
+  function ancestorLevelsUp(leaf, n) {
+    let dir = leaf;
+    for (let i = 0; i < n; i += 1) dir = path.dirname(dir);
+    return dir;
+  }
+
+  // writeConfig assumes `<dir>/.planning/` already exists (every other call
+  // site in this file writes into a `createTempProject()`-scaffolded tree,
+  // which pre-creates it) — the bare ancestor dirs `buildDeepChain` makes do
+  // not, so create it first.
+  function writeConfigAt(dir, obj) {
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    writeConfig(dir, obj);
+  }
+
+  test('limit-1: config.json 6 levels up from targetDir is found', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 6), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.ok(resolver, 'a config.json 6 levels up must be found — well within the 8-deep walk');
+    assert.strictEqual(resolver.runtime, 'codex');
+  });
+
+  test('limit: config.json 7 levels up from targetDir is found — the LAST reachable ancestor', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 7), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.ok(resolver, 'a config.json exactly 7 levels up (the walk\'s last checked ancestor) must still be found');
+    assert.strictEqual(resolver.runtime, 'codex');
+  });
+
+  test('limit+1: config.json 8 levels up from targetDir is NEVER found — one level past what the walk reaches', (t) => {
+    const { root, leaf } = buildDeepChain();
+    t.after(() => cleanup(root));
+    writeConfigAt(ancestorLevelsUp(leaf, 8), { runtime: 'codex', model_profile: 'quality' });
+    const resolver = readGsdRuntimeProfileResolver(leaf);
+    assert.strictEqual(resolver, null, 'a config.json 8 levels up is past the walk\'s cap and must not be found');
   });
 });
 

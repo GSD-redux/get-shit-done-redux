@@ -478,7 +478,8 @@ describe('stale-bake-guard parity with bin/install.js bake paths', () => {
         path.join(tmp, '.planning', 'config.json'),
         JSON.stringify({ model_overrides: { 'gsd-executor': 'opencode-go/flash', 'gsd-planner': 'openai/gpt-5' } }),
       );
-      const resolved = install.readGsdEffectiveModelOverrides(tmp, { homedir: () => sandboxHome });
+      const { readGsdEffectiveModelOverrides } = require(path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'install-model-override-resolver.cjs'));
+      const resolved = readGsdEffectiveModelOverrides(tmp, { homedir: () => sandboxHome });
       assert.deepEqual(resolved, { 'gsd-executor': 'opencode-go/flash', 'gsd-planner': 'openai/gpt-5' });
     } finally {
       cleanup(tmp);

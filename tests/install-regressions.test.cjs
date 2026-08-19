@@ -38,12 +38,18 @@ try {
   else process.env.GSD_TEST_MODE = savedTestMode;
 }
 
-const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, rewriteLegacyManagedNodeHookCommands, resolveNodeRunner, copyWithPathReplacement } = installExports || {};
+const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, copyWithPathReplacement } = installExports || {};
 
 const {
   installRuntimeArtifacts,
   uninstallRuntimeArtifacts,
 } = require('../gsd-core/bin/lib/install-engine.cjs');
+
+const {
+  rewriteLegacyManagedNodeHookCommands,
+  resolveNodeRunner,
+  reconcileManagedShellHookCommands,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
@@ -120,7 +126,7 @@ describe('Defect #1 regression (#3664 reversed by #947): bare-stem dirs removed,
     t.after(() => cleanup(configDir));
 
     assert.strictEqual(typeof installRuntimeArtifacts, 'function',
-      'installRuntimeArtifacts must be exported from bin/install.js');
+      'installRuntimeArtifacts must be exported from install-engine.cjs');
 
     // Pre-create #3664-era bare-stem Hermes layout (no gsd- prefix, now stale).
     // Use real GSD command stems (help, quick) that readGsdCommandNames() knows about.
@@ -307,7 +313,7 @@ describe('U1 (#2973): uninstallRuntimeArtifacts qwen migrates dev-preferences �
     t.after(() => cleanup(configDir));
 
     assert.strictEqual(typeof uninstallRuntimeArtifacts, 'function',
-      'uninstallRuntimeArtifacts must be exported from bin/install.js');
+      'uninstallRuntimeArtifacts must be exported from install-engine.cjs');
 
     const legacyDir = path.join(configDir, 'commands', 'gsd');
     fs.mkdirSync(legacyDir, { recursive: true });
@@ -925,7 +931,7 @@ describe('#976 regression: installer does not duplicate managed hooks when regis
 
   test('rewriteLegacyManagedNodeHookCommands leaves args-form launcher entries unchanged', () => {
     assert.strictEqual(typeof rewriteLegacyManagedNodeHookCommands, 'function',
-      'rewriteLegacyManagedNodeHookCommands must be exported from bin/install.js');
+      'rewriteLegacyManagedNodeHookCommands must be exported from runtime-hooks-surface.cjs');
 
     const launcherCommand = '/usr/local/bin/node-launcher';
     const hookPath = '/Users/user/.claude/hooks/gsd-check-update.js';
@@ -1330,29 +1336,94 @@ describe('#1924: profile-user.md backup path must be outside gsd-core/', () => {
   });
 });
 
-// ─── Test 4: preserveUserArtifacts helper exported from install.js ────────────
+// ─── Test 4: user artifacts survive a wipe via the durable staging path ──────
+//
+// preserveUserArtifacts/restoreUserArtifacts (an in-memory Map, the #1924
+// fix's original mechanism) were retired by #2875 — nothing calls them any
+// more, so a `typeof preserveUserArtifacts === 'function'` assertion would
+// guard a function that never runs: vacuous. #1924's actual point was never
+// "this specific helper is exported" — it was "user artifacts survive a
+// reinstall wipe". This asserts that SAME property through the durable
+// on-disk staging path that replaced the in-memory one, including surviving
+// a crash BETWEEN the wipe and the restore (#1874-F19) — a stronger
+// guarantee than the retired helper ever gave, and one a plain in-process
+// round-trip would not prove.
 
-describe('#1924: preserveUserArtifacts helper exists in install.js', () => {
-  test('install.js exports preserveUserArtifacts function', () => {
-    // Set GSD_TEST_MODE so require() reaches the module.exports block
-    const origMode = process.env.GSD_TEST_MODE;
-    process.env.GSD_TEST_MODE = '1';
-    let mod;
-    try {
-      mod = require(INSTALL_SCRIPT);
-    } finally {
-      if (origMode === undefined) {
-        delete process.env.GSD_TEST_MODE;
-      } else {
-        process.env.GSD_TEST_MODE = origMode;
-      }
+describe('#1924: user artifacts survive a wipe via the durable staging path (user-artifact-staging.cjs exports)', () => {
+  test('user-artifact-staging.cjs exports the staging primitives, and content staged through them survives a destDir wipe + crash', (t) => {
+    const mod = require('../gsd-core/bin/lib/user-artifact-staging.cjs');
+
+    for (const name of ['stageUserArtifacts', 'restoreStagedUserArtifacts', 'discardStagedUserArtifacts', 'recoverOrphanedUserArtifacts']) {
+      assert.strictEqual(
+        typeof mod[name],
+        'function',
+        `user-artifact-staging.cjs must export ${name} — the mechanism that now makes the #1924 durability property testable`,
+      );
     }
 
-    assert.strictEqual(
-      typeof mod.preserveUserArtifacts,
-      'function',
-      'install.js must export preserveUserArtifacts helper for testability'
-    );
+    // user-artifact-staging.cts's recoverOrphanedUserArtifacts re-confines the
+    // record's destDir against configDir (module doc "Confinement"/E2) before
+    // recovering anything: `path.relative(configHome, record.destDir)` must
+    // resolve to a path that never leaves configHome, exactly matching every
+    // real call site (bin/install.js always stages/recovers a destDir that is
+    // a SUBDIRECTORY of configDir). destDir must therefore live under
+    // configDir here too — two unrelated sibling temp dirs (the smoke script's
+    // shortcut) trip E2's outside-confinement refusal and recovered stays
+    // empty, which is what silently diverged the smoke check from this suite.
+    //
+    // Second, separate divergence: the owner-liveness guard
+    // (recoverOrphanedUserArtifacts) skips an entry entirely, reason
+    // 'owner-still-live', whenever the record's `runId` names a currently-
+    // alive process — and `stageUserArtifacts` defaults `runId` to
+    // `String(process.pid)`, i.e. THIS test process, which is alive for the
+    // whole in-process round trip. A real crashed run has a genuinely DEAD
+    // pid; simulate that explicitly (same convention
+    // tests/user-artifact-staging.test.cjs's C15 uses) or recovery always
+    // reports this as "not an orphan yet" and never restores anything.
+    const configDir = createTempDir('gsd-1924-staging-cfg-');
+    const destDir = path.join(configDir, 'skills');
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      const content = '# My Profile\n\nSurvives via durable staging (#2875).\n';
+      fs.writeFileSync(path.join(destDir, 'USER-PROFILE.md'), content);
+      const stagingRoot = path.join(configDir, '.gsd-staging', 'user-artifacts');
+      const deadPid = '999999';
+      mod.stageUserArtifacts(destDir, ['USER-PROFILE.md'], stagingRoot, { runId: deadPid });
+
+      // Simulate the #1874-F19 crash window: the wipe ran, the process died
+      // before any restore. #2875 AC: inject via genuine `fs`-method
+      // monkeypatching (CLAUDE.md §4 / the established idiom in
+      // planning-lock-mkdir-failure-1884.test.cjs) rather than deleting
+      // destDir out-of-band — `t.mock.method` auto-restores the original
+      // after this test (no manual try/finally; CONTRIBUTING.md bans
+      // try/finally in test bodies), and the mock delegates to the captured
+      // original so destDir genuinely vanishes exactly as production's own
+      // `fs.rmSync(destDir, {recursive:true})` would — the injected crash
+      // boundary is "execution never proceeds past this call to any
+      // restore", not a thrown error from the wipe itself. The actual
+      // removal is driven through `helpers.cleanup()` (never a raw
+      // `fs.rmSync` in a test body — `local/no-raw-rmsync-in-tests`), which
+      // reads the SAME mutated `fs.rmSync` property (module singleton), so
+      // the mock still observes and performs the wipe.
+      const realRmSync = fs.rmSync;
+      t.mock.method(fs, 'rmSync', (targetPath, opts) => realRmSync.call(fs, targetPath, opts));
+      cleanup(destDir);
+      assert.ok(!fs.existsSync(path.join(destDir, 'USER-PROFILE.md')));
+
+      // Recovery — not an ordinary restore call — is what must bring it
+      // back, proving the property survives a crash, not merely an
+      // in-process round-trip.
+      const result = mod.recoverOrphanedUserArtifacts(stagingRoot, configDir);
+      assert.strictEqual(result.recovered.length, 1);
+      assert.strictEqual(
+        fs.readFileSync(path.join(destDir, 'USER-PROFILE.md'), 'utf8'),
+        content,
+        'user artifact content must survive the wipe, byte-identical, via the durable staging path',
+      );
+    } finally {
+      cleanup(destDir);
+      cleanup(configDir);
+    }
   });
 });
   });
@@ -1442,8 +1513,6 @@ describe('#3333 regression: copyWithPathReplacement tolerates a source file vani
 // user-authored hooks are untouched.
 
 describe('#3329 regression: stale managed .sh hook commands are reconciled on install/update', () => {
-  const { reconcileManagedShellHookCommands } = installExports || {};
-
   const GLOBAL_EXPECTED = {
     'gsd-validate-commit.sh': '"C:/Users/u/.claude/hooks/gsd-validate-commit.sh"',
     'gsd-graphify-update.sh': '"C:/Users/u/.claude/hooks/gsd-graphify-update.sh"',
@@ -1478,9 +1547,9 @@ describe('#3329 regression: stale managed .sh hook commands are reconciled on in
     return out;
   }
 
-  test('reconcileManagedShellHookCommands is exported from bin/install.js', () => {
+  test('reconcileManagedShellHookCommands is exported from runtime-hooks-surface.cjs', () => {
     assert.strictEqual(typeof reconcileManagedShellHookCommands, 'function',
-      'reconcileManagedShellHookCommands must be exported from bin/install.js (#3329)');
+      'reconcileManagedShellHookCommands must be exported from runtime-hooks-surface.cjs (#3329)');
   });
 
   test('win32+claude: bare `bash`-prefixed global entries are rewritten to the bare script path', () => {

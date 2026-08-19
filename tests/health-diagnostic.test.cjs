@@ -22,10 +22,13 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
 const healthDiagnostic = require('../gsd-core/bin/lib/health-diagnostic.cjs');
 const { buildPlanningSnapshot } = require('../gsd-core/bin/lib/planning-snapshot.cjs');
-const { createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { cmdValidateHealth } = require('../gsd-core/bin/lib/verify.cjs');
+const { MANIFEST_NAME } = require('../gsd-core/bin/lib/installer-migrations.cjs');
+const { createTempProject, createTempGitProject, createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
 
 const {
   SEVERITY,
@@ -271,23 +274,23 @@ describe('evaluateRuleTable — duplicate-code guard (row 13)', () => {
 
 // ─── RULES — the fully wired table ──────────────────────────────────────────
 //
-// 31 rule entries, not the design doc's own prose figure of "32" (that doc's
-// "Rule table organization" section already flags its own count as
-// inconsistent between its table and prose — see this repo's design doc,
-// same section). Counted directly from each rule-group file's own exported
+// 33 rule entries. Counted directly from each rule-group file's own exported
 // `RULES` array: root-existence (4: E002/E003/E004/W001) + state-consistency
-// (5: W024/W002/W011/W021/W026) + config-validation (10: W003/E005/W004/
-// W008/W016/W012/W013/W014/W015/W022) + phase-structure (4: W005/W023/I001/
-// W009) + agent-install (1: W010) + roadmap-disk-consistency (2: W006/W007)
-// + worktree-health (3: W020/W017/W027) + milestone-archive-hygiene (2:
-// W018/W019) = 31. E001 and the home-directory guard (E010/I010) are
-// deliberately NOT rows (design doc, "Two guards that stay OUTSIDE the rule
-// table entirely").
+// (5: W024/W002/W011/W021/W026) + config-validation (11: W003/E005/W004/
+// W008/W016/W012/W013/W014/W015/W022/W029) + phase-structure (4: W005/W023/
+// I001/W009) + agent-install (1: W010) + roadmap-disk-consistency (2: W006/
+// W007) + worktree-health (3: W020/W017/W027) + milestone-archive-hygiene
+// (2: W018/W019) + install-surface-shadowing (1: W028, #2873 epic #2866
+// Phase 4a) = 33. config-validation.cts's W029 (#3586, epic #2292) is
+// registered there per this batch's brief even though its subject
+// (`.planning/` tracked-but-ignored) is not config.json-sourced. E001 and
+// the home-directory guard (E010/I010) are deliberately NOT rows (design
+// doc, "Two guards that stay OUTSIDE the rule table entirely").
 
 describe('RULES', () => {
-  test('is the full, frozen 31-rule table with every code unique', () => {
+  test('is the full, frozen 33-rule table with every code unique', () => {
     assert.equal(Array.isArray(RULES), true);
-    assert.equal(RULES.length, 31);
+    assert.equal(RULES.length, 33);
     const codes = RULES.map((r) => r.code);
     assert.equal(new Set(codes).size, codes.length, 'every rule code must be unique');
   });
@@ -298,6 +301,175 @@ describe('RULES', () => {
       assert.ok(Object.values(SEVERITY).includes(rule.severity), `${rule.code}: unknown severity ${rule.severity}`);
       assert.equal(typeof rule.check, 'function');
     }
+  });
+});
+
+// ─── W028 — install surface shadowing (#2873, epic #2866 Phase 4a; D1-D5) ──
+//
+// `src/health-diagnostic-rules/install-surface-shadowing.cts` reuses W010's
+// (`agent-install.cts`) runtime-resolution mechanism: `resolveRuntime(cwd)`
+// (`runtime-slash.cjs`) never throws (env/config/'claude'-default chain), and
+// `buildShadowReport(runtime, { cwd: snapshot.cwd })` is called with `home`
+// left un-injected so the resolver defaults to `os.homedir()` — the real
+// machine, the same production call shape the installer uses. Every row
+// below therefore drives the REAL global scope by monkeypatching
+// `os.homedir()` (`installSpawnHome`-style DI is not available to this rule,
+// which accepts no `home` option at all) rather than `fs.chmodSync`/mode-bit
+// tricks — this repo's mandated IO-failure-injection technique
+// (CLAUDE.md → "CROSS-PLATFORM TEST IO-FAILURE INJECTION").
+//
+// This suite chose `tests/health-diagnostic.test.cjs` over
+// `tests/health-diagnostic-rules/agent-install.test.cjs`: the latter is
+// W010's dedicated fixture file (closest *mechanism* match, cited above, but
+// a different SUBJECT — agent installation, not install-scope shadowing);
+// this file is the RULES-table-and-evaluator skeleton suite (`describe(
+// 'RULES', ...)` immediately above already asserts the wired table includes
+// every code, W028 included) and is where `evaluateRuleTable`'s own
+// duplicate-code-guard rows (13) already live — the natural home for D4.
+// Extending an existing file either way keeps `lint-test-file-count.cjs`'s
+// `health-diagnostic` prefix bucket unchanged (still the 1 file it was
+// before this PR).
+
+function withHomedir(t, tmpHome) {
+  const originalHomedir = os.homedir;
+  os.homedir = () => tmpHome;
+  t.after(() => {
+    os.homedir = originalHomedir;
+  });
+}
+
+function writeClaudeManifest(configDir, scope, files) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, MANIFEST_NAME), JSON.stringify({
+    manifestVersion: 2, runtime: 'claude', scope, files,
+  }));
+}
+
+describe('W028 (install surface shadowing)', () => {
+  test('D1: health surfaces cross-scope shadowing when both scopes are installed', (t) => {
+    const home = createTempDir('gsd-w028-d1-home-');
+    const cwd = createTempDir('gsd-w028-d1-cwd-');
+    t.after(() => { cleanup(home); cleanup(cwd); });
+    withHomedir(t, home);
+
+    writeClaudeManifest(path.join(home, '.claude'), 'global', { 'skills/gsd-plan-phase/SKILL.md': 'a' });
+    writeClaudeManifest(path.join(cwd, '.claude'), 'local', { 'commands/gsd-plan-phase.md': 'a' });
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const rule = RULES.find((r) => r.code === 'W028');
+    assert.ok(rule, 'RULES must contain a W028 entry');
+    const diagnostics = rule.check(snapshot);
+    assert.strictEqual(diagnostics.length, 1, `expected exactly one W028 diagnostic, got: ${JSON.stringify(diagnostics)}`);
+    const [d] = diagnostics;
+    assert.strictEqual(d.code, 'W028');
+    assert.strictEqual(d.severity, SEVERITY.WARNING);
+    assert.strictEqual(d.remedy.action, REMEDY_ACTION.ADVISE);
+    assert.strictEqual(d.remedy.risk, REMEDY_RISK.NONE);
+  });
+
+  test('D2: health is quiet without shadowing', (t) => {
+    const home = createTempDir('gsd-w028-d2-home-');
+    const cwd = createTempDir('gsd-w028-d2-cwd-');
+    t.after(() => { cleanup(home); cleanup(cwd); });
+    withHomedir(t, home);
+    // Neither scope has any GSD install at all — nothing to shadow.
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const rule = RULES.find((r) => r.code === 'W028');
+    assert.deepStrictEqual(rule.check(snapshot), []);
+  });
+
+  test('D3: --json output (cmdValidateHealth raw=true) carries the W028 code structurally', (t) => {
+    const home = createTempDir('gsd-w028-d3-home-');
+    const cwd = createTempGitProject();
+    t.after(() => { cleanup(home); cleanup(cwd); });
+    withHomedir(t, home);
+
+    // A real, otherwise-healthy .planning/ project — required so
+    // cmdValidateHealth's own E001 pre-check does not short-circuit before
+    // the rule table ever runs (that path is D5, below).
+    const sections = ['## What This Is', '## Core Value', '## Requirements'];
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), `# Project\n\n${sections.map((s) => `${s}\n\nContent here.\n`).join('\n')}`);
+    fs.writeFileSync(path.join(cwd, '.planning', 'ROADMAP.md'), '# Roadmap\n\n### Phase 1: Setup\n');
+    fs.writeFileSync(path.join(cwd, '.planning', 'STATE.md'), '# Session State\n\n## Current Position\n\nPhase: 1\n');
+    fs.writeFileSync(path.join(cwd, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced', commit_docs: true,
+      workflow: { nyquist_validation: true, ai_integration_phase: true },
+    }, null, 2));
+    fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-setup'), { recursive: true });
+
+    writeClaudeManifest(path.join(home, '.claude'), 'global', { 'skills/gsd-plan-phase/SKILL.md': 'a' });
+    writeClaudeManifest(path.join(cwd, '.claude'), 'local', { 'commands/gsd-plan-phase.md': 'a' });
+
+    let result;
+    captureConsole(() => {
+      result = cmdValidateHealth(cwd, {}, true);
+    });
+    // Typed structured assertions on the RETURNED payload (the same object
+    // `output(result, raw)` would JSON.stringify for `--json` mode) — never
+    // a substring match against rendered/printed prose.
+    assert.ok(result, 'cmdValidateHealth must return the result payload');
+    const w028Entries = (result.warnings ?? []).filter((w) => w.code === 'W028');
+    assert.strictEqual(w028Entries.length, 1, `expected one W028 warning entry, got: ${JSON.stringify(result.warnings)}`);
+    assert.strictEqual(typeof w028Entries[0].message, 'string');
+    assert.strictEqual(w028Entries[0].repairable, false);
+  });
+
+  test('D4: rule code is unique — W028 appears exactly once and the duplicate-code guard passes over the real, healthy-project RULES evaluation', (t) => {
+    const codes = RULES.map((r) => r.code);
+    assert.strictEqual(codes.filter((c) => c === 'W028').length, 1, 'W028 must appear exactly once in RULES');
+
+    const tmpDir = createTempGitProject();
+    t.after(() => cleanup(tmpDir));
+    writeMinimalProjectMd(tmpDir);
+    writeMinimalRoadmap(tmpDir);
+    writeMinimalStateMd(tmpDir);
+    writeValidConfigJson(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+
+    // evaluateRuleTable's own duplicate-code guard (row 13, above) throws
+    // BEFORE running any check() if two RULES entries share a code — running
+    // the real, full RULES table end to end (via evaluateRules) over a real
+    // snapshot is what proves that guard passes with the real, wired W028
+    // present, not merely that a hand-built fake array behaves.
+    assert.doesNotThrow(() => evaluateRules(buildPlanningSnapshot(tmpDir)));
+  });
+
+  test('D5: health run outside a project (no .planning/) never throws; rule degrades with no config dir', (t) => {
+    const home = createTempDir('gsd-w028-d5-home-');
+    const cwd = createTempDir('gsd-w028-d5-cwd-'); // deliberately no .planning/ created
+    t.after(() => { cleanup(home); cleanup(cwd); });
+    withHomedir(t, home);
+
+    // A real coexistence fixture exists on disk — proves the outer E001
+    // guard (verify.cts, "stays OUTSIDE the rule table entirely") short-
+    // circuits BEFORE the rule table (and W028 specifically) ever runs, not
+    // merely that nothing happens to be installed. `writeAllSync`-based
+    // `output()` writes directly to fd 1 (io.cts), bypassing `console.log`
+    // entirely, so `captureConsole` cannot observe it here — the CONTRACT
+    // under test is `cmdValidateHealth`'s documented early-return shape
+    // itself: `output(...); return;` with no explicit value, i.e. `undefined`.
+    writeClaudeManifest(path.join(home, '.claude'), 'global', { 'skills/gsd-plan-phase/SKILL.md': 'a' });
+    writeClaudeManifest(path.join(cwd, '.claude'), 'local', { 'commands/gsd-plan-phase.md': 'a' });
+
+    let result;
+    assert.doesNotThrow(() => {
+      result = cmdValidateHealth(cwd, {}, true);
+    });
+    assert.strictEqual(result, undefined, 'the E001 no-.planning/ pre-check returns before the rule table (and W028) ever runs');
+
+    // "no config dir" half of D5: the rule itself, driven directly, must
+    // degrade to no diagnostic (never throw) when `os.homedir()` resolves to
+    // a path that does not exist on disk at all.
+    const rule = RULES.find((r) => r.code === 'W028');
+    const missingHome = path.join(home, 'does-not-exist-at-all');
+    withHomedir(t, missingHome);
+    const bareCwd = createTempDir('gsd-w028-d5-barecwd-');
+    t.after(() => cleanup(bareCwd));
+    const snapshot = buildPlanningSnapshot(bareCwd);
+    assert.doesNotThrow(() => {
+      assert.deepStrictEqual(rule.check(snapshot), []);
+    });
   });
 });
 

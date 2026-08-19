@@ -158,10 +158,28 @@ uninstall side-effect branches in `bin/install.js` (→
 `resolveInstallPlan(runtime).installSurface === 'copilot-instructions'`, already a live descriptor field
 elsewhere in the same file), and two `skipSharedHooksInstall` gates (→
 `hostBehaviors.skipSharedHooksInstall: true`). A dead legacy agent-converter dispatch arm — unreachable
-because copilot is a member of `_DESCRIPTOR_AGENTS_RUNTIMES` — was deleted outright rather than re-gated,
-mirroring step 6's guard: `tests/declarative-reference-copilot.test.cjs` source-greps both files for the
-retired `isCopilot` reads. See the `copilot` section of the reference matrix for the full EoS migration
-note, including the two upgrades (multi-event hook bus; negotiated `dispatch.background`) this PR adds.
+because copilot was a member of the then-existing `_DESCRIPTOR_AGENTS_RUNTIMES` allow-list — was deleted
+outright rather than re-gated, mirroring step 6's guard:
+`tests/declarative-reference-copilot.test.cjs` source-greps both files for the retired `isCopilot` reads.
+See the `copilot` section of the reference matrix for the full EoS migration note, including the two
+upgrades (multi-event hook bus; negotiated `dispatch.background`) this PR adds.
+
+> **`_DESCRIPTOR_AGENTS_RUNTIMES` no longer exists (#2875).** It was an allow-list naming the runtimes
+> whose `agents` came from the descriptor; everything absent from it fell through to an inline
+> `_hostBehaviors()` dispatch loop in `bin/install.js`. That loop and the set are both gone — the
+> descriptor is now authoritative for `agents` on **every** runtime, so there is no longer an
+> opt-in list to join. Declare an `agents` entry under `artifactLayout` and it is installed.
+>
+> If your host needs a per-agent transform the descriptor cannot yet express, extend the pipeline
+> rather than reintroducing an inline branch. The three extension points added when the loop was
+> removed are the pattern to follow: `hostBehaviors.agentFrontmatterExtensions` for injected
+> frontmatter keys, per-agent model-override resolution threaded through the converter's options,
+> and a named converter driven by descriptor data (hermes's branding rewrites are declared in
+> `capability.json`, not hardcoded). All three exist because the descriptor pipeline lacked one
+> thing: per-agent resolution context (`targetDir` + `agentName`).
+>
+> Declaring an `agents` entry also takes effect on the **surface** path (`/gsd-surface --materialize`)
+> immediately, not only on install — the two paths are intentionally converged.
 
 ---
 

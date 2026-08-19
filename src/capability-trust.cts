@@ -338,6 +338,17 @@ interface Disclosure {
    * Empty when no stagedDir was supplied.
    */
   missingArtifacts: string[];
+  /**
+   * #3514 (epic #1900 F21c): what pinned the source content before staging — 'pinned' (a verified
+   * sha512 `--integrity` pin), 'commit-pinned' (a git source checked out at a `#sha:<40-hex>`
+   * commit), or 'unverified' (no pin). PROMPT-ONLY: set by evaluateInstallTrust when the caller
+   * supplies `integrityPin`, rendered by summarizeDisclosure, and deliberately EXCLUDED from
+   * `disclosureSignature` — consent's content binding is `bundleContentHash` (#1459), and a
+   * rendered line must never read as a changed executable set (which would fire a spurious
+   * re-consent on every upgrade). Mirrors the instructionSurfaces exclusion precedent (ADR-2363
+   * D4) one field over.
+   */
+  integrityStatus?: 'pinned' | 'commit-pinned' | 'unverified';
 }
 
 type StrictKnownRegistries = string[] | null | undefined;
@@ -377,6 +388,14 @@ interface InstallTrustArgs {
    * constraint 2; see `ReviewerHostResolver`).
    */
   resolveHost?: ReviewerHostResolver;
+  /**
+   * #3514 (epic #1900 F21c): what kind of pin the source content carries — 'sha512' (a supplied
+   * `--integrity` pin, verified by the resolver before the verdict runs), 'git-commit' (a git
+   * source pinned by `#sha:<40-hex-commit>`), or 'none'. Optional: absent ⇒ the disclosure
+   * carries no `integrityStatus` and the prompt renders no integrity line (legacy callers see
+   * byte-identical output).
+   */
+  integrityPin?: 'sha512' | 'git-commit' | 'none';
 }
 
 interface InstallTrustVerdict {
@@ -1159,6 +1178,12 @@ function evaluateInstallTrust(args: InstallTrustArgs): InstallTrustVerdict {
   // openai-http reviewer lane to the human at install/upgrade time — it never affects the
   // consent-binding signature (disclosureSignature never reads resolvedHost; design constraint 2).
   const disclosure = discloseExecutableSurfaces(manifest, stagedDir, resolveHost);
+  // #3514 (F21c): prompt-only integrity status. Set AFTER discloseExecutableSurfaces so the
+  // surface builder (and every signature computed from it) is untouched — see the field's
+  // disclosure-interface comment for why this must never reach disclosureSignature.
+  if (args.integrityPin === 'sha512') disclosure.integrityStatus = 'pinned';
+  else if (args.integrityPin === 'git-commit') disclosure.integrityStatus = 'commit-pinned';
+  else if (args.integrityPin === 'none') disclosure.integrityStatus = 'unverified';
 
   // A manifest that declares a hook script or command module NOT present in the staged bundle
   // (missing, or escaping the bundle via an absolute/`..` path) is rejected: such an artifact
@@ -1475,19 +1500,33 @@ function summarizeInstructionSurfaces(disclosure: Disclosure): string[] {
  * exists to provide. GSD-authored literals (fallback placeholders, headings, `<redacted>`) are never
  * escaped — only manifest-supplied data is.
  */
+/**
+ * #3515: one predicate for "this MCP server is remote (connects to a URL; nothing local is
+ * spawned)" — shared by the section's confinement notice and the per-server rendering so the
+ * consent-prompt claim cannot drift from what is actually disclosed per server. Branches on the
+ * DECLARED SHAPE: an http/sse transport, or a server with no command but a url.
+ */
+function isRemoteMcpServer(s: McpServerSurface): boolean {
+  return (s.transport === 'http' || s.transport === 'sse') || (!s.command && !!s.url);
+}
+
 function summarizeDisclosure(disclosure: Disclosure): string[] {
   const lines: string[] = [];
   const instructionLines = summarizeInstructionSurfaces(disclosure);
+  // #3514 (F21c): computed once, appended before every return path so a future path cannot miss it.
+  const integrity = integrityStatusLine(disclosure);
   if (!disclosure.hasExecutable) {
     // ADR-2363 D3: "declarative only" is true ONLY when there is no instruction surface either.
     // Claiming it unconditionally told a user their capability contributes nothing to weigh while
     // it was contributing agent instructions — the exact category error ADR-2363 was written to end.
     if (instructionLines.length === 0) {
       lines.push('This capability ships no executable surfaces (declarative only).');
+      if (integrity) lines.push(integrity);
       return lines;
     }
     lines.push('This capability ships no executable surfaces, but contributes agent instructions:');
     for (const line of instructionLines) lines.push(line);
+    if (integrity) lines.push(integrity);
     return lines;
   }
   lines.push('This capability ships executable surfaces that will run in your agent runtime:');
@@ -1511,10 +1550,26 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
   }
   if (disclosure.mcpServers.length > 0) {
     lines.push(`  MCP servers (${disclosure.mcpServers.length}): spawned/connected by the host runtime`);
+    // #3515 (epic #1900 F20): the confinement-posture notice. Hook commands are confined to the
+    // capability bundle (D5 rule 5); an MCP server's command/args/env/cwd are written VERBATIM and
+    // may point anywhere on the machine — an intentional asymmetry (confining them would break
+    // global/npx servers), disclosed here so the consent is informed rather than assumed. env is
+    // named explicitly (isolated review finding): an execution-primitive env value changes WHAT
+    // runs without touching command or argv — the classic vector — and omitting it would invite
+    // the inference that env IS confined. Only SPAWNED (stdio) servers earn the line: a remote
+    // (http/sse) server runs nothing locally, and the claim must be exact in a consent prompt.
+    // One shared predicate (below) decides spawn-vs-remote for the notice AND the per-server
+    // rendering, so the two cannot drift into an inexact claim.
+    if (disclosure.mcpServers.some((s) => !isRemoteMcpServer(s))) {
+      lines.push(
+        '    intentionally NOT confined to the bundle: a server\'s command, args, env, and cwd are written ' +
+          'verbatim and may point anywhere on this machine — unlike hooks, which are confined to the capability bundle root'
+      );
+    }
     for (const s of disclosure.mcpServers) {
       // TRUST2-2 (#1459): a non-stdio (http/sse) server connects to a URL; disclose the endpoint, not
       // a (nonexistent) command. A stdio server discloses command + args as before.
-      const isRemote = (s.transport === 'http' || s.transport === 'sse') || (!s.command && !!s.url);
+      const isRemote = isRemoteMcpServer(s);
       const name = renderValueForPrompt(s.name);
       if (isRemote) {
         const t = s.transport ? renderValueForPrompt(s.transport) : 'http';
@@ -1635,7 +1690,28 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       lines.push(`    - ${renderValueForPrompt(a)}`);
     }
   }
+  if (integrity) lines.push(integrity);
   return lines;
+}
+
+/**
+ * #3514 (F21c): the one-line integrity status for the consent prompt, or null when the caller
+ * supplied no `integrityPin` (legacy — no line, byte-identical output). GSD-authored literals,
+ * never manifest data — no escaping needed. A consent-prompt claim must be EXACT: a git
+ * commit-pinned source renders its own line, never "sha512 pin" — no sha512 was supplied
+ * (isolated review finding).
+ */
+function integrityStatusLine(disclosure: Disclosure): string | null {
+  if (disclosure.integrityStatus === 'pinned') {
+    return '  content: sha512 pin supplied and verified before staging';
+  }
+  if (disclosure.integrityStatus === 'commit-pinned') {
+    return '  content: pinned to a git commit, checked out before staging';
+  }
+  if (disclosure.integrityStatus === 'unverified') {
+    return '  content: NO PINNED HASH — staged unverified (a computed sha512 is recorded in the ledger at install)';
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

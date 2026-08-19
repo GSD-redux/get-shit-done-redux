@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-core",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "GSD Core is a meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
   "main": ".opencode/plugins/gsd-core.js",
   "bin": {
@@ -28,6 +28,7 @@
     "!scripts/affected-tests-lib.cjs",
     "!scripts/run-affected-tests.cjs",
     "!scripts/lint-no-adhoc-regex-escape.cjs",
+    "!scripts/lint-allow-test-rule-refs.cjs",
     "pi",
     "vscode"
   ],
@@ -88,6 +89,7 @@
   },
   "scripts": {
     "sync:launcher": "node scripts/sync-runtime-launcher.cjs",
+    "check:contract-drift": "node scripts/check-contract-drift.cjs",
     "check:env": "node scripts/check-env.cjs",
     "check:alias-drift": "node scripts/check-alias-drift.cjs",
     "check:identity-drift": "node scripts/lint-package-identity-drift.cjs",
@@ -117,7 +119,7 @@
     "lint:table-schema-drift": "node scripts/lint-table-schema-drift.cjs",
     "lint:frontmatter-scalar-broad-grep": "node scripts/lint-frontmatter-scalar-broad-grep.cjs",
     "lint:removed-but-needed": "node scripts/lint-removed-but-needed.cjs",
-    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-emitted-drift-ack.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs && node scripts/lint-example-parser-parity.cjs && node scripts/lint-docs-command-form.cjs && node scripts/lint-plan-count-drift.cjs && node scripts/lint-milestone-window-drift.cjs && node scripts/lint-phase-enumeration-drift.cjs && node scripts/lint-planning-prompt-drift.cjs && node scripts/lint-completion-ratio-drift.cjs && node scripts/lint-state-field-drift.cjs && node scripts/lint-state-write-path-drift.cjs && node scripts/lint-completion-predicate-drift.cjs && node scripts/lint-planning-snapshot-bypass-drift.cjs && node scripts/lint-health-diagnostic-rule-table.cjs && node scripts/lint-planning-artifact-writer-drift.cjs && node scripts/lint-frontmatter-scalar-broad-grep.cjs && node scripts/lint-removed-but-needed.cjs && node scripts/lint-no-adhoc-regex-escape.cjs && node scripts/lint-vendored-deps.cjs",
+    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-emitted-drift-ack.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs && node scripts/lint-example-parser-parity.cjs && node scripts/lint-docs-command-form.cjs && node scripts/lint-plan-count-drift.cjs && node scripts/lint-milestone-window-drift.cjs && node scripts/lint-phase-enumeration-drift.cjs && node scripts/lint-planning-prompt-drift.cjs && node scripts/lint-unreachable-guard-drift.cjs && node scripts/lint-completion-ratio-drift.cjs && node scripts/lint-state-field-drift.cjs && node scripts/lint-state-write-path-drift.cjs && node scripts/lint-completion-predicate-drift.cjs && node scripts/lint-planning-snapshot-bypass-drift.cjs && node scripts/lint-health-diagnostic-rule-table.cjs && node scripts/lint-planning-artifact-writer-drift.cjs && node scripts/lint-frontmatter-scalar-broad-grep.cjs && node scripts/lint-removed-but-needed.cjs && node scripts/lint-no-adhoc-regex-escape.cjs && node scripts/lint-vendored-deps.cjs && npm run lint:hooks-runtime-build-seam && node scripts/check-contract-drift.cjs",
     "lint:allow-test-rule-refs": "node scripts/lint-allow-test-rule-refs.cjs",
     "lint:regression-names": "node scripts/lint-regression-test-names.cjs",
     "lint:descriptions": "node scripts/lint-descriptions.cjs",
@@ -130,6 +132,7 @@
     "lint:qa-smells": "node scripts/qa-smell-ratchet.cjs",
     "lint:legacy-name": "node scripts/lint-legacy-dir-name.cjs",
     "lint:docs-command-form": "node scripts/lint-docs-command-form.cjs",
+    "lint:hooks-runtime-build-seam": "node scripts/lint-hooks-runtime-build-seam.cjs",
     "ci:test-scope": "node scripts/ci-test-scope.cjs",
     "changeset": "node scripts/changeset/new.cjs",
     "changelog:render": "node scripts/changeset/cli.cjs render",

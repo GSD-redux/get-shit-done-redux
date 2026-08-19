@@ -514,6 +514,26 @@ describe('readInstallManifest — manifest schema (#2872 R1-R21)', () => {
     });
     assert.strictEqual(readInstallManifest(dir).runtime, runtime);
   });
+
+  // R27 (regression, #2873 test-matrix row B9) — valid JSON that parses to a
+  // non-object top-level value must degrade to "absent", identically to R1,
+  // on every JS typeof-'object' member: `0`, a string, `true`, `null`
+  // (JSON.parse('null') is a real value), and — the one the `typeof !==
+  // 'object'` guard alone misses, since `typeof [] === 'object'` in JS — a
+  // bare array. Found while implementing #2873's shadow-report test matrix:
+  // `[]` was misread as manifestVersion 1 (a v1 install), reporting a
+  // completely absent manifest as "installed". `readInstallManifest` now
+  // explicitly excludes `Array.isArray` from the object-shape check.
+  for (const raw of ['0', '"a string"', 'true', 'null', '[]']) {
+    test(`R27: a valid-JSON, non-object manifest body (${raw}) reads as absent`, () => {
+      writeRawManifest(dir, raw);
+      const result = readInstallManifest(dir);
+      assert.strictEqual(result.manifestVersion, null, `${raw}: manifestVersion must be null, not a v1 guess`);
+      assert.strictEqual(result.runtime, null);
+      assert.strictEqual(result.scope, null);
+      assert.deepStrictEqual(result.files, {});
+    });
+  }
 });
 
 describe('writeManifest — scope + runtime recording (#2872 W1-W9)', () => {

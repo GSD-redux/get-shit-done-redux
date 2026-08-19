@@ -50,9 +50,11 @@ const {
   findSeamBypasses,
   findPromptSeamUses,
   findPolicyDispatchDrift,
+  findUnstrippedContentWrites,
   applyRatchet,
   loadBaseline,
   buildBaselineEntries,
+  collect,
   SEAM_OWNER_FILE,
   SEAM_OWNER_EXEMPT_FUNCTIONS,
   EXECUTOR_FILE,
@@ -255,18 +257,23 @@ describe('D8 — comments are not drift', () => {
 
 describe('D9 — owner functions are exempt', () => {
   test('guard: owner functions are exempt', () => {
-    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('readModifyWriteStateMd'));
+    // #3469: `readModifyWriteStateMd` now calls the single
+    // `syncAndPreserveStateMd` symbol rather than assembling the two seam
+    // calls itself, so it needs no exemption — `syncAndPreserveStateMd` is
+    // the sole legitimate place `syncStateFrontmatter(` and
+    // `applyPostSyncPreservation(` appear together (the composition every
+    // OTHER caller, including `readModifyWriteStateMd`, now routes through).
+    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('syncAndPreserveStateMd'));
 
     const text = [
-      'function readModifyWriteStateMd(cwd) {',
-      '  const modified = compute();',
-      '  writeStateMd(statePath, modified, cwd);',
-      '  return modified;',
+      'function syncAndPreserveStateMd(originalContent, transformedContent, statePath, cwd, resync) {',
+      '  const synced = syncStateFrontmatter(transformedContent, cwd);',
+      '  return applyPostSyncPreservation(originalContent, transformedContent, synced, statePath, resync);',
       '}',
     ].join('\n');
 
-    // The seam's own internal plumbing (the I/O wrapper calling the pure
-    // sync stage) is not a bypass.
+    // The seam's own internal plumbing (the one owned composition —
+    // sync then post-sync preservation) is not a bypass.
     assert.deepStrictEqual(findSeamBypasses(SEAM_OWNER_FILE, text), []);
   });
 });
@@ -562,5 +569,193 @@ describe('D15 — file (and field) values are sanitized at construction', () => 
     assert.strictEqual(out[0].field, 'status\\u202e\\x9b');
     assert.ok(!out[0].field.includes(RLO));
     assert.ok(!out[0].field.includes(C1_CSI));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 2 (#3469) — ADR-3408 §8.3 Matrix section E: guard rows closing
+// Phase 1's declared known gap (Axis 3, §8.3(b)) and pinning the ratchet's
+// new 2-permanent-entry shape (Amendment 2). Test matrix:
+// .gsd/phase/refactor-3469-one-write-seam/50-test-matrix.md
+//
+// E4/E5 are the false-positive guards — the exact shape that measured 29
+// false positives to 1 true positive in Phase 1's naive co-occurrence
+// approximation (see this guard's own header, Axis 3). E7 is the inverse: a
+// sanctioned-permanent entry vanishing from the observed tree must FAIL, not
+// silently reach zero — a guard reaching zero here would only do so by
+// having stopped looking at a real writer.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('E1 — a re-assembled composition at a new call site is detected', () => {
+  test('guard: a call site invoking syncStateFrontmatter and applyPostSyncPreservation directly (bypassing syncAndPreserveStateMd) is caught on BOTH calls', () => {
+    // Finding 3's exact shape (ADR-3408 Amendment 2): every step calls an
+    // owner, so neither call alone is undeclared — but assembling the PAIR
+    // at a call site outside the seam composition is the re-derivation §8.3
+    // forbids by name. Synthetic: the real instance of this shape
+    // (cmdPhaseComplete's pre-#3469 adapter) was fixed by this same phase.
+    const text = [
+      'function cmdReassembledAdapter(cwd, statePath, stateContent) {',
+      '  let synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);',
+      '  synced = applyPostSyncPreservation(originalStateContent, stateContent, synced, statePath, true, authoritativeFm);',
+      '  return synced;',
+      '}',
+    ].join('\n');
+
+    const observed = findSeamBypasses(OTHER_FILE, text);
+    assert.strictEqual(observed.length, 2, 'both re-assembled stages must be caught, not just one');
+    assert.deepStrictEqual(observed.map((f) => f.symbol).sort(), ['applyPostSyncPreservation', 'syncStateFrontmatter']);
+
+    const findings = applyRatchet(observed, { entries: [] });
+    assert.strictEqual(findings.length, 2);
+    assert.ok(findings.every((f) => f.reason === REASON.SEAM_BYPASS_UNRECORDED));
+  });
+});
+
+describe('E2 — a legitimate single call to the composition is not detected', () => {
+  test('guard: calling syncAndPreserveStateMd (the ONE write-seam composition) is not a bypass', () => {
+    // Verbatim from src/milestone.cts's real cmdMilestoneComplete call site
+    // (ADR-3408 Amendment 2's third caller).
+    const text = [
+      '      const finalContent = syncAndPreserveStateMd(',
+      '        originalStateContent,',
+      '        result.content,',
+      '        statePath,',
+      '        cwd,',
+      '        {',
+      '          resync: true,',
+      '          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,',
+      '          divergedFields,',
+      '        },',
+      '      );',
+    ].join('\n');
+
+    assert.deepStrictEqual(findSeamBypasses(OTHER_FILE, text), []);
+  });
+});
+
+describe('E3 — a patchCore-style frontmatter write is detected (closes the Phase 1 declared gap)', () => {
+  test('guard: stateReplaceField over unstripped content with a variable field name is caught', () => {
+    // The pre-Phase-2 shape #3469 fixed: patchCore ran stateReplaceField
+    // over content that was never stripped of frontmatter, letting a
+    // lowercase/frontmatter-shaped patch key rewrite the YAML block
+    // directly, outside FIELD_CLASSIFICATION.
+    const text = [
+      'function patchCoreOld(content, intent) {',
+      '  let modified = content;',
+      '  for (const [field, value] of Object.entries(intent.patches)) {',
+      '    const replaced = stateReplaceField(modified, field, value);',
+      '    if (replaced !== null) modified = replaced;',
+      '  }',
+      '  return { content: modified };',
+      '}',
+    ].join('\n');
+
+    const out = findUnstrippedContentWrites(EXECUTOR_FILE, text);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].reason, REASON.UNSTRIPPED_CONTENT_WRITE);
+    assert.strictEqual(out[0].line, 4);
+  });
+});
+
+describe('E4 — updateCore\'s strip-then-replace is NOT detected', () => {
+  test('guard: the real updateCore call site (content stripped first) is not flagged', () => {
+    // Verbatim from src/state-transition.cts's real updateCore — the shape
+    // Phase 1 measured a naive co-occurrence detector at 29 false positives
+    // to 1 true positive against; this is one of the 29.
+    const text = [
+      'function updateCore(content, intent) {',
+      '  const existingFm = extractFrontmatter(content) as Record<string, unknown>;',
+      '  const hasFrontmatter = Object.keys(existingFm).length > 0;',
+      '  const body = stripFrontmatter(content);',
+      '  const result = stateReplaceField(body, intent.field, intent.value);',
+      '  if (result === null) {',
+      '    return { content, updated: [], data: { updated: false } };',
+      '  }',
+      '}',
+    ].join('\n');
+
+    assert.deepStrictEqual(findUnstrippedContentWrites(EXECUTOR_FILE, text), []);
+  });
+});
+
+describe('E5 — sectionBody-scoped stateReplaceField calls are NOT detected', () => {
+  test('guard: a literal field name against a non-stripFrontmatter-derived section slice is not flagged', () => {
+    // Verbatim from src/state-transition.cts's real mutateCurrentPositionFirstTime:
+    // sectionBody is a Current-Position section slice (frontmatter-free by
+    // construction — it comes from body.slice(...), never from raw content),
+    // and the field name is a fixed Title-Case literal that can never
+    // collide with a lowercase/snake_case YAML key. One of the ~20 calls
+    // Phase 1's naive detector over-reported.
+    const text = [
+      'function mutateCurrentPositionFirstTime(body, intent, today, updated) {',
+      '  const span = locateCurrentPosition(body);',
+      '  if (span === null) return body;',
+      '  let sectionBody = body.slice(span.start, span.end);',
+      '  const phaseLabel = `${intent.phaseNumber} — EXECUTING`;',
+      '  if (/^Phase:/m.test(sectionBody)) {',
+      '    sectionBody = sectionBody.replace(/^Phase:.*$/m, `Phase: ${phaseLabel}`);',
+      '  } else {',
+      "    const replaced = stateReplaceField(sectionBody, 'Phase', phaseLabel);",
+      '    if (replaced !== null) sectionBody = replaced;',
+      '  }',
+      '}',
+    ].join('\n');
+
+    assert.deepStrictEqual(findUnstrippedContentWrites(EXECUTOR_FILE, text), []);
+  });
+});
+
+describe('E6 — ratchet: exactly 2 sanctioned-permanent entries remain (limit)', () => {
+  test('guard: the real baseline has exactly 2 permanent entries, and the real tree matches it with zero findings', () => {
+    const baseline = loadBaseline();
+    assert.strictEqual(
+      baseline.entries.length,
+      2,
+      'ADR-3408 Amendment 2: the ratchet holds exactly 2 sanctioned-permanent entries, not 0 — ' +
+      'Phase 4 does not drive this baseline to empty',
+    );
+    for (const entry of baseline.entries) {
+      assert.strictEqual(entry.owner, 'sanctioned-permanent');
+    }
+    const { seamFindings } = collect();
+    const findings = applyRatchet(seamFindings, baseline);
+    assert.deepStrictEqual(findings, [], 'the real tree must match the 2-entry baseline exactly');
+  });
+});
+
+describe('E7 — ratchet: a sanctioned-permanent entry disappearing fails (limit-1)', () => {
+  test('guard: removing one of the two permanent entries from the observed tree is reported STALE, not silently accepted', () => {
+    const baseline = loadBaseline();
+    assert.strictEqual(baseline.entries.length, 2);
+    // Simulate one sanctioned entry (cmdStateSync's writeStateMd call)
+    // vanishing from the observed tree — exactly the shape §8.3's closed
+    // exception list forbids: a sanctioned exception may not silently
+    // disappear (a guard reaching zero here would only do so by having
+    // stopped looking at a real writer).
+    const vanished = baseline.entries[0];
+    const stillPresent = baseline.entries[1];
+    const observed = [{ file: stillPresent.file, source: stillPresent.source, symbol: stillPresent.symbol, line: 1 }];
+
+    const findings = applyRatchet(observed, baseline);
+    assert.strictEqual(findings.length, 1);
+    assert.strictEqual(findings[0].reason, REASON.BASELINE_ENTRY_STALE);
+    assert.strictEqual(findings[0].file, vanished.file);
+    assert.strictEqual(findings[0].observed, 0);
+    assert.strictEqual(findings[0].acknowledged, 1);
+  });
+});
+
+describe('E8 — ratchet: a 3rd bypass beside the 2 sanctioned entries fails as unrecorded (limit+1)', () => {
+  test('guard: a new, unacknowledged writeStateMd call alongside the 2 sanctioned entries fails', () => {
+    const baseline = loadBaseline();
+    assert.strictEqual(baseline.entries.length, 2);
+    const matchingObserved = baseline.entries.map((e) => ({ file: e.file, source: e.source, symbol: e.symbol, line: 1 }));
+    const newBypass = { file: OTHER_FILE, source: 'writeStateMd(statePath, modified, cwd);', symbol: 'writeStateMd', line: 42 };
+    const observed = [...matchingObserved, newBypass];
+
+    const findings = applyRatchet(observed, baseline);
+    assert.strictEqual(findings.length, 1);
+    assert.strictEqual(findings[0].reason, REASON.SEAM_BYPASS_UNRECORDED);
+    assert.strictEqual(findings[0].file, OTHER_FILE);
   });
 });

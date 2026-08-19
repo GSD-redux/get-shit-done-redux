@@ -2215,6 +2215,52 @@ describe('stats command', () => {
     assert.strictEqual(stats.plan_percent, 67);
   });
 
+  // #3473 F2 (companion to #3357): determinePhaseStatus now resolves its
+  // *-VERIFICATION.md via the shared resolveVerificationFile resolver instead
+  // of a hand-rolled `.find()` over unsorted readdir() order. Before this fix,
+  // which of a canonical report and an ad-hoc `-CORRECTION-VERIFICATION.md`
+  // worksheet "won" was filesystem-dependent; the canonical report must now
+  // win deterministically regardless of directory-listing order.
+  test('#3473 F2: phase status resolves the canonical report over a -CORRECTION- worksheet, not readdir order', () => {
+    const p1 = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '03-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '03-01-SUMMARY.md'), '# Summary');
+    // The ad-hoc worksheet reports gaps_found; if it won the pick, the phase
+    // would read 'Executed', not 'Complete'.
+    fs.writeFileSync(path.join(p1, '03-CORRECTION-VERIFICATION.md'), '---\nstatus: gaps_found\n---\n# Correction worksheet');
+    fs.writeFileSync(path.join(p1, '03-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stats = JSON.parse(result.output);
+    const phase = stats.phases.find(p => p.number === '03');
+    assert.ok(phase, 'phase 03 must be present in stats output');
+    assert.strictEqual(phase.status, 'Complete', 'the canonical 03-VERIFICATION.md must win over the CORRECTION worksheet');
+  });
+
+  // #3511 BLOCKER-2 regression: a cross-phase stray VERIFICATION.md must not
+  // resolve as THIS phase's report. Phase 03's directory holds only a
+  // '04-VERIFICATION.md' (belongs to phase 04); an unscoped resolver would
+  // pick it up as phase 03's own report and read 'Complete'.
+  test('#3511: phase status is not Complete off a cross-phase stray VERIFICATION.md', () => {
+    const p1 = path.join(tmpDir, '.planning', 'phases', '03-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '03-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(path.join(p1, '03-01-SUMMARY.md'), '# Summary');
+    fs.writeFileSync(path.join(p1, '04-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification');
+
+    const result = runGsdTools('stats', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stats = JSON.parse(result.output);
+    const phase = stats.phases.find(p => p.number === '03');
+    assert.ok(phase, 'phase 03 must be present in stats output');
+    assert.notStrictEqual(phase.status, 'Complete',
+      `phase 03 must not report Complete off phase 04's report; got: ${phase.status}`);
+  });
+
   test('counts requirements from REQUIREMENTS.md', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'REQUIREMENTS.md'),
@@ -2600,6 +2646,530 @@ describe('check-commit command', () => {
     assert.ok(!result.success, 'should block commit');
     assert.ok(result.error.includes('.planning/'), 'error should mention .planning/ files');
     assert.ok(result.error.includes('unstage'), 'error should suggest unstage command');
+  });
+
+  // #3588 F1: cmdCheckCommit must resolve the SAME phase_commit_docs.<phase-id>
+  // tier `gsd-tools query commit` (cmdCommit) already honors (#3587/#3601).
+  // Before this fix, cmdCheckCommit read only project-level `commit_docs`, so
+  // a phase with `phase_commit_docs.<n>: true` under project `commit_docs:
+  // false` was ALLOWED by `query commit` and BLOCKED by this guard — the
+  // hook shipped in this same branch shells out to check-commit, so that
+  // contradiction was live. C4/C5 exercise both directions of the override;
+  // both fail against the pre-fix tree (project-level-only check).
+  test('C4 (#3588/#3587): project commit_docs:false + per-phase true ALLOWS the commit', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false, phase_commit_docs: { '03': true } })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-widgets'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '03-widgets', 'SUMMARY.md'), '# Three');
+    gitOrThrow(['add', '.planning/phases/03-widgets/SUMMARY.md'], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(
+      result.success,
+      `phase_commit_docs.03:true must allow the commit even though project commit_docs is false: ${result.error || ''}`,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.allowed, true);
+  });
+
+  test('C5 (#3588/#3587): project commit_docs:true + per-phase false BLOCKS the commit', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: true, phase_commit_docs: { '03': false } })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-widgets'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '03-widgets', 'SUMMARY.md'), '# Three');
+    gitOrThrow(['add', '.planning/phases/03-widgets/SUMMARY.md'], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'phase_commit_docs.03:false must block the commit even though project commit_docs is true');
+    assert.ok(result.error.includes('03-widgets/SUMMARY.md'), result.error);
+  });
+
+  // #3588 C6: staged paths spanning two phase directories with DIFFERENT
+  // phase_commit_docs values must resolve against the FIRST phase (in
+  // detectPhaseNumberFromFiles's staged-path order) — the same first-match
+  // rule cmdCommit is pinned to (see the folded #3587 `multiPhaseFilesResolves
+  // AgainstFirstPhase` test above). This replaces the pre-fix baseline test,
+  // which could only assert the phase-blind "blocks everything" behavior
+  // because the per-phase tier did not exist here yet.
+  test('C6 (#3588): staged paths spanning two phase directories resolve against the FIRST phase, matching cmdCommit', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false, phase_commit_docs: { '01': true, '02': false } })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-first'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-second'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '01-first', 'SUMMARY.md'), '# One');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '02-second', 'SUMMARY.md'), '# Two');
+    gitOrThrow(
+      ['add', '.planning/phases/01-first/SUMMARY.md', '.planning/phases/02-second/SUMMARY.md'],
+      { cwd: tmpDir }
+    );
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(
+      result.success,
+      `phase 01 (first match) resolves phase_commit_docs.01:true, so the commit must be allowed despite phase 02:false: ${result.error || ''}`,
+    );
+  });
+
+  // #3588 F2: `git diff --cached --name-only` (no `-z`) C-style-quotes any
+  // path containing a non-ASCII byte or another special character — a staged
+  // `.planning/café.md` is reported as `".planning/caf\303\251.md"`, which
+  // does not start with `.planning/`, so the pre-fix guard MISSED it and
+  // allowed the commit — a false negative in the harm direction this guard
+  // exists to prevent. These MUST fail against the pre-fix (LF, no `-z`)
+  // tree and pass once `-z` + NUL-split lands.
+  test('F2 (#3588): a staged .planning/ file with a non-ASCII name is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const unicodeName = '.planning/café.md';
+    fs.writeFileSync(path.join(tmpDir, unicodeName), '# State');
+    gitOrThrow(['add', unicodeName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/café.md must be detected and block the commit');
+    assert.ok(result.error.includes('café.md'), result.error);
+  });
+
+  test('F2 (#3588): a staged .planning/ file with a space in its name is detected and blocked', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const spacedName = '.planning/with space.md';
+    fs.writeFileSync(path.join(tmpDir, spacedName), '# State');
+    gitOrThrow(['add', spacedName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/ file with a space in its name must be detected and block the commit');
+    assert.ok(result.error.includes('with space.md'), result.error);
+  });
+
+  test('F2 (#3588): a staged .planning/ file with a quote character in its name is detected and blocked', (t) => {
+    // `"` is a reserved NTFS character — a file named `with"quote.md` cannot
+    // exist on Windows at all, so the fixture itself is unrepresentable
+    // there. This is not a gap in the guard's Windows behavior; it is an
+    // input that Windows filesystems reject outright. Do not re-enable this
+    // on win32 — see #3588.
+    if (process.platform === 'win32') {
+      t.skip('a `"` filename is illegal on Windows filesystems (#3588); fixture cannot be created');
+      return;
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const quotedName = '.planning/with"quote.md';
+    fs.writeFileSync(path.join(tmpDir, quotedName), '# State');
+    gitOrThrow(['add', quotedName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(!result.success, 'a staged .planning/ file with a quote character in its name must be detected and block the commit');
+    assert.ok(result.error.includes('quote.md'), result.error);
+  });
+
+  // #3588 C7 (flipped): the earlier pass's C7 test pinned a synthetic
+  // top-level filename (`.planning\STATE.md`, backslash as a literal
+  // character in a single path component, not a real nested directory — git
+  // never uses backslash as a tree separator, on any platform) as evidence
+  // that `f.startsWith('.planning\\')` was unreachable, and left the assertion
+  // at "currently allowed" pending a fix. That branch is now removed as dead
+  // code (git's plumbing output is always `/`-normalized, so a real Windows
+  // `.planning\<file>` path never reaches this filter as a `.planning\`
+  // prefix). This replaces it with the REAL analog of the same class of bug:
+  // a genuine `.planning/` file whose name merely CONTAINS a literal
+  // backslash character. Without `-z` that name is also C-style-quoted
+  // (`".planning/back\\slash.md"`) and missed; with `-z` it is read as raw,
+  // unquoted bytes and correctly detected via the plain `.planning/` prefix
+  // check alone — no backslash-specific branch needed.
+  test('C7 (#3588, flipped): a staged .planning/ file whose name contains a backslash character is detected and blocked', (t) => {
+    // `\` is the Windows path separator, not a legal character inside a
+    // single filename component — a file literally named `back\slash.md`
+    // cannot be created on Windows filesystems, so the fixture itself is
+    // unrepresentable there. This is not a gap in the guard's Windows
+    // behavior; it is an input Windows rejects outright. Do not re-enable
+    // this on win32 — see #3588.
+    if (process.platform === 'win32') {
+      t.skip('a `\\` filename is illegal on Windows filesystems (#3588); fixture cannot be created');
+      return;
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ commit_docs: false })
+    );
+    const backslashInName = '.planning/back\\slash.md';
+    fs.writeFileSync(path.join(tmpDir, backslashInName), '# State');
+    gitOrThrow(['add', backslashInName], { cwd: tmpDir });
+
+    const result = runGsdTools('check-commit', tmpDir);
+    assert.ok(
+      !result.success,
+      'a staged .planning/ file whose name contains a backslash character must be detected and block the commit',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// commit-docs-guard: opt-in pre-commit hook (#3588)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
+  const { createTempGitProject, TEST_ENV_BASE } = require('./helpers.cjs');
+  const { runHook } = require('./helpers/process-seam.cjs');
+  const REPO_ROOT = path.join(__dirname, '..');
+  const HOOK_MARKER = '# gsd-core:commit-docs-guard';
+  let tmpDir;
+  let hookPath;
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+    const enableResult = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(enableResult.success, `enable failed: ${enableResult.error}`);
+    hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('A1: hook script carries the gsd-core:commit-docs-guard marker', () => {
+    const content = fs.readFileSync(hookPath, 'utf8');
+    assert.ok(content.includes(HOOK_MARKER), 'written hook must carry the marker line');
+  });
+
+  test('A2: hook script uses LF-only line endings (boundary — Windows)', () => {
+    const content = fs.readFileSync(hookPath, 'utf8');
+    assert.ok(!content.includes('\r'), 'a CRLF shebang is not executable under Git Bash');
+  });
+
+  test('A3: hook file is executable after enable', () => {
+    if (process.platform === 'win32') return; // exec bit is not the Windows-relevant assertion
+    const mode = fs.statSync(hookPath).mode;
+    assert.ok((mode & 0o111) !== 0, 'pre-commit hook must carry the executable bit');
+  });
+
+  test('A4: hook exits zero when the guard allows', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ commit_docs: true }));
+    const result = runHook(hookPath, [], {
+      interpreter: 'bash',
+      cwd: tmpDir,
+      env: { ...process.env, ...TEST_ENV_BASE, RUNTIME_DIR: REPO_ROOT },
+    });
+    assert.strictEqual(result.exitCode, 0, `stdout=${result.stdout} stderr=${result.stderr}`);
+  });
+
+  test('A5: hook exits non-zero and names the staged files when the guard blocks', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ commit_docs: false }));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State');
+    gitOrThrow(['add', '.planning/STATE.md'], { cwd: tmpDir });
+    const result = runHook(hookPath, [], {
+      interpreter: 'bash',
+      cwd: tmpDir,
+      env: { ...process.env, ...TEST_ENV_BASE, RUNTIME_DIR: REPO_ROOT },
+    });
+    assert.notStrictEqual(result.exitCode, 0, 'hook must exit non-zero when the guard blocks');
+    assert.ok(result.stderr.includes('.planning/STATE.md'), result.stderr);
+  });
+});
+
+describe('commit-docs-guard enable/disable (#3588 B1-B15)', () => {
+  const { createTempGitProject } = require('./helpers.cjs');
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir) cleanup(tmpDir);
+    tmpDir = undefined;
+  });
+
+  test('B1: enable writes an executable hook and reports success', () => {
+    tmpDir = createTempGitProject();
+    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(result.success, result.error);
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    assert.ok(fs.existsSync(hookPath));
+    if (process.platform !== 'win32') {
+      assert.ok((fs.statSync(hookPath).mode & 0o111) !== 0);
+    }
+  });
+
+  test('B2: enable refuses to clobber an existing foreign pre-commit hook', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const foreignContent = '#!/bin/sh\necho foreign\n';
+    fs.writeFileSync(hookPath, foreignContent);
+    fs.chmodSync(hookPath, 0o755);
+    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(!result.success, 'enable must refuse to overwrite a foreign hook');
+    assert.ok(result.error.includes(hookPath), result.error);
+    assert.strictEqual(fs.readFileSync(hookPath, 'utf8'), foreignContent, 'foreign hook must be byte-unchanged');
+  });
+
+  test('B3: enable twice is idempotent — no duplicated content', () => {
+    tmpDir = createTempGitProject();
+    const r1 = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(r1.success, r1.error);
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const first = fs.readFileSync(hookPath, 'utf8');
+    const r2 = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(r2.success, r2.error);
+    const second = fs.readFileSync(hookPath, 'utf8');
+    assert.strictEqual(second, first, 'a second enable must not change or duplicate content');
+    const markerCount = (second.match(/# gsd-core:commit-docs-guard/g) || []).length;
+    assert.strictEqual(markerCount, 1, 'exactly one marker line, never duplicated');
+  });
+
+  test('B4: disable removes our hook', () => {
+    tmpDir = createTempGitProject();
+    const enableResult = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(enableResult.success, enableResult.error);
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    assert.ok(fs.existsSync(hookPath));
+    const result = runGsdTools('commit-docs-guard disable --raw', tmpDir);
+    assert.ok(result.success, result.error);
+    assert.ok(!fs.existsSync(hookPath));
+  });
+
+  test('B5: disable refuses to remove a foreign hook', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const foreignContent = '#!/bin/sh\necho foreign\n';
+    fs.writeFileSync(hookPath, foreignContent);
+    fs.chmodSync(hookPath, 0o755);
+    const result = runGsdTools('commit-docs-guard disable --raw', tmpDir);
+    assert.ok(!result.success, 'disable must refuse to remove a foreign hook');
+    assert.strictEqual(fs.readFileSync(hookPath, 'utf8'), foreignContent, 'foreign hook must be byte-unchanged');
+  });
+
+  test('B6: disable with no hook present is a success no-op, not an error', () => {
+    tmpDir = createTempGitProject();
+    const result = runGsdTools('commit-docs-guard disable --raw', tmpDir);
+    assert.ok(result.success, result.error);
+  });
+
+  test('B7: enable outside a git repository fails cleanly, nothing written', () => {
+    tmpDir = createTempDir();
+    const before = fs.readdirSync(tmpDir);
+    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(!result.success, 'enable must fail outside a git repository');
+    assert.deepStrictEqual(fs.readdirSync(tmpDir), before, 'nothing may be written');
+  });
+
+  test('B8: enable resolves the real hooks dir when .git is a worktree file', (t) => {
+    tmpDir = createTempGitProject();
+    const worktreeParent = createTempDir();
+    t.after(() => cleanup(worktreeParent));
+
+    const wtDir = path.join(worktreeParent, 'wt');
+    gitOrThrow(['worktree', 'add', wtDir, '-b', 'gsd-test-commit-docs-guard-wt'], { cwd: tmpDir });
+    assert.ok(fs.statSync(path.join(wtDir, '.git')).isFile(), 'precondition: .git must be a file in a linked worktree');
+
+    const result = runGsdTools('commit-docs-guard enable --raw', wtDir);
+    assert.ok(result.success, result.error);
+    // Hooks are shared across worktrees in the COMMON git dir — never a
+    // literal `<worktree>/.git/hooks`.
+    assert.ok(!fs.existsSync(path.join(wtDir, '.git', 'hooks')), 'must never write a literal <worktree>/.git/hooks path');
+    const commonHookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    assert.ok(fs.existsSync(commonHookPath), 'hook must land in the real (common) hooks directory');
+  });
+
+  test('B9: enable refuses when core.hooksPath is already set', () => {
+    tmpDir = createTempGitProject();
+    gitOrThrow(['config', 'core.hooksPath', 'custom-hooks'], { cwd: tmpDir });
+    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(!result.success, 'enable must refuse when core.hooksPath is set');
+    assert.ok(result.error.includes('core.hooksPath'), result.error);
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'custom-hooks', 'pre-commit')), 'must not write into the hooksPath-configured dir either');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'pre-commit')), 'must not write the ordinary hooks dir either');
+  });
+
+  test('B10: marker detection tolerates a user-appended line', () => {
+    tmpDir = createTempGitProject();
+    const r1 = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(r1.success, r1.error);
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.appendFileSync(hookPath, '\n# a user comment appended after install\n');
+
+    const r2 = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(r2.success, `enable must still recognize the edited hook as ours: ${r2.error}`);
+    assert.ok(
+      fs.readFileSync(hookPath, 'utf8').includes('a user comment appended after install'),
+      'enable must not silently discard the user edit on a recognized hook'
+    );
+
+    const r3 = runGsdTools('commit-docs-guard disable --raw', tmpDir);
+    assert.ok(r3.success, `disable must still recognize the edited hook as ours: ${r3.error}`);
+    assert.ok(!fs.existsSync(hookPath));
+  });
+
+  test('B11: no subcommand at all hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard'], tmpDir);
+    assert.ok(!result.success, 'missing subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'missing subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a missing subcommand');
+  });
+
+  test('B12: an unknown subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', 'bogus'], tmpDir);
+    assert.ok(!result.success, 'an unrecognized subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'an unrecognized subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for an unrecognized subcommand');
+  });
+
+  test('B13: an empty-string subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', ''], tmpDir);
+    assert.ok(!result.success, 'an empty-string subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'an empty-string subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for an empty-string subcommand');
+  });
+
+  test('B14: a whitespace-only subcommand hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', '   '], tmpDir);
+    assert.ok(!result.success, 'a whitespace-only subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'a whitespace-only subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a whitespace-only subcommand');
+  });
+
+  test('B15: a flag-shaped value in the subcommand position hits the unknown-subcommand routing guard', () => {
+    tmpDir = createTempGitProject();
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    const result = runGsdTools(['--json-errors', 'commit-docs-guard', '--enable'], tmpDir);
+    assert.ok(!result.success, 'a flag-shaped subcommand must not succeed');
+    assert.notStrictEqual(result.exitCode, 0, 'a flag-shaped subcommand must exit non-zero');
+    const parsed = JSON.parse(result.error);
+    assert.deepStrictEqual(Object.keys(parsed).sort(), ['message', 'ok', 'reason']);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.reason, 'sdk_unknown_command');
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, 'non-debug failure must not print a stack trace');
+    assert.ok(!fs.existsSync(hookPath), 'no hook may be written for a flag-shaped subcommand');
+  });
+});
+
+describe('commit-docs-guard real git commit wiring (#3588 D1-D3)', () => {
+  const { createTempGitProject, TEST_ENV_BASE } = require('./helpers.cjs');
+  const { runGit } = require('./helpers/process-seam.cjs');
+  const REPO_ROOT = path.join(__dirname, '..');
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+    const enableResult = runGsdTools('commit-docs-guard enable --raw', tmpDir);
+    assert.ok(enableResult.success, `enable failed: ${enableResult.error}`);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function stagePlanningFile(name) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', name), '# State\n');
+    gitOrThrow(['add', `.planning/${name}`], { cwd: tmpDir });
+  }
+
+  function commitEnv() {
+    // RUNTIME_DIR pins the hook's gsd_run resolution (the
+    // _runtime-launcher.snippet.sh preamble) to THIS checkout's own
+    // gsd-core/bin/gsd-tools.cjs rather than relying on an ambient PATH
+    // install or a config-dir fallback that would not exist in CI.
+    return { ...process.env, ...TEST_ENV_BASE, RUNTIME_DIR: REPO_ROOT };
+  }
+
+  function commitCount() {
+    return Number(gitOrThrow(['rev-list', '--count', 'HEAD'], { cwd: tmpDir }).trim());
+  }
+
+  test('D1: a real `git commit` is refused when commit_docs is false and .planning/ is staged', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ commit_docs: false }));
+    stagePlanningFile('STATE.md');
+    const before = commitCount();
+    const result = runGit(['commit', '-m', 'chore: should be refused'], { cwd: tmpDir, env: commitEnv() });
+    assert.notStrictEqual(result.exitCode, 0, `commit should have been refused; stdout=${result.stdout} stderr=${result.stderr}`);
+    assert.strictEqual(commitCount(), before, 'nothing should have been committed');
+  });
+
+  test('D2: a real `git commit` succeeds when commit_docs is true', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ commit_docs: true }));
+    stagePlanningFile('STATE.md');
+    const before = commitCount();
+    const result = runGit(['commit', '-m', 'chore: should succeed'], { cwd: tmpDir, env: commitEnv() });
+    assert.strictEqual(result.exitCode, 0, `commit should have succeeded; stdout=${result.stdout} stderr=${result.stderr}`);
+    assert.strictEqual(commitCount(), before + 1);
+  });
+
+  test('D3: disable actually unwires the hook — the same D1 scenario now succeeds', () => {
+    const disableResult = runGsdTools('commit-docs-guard disable --raw', tmpDir);
+    assert.ok(disableResult.success, disableResult.error);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ commit_docs: false }));
+    stagePlanningFile('STATE.md');
+    const before = commitCount();
+    const result = runGit(['commit', '-m', 'chore: allowed after disable'], { cwd: tmpDir, env: commitEnv() });
+    assert.strictEqual(result.exitCode, 0, `commit should have succeeded after disable; stdout=${result.stdout} stderr=${result.stderr}`);
+    assert.strictEqual(commitCount(), before + 1);
+  });
+});
+
+describe('commit-docs-guard default install scope guarantee (#3588 E2)', () => {
+  test('E2: the default install path wires nothing new — commit-docs-guard is opt-in only', () => {
+    // #3588 scope guarantee (40-design.md): bin/install.js wiring is
+    // explicitly OUT of scope. This is the regression lock for that
+    // narrowing — checked structurally (require()'d typed exports, never
+    // source-text grep) against the THREE surfaces that would make the hook
+    // install by default.
+    const { MANAGED_HOOKS } = require('../hooks/managed-hooks-registry.cjs');
+    assert.ok(
+      !MANAGED_HOOKS.some((h) => h.includes('commit-docs-guard')),
+      'commit-docs-guard must not be a MANAGED_HOOKS install-time hook'
+    );
+
+    // scripts/build-hooks.js HOOKS_TO_COPY is the single source of truth for
+    // both the shared hooks/dist/ bundle AND bin/install.js's
+    // INSTALLED_HOOK_FILES/GSD_UNINSTALL_HOOKS (see the "new hook-script
+    // registration invariants" ripple) — asserting against the exported
+    // array itself, not grepping either file's source text.
+    const { HOOKS_TO_COPY } = require('../scripts/build-hooks.js');
+    assert.ok(
+      !HOOKS_TO_COPY.includes('commit-docs-guard'),
+      'commit-docs-guard must not be copied into the shared hooks bundle'
+    );
+
+    const { GSD_UNINSTALL_HOOKS } = require('../bin/install.js');
+    assert.ok(
+      !GSD_UNINSTALL_HOOKS.includes('commit-docs-guard'),
+      'bin/install.js must not list commit-docs-guard among installed/uninstalled hook files'
+    );
   });
 });
 
@@ -3701,6 +4271,88 @@ description: Executes GSD phase plans
 Body of the agent.
 `;
 
+describe('#3533 effort sync: inherit means the key must not exist', () => {
+  test('10d: sync does not re-add a hand-stripped key when inherit is configured', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-absent-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITHOUT_EFFORT);
+    // Tier standard -> inherit.
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'high', standard: 'inherit', heavy: 'xhigh' } });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 0, `absent key + inherit is IN SYNC, not drift: ${JSON.stringify(result.changes)}`);
+    assert.equal(result.changes.length, 0, 'no change may be reported for an absent key under inherit');
+    const after = fs.readFileSync(path.join(agentsDir, 'gsd-executor.md'), 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'the effort: key must NOT be re-added');
+
+    cleanup(tmpDir);
+  });
+
+  test('10d: sync strips the key when inherit is configured and a value is present', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-strip-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    // Fixture carries its own name so the survivor assertion below is
+    // satisfiable (AGENT_WITH_EFFORT names gsd-planner — wrong file).
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), AGENT_WITH_EFFORT.replace('name: gsd-planner', 'name: gsd-executor'));
+    // #3531+#3533 combined: pin every TIER to inherit — a bare effort.default
+    // no longer reaches a tiered agent now that the config block merges over
+    // the built-in tier ladder (the manifest standard tier would answer 'high').
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'inherit', standard: 'inherit', heavy: 'inherit' } });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 1);
+    assert.equal(result.changes[0].agent, 'gsd-executor');
+    assert.equal(result.changes[0].from, 'medium');
+    assert.equal(result.changes[0].to, null, 'to: null is the typed IR for omission');
+    const after = fs.readFileSync(path.join(agentsDir, 'gsd-executor.md'), 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'the effort: line must be stripped');
+    assert.ok(after.includes('name: gsd-executor'), 'every other frontmatter line survives');
+    assert.ok(after.includes('Body of the agent.'), 'the body survives');
+
+    cleanup(tmpDir);
+  });
+
+  test('10d: strip preserves CRLF files and leaves comments and sibling keys intact', () => {
+    const tmpDir = makeTmpDir('effort-sync-inherit-crlf-');
+    const agentsDir = makeAgentsDir(tmpDir);
+    const crlfAgent = [
+      '---',
+      'name: gsd-executor',
+      '# a hand comment that must survive',
+      'effort: high',
+      'description: Executes GSD phase plans',
+      '---',
+      'Body.',
+      '',
+    ].join('\r\n');
+    const agentPath = path.join(agentsDir, 'gsd-executor.md');
+    fs.writeFileSync(agentPath, crlfAgent);
+    writePlanningConfig(tmpDir, { agent_overrides: { 'gsd-executor': 'inherit' } });
+
+    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+    const result = captureOutput(() =>
+      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+    );
+
+    assert.equal(result.synced, 1, `expected one strip: ${JSON.stringify(result.changes)}`);
+    const after = fs.readFileSync(agentPath, 'utf8');
+    assert.ok(!/^effort:/m.test(after), 'effort line gone');
+    assert.ok(after.includes('\r\n'), 'CRLF endings preserved');
+    assert.ok(after.includes('# a hand comment that must survive'), 'comment preserved');
+    assert.ok(/^description: Executes GSD phase plans\r?$/m.test(after), 'sibling key preserved');
+
+    cleanup(tmpDir);
+  });
+});
+
 describe('feat-488: effort sync command', () => {
   test('dry-run mode reports pending changes without writing files', () => {
     const tmpDir = makeTmpDir('effort-sync-dry-');
@@ -3772,7 +4424,10 @@ describe('feat-488: effort sync command', () => {
     const agentsDir = makeAgentsDir(tmpDir);
     const agentPath = path.join(agentsDir, 'gsd-executor.md');
     fs.writeFileSync(agentPath, AGENT_WITHOUT_EFFORT);
-    writePlanningConfig(tmpDir, { default: 'max' });
+    // #3531: pin every tier so the injected value is tier-independent — an
+    // effort.default alone no longer answers for a tiered agent now that the
+    // config block merges over the built-in tier ladder.
+    writePlanningConfig(tmpDir, { routing_tier_defaults: { light: 'max', standard: 'max', heavy: 'max' }, default: 'max' });
 
     const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
     const result = captureOutput(() =>
@@ -3821,10 +4476,14 @@ describe('feat-488: effort sync command', () => {
     fs.mkdirSync(planningDir, { recursive: true });
     fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ model_profile: 'balanced' }));
 
-    // Home defaults set effort.default = low
+    // Home defaults set the heavy tier effort to low. (#3531: a bare home
+    // effort.default would no longer reach gsd-planner — the merged tier
+    // ladder answers for tiered agents — so the home fixture pins the tier,
+    // which is what this test's claim actually exercises: home-level effort
+    // applies when the project config has no effort section.)
     const gsdDir = path.join(tmpHome, '.gsd');
     fs.mkdirSync(gsdDir, { recursive: true });
-    fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ effort: { default: 'low' } }));
+    fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ effort: { routing_tier_defaults: { heavy: 'low' } } }));
 
     // Isolate HOME (and USERPROFILE for Windows parity) so
     // readGsdEffectiveEffortConfig reads our fixture, not the
@@ -3853,7 +4512,7 @@ describe('feat-488: effort sync command', () => {
       }
     }
 
-    // With home effort.default = 'low' and the agent currently at 'medium',
+    // With home heavy-tier effort 'low' and the agent currently at 'medium',
     // cmdEffortSync must sync exactly 1 agent and set it to 'low'.
     assert.equal(result.synced, 1, 'should sync 1 agent whose effort differs from home default');
     assert.equal(result.changes[0].agent, 'gsd-planner');

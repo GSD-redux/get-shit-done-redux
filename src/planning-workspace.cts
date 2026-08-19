@@ -25,8 +25,10 @@ const {
   createSessionScopedPointerAdapter,
   createMemoryPointerAdapter,
   getActiveWorkstream: getStoredActiveWorkstream,
+  peekActiveWorkstream: peekStoredActiveWorkstream,
   setActiveWorkstream: setStoredActiveWorkstream,
   clearActiveWorkstream: clearStoredActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream: diagnoseUnresolvedStoredActiveWorkstream,
 } = activeWorkstreamStore;
 
 // Track .planning/.lock files held by this process so they can be removed on exit.
@@ -167,6 +169,17 @@ interface PlanningPaths {
   phases: string;
   requirements: string;
   debug: string;
+  quick: string;
+}
+
+// #2142: the quick-task directory. Exported as its own function (not only as a
+// `planningPaths` key) because `audit.cts`'s `scanQuickTasks` receives an
+// already-resolved planning base rather than a `cwd`, so it cannot reach
+// `planningPaths`. Without this shared helper, adding the `quick` key would
+// leave TWO composers of `<planning>/quick` — the DEFECT.GENERATIVE-FIX shape
+// the `debug` key (#3149) was introduced to eliminate.
+function quickDirFrom(planningBase: string): string {
+  return path.join(planningBase, 'quick');
 }
 
 function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
@@ -183,6 +196,8 @@ function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
     // `debug_dir` field and `init.debug`'s — previously each composed its own
     // `path.join(planning, 'debug')` (DEFECT.GENERATIVE-FIX).
     debug: path.join(base, 'debug'),
+    // #2142: quick-task directory, composed via the shared quickDirFrom helper.
+    quick: quickDirFrom(base),
   };
 }
 
@@ -378,8 +393,45 @@ function getActiveWorkstream(cwd: string): string | null {
   return getStoredActiveWorkstream(cwd);
 }
 
+// #3579 root-cause fix: read-only sibling of getActiveWorkstream, thin
+// pass-through to active-workstream-store's non-mutating peek. Callers that
+// only need to KNOW whether a workstream resolves (a guard's initial check,
+// a bootstrap that will re-derive the answer anyway) must use this instead
+// of getActiveWorkstream — the mutating variant self-heals (clears) a
+// present-but-unresolvable chain[0] value, and a later read in the SAME
+// process (another getActiveWorkstream call, or diagnoseUnresolvedActiveWorkstream)
+// would then observe already-cleared state instead of the original evidence,
+// silently changing the answer or losing the diagnostic reason. Self-heal
+// still happens — exactly once, wherever the real consuming call site invokes
+// getActiveWorkstream — this sibling just avoids triggering it prematurely.
+function peekActiveWorkstream(cwd: string): string | null {
+  return peekStoredActiveWorkstream(cwd);
+}
+
 function setActiveWorkstream(cwd: string, name: string): void {
   setStoredActiveWorkstream(cwd, name);
+}
+
+// #3579 item 1: read-only diagnostic sibling of getActiveWorkstream, thin
+// pass-through to active-workstream-store's chain walk. Lets the #1912/#2028
+// fail-safe guards (init.progress, phase.complete) distinguish "no marker at
+// all" from "a marker exists but didn't resolve" without duplicating the
+// resolution predicate.
+function diagnoseUnresolvedActiveWorkstream(cwd: string): {
+  present: boolean;
+  value: string | null;
+  reason: 'invalid_name' | 'missing_workstream_dir' | null;
+} {
+  return diagnoseUnresolvedStoredActiveWorkstream(cwd);
+}
+
+// #3579 item 1: human-readable clause for diagnoseUnresolvedActiveWorkstream's
+// `reason`, shared by the init.progress and phase.complete fail-safe guards so
+// the two error messages describe the same failure the same way instead of
+// drifting (CLAUDE.md's Generative Fix Divergence anti-pattern).
+function describeUnresolvedWorkstreamReason(reason: 'invalid_name' | 'missing_workstream_dir' | null): string {
+  if (reason === 'invalid_name') return 'the name is not a valid workstream name';
+  return "its workstream directory doesn't exist (it may have been renamed or removed)";
 }
 
 /**
@@ -425,9 +477,13 @@ export = {
   planningRoot,
   listAvailableWorkstreams,
   planningPaths,
+  quickDirFrom,
   withPlanningLock,
   getActiveWorkstream,
+  peekActiveWorkstream,
   setActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
+  describeUnresolvedWorkstreamReason,
   findContextMdIn,
   // Test seam (audit M1): inject a deterministic isPidAlive so the liveness-gated
   // steal decision is exercised without real pids. Mirrors capability-lock.cts.

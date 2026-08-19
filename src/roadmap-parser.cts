@@ -42,7 +42,7 @@ import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
 import { tokenizeHeadings, stripTaggedBlocks, withSection, stripFencedCode, collectSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
-import { findTableWithColumns } from './markdown-table.cjs';
+import { findTableWithColumns, matchTableSchema, isDelimiterRow, splitTableRow } from './markdown-table.cjs';
 import type { MarkdownTable } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
@@ -424,7 +424,48 @@ function hasPhaseEntries(markdown: string): boolean {
   // doc showing the convention) counts as a real phase entry. Strip fences
   // through the canonical seam before testing, matching tokenizeHeadings'
   // fence-awareness above.
-  return BULLET_PHASE_LINE_PATTERN.test(stripFencedCode(markdown).text);
+  if (BULLET_PHASE_LINE_PATTERN.test(stripFencedCode(markdown).text)) return true;
+  // #3577: a markdown-table phase listing also declares phases.
+  return collectTablePhaseRows(markdown).length > 0;
+}
+
+// ─── #3577: markdown-table phase listings ─────────────────────────────────────
+// #3577: a GFM table declares phases when its header's FIRST cell is the literal
+// `Phase` (optionally `Phase #` / `Phase No.` / `Phase number`) and the header does
+// NOT match a known non-listing schema — the canonical RoadmapProgress table
+// (`| Phase | Plans Complete | Status | Completed |`) leads with `Phase` too, and
+// its rows are progress markers, not declarations. Data rows carry the phase id in
+// their first cell (digit-bearing canonical shape — `Phase`-word header cells and
+// `---` delimiter rows are digit-free and excluded by construction). Fence-aware
+// via stripFencedCode, matching the #3184 lesson: a fenced EXAMPLE of the table
+// form is not a declared phase.
+const PHASE_LISTING_HEADER_RE = /^\|?\s*phase(?:\s*(?:#|no\.?|number))?\s*\|/i;
+const TABLE_PHASE_ID_RE = /^[A-Za-z]?\d[\w.-]*$/;
+
+function collectTablePhaseRows(window: string): Array<{ id: string; name: string | null; row: string }> {
+  const unfenced = stripFencedCode(window).text;
+  const lines = unfenced.split(/\r?\n/);
+  const rows: Array<{ id: string; name: string | null; row: string }> = [];
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (!PHASE_LISTING_HEADER_RE.test(lines[i])) continue;
+    const headerCells = splitTableRow(lines[i]);
+    if (matchTableSchema(headerCells) !== null) continue; // canonical non-listing schema
+    if (!isDelimiterRow(splitTableRow(lines[i + 1]))) continue;
+    for (let j = i + 2; j < lines.length; j++) {
+      // GFM semantics: the table ENDS at the first line that is not a table
+      // row. Review finding: breaking only on blank lines let subsequent prose
+      // (e.g. a bare `2026-01-01` date line) be harvested as a phase id.
+      if (!/^\s*\|/.test(lines[j])) break;
+      const cells = splitTableRow(lines[j]);
+      if (cells.length === 0 || cells.every((c) => c === '')) break; // defensive: blank row
+      const first = cells[0] ?? '';
+      if (!TABLE_PHASE_ID_RE.test(first)) continue;
+      if (!/^999\b/.test(first)) {
+        rows.push({ id: first, name: cells[1] && cells[1] !== '' ? cells[1] : null, row: lines[j] });
+      }
+    }
+  }
+  return rows;
 }
 
 /**
@@ -465,6 +506,9 @@ function scanMilestonePhaseIds(window: string): Set<string> {
   while ((bm = scanner.exec(unfenced)) !== null) {
     if (!/^999\b/.test(bm[1])) ids.add(bm[1]);
   }
+  // #3577: table-declared ids join the same membership set — the milestone
+  // filter must not collapse a table-house-style window to zero-count.
+  for (const tr of collectTablePhaseRows(window)) ids.add(tr.id);
   return ids;
 }
 
@@ -884,6 +928,25 @@ function findRoadmapPhaseInContent(content: string, phaseNum: unknown, phaseSour
   };
 }
 
+// #3577: markdown-table row fallback. Mirrors the #2199 bullet fallback's
+// tier — used only AFTER heading and bullet lookups fail on scoped + full
+// content, so a heading with a Requirements/Goal section always wins. The row
+// itself is the section (single line), the name comes from column 2.
+function findRoadmapTablePhaseInContent(content: string, phaseNum: unknown): RoadmapPhaseResult | null {
+  const wanted = String(phaseNum).replace(/^0+(?=.)/, '');
+  for (const tr of collectTablePhaseRows(content)) {
+    if (tr.id.replace(/^0+(?=.)/, '') !== wanted) continue;
+    return {
+      found: true,
+      phase_number: String(phaseNum),
+      phase_name: tr.name ?? `Phase ${tr.id}`,
+      goal: null,
+      section: tr.row.trim(),
+    };
+  }
+  return null;
+}
+
 function findRoadmapBulletPhaseInContent(content: string, phaseNum: unknown, phaseSource?: string): RoadmapPhaseResult | null {
   // #2199: bullet/checkbox entry fallback (`- [ ] **Phase N — name**`). Returns
   // the single bullet line as the section (no multi-line body) — used only as a
@@ -940,6 +1003,12 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
       const fullBullet = findRoadmapBulletPhaseInContent(fullContent, phaseNum, source);
       if (fullBullet) return fullBullet;
     }
+
+    // #3577: last tier — a markdown-table row declaration.
+    const scopedTable = findRoadmapTablePhaseInContent(content, phaseNum);
+    if (scopedTable) return scopedTable;
+    const fullTable = findRoadmapTablePhaseInContent(fullContent, phaseNum);
+    if (fullTable) return fullTable;
 
     return null;
   } catch (err) {
@@ -1591,5 +1660,6 @@ export = {
   // CLI probe) and the free-text predicate the phase add/add-batch/insert
   // guards and the edit-phase workflow's pre/post capture are built on.
   scanMilestonePhaseIds,
+  collectTablePhaseRows,
   findMilestoneScopeHeadingLines,
 };

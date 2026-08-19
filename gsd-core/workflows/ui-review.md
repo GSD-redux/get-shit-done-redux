@@ -84,12 +84,12 @@ Conduct 6-pillar visual audit of Phase {phase_number}: {phase_name}
 {If no UI-SPEC: "Audit against abstract 6-pillar standards."}
 </objective>
 
-<files_to_read>
+<required_reading>
 - {summary_paths} (Execution summaries)
 - {plan_paths} (Execution plans — what was intended)
 - {ui_spec_path} (UI Design Contract — audit baseline, if exists)
 - {context_path} (User decisions, if exists)
-</files_to_read>
+</required_reading>
 
 ${AGENT_SKILLS_UI_REVIEWER}
 

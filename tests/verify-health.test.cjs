@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const { VALID_PROFILES } = require('../gsd-core/bin/lib/model-catalog.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 // ─── Helpers for setting up minimal valid projects ────────────────────────────
 
@@ -1546,6 +1547,77 @@ describe('validate health — #1454 W017 excludes active worktree', () => {
     assert.ok(
       !output.warnings.some(w => w.code === 'W017'),
       `W017 should not fire for a non-git project dir: ${JSON.stringify(output.warnings)}`
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W029 — .planning/ tracked-and-gitignored (#3586, epic #2292)
+//
+// Test matrix: .gsd/phase/fix-3586-tracked-gitignored-planning/50-test-matrix.md
+// section C (C1/C2) — CLI-LEVEL integration, through the real `gsd-tools
+// validate health` dispatch path (unlike tests/health-diagnostic-rules/
+// config-validation.test.cjs's B-group, which drives `ruleFor('W029').check`
+// directly against a hand-built snapshot). These two prove W029 is actually
+// REACHABLE end-to-end — registered in RULES is not the same claim as wired
+// into `cmdValidateHealth`'s JSON output.
+//
+// Asserted on the parsed JSON's `code` field only (never rendered text, per
+// CONTRIBUTING's ban on raw-text output matching) — the real CLI response
+// shape carries no per-diagnostic `severity` field; severity is expressed
+// structurally by which top-level array (`errors` vs `warnings`) an entry
+// lands in, so "W029 is in `warnings`" already encodes SEVERITY.WARNING.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('validate health — W029 .planning/ tracked-and-gitignored (#3586)', () => {
+  function initGitRepo(cwd) {
+    gitOrThrow(['init'], { cwd });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd });
+  }
+
+  function commitAll(cwd, message) {
+    gitOrThrow(['add', '-A'], { cwd });
+    gitOrThrow(['commit', '-m', message], { cwd });
+  }
+
+  test('C1: healthReportsTrackedIgnoredState — a temp git project with .planning/ committed then gitignored reports W029', () => {
+    const cwd = createTempProject();
+    // createTempProject() writes only an EMPTY .planning/phases/ dir — git
+    // never tracks an empty directory, so without a real file under
+    // .planning/ the initial commit would track nothing and this fixture
+    // could never reach the "tracked" half of the contradiction.
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+    initGitRepo(cwd);
+    commitAll(cwd, 'initial commit — .planning/ tracked');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), '.planning/\n');
+    commitAll(cwd, 'add gitignore — .planning/ now contradictorily ignored-but-tracked');
+
+    const result = runGsdTools('validate health', cwd);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const w029 = output.warnings.find(w => w.code === 'W029');
+    assert.ok(w029, `Expected W029 in warnings: ${JSON.stringify(output.warnings)}`);
+    assert.strictEqual(w029.code, 'W029');
+  });
+
+  test('C2: healthSilentOnHealthyProject — the same project layout with .planning/ tracked and NOT ignored reports no W029', () => {
+    const cwd = createTempProject();
+    fs.writeFileSync(path.join(cwd, '.planning', 'PROJECT.md'), '# Project\n');
+    initGitRepo(cwd);
+    commitAll(cwd, 'initial commit — .planning/ tracked, no .gitignore at all');
+    // No .gitignore written — the default, healthy state of essentially
+    // every GSD project (mirrors the B2a/A3 fixture convention).
+
+    const result = runGsdTools('validate health', cwd);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok(
+      !output.warnings.some(w => w.code === 'W029'),
+      `Should not have W029 on a healthy tracked-not-ignored project: ${JSON.stringify(output.warnings)}`
     );
   });
 });

@@ -615,3 +615,192 @@ test('TV-09: signatureForManifest does NOT vary with missingArtifacts (MISSING a
     cleanup(missing);
   }
 });
+
+// ---------------------------------------------------------------------------
+// #3514 (epic #1900 F21c) — unverified-integrity disclosure. The verdict gains
+// integrityPinned; the Disclosure carries integrityStatus ('pinned' |
+// 'unverified'); summarizeDisclosure renders it. Deliberately NOT part of the
+// consent-binding signature — consent's content binding is bundleContentHash
+// (#1459), and a prompt line must never force a spurious re-consent.
+// ---------------------------------------------------------------------------
+
+const EXEC_MANIFEST_3514 = {
+  id: 'integrity-status-cap',
+  hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+};
+
+test('#3514: integrityPinned:true verdict carries integrityStatus "pinned" and renders the pinned line', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPin: 'sha512',
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'pinned');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /pin supplied and verified/i);
+  assert.doesNotMatch(joined, /NO PINNED HASH/i);
+});
+
+test('#3514: integrityPinned:false verdict carries integrityStatus "unverified" and renders the unverified line', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPin: 'none',
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'unverified');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /NO PINNED HASH/i);
+  assert.match(joined, /staged unverified/i);
+});
+
+test('#3514: integrityPin git-commit renders the commit-pinned line, never a sha512 claim', () => {
+  const v = trust.evaluateInstallTrust({
+    parsed: { kind: 'git', raw: 'https://example.com/cap.git#sha:0123456789abcdef0123456789abcdef01234567', target: 'https://example.com/cap.git' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+    integrityPin: 'git-commit',
+  });
+  assert.strictEqual(v.disclosure.integrityStatus, 'commit-pinned');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.match(joined, /pinned to a git commit/i);
+  assert.doesNotMatch(joined, /sha512 pin/i, 'a commit pin must not be reported as a sha512 pin');
+});
+
+test('#3514: legacy callers (no integrityPin) see no integrity line — byte-identical rendering', () => {
+  const base = {
+    parsed: { kind: 'tarball', raw: 'https://example.com/cap.tgz', target: 'https://example.com/cap.tgz' },
+    manifest: EXEC_MANIFEST_3514,
+    hostVersion: '1.6.0',
+  };
+  const v = trust.evaluateInstallTrust(base);
+  assert.strictEqual(v.disclosure.integrityStatus, undefined, 'absent arg ⇒ absent field');
+  const joined = trust.summarizeDisclosure(v.disclosure).join('\n');
+  assert.doesNotMatch(joined, /PINNED|unverified/i, 'no integrity line for legacy callers');
+});
+
+test('#3514: unverified line also renders on the declarative-only disclosure path', () => {
+  const d = trust.discloseExecutableSurfaces({ id: 'x', skills: ['s'] });
+  d.integrityStatus = 'unverified';
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /NO PINNED HASH/i);
+});
+
+test('#3514: integrityStatus NEVER enters the consent signature (executableSetChanged stable)', () => {
+  const d1 = trust.discloseExecutableSurfaces(EXEC_MANIFEST_3514);
+  const d2 = trust.discloseExecutableSurfaces(EXEC_MANIFEST_3514);
+  d2.integrityStatus = 'unverified';
+  assert.strictEqual(
+    trust.executableSetChanged(d1, d2),
+    false,
+    'a prompt-only integrity line must not read as a changed executable set'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// #3515 (epic #1900 F20) — MCP server config is INTENTIONALLY unconfined
+// (unlike hooks); the consent disclosure must say so. Adopted decision: the
+// document+disclose arm — confining args/cwd would break global/npx MCP
+// servers (Hyrum); honest disclosure is the defense-in-depth.
+// ---------------------------------------------------------------------------
+
+test('#3515: stdio MCP disclosure carries the intentionally-unconfined notice', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+    mcpServers: {
+      'cap-srv': { command: 'node', args: ['/opt/global/server.js'], cwd: '/opt/somewhere-else' },
+    },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /MCP servers \(1\)/);
+  assert.match(
+    joined,
+    /not confined to the bundle.*anywhere on this machine/i,
+    'the notice must state the unconfined posture and its scope'
+  );
+  assert.match(joined, /command, args, env, and cwd/i,
+    'isolated-review finding: env is the classic execution-primitive channel — omitting it invites the inference that env IS confined');
+  assert.match(joined, /unlike hooks/i, 'the hooks contrast is the load-bearing part of the claim');
+});
+
+test('#3515: the notice is unconditional for spawned servers (no per-value path heuristics)', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap-min',
+    mcpServers: { 'min-srv': { command: 'npx' } },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /not confined to the bundle/i);
+});
+
+test('#3515: remote-only MCP does not claim a local spawn', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mcp-cap-remote',
+    mcpServers: { 'remote-srv': { transport: 'http', url: 'https://example.com/mcp' } },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.match(joined, /MCP servers \(1\)/);
+  assert.doesNotMatch(joined, /not confined to the bundle/i, 'nothing local is spawned — no unconfined claim');
+});
+
+test('#3515: no MCP section, no notice', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'hooks-only',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  assert.doesNotMatch(joined, /not confined to the bundle/i);
+});
+
+test('#3515: the notice changes no consent signature — golden value for a spawned-server manifest', () => {
+  const manifest = {
+    id: 'sig-cap',
+    hooks: [{ event: 'PostToolUse', script: 'hooks/run.js' }],
+    mcpServers: { 'sig-srv': { command: 'node', args: ['x'], env: { K: 'V' }, cwd: '/tmp' } },
+  };
+  // GOLDEN (isolated-review finding m1: a self-comparison can never fail). Base64 of the exact
+  // signature so the literal carries no escaping. If you intentionally extend disclosureSignature,
+  // these bytes change and this fails — update the literal in the same, conscious change.
+  const GOLDEN_B64 = 'W1siW1wiaG9va1wiLFwiUG9zdFRvb2xVc2VcIixcImhvb2tzL3J1bi5qc1wiXSJdLFtdLFsiW1wibWNwXCIsXCJzaWctc3J2XCIsXCJcIixcIm5vZGVcIixbXCJ4XCJdLFwiXCIse30se1wiS1wiOlwiVlwifSxcIi90bXBcIix7XCJhcmdzXCI6W1wieFwiXSxcImNvbW1hbmRcIjpcIm5vZGVcIixcImN3ZFwiOlwiL3RtcFwiLFwiZW52XCI6e1wiS1wiOlwiVlwifX1dIl1d';
+  assert.strictEqual(
+    Buffer.from(trust.signatureForManifest(manifest), 'utf8').toString('base64'),
+    GOLDEN_B64
+  );
+  const d1 = trust.discloseExecutableSurfaces(manifest);
+  trust.summarizeDisclosure(d1); // rendering reads only — assert it cannot mutate disclosure state
+  assert.strictEqual(trust.executableSetChanged(d1, trust.discloseExecutableSurfaces(manifest)), false);
+});
+
+test('#3515: mixed transports render exactly one notice and still disclose the remote endpoint', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'mixed-cap',
+    mcpServers: {
+      'local-srv': { command: 'node', args: ['server.js'] },
+      'remote-srv': { transport: 'http', url: 'https://example.com/mcp' },
+    },
+  });
+  const lines = trust.summarizeDisclosure(d);
+  assert.strictEqual(
+    lines.filter((l) => /not confined to the bundle/i.test(l)).length,
+    1,
+    'one section-level notice, not one per server'
+  );
+  assert.ok(lines.some((l) => /\[http\] https:\/\/example\.com\/mcp/.test(l)), 'the remote endpoint is still disclosed');
+});
+
+test('#3515: boundary server shapes — no command and no url renders as spawned (exact-claim edges)', () => {
+  const d = trust.discloseExecutableSurfaces({
+    id: 'edge-cap',
+    mcpServers: {
+      'empty-srv': {},
+      'http-with-command': { transport: 'http', command: 'node', url: 'https://example.com/mcp' },
+    },
+  });
+  const joined = trust.summarizeDisclosure(d).join('\n');
+  // `{}` has neither transport nor url nor command — the shared predicate classifies it SPAWNED
+  // (nothing proves it is remote), so the notice fires.
+  assert.match(joined, /not confined to the bundle/i);
+  // An http-transport server WITH a command is remote by declared shape (transport wins).
+  assert.ok(/\[http\]/.test(joined));
+});

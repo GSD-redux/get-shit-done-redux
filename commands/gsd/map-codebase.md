@@ -34,7 +34,7 @@ Output: .planning/codebase/ folder with 7 structured documents about the codebas
 Arguments: $ARGUMENTS
 
 Parse the first token of $ARGUMENTS:
-- If it is `--fast`: strip the flag, run the scan workflow (passing remaining args including optional --focus).
+- If it is `--fast`: strip the flag, then read and execute `~/.claude/gsd-core/workflows/scan.md` (passing remaining args including optional --focus). Load it on demand here — it is deliberately not in `<execution_context>`, so the common full-map path does not pay for it.
 - If it is `--query`: strip the flag, run the intel workflow (passing remaining args as the subcommand).
 - Otherwise: pass all of $ARGUMENTS as focus area to the map-codebase workflow.
 

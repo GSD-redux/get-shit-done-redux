@@ -110,7 +110,7 @@ Print: `◆ Spawning nyquist auditor... (runs in a subagent — no output until 
 ```
 Agent(
   prompt="Read ~/.claude/agents/gsd-nyquist-auditor.md for instructions.\n\n" +
-    "<files_to_read>{PLAN, SUMMARY, impl files, VALIDATION.md}</files_to_read>" +
+    "<required_reading>{PLAN, SUMMARY, impl files, VALIDATION.md}</required_reading>" +
     "<gaps>{gap list}</gaps>" +
     "<test_infrastructure>{framework, config, commands}</test_infrastructure>" +
     "<constraints>Never modify impl files. Max 3 debug iterations. Escalate impl bugs.</constraints>" +

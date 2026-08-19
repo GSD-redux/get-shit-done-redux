@@ -6,7 +6,7 @@
 
 - ここに記載された数値は v1.36.0 時点のファイルシステムから導出されており、リリース間で変動する可能性があります。最新の数値を確認するには、チェックアウトに対して `ls commands/gsd/*.md | wc -l`、`ls agents/gsd-*.md | wc -l` などを実行してください。
 - このファイルは出荷済みのすべてのサーフェスを 6 つのファミリー（エージェント、コマンド、ワークフロー、リファレンス、CLI モジュール、フック）にわたって列挙します。広範なドキュメントはナラティブや厳選されたサブセットを提示する場合があります。ファイルシステムと異なる場合は、このファイルとディレクトリ一覧が正式です。
-- v1.36.0 以降に追加された新しいサーフェスはまずここに記載し、その後広範なドキュメントに伝播させてください。`tests/inventory-counts.test.cjs`、`tests/commands-doc-parity.test.cjs`、`tests/agents-doc-parity.test.cjs`、`tests/cli-modules-doc-parity.test.cjs`、`tests/hooks-doc-parity.test.cjs`、`tests/architecture-counts.test.cjs`、`tests/command-count-sync.test.cjs` のドリフト管理テストが、ファイルシステムに対して数値とロスター内容を固定します。
+- v1.36.0 以降に追加された新しいサーフェスはまずここに記載し、その後広範なドキュメントに伝播させてください。`tests/inventory-manifest-sync.test.cjs` のドリフト管理テストが、ファイルシステムに対してロスター内容を固定します。
 
 これは出荷済みのすべての GSD Core サーフェスの正式な一覧です。トピック別のナビゲーションは [docs インデックス](README.md) を参照してください。
 
@@ -189,7 +189,6 @@
 | `code-review.md` | gsd-code-reviewer でフェーズのソース変更をレビュー。REVIEW.md を作成。 | `/gsd-code-review` |
 | `complete-milestone.md` | 出荷されたバージョンを完了としてマーク — MILESTONES.md エントリー、PROJECT.md の進化、タグ。 | `/gsd-complete-milestone` |
 | `diagnose-issues.md` | 並列デバッグエージェントをオーケストレーションして UAT のギャップを調査し、根本原因を特定。 | `/gsd-verify-work` (auto-diagnosis) |
-| `discovery-phase.md` | 適切な深さレベルでディスカバリーを実行。 | `/gsd-new-project` (discovery path) |
 | `discuss-phase-assumptions.md` | 仮定モードの discuss — コードベースファーストの分析で実装決定を抽出。 | `/gsd-discuss-phase` (when `discuss_mode=assumptions`) |
 | `discuss-phase-power.md` | パワーユーザー discuss — すべての質問を JSON 状態ファイル + HTML UI に事前生成。 | `/gsd-discuss-phase --power` |
 | `discuss-phase.md` | 反復的なグレーゾーンの議論を通じて実装決定を抽出。 | `/gsd-discuss-phase` |
@@ -261,7 +260,7 @@
 | `validate-phase.md` | 完了したフェーズの Nyquist バリデーションのギャップを遡及監査して埋める。 | `/gsd-validate-phase` |
 | `verify-work.md` | 自動診断付きの会話型 UAT — UAT.md と修正プランを作成。 | `/gsd-verify-work` |
 
-> **注記:** 一部のワークフローには直接ユーザー向けのコマンドがありません（例: `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— これらはオーケストレーターワークフローによって内部的に呼び出されます。`discovery-phase.md` は `/gsd-new-project` の代替エントリーポイントです。
+> **注記:** 一部のワークフローには直接ユーザー向けのコマンドがありません（例: `execute-plan.md`、`transition.md`、`node-repair.md`、`diagnose-issues.md`）— これらはオーケストレーターワークフローによって内部的に呼び出されます。
 
 ---
 
@@ -396,7 +395,7 @@
 | `decisions.cjs` | CONTEXT.md の `<decisions>` ブロックを解析。数値（D-42）と英数字（D-INFRA-01）の ID を受け付け。`{id, text, category, tags, trackable}` を返す |
 | `docs.cjs` | docs-update ワークフロー初期化、Markdown スキャン、モノリポ検出 |
 | `drift.cjs` | 実行後のコードベース構造ドリフト検出器（#2003）: ファイル変更を new-dir/barrel/migration/route カテゴリに分類し、`last_mapped_commit` フロントマターをラウンドトリップ |
-| `fallow-runner.cjs` | `/gsd-code-review` 向けのファロー監査アダプター: バイナリ解決（`PATH` 次に `node_modules/.bin`）、アクション可能なバイナリ欠落エラー、構造的な調査結果の正規化 |
+| `fallow-runner.cjs` | `/gsd-code-review` 向けのファロー監査アダプター: バイナリ解決（`node_modules/.bin` 次に `PATH`）、アクション可能なバイナリ欠落エラー、構造的な調査結果の正規化 |
 | `frontmatter.cjs` | YAML フロントマター CRUD 操作 |
 | `gap-checker.cjs` | 計画後のギャップ分析（#2493）: REQUIREMENTS.md + CONTEXT.md 決定事項 vs PLAN.md カバレッジレポート（`gsd-tools gap-analysis`）の統合 |
 | `graphify.cjs` | `/gsd-graphify` 向けのナレッジグラフビルド/クエリ/ステータス/差分 |

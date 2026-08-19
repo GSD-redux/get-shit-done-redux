@@ -19,7 +19,10 @@ const {
   createSessionScopedPointerAdapter,
   createMemoryPointerAdapter,
   pickActiveWorkstreamAdapter,
+  pickActiveWorkstreamAdapterChain,
   getActiveWorkstream,
+  peekActiveWorkstream,
+  diagnoseUnresolvedActiveWorkstream,
   setActiveWorkstream,
   clearActiveWorkstream,
   parseCliWorkstream,
@@ -328,6 +331,95 @@ describe('pickActiveWorkstreamAdapter', () => {
   });
 });
 
+// ── pickActiveWorkstreamAdapterChain (#3579) ─────────────────────────────────
+//
+// Each test below is written to KILL a specific surviving mutant reported by
+// Stryker on this function: the `if (!sessionKey)` guard (and its block-body
+// removal), the two `?? createMemoryPointerAdapter(null)` fallback sites, and
+// the `session ? [session, shared] : []` shape mutant.
+
+describe('pickActiveWorkstreamAdapterChain', () => {
+  let saved;
+  beforeEach(() => {
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => restoreSessionEnv(saved));
+
+  test('returns single-element [shared] chain when no session key present', () => {
+    // Kills: `if (!sessionKey)` → `if (false)`, and the BlockStatement removal
+    // on that guard's body. Both mutants would instead fall into the
+    // sessionKey-truthy branch and, since `injected.session` is supplied,
+    // return a 2-element [session, shared] chain instead of [shared].
+    const shared = createMemoryPointerAdapter('shared-ws');
+    const session = createMemoryPointerAdapter('session-ws');
+    const chain = pickActiveWorkstreamAdapterChain('/fake', {
+      activeWorkstreamAdapters: { session, shared },
+    });
+    assert.equal(chain.length, 1);
+    assert.strictEqual(chain[0], shared);
+  });
+
+  test('returns [session, shared] chain (length 2, in order) when session key present', () => {
+    // Kills: `return session ? [session, shared] : []` → `: []`. A mutant
+    // there collapses the chain to empty even though session key is set.
+    process.env.GSD_SESSION_KEY = 'chain-session';
+    const shared = createMemoryPointerAdapter('shared-ws');
+    const session = createMemoryPointerAdapter('session-ws');
+    const chain = pickActiveWorkstreamAdapterChain('/fake', {
+      activeWorkstreamAdapters: { session, shared },
+    });
+    assert.equal(chain.length, 2);
+    assert.strictEqual(chain[0], session);
+    assert.strictEqual(chain[1], shared);
+  });
+
+  test('no session key + adapters given without shared: fallback is inert memory adapter', () => {
+    // Kills: `injected.shared ?? createMemoryPointerAdapter(null)` → `&&` on
+    // the no-sessionKey branch. Under the mutant, `undefined && ...` is
+    // `undefined`, so chain[0] would be undefined instead of a usable adapter.
+    const chain = pickActiveWorkstreamAdapterChain('/fake', {
+      activeWorkstreamAdapters: {},
+    });
+    assert.equal(chain.length, 1);
+    assert.notEqual(chain[0], undefined);
+    assert.equal(typeof chain[0].read, 'function');
+    assert.equal(chain[0].read(), null);
+  });
+
+  test('session key present, only session injected: shared half is inert memory adapter', () => {
+    // Kills: `injected.shared ?? createMemoryPointerAdapter(null)` → `&&` on
+    // the sessionKey-truthy branch (the shared fallback site).
+    process.env.GSD_SESSION_KEY = 'chain-partial-shared';
+    const session = createMemoryPointerAdapter('session-ws');
+    const chain = pickActiveWorkstreamAdapterChain('/fake', {
+      activeWorkstreamAdapters: { session },
+    });
+    assert.equal(chain.length, 2);
+    assert.strictEqual(chain[0], session);
+    assert.notEqual(chain[1], undefined);
+    assert.equal(typeof chain[1].read, 'function');
+    assert.equal(chain[1].read(), null);
+    // in-memory only — proves it never touches the real shared marker file
+    chain[1].write('should-not-persist');
+    assert.equal(chain[1].read(), 'should-not-persist');
+  });
+
+  test('session key present, only shared injected: session half is inert memory adapter', () => {
+    // Kills: `injected.session ?? createMemoryPointerAdapter(null)` → `&&`.
+    process.env.GSD_SESSION_KEY = 'chain-partial-session';
+    const shared = createMemoryPointerAdapter('shared-ws');
+    const chain = pickActiveWorkstreamAdapterChain('/fake', {
+      activeWorkstreamAdapters: { shared },
+    });
+    assert.equal(chain.length, 2);
+    assert.notEqual(chain[0], undefined);
+    assert.equal(typeof chain[0].read, 'function');
+    assert.equal(chain[0].read(), null);
+    assert.strictEqual(chain[1], shared);
+  });
+});
+
 // ── getWorkstreamSessionKey ───────────────────────────────────────────────────
 
 describe('getWorkstreamSessionKey', () => {
@@ -547,6 +639,173 @@ describe('getActiveWorkstream', () => {
     const adapter = createMemoryPointerAdapter('v1.2');
     const result = getActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
     assert.equal(result, 'v1.2');
+  });
+});
+
+// ── resolvesToExistingWorkstream (#3579, exercised via getActiveWorkstream) ──
+//
+// resolvesToExistingWorkstream is internal; these two tests reach it through
+// its public callers and are designed to disagree with two survived mutants:
+// `if (!name || !validateWorkstreamName(name))` → `if (false)` (name check
+// skipped entirely) and → `if (false)`/`&&` (the `||` weakened to `&&`). Both
+// tests plant a REAL directory at the exact stored name so that if the name
+// check is bypassed, `fs.existsSync` would wrongly say "resolved".
+
+describe('resolvesToExistingWorkstream — name-check short-circuit (#3579)', () => {
+  let tmpDir;
+  let saved;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-unit-resolves-'));
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => {
+    restoreSessionEnv(saved);
+    cleanup(tmpDir);
+  });
+
+  test('empty name from a fallback adapter never resolves, even though the workstreams dir itself exists', () => {
+    // Kills `if (!name || ...)` → `if (false)`: without the early return, the
+    // mutant checks fs.existsSync(join(root, 'workstreams', '')), which
+    // collapses to the 'workstreams' dir itself — which DOES exist here.
+    makePlanningDir(tmpDir); // creates .planning/workstreams with no children
+    process.env.GSD_SESSION_KEY = 'resolves-empty-name';
+    const session = createMemoryPointerAdapter(''); // owned: falls through
+    const shared = createMemoryPointerAdapter('');  // fallback: also empty
+    const result = getActiveWorkstream(tmpDir, {
+      activeWorkstreamAdapters: { session, shared },
+    });
+    assert.equal(result, null);
+  });
+
+  test('non-empty malformed name never resolves, even when a matching directory exists on disk', () => {
+    // Kills both `if (false)` (name check skipped) and `||` → `&&` (since
+    // !name is false here, only the format-check operand is true — OR yields
+    // true/unresolvable, AND yields false/would-check-disk). We create a
+    // literal 'bad name!' directory so a mutant that reaches fs.existsSync
+    // reports true instead of the correct "invalid format" false.
+    makePlanningDir(tmpDir, 'bad name!');
+    const adapter = createMemoryPointerAdapter('bad name!');
+    const result = getActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.equal(result, null);
+    assert.equal(adapter.read(), null); // self-healed: cleared as unresolvable
+  });
+});
+
+// ── resolveFromChain (#3579, exercised via getActiveWorkstream/peekActiveWorkstream) ──
+
+describe('resolveFromChain — owned/fallback/selfHeal discrimination (#3579)', () => {
+  let tmpDir;
+  let saved;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-unit-fromchain-'));
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => {
+    restoreSessionEnv(saved);
+    cleanup(tmpDir);
+  });
+
+  test('falls through to a resolvable fallback when the owned pointer is empty', () => {
+    // Kills `if (ownedName) {` → `if (true)`: the mutant would treat a null
+    // ownedName as needing resolution, resolve it to null immediately, and
+    // return before ever consulting the fallback — losing the real
+    // 'fallback-ws' result. Also kills the `for (const adapter of fallbacks)`
+    // BlockStatement removal (an emptied loop body would likewise never find
+    // the match and fall through to `return null`).
+    makePlanningDir(tmpDir, 'fallback-ws');
+    process.env.GSD_SESSION_KEY = 'owned-empty-1';
+    const session = createMemoryPointerAdapter(null);
+    const shared = createMemoryPointerAdapter('fallback-ws');
+    const result = getActiveWorkstream(tmpDir, {
+      activeWorkstreamAdapters: { session, shared },
+    });
+    assert.equal(result, 'fallback-ws');
+  });
+
+  test('an unresolvable fallback name still resolves to null (never returned as-is)', () => {
+    // Kills the fallback `if (resolvesToExistingWorkstream(cwd, name))` →
+    // `if (true)`: the mutant would return the bogus fallback name
+    // unconditionally instead of continuing to null.
+    makePlanningDir(tmpDir); // workstreams root exists, 'ghost-fallback' does not
+    process.env.GSD_SESSION_KEY = 'owned-empty-2';
+    const session = createMemoryPointerAdapter(null);
+    const shared = createMemoryPointerAdapter('ghost-fallback');
+    const result = getActiveWorkstream(tmpDir, {
+      activeWorkstreamAdapters: { session, shared },
+    });
+    assert.equal(result, null);
+  });
+
+  test('peekActiveWorkstream (selfHeal=false) does NOT clear a stale owned pointer', () => {
+    // Kills `if (selfHeal)` → `if (true)`: the mutant would clear the
+    // adapter unconditionally, even for the read-only peek path.
+    makePlanningDir(tmpDir); // 'stale-ws' has no matching dir
+    const adapter = createMemoryPointerAdapter('stale-ws');
+    const result = peekActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.equal(result, null);
+    assert.equal(adapter.read(), 'stale-ws'); // untouched — proves no self-heal
+  });
+});
+
+// ── diagnoseUnresolvedActiveWorkstream (#3579) ────────────────────────────────
+//
+// Each test asserts the FULL returned object (present/value/reason) for one
+// of the three distinguishable outcomes, which is what kills the
+// `present: true` → `present: false` and the StringLiteral ('' for the
+// reason strings) mutants — a partial assertion on just `present` or `value`
+// would leave those survivable.
+
+describe('diagnoseUnresolvedActiveWorkstream — full-object assertions (#3579)', () => {
+  let tmpDir;
+  let saved;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-unit-diagnose-'));
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => {
+    restoreSessionEnv(saved);
+    cleanup(tmpDir);
+  });
+
+  test('nothing set anywhere: present:false, value:null, reason:null', () => {
+    // Kills `if (!raw)` → `raw` (inverted) and → `if (false)`: either mutant
+    // would fall through the `continue` and wrongly report presence for a
+    // null/empty raw value.
+    const adapter = createMemoryPointerAdapter(null);
+    const result = diagnoseUnresolvedActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.deepEqual(result, { present: false, value: null, reason: null });
+  });
+
+  test('well-formed name with no matching workstream dir: reason is exactly "missing_workstream_dir"', () => {
+    // Kills `if (!raw)` → `if (true)` (would always `continue`, hiding this
+    // case as present:false), the fallback `if (resolvesToExistingWorkstream(...))`
+    // → `if (true)`, the `present: true` → `present: false` mutant, and the
+    // StringLiteral mutant on 'missing_workstream_dir'.
+    makePlanningDir(tmpDir); // workstreams root exists, 'ghost-ws' does not
+    const adapter = createMemoryPointerAdapter('ghost-ws');
+    const result = diagnoseUnresolvedActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.deepEqual(result, { present: true, value: 'ghost-ws', reason: 'missing_workstream_dir' });
+  });
+
+  test('malformed name: reason is exactly "invalid_name"', () => {
+    // Kills the StringLiteral mutant on 'invalid_name' and the ternary's
+    // false-branch selection (validateWorkstreamName(raw) ? ... : 'invalid_name').
+    const adapter = createMemoryPointerAdapter('bad name!');
+    const result = diagnoseUnresolvedActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.deepEqual(result, { present: true, value: 'bad name!', reason: 'invalid_name' });
+  });
+
+  test('a stored pointer that actually resolves reports present:false (nothing unresolved)', () => {
+    // Kills the fallback `if (resolvesToExistingWorkstream(cwd, raw)) continue;`
+    // → `if (false)`: the mutant would never skip a resolving value and
+    // wrongly report it as an unresolved marker.
+    makePlanningDir(tmpDir, 'good-ws');
+    const adapter = createMemoryPointerAdapter('good-ws');
+    const result = diagnoseUnresolvedActiveWorkstream(tmpDir, { activeWorkstreamAdapter: adapter });
+    assert.deepEqual(result, { present: false, value: null, reason: null });
   });
 });
 
@@ -1074,5 +1333,132 @@ describe('_resetControllingTtyCacheForTests: proves BOTH cache fields cleared (#
       restoreSessionEnv(saved);
       _resetControllingTtyCacheForTests();
     }
+  });
+});
+
+// ── #3557: Claude Code exports its session id as CLAUDE_CODE_SESSION_ID ──────
+//
+// The session-key probe listed CLAUDE_SESSION_ID / CLAUDE_CODE_SSE_PORT but not
+// CLAUDE_CODE_SESSION_ID (exported by Claude Code ≥ 2.1.132), so on Claude Code
+// the probe returned null and every concurrent session in a working tree shared
+// the single .planning/active-workstream pointer — cross-workstream STATE.md
+// writes landed silently in the wrong workstream's file.
+describe('#3557 CLAUDE_CODE_SESSION_ID session key', () => {
+  let tmpDir;
+  let saved;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3557-'));
+    saved = saveSessionEnv();
+    clearSessionEnv();
+  });
+  afterEach(() => {
+    restoreSessionEnv(saved);
+    cleanup(tmpDir);
+  });
+
+  // Deterministic non-TTY stdin regardless of the host terminal (pattern from
+  // the getWorkstreamSessionKey describe above, incl. the #1191 memo seam).
+  function withNonTtyStdin(fn) {
+    const origDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true, writable: true });
+    _resetControllingTtyCacheForTests();
+    try {
+      return fn();
+    } finally {
+      if (origDescriptor) Object.defineProperty(process.stdin, 'isTTY', origDescriptor);
+      else delete (process.stdin).isTTY;
+      _resetControllingTtyCacheForTests();
+    }
+  }
+
+  // Row 1 — the regression-first probe assertion (criterion 1).
+  test('session key resolves from CLAUDE_CODE_SESSION_ID alone', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, 'claude-code-session-id-sess-alpha-123',
+      'Claude Code\'s exported session id must produce a session-scoped key');
+  });
+
+  // Row 2 — end-to-end: the session adapter engages and the shared pointer is
+  // untouched; the session tmp dir is created on first write (criterion 2).
+  test('resolution writes the session-scoped pointer, never the shared file', () => {
+    makePlanningDir(tmpDir, 'workstream-a', 'workstream-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'workstream-b');
+
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    withNonTtyStdin(() => {
+      const adapter = createSessionScopedPointerAdapter(tmpDir);
+      assert.notEqual(adapter, null, 'a session key must select the session-scoped adapter');
+      adapter.write('workstream-a');
+
+      const resolved = resolveActiveWorkstream(tmpDir, [], {});
+      assert.equal(resolved.ws, 'workstream-a',
+        'the session-scoped pointer must win over the stale shared pointer');
+      assert.equal(resolved.source, 'store',
+        'adapter-backed resolution reports source "store"; the shared file '
+        + 'staying on workstream-b below is what proves the session scoping');
+    });
+
+    assert.equal(fs.readFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'utf8').trim(),
+      'workstream-b', 'the shared pointer file must be untouched');
+  });
+
+  // Row 3 — two sessions cannot observe each other's pointer (criterion 3).
+  test('distinct CLAUDE_CODE_SESSION_ID values cannot observe each other', () => {
+    makePlanningDir(tmpDir, 'workstream-a', 'workstream-b');
+
+    const alpha = createSessionScopedPointerAdapter(tmpDir, 'claude-code-session-id-sess-alpha-123');
+    const beta = createSessionScopedPointerAdapter(tmpDir, 'claude-code-session-id-sess-beta-456');
+    alpha.write('workstream-a');
+    beta.write('workstream-b');
+    assert.equal(alpha.read(), 'workstream-a');
+    assert.equal(beta.read(), 'workstream-b');
+  });
+
+  // Row 4 — no identity at all: legacy headless fallback unchanged (criterion 4).
+  test('no session identity falls back to the shared pointer', () => {
+    makePlanningDir(tmpDir, 'workstream-b');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'workstream-b');
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, null);
+    const resolved = resolveActiveWorkstream(tmpDir, [], {});
+    assert.equal(resolved.ws, 'workstream-b');
+    assert.equal(resolved.source, 'store');
+  });
+
+  // Row 5 — the new key must not disturb existing precedence (criterion 6).
+  test('existing key precedence unchanged by the new key', () => {
+    process.env.GSD_SESSION_KEY = 'explicit-key';
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    const key = withNonTtyStdin(() => getWorkstreamSessionKey());
+    assert.equal(key, 'gsd-session-key-explicit-key',
+      'GSD_SESSION_KEY stays ahead of runtime keys in the probe order');
+
+    // Pin the new key's position against BOTH immediate neighbors — a swap
+    // with either would silently change which signal wins when Claude Code
+    // exports more than one (review finding on #3557).
+    delete process.env.GSD_SESSION_KEY;
+    process.env.CLAUDE_SESSION_ID = 'legacy-id';
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-session-id-legacy-id',
+      'CLAUDE_SESSION_ID stays ahead of CLAUDE_CODE_SESSION_ID');
+
+    delete process.env.CLAUDE_SESSION_ID;
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-alpha-123';
+    process.env.CLAUDE_CODE_SSE_PORT = '9999';
+    assert.equal(withNonTtyStdin(() => getWorkstreamSessionKey()),
+      'claude-code-session-id-sess-alpha-123',
+      'CLAUDE_CODE_SESSION_ID stays ahead of CLAUDE_CODE_SSE_PORT');
+  });
+
+  // Row 6 — helper scrub lists must know the new key, or the suite is
+  // nondeterministic when run under Claude Code itself (criterion 5).
+  test('helpers scrub CLAUDE_CODE_SESSION_ID with the other session vars', () => {
+    const { SESSION_ENV_KEYS, SESSION_IDENTITY_ENV_KEYS } = require('./helpers.cjs');
+    assert.ok(SESSION_ENV_KEYS.includes('CLAUDE_CODE_SESSION_ID'),
+      'SESSION_ENV_KEYS must scrub CLAUDE_CODE_SESSION_ID');
+    assert.ok(SESSION_IDENTITY_ENV_KEYS.includes('CLAUDE_CODE_SESSION_ID'),
+      'SESSION_IDENTITY_ENV_KEYS must scrub CLAUDE_CODE_SESSION_ID');
   });
 });

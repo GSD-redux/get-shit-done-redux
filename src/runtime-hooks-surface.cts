@@ -19,9 +19,12 @@
  * BEHAVIOR-PRESERVING RELOCATION: all logic is copied verbatim from
  * bin/install.js. No behavior change, no descriptor reads, no new IO.
  *
- * bin/install.js re-exports every symbol from this module so existing
- * consumers that do require('../bin/install.js').writeCursorHooksJson
- * (etc.) continue to work unchanged.
+ * #2876 (epic #2866 Phase 7): bin/install.js previously re-exported every
+ * symbol from this module, but a repo-wide audit found zero production
+ * consumers of those re-exports — no `require('../bin/install.js').
+ * writeCursorHooksJson` (or any sibling) exists outside a doc comment
+ * anywhere in the tree. The re-exports were test-suite-only pass-throughs;
+ * tests now require this module directly instead.
  */
 
 import fs from 'node:fs';

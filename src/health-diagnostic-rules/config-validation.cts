@@ -62,6 +62,10 @@ type Rule = healthDiagnosticMod.Rule;
 
 import { VALID_PROFILES, VALID_TIERS, VALID_PHASE_TYPES } from '../model-catalog.cjs';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('../planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+
 // verify.cts:2141 — inlined literal, not exported from anywhere; same list.
 const VALID_BRANCHING_STRATEGIES = ['none', 'phase', 'milestone'];
 
@@ -273,6 +277,39 @@ function checkW022(snapshot: PlanningSnapshot): Diagnostic[] {
   return diagnostics;
 }
 
+// ─── W029 — `.planning/` ignored but still tracked (#3586, epic #2292) ─────
+//
+// Not a config.json-sourced check (unlike every other rule in this file) —
+// registered here per the phase brief rather than in a new file, reading
+// only `snapshot.planningTracked` (`src/planning-snapshot.cts`'s
+// `buildPlanningTrackedField`). Fires ONLY when the probe's scope is
+// COMPLETE and both `ignored` and `tracked` are true: `.gitignore` has no
+// effect on files git already tracks, so a project that committed
+// `.planning/` before ignoring it keeps staging those files forever even
+// though `commit_docs` correctly auto-resolves `false`. Any other COMPLETE
+// combination (most importantly `ignored: false, tracked: true` — the
+// default, healthy state of every normal project) is silent; a degraded
+// (non-COMPLETE) scope is ALSO silent — a probe that could not run must
+// never manufacture a finding. ADVISE-only: auto-untracking is destructive
+// and outside this phase's stated boundary (design doc, "Rejected" #3).
+
+function checkW029(snapshot: PlanningSnapshot): Diagnostic[] {
+  const field = snapshot.planningTracked;
+  if (!field || field.scope !== SCOPE.COMPLETE) return [];
+  if (!field.value.ignored || !field.value.tracked) return [];
+  return [
+    {
+      code: 'W029',
+      severity: SEVERITY.WARNING,
+      message:
+        '.planning/ matches a gitignore rule but is still tracked by git — .gitignore has no effect on already-tracked files, so staging keeps picking them up',
+      remedy: adviseRemedy(
+        'Run `git rm -r --cached .planning/` to untrack it (the ignore rule then takes effect); this does not delete the files on disk',
+      ),
+    },
+  ];
+}
+
 // ─── Exports ────────────────────────────────────────────────────────────────
 
 const RULES: Rule[] = [
@@ -328,6 +365,13 @@ const RULES: Rule[] = [
     description: 'config.json models entry malformed (unknown phase type, invalid tier, or non-object value)',
     repairable: false,
     check: checkW022,
+  },
+  {
+    code: 'W029',
+    severity: SEVERITY.WARNING,
+    description: '.planning/ matches a gitignore rule but is still tracked by git (gitignore has no effect on already-tracked files)',
+    repairable: false,
+    check: checkW029,
   },
 ];
 

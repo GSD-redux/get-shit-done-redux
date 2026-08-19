@@ -1,6 +1,5 @@
 [
   ".gsd-profile",
-  ".gsd/defaults.json",
   "agents/gsd-advisor-researcher.md",
   "agents/gsd-ai-researcher.md",
   "agents/gsd-assumptions-analyzer.md",
@@ -314,7 +313,6 @@
   "gsd-core/workflows/debug.md",
   "gsd-core/workflows/debug/steps/runtime-evidence-protocol.md",
   "gsd-core/workflows/diagnose-issues.md",
-  "gsd-core/workflows/discovery-phase.md",
   "gsd-core/workflows/discuss-phase-assumptions.md",
   "gsd-core/workflows/discuss-phase-assumptions/steps/auto-advance-dispatch.md",
   "gsd-core/workflows/discuss-phase-power.md",
@@ -383,7 +381,6 @@
   "gsd-core/workflows/note.md",
   "gsd-core/workflows/onboard.md",
   "gsd-core/workflows/pause-work.md",
-  "gsd-core/workflows/plan-milestone-gaps.md",
   "gsd-core/workflows/plan-phase.md",
   "gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md",
   "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",

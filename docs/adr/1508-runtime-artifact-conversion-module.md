@@ -91,3 +91,37 @@ Two deferred follow-ups were spun out as **sub-issues of #1507** and have since 
 - **#1676** (PR #1686) — added the `fast-check` property test (`$HOME`-collapse invariant + path-rewrite idempotency) promised in #1511's test scope.
 
 Delivery verified by a Codex (`gpt-5.4`, high-effort, read-only) review against the epic's stated deliverables, cross-checked against the indexed code graph and live source.
+
+## Amendment — 2026-08-17 (#2876): the re-export mandate's stated beneficiary was the test suite
+
+This ADR's relocation slices, and ADR-857's before them, kept a re-export spine in `bin/install.js`
+so that *"existing consumers that do `require('../bin/install.js').writeCursorHooksJson` (etc.)
+continue to work unchanged"* — the wording carried in `src/runtime-hooks-surface.cts`'s own header.
+
+**Epic #2866 Phase 7 measured the consumers. There are none.**
+
+`bin/install.js` exported **197** names. Every reference to it outside `tests/` — in `src/`,
+`hooks/`, `scripts/` and `bin/` — sits **inside a comment**, including the one in
+`runtime-hooks-surface.cts` that named the case. Not one line of production code has ever required
+the file. The 44 consumers are test files.
+
+So the pattern was real and the reasoning behind it was sound; the beneficiary was simply
+misidentified. The compatibility spine was preserving access for a caller that did not exist, while
+the actual dependency — the test suite reaching implementation through the installer rather than
+through the modules that own it — went unnamed and therefore unmanaged.
+
+**What Phase 7 changed.** 9 dead exports and 61 pass-throughs are gone; their tests now import the
+extracted modules directly. `bin/install.js` exports **127** — 197 − 9 − 61 — and every one of those
+127 is substantive local implementation. They are not a compatibility wall; they are code with no
+other home yet, and extracting them is a different piece of work.
+
+**What this does not change.** The dependency direction this ADR established — installer and layout
+import the conversion module, the conversion module imports nothing upward — is untouched, and so is
+ADR-857's capability-registry contract. Relocation still requires the moved symbol to keep working
+for its real callers; the correction is only about who those callers are.
+
+**The generalizable point.** A back-compat re-export is a claim about consumers, and a claim about
+consumers is checkable. This one went four ADRs and several epics without being checked, which let
+an interface be shaped by test access while everyone believed it was shaped by callers. Before
+adding a compatibility layer, enumerate what it is compatible *for*; if the answer is "the tests",
+the honest fix is to point the tests at the owning module.

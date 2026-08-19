@@ -1011,6 +1011,83 @@ describe('evaluateUatPassed — output shape (Hyrum\'s Law contract)', () => {
   });
 });
 
+// ─── #3511: phase-scoped UAT/VERIFICATION scanning — the transition gate ─────
+//
+// evaluateUatPassed is the CRITICAL anchor for #3511: its `passed`/`blockers`
+// fields directly gate a phase transition. A cross-phase stray file sitting
+// in a phase directory must never contribute a blocker to a phase it does not
+// belong to, and the phase's own artifacts must keep behaving exactly as
+// before.
+
+describe('#3511: evaluateUatPassed — cross-phase stray files do not contribute blockers', () => {
+  let baseDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3511-uat-pred-'));
+    // Phase-shaped basename ("03-…") so isPhaseArtifact actually scopes —
+    // extractPhaseToken('03-uat-predicate') derives token "03".
+    phaseDir = path.join(baseDir, '03-uat-predicate');
+    fs.mkdirSync(phaseDir);
+  });
+
+  afterEach(() => {
+    rmDir(baseDir);
+  });
+
+  test('passed:true with a passing own UAT + own VERIFICATION, despite a blocking cross-phase stray VERIFICATION', () => {
+    writeFile(phaseDir, '03-UAT.md', makePassingUat(1));
+    writeFile(phaseDir, '03-VERIFICATION.md', '---\nstatus: passed\n---\n\nOK.');
+    // Cross-phase stray: a "04" VERIFICATION file sitting in phase 03's
+    // directory, with a BLOCKING status. Pre-#3511, this unscoped scan would
+    // have picked it up and blocked phase 03's transition.
+    writeFile(phaseDir, '04-VERIFICATION.md', '---\nstatus: human_needed\n---\n\nNeeds human check.');
+
+    const report = evaluateUatPassed(phaseDir);
+    assert.strictEqual(report.passed, true,
+      'a cross-phase stray VERIFICATION file must not block this phase\'s transition');
+    assert.ok(
+      !report.blockers.some(b => /04-VERIFICATION\.md/.test(b) || /human_needed/i.test(b)),
+      `blockers must not name the stray file; got: ${JSON.stringify(report.blockers)}`,
+    );
+    assert.strictEqual(report.verification_files.includes('04-VERIFICATION.md'), false,
+      'the stray must not even be counted as a verification_files entry for this phase');
+  });
+
+  test('passed:false with own report still failing, unaffected by an unrelated passing cross-phase stray (non-stray case unchanged)', () => {
+    writeFile(phaseDir, '03-UAT.md', makePassingUat(1));
+    // This phase's own VERIFICATION is blocking.
+    writeFile(phaseDir, '03-VERIFICATION.md', '---\nstatus: gaps_found\n---\n\nHas gaps.');
+    // A cross-phase stray that is itself passing must not paper over the
+    // phase's own real failure either — over-exclusion is as dangerous as
+    // under-exclusion here.
+    writeFile(phaseDir, '99-VERIFICATION.md', '---\nstatus: passed\n---\n\nOK.');
+
+    const report = evaluateUatPassed(phaseDir);
+    assert.strictEqual(report.passed, false,
+      'the phase\'s own gaps_found VERIFICATION must still block, exactly as before #3511');
+    assert.ok(report.blockers.some(b => /gaps_found/i.test(b)),
+      `blockers must still name this phase's own gaps_found status; got: ${JSON.stringify(report.blockers)}`);
+  });
+
+  test('#3511 follow-up: passed:true from a NON-canonical dir shape "1-unpadded" (over-exclusion / no_uat_artifacts check)', () => {
+    // "1-unpadded" tokenizes to literal "1"; scaffold writes the PADDED
+    // "01-…" form (normalizePhaseName). A literal token compare excluded the
+    // phase's own artifacts here, flipping `no_uat_artifacts: true` and
+    // false-blocking the transition gate this predicate feeds.
+    const unpaddedDir = path.join(baseDir, '1-unpadded');
+    fs.mkdirSync(unpaddedDir);
+    writeFile(unpaddedDir, '01-UAT.md', makePassingUat(1));
+    writeFile(unpaddedDir, '01-VERIFICATION.md', '---\nstatus: passed\n---\n\nOK.');
+
+    const report = evaluateUatPassed(unpaddedDir);
+    assert.strictEqual(report.no_uat_artifacts, false,
+      `own UAT/VERIFICATION files in an unpadded-dir phase must be found; got: ${JSON.stringify(report)}`);
+    assert.strictEqual(report.passed, true,
+      `the phase's own passing files in a non-canonical dir must pass the gate; got: ${JSON.stringify(report)}`);
+  });
+});
+
 // ─── FIX A regression: nested-fence (~~~ inside ```) ─────────────────────────
 
 describe('FIX A — nested fence: ~~~ inside ``` does not prematurely close outer fence', () => {

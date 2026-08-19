@@ -4,7 +4,7 @@ Template for `.planning/phases/XX-name/{phase_num}-DISCUSSION-LOG.md` — audit 
 
 **Purpose:** Software audit trail for decision-making. Captures all options considered, not just the selected one. Separate from CONTEXT.md which is the implementation artifact consumed by downstream agents.
 
-**NOT for LLM consumption.** This file should never be referenced in `<files_to_read>` blocks or agent prompts.
+**NOT for LLM consumption.** This file should never be referenced in `<required_reading>` blocks or agent prompts.
 
 ## Format
 

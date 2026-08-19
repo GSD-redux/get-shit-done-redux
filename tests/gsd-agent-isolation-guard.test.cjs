@@ -54,6 +54,7 @@ const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempProject, runGsdTools, cleanup } = require('./helpers.cjs');
 const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS, readSentinel } = require('../hooks/lib/isolation-sentinel.js');
+const { REASON_CODE } = require('../hooks/lib/isolation-deny-reason.js');
 const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-agent-isolation-guard.js');
@@ -621,6 +622,205 @@ describe('gsd-agent-isolation-guard.js: #3045 MAJOR — clock seam boundary cove
   });
 });
 
+describe('gsd-agent-isolation-guard.js: #3566 — per-install .gsd-runtime marker rung (in-process)', () => {
+  // Precedence under the fix: GSD_RUNTIME > config.json `runtime` > the per-install
+  // marker at <install>/gsd-core/.gsd-runtime > ~/.gsd/defaults.json `runtime`.
+  //
+  // The marker is __dirname-relative in production (hooks/ sits beside gsd-core/ in
+  // every install tree — the same sibling assumption the hook's own
+  // require('../gsd-core/bin/lib/…') already makes), so a spawned hook in this dev
+  // tree (which has no marker) can never exercise the rung. These tests require the
+  // module in-process and drive the marker through the same
+  // _setInstallRuntimeMarkerForTests seam src/model-resolver.cts established for
+  // #2297 — null simulates a dev tree / pre-#2297 install with no marker file.
+  const guardModule = require('../hooks/gsd-agent-isolation-guard.js');
+  const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+
+  // Distinct canonical runtimes so the precedence oracle is unambiguous.
+  const IDENTITY_POOL = ['claude', 'codex', 'windsurf', 'opencode'];
+
+  let savedHome;
+  let savedUserProfile;
+  let savedGsdRuntime;
+  let markerProject; // scaffold-shaped config ({}), per #2840's no-runtime-key template
+
+  // Per-test world: install marker (seam), HOME containing an optional defaults.json,
+  // GSD_RUNTIME. resolveRuntimeIdentity resolves the defaults rung through
+  // os.homedir() at call time, so redirecting HOME — mirrored onto USERPROFILE for
+  // Windows, exactly as runHook documents above — pins it hermetically.
+  function setWorld(t, { marker = null, defaultsRuntime = null, envRuntime = undefined }) {
+    guardModule._setInstallRuntimeMarkerForTests(marker);
+    const home = mkProject('gsd-aig-3566-home-');
+    if (defaultsRuntime !== null) {
+      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: defaultsRuntime }));
+    }
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    if (envRuntime === undefined) delete process.env.GSD_RUNTIME;
+    else process.env.GSD_RUNTIME = envRuntime;
+    t.after(() => {
+      cleanup(home);
+      guardModule._setInstallRuntimeMarkerForTests(null);
+    });
+  }
+
+  function identity(proj = markerProject) {
+    const configPath = path.join(proj, '.planning', 'config.json');
+    return guardModule.resolveRuntimeIdentity(proj, configPath, resolveRuntimeNameFromCandidates);
+  }
+
+  before(() => {
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+    savedGsdRuntime = process.env.GSD_RUNTIME;
+    markerProject = mkProject('gsd-aig-3566-');
+    // Mirrors gsd-core/templates/config.json exactly: no `runtime` key — the COMMON
+    // scaffold shape since #2840 stopped copying runtime into project configs.
+    writeConfig(markerProject, JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(markerProject);
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    if (savedGsdRuntime === undefined) delete process.env.GSD_RUNTIME;
+    else process.env.GSD_RUNTIME = savedGsdRuntime;
+    guardModule._setInstallRuntimeMarkerForTests(null);
+  });
+
+  test('#3566: per-install marker outranks host-wide defaults — two-runtime machine enforces instead of going inert', (t) => {
+    // The exact issue scenario: a Codex install ran last (defaults.json says codex),
+    // the Claude install's own marker says claude, the project scaffolded without a
+    // runtime key, GSD_RUNTIME unset. Pre-fix the guard resolved codex confidently
+    // and silently went inert; post-fix it resolves claude and DEMANDS the flag.
+    setWorld(t, { marker: 'claude', defaultsRuntime: 'codex' });
+    const decision = guardModule.evaluateDispatch(
+      { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: markerProject },
+    );
+    assert.equal(decision.action, 'block', 'must resolve claude → harness-worktree and demand the isolation param');
+    // (The block REASON's "names the exact parameter to add" property is already
+    // pinned by the pre-existing #3045 row 'reason names the exact parameter to
+    // add' — no new raw-text matching here, per CONTRIBUTING's test-output rule.)
+  });
+
+  test('#3566: marker rung returns confident claude above codex defaults (identity contract)', (t) => {
+    setWorld(t, { marker: 'claude', defaultsRuntime: 'codex' });
+    assert.deepEqual(identity(), { runtimeId: 'claude', confident: true });
+  });
+
+  test('#3566: explicit config.json runtime still outranks the install marker', (t) => {
+    const proj = mkProject('gsd-aig-3566-cfg-');
+    writeConfig(proj, JSON.stringify({ runtime: 'codex' }));
+    t.after(() => cleanup(proj));
+    setWorld(t, { marker: 'claude' });
+    assert.deepEqual(identity(proj), { runtimeId: 'codex', confident: true });
+    const decision = guardModule.evaluateDispatch(
+      { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: proj },
+    );
+    assert.equal(decision.action, 'allow', 'codex dispatch isolation is not harness-worktree — the explicit config override is respected');
+  });
+
+  test('#3566: GSD_RUNTIME env still outranks the install marker', (t) => {
+    setWorld(t, { marker: 'claude', envRuntime: 'windsurf' });
+    assert.deepEqual(identity(), { runtimeId: 'windsurf', confident: true });
+  });
+
+  test('#3566: empty marker is no signal — falls through to the defaults rung', (t) => {
+    setWorld(t, { marker: '', defaultsRuntime: 'claude' });
+    assert.deepEqual(identity(), { runtimeId: 'claude', confident: true });
+  });
+
+  test('#3566: whitespace-only marker is no signal', (t) => {
+    setWorld(t, { marker: '   ', defaultsRuntime: 'claude' });
+    assert.deepEqual(identity(), { runtimeId: 'claude', confident: true });
+  });
+
+  test('#3566: marker value canonicalized through runtime-name-policy', (t) => {
+    setWorld(t, { marker: 'claude-code' });
+    assert.deepEqual(identity(), { runtimeId: 'claude', confident: true });
+  });
+
+  test('#3566: unknown marker value degrades to inert via registry miss, mirroring every other rung', (t) => {
+    setWorld(t, { marker: 'not-a-runtime' });
+    assert.deepEqual(identity(), { runtimeId: 'not-a-runtime', confident: true }, 'future-runtime tolerance passthrough');
+    const configPath = path.join(markerProject, '.planning', 'config.json');
+    assert.deepEqual(
+      guardModule.resolveRegistryIsolation(markerProject, configPath),
+      { isolation: 'none', harnessFlag: null },
+      'the SPECIFIC degraded verdict — not merely survival',
+    );
+    const decision = guardModule.evaluateDispatch(
+      { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: markerProject },
+    );
+    assert.equal(decision.action, 'allow');
+  });
+
+  test('#3566: absent marker preserves the #3045 defaults.json confidence rung', (t) => {
+    setWorld(t, { marker: null, defaultsRuntime: 'claude' });
+    assert.deepEqual(identity(), { runtimeId: 'claude', confident: true });
+    const decision = guardModule.evaluateDispatch(
+      { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: markerProject },
+    );
+    assert.equal(decision.action, 'block', 'single-runtime default install still enforces (#3045 BLOCKER 2 part B)');
+  });
+
+  test('#3566: no-signal case still degrades to inert, never a guessed runtime', (t) => {
+    setWorld(t, { marker: null });
+    assert.deepEqual(identity(), { runtimeId: null, confident: false });
+    const decision = guardModule.evaluateDispatch(
+      { tool_name: 'Agent', tool_input: { subagent_type: 'gsd-executor' }, cwd: markerProject },
+    );
+    assert.equal(decision.action, 'allow');
+  });
+
+  test('#3566 property: precedence chain is a total order over arbitrary signal subsets', (t) => {
+    const proj = mkProject('gsd-aig-3566-prop-');
+    const home = mkProject('gsd-aig-3566-prophome-');
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    const defaultsPath = path.join(home, '.gsd', 'defaults.json');
+    const configPath = path.join(proj, '.planning', 'config.json');
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    t.after(() => {
+      cleanup(proj);
+      cleanup(home);
+      guardModule._setInstallRuntimeMarkerForTests(null);
+    });
+
+    fc.assert(fc.property(
+      fc.uniqueArray(fc.constantFrom(...IDENTITY_POOL), { minLength: 4, maxLength: 4 }),
+      fc.tuple(fc.boolean(), fc.boolean(), fc.boolean(), fc.boolean()),
+      (perm, actives) => {
+        // perm (a uniqueArray over the exact 4-runtime pool) assigns DISTINCT
+        // canonical runtimes to the four rungs; actives[i] selects whether rung i
+        // carries a value at all. Distinctness makes the oracle unambiguous: the
+        // winner is the first ACTIVE rung in precedence order env > config >
+        // marker > defaults.
+        const [envV, cfgV, mkV, defV] = perm;
+        const [envOn, cfgOn, mkOn, defOn] = actives;
+        if (envOn) process.env.GSD_RUNTIME = envV;
+        else delete process.env.GSD_RUNTIME;
+        writeConfig(proj, cfgOn ? JSON.stringify({ runtime: cfgV }) : JSON.stringify({}));
+        guardModule._setInstallRuntimeMarkerForTests(mkOn ? mkV : null);
+        if (defOn) fs.writeFileSync(defaultsPath, JSON.stringify({ runtime: defV }));
+        else fs.writeFileSync(defaultsPath, JSON.stringify({})); // no `runtime` key = no signal from the rung
+
+        const expected = envOn ? envV : cfgOn ? cfgV : mkOn ? mkV : defOn ? defV : null;
+        const id = guardModule.resolveRuntimeIdentity(proj, configPath, resolveRuntimeNameFromCandidates);
+        if (expected === null) {
+          assert.equal(id.runtimeId, null);
+          assert.equal(id.confident, false);
+        } else {
+          assert.deepEqual(id, { runtimeId: expected, confident: true });
+        }
+      },
+    ));
+  });
+});
+
 // Folded from tests/fix-3045-dispatch-isolation-resolver.test.cjs (#3333 wave
 // 1, test-only consolidation — no behavior change). These describe blocks
 // cover the sentinel WRITE side: `gsd-tools.cjs query dispatch-isolation`
@@ -1070,5 +1270,54 @@ describe('#2486 regression: inspect-dispatch-isolation is the sentinel-free read
     );
     assert.equal(inspectedJson.isolation, 'orchestrator-worktree', 'precondition: codex is the orchestrator-worktree case');
     assert.ok(inspectedJson.exec, 'precondition: this branch actually populates exec, so the comparison means something');
+  });
+});
+
+// ─── #3582: cold tree (no gsd-core/bin/lib/*.cjs) — self-heal surfacing ────
+//
+// gsd-core/bin/lib/*.cjs are tsc build artifacts (ADR-457), gitignored and
+// absent on a raw plugin-marketplace / git-clone install that never ran
+// `npm run build:lib`. Before #3582, resolveRegistryIsolation's
+// require('../gsd-core/bin/lib/runtime-name-policy.cjs') threw a bare
+// "Cannot find module", which resolveIsolationState's catch folded into the
+// SAME generic "could not read or resolve ... configuration" reason as an
+// unreadable config.json (row 8/12 above) — a misreport of a completely
+// different failure (#3050 lesson). The fix: resolveRegistryIsolation now
+// calls ensureRuntimeBuild() first; a RuntimeBuildError surfaces its own
+// actionable message instead. Simulated hermetically via a fixture install
+// tree that copies hooks/ + the seam module but never gsd-core/bin/lib/ or
+// tsconfig.build.json (tests/helpers/cold-runtime-lib-fixture.cjs) — the
+// REAL gsd-core/bin/lib/ is never touched.
+describe('gsd-agent-isolation-guard.js: #3582 cold tree — RuntimeBuildError surfaces distinctly', () => {
+  const { buildColdInstallTree } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+  test('missing compiled runtime library -> DENY (fail-closed) with the seam\'s own actionable message, not the generic config-unreadable text', (t) => {
+    const cold = buildColdInstallTree();
+    t.after(cold.cleanup);
+    const project = mkProject('gsd-aig-cold-');
+    t.after(() => cleanup(project));
+    writeConfig(project, JSON.stringify({ runtime: 'claude' }));
+
+    const env = { ...process.env };
+    delete env.GSD_RUNTIME;
+    const r = runHookSeam(path.join(cold.hooksDir, 'gsd-agent-isolation-guard.js'), [], {
+      input: JSON.stringify(agentPayload()),
+      cwd: project,
+      env,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    const result = toLegacyResult(r);
+    assert.equal(result.status, 2, `expected fail-closed DENY; stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.decision, 'block');
+    // Typed reason code (CONTRIBUTING.md "Prohibited: Raw Text Matching on
+    // Test Outputs" — assert the stable code, not the free-form `reason`
+    // prose). RUNTIME_BUILD_FAILED and CONFIG_UNREADABLE are distinct codes,
+    // so this equality check itself proves the build failure is NOT
+    // misreported as the generic unreadable-config case (rows 8/12 above).
+    assert.equal(out.reason_code, REASON_CODE.RUNTIME_BUILD_FAILED);
+    // `reason` remains free-form operator-facing text — not asserted here.
+    assert.equal(typeof out.reason, 'string');
+    assert.ok(out.reason.length > 0);
   });
 });

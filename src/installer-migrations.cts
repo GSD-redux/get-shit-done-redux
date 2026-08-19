@@ -19,6 +19,21 @@ import {
 import { platformWriteSync, retryRenameSync, posixNormalize } from './shell-command-projection.cjs';
 import { realClock, type Clock } from './clock.cjs';
 import { isInstallScopeId, type InstallScope } from './install-scope.cjs';
+// #2874 (ADR-58 cleanup phase): this file is the ~1200-line migration
+// plan/apply/rollback/lock/journal engine — almost none of it is on the
+// installRuntimeArtifacts call tree. Only `readInstallManifest` and
+// `classifyArtifact` are reached (via install-engine.cts's
+// _migrateLegacyOpencodeCommandDir and retired-artifact-cleanup.cts's
+// pruneRetiredRuntimeArtifacts), so only those two entry points — plus their
+// shared `readJsonIfPresent` helper and `classifyArtifact`'s `sha256File`
+// hashing helper — are routed through the injectable seam. Everything else
+// in this file (locking, journal, apply/rollback, migration discovery)
+// keeps using real `fs` directly: it is not reachable from
+// installRuntimeArtifacts, so routing it would grow this seam past what
+// AC2 actually requires. See install-fs-adapter.cts's module doc.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installFsAdapter = require('./install-fs-adapter.cjs');
+const { installFs } = installFsAdapter;
 
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const INSTALL_STATE_NAME = 'gsd-install-state.json';
@@ -27,18 +42,31 @@ const DEFAULT_MIGRATIONS_DIR = path.join(__dirname, 'installer-migrations');
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const STRICT_JSON = Symbol('strict-json');
 
+// #2874: routed through installFs()'s openSync/readSync/closeSync trio
+// instead of importing `node:fs` directly, so classifyArtifact — reachable
+// from installRuntimeArtifacts — can be exercised against an injected
+// adapter. This function was briefly converted to a single
+// `installFs().readFileSync` call (buffering the whole file); that broke
+// tests/installer-migrations.test.cjs's "classifies large files without
+// loading the whole file through readFileSync", which monkeypatches real
+// fs.readFileSync to throw for the file under test and asserts hashing still
+// succeeds — an explicit, pre-existing contract that large files must be
+// streamed, not buffered. Restored to the original raw-fd streaming shape,
+// now going through the adapter instead of `node:fs` directly. This is the
+// ONLY call site of sha256File in this file (confirmed by inspection) — no
+// other caller is affected.
 function sha256File(filePath: string): string {
   const hash = crypto.createHash('sha256');
   const buffer = Buffer.allocUnsafe(1024 * 1024);
-  const fd = fs.openSync(filePath, 'r');
+  const fd = installFs().openSync(filePath, 'r');
   try {
     while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      const bytesRead = installFs().readSync(fd, buffer, 0, buffer.length, null);
       if (bytesRead === 0) break;
       hash.update(buffer.subarray(0, bytesRead));
     }
   } finally {
-    fs.closeSync(fd);
+    installFs().closeSync(fd);
   }
   return hash.digest('hex');
 }
@@ -47,25 +75,6 @@ function sha256Text(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-/**
- * Copy a managed path for the rollback snapshot or the user-facing backup,
- * WITHOUT dereferencing a symlink.
- *
- * `fs.copyFileSync` follows symlinks, so a managed path that has been replaced
- * by a link (tampering, or an unexpected user layout) would have had the
- * LINK TARGET's bytes copied into `gsd-migration-journal/…-backups/` — e.g. a
- * `gsd.cjs` symlinked at `~/.ssh/id_rsa` would land that key's contents in the
- * backup tree. Nothing GSD installs is ever a symlink, so the faithful snapshot
- * of a symlinked managed path is the link itself: recreating it preserves
- * rollback fidelity (restore re-creates the same link) while never reading the
- * referent. Deletion was already safe — `fs.rmSync` unlinks the link, never the
- * target.
- *
- * Windows note: `fs.symlinkSync` can throw EPERM for unprivileged users. That
- * surfaces as an apply failure and triggers the normal rollback path, which is
- * the correct outcome — refusing to proceed beats silently copying referent
- * bytes.
- */
 /**
  * Evaluate and, if safe, perform a `remove-empty-dir` action against `fullPath`.
  *
@@ -135,23 +144,54 @@ function evaluateRemoveEmptyDir(configDir: string, fullPath: string): string {
   }
 }
 
+/**
+ * Copy a managed path for the rollback snapshot or the user-facing backup,
+ * WITHOUT dereferencing a symlink.
+ *
+ * `fs.copyFileSync` follows symlinks, so a managed path that has been replaced
+ * by a link (tampering, or an unexpected user layout) would have had the
+ * LINK TARGET's bytes copied into `gsd-migration-journal/…-backups/` — e.g. a
+ * `gsd.cjs` symlinked at `~/.ssh/id_rsa` would land that key's contents in the
+ * backup tree. Nothing GSD installs is ever a symlink, so the faithful snapshot
+ * of a symlinked managed path is the link itself: recreating it preserves
+ * rollback fidelity (restore re-creates the same link) while never reading the
+ * referent. Deletion was already safe — `fs.rmSync` unlinks the link, never the
+ * target.
+ *
+ * Windows note: `fs.symlinkSync` can throw EPERM for unprivileged users. That
+ * surfaces as an apply failure and triggers the normal rollback path, which is
+ * the correct outcome — refusing to proceed beats silently copying referent
+ * bytes.
+ *
+ * #2875 (epic #2866 Phase 6): all five fs calls routed through `installFs()`
+ * so this primitive can be reused on the routed install path (by
+ * user-artifact-staging.cts) without punching a hole through the seam Phase 5
+ * built. Every EXISTING caller of this function is on the migration
+ * plan/apply/rollback tree, which never wraps a call in `withInstallFs` — the
+ * ambient adapter there resolves to real `node:fs` by default, so this
+ * routing is behavior-preserving for them (test-matrix D2).
+ */
 function copyPreservingSymlink(srcPath: string, destPath: string): void {
-  if (fs.lstatSync(srcPath).isSymbolicLink()) {
+  if (installFs().lstatSync(srcPath).isSymbolicLink()) {
     // symlinkSync fails with EEXIST on an occupied path, so clear it first.
     // Scoped to this branch on purpose: the regular-file path below keeps
     // copyFileSync's overwrite-in-place, so a mid-restore failure cannot leave
     // the destination destroyed.
-    fs.rmSync(destPath, { force: true });
-    fs.symlinkSync(fs.readlinkSync(srcPath), destPath);
+    installFs().rmSync(destPath, { force: true });
+    installFs().symlinkSync(installFs().readlinkSync(srcPath), destPath);
     return;
   }
-  fs.copyFileSync(srcPath, destPath);
+  installFs().copyFileSync(srcPath, destPath);
 }
 
+// Shared by readInstallManifest (on the installRuntimeArtifacts call tree —
+// routed) and readInstallState/readJson (not on that call tree — the
+// ambient default resolves to real fs for those, unchanged). Routing once
+// here is safe for all three callers.
 function readJsonIfPresent(filePath: string, fallback: unknown): unknown {
-  if (!fs.existsSync(filePath)) return fallback;
+  if (!installFs().existsSync(filePath)) return fallback;
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return JSON.parse(installFs().readFileSync(filePath, 'utf8'));
   } catch (error) {
     if (fallback === STRICT_JSON) {
       throw new Error(`invalid installer migration state JSON: ${filePath}: ${(error as Error).message}`);
@@ -246,7 +286,14 @@ function normalizeManifestVersion(raw: unknown): number {
 
 function readInstallManifest(configDir: string): InstallManifest {
   const manifest = readJsonIfPresent(path.join(configDir, MANIFEST_NAME), null);
-  if (!manifest || typeof manifest !== 'object') {
+  // `typeof [] === 'object'` in JS, so a bare `typeof !== 'object'` guard lets
+  // a top-level JSON array (valid JSON, but not the manifest's documented
+  // object shape) fall through to the field reads below — `m.manifestVersion`
+  // reads `undefined` off an array, which `normalizeManifestVersion` then
+  // reports as `1` (a v1 manifest), misclassifying "not an object" as
+  // "installed". `Array.isArray` closes that gap explicitly rather than
+  // relying on the object-shape checks below to catch it incidentally.
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     return {
       version: null,
       timestamp: null,
@@ -351,7 +398,7 @@ function classifyArtifact(configDir: string, relPath: string, manifest: InstallM
   const normalized = normalizeRelPath(relPath);
   const originalHash = manifest.files[normalized] || null;
   const fullPath = path.join(configDir, normalized);
-  if (!fs.existsSync(fullPath)) {
+  if (!installFs().existsSync(fullPath)) {
     return { classification: originalHash ? 'managed-missing' : 'missing', originalHash, currentHash: null };
   }
   const currentHash = sha256File(fullPath);
@@ -1180,6 +1227,7 @@ export = {
   acquireInstallMigrationLock,
   applyInstallerMigrationPlan,
   classifyArtifact,
+  copyPreservingSymlink,
   discoverInstallerMigrations,
   evaluateRemoveEmptyDir,
   MANIFEST_SCHEMA_VERSION,

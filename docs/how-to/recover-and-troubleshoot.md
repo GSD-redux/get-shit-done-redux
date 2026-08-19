@@ -265,6 +265,33 @@ npx @opengsd/gsd-core@latest --claude --local
 
 For runtime-specific install paths and troubleshooting, see [Install on your runtime](install-on-your-runtime.md).
 
+### If an install or uninstall was interrupted
+
+Nothing to do — finish the interrupted command by running it again.
+
+GSD deletes and rebuilds whole directories while installing, and some files in them are yours
+rather than GSD's: `USER-PROFILE.md` (written by `/gsd-profile-user`) and `dev-preferences.md`.
+Before anything is deleted, GSD copies those to a staging area under your runtime's config
+directory, at `.gsd-staging/user-artifacts/`. The copy is committed to disk before the delete
+begins, so pressing <kbd>Ctrl</kbd>+<kbd>C</kbd>, a crash, or a machine losing power cannot leave
+you without them.
+
+The next install or uninstall looks for staged copies left behind by an interrupted run and
+restores them before doing anything else. It will not overwrite a file that is already there — a
+file present on disk was never lost — and it leaves alone any staging belonging to another install
+still running.
+
+To confirm your profile came back:
+
+```bash
+ls ~/.claude/gsd-core/USER-PROFILE.md
+```
+
+If the file is missing but `.gsd-staging/user-artifacts/` still contains an entry, run the install
+again; recovery happens at the start of the next run, not in the background. If you are curious
+what is staged, each entry holds a `record.json` naming the directory it came from and the files it
+holds — those are ordinary files you can inspect or copy out by hand.
+
 ### If Codex agents fail to spawn with a 400 about an unsupported model
 
 Symptom — a typed agent (`gsd-planner`, `gsd-executor`, …) fails to start and the whole
