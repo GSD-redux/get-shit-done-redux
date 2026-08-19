@@ -1,5 +1,0 @@
----
-type: Fixed
-pr: 3429
----
-**`init execute-phase` no longer hands a directory slug to the phase-start flow as the phase display name.** When a phase's working directory already exists on disk, the disk-lookup path derived `phase_name` from the directory-name remainder — itself an already-slugified value (`phase.add` writes `${num}-${slug}` dirs) — so `phase_name` and `phase_slug` came out byte-identical. The execute-phase workflow forwards `phase_name` into `state begin-phase --name`, which wrote that raw slug into STATE.md's `current_phase_name` on every phase start (`loop-termination-and-baseline-correctness` instead of `Loop-Termination and Baseline Correctness`). `init execute-phase` now prefers the ROADMAP's curated display name (`### Phase N: <Name>`) for `phase_name`, matching the no-disk fallback path that already did this correctly; `phase_slug` is unchanged so branch-name construction is unaffected. The `state begin-phase` override mechanism (#2821/#2736) is untouched. (#3171)
