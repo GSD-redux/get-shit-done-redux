@@ -25,6 +25,7 @@ const identity = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'package-iden
 const pkg = require(path.join(ROOT, 'package.json'));
 const { MANAGED_HOOKS } = require(path.join(ROOT, 'hooks', 'managed-hooks-registry.cjs'));
 const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
+const { shouldCopyHookEntry } = require('./helpers/cold-runtime-lib-fixture.cjs');
 
 const PLUGIN_JSON_PATH = path.join(ROOT, '.claude-plugin', 'plugin.json');
 const HOOKS_JSON_PATH  = path.join(ROOT, 'hooks', 'hooks.json');
@@ -230,7 +231,7 @@ describe('B: hooks/hooks.json', () => {
 //
 // The `claude plugin validate --strict` binary is absent on CI, so Section C was
 // previously SKIPPED there — the only full-schema gate never ran.  This section
-// replaces the skip-on-absent pattern with two tiers:
+// replaces the skip-on-absent pattern with three tiers:
 //
 //   C1 (UNCONDITIONAL) — Validate plugin.json against a snapshotted JSON schema
 //        fixture that captures the fields `--strict` requires.  Runs on every
@@ -427,7 +428,26 @@ describe('C: plugin.json schema validation', () => {
       fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
       fs.copyFileSync(PLUGIN_JSON_PATH, path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
       for (const dir of COMPONENT_DIRS) {
-        fs.cpSync(path.join(ROOT, dir), path.join(pluginRoot, dir), { recursive: true });
+        // Copy entry-by-entry and skip by NAME BEFORE anything stats it. A bare
+        // recursive copy of hooks/ races the builders: scripts/build-hooks.js
+        // writes atomically through a per-PID `hooks/.dist-staging-<pid>` and
+        // removes it when done, and nine test files invoke that script from
+        // their before() hooks — so a recursive walk can enumerate a staging
+        // directory and then lstat it after the owning process deleted it
+        // (ENOENT). #3656 fixed this same shape in the cold-tree fixture; this
+        // reuses its predicate rather than re-deriving the rule, and a filter
+        // applied AFTER the stat would not close it.
+        //
+        // shouldCopyHookEntry also excludes hooks/dist, which is right for this
+        // fixture independently: a real marketplace install contains neither
+        // dist nor a transient staging dir — the same reasoning that keeps the
+        // repo-root CLAUDE.md out of the validated tree.
+        const src = path.join(ROOT, dir);
+        fs.mkdirSync(path.join(pluginRoot, dir), { recursive: true });
+        for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+          if (!shouldCopyHookEntry(entry.name)) continue;
+          fs.cpSync(path.join(src, entry.name), path.join(pluginRoot, dir, entry.name), { recursive: true });
+        }
       }
     } catch (err) {
       // Best-effort: cleanup() can itself throw (it tolerates Windows EBUSY by
