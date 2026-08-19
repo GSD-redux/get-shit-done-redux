@@ -144,6 +144,44 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
   });
 }
 
+// ─── #3631: cold-tree fixture must tolerate a concurrent build-hooks.js
+// staging dir in the live hooks/ tree ───────────────────────────────────
+//
+// scripts/build-hooks.js writes atomically via a per-PID staging dir
+// (hooks/.dist-staging-<pid>) that it creates and removes; up to nine test
+// files invoke it concurrently from their `before()` hooks, so the live
+// hooks/ dir is never guaranteed stable during a test run. This proves
+// buildColdInstallTree() copies the tree without erroring even while such a
+// staging dir is present, and that it never lands in the fixture.
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { buildColdInstallTree, REPO_ROOT } = require('./helpers/cold-runtime-lib-fixture.cjs');
+  const { cleanup } = require('./helpers.cjs');
+
+  describe('cold-runtime-lib-fixture.cjs: #3631 tolerates a concurrent hooks/.dist-staging-<pid> dir', () => {
+    test('a live .dist-staging-test-<random> dir does not break the fixture copy, and is excluded from it', (t) => {
+      const stagingName = `.dist-staging-test-${Math.random().toString(36).slice(2)}`;
+      const stagingDir = path.join(REPO_ROOT, 'hooks', stagingName);
+      fs.mkdirSync(stagingDir);
+      fs.writeFileSync(path.join(stagingDir, 'scratch.txt'), 'transient build output');
+      t.after(() => cleanup(stagingDir));
+
+      const cold = buildColdInstallTree();
+      t.after(cold.cleanup);
+
+      const entries = fs.readdirSync(cold.hooksDir);
+      assert.ok(
+        !entries.some((e) => e.startsWith('.dist-staging')),
+        `fixture hooks/ must not contain any .dist-staging* entry, got: ${entries.join(', ')}`,
+      );
+      assert.ok(entries.includes('hooks.json'), 'fixture must still contain the real hooks/ tree');
+    });
+  });
+}
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2992-check-latest-version.test.cjs — consolidation epic #1969 (B5 #1974)

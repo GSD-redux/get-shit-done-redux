@@ -35,10 +35,34 @@ function buildColdInstallTree() {
   // managed-hooks-registry.cjs + hooks.json). hooks/dist/ (gitignored,
   // build-hooks.js output) is excluded — it is not present in a raw
   // marketplace checkout either.
-  fs.cpSync(path.join(REPO_ROOT, 'hooks'), path.join(dir, 'hooks'), {
-    recursive: true,
-    filter: (src) => path.basename(src) !== 'dist',
-  });
+  //
+  // This is NOT a single recursive fs.cpSync(hooks/, ...) with a `filter`
+  // callback. The live hooks/ directory is not stable during a test run:
+  // scripts/build-hooks.js writes atomically via a per-PID staging dir
+  // (hooks/.dist-staging-<pid>, gitignored — see .gitignore:21) that it
+  // creates and then removes once the atomic rename into hooks/dist/ is
+  // done, and up to nine test files invoke build-hooks.js concurrently from
+  // their `before()` hooks. A recursive cpSync enumerates hooks/, may
+  // observe another process's transient .dist-staging-<pid> entry, and can
+  // then lstat/copy it AFTER that process has already deleted it — an
+  // intermittent ENOENT ("no such file or directory, lstat
+  // '.../hooks/.dist-staging-<pid>'"). Excluding only the basename 'dist'
+  // does not help: '.dist-staging-<pid>' is a different name.
+  //
+  // Fix: enumerate hooks/ ourselves and skip transient entries BY NAME
+  // ONLY, before ever touching them — no stat/lstat on a name we're going
+  // to skip. Skipping by name (rather than filtering after readdir handed
+  // control to fs.cpSync's own traversal) is what closes the race: a
+  // vanishing .dist-staging-<pid> dir is never accessed at all once its
+  // name has excluded it.
+  const hooksDestDir = path.join(dir, 'hooks');
+  fs.mkdirSync(hooksDestDir, { recursive: true });
+  for (const entry of fs.readdirSync(path.join(REPO_ROOT, 'hooks'), { withFileTypes: true })) {
+    if (entry.name === 'dist' || entry.name.startsWith('.dist-staging')) continue;
+    fs.cpSync(path.join(REPO_ROOT, 'hooks', entry.name), path.join(hooksDestDir, entry.name), {
+      recursive: true,
+    });
+  }
 
   // gsd-core/bin/ensure-runtime-build.cjs — the seam itself. Deliberately
   // NOT gsd-core/bin/lib/ (absent — isBuilt() reads false) and NOT
