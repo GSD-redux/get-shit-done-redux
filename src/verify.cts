@@ -294,10 +294,18 @@ function scanNegativeGrepCommentEcho(content: string): { errors: string[]; warni
   const warnings: string[] = [];
   // Normalize newlines; join backslash line-continuations so a verify command wrapped
   // across lines (grep ... \ <newline> == 0) is still seen as one segment.
+  // #3611: decode entity-escaped ampersands (&amp; → &) before any downstream
+  // scanning. Planners emit <automated> bodies with `&amp;&amp;` as the chain
+  // operator (66 occurrences vs 0 literal `&&` in the reporting repo), and the
+  // shell itself only ever sees the decoded form — the segment split, the
+  // zero-comparison, the count-grep literal harvest, and the action-echo scan
+  // must all operate on the same decoded text or a negative clause (`= 0`)
+  // poisons the literals of a POSITIVE clause (-ge 3) joined to it.
   const text = (content || '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/\\\n/g, ' ');
+    .replace(/\\\n/g, ' ')
+    .replace(/&amp;/g, '&');
 
   // 1. Allowlisted literals: <!-- planner-discipline-allow: LIT -->
   const allow = new Set<string>();
