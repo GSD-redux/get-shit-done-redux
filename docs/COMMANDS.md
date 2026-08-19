@@ -1172,6 +1172,64 @@ Extract reusable patterns, anti-patterns, and architectural decisions from compl
 
 ---
 
+### `gsd-tools check verify-command-paths`
+
+Deterministic resolvability probe over a phase's `<automated>` verify commands (#2401). Run
+automatically by `/gsd-plan-phase` before the plan-check pass and handed to `gsd-plan-checker`;
+runnable by hand to see what the checker saw.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `N` | **Yes** | Phase number whose `-PLAN.md` files are probed |
+
+| Flag | Description |
+|------|-------------|
+| `--raw` | Emit the JSON payload with no surrounding prose |
+
+**Prerequisites:** none — an unresolvable phase degrades to a JSON payload with `readError` set
+rather than failing.
+**Produces:** JSON on stdout. Nothing is written to disk.
+
+**It never executes command text.** PLAN.md is LLM-authored, so the probe only resolves paths
+and stats directories; a `package.json` it finds is read for script *names* only.
+
+It grounds exactly two forms — a leading `cd <literal>` chain and `npm --prefix <literal>` —
+and refuses to guess at anything else. `pushd`, `make -C`, `yarn --cwd`, `pnpm -C`, and
+`cargo --manifest-path` are not recognized today and report `unresolvable`.
+
+Each row of `commands` carries `command`, `plan`, `task`, `status`, `severity`, `reason`,
+`form`, `rawTarget`, `target`, `manifest`, `script`, `sentinel`, and `base`. There is
+deliberately **no** `suggestion` field — the probe reports what failed to resolve and leaves
+the replacement to the planner.
+
+| `status` | Meaning |
+|---|---|
+| `ok` | Target resolved (a `reason` may still carry an advisory — see below) |
+| `broken` | Target does not resolve, or holds no required manifest — **blocker** |
+| `unresolvable` | The path could not be grounded (variable, glob, substitution, `~`) — warning |
+| `pending_creation` | An earlier task in this phase creates the target — not a finding |
+| `not_applicable` | No `cd`/`--prefix` to resolve, or a Nyquist `MISSING …` sentinel |
+
+| `reason` | `severity` | What it means |
+|---|---|---|
+| `missing_dir` | `blocker` | The resolved directory does not exist, or is not a directory |
+| `no_manifest` | `blocker` | The directory exists but holds no `package.json` / `Makefile` the command needs |
+| `dynamic_path` | `warning` | The path contains `$`, a backtick, `*`, `?`, or `~` — refused, not guessed |
+| `outside_root` | `warning` | A bare ancestor climb (`cd ../..`); the base differs under worktree execution |
+| `script_missing` | `warning` | `npm run <script>` names a script the manifest does not define — this phase may add it |
+| `manifest_unreadable` | `warning` | `package.json` is oversized, unparseable, or not a JSON object |
+| `null` | `none` | Nothing to report |
+
+A non-empty `readError` means the probe **could not look** — distinct from finding nothing.
+
+```bash
+gsd-tools check verify-command-paths 3 --raw    # probe phase 3's verify commands
+```
+
+See [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md).
+
+---
+
 ## Workstream Management
 
 ### `/gsd-workstreams`
