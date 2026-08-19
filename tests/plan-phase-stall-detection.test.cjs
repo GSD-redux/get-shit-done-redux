@@ -36,7 +36,6 @@
 
 const { describe, test, mock } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 // Required as a MODULE OBJECT, not destructured, so `mock.method(processSeam, 'runHook', …)`
 // can observe what runBashScript actually passes to the seam. tests/helpers.cjs:221-224
 // documents this same pattern for runNode.
@@ -160,15 +159,45 @@ function extractStallHelpersBash() {
  * @param {string[]} [args]  positional args passed to the script (become
  *   $1, $2, ... inside it) — empty when the caller embeds values directly
  *   into the script text instead (e.g. via JSON.stringify).
- * @param {object} [opts]  extra spawnSync options (e.g. `{ timeout }`),
- *   merged over the `{ encoding: 'utf-8' }` default.
+ * @param {object} [opts]  extra process-seam options (`{ timeoutMs, cwd, env, input,
+ *   killSignal }`), merged over the defaults below. NOTE the key is `timeoutMs`, not
+ *   spawnSync's `timeout` — the seam reads only its own documented options, so a stray
+ *   `timeout` key is silently ignored rather than honoured.
  */
 function runBashScript(script, args = [], opts = {}) {
   const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-sh-'));
   try {
     const scriptPath = path.join(scriptDir, 'script.sh');
     fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
-    return spawnSync('bash', [scriptPath, ...args], { encoding: 'utf-8', timeout: 10000, ...opts });
+    // Through the process seam, never a hand-rolled spawnSync (CONTRIBUTING.md:
+    // "Anything that shells out goes through tests/helpers/process-seam.cjs"). Two
+    // things that buys, both of which the raw call lacked:
+    //
+    //   1. HOOK_FANOUT_TIMEOUT_MS — the class norm for a bash invocation that FANS OUT
+    //      to nested subprocesses. This script does exactly that: the extracted fence
+    //      opens with the runtime-launcher preamble, which resolves gsd-tools.cjs and
+    //      really runs two `gsd_run query config-get` lines, i.e. two Node spawns
+    //      (measured 236ms vs 2ms for the fallback shape). The old hard-coded 10000ms
+    //      was sized for a cheap probe and was exceeded at 10006ms on
+    //      `full test (windows-latest, 24, shard 1/3)`. timeouts.cjs records the same
+    //      failure mode on PR #3285: a bound sized for the wrong class, not a slow machine.
+    //
+    //   2. A typed `outcome`. spawnSync reports a kill as `status: null`, so an exceeded
+    //      bound reached the call sites as `null !== 0` — naming neither the timeout nor
+    //      the bound. OUTCOME.TIMED_OUT names itself.
+    //
+    // Looked up on the module object (`processSeam.runHook`) rather than destructured, so
+    // a test can observe the options actually passed — same rationale as
+    // tests/helpers.cjs:221-224 for runNode.
+    const result = processSeam.runHook(scriptPath, args, {
+      interpreter: 'bash',
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+      ...opts,
+    });
+    // `status` is aliased from `exitCode` by toLegacyResult so the existing assertions in
+    // this file keep reading the shape they were written against; `outcome`/`timedOut`
+    // are additive, and are what make a bound failure self-describing.
+    return { ...toLegacyResult(result), outcome: result.outcome, timedOut: result.timedOut };
   } finally {
     cleanup(scriptDir);
   }
@@ -267,11 +296,19 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pur
 });
 
 describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real execution, not just the pure classifier)', () => {
-  // Sourcing the extracted script without `gsd_run` defined naturally exercises
-  // the `|| echo "<default>"` fallback already in the config-get lines (command
-  // lookup fails -> non-zero exit -> the `||` branch fires), so
-  // PLANNER_STALL_INTERVAL_MINUTES/PLANNER_STALL_THRESHOLD_MINUTES start at their
-  // real defaults (5/10) here; each test overrides them afterward for speed.
+  // CORRECTION (#2650 follow-up): an earlier version of this comment claimed the
+  // extracted script runs WITHOUT `gsd_run` defined, so the `|| echo "<default>"`
+  // fallback in the config-get lines fires. That is false, and it is why the spawn
+  // bound below was mis-sized. extractStallHelpersBash slices the ENTIRE ```bash
+  // fence, which opens with the runtime-launcher preamble; that preamble finds
+  // gsd-core/bin/gsd-tools.cjs from the repo root and DEFINES gsd_run, so both
+  // config-get lines really spawn Node. Verified: `gsd_run defined: function`,
+  // GSD_TOOLS=<repo>/gsd-core/bin/gsd-tools.cjs. The resolved values are then
+  // discarded anyway — runWatch overrides both PLANNER_STALL_* vars right after the
+  // helpers, and runShouldRecover passes them as arguments — so the two spawns are
+  // dead cost that the bound must nonetheless accommodate. They are deliberately NOT
+  // removed here: dropping them would change what the extracted script executes and
+  // weaken the "the shipped fence is runnable end to end" property these tests carry.
   let helpersBash;
   let tmp;
 
@@ -291,7 +328,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     const call = `gsd_stall_watch ${JSON.stringify(String(dispatchTs))} ${JSON.stringify(outputFile)} ${JSON.stringify(artifactGlob)}` +
       markers.map((m) => ` ${JSON.stringify(m)}`).join('');
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    return runBashScript(script, [], { timeout: 10000 });
+    return runBashScript(script, []);
   }
 
   test('marker present in the real output file (via real grep, interval=0 so sleep is instant) -> marker_received', (t) => {
@@ -378,7 +415,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     const call = `gsd_stall_watch ${JSON.stringify(String(now))} ${JSON.stringify(missingOutputFile)} ${JSON.stringify(glob)}` +
       ` ${JSON.stringify('## PLANNING COMPLETE')}`;
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    const result = runBashScript(script, [], { timeout: 10000 });
+    const result = runBashScript(script, []);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'active');
   });
