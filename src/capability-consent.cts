@@ -281,8 +281,6 @@ function normalizeSepBytes(rel: Buffer): Buffer {
  *      exactly `__pycache__` (checked byte-exact, never `.pytest_cache`) — a `.pyc`/`.pyo` anywhere else
  *      (bundle root, `scripts/`, a directory literally named `cache.pyc`, etc.) is hashed normally,
  *      because a sourceless legacy `.pyc` there IS importable and executable (H2).
- *   3. A FILE named exactly `.DS_Store`, anywhere, is excluded (it is never executed and is a file, so
- *      excluding it opens no unhashed subtree).
  *
  * A regular FILE literally named `__pycache__` or `.pytest_cache` is NOT excluded (only a DIRECTORY of
  * that basename gets marker-suppression) — it is hashed like any other file. A DIRECTORY literally
@@ -338,8 +336,6 @@ const PYCACHE_DIR_BASENAMES: readonly Buffer[] = [
   Buffer.from('__pycache__'),
   Buffer.from('.pytest_cache'),
 ];
-/** The exact-match FILE basename excluded anywhere in the tree — never executed, so opens no subtree. */
-const DS_STORE_BASENAME = Buffer.from('.DS_Store');
 /** FILE-name suffixes excluded ONLY when the file's parent directory basename is `__pycache__` (see below). */
 const PYCACHE_FILE_SUFFIXES: readonly Buffer[] = [
   Buffer.from('.pyc'),
@@ -360,11 +356,6 @@ function isPycacheDirBasename(name: Buffer): boolean {
   return false;
 }
 
-/** True when raw-byte basename `name` is exactly `.DS_Store`. */
-function isDsStoreBasename(name: Buffer): boolean {
-  return Buffer.compare(name, DS_STORE_BASENAME) === 0;
-}
-
 /** True when raw-byte basename `name` ends in `.pyc` or `.pyo` (byte-suffix match, never utf8-decoded). */
 function hasPycacheFileSuffix(name: Buffer): boolean {
   for (const suffix of PYCACHE_FILE_SUFFIXES) {
@@ -377,16 +368,14 @@ function hasPycacheFileSuffix(name: Buffer): boolean {
 
 /**
  * True when a FILE with basename `name`, inside a directory whose OWN basename is `dirBasename`, must
- * be excluded from the digest: `.DS_Store` anywhere, or a `.pyc`/`.pyo` suffix whose parent directory
- * basename is exactly `__pycache__` (byte-exact — never `.pytest_cache`, so a `.pyc` sitting directly
- * inside a `.pytest_cache` dir is still hashed). A `.pyc`/`.pyo` file anywhere else — bundle root,
- * `scripts/`, a directory literally named `cache.pyc`, etc. — is NOT excluded (H2): a sourceless
- * legacy `.pyc` there is importable and executable, so it must stay bound to consent.
+ * be excluded from the digest: a `.pyc`/`.pyo` suffix whose parent directory basename is exactly
+ * `__pycache__` (byte-exact — never `.pytest_cache`, so a `.pyc` sitting directly inside a
+ * `.pytest_cache` dir is still hashed). A `.pyc`/`.pyo` file anywhere else — bundle root, `scripts/`,
+ * a directory literally named `cache.pyc`, etc. — is NOT excluded (H2): a sourceless legacy `.pyc`
+ * there is importable and executable, so it must stay bound to consent.
  */
 function isExcludedFileBasename(name: Buffer, dirBasename: Buffer): boolean {
-  if (isDsStoreBasename(name)) return true;
-  if (hasPycacheFileSuffix(name) && Buffer.compare(dirBasename, PYCACHE_PARENT_BASENAME) === 0) return true;
-  return false;
+  return hasPycacheFileSuffix(name) && Buffer.compare(dirBasename, PYCACHE_PARENT_BASENAME) === 0;
 }
 
 function collectBundleEntries(absDir: Buffer, relDir: Buffer, dirBasename: Buffer, acc: BundleEntry[], total: { bytes: number }, count: { n: number }): void {
@@ -460,7 +449,7 @@ function collectBundleEntries(absDir: Buffer, relDir: Buffer, dirBasename: Buffe
     if (!st.isFile()) {
       throw new Error(`bundleContentHash: refusing to hash a non-regular file in the bundle: "${abs.toString('utf8')}"`);
     }
-    // #3631: an excluded FILE (e.g. a __pycache__/*.pyc, .DS_Store) still counts its bytes toward the
+    // #3631: an excluded FILE (a __pycache__/*.pyc or *.pyo) still counts its bytes toward the
     // total-size cap below — exclusion answers "does this bind the digest?", not "is this safe to
     // read unbounded?" — so it must never become a way to smuggle unbounded bytes past
     // BUNDLE_MAX_TOTAL_BYTES.
@@ -504,8 +493,6 @@ const TAG_DIR = Buffer.from([0x02]);
  *   - A `.pyc`/`.pyo` FILE is excluded ONLY when its immediate parent directory's basename is exactly
  *     `__pycache__`; a `.pyc`/`.pyo` anywhere else (bundle root, `scripts/`, etc.) is hashed normally,
  *     since a sourceless legacy `.pyc` there is importable and executable.
- *   - `.DS_Store` is excluded by exact basename anywhere (it is never executed; excluding a FILE opens
- *     no subtree).
  * `node_modules`, `dist`, `build`, and similar are deliberately NOT excluded: their contents are
  * executed/required at runtime, so dropping them from the digest would stop consent from binding
  * executable content.
@@ -521,12 +508,16 @@ const TAG_DIR = Buffer.from([0x02]);
  * file) either reopens an unbounded unhashed region or makes consent fire on routine bytecode caching —
  * and is bounded by: (1) the attacker must already have POST-CONSENT write access to the bundle; (2)
  * everything outside `__pycache__/*.pyc` — including sourceless legacy `.pyc`/`.pyo` files anywhere
- * else — remains hashed; (3) a manifest-declared executable surface (hook `script`) cannot point into
- * the excluded space at all (see `isSafeHookScriptPath` in capability-lifecycle.cts /
- * capability-validator.cjs, which reject any script path containing a `__pycache__`/`.pytest_cache`
- * segment or ending `.pyc`/`.pyo`). KNOWN LIMITATION: `.pytest_cache`'s CONTENTS still change the
- * digest as normal files — only its directory marker is suppressed, so this residual risk does NOT
- * extend to `.pytest_cache`.
+ * else — remains hashed. NOT a bound, despite `isSafeHookScriptPath` (capability-lifecycle.cts /
+ * capability-validator.cjs) rejecting a manifest-declared hook `script` that names a
+ * `__pycache__`/`.pytest_cache` segment or ends `.pyc`/`.pyo`: the excluded region is still reachable
+ * by ONE HOP of indirection from any hashed, consent-covered script — a `require`/`import` of a
+ * `__pycache__/*.pyc` module path is not itself a declared script and the validator never sees it —
+ * so a hashed `hooks/run.js` can load a `__pycache__/mod.pyc` whose bytes are then free to change
+ * post-consent with the digest unmoved. The validator guard raises the bar for DECLARED surfaces; it
+ * does not contain the risk. KNOWN LIMITATION: `.pytest_cache`'s CONTENTS still change the digest as
+ * normal files — only its directory marker is suppressed, so this residual risk does NOT extend to
+ * `.pytest_cache`.
  *
  * Canonicalization (#1459 findings 1 + 4 — the prior `relpath + NUL + content + NUL` over utf8-decoded
  * STRINGS was non-injective, lossy in CONTENT, AND lossy in the PATH component):

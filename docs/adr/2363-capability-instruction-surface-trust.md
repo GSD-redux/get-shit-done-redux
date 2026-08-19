@@ -169,7 +169,8 @@ hash and silently deactivated the capability. The FIRST fix shipped for this (ba
 `__pycache__`/`.pytest_cache`/`.DS_Store`, plus any `.pyc`/`.pyo` file anywhere, with an excluded
 DIRECTORY skipped from recursion entirely) was itself found UNSAFE by two orthogonal reviews and
 was corrected before merge to next. That draft is not described further here; this section
-describes the shipped exclusion.
+describes the shipped exclusion. `.DS_Store` was part of that first draft and was later removed
+from the exclusion set entirely (not merely narrowed) — see the amendment below.
 
 `bundleContentHash` now excludes from the DIGEST ONLY:
 - A `__pycache__` or `.pytest_cache` DIRECTORY's own marker (its bare existence no longer moves
@@ -181,16 +182,26 @@ describes the shipped exclusion.
   `__pycache__`. A `.pyc`/`.pyo` anywhere else (bundle root, `scripts/`, a directory literally
   named `cache.pyc`, etc.) stays hashed, because a sourceless legacy `.pyc` there is genuinely
   importable/executable. (The unsafe draft matched the suffix anywhere in the tree.)
-- `.DS_Store` by exact basename, anywhere — it is never executed and is a file, so excluding it
-  opens no subtree.
 
-Defense in depth: a manifest-declared hook `script` path cannot point into the excluded space at
-all. `isSafeHookScriptPath` (`src/capability-lifecycle.cts` and its mirror
-`gsd-core/bin/lib/capability-validator.cjs`) additionally rejects any declared script path
-containing a `__pycache__`/`.pytest_cache` path segment, or whose basename ends `.pyc`/`.pyo` — a
-file named e.g. `x.pyc` can contain perfectly valid JavaScript and would be executed by `node`
-regardless of extension, so the digest exclusion must not be reachable from a declared,
-attacker-authored surface.
+`.DS_Store` is deliberately NOT excluded (the first draft excluded it; that exclusion was removed
+entirely, not narrowed). An excluded filename is a permanently unhashed name that a declared hook
+`script` could still be pointed at — e.g. `hooks/.DS_Store` — and `isSafeHookScriptPath` (below)
+was hardened only for the `__pycache__`/`.pytest_cache`/`.pyc`/`.pyo` shapes, not for `.DS_Store`.
+It was also unrelated to #3631's reported symptom (Python bytecode caching from a test run), so it
+was not worth carrying as a permanently unhashed name. `.DS_Store` now stays bound like any other
+file.
+
+`isSafeHookScriptPath` (`src/capability-lifecycle.cts` and its mirror
+`gsd-core/bin/lib/capability-validator.cjs`) rejects any DECLARED script path containing a
+`__pycache__`/`.pytest_cache` path segment, or whose basename ends `.pyc`/`.pyo` — a file named
+e.g. `x.pyc` can contain perfectly valid JavaScript and would be executed by `node` regardless of
+extension. This raises the bar for a manifest-declared hook `script`, but it is NOT a containment
+bound on the excluded region: it only ever inspects the declared `script` path string itself, not
+what that script `require`s/`import`s at runtime. A hashed, consent-covered `hooks/run.js`
+containing `require('../__pycache__/mod.pyc')` reaches the excluded region in one hop — Node loads
+an unregistered extension through its default `.js` handler — and the validator never sees that
+reference. Once loaded that way, the referenced `.pyc` is free to be rewritten post-consent with
+the digest unmoved. See the corrected bound below.
 
 **D4's argument is unaffected.** The claim this ADR rests on is that a single changed byte in a
 skill body deactivates a project-scoped capability until re-consent. Skill bodies are `.md` files
@@ -209,10 +220,12 @@ deliberately — it stops routine bytecode caching from silently deactivating ca
 the usability defect this exclusion exists to fix — and it is bounded by: (1) the attacker must
 already have POST-CONSENT write access to the bundle (this is not a remote-exploit surface); (2)
 everything outside `__pycache__/*.pyc` — including sourceless legacy `.pyc`/`.pyo` files anywhere
-else in the bundle — remains hashed; (3) a declared executable surface (hook `script`) cannot
-point into the excluded space (the `isSafeHookScriptPath` guard above). KNOWN LIMITATION:
-`.pytest_cache`'s CONTENTS still change the digest as ordinary hashed files — only its directory
-marker is suppressed, so this residual risk does not extend to `.pytest_cache`.
+else in the bundle — remains hashed. NOT a bound: the excluded region IS reachable by indirection
+from any hashed, consent-covered script — a `require`/`import` of a `__pycache__/*.pyc` path is one
+hop, not only CPython's own bytecode loading path described above — so `isSafeHookScriptPath`
+raises the bar for a DECLARED hook `script` surface but does not contain the risk. KNOWN
+LIMITATION: `.pytest_cache`'s CONTENTS still change the digest as ordinary hashed files — only its
+directory marker is suppressed, so this residual risk does not extend to `.pytest_cache`.
 
 Two properties were preserved deliberately and are pinned by tests: the exclusion is applied
 AFTER the symlink/non-regular fail-closed rejection (so a symlink named `x.pyc` still throws
