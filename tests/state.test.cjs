@@ -3661,6 +3661,10 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
       ].join('\n'),
     );
 
+    // GSD_TEST_MODE is required alongside GSD_NOW_MS or the pin is silently dropped
+    // (src/clock.cts `_pinnedNowMs`). Without it `last_activity` is stamped with the real
+    // today, so this test — whose entire subject is the SAME-date conflict — quietly
+    // exercised the DIFFERENT-date path instead and passed for the wrong reason.
     const result = runGsdTools(
       ['state', 'planned-phase', '--phase', '1', '--plans', '3'],
       tmpDir,
@@ -3673,6 +3677,10 @@ describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
     const fmMatch = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
+    // Precondition this test's name depends on: with the clock pinned the write really
+    // does land on 2020-09-10, so the SAME-date branch is the one under test.
+    assert.match(frontmatter, /last_activity:\s*'?2020-09-10'?/,
+      `pinned clock must make this a same-date conflict; frontmatter was:\n${frontmatter}`);
     assert.ok(
       frontmatter.includes('authoritative description'),
       'frontmatter last_activity_desc must be preserved when same-date body prose conflicts',
@@ -3702,11 +3710,40 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     cleanup(tmpDir);
   });
 
-  const PINNED_ENV = { GSD_NOW_MS: String(Date.parse('2026-08-14T15:00:00.000Z')) };
+  // GSD_TEST_MODE is load-bearing here, not decoration. `_pinnedNowMs()` (src/clock.cts)
+  // opens with `if (!process.env.GSD_TEST_MODE) return null;`, so GSD_NOW_MS ALONE is
+  // silently discarded and every `last_updated` below is stamped from the live wall clock
+  // instead. That is what put a real timestamp into a document this block asserts over,
+  // and an instant ending `...:35.149Z` contains the substring `35.1` — reddening
+  // `full test (windows-latest, 24, shard 2/3)` about 1 run in 600 (second == 35 AND
+  // millisecond in 100..199). The pin is what makes that window unreachable; scoping the
+  // assertion to `## Current Position` below is what makes it HARMLESS even when a pinned
+  // value does collide. Both are needed: either alone leaves the defect latent.
+  const PINNED_INSTANT = '2026-08-14T15:00:00.000Z';
+  const PINNED_ENV = { GSD_NOW_MS: String(Date.parse(PINNED_INSTANT)) };
+
+  // An instant chosen to sit INSIDE that collision window on purpose, so the regression
+  // below reproduces the CI failure deterministically instead of 1-in-600.
+  const COLLIDING_INSTANT = '2026-08-14T15:00:35.149Z';
+  const COLLIDING_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: String(Date.parse(COLLIDING_INSTANT)) };
 
   function frontmatterBlock(stateContent) {
     const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     return m ? m[1] : '';
+  }
+
+  // `## Current Position` is the body prose #3395 is about — the source `state json`
+  // re-derives current_phase from. Frontmatter is NOT phase prose: `last_updated`,
+  // `last_activity` and friends legitimately carry digit runs that can spell a phase id,
+  // so scanning the WHOLE document for a stale id reports staleness that does not exist.
+  // indexOf rather than a regex: nothing for local/no-unbounded-quantifier to flag, and
+  // `\n## ` still matches under CRLF because the `\r` precedes the newline.
+  function currentPositionBlock(stateContent) {
+    const start = stateContent.indexOf('## Current Position');
+    if (start === -1) return '';
+    const rest = stateContent.slice(start);
+    const nextHeading = rest.indexOf('\n## ', 1);
+    return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
   }
 
   // The issue's repro shape: frontmatter already carries the correct decimal
@@ -3756,6 +3793,121 @@ describe('#3395: planned-phase refreshes the stale Phase line and persists --nam
     const json = JSON.parse(runGsdTools(['state', 'json', '--raw'], tmpDir, PINNED_ENV).output);
     assert.strictEqual(json.current_phase, '35.3',
       `state json must report the refreshed phase, got: ${json.current_phase}`);
+  });
+
+  test('regression: PINNED_ENV actually pins the clock — GSD_NOW_MS needs GSD_TEST_MODE', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '35.3', '--plans', '3'], tmpDir, PINNED_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const fm = frontmatterBlock(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+    // Without GSD_TEST_MODE this reads a live wall-clock instant instead, which is the
+    // whole mechanism behind the intermittent Windows red.
+    assert.ok(fm.includes(PINNED_INSTANT),
+      `last_updated must be the pinned instant ${PINNED_INSTANT} — GSD_NOW_MS is only honored when GSD_TEST_MODE is set too (src/clock.cts _pinnedNowMs); frontmatter was:\n${fm}`);
+  });
+
+  test('regression: a last_updated containing the phase-number substring does not trip the stale-prose check', () => {
+    writeStalePhaseLineFixture();
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '35.3', '--plans', '3'], tmpDir, COLLIDING_ENV);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // Precondition: we really are at the colliding instant. Fails loudly if the pin ever
+    // stops working again, rather than degrading this back into a 1-in-600 coin flip.
+    assert.ok(stateContent.includes(COLLIDING_INSTANT),
+      `precondition: the clock must be pinned to ${COLLIDING_INSTANT}; STATE.md was:\n${stateContent}`);
+    // Precondition: the OLD whole-file scan genuinely does match here. This is the exact
+    // CI failure, reproduced deterministically.
+    assert.ok(stateContent.includes('35.1'),
+      `precondition: the whole-document scan must see 35.1 at this instant; STATE.md was:\n${stateContent}`);
+    // The property actually under test.
+    assert.ok(!currentPositionBlock(stateContent).includes('35.1'),
+      `a timestamp containing 35.1 must not be read as stale phase prose; STATE.md was:\n${stateContent}`);
+  });
+
+  test('control: the narrowed scan still catches genuinely stale phase prose in the body', () => {
+    const stale = [
+      '---',
+      `last_updated: "${PINNED_INSTANT}"`,
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 35.1 (unattended-launch-prerequisites) — COMPLETE (4/4 plans)',
+      '',
+      '## Next',
+      '',
+      'unrelated 35.1 mention outside the block',
+      '',
+    ].join('\n');
+    // Narrowing must not defang the check the fix exists to keep.
+    assert.ok(currentPositionBlock(stale).includes('35.1'),
+      'genuinely stale phase prose inside ## Current Position must still be reported');
+    // The slice stops at the next heading, so the trailing mention is out of scope.
+    assert.ok(!currentPositionBlock(stale).includes('unrelated'),
+      'the block must end at the next ## heading');
+    // Missing-input class: no heading at all yields an empty block, never a throw.
+    assert.strictEqual(currentPositionBlock('# Project State\n\nno position heading\n'), '');
+  });
+
+  test('boundary: the 35.1 collision window is exactly milliseconds 100-199 at second 35', () => {
+    // limit-1 / limit / limit+1 on BOTH axes of the collision. The scoped reader must be
+    // blind to every one of them; the whole-document reader must match exactly the window.
+    const cases = [
+      { iso: '2026-08-14T15:00:35.099Z', collides: false, why: 'limit-1 (ms 099)' },
+      { iso: '2026-08-14T15:00:35.100Z', collides: true, why: 'limit (ms 100)' },
+      { iso: '2026-08-14T15:00:35.199Z', collides: true, why: 'limit (ms 199)' },
+      { iso: '2026-08-14T15:00:35.200Z', collides: false, why: 'limit+1 (ms 200)' },
+      { iso: '2026-08-14T15:00:34.149Z', collides: false, why: 'limit-1 (second 34)' },
+      { iso: '2026-08-14T15:00:36.149Z', collides: false, why: 'limit+1 (second 36)' },
+    ];
+    for (const { iso, collides, why } of cases) {
+      for (const eol of ['\n', '\r\n']) {
+        const doc = [
+          '---',
+          `last_updated: "${iso}"`,
+          '---',
+          '',
+          '## Current Position',
+          '',
+          'Phase: 35.3 — READY TO EXECUTE',
+          '',
+        ].join(eol);
+        assert.strictEqual(doc.includes('35.1'), collides,
+          `whole-document scan for ${iso} (${why}, eol=${JSON.stringify(eol)})`);
+        assert.ok(!currentPositionBlock(doc).includes('35.1'),
+          `scoped scan must never match a timestamp: ${iso} (${why}, eol=${JSON.stringify(eol)})`);
+      }
+    }
+  });
+
+  test('property: no last_updated value can trip the scoped check, and real stale prose always does', () => {
+    // Two arms against the SAME generated inputs. Arm 1 alone would be satisfied by a
+    // helper that always returns ''; arm 2 is what makes that impossible.
+    fc.assert(fc.property(
+      fc.date({ min: new Date('2000-01-01T00:00:00.000Z'), max: new Date('2099-12-31T23:59:59.999Z') }),
+      fc.integer({ min: 1, max: 99 }),
+      fc.integer({ min: 1, max: 9 }),
+      (when, major, minor) => {
+        const iso = when.toISOString();
+        const header = ['---', `last_updated: "${iso}"`, '---', '', '## Current Position', ''];
+        const clean = [...header, `Phase: ${major}.${minor} — READY TO EXECUTE`, ''].join('\n');
+        // Deterministic guard: the frontmatter instant is NEVER inside the block. If the
+        // helper ever widened back to the whole document this fails on every run, not
+        // only on the runs where the generated timestamp happens to spell a phase id.
+        assert.ok(!currentPositionBlock(clean).includes(iso));
+        // Arm 1: a clean block never reports the STALE id, whatever the timestamp is.
+        const staleId = `${major}.${minor}9`;
+        assert.ok(!currentPositionBlock(clean).includes(staleId));
+        // Arm 2: inject genuinely stale prose and it is always reported.
+        const dirty = [...header, `Phase: ${staleId} (x) — COMPLETE`, ''].join('\n');
+        assert.ok(currentPositionBlock(dirty).includes(staleId));
+        return true;
+      },
+    ), { numRuns: 200 });
   });
 
   test('--name is persisted into the Phase line and frontmatter, not silently dropped', () => {
