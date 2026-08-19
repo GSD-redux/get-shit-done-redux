@@ -4893,7 +4893,12 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
   // ─── Defect 2 — gen-time wired guard ────────────────────────────────────────
 
-  describe('Defect 2: validateHooksWired gen-time guard', () => {
+  // Shared #3606 fixtures: every hook kind, and a Map<point, Set<kind>> builder
+  // for validateHooksWired's wiredKinds argument.
+  const ALL = ['contribution', 'step', 'gate'];
+  const kindsMap = (spec) => new Map(Object.entries(spec).map(([pt, ks]) => [pt, new Set(ks)]));
+
+  describe('Defect 2: validateHooksWired gen-time wired guard', () => {
     /** Minimal capability fixture with one hook at a given point */
     function makeCapWithStep(point) {
       return {
@@ -4927,9 +4932,6 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         config: {},
       };
     }
-
-    const kindsMap = (spec) => new Map(Object.entries(spec).map(([pt, ks]) => [pt, new Set(ks)]));
-    const ALL = ['contribution', 'step', 'gate'];
 
     test('returns non-empty error array mentioning "not wired" when step point is not in wiredSet', () => {
       const cap = makeCapWithStep('discuss:pre');
@@ -5026,9 +5028,6 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
   // dispatch text covers that kind.
 
   describe('Defect 3: validateHooksWired hook-kind coverage (#3606)', () => {
-    const ALL = ['contribution', 'step', 'gate'];
-    /** wiredKinds fixture: Map<point, Set<kind>> */
-    const kindsMap = (spec) => new Map(Object.entries(spec).map(([p, ks]) => [p, new Set(ks)]));
 
     test('a step hook at a point whose site covers only gate fails with a kind-coverage error', () => {
       const cap = {
@@ -5231,8 +5230,12 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('HOOK_KINDS vocabulary parity: scanner kinds match the validator group->kind mapping', () => {
       const { HOOK_KINDS } = require('../scripts/gen-loop-host-contract.cjs');
-      assert.deepEqual([...HOOK_KINDS].sort(), ['contribution', 'gate', 'step'],
-        "the scanner vocabulary must stay in lock-step with validateHooksWired's steps/contributions/gates -> step/contribution/gate mapping");
+      const { HOOK_GROUP_KINDS } = require('../gsd-core/bin/lib/capability-validator.cjs');
+      assert.deepEqual(
+        [...HOOK_KINDS].sort(),
+        Object.values(HOOK_GROUP_KINDS).sort(),
+        'the scanner vocabulary must stay in lock-step with validateHooksWired\u2019s exported group->kind mapping — a rename on either side must fail here',
+      );
     });
   });
 

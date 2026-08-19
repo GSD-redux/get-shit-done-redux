@@ -446,8 +446,11 @@ const HOST_LOOP_FILES = STEP_WORKFLOWS.map((w) => 'gsd-core/workflows/' + w.file
  * @param {string} text  Content of a workflow file (or any text).
  * @returns {Set<string>}
  */
+/** The call-site shape both scanners key on — one regex, two consumers (#3606). */
+const CALL_SITE_RE = /loop render-hooks\s+([a-z:]+)/g;
+
 function scanWiredPoints(text) {
-  const re = /loop render-hooks\s+([a-z:]+)/g;
+  const re = CALL_SITE_RE;
   const result = new Set();
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -541,7 +544,7 @@ function coveredKindsInRegion(region) {
  */
 function scanWiredKinds(text) {
   const result = new Map();
-  const siteRe = /loop render-hooks\s+([a-z:]+)/g;
+  const siteRe = CALL_SITE_RE;
   const sites = [];
   let m;
   while ((m = siteRe.exec(text)) !== null) sites.push({ point: m[1], start: m.index });
