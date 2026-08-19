@@ -42,7 +42,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 // Import the leaf I/O module directly (core.cjs re-export spine retired in epic #1267).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
@@ -231,7 +231,7 @@ export function buildLintArgs(check: CheckDescriptor): string[] {
 }
 
 /**
- * Resolve the project's eslint CLI entry portably (no `npx` — not spawnable via `execFileSync` on
+ * Resolve the project's eslint CLI entry portably (no `npx` — not spawnable via `spawnSync` on
  * Windows). Resolves eslint's package.json from the target project's `node_modules` and derives
  * `bin/eslint.js`, so it is run as `node <cli>` (portable). Returns null if eslint is not installed
  * (→ the lint-rule check fails closed, never throws).
@@ -428,7 +428,7 @@ export function eslintJsonHasRule(jsonText: string, rule: string): boolean {
  *     structured report by `ruleId` instead (the #1259 SF-01 fix).
  *
  * Both kinds spawn via `process.execPath` (never bare `node`/`npx` — not portably spawnable via
- * `execFileSync` on Windows) with arg arrays (no shell → no injection from a caller-supplied target).
+ * `spawnSync` on Windows) with arg arrays (no shell → no injection from a caller-supplied target).
  */
 /**
  * Env for spawned checks: strip `NODE_TEST_CONTEXT` and `NODE_OPTIONS` so an AMBIENT test-runner
@@ -444,8 +444,9 @@ function childEnv(): NodeJS.ProcessEnv {
 }
 
 // Bounded subprocess limits (DEFECT.UNBOUNDED-SUBPROCESS): a stuck wired test / eslint must not hang
-// verify forever. On timeout `execFileSync` throws -> caught -> fail-closed (degraded, non-passing).
-// `maxBuffer` caps output so a runaway producer throws (safe direction) rather than OOMs the verifier.
+// verify forever. On timeout the child is killed and only PARTIAL output survives -> no `# pass`
+// summary / unparseable JSON -> fail-closed (degraded, non-passing).
+// `maxBuffer` caps output so a runaway producer is cut off (safe direction) rather than OOMing the verifier.
 const NODE_TEST_TIMEOUT_MS = 30_000;
 const ESLINT_TIMEOUT_MS = 60_000;
 const CHECK_MAX_BUFFER = 16 * 1024 * 1024;
@@ -457,73 +458,115 @@ function posTimeout(timeoutMs: number | undefined, def: number): number {
   return typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : def;
 }
 
+/** POSIX only: `detached` makes the child a process-GROUP LEADER, which is what lets us reap its whole
+ * subtree via `process.kill(-pid)`. Windows has no equivalent (a negative PID is not a process group
+ * there), so it keeps the plain single-child kill `spawnSync`'s `timeout` already does. */
+const CAN_REAP_GROUP = process.platform !== 'win32';
+
 /**
- * Spawn the negative `node --test` against a single subject (set via the `GSD_PROHIB_SUBJECT`
- * convention, #1279) and return its TAP output. Reuses the bounded-subprocess machinery
- * (`process.execPath`, arg arrays → no shell, `childEnv`, bounded `timeout`/`maxBuffer`) and NEVER
- * throws — a RED run exits non-zero, so the partial TAP (with the `# fail` summary) is recovered from
- * the thrown error's `stdout`. The prover calls this once per subject: the KNOWN-BAD violation fixture
- * (expect RED) and, for the #1346 causation control, the KNOWN-CLEAN control subject (expect GREEN).
+ * Run a bounded check subprocess, return its stdout, NEVER throw — and never let a descendant outlive
+ * the call.
+ *
+ * WHY NOT `execFileSync`: its `timeout` signals the DIRECT CHILD ONLY. `node --test` defaults to
+ * `--test-isolation=process` (Node >= 22), so the direct child is a RUNNER that re-execs a per-file
+ * WORKER, and the worker is what actually executes the subject. On timeout the runner is killed while
+ * the worker is never signalled at all: it is reparented to PID 1 and, if the subject hangs, busy-loops
+ * forever burning a core. The verdict still failed closed, so nothing observable broke — which is
+ * exactly why this leaked unnoticed across days of green runs.
+ *
+ * So: spawn detached (the child leads its own group) and SIGKILL the whole GROUP in a `finally`.
+ * SIGKILL rather than SIGTERM because a subject stuck in a tight loop blocks the event loop, so a
+ * JS-level signal handler could never run — only an uncatchable signal is guaranteed to land. The reap
+ * is unconditional rather than timeout-only, so the invariant stays simple and testable: NO descendant
+ * of a bounded check survives the call.
+ *
+ * Rejected alternative: `--test-isolation=none` forks no worker, so the direct child is the hanging
+ * process and the existing kill would reach it. Measured, it is strictly WORSE — the subject then runs
+ * inside the runner, whose SIGTERM queues behind the blocked event loop and is never processed, so the
+ * bounded timeout stops working and verify hangs instead of failing closed.
  */
-function runNodeTestWithSubject(check: CheckDescriptor, cwd: string, subject: string, timeoutMs?: number): string {
+function runBoundedCapture(
+  file: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeout: number,
+): string {
+  let pid: number | undefined;
   try {
-    return execFileSync(process.execPath, buildNodeTestArgs(check), {
+    // The cast exists ONLY because @types/node omits `detached` from SpawnSyncOptions; libuv honors it
+    // for `spawnSync` exactly as for `spawn`. Verified on this runtime, not assumed: with `detached`
+    // the child reports `pgid === pid` (it leads its own group), without it the child inherits the
+    // caller's group — which is what makes `process.kill(-pid)` below address the subtree and not us.
+    const opts = {
       cwd,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...childEnv(), GSD_PROHIB_SUBJECT: subject },
-      timeout: posTimeout(timeoutMs, NODE_TEST_TIMEOUT_MS),
+      env,
+      timeout,
       maxBuffer: CHECK_MAX_BUFFER,
-    });
-  } catch (e) {
-    const stdout = e && typeof e === 'object' && 'stdout' in e ? (e as { stdout?: unknown }).stdout : '';
-    return typeof stdout === 'string' ? stdout : '';
+      detached: CAN_REAP_GROUP,
+    } as unknown as SpawnSyncOptionsWithStringEncoding;
+    const res = spawnSync(file, args, opts);
+    pid = res.pid;
+    // A non-zero exit is NOT an error here: a RED proof run and a failing check both exit non-zero by
+    // design, and `spawnSync` reports stdout either way. That makes the partial-output recovery the old
+    // `catch (e) => e.stdout` blocks performed inherent rather than exceptional.
+    return typeof res.stdout === 'string' ? res.stdout : '';
+  } catch {
+    return ''; // spawn itself failed -> no output -> every caller's vacuity guard fails closed
+  } finally {
+    if (CAN_REAP_GROUP && typeof pid === 'number' && pid > 0) {
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* group already empty — nothing to reap */ }
+    }
   }
+}
+
+/**
+ * Spawn the negative `node --test` against a single subject (set via the `GSD_PROHIB_SUBJECT`
+ * convention, #1279) and return its TAP output. Reuses the bounded-subprocess machinery
+ * (`process.execPath`, arg arrays → no shell, `childEnv`, bounded `timeout`/`maxBuffer`) and NEVER
+ * throws — a RED run exits non-zero, but `runBoundedCapture` returns the TAP (with its `# fail`
+ * summary) on stdout regardless of exit code. The prover calls this once per subject: the KNOWN-BAD violation fixture
+ * (expect RED) and, for the #1346 causation control, the KNOWN-CLEAN control subject (expect GREEN).
+ */
+function runNodeTestWithSubject(check: CheckDescriptor, cwd: string, subject: string, timeoutMs?: number): string {
+  return runBoundedCapture(
+    process.execPath,
+    buildNodeTestArgs(check),
+    cwd,
+    { ...childEnv(), GSD_PROHIB_SUBJECT: subject },
+    posTimeout(timeoutMs, NODE_TEST_TIMEOUT_MS),
+  );
 }
 
 function defaultRunCheck(check: CheckDescriptor, cwd: string, timeoutMs?: number): CheckRunResult {
   try {
     if (check.kind === 'node-test') {
-      let out = '';
-      try {
-        out = execFileSync(process.execPath, buildNodeTestArgs(check), {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          env: childEnv(),
-          timeout: posTimeout(timeoutMs, NODE_TEST_TIMEOUT_MS),
-          maxBuffer: CHECK_MAX_BUFFER,
-        });
-      } catch (e) {
-        // A failing/timed-out run exits non-zero or is killed (partial TAP on stdout, no `# pass`
-        // summary). Parse what we have: a real failure or timeout -> not a non-vacuous pass -> false.
-        const stdout = e && typeof e === 'object' && 'stdout' in e ? (e as { stdout?: unknown }).stdout : '';
-        out = typeof stdout === 'string' ? stdout : '';
-      }
+      // A failing/timed-out run exits non-zero or is killed (partial TAP on stdout, no `# pass`
+      // summary). Parse what we have: a real failure or timeout -> not a non-vacuous pass -> false.
+      const out = runBoundedCapture(
+        process.execPath,
+        buildNodeTestArgs(check),
+        cwd,
+        childEnv(),
+        posTimeout(timeoutMs, NODE_TEST_TIMEOUT_MS),
+      );
       return { passed: isNonVacuousNodeTestPass(out, check.target) };
     }
     if (check.kind === 'lint-rule') {
       const eslintCli = resolveEslintCli(cwd);
       if (!eslintCli) return { passed: false }; // eslint not installed -> fail closed, never throw
-      let json = '';
-      try {
-        json = execFileSync(process.execPath, [eslintCli, ...buildLintArgs(check)], {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          env: childEnv(),
-          timeout: posTimeout(timeoutMs, ESLINT_TIMEOUT_MS),
-          maxBuffer: CHECK_MAX_BUFFER,
-        });
-      } catch (e) {
-        // eslint exits non-zero when ANY error is present; the JSON report is still on stdout.
-        // A timeout/kill leaves no parseable JSON -> eslintHasFatalError(unparseable) -> fail-closed.
-        const stdout = e && typeof e === 'object' && 'stdout' in e ? (e as { stdout?: unknown }).stdout : '';
-        json = typeof stdout === 'string' ? stdout : '';
-      }
+      // eslint exits non-zero when ANY error is present; the JSON report is still on stdout.
+      // A timeout/kill leaves no parseable JSON -> eslintHasFatalError(unparseable) -> fail-closed.
+      const json = runBoundedCapture(
+        process.execPath,
+        [eslintCli, ...buildLintArgs(check)],
+        cwd,
+        childEnv(),
+        posTimeout(timeoutMs, ESLINT_TIMEOUT_MS),
+      );
       // PASS requires: the target actually linted (>=1 file result), NO fatal/parse error (the rule
       // must have RUN — #1259 B1), and ZERO messages for the rule (in messages OR suppressedMessages).
       const lintedSomething = eslintFileResultCount(json) >= 1;
@@ -543,7 +586,7 @@ function defaultRunCheck(check: CheckDescriptor, cwd: string, timeoutMs?: number
  * wired check against the descriptor's `violationFixture` (a KNOWN-BAD subject) and requires it to go
  * RED — the machine proof that replaces caller attestation. Like `defaultRunCheck`, it is the
  * impure/injectable seam (spawns eslint / `node --test`), reuses the identical bounded-subprocess
- * machinery (`childEnv`/`posTimeout`/`CHECK_MAX_BUFFER`, `execFileSync(process.execPath, …)`, arg
+ * machinery (`childEnv`/`posTimeout`/`CHECK_MAX_BUFFER`, `runBoundedCapture(process.execPath, …)`, arg
  * arrays → no shell), and NEVER throws — every un-provable path returns `{ provenFailFirst: false }`.
  *
  *   - lint-rule: lint the `violationFixture` via the project flat config (so `local/*` plugins load)
@@ -564,23 +607,15 @@ function defaultProveFailFirst(check: CheckDescriptor, cwd: string, timeoutMs?: 
       if (!fixture) return { provenFailFirst: false }; // can't prove without a known violation -> hard-gate
       const eslintCli = resolveEslintCli(cwd);
       if (!eslintCli) return { provenFailFirst: false }; // eslint not installed -> fail closed, never throw
-      let json = '';
-      try {
-        json = execFileSync(process.execPath, [eslintCli, ...buildLintArgs({ ...check, target: fixture })], {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          env: childEnv(),
-          timeout: posTimeout(timeoutMs, ESLINT_TIMEOUT_MS),
-          maxBuffer: CHECK_MAX_BUFFER,
-        });
-      } catch (e) {
-        // eslint exits non-zero on any error; the JSON report is still on stdout. A timeout/kill
-        // leaves no parseable JSON -> eslintHasFatalError(unparseable) -> not proven (fail-closed).
-        const stdout = e && typeof e === 'object' && 'stdout' in e ? (e as { stdout?: unknown }).stdout : '';
-        json = typeof stdout === 'string' ? stdout : '';
-      }
+      // eslint exits non-zero on any error; the JSON report is still on stdout. A timeout/kill
+      // leaves no parseable JSON -> eslintHasFatalError(unparseable) -> not proven (fail-closed).
+      const json = runBoundedCapture(
+        process.execPath,
+        [eslintCli, ...buildLintArgs({ ...check, target: fixture })],
+        cwd,
+        childEnv(),
+        posTimeout(timeoutMs, ESLINT_TIMEOUT_MS),
+      );
       // Proven iff: the fixture actually linted (>=1 file result), the rule RAN (no fatal/parse
       // error), and the rule id appears (the violation was flagged -> the rule has teeth).
       const proven = eslintFileResultCount(json) >= 1

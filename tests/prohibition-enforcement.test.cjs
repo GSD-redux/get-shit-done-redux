@@ -9,7 +9,7 @@ process.env.GSD_TEST_MODE = '1';
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, waitFor } = require('./helpers.cjs');
 
 const ENFORCEMENT_LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'prohibition-enforcement.cjs');
 
@@ -698,6 +698,85 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     assert.notEqual(result.status, 'green', 'a hung check must be killed and fail closed — never hang verify or green');
     assert.equal(result.located, true);
   });
+
+  // The test above proves the VERDICT (non-green). It does NOT prove the REAPING, and for a long time
+  // the two came apart. `node --test` defaults to `--test-isolation=process` (Node >= 22), so the
+  // subject actually runs in a WORKER one level below the runner we spawn. The bounded timeout signals
+  // the DIRECT CHILD only, so the runner died while the worker was never signalled at all: reparented
+  // to PID 1 and, being a `while (true) {}`, spinning at ~100% CPU forever. The suite stayed green
+  // throughout — a killed runner yields exactly the non-green verdict asserted above — so the leak was
+  // invisible here and surfaced only as unexplained load on the machine (~6.4 cores over two days).
+  //
+  // CONTROL + TREATMENT, in the same spirit as the #1346 causation control: "no orphan survived" proves
+  // nothing unless an orphan was POSSIBLE, so the control reproduces the pre-fix spawn and REQUIRES one
+  // to appear. That keeps the treatment arm from passing vacuously if the subject ever stops hanging,
+  // the runner stops forking a worker, or `pgrep` detection silently breaks.
+  const REAP_SUPPORTED = process.platform !== 'win32'; // needs POSIX process groups + pgrep
+  test('a HANGING node-test leaves NO orphaned descendant (B2 reaping, not just the verdict)',
+    { skip: REAP_SUPPORTED ? false : 'POSIX-only: needs process groups + pgrep' }, async (t) => {
+      const { spawnSync } = require('node:child_process');
+      const enforce = require(ENFORCEMENT_LIB);
+      const dir = createTempDir('prohib-reap-');
+      const HANG_SRC = "const { test } = require('node:test');\ntest('hangs forever', () => { while (true) {} });\n";
+      // Distinct file names -> distinct `pgrep -f` markers, so the control's orphan can never be read
+      // as a treatment leak (or vice versa).
+      const ctlTarget = path.join(dir, 'hang-control.test.cjs');
+      const txTarget = path.join(dir, 'hang-treatment.test.cjs');
+      fs.writeFileSync(ctlTarget, HANG_SRC);
+      fs.writeFileSync(txTarget, HANG_SRC);
+
+      const pidsFor = (target) => {
+        // Bounded like every other spawn here (local/no-unbounded-spawn): `pgrep` is a fast one-shot,
+        // so a generous bound only guards against it wedging, never against normal slowness.
+        const r = spawnSync('pgrep', ['-f', target], { encoding: 'utf-8', timeout: 10_000 });
+        return String(r.stdout || '').trim().split('\n').filter(Boolean);
+      };
+      const killAll = (target) => {
+        for (const pid of pidsFor(target)) {
+          try { process.kill(Number(pid), 'SIGKILL'); } catch { /* already gone */ }
+        }
+      };
+      // Belt and braces: this test deliberately creates a spinner, so it must never leak one itself,
+      // on any exit path (including a failed assertion above).
+      t.after(() => { killAll(ctlTarget); killAll(txTarget); cleanup(dir); });
+
+      // CONTROL — the pre-fix spawn: no process group, so the bounded timeout can only reach the direct
+      // child. The worker MUST survive it.
+      //
+      // The env sanitation is load-bearing, not boilerplate: it mirrors the lib's own `childEnv()`.
+      // Inherited from THIS process, `NODE_TEST_CONTEXT` tells the spawned runner it is already inside a
+      // test child, so it runs the subject in-process and forks no worker — the control would then orphan
+      // nothing and report a leak that is real as "not reproducible". Strip it so the child is a genuine
+      // standalone runner that forks the per-file worker this test is about.
+      const ctlEnv = { ...process.env };
+      delete ctlEnv.NODE_TEST_CONTEXT;
+      delete ctlEnv.NODE_OPTIONS;
+      spawnSync(process.execPath, enforce.buildNodeTestArgs({ kind: 'node-test', target: ctlTarget }), {
+        cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 1500, env: ctlEnv,
+      });
+      await waitFor(() => pidsFor(ctlTarget).length > 0, {
+        timeoutMs: 5000,
+        message: 'CONTROL orphaned nothing: the leak is no longer reproducible this way, so the treatment '
+          + 'arm below would pass vacuously. Re-derive the control before trusting this test again.',
+      });
+      killAll(ctlTarget);
+
+      // TREATMENT — the real code path, same hanging subject, same bound.
+      const result = enforce.runProhibitionEnforcement(
+        TEST_TIER,
+        { kind: 'node-test', target: txTarget, failFirst: true },
+        { cwd: dir, timeoutMs: 1500 },
+      );
+      assert.notEqual(result.status, 'green', 'a hung check must still fail closed');
+      // SIGKILL delivery is immediate, but teardown/reparenting is not — poll rather than sample once.
+      // On the pre-fix code this never empties: the orphan spins forever.
+      await waitFor(() => pidsFor(txTarget).length === 0, {
+        timeoutMs: 5000,
+        message: 'a descendant of the bounded check OUTLIVED it. The timeout killed the runner but not the '
+          + 'worker executing the subject; that worker busy-loops at ~100% CPU forever (PPID 1) while this '
+          + 'suite stays green — exactly how the original leak went unnoticed.',
+      });
+    });
 
   test('an EMPTY node-test file (exit 0, zero tests) does NOT green via the real runner (BL-01)', (t) => {
     const enforce = require(ENFORCEMENT_LIB);
