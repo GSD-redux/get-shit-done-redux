@@ -22,10 +22,11 @@ AGENT_SKILLS=$(gsd_run query agent-skills gsd-doc-writer)
 # only the section_manifest field (gates dispatch_monorepo_packages).
 INIT_DOCS_UPDATE=$(gsd_run query init.docs-update)
 if [[ "$INIT_DOCS_UPDATE" == @file:* ]]; then INIT_DOCS_UPDATE=$(cat "${INIT_DOCS_UPDATE#@file:}"); fi
+DOC_VERIFIER_MODEL=$(gsd_run query resolve-model gsd-doc-verifier --raw)
 ```
 
 Extract from init JSON:
-- `doc_writer_model` — model string to pass to each spawned agent (never hardcode a model name)
+- `doc_writer_model` — model string for the doc-writer spawns (never hardcode a model name); the doc-verifier spawn resolves its own `DOC_VERIFIER_MODEL`
 - `commit_docs` — whether to commit generated files when done
 - `existing_docs` — array of `{path, has_gsd_marker}` objects for existing Markdown files
 - `project_type` — object with boolean signals: `has_package_json`, `has_api_routes`, `has_cli_bin`, `is_open_source`, `has_deploy_config`, `is_monorepo`, `has_tests`
@@ -394,7 +395,7 @@ Use `run_in_background=true` for all three to enable parallel execution.
 
 <!-- #2517 model-omit-on-inherit -->
 
-> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`doc_writer_model`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
+> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`doc_writer_model`, `DOC_VERIFIER_MODEL`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
 
 ```
 Agent(
@@ -932,7 +933,7 @@ Continue to scan_for_secrets.
 Invoke the gsd-doc-verifier agent in read-only mode for each file in `existing_docs` from the init JSON:
 
 1. For each doc in `existing_docs`:
-   a. Spawn `gsd-doc-verifier` (or invoke sequentially if Task tool is unavailable) with:
+   a. Spawn `gsd-doc-verifier` (or invoke sequentially if Task tool is unavailable), passing `model="{DOC_VERIFIER_MODEL}"` as the Task/Agent call's `model` parameter — not part of the `<verify_assignment>` prompt — so `dynamic_routing`/`model_profile` tiers apply instead of the caller's session model (#3602). Omit the parameter entirely when the value is `"inherit"` or empty (#2517). Each spawn carries:
       ```xml
       <verify_assignment>
       doc_path: {doc.path}

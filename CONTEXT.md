@@ -407,7 +407,7 @@ Module owning the code-intelligence store: tri-state capability gate (`isCapabil
 The GSD-RESEARCH capability behind an L2-hybrid seam: code owns cache + provider policy + package legitimacy; MCP owns the actual fetch. Reachable via `gsd-tools query research-plan|research-store|package-legitimacy`. Source: `src/research-{store,provider}.cts` + `src/package-legitimacy.cts` (generated to `gsd-core/bin/lib/*.cjs` per ADR-457). Replaces the prose provider-waterfall duplicated across the researcher agents and the pip-install `slopcheck` bolt-on.
 
 - `GSD-RESEARCH.MODULE.research-store=content-addressed cache; key=sha256(ecosystem+library+version+query+kind); getResearch->{hit,stale} never throws (mirrors graphify staleness); ttlForSource curated HIGH 30d|MED 7d|web LOW 1d; tiers: curated-doc kinds -> ~/.gsd/research-cache (cross-project), web/synthesis -> project .planning/research/.cache`
-- `GSD-RESEARCH.MODULE.research-provider=single source of truth PROVIDER_WATERFALL (docs Context7->Ref->Jina->websearch; web Exa->Tavily->Perplexity->Brave->websearch; scrape Firecrawl->Jina); planResearch returns cache-hits+fetch-plan; classifyConfidence stamps HIGH|MEDIUM|LOW by provider AUTHORITY + verification EVIDENCE (HIGH requires code-computed ground-truth corroboration e.g. legitimacyVerdict OK; provider authority alone caps at MEDIUM; SLOP caps at LOW); Firecrawl is scrape-only (not in docs/web discovery)`
+- `GSD-RESEARCH.MODULE.research-provider=single source of truth PROVIDER_WATERFALL (docs Context7->Ref->Jina->websearch; web Exa->Tavily->Perplexity->Brave->websearch; scrape Firecrawl->Jina); planResearch returns cache-hits+fetch-plan; classifyConfidence stamps HIGH|MEDIUM|LOW by provider AUTHORITY + verification EVIDENCE (HIGH requires code-computed ground-truth corroboration e.g. legitimacyVerdict OK; provider authority alone caps at MEDIUM; SLOP caps at LOW); Firecrawl is scrape-only (not in the docs or web legs)`
 - `GSD-RESEARCH.MODULE.package-legitimacy=registry-API verdicts (npm/PyPI/crates.io injectable adapters) computed from thresholds {minAgeDays:30,minWeeklyDownloads:1000,requireRepo:true}; verdict OK|SUS|SLOP per package; slopcheck=optional adapter that can only escalate, never the install-or-degrade gate`
 - `GSD-RESEARCH.INTEGRATION.L2-hybrid=code owns cache+legitimacy+confidence+provider-pick (gsd-tools query research-plan/research-store/package-legitimacy); MCP owns the fetch; agent returns RESEARCH.md path, never raw fetches`
 - `GSD-RESEARCH.PROVIDER.availability=config flags brave_search/exa_search/firecrawl/tavily_search/ref_search/perplexity/jina (env <X>_API_KEY or ~/.gsd/<x>_api_key); context7/jina/websearch always available; planResearch falls through waterfall to websearch terminal`
@@ -547,7 +547,7 @@ The prompt-level data/instruction isolation seam for untrusted web/document ingr
 `PROHIB.descriptor.shape=5 FLAT scalars (check_kind,check_target,check_rule,check_violation_fixture,check_clean_fixture) — NEVER a nested check:{} (parseMustHavesBlock is a flat parser, src/frontmatter.cts)`
 `PROHIB.rail=core verify rail, non-toggleable (ADR-857 verification-substrate boundary / decision #6); the verifier<->predicate contract is NOT an off-by-default capability`
 `PROHIB.judgment-tier=never-silent / never-hard-halt soft gate; autonomous emits "unverified-prohibition — human review recommended" (exogenous grading, ADR-550 D4)`
-`PROHIB.enforce.adr=docs/adr/1606 (verify-time enforcement seam) + docs/adr/550 (spec-phase contract)`
+`PROHIB.enforce.adr=docs/adr/1606-prohibition-enforcement-verify-seam.md (verify-time enforcement seam) + docs/adr/550-spec-phase-probe-contract.md (spec-phase contract)`
 
 ---
 
@@ -644,7 +644,7 @@ The prompt-level data/instruction isolation seam for untrusted web/document ingr
 `WORKTREE.SEAM.invariant=parser failure must degrade to metadata_prune_only and never escalate to destructive removal`
 `WORKTREE.SEAM.inventory-interface=[listLinkedWorktreePaths, inspectWorktreeHealth]`
 `WORKTREE.SEAM.caller-rule=verify.cjs must consume inspectWorktreeHealth for W017 classification; no ad-hoc porcelain parsing in callers`
-`WORKTREE.SEAM.test-anchor-w017=tests/orphan-worktree-detection.test.cjs + tests/worktree-safety-policy.test.cjs`
+`WORKTREE.SEAM.test-anchor-w017=tests/orphan-worktree-detection.test.cjs + tests/worktree-safety.test.cjs`
 `WORKTREE.SEAM.inventory-snapshot=snapshotWorktreeInventory(repoRoot,{staleAfterMs,nowMs}) is canonical linked-worktree health snapshot for callers`
 `PLANNING.PATH.PARITY.project-scope=.planning/<project> (never .planning/projects/<project>); mirror planning-workspace.cjs planningDir()`
 `PLANNING.PATH.SEAM.helpers=helpers.planningPaths delegates to workspacePlanningPaths + resolveWorkspaceContext; precedence explicit-ws > env-ws > env-project > root`

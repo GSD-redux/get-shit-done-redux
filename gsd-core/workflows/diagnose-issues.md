@@ -124,6 +124,9 @@ fi
 # Re-record after the base-check degrade, immediately before the spawn below, so the
 # #3045 sentinel matches the dispatch the guard is about to see (#3045).
 gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
+
+# Model resolution for the debugger spawns below (#3602).
+DEBUGGER_MODEL=$(gsd_run query resolve-model gsd-debugger --raw)
 ```
 
 **Spawn debug agents — parallel only when each one is isolated:**
@@ -157,10 +160,15 @@ placeholder, not a shell variable.
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
+<!-- #2517 model-omit-on-inherit -->
+
+> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`DEBUGGER_MODEL`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
+
 ```
 Agent(
   prompt=filled_debug_subagent_prompt + "\n\n" + WORKTREE_GUARD + "\n\n<required_reading>\n- {phase_dir}/{phase_num}-UAT.md\n- {state_path}\n</required_reading>\n${AGENT_SKILLS_DEBUGGER}",
   subagent_type="gsd-debugger",
+  model="{DEBUGGER_MODEL}",
   {harnessFlag}
   description="Debug: {truth_short}"
 )
