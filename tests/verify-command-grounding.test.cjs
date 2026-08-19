@@ -15,9 +15,11 @@
  * This module answers "can this command's target directory be grounded?" WITHOUT
  * executing the command. It is a RECOGNIZER, not a shell interpreter: exactly two
  * forms are grounded (`cd <literal>` and `npm --prefix <literal>`), and anything
- * carrying a variable, glob, substitution or `~` returns `unresolvable` — a
- * warning, never a blocker. Refusing to guess is the whole point; guessing is the
- * defect being fixed.
+ * carrying a variable, glob, substitution, or a LEADING `~` (home-expansion)
+ * returns `unresolvable` — a warning, never a blocker. A `~` anywhere else in
+ * the path (e.g. a Windows 8.3 short name like `RUNNER~1`) is an ordinary
+ * literal character and must resolve normally (#2401 CI regression). Refusing
+ * to guess is the whole point; guessing is the defect being fixed.
  *
  * Row numbers below map to `.gsd/phase/feat-2401-verify-command-grounding/50-test-matrix.md`.
  *
@@ -480,6 +482,51 @@ describe('resolveVerifyCommandTarget — refusals and negative space', () => {
     resolveVerifyCommandTarget(`cd . && touch ${canary}`, { projectRoot: root });
     resolveVerifyCommandTarget(`npm --prefix . run x; touch ${canary}`, { projectRoot: root });
     assert.equal(fs.existsSync(canary), false, 'the probe must never execute command text');
+  });
+});
+
+describe('#2401 CI regression — mid-string ~ (Windows 8.3 short names) is a literal, not home-expansion', () => {
+  // Fixture dir literally named `RUNNER~1`, mirroring the 8.3 short-name shape
+  // GitHub's Windows runners put in os.tmpdir() (e.g. `C:\Users\RUNNER~1\...`).
+  // A `~` anywhere but the START of a path is an ordinary literal character;
+  // only a LEADING `~` is shell home-expansion.
+  function shortNameFixture(name) {
+    const root = fixtureRoot(name);
+    const app = path.join(root, 'RUNNER~1', 'app');
+    writePackageJson(app, { lint: 'eslint .', test: 'node --version' });
+    return { root, app };
+  }
+
+  test('mid-string ~ in an absolute --prefix path resolves', () => {
+    const { app } = shortNameFixture('tilde-abs-prefix');
+    const r = resolveVerifyCommandTarget(`npm --prefix ${app} run lint`, { projectRoot: app });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.severity, 'none');
+    assert.equal(r.target, app);
+  });
+
+  test('mid-string ~ in a relative cd target resolves', () => {
+    const { root } = shortNameFixture('tilde-relative-cd');
+    const r = resolveVerifyCommandTarget('cd RUNNER~1/app && npm test', { projectRoot: root });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.severity, 'none');
+    assert.equal(r.target, path.join(root, 'RUNNER~1', 'app'));
+  });
+
+  test('leading ~ is still refused (row 14 must not be weakened)', () => {
+    const root = fixtureRoot('tilde-leading-still-refused');
+    const r = resolveVerifyCommandTarget('cd ~/web && npm test', { projectRoot: root });
+    assert.equal(r.status, 'unresolvable');
+    assert.equal(r.reason, 'dynamic_path');
+    assert.equal(r.severity, 'warning');
+  });
+
+  test('quoted leading ~ is still refused', () => {
+    const root = fixtureRoot('tilde-leading-quoted-refused');
+    const r = resolveVerifyCommandTarget('cd "~/web" && npm test', { projectRoot: root });
+    assert.equal(r.status, 'unresolvable');
+    assert.equal(r.reason, 'dynamic_path');
+    assert.equal(r.severity, 'warning');
   });
 });
 

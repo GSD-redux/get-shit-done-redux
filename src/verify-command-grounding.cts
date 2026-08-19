@@ -204,8 +204,22 @@ function extractAutomatedCommands(planText: unknown): AutomatedCommand[] {
 
 // ─── Resolution ───────────────────────────────────────────────────────────────
 
-/** `$`, backtick, `*`, `?`, `~`, or a newline — a path this recognizer refuses to guess at. */
-const DYNAMIC_PATH_RE = /[$`*?~\n]/;
+/**
+ * `$`, backtick, `*`, `?`, or a newline — a path this recognizer refuses to
+ * guess at anywhere in the string. `$`/backtick are substitution, `*`/`?` are
+ * shell globs (and illegal in Windows path components regardless), and a
+ * newline is never a valid single path.
+ */
+const DYNAMIC_PATH_ANYWHERE_RE = /[$`*?\n]/;
+/**
+ * A LEADING `~` is shell home-expansion (`~/web`, `~user/web`) and is refused
+ * as dynamic; the dynamic check runs BEFORE quote stripping (so `cd
+ * "$FRONTEND"` is still caught), so this tolerates one leading quote char
+ * before the `~`. A `~` anywhere else in a path is an ordinary literal
+ * character — e.g. Windows 8.3 short names like `RUNNER~1` — and must resolve
+ * normally rather than being refused (#2401 CI regression).
+ */
+const DYNAMIC_PATH_LEADING_TILDE_RE = /^["']?~/;
 const CD_SEGMENT_RE = /^cd\s+(.+)$/;
 /**
  * Quote-aware `--prefix` value capture (#2401 review Finding 2): a bare
@@ -409,7 +423,7 @@ function resolveVerifyCommandTarget(command: unknown, options?: ResolveOptions):
   }
 
   // Dynamic-path refusal, tested against rawTarget BEFORE any unquoting.
-  if (DYNAMIC_PATH_RE.test(rawTarget)) {
+  if (DYNAMIC_PATH_ANYWHERE_RE.test(rawTarget) || DYNAMIC_PATH_LEADING_TILDE_RE.test(rawTarget)) {
     result.status = 'unresolvable';
     result.reason = 'dynamic_path';
     result.severity = 'warning';
