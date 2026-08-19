@@ -284,7 +284,7 @@ cannot represent these without collision.
 **Adding a step or mode file requires no hand-written row here.** Run
 `node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
 `tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
-in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 61 rows that must be
+in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 62 rows that must be
 hand-maintained in lockstep with a generated artifact is the drift this file exists to catch.
 
 ---
