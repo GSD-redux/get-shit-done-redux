@@ -699,6 +699,106 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     assert.equal(result.located, true);
   });
 
+  // ── #3660: the bound must reap the whole SUBTREE, not just the direct child ──
+  //
+  // `node --test` defaults to `--test-isolation=process` and forks a per-file worker as a
+  // GRANDCHILD. The old spawn shape (`timeout` alone, no detach) signalled only the runner: the
+  // worker was never signalled, reparented to init, and busy-looped at a full core forever — one
+  // orphan per hung check, while the verdict stayed correctly non-green and the suite stayed
+  // green. Control + treatment in the #1346 causation-control spirit: the control REQUIRES the
+  // leak to appear under the old shape (proving this test can see the defect at all), the
+  // treatment requires zero survivors through the production path.
+  //
+  // Both spawn a marker file name unique per run and find survivors by that marker in the
+  // process table — not by pgrep of a shared name, which would race concurrent test files.
+
+  /** Poll the process table (bounded) for live processes whose argv carries `marker`.
+   * Returns `null` when the observation itself fails — an unobservable table must never read as
+   * "zero survivors", or a transient ps failure turns the treatment into a silent pass. */
+  function survivorsOf(marker) {
+    const { execFileSync: ef } = require('node:child_process');
+    let out = '';
+    try {
+      out = ef('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8', timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+    return out
+      .split('\n')
+      .filter((l) => l.includes(marker) && !l.includes('ps -axo'))
+      .map((l) => Number.parseInt(l.trim().split(/\s+/)[0], 10))
+      .filter((n) => Number.isInteger(n) && n > 1);
+  }
+
+  /** Reap any survivors this test itself created — never leave the leak we are testing for. */
+  function reap(pids) {
+    for (const pid of pids || []) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+
+  test('#3660 control: the un-reaped spawn shape really does orphan the worker (leak is observable)', {
+    skip: process.platform === 'win32' ? 'POSIX group semantics; Windows reap is a #3660 follow-up' : false,
+  }, (t) => {
+    const { spawnSync } = require('node:child_process');
+    const dir = createTempDir('prohib-3660-ctl-');
+    t.after(() => cleanup(dir));
+    const marker = `gsd3660ctl_${process.pid}_${Date.now()}`;
+    const tf = path.join(dir, `${marker}.test.cjs`);
+    fs.writeFileSync(tf, "const { test } = require('node:test');\ntest('hangs forever', () => { while (true) {} });\n");
+    // The OLD shape: bounded timeout, NO detach, no group reap — exactly what shipped before #3660.
+    // MUST strip NODE_TEST_CONTEXT (as childEnv does): under an ambient runner context the child
+    // runs the subject in-process, forks no worker, and this control false-negatives.
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_OPTIONS;
+    spawnSync(process.execPath, ['--test', '--test-reporter=tap', '--', tf], {
+      cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      env, timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024,
+    });
+    const leaked = survivorsOf(marker);
+    t.after(() => reap(survivorsOf(marker)));
+    assert.ok(Array.isArray(leaked), 'process-table observation failed — the control cannot run blind');
+    assert.ok(leaked.length >= 1,
+      'the control must LEAK: without a group reap the per-file worker survives the bounded kill. '
+      + 'If this fails, the leak is no longer observable this way and the treatment below proves nothing.');
+    reap(leaked);
+  });
+
+  test('#3660 treatment: a hung check leaves ZERO descendants via the production path', {
+    skip: process.platform === 'win32' ? 'POSIX group semantics; Windows reap is a #3660 follow-up' : false,
+  }, (t) => {
+    const enforce = require(ENFORCEMENT_LIB);
+    const dir = createTempDir('prohib-3660-trt-');
+    t.after(() => cleanup(dir));
+    const marker = `gsd3660trt_${process.pid}_${Date.now()}`;
+    const tf = path.join(dir, `${marker}.test.cjs`);
+    fs.writeFileSync(tf, "const { test } = require('node:test');\ntest('hangs forever', () => { while (true) {} });\n");
+    const result = enforce.runProhibitionEnforcement(
+      TEST_TIER,
+      { kind: 'node-test', target: tf, failFirst: true },
+      { cwd: dir, timeoutMs: 1500 },
+    );
+    // Verdict semantics unchanged (the L685 test's own assertions, restated here so THIS test
+    // fails loudly if reaping ever changes the disposition):
+    assert.notEqual(result.status, 'green', 'reaping must not change the fail-closed verdict');
+    assert.equal(result.located, true);
+    // The #3660 property: nothing matching this run's unique marker survives, checked over a
+    // grace window (the group SIGKILL is synchronous but the table update need not be instant).
+    const deadline = Date.now() + 5000;
+    let leaked = survivorsOf(marker);
+    while (Array.isArray(leaked) && leaked.length > 0 && Date.now() < deadline) {
+      const spinUntil = Date.now() + 200;
+      while (Date.now() < spinUntil) { /* bounded wait without timers (sync test) */ }
+      leaked = survivorsOf(marker);
+    }
+    t.after(() => reap(survivorsOf(marker)));
+    assert.ok(Array.isArray(leaked), 'process-table observation failed — an unobservable table is not a pass');
+    assert.equal(leaked.length, 0,
+      `#3660: ${leaked.length} process(es) survived the bounded run [${leaked.join(', ')}] — `
+      + 'the timeout killed the runner but not its worker');
+  });
+
   test('an EMPTY node-test file (exit 0, zero tests) does NOT green via the real runner (BL-01)', (t) => {
     const enforce = require(ENFORCEMENT_LIB);
     const dir = createTempDir('prohib-real-empty-');
