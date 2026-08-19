@@ -1,12 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "ingest-docs.md": {
-      "reason": "#3602: gains CLASSIFIER_MODEL/SYNTHESIZER_MODEL/ROADMAPPER_MODEL resolve-model bindings, a #2517 model-omit-on-inherit marker + rule block, and model= on all three subagent dispatch shapes (classifier prose fan-out, synthesizer Agent block, roadmapper Agent block) so dynamic_routing/model_profile tiers apply instead of the caller's session model. Deliberate growth in runtime-loaded workflow text, not converter drift."
-    },
-    "import.md": {
-      "reason": "#3602: gains a CHECKER_MODEL resolve-model binding, the #2517 marker + rule block, and model=\"{CHECKER_MODEL}\" on the gsd-plan-checker Agent block. Same defect class as ingest-docs.md; deliberate growth, not converter drift."
-    },
     "audit-fix.md": {
       "reason": "#3602: the issue's file-level grep audit missed this file — its gsd-executor spawn is dispatch-shaped. Gains an EXECUTOR_MODEL resolve-model binding, the #2517 marker + rule block, and model= on the executor Agent block. Deliberate growth, not converter drift."
     },
