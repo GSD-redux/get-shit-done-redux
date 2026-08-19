@@ -28,6 +28,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { extractTaggedBlocks, stripTaggedBlocks } from './markdown-sectionizer.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const { stripProjectCodePrefix, extractPhaseToken, comparePhaseNum } = phaseIdMod;
@@ -121,65 +122,83 @@ interface HarvestOptions {
 
 // ─── Extraction ───────────────────────────────────────────────────────────────
 
-/**
- * ReDoS-safe stop-at-next-open pattern (shape mirrors `PLAN_TASK_BLOCK_RE` in
- * src/verify.cts): bounded attrs, body terminating at the next `<task[\s>]`
- * rather than a lazy scan across the whole remaining document.
- */
-const TASK_BLOCK_RE = /<task(\s[^>]{0,1000})?>((?:(?!<task[\s>])[\s\S])*?)<\/task>/g;
 const TASK_NAME_RE = /<name>([\s\S]*?)<\/name>/;
 const AUTOMATED_BLOCK_RE = /<automated[^>]{0,200}>([\s\S]*?)<\/automated>/g;
 
-/** Bounds walking pathological input (e.g. hundreds of unclosed openers). */
+/**
+ * Bounds walking pathological input (e.g. hundreds of unclosed `<automated>`
+ * openers). `extractTaggedBlocks`/`stripTaggedBlocks` (task-block grammar
+ * owner, `./markdown-sectionizer.cjs`) already use a ReDoS-safe
+ * stop-at-next-open pattern with no separate iteration cap of their own — a
+ * document full of unclosed `<task>` openers never matches, so their walk is
+ * a single linear scan regardless. This guard only bounds the `<automated>`
+ * scan this module still runs directly, matching the pre-existing behavior.
+ */
 const MAX_BLOCK_WALK = 20000;
 
 /**
- * Extract every `<automated>…</automated>` command from PLAN.md text, in
- * document order, attaching the owning `<task><name>` when the block sits
- * inside a `<task>…</task>`. Never throws; a non-string or blank plan yields
- * `[]`. `plan` is left `''` — callers (`probePhaseVerifyCommands`,
+ * Run `AUTOMATED_BLOCK_RE` over `text`, pushing `{plan: '', task, command}`
+ * for each non-empty trimmed block onto `out`, in order. Shares `guard`
+ * across every caller in one `extractAutomatedCommands` invocation so the
+ * MAX_BLOCK_WALK bound applies to the WHOLE document's `<automated>` count,
+ * not per task body. Returns `false` when the bound was hit (caller stops
+ * walking further task bodies immediately); `true` otherwise.
+ */
+function extractAutomatedFromText(
+  text: string,
+  task: string,
+  out: AutomatedCommand[],
+  guard: { n: number },
+): boolean {
+  AUTOMATED_BLOCK_RE.lastIndex = 0;
+  let aMatch: RegExpExecArray | null;
+  while ((aMatch = AUTOMATED_BLOCK_RE.exec(text)) !== null) {
+    const raw = (aMatch[1] ?? '').trim();
+    if (raw !== '') out.push({ plan: '', task, command: raw });
+    if (aMatch.index === AUTOMATED_BLOCK_RE.lastIndex) AUTOMATED_BLOCK_RE.lastIndex += 1;
+    guard.n += 1;
+    if (guard.n > MAX_BLOCK_WALK) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract every `<automated>…</automated>` command from PLAN.md text,
+ * attaching the owning `<task><name>` when the block sits inside a
+ * `<task>…</task>`. Never throws; a non-string or blank plan yields `[]`.
+ * `plan` is left `''` — callers (`probePhaseVerifyCommands`,
  * `harvestPriorVerifyCommands`) set it from the filename they read.
+ *
+ * Task-block bodies are obtained from the canonical sectionizer
+ * (`extractTaggedBlocks`/`stripTaggedBlocks`, `./markdown-sectionizer.cjs`)
+ * rather than a fourth hand-rolled `<task>` grammar copy (review finding,
+ * generative fix divergence class). This module only needs each task's
+ * `<name>` and its `<automated>` blocks — never the opening tag's `type=`
+ * attribute — so, unlike `src/verify.cts`'s `PLAN_TASK_BLOCK_RE` (which keeps
+ * its own copy specifically to read `type=`), it can share the owner
+ * outright. Ordering: every in-task command is emitted first, task by task
+ * in document order (`extractTaggedBlocks` returns bodies in document
+ * order); every command sitting OUTSIDE any `<task>` is emitted after, in
+ * the order it appears in the task-stripped remainder. No existing caller or
+ * test depends on interleaving an outside-task block between two in-task
+ * blocks that surround it in the raw document.
  */
 function extractAutomatedCommands(planText: unknown): AutomatedCommand[] {
   if (typeof planText !== 'string' || planText.length === 0) return [];
 
-  const taskSpans: Array<{ start: number; end: number; task: string }> = [];
-  TASK_BLOCK_RE.lastIndex = 0;
-  let tMatch: RegExpExecArray | null;
-  let guard = 0;
-  while ((tMatch = TASK_BLOCK_RE.exec(planText)) !== null) {
-    const body = tMatch[2] ?? '';
+  const out: AutomatedCommand[] = [];
+  const guard = { n: 0 };
+
+  const taskBodies = extractTaggedBlocks(planText, 'task', true);
+  for (const body of taskBodies) {
     const nameMatch = TASK_NAME_RE.exec(body);
     const task = nameMatch ? nameMatch[1].trim() : '';
-    taskSpans.push({ start: tMatch.index, end: tMatch.index + tMatch[0].length, task });
-    if (tMatch.index === TASK_BLOCK_RE.lastIndex) TASK_BLOCK_RE.lastIndex += 1;
-    guard += 1;
-    if (guard > MAX_BLOCK_WALK) break;
+    if (!extractAutomatedFromText(body, task, out, guard)) return out;
   }
 
-  const out: AutomatedCommand[] = [];
-  AUTOMATED_BLOCK_RE.lastIndex = 0;
-  let aMatch: RegExpExecArray | null;
-  guard = 0;
-  // Monotonic pointer: both taskSpans and <automated> matches are produced in
-  // ascending document order, so this index only ever advances — avoids an
-  // O(n·m) `.find` rescan of taskSpans for every block (was quadratic on a
-  // pathological plan; MAX_BLOCK_WALK bounds the worst case regardless).
-  let spanIdx = 0;
-  while ((aMatch = AUTOMATED_BLOCK_RE.exec(planText)) !== null) {
-    const raw = (aMatch[1] ?? '').trim();
-    if (raw !== '') {
-      while (spanIdx < taskSpans.length && taskSpans[spanIdx].end <= aMatch.index) {
-        spanIdx += 1;
-      }
-      const span =
-        spanIdx < taskSpans.length && aMatch.index >= taskSpans[spanIdx].start ? taskSpans[spanIdx] : null;
-      out.push({ plan: '', task: span ? span.task : '', command: raw });
-    }
-    if (aMatch.index === AUTOMATED_BLOCK_RE.lastIndex) AUTOMATED_BLOCK_RE.lastIndex += 1;
-    guard += 1;
-    if (guard > MAX_BLOCK_WALK) break;
-  }
+  const remainder = stripTaggedBlocks(planText, 'task', true);
+  extractAutomatedFromText(remainder, '', out, guard);
+
   return out;
 }
 

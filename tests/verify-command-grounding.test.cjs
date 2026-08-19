@@ -53,6 +53,7 @@ const {
   probePhaseVerifyCommands,
   harvestPriorVerifyCommands,
 } = require('../gsd-core/bin/lib/verify-command-grounding.cjs');
+const { extractTaggedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const KNOWN_STATUSES = new Set([
   'ok',
@@ -159,6 +160,34 @@ describe('extractAutomatedCommands', () => {
     assert.deepEqual(
       crlf.map((c) => c.command),
       lf.map((c) => c.command),
+    );
+  });
+});
+
+describe('task-grammar parity', () => {
+  test('extractAutomatedCommands attributes the same task names as the canonical sectionizer', () => {
+    const longAttr = 'x'.repeat(400);
+    const fixture = [
+      '<task><name>bare</name><verify><automated>echo bare</automated></verify></task>',
+      '<task type="auto"><name>typed</name><verify><automated>echo typed</automated></verify></task>',
+      `<task type="auto" data-note="${longAttr}"><name>longattr</name><verify><automated>echo longattr</automated></verify></task>`,
+      '<task><name>adjacent-a</name><verify><automated>echo a</automated></verify></task>',
+      '<task><name>adjacent-b</name><verify><automated>echo b</automated></verify></task>',
+      '<task><name>lt</name><verify><automated>echo "a < b" && echo x < y</automated></verify></task>',
+    ].join('\n');
+
+    const attributed = new Set(extractAutomatedCommands(fixture).map((c) => c.task));
+    const canonicalNames = new Set(
+      extractTaggedBlocks(fixture, 'task', true).map((body) => {
+        const m = /<name>([\s\S]*?)<\/name>/.exec(body);
+        return m ? m[1].trim() : '';
+      }),
+    );
+
+    assert.deepEqual(attributed, canonicalNames);
+    assert.deepEqual(
+      [...attributed].sort(),
+      ['adjacent-a', 'adjacent-b', 'bare', 'longattr', 'lt', 'typed'],
     );
   });
 });
