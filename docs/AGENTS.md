@@ -1,6 +1,6 @@
 # GSD Agent Reference
 
-> Full role cards for 21 primary agents plus concise stubs for 12 advanced/specialized agents (33 shipped agents total). The `agents/` directory and [`docs/INVENTORY.md`](INVENTORY.md) are the authoritative roster; see [Architecture](ARCHITECTURE.md) for context.
+> Full role cards for 22 primary agents plus concise stubs for 12 advanced/specialized agents (34 shipped agents total). The `agents/` directory and [`docs/INVENTORY.md`](INVENTORY.md) are the authoritative roster; see [Architecture](ARCHITECTURE.md) for context.
 
 ---
 
@@ -12,7 +12,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 
 ### Agent Categories
 
-> The table below covers the **21 primary agents** detailed in this section. Thirteen additional shipped agents (pattern-mapper, debug-session-manager, code-reviewer, code-fixer, ai-researcher, domain-researcher, eval-planner, eval-auditor, framework-selector, intel-updater, doc-classifier, doc-synthesizer, mempalace-curator) have concise stubs in the [Advanced and Specialized Agents](#advanced-and-specialized-agents) section below. For the authoritative 34-agent roster, see [`docs/INVENTORY.md`](INVENTORY.md) and the `agents/` directory.
+> The table below covers the **22 primary agents** detailed in this section. Thirteen additional shipped agents (pattern-mapper, debug-session-manager, code-reviewer, code-fixer, ai-researcher, domain-researcher, eval-planner, eval-auditor, framework-selector, intel-updater, doc-classifier, doc-synthesizer, mempalace-curator) have concise stubs in the [Advanced and Specialized Agents](#advanced-and-specialized-agents) section below. For the authoritative 35-agent roster, see [`docs/INVENTORY.md`](INVENTORY.md) and the `agents/` directory.
 
 | Category | Count | Agents |
 |----------|-------|--------|
@@ -23,7 +23,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | Roadmappers | 1 | roadmapper |
 | Executors | 1 | executor |
 | Checkers | 3 | plan-checker, integration-checker, ui-checker |
-| Verifiers | 1 | verifier |
+| Verifiers | 2 | verifier, dom-verifier |
 | Auditors | 3 | nyquist-auditor, ui-auditor, security-auditor |
 | Mappers | 1 | codebase-mapper |
 | Debuggers | 1 | debugger |
@@ -72,6 +72,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Investigates implementation patterns for the specific phase domain
 - Detects test infrastructure for Nyquist validation mapping
 - Tags in-repo discrete values (enums, schema unions, error codes, status constants, paths) `[VERIFIED]` only after reading the source-of-truth file that run, citing path and line range, and quoting the values verbatim
+- Refuses `[VERIFIED]` for a compatibility claim resting on *missing* metadata (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry, no matching support-matrix row) — an absence constrains no version, and an enumerated allow-list that stops short of the target is still an absence, so only a positive falsification attempt with its failing output pasted earns the tag; anything less stays `[ASSUMED]`
 
 ---
 
@@ -368,6 +369,37 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 4. Typography
 5. Spacing
 6. Experience Design
+
+---
+
+### gsd-dom-verifier
+
+**Role:** Observes a live DOM and reports which of a wave's stated UI acceptance criteria hold. Additive — never blocks.
+
+| Property | Value |
+|----------|-------|
+| **Spawned by** | `live-dom-uat` capability step at `execute:wave:post` |
+| **Parallelism** | One per wave |
+| **Tools** | Read, Write, Glob, Grep, mcp__chrome-devtools__*, mcp__claude-in-chrome__* |
+| **Disallowed Tools** | Edit, Bash, the Playwright MCP family |
+| **Model (balanced)** | Sonnet |
+| **Color** | Cyan |
+| **Produces** | `{phase}-DOM-VERIFY.md` |
+| **Gated by** | `workflow.live_dom_uat` (default `false`) |
+
+This is the **only** GSD agent carrying browser MCP tools. `gsd-executor` is deliberately not widened — for a first-party agent the static `tools:` list is the only control that exists ([ADR-1244](adr/1244-capability-ecosystem.md) D2, [ADR-857](adr/857-capability-system.md) D4). It carries no `Bash`: it does not start dev servers or shell out.
+
+**Outcome codes** (`nothing_to_report` and `could_not_look` are never conflated):
+
+| `outcome` | `reason` | Meaning |
+|---|---|---|
+| `verified` | `ok` | Criteria existed and were observed |
+| `nothing_to_report` | `no_criteria` | The wave stated no UI acceptance criteria |
+| `could_not_look` | `no_browser_mcp` | No browser MCP answered |
+| `could_not_look` | `profile_locked` | Another instance holds the browser profile |
+| `could_not_look` | `target_unreachable` | Nothing serving the target |
+
+**Reference:** [Enable live-DOM verification](how-to/enable-live-dom-verification.md) · [Explanation](explanation/live-dom-uat-capability.md)
 
 ---
 
@@ -788,7 +820,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 
 ## Agent Tool Permissions Summary
 
-> **Scope:** this table covers the 21 primary agents only. The 13 advanced/specialized agents listed above carry their own tool surfaces in their `agents/gsd-*.md` frontmatter (summarized in the per-agent stubs above and in [`docs/INVENTORY.md`](INVENTORY.md)).
+> **Scope:** this table covers the 22 primary agents only. The 13 advanced/specialized agents listed above carry their own tool surfaces in their `agents/gsd-*.md` frontmatter (summarized in the per-agent stubs above and in [`docs/INVENTORY.md`](INVENTORY.md)).
 
 | Agent | Read | Write | Edit | Bash | Grep | Glob | WebSearch | WebFetch | MCP |
 |-------|------|-------|------|------|------|------|-----------|----------|-----|

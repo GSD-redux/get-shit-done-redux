@@ -32,6 +32,10 @@ const {
   roadmapPhaseLookupSources,
   extractPhaseToken,
   isSentinelPhaseId,
+  // #3641: the single-owner heading-intro and digit-token grammar sources —
+  // see BRACKET_PHASE_ENTRY_HEADING_RE below.
+  PHASE_HEADING_PREFIX_SRC,
+  PHASE_NUMBER_TOKEN_SOURCE,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -412,12 +416,40 @@ function sliceMilestoneWindow(content: string, version: string): string | null {
  * exist" — a window containing only sentinel phases still reached the
  * region and must read COMPLETE, not TRUNCATED.
  */
-function hasPhaseEntries(markdown: string): boolean {
+// #3641: the bracket-convention phase-ENTRY heading shape — ADR-612 Decision
+// 1's own discriminator: a phase heading is a bracket followed by a
+// DIGIT-then-colon (`### [GSD.04] 01: Name`); a bracket followed by a NAME
+// is a milestone heading and must never count. Every fragment interpolates a
+// single-owner export from phase-id.cts — the heading intro
+// (PHASE_HEADING_PREFIX_SRC: a `[...]` bracket optionally followed by a
+// `Phase ` label, or a bare `Phase ` label), the digit-bearing token
+// (PHASE_NUMBER_TOKEN_SOURCE, which also covers the dotted sub-phase form
+// `[GSD.02] 05.03:`), and the optional pre-colon tag
+// (OPTIONAL_PHASE_TAG_SOURCE) — never a re-typed grammar. Tested IN
+// ADDITION to the legacy pattern below, so bracket mode is a strict
+// superset: mid-migration legacy-labeled headings (`Phase AUTH-101:`-style
+// custom ids included) keep their existing recognition. Review finding: an
+// earlier single-alternative form with a `[\\w]` token admitted
+// `[bracket] Word:` shapes — a colon-bearing MILESTONE heading inside the
+// window read as an entry (defeating V005 outright for that spelling) and a
+// decoy `### [GSD.04] Notes:` outside the window manufactured a false V005
+// while suppressing the correct V004. The digit anchor forecloses both.
+const BRACKET_PHASE_ENTRY_HEADING_RE = new RegExp(
+  `^${PHASE_HEADING_PREFIX_SRC}${PHASE_NUMBER_TOKEN_SOURCE}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
+  'i',
+);
+
+function hasPhaseEntries(markdown: string, phaseIdConvention?: string | null): boolean {
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  // #3641: the widened grammar engages ONLY when the resolved convention is
+  // 'bracket' — a project that has not opted in runs the legacy pattern
+  // alone, byte-identically.
   const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  const bracketMode = phaseIdConvention === 'bracket';
   for (const h of tokenizeHeadings(markdown)) {
     if (h.level < 2 || h.level > 4) continue;
     if (phaseHeadingPattern.test(h.text)) return true;
+    if (bracketMode && BRACKET_PHASE_ENTRY_HEADING_RE.test(h.text)) return true;
   }
   // #3184 review finding: the bullet fallback must be fence-aware too, or a
   // FENCED markdown EXAMPLE of the `- [ ] **Phase N — Name**` syntax (e.g. a
@@ -598,8 +630,18 @@ function classifyMilestoneWindow(input: {
  * symbols, 20 direct callers) means its signature and return type do not
  * change. This is the real owner; `extractCurrentMilestone` becomes a
  * one-line wrapper returning `.value` so every existing caller is untouched.
+ *
+ * @param phaseIdConvention - #3641: the RESOLVED `phase_id_convention`
+ *   config value, threaded to `hasPhaseEntries` so the scope axis's row-8
+ *   comparison recognizes bracket-convention phase entries
+ *   (`### [GSD.04] 01: Name`). Optional: absent, or any value other than
+ *   `'bracket'`, compiles the legacy entry grammar byte-identically — the
+ *   widening engages only for a project that resolved the convention
+ *   explicitly. `extractCurrentMilestone`'s wrapper deliberately does NOT
+ *   expose it (its 20 callers are not the scope-axis consumers; V005's
+ *   router site and `getMilestonePhaseFilter` resolve and thread it).
  */
-function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: string | null): { value: string; scope: Scope } {
+function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: string | null, phaseIdConvention?: string | null): { value: string; scope: Scope } {
   if (!cwd) {
     // Row 1: a deliberate unscoped read (no cwd supplied) is a real answer —
     // the caller asked for no scoping, so whole-document is COMPLETE.
@@ -640,13 +682,13 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
         versionResolved,
         hasVersionedMilestones: versionedMilestonesPresent,
         headingFound: false,
-        windowHasPhaseEntries: hasPhaseEntries(value),
-        documentHasPhaseEntries: hasPhaseEntries(value),
+        windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
+        documentHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
       }),
     };
   }
 
-  const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(content));
+  const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(content), phaseIdConvention);
   const summaryPattern = new RegExp(
     `<summary[^>]*>([^<]*${escapeRegex(version)}[^<]*)<\\/summary>`,
     'i'
@@ -680,7 +722,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
             versionResolved,
             hasVersionedMilestones: versionedMilestonesPresent,
             headingFound: true,
-            windowHasPhaseEntries: hasPhaseEntries(value),
+            windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
             documentHasPhaseEntries,
           }),
         };
@@ -694,7 +736,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
         versionResolved,
         hasVersionedMilestones: versionedMilestonesPresent,
         headingFound: false,
-        windowHasPhaseEntries: hasPhaseEntries(value),
+        windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
         documentHasPhaseEntries,
       }),
     };
@@ -787,7 +829,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       versionResolved,
       hasVersionedMilestones: versionedMilestonesPresent,
       headingFound: true,
-      windowHasPhaseEntries: hasPhaseEntries(value),
+      windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
       documentHasPhaseEntries,
     }),
   };
@@ -1380,7 +1422,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     const roadmapPath = path.join(planningDir(cwd, ws), 'ROADMAP.md');
     const roadmapContent = platformReadSync(roadmapPath);
     if (roadmapContent === null) throw new Error('missing');
-    const scopedResult = extractCurrentMilestoneScoped(roadmapContent, cwd, ws);
+    const scopedResult = extractCurrentMilestoneScoped(roadmapContent, cwd, ws, phaseIdConvention);
     let roadmap = scopedResult.value;
     // Default: the filter's window IS extractCurrentMilestoneScoped's own
     // window (reused verbatim, not re-derived — ADR-3180 Decision 4c).
@@ -1417,7 +1459,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       // via `storedMilestone`).
       const sliced = sliceMilestoneWindow(roadmapContent, versionOverride);
 
-      const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(roadmapContent));
+      const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(roadmapContent), phaseIdConvention);
 
       if (sliced !== null) {
         versionScoped = true;
@@ -1441,7 +1483,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
         versionResolved: true,
         hasVersionedMilestones: hasVersionedMilestonesGlobal,
         headingFound: sliced !== null,
-        windowHasPhaseEntries: hasPhaseEntries(roadmap),
+        windowHasPhaseEntries: hasPhaseEntries(roadmap, phaseIdConvention),
         documentHasPhaseEntries,
       });
     }
@@ -1662,4 +1704,8 @@ export = {
   scanMilestonePhaseIds,
   collectTablePhaseRows,
   findMilestoneScopeHeadingLines,
+  // #3641: the scope axis's phase-ENTRY predicate, exported so roadmap
+  // validate's V004 document-level check routes through the same single
+  // owner (and its convention gate) instead of a private inline copy.
+  hasPhaseEntries,
 };

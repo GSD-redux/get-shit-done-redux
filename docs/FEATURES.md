@@ -1330,6 +1330,14 @@ That third-party dependence is a real trade-off, held honestly rather than paper
 - REQ-PRBRANCH-01: System MUST identify commits that only modify `.planning/` files
 - REQ-PRBRANCH-02: System MUST create a new branch with planning commits filtered out
 - REQ-PRBRANCH-03: Code changes MUST be preserved exactly as committed
+- REQ-PRBRANCH-04: System MUST NOT delete a `.planning/` path the target branch already tracks
+- REQ-PRBRANCH-05: Verification MUST assert against the active filter mode's contract, not an unconditional zero
+
+**Filter modes.** `planning.pr_strict` selects what "filtered" means. The default mode treats `.planning/` as two populations: structural state that belongs in review (`STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**`) and transient per-phase artifacts that do not (`phases/`, `quick/`, `research/`, `threads/`, `todos/`, `debug/`, `seeds/`, `codebase/`, `ui-reviews/`). Strict mode collapses that distinction: nothing under `.planning/` reaches the PR branch, and a commit is carried over only when it touches at least one file outside `.planning/`.
+
+Strict mode exists because the two ways to keep planning private are not equivalent. Turning off `planning.commit_docs` keeps `.planning/` out of git, which also takes parallel executor worktrees with it — a worktree is checked out from a commit, so an untracked planning tree is simply absent inside it and the executor has no `PLAN.md` to read. Strict mode leaves planning committed, so worktrees and revert paths keep working, and moves the guarantee to the publication boundary instead. See [Publish PRs without planning artifacts](how-to/publish-prs-without-planning-artifacts.md).
+
+Both modes filter by forcing the excluded paths back to whatever the target branch already tracks, in the index *and* the working tree. Un-staging alone would record a deletion of any planning file the target branch carries, and would leave the picked file untracked on disk, where it makes a later cherry-pick of the same path abort.
 
 ---
 
@@ -3179,6 +3187,8 @@ explicit reviewer flags -> --all -> review.default_reviewers -> all detected rev
 
 When a requirement's prose matches **no** shape cue, the probe does not silently drop it (#1110): it emits a single `unclassified — review manually` candidate so the zero-cue requirement is surfaced for the author to resolve like any other (specify / dismiss-with-reason / defer) — a manual-review nudge, not a hard block.
 
+**Non-English projects: the probe reads English, the SPEC does not have to (#2773).** The shape cues are English word-boundary patterns, so a project running with [`response_language`](CONFIGURATION.md) set would otherwise have *every* requirement match nothing, classify to zero shapes, and land in `unclassified` — the taxonomy silently contributing nothing to exactly the kind of spec it exists to harden. `spec-phase` Step 5.5 therefore feeds the probe a faithful **English translation** of each requirement's `text`: that payload is engine input, never user-facing output, so it is translated while the SPEC itself stays in the original language, requirement ids are left untouched, and any acceptance criteria written back from the resolved edges return to `response_language`. Translation makes the classifier *applicable*; it does not make it omniscient. A requirement carrying no shape cue in **any** language still classifies to zero — that is the classifier's recorded recall gap (ADR-857 §98), not a translation failure — and the remedy there is the same one an English project uses: author an explicit `shapes` array on the requirement instead of relying on prose classification.
+
 The resolved edges populate a `## Edge Coverage` section in `SPEC.md`. Unresolved *applicable* edges trigger a soft gate (Resolve / Write-anyway-flagged / Keep-probing) rather than a hard block. Under `--auto`, the probe **never auto-dismisses** — it auto-covers where a defensible criterion exists, otherwise auto-backstops, and logs `[auto] edge coverage: C covered, B backstop, U unresolved`. The one exception is an `unclassified` candidate: `--auto` leaves it **`unresolved`** (surfaced as a flagged assumption), never auto-`backstop` — a missing shape is not evidence an edge exists, so minting a held-out edge obligation would be a false claim.
 
 The load-bearing wire is the `plan-phase` lift: `covered` and `backstop` edges become `must_haves.truths` the verifier can check, so the section is not merely documentation. A `backstop` edge is lifted as a **structured non-inferable marker** (`{ statement, verification: backstop }`, a flat scalar — not a prose note), which the **honest verifier** then consumes (see below) — closing the loop the edge-probe opened.
@@ -3471,3 +3481,48 @@ See [Resolve verify-command path findings](how-to/resolve-verify-command-path-fi
 **A proxy, never a drift measurement.** The count includes commits that touched nothing `STATE.md` describes, and the stamp restamps on every state write — so a low count means "something wrote STATE recently", not "STATE is accurate". Rendered with a `~`; never gate on it.
 
 **Reference:** [Configuration](CONFIGURATION.md) · [Read the statusline freshness marker](how-to/read-the-statusline-freshness-marker.md) · [ADR-2164](adr/2164-statusline-scope-boundary.md)
+
+### 163. Read-Only Planning Snapshot (`planning inspect`)
+
+**Command:** `gsd-tools query planning inspect`
+
+**Purpose:** Give downstream consumers — harness UIs, mission-control surfaces, dashboards, bots — one schema-versioned JSON document describing everything `.planning/` knows, so nothing outside gsd-core has to parse `ROADMAP.md` / `REQUIREMENTS.md` / `*-PLAN.md` / `*-SUMMARY.md` a second time. gsd-core is the single source of `.planning/` truth; a second parser is a second answer.
+
+**Requirements:**
+- REQ-INSP-01: `PLANNING_INSPECT_SCHEMA_VERSION = 1` is emitted as `schema_version`. Consumers MUST reject any other value rather than best-effort-parse an unknown shape.
+- REQ-INSP-02: Read-only. The command mutates no planning state, and mutates nothing on disk, under any input.
+- REQ-INSP-03: Unknown or conflicting evidence serializes as `null` / `"unknown"` with a coded entry in `diagnostics[]` — never inferred, reconciled, or defaulted. Every key is always present; a key is never omitted to signal absence.
+- REQ-INSP-04: Argument errors fail loud (non-zero exit, typed `ERROR_REASON`); data gaps do not. v1 takes no arguments, and a stray positional or unknown flag is a usage error rather than a silently-ignored one.
+- REQ-INSP-05: Roadmap acceptance, verification status, and UAT items are reported side by side per phase and are never folded into a single verdict. A ROADMAP checkbox carries `authoritative: false` — completion is derived from disk state.
+- REQ-INSP-06: `accepted_phases` and `completed_plans` are independent fractions. `percent` is `null` whenever the scope is not `complete`, per the same rule the roadmap and progress surfaces follow.
+- REQ-INSP-07: Payloads over ~50 KB use the existing `@file:` spill channel, resolved transparently before stdout.
+
+**Why it does not simply serialize the internal snapshot.** `PlanningSnapshot` (the diagnostic-rule subject introduced by ADR-3180 §8.1) is deliberately additive and still growing — four fields at Phase 10, twenty-plus by Phase 12. Handing that shape to external consumers would freeze an internal contract by accident. `planning inspect` declares its own flat schema and maps into it, so a field added to `PlanningSnapshot` never changes what this command emits.
+
+**Composed, never re-derived.** Milestone identity and phase enumeration arrive via `buildPlanningSnapshot`; completion from `isPhaseComplete` (disk-strict); live-plan counting from `scanPhasePlans`; the percentage arithmetic from `clampPercent`; STATE fields from `stateFieldValue`; plan bodies from the Plan Document Module; requirement IDs from `parseRequirements`; UAT items from `parseUatItems`. Markdown structure is read through the Markdown Sectionizer and Markdown Table Model seams, so the Traceability table is resolved by column name against its registered schema rather than by a position-anchored regex.
+
+**Known limit — task-scoped file provenance.** A `<task>` declares the files it plans to touch, but `SUMMARY.md`'s `## Files Created/Modified` describes the whole plan. Spreading that list across a plan's tasks would be inference, so a task's `changed_files` is populated only where the summary attributes files to that specific task; otherwise it is `null` with `provenance: "plan_scoped"`. Closing this needs a change to the SUMMARY format, not to the reader.
+
+**Reference:** [CLI Tools](CLI-TOOLS.md#planning-inspect) · [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md)
+
+### 164. Live-DOM UAT Capability
+
+**Config key:** `workflow.live_dom_uat` (default `false`)
+
+**Purpose:** A phase with a live-UI acceptance criterion could not be finished by the agent that executed it. `gsd-executor` carries no browser tools, so it correctly returned a `checkpoint:human-action` — even though the work was not human-only, just tool-less. Every such phase quietly degraded from *executed by the executor* to *executed, then finished by hand in the orchestrator*, and the plan's `autonomous: false` marker could not distinguish "a human must judge this" from "the executor lacks the tool" (#2856).
+
+**Behavior:** A default-off capability owns one boolean key, one agent, and one additive step. When the key is on, `gsd-dom-verifier` runs at `execute:wave:post` and writes `{phase}-DOM-VERIFY.md`; the orchestrator's `automated_ui_verification` step additionally considers `mcp__chrome-devtools__*` / `mcp__claude-in-chrome__*` when present.
+
+**The executor's tool surface is unchanged in every configuration.** Widening it was the reported proposal and was refused: for a first-party agent the static `tools:` list is the only control that exists — no capability can grant tools to one ([ADR-1244](adr/1244-capability-ecosystem.md) D2), no hook kind grants tool permissions ([ADR-857](adr/857-capability-system.md) D4), and there is no per-dispatch override. Browser reach lives in one purpose-built agent that carries no `Bash`.
+
+**Two independent gates, both fail-closed.** The capability's `activationKey` makes it resolve inactive when the key is off — `resolveLoopHooks` renders a hook only on `state.active === true` — and the step carries its own `when` guard. Tool presence alone never activates it: a browser MCP configured for unrelated work is not driven by default.
+
+**The pre-existing Playwright path is untouched.** `mcp__playwright__*` keeps the gating it already had (presence plus an active UI phase). Pulling it behind a new default-off key would have silently removed working behavior from current users on upgrade; the key gates only the newly added families.
+
+**It tolerates the browser-profile lock rather than coordinating it.** `chrome-devtools-mcp` holds an exclusive lock on its profile, so parallel waves collide. `--isolated` is a flag on the operator's own MCP server registration — GSD neither launches that server nor passes its arguments — so the verifier reports `could_not_look` / `profile_locked`, names the flag, and stops. No retry, no held-up wave.
+
+**`nothing_to_report` is never conflated with `could_not_look`.** A report claiming no issues when it never opened a browser is worse than no report; the artifact carries a closed reason enum so the two are always distinguishable.
+
+**Known limits:** no sandbox — once enabled, nothing constrains which origins are reached ([ADR-1244](adr/1244-capability-ecosystem.md) D5); DOM observation only, no screenshot diffing, accessibility audit, or performance tracing.
+
+**Reference:** [Configuration](CONFIGURATION.md) · [Enable live-DOM verification](how-to/enable-live-dom-verification.md) · [Explanation](explanation/live-dom-uat-capability.md) · [Agents](AGENTS.md)

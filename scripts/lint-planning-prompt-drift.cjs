@@ -370,8 +370,45 @@ function writeBaseline(root, violations) {
   return entries;
 }
 
+/**
+ * Resolve the scan root for a CLI run. Default: this repo — exactly what
+ * `lint:ci` invokes. `--root <dir>` overrides it (#3640) so the CLI
+ * end-to-end test can prove the guard's FAIL path against an isolated temp
+ * tree instead of writing its fixture into the shared `gsd-core/workflows/`
+ * that parallel test chunks observe mid-lifecycle (the emitted-provenance
+ * manifest build copies the transient file into all 19 runtime manifests;
+ * the #3333 TOCTOU ENOENT crash was the same writer's first symptom).
+ *
+ * Usage errors exit 2 — a code distinct from the guard's own findings exit
+ * (1), so tests and CI can tell "bad invocation" from "drift found" without
+ * parsing stderr. Fail-closed on every bad shape, because a wrong root is
+ * not harmless: `--root --update` would otherwise resolve the flag itself
+ * into a cwd-relative path and --update would happily `mkdir -p` a stray
+ * baseline tree inside the shared source directory (#3640's write class).
+ * A value that starts with `-` (another flag) or does not name an existing
+ * directory is therefore a usage error, never a scan root. With repeated
+ * `--root` flags the first wins (same first-match convention as the boolean
+ * `--update` parse).
+ */
+function resolveScanRoot() {
+  const rootIdx = process.argv.indexOf('--root');
+  if (rootIdx === -1) return path.join(__dirname, '..');
+  const value = process.argv[rootIdx + 1];
+  const isDir = value !== undefined
+    && !value.startsWith('-')
+    && fs.existsSync(value)
+    && fs.statSync(value).isDirectory();
+  if (!isDir) {
+    process.stderr.write('planning-prompt-drift: --root requires an existing directory argument (usage: --root <dir>)\n');
+    process.exitCode = 2;
+    return null;
+  }
+  return path.resolve(value);
+}
+
 function main() {
-  const root = path.join(__dirname, '..');
+  const root = resolveScanRoot();
+  if (root === null) return;
   const update = process.argv.includes('--update');
   const violations = scanRepo(root);
 

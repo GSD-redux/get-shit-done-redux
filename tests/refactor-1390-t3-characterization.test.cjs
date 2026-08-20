@@ -297,6 +297,14 @@ describe('parseRequirements — checkbox-bullet characterization (T3 pre-migrati
     assert.strictEqual(items[0].text, 'Checked requirement');
   });
 
+  test('strips the separator colon used by the shipped requirements template', () => {
+    const md = '- [ ] **AUTH-01**: User can sign up\n';
+    const items = parseRequirements(md);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].id, 'AUTH-01');
+    assert.strictEqual(items[0].text, 'User can sign up');
+  });
+
   test('parses multiple checkbox bullets', () => {
     const md = [
       '- [ ] **REQ-01** First',

@@ -198,6 +198,67 @@ const COVERED = {
     ],
     minScore: 75,  // measured 77.52% (2026-06-14, issue #1187); floor = 77 - 2
   },
+  // planning-inspect / plan-document / planning-command-router: net-new modules
+  // added by #2790. Registered here so the Stryker gate stops SKIPPING them
+  // (previously has_work: "false" — ~1000 LOC entirely outside mutation scoring).
+  //
+  // WHY THESE SHARDS POINT AT tests/planning-inspect.unit.test.cjs, NOT
+  // tests/planning-inspect.test.cjs. CI evidence: two shards pointed at the
+  // integration file were CANCELLED at the workflow's 15-minute cap —
+  // "Mutation testing 4% (elapsed: ~3m, remaining: ~1h 19m) 27/640 tested".
+  // tests/planning-inspect.test.cjs is INTEGRATION-shaped (91 cases, most
+  // spawning a `gsd-tools` child process via `runGsdTools`); Stryker's command
+  // runner treats the whole `node --test <file>` invocation as ONE test costing
+  // whatever the slowest case costs (measured ~20s), and re-runs that entire
+  // file once per mutant — 640 mutants x 20s cannot finish in 15 minutes.
+  // tests/planning-inspect.unit.test.cjs is the dedicated, spawn-free,
+  // in-process mutation surface for exactly these three modules (measured
+  // locally: the whole file runs in well under a second) — the same shape
+  // every other entry in this registry already uses (*.property.test.cjs /
+  // *.unit.test.cjs). The integration suite is UNAFFECTED by this change: it
+  // keeps running in full in the normal (non-mutation) test job, and remains
+  // the source of truth for spawn-boundary/CLI-dispatch/read-only-proof
+  // behaviour that an in-process unit file cannot exercise.
+  //
+  // Measured CI scores (GitHub Actions run 32392791843, all three shards
+  // PASSED — not a local run; mutation shards run `node --test`, hard-blocked
+  // in this repo's local environment):
+  //   planning-command-router 95.65% → floor 94  (already exceeds TARGET_MUTATION_SCORE (80))
+  //   plan-document            76.58% → floor 75
+  //   planning-inspect         57.03% → floor 56  (well below TARGET (80) — ratchet
+  //     candidate; comfortably clears its own floor but has real room to grow.
+  //     Raise as its tests improve, never lower it.)
+  //
+  // All three shards point at tests/planning-inspect.unit.test.cjs (in-process,
+  // spawn-free, ~0.3s dry run), not tests/planning-inspect.test.cjs — that is
+  // what made measurement possible at all. The integration file spawns a
+  // subprocess per case via runGsdTools; Stryker's command runner treats the
+  // whole `node --test <file>` invocation as one test costing whatever the
+  // slowest case costs (measured ~20s), and re-runs that entire file once per
+  // mutant, so 640 mutants x 20s could not finish inside the 15-minute shard
+  // cap. The integration suite is unaffected by this change: it keeps running
+  // in full in the normal (non-mutation) test job.
+  'planning-inspect': {
+    cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 56,
+  },
+  'plan-document': {
+    cjs: 'gsd-core/bin/lib/plan-document.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 75,
+  },
+  'planning-command-router': {
+    cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 94,
+  },
 };
 
 // ── Files that, when changed, invalidate ALL modules ─────────────────────────
