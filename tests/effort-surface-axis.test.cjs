@@ -496,10 +496,61 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
     );
   });
 
-  test('Decision item 1 (invocation override) still has NO live caller', () => {
-    // Guards the corrected ADR-443 claim. If someone later wires --effort into a
-    // workflow, this fails and the ADR status text must be revisited — that is
-    // the point: the ADR must not silently drift back to being wrong.
+  /**
+   * Does this text invoke `resolve-execution` with an invocation-time effort override (#2475)?
+   *
+   * BOTH argument shapes, because the CLI accepts both: `--effort <level>` and `--effort=<level>`
+   * (`gsd-core/bin/gsd-tools.cjs` — `a.slice('--effort='.length)`). The original matcher required
+   * `--effort\s`, so `--effort=low` — the terser form a workflow author is at least as likely to
+   * write — evaded it entirely, along with `--effort` at end-of-input. That hole mattered little
+   * while this guard merely SNAPSHOT a temporary gap; it matters a lot now that path (b) makes the
+   * guard the enforcement of a decision (ADR-443 amendment 2026-08-19).
+   *
+   * `[^\r\n]*` keeps the call and the flag on ONE line, so a `resolve-execution` on one line and an
+   * unrelated `--effort` on the next is not a false hit. The trailing `(?:[\s=]|$)` is what stops
+   * `--effortless` from matching: the character after `--effort` must be a delimiter or nothing.
+   *
+   * The unbounded quantifier is deliberate and safe here: the corpus scanned is maintainer-authored
+   * workflow, reference, and agent markdown — bounded prose, not adversarial input.
+   *
+   * DIVERGENCE RISK. This predicate independently models `gsd-tools.cjs`'s own argument parser; the
+   * two are not derived from one shared constant. If that parser ever accepts a THIRD spelling of
+   * `--effort`, this regex is the surface that must follow it — otherwise ADR-443's ratifying
+   * invariant silently stops holding while the guard still reports green.
+   */
+  const EFFORT_CALLER_RE = /resolve-execution[^\r\n]*--effort(?:[\s=]|$)/;
+  const hasEffortCaller = (text) => EFFORT_CALLER_RE.test(String(text ?? ''));
+
+  test('the item-1 matcher recognises every shape the CLI accepts, and nothing else', () => {
+    // Behavioral: the predicate is called with inputs and its verdict asserted. The equals form
+    // fails against the pre-#2475 matcher — it is the regression this sub-change closes.
+    for (const [label, text] of [
+      ['space form', 'gsd_run query resolve-execution gsd-executor --effort low\n'],
+      ['equals form', 'gsd_run query resolve-execution gsd-executor --effort=low\n'],
+      ['bare trailing --effort', 'gsd_run query resolve-execution gsd-executor --effort\n'],
+      ['end of input, no newline', 'gsd_run query resolve-execution gsd-executor --effort'],
+      ['CRLF equals form', 'gsd_run query resolve-execution gsd-executor --effort=low\r\n'],
+    ]) {
+      assert.ok(hasEffortCaller(text), `must detect an item-1 caller written as: ${label}`);
+    }
+
+    for (const [label, text] of [
+      ['--effortless is a different word', 'resolve-execution gsd-executor --effortless\n'],
+      ['no effort argument at all', 'resolve-execution gsd-executor --host codex\n'],
+      ['--effort without resolve-execution', 'some-other-command --effort low\n'],
+      ["item 6's --attempt caller", 'resolve-execution gsd-executor --attempt 1\n'],
+      ['call and flag on different lines', 'resolve-execution\ngsd-executor --effort low\n'],
+      ['empty input', ''],
+    ]) {
+      assert.ok(!hasEffortCaller(text), `must NOT fire on: ${label}`);
+    }
+  });
+
+  test('Decision item 1 (invocation override) has no orchestration caller — by decision', () => {
+    // ADR-443's 2026-08-19 amendment settles this as path (b) FOR ITEM 1: the invocation-override
+    // step is an operator-facing CLI surface, deliberately not driven by shipped orchestration.
+    // So this is no longer a snapshot of a gap awaiting wiring — it is the invariant that keeps the
+    // ratified ADR true. A hit here is not "the ADR is stale", it is "the ADR must be amended first".
     const dirs = ['gsd-core/workflows', 'gsd-core/references', 'agents', 'commands'];
     const hits = [];
     const walk = (d) => {
@@ -508,8 +559,7 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
       for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
         const full = path.join(abs, e.name);
         if (e.isDirectory()) walk(path.relative(REPO_ROOT, full));
-        // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored workflow/reference/agent markdown, bounded prose, not adversarial input
-        else if (e.name.endsWith('.md') && /resolve-execution[^\r\n]*--effort\s/.test(fs.readFileSync(full, 'utf8'))) {
+        else if (e.name.endsWith('.md') && hasEffortCaller(fs.readFileSync(full, 'utf8'))) {
           hits.push(path.relative(REPO_ROOT, full));
         }
       }
@@ -517,8 +567,8 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
     dirs.forEach(walk);
     assert.deepEqual(
       hits, [],
-      `ADR-443 records Decision item 1 as having no live caller; found: ${JSON.stringify(hits)}. ` +
-      'Update the ADR-443 amendment before adding one.',
+      `ADR-443 records Decision item 1 as deliberately having no orchestration caller; found: ${JSON.stringify(hits)}. ` +
+      'Amend ADR-443 before wiring one — the ADR is Accepted on the strength of this invariant.',
     );
   });
 });

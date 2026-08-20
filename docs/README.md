@@ -24,6 +24,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Resolve edge-coverage findings](how-to/resolve-edge-coverage-findings.md) — turn the spec phase's surfaced domain-boundary edges into covered, dismissed, or backstopped spec decisions
 - [Resolve prohibition findings](how-to/resolve-prohibition-findings.md) — turn the spec phase's surfaced must-NOT constraints into resolved, dismissed, or deferred spec decisions
 - [Resolve an unreachable-workflow finding](how-to/resolve-unreachable-workflow-findings.md) — wire or fully sweep a shipped workflow that no command, agent, or skill references
+- [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md) — fix an `<automated>` verify command whose target directory does not resolve from the executor's cwd
 - [Resolve a contract-drift finding](how-to/resolve-contract-drift-findings.md) — bring an agent's completion contract, read-tag gate, or deleted-file test reference back into agreement with the registry
 - [Resolve unreachable-guard findings](how-to/resolve-unreachable-guard-findings.md) — fix shell guards whose fallback arm cannot run, and tell "nothing to report" apart from "could not look"
 - [Resolve an ESLint glob-coverage finding](how-to/resolve-eslint-coverage-findings.md) — bring a source file that matches no lint rule under coverage, or record a reasoned exemption
@@ -37,6 +38,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Configure model profiles](how-to/configure-model-profiles.md) — switch between quality, balanced, and budget model tiers
 - [Control which host runtime GSD reports](how-to/control-the-reported-host-runtime.md) — read the `agent_runtime` ladder, understand what host detection looks at, and pin the runtime when detection is not what you want
 - [Set up cross-AI review](how-to/set-up-cross-ai-review.md) — configure a second AI to review code produced by the primary agent
+- [Scope code review depth by path](how-to/scope-code-review-depth-by-path.md) — escalate `/gsd-code-review` to `deep` for sensitive directories while the rest of the repo stays at the default depth
 - [Work in parallel with workstreams](how-to/work-in-parallel-with-workstreams.md) — run independent lines of work simultaneously using workstreams
 - [Isolate work with workspaces](how-to/isolate-work-with-workspaces.md) — use workspaces to sandbox experimental or risky changes
 - [Debug a failed execution](how-to/debug-a-failed-execution.md) — diagnose and recover from broken or incomplete phase execution

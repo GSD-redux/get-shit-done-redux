@@ -549,9 +549,11 @@ Skip this step entirely if `$FULL_MODE` is false.
 EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw)
 ```
 
+**Generic step dispatch (#3606):** dispatch every `kind == "step"` hook from `EXECUTE_POST_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md (skip silently when none); each step is advisory and best-effort. The code-review specialization below is one such hook, not a replacement for the generic dispatch.
+
 Resolve active step hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "code-review"`.
 
-If no active code-review step hook exists, skip with message "Code review skipped (code-review capability inactive)".
+If no active code-review step hook exists, skip with message "Code review skipped (code-review capability inactive)" — after dispatching any other active step hooks above — and proceed.
 
 **Scope files from executor's commits:**
 ```bash

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "code-review.md": {
+      "reason": "#2554: +5376 bytes vs next. resolve_depth was rewritten to call the new path-scoped depth resolver (src/code-review-depth.cts) — the two config reads, the JSON payload construction that passes config via env vars and the changed-file list via stdin, an executable misconfiguration guard that halts the review instead of a prose instruction, the provenance/warning/downgrade output, and the large-scope downgrade relocated out of compute_file_scope so one step owns depth. Replaces the spent 3503-diff-base-scope-anchor.json fragment (its code-review.md entry was consumed when #3503 merged at 49b60070a and can no longer clear anything — the base file is exactly the 34435-byte baseline this growth is measured against), mirroring how #3503 itself replaced the spent 3191-unanchored-grep-sites.json."
+    }
+  }
+}

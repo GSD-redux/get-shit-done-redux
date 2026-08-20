@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "code-review.md": "#3503: +915 bytes vs next. The emitted workflow copy grows with its source gsd-core/workflows/code-review.md — the scope-anchored diff-base grep, the PHASE_SCOPE_NUM padded/unpadded prep, and the #3503 contract comments at both derivation sites (Tier-3 fallback and spawn_reviewer). Replaces the spent 3191-unanchored-grep-sites.json fragment (its code-review.md entry was consumed when #3191 merged and could no longer clear anything). The source-path ripples (gsd-core/workflows/code-review.md, gsd-core/workflows/code-review/steps/structural-pre-pass.md) are identity-attributed by the table and need no ack."
-  }
-}

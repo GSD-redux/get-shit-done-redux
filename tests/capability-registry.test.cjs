@@ -4893,7 +4893,12 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
   // ─── Defect 2 — gen-time wired guard ────────────────────────────────────────
 
-  describe('Defect 2: validateHooksWired gen-time guard', () => {
+  // Shared #3606 fixtures: every hook kind, and a Map<point, Set<kind>> builder
+  // for validateHooksWired's wiredKinds argument.
+  const ALL = ['contribution', 'step', 'gate'];
+  const kindsMap = (spec) => new Map(Object.entries(spec).map(([pt, ks]) => [pt, new Set(ks)]));
+
+  describe('Defect 2: validateHooksWired gen-time wired guard', () => {
     /** Minimal capability fixture with one hook at a given point */
     function makeCapWithStep(point) {
       return {
@@ -4930,7 +4935,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns non-empty error array mentioning "not wired" when step point is not in wiredSet', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const wiredSet = new Set(['plan:pre', 'plan:post']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(Array.isArray(errs), 'must return an array');
       assert.ok(errs.length > 0, 'must return errors when point is unwired');
@@ -4942,7 +4947,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns non-empty error array when contribution point is not in wiredSet', () => {
       const cap = makeCapWithContribution('discuss:pre');
-      const wiredSet = new Set(['plan:pre']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(errs.length > 0, 'must return errors for unwired contribution point');
       assert.match(errs.join(' '), /not wired/i);
@@ -4950,7 +4955,7 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns non-empty error array when gate point is not in wiredSet', () => {
       const cap = makeCapWithGate('discuss:pre');
-      const wiredSet = new Set(['plan:pre']); // discuss:pre absent
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent
       const errs = validateHooksWired(cap, wiredSet);
       assert.ok(errs.length > 0, 'must return errors for unwired gate point');
       assert.match(errs.join(' '), /not wired/i);
@@ -4958,35 +4963,37 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
 
     test('returns empty array when all declared points are in wiredSet', () => {
       const cap = makeCapWithStep('plan:pre');
-      const wiredSet = new Set(['plan:pre', 'plan:post', 'execute:post']);
+      const wiredSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL, 'execute:post': ALL });
       const errs = validateHooksWired(cap, wiredSet);
-      assert.deepEqual(errs, [], 'must return empty array when all points are wired');
+      assert.deepEqual(errs, [], 'must return empty array when all points are wired and kind-covered');
     });
 
     test('boundary: cap declaring discuss:pre is rejected against wiredSet lacking it', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const smallSet = new Set(['plan:pre', 'plan:post']);
+      const smallSet = kindsMap({ 'plan:pre': ALL, 'plan:post': ALL });
       const errs = validateHooksWired(cap, smallSet);
       assert.ok(errs.length > 0, 'must reject discuss:pre against a set that lacks it');
     });
 
-    test('boundary: cap declaring discuss:pre is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
+    test('boundary: cap declaring discuss:pre is accepted against real getWiredKinds(ROOT) post-fix', () => {
       const cap = makeCapWithStep('discuss:pre');
-      const realWired = getWiredLoopPoints(ROOT);
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const realWired = getWiredKinds(ROOT);
       const errs = validateHooksWired(cap, realWired);
       assert.deepEqual(
         errs, [],
-        `discuss:pre must be wired after the fix. Errors: ${errs.join('; ')}`,
+        `discuss:pre must be wired and kind-covered after the fix. Errors: ${errs.join('; ')}`,
       );
     });
 
-    test('boundary: cap declaring discuss:post is accepted against real getWiredLoopPoints(ROOT) post-fix', () => {
+    test('boundary: cap declaring discuss:post is accepted against real getWiredKinds(ROOT) post-fix', () => {
       const cap = makeCapWithContribution('discuss:post');
-      const realWired = getWiredLoopPoints(ROOT);
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const realWired = getWiredKinds(ROOT);
       const errs = validateHooksWired(cap, realWired);
       assert.deepEqual(
         errs, [],
-        `discuss:post must be wired after the fix. Errors: ${errs.join('; ')}`,
+        `discuss:post must be wired and kind-covered after the fix. Errors: ${errs.join('; ')}`,
       );
     });
 
@@ -4999,13 +5006,235 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         gates: [],
         config: {},
       };
-      const wiredSet = new Set(['plan:pre']); // the invalid point is not here either
+      const wiredSet = kindsMap({ 'plan:pre': ALL }); // the invalid point is not here either
       const errs = validateHooksWired(cap, wiredSet);
       // Should NOT flag it — invalid points are the schema validator's job
       const notWiredErrors = errs.filter((e) => /not wired/i.test(e));
       assert.deepEqual(
         notWiredErrors, [],
         'validateHooksWired must not flag invalid points as "not wired" (those are caught by schema validation)',
+      );
+    });
+  });
+
+  // ─── Defect 3: hook-kind coverage (#3606) ────────────────────────────────────
+  //
+  // A point having a call site proves hooks are RENDERED, not DISPATCHED. A
+  // consumer that iterates only `kind == "gate"` (or narrows `kind == "step"`
+  // to one ref.skill) silently drops every other registered kind — mempalace's
+  // step hooks were wired, active, and never run for five days across
+  // plan:post / execute:wave:post / verify:post / execute:post consumers.
+  // The guard must validate, per registered kind, that the call site's
+  // dispatch text covers that kind.
+
+  describe('Defect 3: validateHooksWired hook-kind coverage (#3606)', () => {
+
+    test('a step hook at a point whose site covers only gate fails with a kind-coverage error', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'plan:post', ref: { skill: 'my-skill' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'plan:post': ['gate'] }); // hand-rolled gate-only consumer
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'a step registered at a gate-only point must fail validation');
+      const joined = errs.join(' ');
+      assert.match(joined, /plan:post/, 'error must name the point');
+      assert.match(joined, /test-cap/, 'error must name the capability id');
+      assert.match(joined, /step/, 'error must name the uncovered kind');
+      assert.doesNotMatch(joined, /not wired/i, 'the point IS wired — this is the coverage error, not the wiring error');
+    });
+
+    test('a contribution hook at a point whose site covers only gate fails', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [],
+        contributions: [{ point: 'execute:wave:post', into: 'orchestrator', fragment: { inline: 'hi' }, produces: [], consumes: [] }],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'execute:wave:post': ['gate'] });
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'a contribution registered at a gate-only point must fail validation');
+      assert.match(errs.join(' '), /contribution/);
+    });
+
+    test('a point covered for exactly the registered kinds passes (boundary: no over-reach)', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'ship:post', ref: { skill: 'my-skill' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'ship:post': ['step'] }); // ship.md's real coverage
+      assert.deepEqual(validateHooksWired(cap, wired), [], 'step at a step-covered point must pass');
+    });
+
+    test('unwired-point errors are unchanged when the arg is a kinds Map', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'discuss:pre', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = kindsMap({ 'plan:pre': ALL }); // discuss:pre absent entirely
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'unwired point still fails');
+      assert.match(errs.join(' '), /not wired/i, 'the existing unwired error text is preserved');
+    });
+
+    test('boundary: invalid points are not kind-flagged (schema validator owns them)', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'not:a:real:point', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const errs = validateHooksWired(cap, kindsMap({}));
+      assert.deepEqual(errs, [], 'invalid points produce neither wiring nor coverage errors');
+    });
+
+    test('the real tree passes the extended guard for every in-tree registered kind', () => {
+      // Self-enforcement: the repo's own capabilities and host workflows must
+      // satisfy the new check — this is the test that forces consumer fixes.
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const wiredKinds = getWiredKinds(ROOT);
+      const failures = [];
+      for (const capPath of fs.readdirSync(path.join(ROOT, 'capabilities'))) {
+        const manifest = path.join(ROOT, 'capabilities', capPath, 'capability.json');
+        if (!fs.existsSync(manifest)) continue;
+        let cap;
+        try { cap = JSON.parse(fs.readFileSync(manifest, 'utf8')); } catch { continue; }
+        for (const err of validateHooksWired(cap, wiredKinds)) failures.push(`${capPath}: ${err}`);
+      }
+      assert.deepEqual(
+        failures, [],
+        `in-tree capabilities must be fully kind-covered by host workflows:\n  ${failures.join('\n  ')}`,
+      );
+    });
+  });
+
+  describe('coveredKindsInRegion: dispatch-text kind coverage (#3606)', () => {
+    test('deferral line without a kind discriminator covers every kind', () => {
+      const region = 'Apply each entry in `activeHooks` per @gsd-core/references/loop-hook-dispatch.md\n';
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      assert.deepEqual([...coveredKindsInRegion(region)].sort(), ['contribution', 'gate', 'step']);
+    });
+
+    test('deferral line naming one kind covers only that kind', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['step']);
+    });
+
+    test('a bare §-citation of the reference covers nothing (validation guidance, not dispatch)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = '⚠ **Validate `check` before shell use** — `loop-hook-dispatch.md` § `gate`.\n**For each active entry where `kind == "gate"`**\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['gate'], 'gate dispatched unconditionally, step/contribution NOT');
+    });
+
+    test('a narrowed kind line (kind == step AND ref.skill ==) does not cover the kind', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Resolve hooks where `kind == "step"` and `ref.skill == "secure-phase"`.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], [], 'a one-skill special case proves nothing about the kind generally');
+    });
+
+    test('quote and operator variants are tolerated (=== and single quotes)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = "for h in hooks: if h.kind === 'contribution' then inject\n";
+      assert.deepEqual([...coveredKindsInRegion(region)], ['contribution']);
+    });
+
+    test('CRLF input yields the same verdicts as LF', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const lf = 'per @gsd-core/references/loop-hook-dispatch.md\n`kind == "gate"` unconditional\n';
+      const crlf = lf.replace(/\n/g, '\r\n');
+      assert.deepEqual([...coveredKindsInRegion(crlf)].sort(), [...coveredKindsInRegion(lf)].sort());
+    });
+
+    test('scanWiredKinds accumulates per-point unions across multiple call sites', () => {
+      const { scanWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const text = [
+        'X=$(gsd_run loop render-hooks verify:post --raw)',
+        '**For each active entry where `kind == "gate"`**',
+        'Y=$(gsd_run loop render-hooks verify:post --raw)',
+        'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md.',
+        '',
+      ].join('\n');
+      const m = scanWiredKinds(text);
+      assert.ok(m.has('verify:post'), 'point must be present');
+      assert.deepEqual(
+        [...m.get('verify:post')].sort(),
+        ['gate', 'step'],
+        'two call sites at one point accumulate their coverage',
+      );
+    });
+
+    test('capId == and into == narrowing void contribution credit (#3606 adversarial finding)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const capIdNarrowed = 'Resolve hooks where `kind == "contribution"` and `capId == "security"`.\n';
+      assert.deepEqual([...coveredKindsInRegion(capIdNarrowed)], [],
+        'a one-capability hand-roll is not generic contribution coverage');
+      const intoNarrowed = 'For each entry where `kind == "contribution"` and `into == "planner"`: inject.\n';
+      assert.deepEqual([...coveredKindsInRegion(intoNarrowed)], [],
+        'planner-targeted-only injection leaves orchestrator-targeted contributions dispatched by no one');
+    });
+
+    test('a negated kind mention describes an absence, not a dispatch', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Branch 1 — no active `ship:post` step hooks (`activeHooks` has no entry with `kind == "step"`): Skip.\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], [],
+        '"has no entry with kind == step" must not count as step coverage');
+    });
+
+    test('a deferral sentence keeps its credit when the NEXT sentence specializes (segment split)', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Dispatch `kind == "step"` hooks per @gsd-core/references/loop-hook-dispatch.md. `ref.skill == "code-review"`:\n';
+      assert.deepEqual([...coveredKindsInRegion(region)], ['step'],
+        'the generic deferral and the one-hook specialization are separate sentences');
+    });
+
+    test('a deferral path with a period (loop-hook-dispatch.md) is not split into segments', () => {
+      const { coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
+      const region = 'Apply each entry per @~/.claude/gsd-core/references/loop-hook-dispatch.md\n';
+      assert.deepEqual([...coveredKindsInRegion(region)].sort(), ['contribution', 'gate', 'step'],
+        'the .md inside the deferral path is not a sentence boundary');
+    });
+
+    test('a site whose consumers are all narrowed yields the zero-coverage error, not "not wired"', () => {
+      const cap = {
+        id: 'test-cap',
+        role: 'feature',
+        steps: [{ point: 'verify:post', ref: { skill: 'x' }, produces: [], consumes: [], onError: 'skip' }],
+        contributions: [],
+        gates: [],
+        config: {},
+      };
+      const wired = new Map([['verify:post', new Set()]]); // sites exist, all narrowed
+      const errs = validateHooksWired(cap, wired);
+      assert.ok(errs.length > 0, 'all-narrowed consumers must fail');
+      const joined = errs.join(' ');
+      assert.match(joined, /covers NO hook kind/i, 'error must name the zero-coverage diagnosis');
+      assert.doesNotMatch(joined, /not wired/i, 'the site EXISTS — misdiagnosing it as unwired points at the wrong remedy');
+    });
+
+    test('HOOK_KINDS vocabulary parity: scanner kinds match the validator group->kind mapping', () => {
+      const { HOOK_KINDS } = require('../scripts/gen-loop-host-contract.cjs');
+      const { HOOK_GROUP_KINDS } = require('../gsd-core/bin/lib/capability-validator.cjs');
+      assert.deepEqual(
+        [...HOOK_KINDS].sort(),
+        Object.values(HOOK_GROUP_KINDS).sort(),
+        'the scanner vocabulary must stay in lock-step with validateHooksWired\u2019s exported group->kind mapping — a rename on either side must fail here',
       );
     });
   });

@@ -94,7 +94,9 @@ When the tdd capability's `workflow.tdd_mode` is active (resolved via the plan:p
 
 When `CONTEXT_WINDOW >= 500000`, the planner prompt includes the 3 most recent prior-phase CONTEXT.md/SUMMARY.md files plus any phases in the current phase's `Depends on:` field (explicit deps load regardless of recency).
 
-Parse JSON for: `researcher_model`, `planner_model`, `checker_model`, `research_enabled`, `plan_checker_enabled`, `nyquist_validation_enabled`, `commit_docs`, `text_mode`, `phase_found`, `phase_dir`, `phase_number`, `phase_name`, `phase_slug`, `padded_phase`, `has_research`, `has_context`, `has_reviews`, `has_plans`, `plan_count`, `phase_status` (#3569), `planning_exists`, `roadmap_exists`, `phase_req_ids`, `response_language`, `granularity`.
+**#2401 — `prior_verify_commands` is NOT part of that enrichment and is never gated on `CONTEXT_WINDOW`.** It is a handful of one-line `<automated>` commands harvested from the nearest prior phase that had any; the payload is tiny and its absence at 200k is exactly what made the planner re-invent a verify command and author an unrunnable path. Surface it at every context window.
+
+Parse JSON for: `researcher_model`, `planner_model`, `checker_model`, `research_enabled`, `plan_checker_enabled`, `nyquist_validation_enabled`, `commit_docs`, `text_mode`, `phase_found`, `phase_dir`, `phase_number`, `phase_name`, `phase_slug`, `padded_phase`, `has_research`, `has_context`, `has_reviews`, `has_plans`, `plan_count`, `phase_status` (#3569), `planning_exists`, `roadmap_exists`, `phase_req_ids`, `response_language`, `granularity`, `prior_verify_commands` (#2401 — array of `{phase, plan, task, command}`, possibly empty; emitted at every context window).
 
 **#2517:** omit the `model=` param from an `Agent()` call when its `researcher`/`planner`/`checker`_model is `"inherit"` or empty — passing `model=""` 404s on non-Claude runtimes; omitting inherits the orchestrator model (mirrors execute-phase).
 
@@ -421,6 +423,8 @@ test -f "${PHASE_DIR}/${PADDED_PHASE}-VALIDATION.md" && echo "VALIDATION_CREATED
 PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
 ```
 
+**Contribution dispatch (#3606):** inject every `kind == "contribution"` fragment from `PLAN_PRE_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md, in array order, into the role each entry's `into` names — planner-targeted ones land in the prompt block below, orchestrator-targeted ones in your working context. The security specialization below is one such contribution, not a replacement for the generic dispatch.
+
 Resolve active contribution hooks from `PLAN_PRE_HOOKS_JSON` where `kind == "contribution"` and `capId == "security"`.
 
 **If no active security contribution hook exists:** Skip to step 5.6.
@@ -725,6 +729,17 @@ ${CONTEXT_WINDOW >= 500000 ? `
 - Skip all other prior phases to stay within context budget
 ` : ''}
 </required_reading>
+${prior_verify_commands.length > 0 ? `
+<proven_verify_commands>
+**Verify commands the previous phase actually ran (#2401) — reuse before re-deriving.** These
+are the `<automated>` commands from the nearest prior phase that had any. They resolved from
+the executor's cwd in a real run, so a path here is grounded evidence, not a guess. When this
+phase's build/test story is the same, **copy the command verbatim**; do not re-derive a
+directory. Surfaced at every context window — not part of the 1M enrichment above.
+
+{For each entry in \`prior_verify_commands\`: \`- Phase {phase} · {task}: \\\`{command}\\\`\`}
+</proven_verify_commands>
+` : ''}
 ${API_SURFACE_PATH ? `
 <intel_surface_hint>
 **API Surface (HINT — may be incomplete):** When \`intel.enabled\` is true, \`${API_SURFACE_PATH}\` lists symbols extracted from the codebase by regex/JS analysis. Prefer symbols listed there when referencing existing code. This surface is regex/JS-derived and MAY BE INCOMPLETE — a symbol's absence means *unknown*, not *nonexistent*. Never treat the surface as exhaustive. If you reference a symbol that is not in the surface and this phase creates it, list it under "Artifacts this phase produces".
@@ -971,6 +986,15 @@ Display banner:
 ◆ Spawning plan checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
 
+**Verify-command path probe (#2401).** Before spawning, run the deterministic resolvability
+probe and hand its JSON to the checker. It never executes command text and never prescribes a
+replacement path — it reports which `<automated>` targets resolve, which do not, and which it
+refused to guess at. Handing it over is what stops the checker hand-reasoning the filesystem.
+
+```bash
+VERIFY_PATHS=$(gsd_run check verify-command-paths "${PHASE}" --raw)
+```
+
 Checker prompt:
 
 ```markdown
@@ -989,6 +1013,19 @@ Checker prompt:
 </required_reading>
 
 ${AGENT_SKILLS_CHECKER}
+
+<verify_command_path_probe>
+**Deterministic verify-command path probe (#2401)** — already run; do NOT re-derive these
+verdicts by reading the filesystem yourself. Act on `severity` per the "Verify Command Path
+Resolvability" dimension: `blocker` → BLOCKER, `warning` → WARNING, `none` → silent.
+`status: pending_creation` is not a finding. A non-empty `readError` means the probe could not
+look — a WARNING, not a pass. Report the failing target verbatim; never prescribe a
+replacement path.
+
+```json
+{VERIFY_PATHS}
+```
+</verify_command_path_probe>
 
 <review_incorporation_verification>
 **If Mode is reviews:** Read REVIEWS.md and verify each current actionable review finding is visible in executable PLAN.md content or explicitly deferred/rejected in the relevant PLAN.md. A finding remains actionable if it requires a concrete plan task, `<action>`, `<acceptance_criteria>`, `<verify>`, `must_haves`, threat-model item, stale-path correction, or execution contract change before /gsd:execute-phase runs.
@@ -1381,8 +1418,12 @@ PHASE_REQ_IDS=$(gsd_run query init.plan-phase "$PHASE" --pick phase_req_ids 2>/d
 PHASE_REQ_IDS="${PHASE_REQ_IDS:-TBD}"
 ```
 
-Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If the
-`gap-analysis` gate hook is absent (capability inactive), skip this step.
+Read the `activeHooks` array from `PLAN_POST_HOOKS_JSON` in-context. If
+`activeHooks` is empty or absent, skip this step silently — do NOT key the skip
+on any one capability's gate being absent (#3606: that skip silently dropped
+every other registered hook at this point).
+
+**Step and contribution dispatch:** dispatch every `kind == "step"` hook and inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip each kind silently when none), before gate evaluation below.
 
 ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
 

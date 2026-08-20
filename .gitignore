@@ -132,6 +132,7 @@ build/
 /gsd-core/bin/lib/config-types.cjs
 /gsd-core/bin/lib/cli-exit.cjs
 /gsd-core/bin/lib/code-review-flags.cjs
+/gsd-core/bin/lib/code-review-depth.cjs
 /gsd-core/bin/lib/context-utilization.cjs
 /gsd-core/bin/lib/artifacts.cjs
 /gsd-core/bin/lib/command-arg-projection.cjs
@@ -251,6 +252,7 @@ build/
 /gsd-core/bin/lib/gate-predicate-evaluator.cjs
 /gsd-core/bin/lib/docs.cjs
 /gsd-core/bin/lib/check-command-router.cjs
+/gsd-core/bin/lib/verify-command-grounding.cjs
 /gsd-core/bin/lib/frontmatter.cjs
 /gsd-core/bin/lib/learnings.cjs
 /gsd-core/bin/lib/gsd2-import.cjs
