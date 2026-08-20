@@ -339,6 +339,7 @@
       "cli-skew-check.cjs",
       "clock.cjs",
       "clusters.cjs",
+      "code-review-depth.cjs",
       "code-review-flags.cjs",
       "codex-agent-toml.cjs",
       "command-aliases.cjs",

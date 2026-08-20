@@ -29,6 +29,7 @@
     "workflow.use_worktrees",
     "workflow.worktree_skip_hooks",
     "workflow.code_review_command",
+    "workflow.code_review_depth_overrides",
     "workflow.plan_bounce",
     "workflow.plan_bounce_script",
     "workflow.plan_bounce_passes",

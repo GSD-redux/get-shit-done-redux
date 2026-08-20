@@ -98,36 +98,6 @@ Exit workflow.
 Default is active through the Capability Registry schema — only skip when the registry resolves no active code-review step hook. This check runs AFTER phase validation so invalid phase errors are shown first.
 </step>
 
-<step name="resolve_depth">
-Determine review depth with priority order:
-
-1. DEPTH_OVERRIDE from --depth flag (highest priority)
-2. Config value: `gsd-tools.cjs query config-get workflow.code_review_depth 2>/dev/null`
-3. Default: "standard"
-
-```bash
-if [ -n "$DEPTH_OVERRIDE" ]; then
-  REVIEW_DEPTH="$DEPTH_OVERRIDE"
-else
-  CONFIG_DEPTH=$(gsd_run query config-get workflow.code_review_depth 2>/dev/null || echo "")
-  REVIEW_DEPTH="${CONFIG_DEPTH:-standard}"
-fi
-```
-
-**Validate depth value:**
-```bash
-case "$REVIEW_DEPTH" in
-  quick|standard|deep)
-    # Valid
-    ;;
-  *)
-    echo "Warning: Invalid depth '${REVIEW_DEPTH}'. Valid values: quick, standard, deep. Using 'standard'."
-    REVIEW_DEPTH="standard"
-    ;;
-esac
-```
-</step>
-
 <step name="compute_file_scope">
 Three-tier scoping with explicit precedence:
 
@@ -394,9 +364,90 @@ echo "File scope: ${#REVIEW_FILES[@]} files from ${TIER}"
 if [ ${#REVIEW_FILES[@]} -gt 50 ]; then
   echo "Warning: ${#REVIEW_FILES[@]} files is a large review scope."
   echo "Consider using --files to narrow scope, or --depth=quick for a faster pass."
-  if [ "$REVIEW_DEPTH" = "deep" ]; then
+fi
+```
+</step>
+
+<step name="resolve_depth">
+Determine review depth via the path-scoped depth resolver (`code-review-depth.cjs`). This step runs after `compute_file_scope` because rule matching needs the final `REVIEW_FILES` set.
+
+```bash
+CONFIG_DEPTH=$(gsd_run query config-get workflow.code_review_depth 2>/dev/null || echo "")
+DEPTH_OVERRIDES=$(gsd_run query config-get workflow.code_review_depth_overrides --default '[]' 2>/dev/null || echo '[]')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+
+# Files travel on stdin, never argv — a 50+-file scope with long paths approaches the
+# Windows execFileSync 32,767-char argv ceiling; stdin has no such bound.
+DEPTH_PAYLOAD=$(printf '%s\n' "${REVIEW_FILES[@]}" | FLAG_DEPTH="$DEPTH_OVERRIDE" CONFIG_DEPTH="$CONFIG_DEPTH" DEPTH_OVERRIDES="$DEPTH_OVERRIDES" REPO_ROOT="$REPO_ROOT" node -e "
+  const files = require('fs').readFileSync('/dev/stdin', 'utf-8').split('\n').filter(Boolean);
+  process.stdout.write(JSON.stringify({
+    flagDepth: process.env.FLAG_DEPTH || '',
+    configDepth: process.env.CONFIG_DEPTH || '',
+    overrides: JSON.parse(process.env.DEPTH_OVERRIDES || '[]'),
+    files,
+    repoRoot: process.env.REPO_ROOT || '',
+  }));
+")
+
+DEPTH_JSON=$(echo "$DEPTH_PAYLOAD" | node -e "
+  const { resolveCodeReviewDepth } = require('./gsd-core/bin/lib/code-review-depth.cjs');
+  const input = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf-8'));
+  process.stdout.write(JSON.stringify(resolveCodeReviewDepth(input)));
+")
+
+DEPTH_OK=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).ok))")
+```
+
+**If `DEPTH_OK` is not `true`**, `workflow.code_review_depth_overrides` is misconfigured. Print every collected error — never fall back to a default depth, since silently reviewing a misconfigured sensitive-path policy at `standard` is the exact hole this feature closes:
+
+```bash
+if [ "$DEPTH_OK" != "true" ]; then
+  echo "$DEPTH_JSON" | node -e "
+    const { errors } = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf-8'));
+    for (const err of errors) {
+      const parts = [];
+      if (err.ruleIndex !== undefined) parts.push('rule ' + err.ruleIndex);
+      if (err.path !== undefined) parts.push('path \"' + err.path + '\"');
+      if (err.value !== undefined) parts.push('depth \"' + err.value + '\"');
+      console.error('Error: workflow.code_review_depth_overrides' + (parts.length ? ' (' + parts.join(', ') + ')' : '') + ': ' + err.reason);
+    }
+  "
+  echo "Error: Fix workflow.code_review_depth_overrides and retry."
+fi
+```
+If `DEPTH_OK` is not `true`, exit workflow after printing the errors above. Do NOT spawn agent or create REVIEW.md.
+
+**Otherwise**, extract the resolved depth and its provenance:
+
+```bash
+REVIEW_DEPTH=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).depth)")
+DEPTH_SOURCE=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).source)")
+DEPTH_MATCHED_RULE_INDEX=$(echo "$DEPTH_JSON" | node -e "const r=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).matchedRule; process.stdout.write(r ? String(r.index) : '')")
+DEPTH_MATCHED_RULE_PATH=$(echo "$DEPTH_JSON" | node -e "const r=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).matchedRule; process.stdout.write(r ? r.path : '')")
+DEPTH_INVALID_FLAG=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(String(!!JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).invalidFlagDepth))")
+DEPTH_INVALID_CONFIG=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(String(!!JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).invalidConfigDepth))")
+DEPTH_DOWNGRADED=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(String(!!JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).downgraded))")
+
+case "$DEPTH_SOURCE" in
+  flag) DEPTH_PROVENANCE="from --depth flag" ;;
+  rule) DEPTH_PROVENANCE="matched rule ${DEPTH_MATCHED_RULE_INDEX}: ${DEPTH_MATCHED_RULE_PATH}" ;;
+  config) DEPTH_PROVENANCE="from workflow.code_review_depth" ;;
+  *) DEPTH_PROVENANCE="default" ;;
+esac
+echo "Review depth: ${REVIEW_DEPTH} (${DEPTH_PROVENANCE})"
+
+if [ "$DEPTH_INVALID_FLAG" = "true" ]; then
+  echo "Warning: Invalid depth '${DEPTH_OVERRIDE}'. Valid values: quick, standard, deep. Using 'standard'."
+fi
+if [ "$DEPTH_INVALID_CONFIG" = "true" ]; then
+  echo "Warning: Invalid depth '${CONFIG_DEPTH}'. Valid values: quick, standard, deep. Using 'standard'."
+fi
+
+if [ "$DEPTH_DOWNGRADED" = "true" ]; then
+  if [ -n "$DEPTH_MATCHED_RULE_INDEX" ]; then
+    echo "Switching from deep to standard depth for large file count (overrides matched rule ${DEPTH_MATCHED_RULE_INDEX}: ${DEPTH_MATCHED_RULE_PATH})."
+  else
     echo "Switching from deep to standard depth for large file count."
-    REVIEW_DEPTH="standard"
   fi
 fi
 ```
@@ -616,7 +667,7 @@ Display inline summary to user:
 
 ───────────────────────────────────────────────────────────────
 
-  Depth:           ${REVIEW_DEPTH}
+  Depth:           ${REVIEW_DEPTH} (${DEPTH_PROVENANCE})
   Files Reviewed:  ${FILES_REVIEWED}
   
   Findings:

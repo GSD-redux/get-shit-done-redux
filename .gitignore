@@ -132,6 +132,7 @@ build/
 /gsd-core/bin/lib/config-types.cjs
 /gsd-core/bin/lib/cli-exit.cjs
 /gsd-core/bin/lib/code-review-flags.cjs
+/gsd-core/bin/lib/code-review-depth.cjs
 /gsd-core/bin/lib/context-utilization.cjs
 /gsd-core/bin/lib/artifacts.cjs
 /gsd-core/bin/lib/command-arg-projection.cjs
