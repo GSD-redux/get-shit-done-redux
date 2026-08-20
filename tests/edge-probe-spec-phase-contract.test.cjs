@@ -468,3 +468,39 @@ test('#2773: the edge-probe reference documents the English-cue assumption', () 
     'the edge-probe reference must point non-English projects at the translated-input requirement',
   );
 });
+
+test('#2773: no Step 5.5 exit path leaks the $REQS_JSON temp file', () => {
+  // The temp file holds the SPEC's requirement text. Every guard between its creation and
+  // the unconditional cleanup must `rm -f` it before `exit 1`, or a failed spec run strands
+  // requirement content in TMPDIR. The engine-failure guard always did; the empty/placeholder
+  // guard directly above it did not, so the two siblings disagreed about their own invariant.
+  const block = extractStep55Block(readSpecPhase());
+  assert.ok(block.length > 0, 'Step 5.5 block must be extractable from spec-phase.md');
+
+  const lines = block.split('\n');
+  const createIdx = lines.findIndex((l) => /REQS_JSON=\$\(mktemp/.test(l));
+  assert.ok(createIdx !== -1, 'Step 5.5 must create $REQS_JSON via mktemp');
+
+  // The region ends at the first UNCONDITIONAL cleanup (a bare `rm -f "$REQS_JSON"` at column
+  // zero); past that the file is already gone and later exits cannot leak it.
+  const afterCreate = lines.slice(createIdx + 1);
+  const endOffset = afterCreate.findIndex((l) => /^rm -f "\$REQS_JSON"/.test(l));
+  assert.ok(endOffset !== -1, 'Step 5.5 must unconditionally rm -f "$REQS_JSON" after the engine run');
+  const region = afterCreate.slice(0, endOffset);
+
+  // Walk the region tracking whether the current guard branch has cleaned up. `then`/`else`
+  // opens a fresh branch; a cleanup inside it arms the branch; an `exit` must find it armed.
+  let cleanedInBranch = false;
+  const leaks = [];
+  for (const line of region) {
+    if (/\bthen\b|^\s*else\b|^\s*elif\b/.test(line)) cleanedInBranch = false;
+    if (/rm -f "\$REQS_JSON"/.test(line)) cleanedInBranch = true;
+    if (/^\s*exit\s+\d+/.test(line) && !cleanedInBranch) leaks.push(line.trim());
+  }
+
+  assert.deepEqual(
+    leaks,
+    [],
+    `every exit between the mktemp and the unconditional cleanup must rm -f "$REQS_JSON" first; leaking exits: ${JSON.stringify(leaks)}`,
+  );
+});

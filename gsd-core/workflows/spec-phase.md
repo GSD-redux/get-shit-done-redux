@@ -268,6 +268,7 @@ JSON
 # `<replace: …>` placeholder (a forgotten substitution would otherwise yield a
 # meaningful-looking but bogus coverage report). Fail loud, not silent no-op.
 if ! node -e 'const a=require(process.argv[1]);if(!Array.isArray(a)||a.length===0)process.exit(1);if(a.some(r=>typeof r.text!=="string"||!r.text.trim()||r.text.includes("<replace:")))process.exit(1)' "$REQS_JSON" 2>/dev/null; then
+  rm -f "$REQS_JSON"
   echo "ERROR: edge-probe requirements JSON is empty/invalid or still holds the <replace: …> placeholder — populate \$REQS_JSON from the SPEC Requirements before Step 5.5 runs." >&2
   exit 1
 fi
