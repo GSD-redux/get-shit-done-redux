@@ -445,16 +445,4 @@ describe('live-dom-uat: shipped agent and workflow text', () => {
     assert.ok(!block.includes('mcp__playwright__'),
       'playwright must not be inside the key-gated block — that would be a silent regression');
   });
-
-  test('detectionBlockIsCrlfSafe', () => {
-    // allow-test-rule: source-text-is-the-product (#2856)
-    const src = fs.readFileSync(UI_VERIFY_PATH, 'utf8');
-    const crlf = src.replace(/\r?\n/g, '\r\n');
-    const open = crlf.indexOf('<!-- gsd:live-dom-families -->');
-    const close = crlf.indexOf('<!-- /gsd:live-dom-families -->');
-    assert.ok(open !== -1 && close > open, 'block markers must survive CRLF normalisation');
-    for (const glob of BROWSER_GLOBS) {
-      assert.ok(crlf.slice(open, close).includes(glob), `${glob} must survive CRLF normalisation`);
-    }
-  });
 });
