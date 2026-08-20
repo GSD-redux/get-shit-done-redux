@@ -76,6 +76,7 @@
     "statusline.show_context_tokens",
     "statusline.state_format",
     "statusline.show_git",
+    "statusline.show_state_freshness",
     "workflow.max_discuss_passes",
     "features.thinking_partner",
     "context",
