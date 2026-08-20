@@ -793,10 +793,11 @@ describe('resolveCodeReviewDepth — independence', () => {
 // ─── property-based tests (rows 40-41, plus one additional) ───────────────
 
 describe('resolveCodeReviewDepth — properties', () => {
-  const segment = fc.stringOf(
-    fc.constantFrom(..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split('')),
-    { minLength: 1, maxLength: 8 },
-  );
+  const segment = fc.string({
+    unit: fc.constantFrom(..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split('')),
+    minLength: 1,
+    maxLength: 8,
+  });
   const rulePathArb = fc.array(segment, { minLength: 1, maxLength: 3 }).map((parts) => parts.join('/'));
   const depthArb = fc.constantFrom(...DEPTH_TIERS);
   const ruleArb = fc.record({ paths: fc.array(rulePathArb, { minLength: 1, maxLength: 2 }), depth: depthArb });
