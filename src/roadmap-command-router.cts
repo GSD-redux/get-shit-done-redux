@@ -26,7 +26,7 @@ import cliExitMod = require('./cli-exit.cjs');
 const { ExitError } = cliExitMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { extractCurrentMilestoneScoped } = roadmapParserMod;
+const { extractCurrentMilestoneScoped, hasPhaseEntries } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -188,42 +188,12 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
           }
         }
 
-        // No recognizable phase structure — at least one `### Phase N:` heading.
-        // Mirrors the phase-heading pattern used across roadmap-parser.cts.
-        const hasPhaseEntry = /^#{2,4}\s*Phase\s+\S/im.test(roadmapContent);
-        if (!hasPhaseEntry && !warnings.some((w) => w.code === 'V002')) {
-          warnings.push({ code: 'V004', message: 'ROADMAP.md contains no recognizable phase entries (no "### Phase N:" headings)' });
-        }
-
-        // #3263: a whole-document phase check (V004 above) is satisfied by a
-        // document whose phase entries live OUTSIDE the active milestone's
-        // resolved window — e.g. an intervening version-bearing heading closes
-        // the window before its own `### Phase N:` sections. That truncation
-        // is exactly what the #3184 scope discriminator classifies, so ask
-        // the single owner (never re-derive the window shape here —
-        // lint-milestone-window-drift bans local copies) and surface a
-        // non-COMPLETE-but-not-empty verdict. TRUNCATED only: a genuinely
-        // phase-less milestone classifies COMPLETE (V004 owns that case) and
-        // an unscoped/unreadable window is a different failure mode with a
-        // different remediation, deliberately not warned here.
-        try {
-          const scoped = extractCurrentMilestoneScoped(contentAfterBom, cwd);
-          if (scoped.scope === SCOPE.TRUNCATED) {
-            warnings.push({
-              code: 'V005',
-              message:
-                'Active milestone window is truncated: phase entries exist in ROADMAP.md but are excluded from the ' +
-                'active milestone\'s resolved window (check for a heading between the milestone heading and its "### Phase N:" sections)',
-            });
-          }
-        } catch {
-          // The classifier is best-effort here — a throw must not mask the
-          // structural warnings already collected above.
-        }
-
-        // W021 only fires when phase_id_convention is explicitly 'milestone-prefixed'.
-        // Authoritative source: .planning/config.json (set by the upgrade command).
-        // Fallback: ROADMAP.md frontmatter (for projects that set the field there directly).
+        // #3641: resolve phase_id_convention ONCE, ahead of every consumer in
+        // this validate pass — V004's entry check and V005's scope classifier
+        // below, and the W021 milestone-prefix check after them.
+        // Authoritative source: .planning/config.json (set by the upgrade
+        // command). Fallback: ROADMAP.md frontmatter (for projects that set
+        // the field there directly).
         let convention: string | undefined | null;
         try {
           const cfg = loadConfig(cwd);
@@ -244,6 +214,48 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
             }
           }
         }
+
+        // No recognizable phase structure. #3641: routed through the
+        // roadmap-parser owner (`hasPhaseEntries` — headings, #2199 bullets,
+        // #3577 table rows) instead of a private inline heading regex, so the
+        // document-level check and the V005 scope axis below can never
+        // disagree about what a phase entry is — and so a bracket-convention
+        // project's `### [GSD.04] 01:` entries are entries here too.
+        const hasPhaseEntry = hasPhaseEntries(roadmapContent, convention);
+        if (!hasPhaseEntry && !warnings.some((w) => w.code === 'V002')) {
+          warnings.push({ code: 'V004', message: 'ROADMAP.md contains no recognizable phase entries (no phase headings, bullet entries, or table rows)' });
+        }
+
+        // #3263: a whole-document phase check (V004 above) is satisfied by a
+        // document whose phase entries live OUTSIDE the active milestone's
+        // resolved window — e.g. an intervening version-bearing heading closes
+        // the window before its own `### Phase N:` sections. That truncation
+        // is exactly what the #3184 scope discriminator classifies, so ask
+        // the single owner (never re-derive the window shape here —
+        // lint-milestone-window-drift bans local copies) and surface a
+        // non-COMPLETE-but-not-empty verdict. TRUNCATED only: a genuinely
+        // phase-less milestone classifies COMPLETE (V004 owns that case) and
+        // an unscoped/unreadable window is a different failure mode with a
+        // different remediation, deliberately not warned here.
+        try {
+          // #3641: thread the resolved convention so the scope axis's
+          // hasPhaseEntries comparison recognizes bracket phase entries.
+          const scoped = extractCurrentMilestoneScoped(contentAfterBom, cwd, undefined, convention);
+          if (scoped.scope === SCOPE.TRUNCATED) {
+            warnings.push({
+              code: 'V005',
+              message:
+                'Active milestone window is truncated: phase entries exist in ROADMAP.md but are excluded from the ' +
+                'active milestone\'s resolved window (check for a heading between the milestone heading and its phase-entry sections)',
+            });
+          }
+        } catch {
+          // The classifier is best-effort here — a throw must not mask the
+          // structural warnings already collected above.
+        }
+
+        // W021 only fires when phase_id_convention is explicitly
+        // 'milestone-prefixed' — the same hoisted resolution above (#3641).
         if (convention === 'milestone-prefixed') {
           warnings.push(...checkW021(roadmapContent));
         }

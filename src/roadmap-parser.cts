@@ -32,6 +32,9 @@ const {
   roadmapPhaseLookupSources,
   extractPhaseToken,
   isSentinelPhaseId,
+  // #3641: the single-owner bracket heading-intro grammar — see
+  // BRACKET_PHASE_ENTRY_HEADING_RE below.
+  PHASE_HEADING_PREFIX_SRC,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -412,9 +415,31 @@ function sliceMilestoneWindow(content: string, version: string): string | null {
  * exist" — a window containing only sentinel phases still reached the
  * region and must read COMPLETE, not TRUNCATED.
  */
-function hasPhaseEntries(markdown: string): boolean {
+// #3641: the bracket-convention phase-ENTRY heading shape — the SAME intro
+// grammar phase-id.cts owns (PHASE_HEADING_PREFIX_SRC: a `[...]` bracket
+// optionally followed by a `Phase ` label, or a bare `Phase ` label), so
+// under 'bracket' the entry set admits `### [GSD.04] 01: Name` (bracket +
+// bare token — ADR-612: the bracket IS the intro; a bare number without one
+// is not) in addition to every shape the legacy pattern already recognized.
+// Built by interpolating the single-owner export — never a re-typed grammar
+// (the phase-id drift guard bans literal re-derivations) — and mirroring the
+// composition PR #2867 threads into the probe's phase-SET scan, so the entry
+// axis and the set axis cannot disagree on what a bracket phase heading is.
+const BRACKET_PHASE_ENTRY_HEADING_RE = new RegExp(
+  `^${PHASE_HEADING_PREFIX_SRC}[\\w][\\w.-]*(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
+  'i',
+);
+
+function hasPhaseEntries(markdown: string, phaseIdConvention?: string | null): boolean {
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-  const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  // #3641: the widened grammar engages ONLY when the resolved convention is
+  // 'bracket' — a project that has not opted in compiles the same legacy
+  // pattern it always did. The widened intro is a strict SUPERSET of the
+  // legacy one, so a mid-migration bracket ROADMAP keeps its legacy-labeled
+  // headings recognized too.
+  const phaseHeadingPattern = phaseIdConvention === 'bracket'
+    ? BRACKET_PHASE_ENTRY_HEADING_RE
+    : /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
   for (const h of tokenizeHeadings(markdown)) {
     if (h.level < 2 || h.level > 4) continue;
     if (phaseHeadingPattern.test(h.text)) return true;
@@ -598,8 +623,18 @@ function classifyMilestoneWindow(input: {
  * symbols, 20 direct callers) means its signature and return type do not
  * change. This is the real owner; `extractCurrentMilestone` becomes a
  * one-line wrapper returning `.value` so every existing caller is untouched.
+ *
+ * @param phaseIdConvention - #3641: the RESOLVED `phase_id_convention`
+ *   config value, threaded to `hasPhaseEntries` so the scope axis's row-8
+ *   comparison recognizes bracket-convention phase entries
+ *   (`### [GSD.04] 01: Name`). Optional: absent, or any value other than
+ *   `'bracket'`, compiles the legacy entry grammar byte-identically — the
+ *   widening engages only for a project that resolved the convention
+ *   explicitly. `extractCurrentMilestone`'s wrapper deliberately does NOT
+ *   expose it (its 20 callers are not the scope-axis consumers; V005's
+ *   router site and `getMilestonePhaseFilter` resolve and thread it).
  */
-function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: string | null): { value: string; scope: Scope } {
+function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: string | null, phaseIdConvention?: string | null): { value: string; scope: Scope } {
   if (!cwd) {
     // Row 1: a deliberate unscoped read (no cwd supplied) is a real answer —
     // the caller asked for no scoping, so whole-document is COMPLETE.
@@ -640,13 +675,13 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
         versionResolved,
         hasVersionedMilestones: versionedMilestonesPresent,
         headingFound: false,
-        windowHasPhaseEntries: hasPhaseEntries(value),
-        documentHasPhaseEntries: hasPhaseEntries(value),
+        windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
+        documentHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
       }),
     };
   }
 
-  const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(content));
+  const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(content), phaseIdConvention);
   const summaryPattern = new RegExp(
     `<summary[^>]*>([^<]*${escapeRegex(version)}[^<]*)<\\/summary>`,
     'i'
@@ -680,7 +715,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
             versionResolved,
             hasVersionedMilestones: versionedMilestonesPresent,
             headingFound: true,
-            windowHasPhaseEntries: hasPhaseEntries(value),
+            windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
             documentHasPhaseEntries,
           }),
         };
@@ -694,7 +729,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
         versionResolved,
         hasVersionedMilestones: versionedMilestonesPresent,
         headingFound: false,
-        windowHasPhaseEntries: hasPhaseEntries(value),
+        windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
         documentHasPhaseEntries,
       }),
     };
@@ -787,7 +822,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       versionResolved,
       hasVersionedMilestones: versionedMilestonesPresent,
       headingFound: true,
-      windowHasPhaseEntries: hasPhaseEntries(value),
+      windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
       documentHasPhaseEntries,
     }),
   };
@@ -1380,7 +1415,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     const roadmapPath = path.join(planningDir(cwd, ws), 'ROADMAP.md');
     const roadmapContent = platformReadSync(roadmapPath);
     if (roadmapContent === null) throw new Error('missing');
-    const scopedResult = extractCurrentMilestoneScoped(roadmapContent, cwd, ws);
+    const scopedResult = extractCurrentMilestoneScoped(roadmapContent, cwd, ws, phaseIdConvention);
     let roadmap = scopedResult.value;
     // Default: the filter's window IS extractCurrentMilestoneScoped's own
     // window (reused verbatim, not re-derived — ADR-3180 Decision 4c).
@@ -1417,7 +1452,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       // via `storedMilestone`).
       const sliced = sliceMilestoneWindow(roadmapContent, versionOverride);
 
-      const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(roadmapContent));
+      const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(roadmapContent), phaseIdConvention);
 
       if (sliced !== null) {
         versionScoped = true;
@@ -1441,7 +1476,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
         versionResolved: true,
         hasVersionedMilestones: hasVersionedMilestonesGlobal,
         headingFound: sliced !== null,
-        windowHasPhaseEntries: hasPhaseEntries(roadmap),
+        windowHasPhaseEntries: hasPhaseEntries(roadmap, phaseIdConvention),
         documentHasPhaseEntries,
       });
     }
@@ -1662,4 +1697,8 @@ export = {
   scanMilestonePhaseIds,
   collectTablePhaseRows,
   findMilestoneScopeHeadingLines,
+  // #3641: the scope axis's phase-ENTRY predicate, exported so roadmap
+  // validate's V004 document-level check routes through the same single
+  // owner (and its convention gate) instead of a private inline copy.
+  hasPhaseEntries,
 };
