@@ -278,7 +278,9 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 </step>
 
 <step name="handle_branching">
-For **"none"**, warn on a protected current branch and continue:
+Check `branching_strategy` from init:
+
+**"none":** Skip, continue on current branch. Warn if it is a protected branch:
 
 ```bash
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
@@ -289,7 +291,7 @@ fi
 
 **"phase" or "milestone":** Use pre-computed `branch_name` from init.
 
-Fork new branches from `origin/HEAD`, not current HEAD; reuse `$BRANCH_NAME` when it exists (#2916).
+Fork the new phase branch off `origin/HEAD` (the project's default branch), not the current HEAD — otherwise consecutive phases compound and stay unpushed (#2916). If `$BRANCH_NAME` already exists locally, reuse it as-is.
 
 ```bash
 DEFAULT_BRANCH=$(gsd_run query git.base-branch 2>/dev/null \
@@ -299,9 +301,9 @@ DEFAULT_BRANCH=$(gsd_run query git.base-branch 2>/dev/null \
 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
   git switch "$BRANCH_NAME" || { echo "ERROR: Could not switch to existing branch '$BRANCH_NAME'." >&2; exit 1; }
 else
-  if ! git fetch --quiet origin "$DEFAULT_BRANCH"; then
+  if ! git fetch --quiet origin "$DEFAULT_BRANCH"; then  # #2916
     git show-ref --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH" \
-      || { echo "ERROR: origin/$DEFAULT_BRANCH unavailable; refusing current-HEAD fallback (#2916)." >&2; exit 1; }
+      || { echo "ERROR: fetch origin/$DEFAULT_BRANCH failed and no local copy exists. Refusing to create '$BRANCH_NAME' off current HEAD (#2916)." >&2; exit 1; }
     echo "WARNING: fetch origin/$DEFAULT_BRANCH failed; using local copy as base." >&2
   fi
   if [ -n "$(git status --porcelain)" ]; then
@@ -309,6 +311,7 @@ else
   else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
+  # Pinned base (#2916); --no-track (#2498). #2639: warn if local ahead of origin.
   AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..$DEFAULT_BRANCH" 2>/dev/null || echo 0)
   [ "$AHEAD" != "0" ] && [ -n "$AHEAD" ] && echo "WARNING: $DEFAULT_BRANCH is $AHEAD ahead of origin — '$BRANCH_NAME' won't include those commits (#2639)." >&2
   git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \

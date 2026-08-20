@@ -30,10 +30,10 @@
  * tests can run without touching the real filesystem or spawning real git.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
+import { normalizeLegacyKeys } from './configuration.cjs';
 import { execGit as execGitSeam } from './shell-command-projection.cjs';
 
 const { loadConfig: loadConfigSeam } = configLoader;
@@ -46,7 +46,7 @@ type LoadConfigFn = typeof loadConfigSeam;
 export interface BaseBranchDeps {
   /** Override the git runner (default: execGit from shell-command-projection) */
   execGit?: ExecGitFn;
-  /** Override filesystem reads (default: fs.readFileSync / fs.existsSync) */
+  /** Low-level config-file read seam for {@link readEffectiveGitConfig}'s test path (no production default) */
   readFile?: (p: string) => string | null;
   /** Override effective configuration loading (default: config-loader.loadConfig) */
   loadConfig?: LoadConfigFn;
@@ -62,66 +62,6 @@ export interface BaseBranchDeps {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Safely look up `git.base_branch` from the project's config.json.
- * Returns the configured value (a non-empty, non-null string) or null.
- */
-export function readConfigBaseBranch(
-  planningDir: string,
-  deps?: Pick<BaseBranchDeps, 'readFile'>
-): string | null {
-  const readFile: (p: string) => string | null = deps?.readFile ??
-    ((p: string) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } });
-
-  const configPath = path.join(planningDir, 'config.json');
-  const raw = readFile(configPath);
-  if (!raw) return null;
-
-  let cfg: unknown;
-  try { cfg = JSON.parse(raw); } catch { return null; }
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return null;
-
-  const top = cfg as Record<string, unknown>;
-  // Support both "git.base_branch" (nested) and "base_branch" (flat legacy)
-  const gitSection = top.git;
-  if (gitSection && typeof gitSection === 'object' && !Array.isArray(gitSection)) {
-    const nested = (gitSection as Record<string, unknown>).base_branch;
-    if (typeof nested === 'string' && nested.trim()) return nested.trim();
-  }
-  const flat = top.base_branch;
-  if (typeof flat === 'string' && flat.trim()) return flat.trim();
-
-  return null;
-}
-
-/**
- * Safely read `git.protected_branches` from the project's config.json.
- * Invalid direct edits contribute no branches; callers still retain the
- * resolved base branch in their protected set.
- */
-export function readConfigProtectedBranches(
-  planningDir: string,
-  deps?: Pick<BaseBranchDeps, 'readFile'>
-): string[] {
-  const readFile: (p: string) => string | null = deps?.readFile ??
-    ((p: string) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } });
-
-  const raw = readFile(path.join(planningDir, 'config.json'));
-  if (!raw) return [];
-
-  let cfg: unknown;
-  try { cfg = JSON.parse(raw); } catch { return []; }
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return [];
-
-  const gitSection = (cfg as Record<string, unknown>).git;
-  if (!gitSection || typeof gitSection !== 'object' || Array.isArray(gitSection)) return [];
-
-  const configured = (gitSection as Record<string, unknown>).protected_branches;
-  if (!Array.isArray(configured) || configured.length === 0) return [];
-  if (!configured.every((branch) => typeof branch === 'string' && branch.trim() !== '')) return [];
-  return configured as string[];
-}
 
 interface EffectiveGitConfig {
   baseBranch: string | null;
@@ -145,12 +85,16 @@ function readEffectiveGitConfig(
       try {
         const parsed: unknown = JSON.parse(raw);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const top = parsed as Record<string, unknown>;
-          const git = top.git && typeof top.git === 'object' && !Array.isArray(top.git)
-            ? top.git as Record<string, unknown>
+          // Route through the same precedence authority production uses
+          // (config-loader's loadConfig also normalizes via this function)
+          // so this low-level seam cannot silently diverge from production
+          // resolution order (#3648 review Blocker 2).
+          const { parsed: normalized } = normalizeLegacyKeys(parsed as Record<string, unknown>);
+          const git = normalized.git && typeof normalized.git === 'object' && !Array.isArray(normalized.git)
+            ? normalized.git as Record<string, unknown>
             : {};
           config = {
-            base_branch: git.base_branch ?? top.base_branch,
+            base_branch: git.base_branch,
             protected_branches: git.protected_branches,
           };
         }
@@ -170,7 +114,7 @@ function readEffectiveGitConfig(
   const protectedBranches = Array.isArray(rawProtectedBranches)
     && rawProtectedBranches.length > 0
     && rawProtectedBranches.every((branch) => typeof branch === 'string' && branch.trim() !== '')
-    ? rawProtectedBranches as string[]
+    ? (rawProtectedBranches as string[]).map((branch) => branch.trim())
     : [];
 
   return { baseBranch, protectedBranches };
@@ -538,7 +482,19 @@ export function cmdGitBaseBranch(
   deps?: BaseBranchDeps
 ): string {
   if (args[0] === '--is-protected') {
-    const rendered = String(resolveProtectedBranchStatus(cwd, args[1] ?? '', deps).isProtected);
+    const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);
+    // A protection guard must fail closed: if the base branch could not be
+    // verified against this repository (a git query timed out or failed to
+    // run — #3057 B4), report "protected" rather than silently trusting an
+    // unverified guess that might happen to not match the current branch.
+    const rendered = String(status.verified ? status.isProtected : true);
+    if (!status.verified) {
+      const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
+      writeDiagnostic(
+        `⚠ git-base-branch: --is-protected could not verify the base branch against this ` +
+        `repository — defaulting to protected (fail-closed). See #3057.\n`
+      );
+    }
     const write = deps?.write ?? ((s: string) => process.stdout.write(s));
     write(rendered + '\n');
     return rendered;

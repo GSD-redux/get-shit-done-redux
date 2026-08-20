@@ -234,6 +234,30 @@ describe('#1146: git.base-branch resolver', () => {
       `Expected flat config override 'release', got: '${branch}'`);
   });
 
+  test('A3. #3648 precedence: both flat base_branch and nested git.base_branch set → nested (canonical) wins', (t) => {
+    // Regression for #3648 review Blocker 1: production config resolution
+    // (config-loader's `get()`) is flat-first, so a project that migrated to
+    // the namespaced `git.base_branch` but still carries a stale flat
+    // `base_branch` from before migration would silently get the old flat
+    // value back. `normalizeLegacyKeys` must hoist/resolve `base_branch` the
+    // same way it already does `branching_strategy` — canonical nested wins,
+    // stale flat top-level is dropped.
+    const dir = createGitRepo({ prefix: 'gsd-3648-a3-', defaultBranch: 'master' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = require('node:path').join(dir, '.planning', 'config.json');
+    require('node:fs').writeFileSync(
+      cfgPath,
+      JSON.stringify({ base_branch: 'stale-flat', git: { base_branch: 'canonical-nested' } }, null, 2) + '\n',
+    );
+
+    const result = runGsdTools(['query', 'git.base-branch'], dir);
+    assert.ok(result.success, `git.base-branch with both config keys failed:\n${result.error}`);
+    const branch = result.output.trim();
+    assert.strictEqual(branch, 'canonical-nested',
+      `Expected namespaced 'git.base_branch' to win over stale flat 'base_branch', got: '${branch}'`);
+  });
+
   test('H. No remote, both "main" and "master" local branches exist → returns "main" (main wins tie-break)', (t) => {
     // Tier-4 tie-break: when both main and master exist locally and no remote info is available,
     // "main" wins (documented in tryLocalBranch JSDoc — modern default).
@@ -337,7 +361,7 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-fault-'));
     t.after(() => cleanup(dir));
     // No .planning/config.json in this dir → the config-override tier is
-    // skipped naturally (readConfigBaseBranch's real-fs read misses cleanly).
+    // skipped naturally (loadConfig's real-fs read misses cleanly).
     const faultyGit = makeFaultyGit({ faults: [{ kind: 'timeout' }] });
 
     const result = gitBaseBranch.resolveBaseBranchDiagnostics(dir, { execGit: faultyGit });
@@ -399,6 +423,40 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
     });
     assert.strictEqual(stdoutText, 'main\n');
     assert.strictEqual(stderrText, '', 'a verified fallback must not write any diagnostic');
+  });
+
+  test('#3648 Major: --is-protected fails CLOSED (reports protected) when the base branch is unverified', (t) => {
+    // Regression for #3648 review's Major finding: `--is-protected` used to
+    // discard `verified` entirely, so a degraded git (timeout / spawn
+    // failure) silently answered `false` — the wrong failure direction for a
+    // protection guard. An unverified guess must not let a caller conclude
+    // "definitely not protected".
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3648-major-'));
+    t.after(() => cleanup(dir));
+
+    let stdoutText = '';
+    let stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, ['--is-protected', 'some-topic-branch'], {
+      execGit: makeFaultyGit({ faults: [{ kind: 'timeout' }] }),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'true\n',
+      'an unverified answer must fail closed (report protected), not silently false');
+    assert.match(stderrText, /could not verify the base branch/);
+
+    // Negative control: a verified resolution for the same non-matching
+    // branch must still cleanly report false — the fail-closed path must
+    // trigger on non-verification, not on every "not protected" answer.
+    stdoutText = '';
+    stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, ['--is-protected', 'some-topic-branch'], {
+      execGit: makeFaultyGit(),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'false\n');
+    assert.strictEqual(stderrText, '', 'a verified non-match must not write any diagnostic');
   });
 });
 
@@ -474,22 +532,6 @@ describe('#3552: configured protected branches', () => {
     };
   };
 
-  test('#3552 direct config reader requests the exact planning config path', () => {
-    const expectedPath = path.join('/repo', '.planning', 'config.json');
-    let reads = 0;
-    const configuredRead = (requestedPath) => {
-      reads += 1;
-      assert.strictEqual(requestedPath, expectedPath);
-      return '{"git":{"protected_branches":["develop","next"]}}';
-    };
-
-    assert.deepStrictEqual(
-      gitBaseBranch.readConfigProtectedBranches(path.dirname(expectedPath), { readFile: configuredRead }),
-      ['develop', 'next'],
-    );
-    assert.strictEqual(reads, 1, 'the reader must request one exact config snapshot');
-  });
-
   test('#3552 configured match and unrelated branch produce opposite results', () => {
     const match = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
       loadConfig: configuredLoad,
@@ -546,7 +588,11 @@ describe('#3552: configured protected branches', () => {
     addPlanning(dir);
     setGsdConfig(dir, 'git.protected_branches', ['root-only']);
     fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
-    const workstreamEnv = { GSD_WORKSTREAM: 'alpha', HOME: dir };
+    // Both HOME and USERPROFILE must be redirected — Node's os.homedir() (and
+    // anything relying on it) consults USERPROFILE first on Windows, where
+    // setting HOME alone leaves the real home directory in effect and makes
+    // this isolation silently vacuous on that platform.
+    const workstreamEnv = { GSD_WORKSTREAM: 'alpha', HOME: dir, USERPROFILE: dir };
 
     const setResult = runGsdTools(
       ['config-set', 'git.protected_branches', '["develop","next"]'],
@@ -693,86 +739,6 @@ function constGit(overrides) {
 function throwingGit(message) {
   return () => { throw new Error(message); };
 }
-
-describe('#3057 W3: readConfigBaseBranch — config present but unusable', () => {
-  const PLANNING_DIR = path.join(path.sep, 'gsd-3057-w3', '.planning');
-
-  /** Read a config whose raw text is `raw`, recording the paths requested. */
-  function readWith(raw, seenPaths) {
-    return gitBaseBranch.readConfigBaseBranch(PLANNING_DIR, {
-      readFile: (p) => { if (seenPaths) seenPaths.push(p); return raw; },
-    });
-  }
-
-  test('config.json exists but is not valid JSON → null (parse failure swallowed)', () => {
-    const seen = [];
-    assert.strictEqual(readWith('{ not json', seen), null);
-    assert.deepStrictEqual(seen, [path.join(PLANNING_DIR, 'config.json')],
-      'the resolver must look for config.json inside the planning dir it was given');
-  });
-
-  test('config.json parses to a non-object → null for null / string / number / array', () => {
-    // NOTE on the `[]` case: this documents observed behaviour only. It does
-    // NOT pin the `Array.isArray(cfg)` guard in readConfigBaseBranch — that
-    // guard is unreachable (and therefore unkillable) through this readFile
-    // entry point. `cfg` is always the result of `JSON.parse(raw)` on a
-    // string, and a JSON array can never carry a `.git` or `.base_branch`
-    // own-property the way a hand-built JS array could; with the guard
-    // deleted entirely, `top.git`/`top.base_branch` on an array are still
-    // `undefined`, so the result is `null` either way. Verified by mutation:
-    // deleting `|| Array.isArray(cfg)` from the built lib does not change any
-    // output for any JSON-string input. The guard is real defense-in-depth
-    // for a future non-JSON-string caller, not something this suite can pin.
-    assert.strictEqual(readWith('null'), null, 'JSON null must not be treated as a config');
-    assert.strictEqual(readWith('"master"'), null, 'a bare JSON string must not be treated as a config');
-    assert.strictEqual(readWith('42'), null, 'a bare JSON number must not be treated as a config');
-    assert.strictEqual(readWith('[]'), null, 'a JSON array must not be treated as a config');
-  });
-
-  test('"git" section present but base_branch missing / non-string / blank → null', () => {
-    assert.strictEqual(readWith('{"git":{}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":42}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":null}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":""}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":"   "}}'), null,
-      'a whitespace-only override must not win the precedence ladder');
-  });
-
-  test('"git" key present but not a usable object (string/array/null) → nested lookup finds nothing, flat legacy key still consulted', () => {
-    // NOTE on the `"git":[]` case: like the sibling note above, this does NOT
-    // pin `!Array.isArray(gitSection)`. `gitSection` here is a JSON-parsed
-    // array with no `.base_branch` own-property, so `gitSection.base_branch`
-    // is `undefined` whether or not the guard runs — the flat key is
-    // consulted either way. Verified by mutation: deleting
-    // `&& !Array.isArray(gitSection)` from the built lib does not change this
-    // output for any JSON-string input.
-    assert.strictEqual(readWith('{"git":"main","base_branch":"release"}'), 'release');
-    assert.strictEqual(readWith('{"git":[],"base_branch":"release"}'), 'release');
-    assert.strictEqual(readWith('{"git":null,"base_branch":"release"}'), 'release');
-  });
-
-  test('flat base_branch present but non-string / blank → null', () => {
-    assert.strictEqual(readWith('{"base_branch":true}'), null);
-    assert.strictEqual(readWith('{"base_branch":["main"]}'), null);
-    assert.strictEqual(readWith('{"base_branch":""}'), null);
-    assert.strictEqual(readWith('{"base_branch":"   "}'), null);
-  });
-
-  test('config parses cleanly but carries neither key → null (distinct from an absent file)', () => {
-    // The absent-file path returns null after reading an empty string and never
-    // reaches JSON.parse. This one parses a real object and falls all the way
-    // through both key lookups to the final return.
-    assert.strictEqual(readWith('{"other":1}'), null);
-    assert.strictEqual(readWith('{}'), null);
-    assert.strictEqual(readWith(''), null, 'absent file (empty read) also yields null');
-  });
-
-  test('positive controls: values are trimmed, and the nested key outranks the flat one', () => {
-    assert.strictEqual(readWith('{"git":{"base_branch":"  develop  "}}'), 'develop');
-    assert.strictEqual(readWith('{"base_branch":"  release\\n"}'), 'release');
-    assert.strictEqual(readWith('{"git":{"base_branch":"nested"},"base_branch":"flat"}'), 'nested');
-  });
-});
 
 describe('#3057 W3: trySymbolicRef — tier-2 output that resolves to nothing', () => {
   test('stdout is exactly "origin/" → null (prefix strip leaves an empty name)', () => {
