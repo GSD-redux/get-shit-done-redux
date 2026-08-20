@@ -57,10 +57,11 @@ function checkC001(snapshot: PlanningSnapshot): Diagnostic[] {
 
   const integerPhases = snapshot.allPhaseDirNames.value
     // #3225: exclude sentinel phase ids (999.x/0.x) — never part of the
-    // sequential numbering, mirrors verify.cts:1510 verbatim. #3639: the
-    // dir-aware recognizer so bracket sentinel dirs (GSD.999-07-icebox,
-    // sentinel-ness in the MILESTONE portion) are excluded like their legacy
-    // twins — the convention-less id predicate never saw them.
+    // sequential numbering, mirrors verify.cts:1510 verbatim. The dot filter
+    // already drops every code-prefixed (bracket) name before the sentinel
+    // test, so the dir-aware recognizer below is defense-in-depth for the
+    // dotless legacy forms — kept so this guard cannot regress if the dot
+    // filter is ever loosened (#3639).
     .filter((p) => !p.includes('.') && !isSentinelPhaseDir(p))
     .map((p) => parseInt(p, 10))
     .filter((n) => !Number.isNaN(n))

@@ -429,9 +429,17 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
  *
  * The bracket branch requires the FULL bracket dir shape — code prefix, dot,
  * milestone digits, hyphen, PHASE DIGITS — so a #1324 letter-prefixed real
- * dir (`P0.0-foundation`: letters after the hyphen) never matches it
- * (ADR-2121 indistinguishability, same gate as extractPhaseToken below).
- * Everything else falls to the legacy leading-int rule.
+ * dir with a LETTER slug (`P0.0-foundation`) never matches it (ADR-2121
+ * indistinguishability, same gate as extractPhaseToken below). DISCLOSED
+ * RESIDUAL (#3639 review): the #1324 family also has digit continuations
+ * (`P0.0-1-foundation`, `P0.3-2` are real shapes per derivePhaseTokenSegments),
+ * and `{code}.{0|999}-{digit}...` is string-indistinguishable from a bracket
+ * sentinel dir — no convention-free discriminator exists (ADR-2121). Such a
+ * dir reads as sentinel here, which at the disk-guard call sites suppresses
+ * a warning (conservative for a linter) rather than deleting data. The
+ * digit-continuation family with NON-sentinel first decimals (`P0.3-2`)
+ * reads milestone 3 — ordinary — exactly as the convention-gated id
+ * predicate does. Everything else falls to the legacy leading-int rule.
  */
 function isSentinelPhaseDir(dirName: string): boolean {
   const bracketDir = dirName.match(/^[A-Z][A-Z0-9_]*\.(\d+)-\d/); // milestone digits + hyphen + phase DIGITS

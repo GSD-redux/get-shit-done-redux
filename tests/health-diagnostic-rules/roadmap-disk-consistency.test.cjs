@@ -258,20 +258,25 @@ describe('W007 — disk dir with no ROADMAP entry', () => {
     );
   });
 
-  test('#3639 characterization: legacy letter-prefixed REAL dirs (P0.0-foundation) are NOT bracket sentinels', (t) => {
-    // ADR-2121 indistinguishability: P0.0-foundation is a legacy REAL phase
-    // whose shape collides with the bracket dir form. The disk-side recognizer
-    // must not re-read it as sentinel milestone 0.
-    const cwd = createTempDir('gsd-3639-w007-legacy-coll-');
+  test('#3639 over-suppression guard: an UNCLAIMED ordinary #1324 digit-continuation dir still fires W007', (t) => {
+    // The disclosed residual (#3639 review): #1324 dirs with a SENTINEL-valued
+    // first decimal (`P0.0-1-x`) are indistinguishable from bracket sentinels
+    // and read as sentinel (suppressed). This row pins that the family is not
+    // BLANKET-suppressed: a NON-sentinel first decimal (`P0.1-2-x`), unclaimed,
+    // must still fire — otherwise the recognizer would silently swallow every
+    // letter-prefixed real dir.
+    const cwd = createTempDir('gsd-3639-w007-over-sup-');
     t.after(() => cleanup(cwd));
-    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 0.0: Foundation'].join('\n'));
-    makePhaseDir(cwd, 'P0.0-foundation');
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    makePhaseDir(cwd, '01-foo');
+    makePhaseDir(cwd, 'P0.1-2-x');
 
     const snapshot = buildPlanningSnapshot(cwd);
-    // The dir IS declared on the roadmap, so even without the sentinel guard it
-    // would not fire; the load-bearing assertion is the predicate itself —
-    // pinned at the phase-id layer in its own suite. Here: no crash, no W007.
-    assert.deepEqual(ruleFor('W007').check(snapshot), []);
+    const diagnostics = ruleFor('W007').check(snapshot);
+    assert.ok(
+      diagnostics.some((d) => d.message.includes('P0.1-2-x')),
+      `an unclaimed ordinary #1324 digit-continuation dir must still fire W007. Got: ${JSON.stringify(diagnostics)}`,
+    );
   });
 
   test('boundary: zero declared phases and zero phase directories produces zero findings', (t) => {
