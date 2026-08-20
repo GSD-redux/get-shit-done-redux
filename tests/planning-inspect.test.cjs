@@ -121,7 +121,7 @@ function slugPhaseDirName(token, name) {
  * projects and `tests/planning-snapshot.test.cjs`'s own fixtures.
  */
 function declarePhase(cwd, token, name, { checkedInPhaseList = false } = {}) {
-  writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning']);
+  writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
   const phaseListLine = checkedInPhaseList
     ? `- [x] **Phase ${token}: ${name}** - stub`
     : `- [ ] **Phase ${token}: ${name}** - stub`;
@@ -135,12 +135,17 @@ function declarePhase(cwd, token, name, { checkedInPhaseList = false } = {}) {
     `### Phase ${token}: ${name}`,
     '',
   ]);
-  return phaseDirOf(cwd, slugPhaseDirName(token, name));
+  // phaseDirOf only computes a path; only writeAbs creates directories, as a
+  // side effect of writing a file. A declared-but-absent directory silently
+  // produces an empty `phases[]`, so create it explicitly here.
+  const phaseDir = phaseDirOf(cwd, slugPhaseDirName(token, name));
+  fs.mkdirSync(phaseDir, { recursive: true });
+  return phaseDir;
 }
 
 /** A healthy two-phase project: both phases complete, requirements mapped. */
 function buildHealthyFixture(cwd, eol = '\n') {
-  writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning'], [], eol);
+  writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0'], [], eol);
   writeRoadmap(cwd, [
     '## v1.0 Current 🚧',
     '',
@@ -751,7 +756,7 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     // equality never matches. Three phases distinguish all three checkbox
     // states so none of them collapses into another: ticked (true), unticked
     // (false), and no checkbox bullet at all (null, NOT false).
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -796,7 +801,7 @@ describe('planning inspect — per-phase goal and dependency evidence', () => {
   test('reportsThePhaseHeadingProseAsGoalWithCompleteScope', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -820,7 +825,7 @@ describe('planning inspect — per-phase goal and dependency evidence', () => {
   test('reportsDependsOnPhaseTokensAsAStringArray', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -864,7 +869,7 @@ describe('planning inspect — per-phase goal and dependency evidence', () => {
   test('excludesTheDependsOnAnnotationFromGoalEvenThoughItIsSurfacedSeparately', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -893,7 +898,7 @@ describe('planning inspect — per-phase goal and dependency evidence', () => {
   test('excludesThePlansChecklistFromGoalProse', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -921,7 +926,7 @@ describe('planning inspect — per-phase goal and dependency evidence', () => {
   test('reportsNullGoalWithCompleteScopeWhenTheSectionIsPureMetadata', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, [
       '## v1.0 Current 🚧',
       '',
@@ -962,7 +967,7 @@ describe('planning inspect — percent withholding', () => {
   test('emitsZeroPercentNotNullNotHundredForAZeroPhaseButReadableProject', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
     writeRoadmap(tmpDir, ['## v1.0 Current 🚧', '']);
     // No phase directories at all.
 
@@ -1224,7 +1229,7 @@ const PLANNING_PROJECT_SHAPE_ARB = fc.record({
 
 function buildDocumentShapedProject(cwd, cfg) {
   if (cfg.hasState) {
-    writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning'], [], cfg.eol);
+    writeState(cwd, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0'], [], cfg.eol);
   }
   if (cfg.hasRoadmap) {
     const lines = ['## v1.0 Current 🚧', ''];
