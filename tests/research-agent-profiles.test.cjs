@@ -722,9 +722,13 @@ describe('gsd-phase-researcher absent-evidence provenance rule (#2951)', () => {
 
   test('licenses a positive falsification attempt as the route to [VERIFIED]', () => {
     const content = read();
-    assert.ok(
-      content.includes('positive falsification attempt'),
-      'the rule must state the one route from an absence to [VERIFIED]'
+    // Pinned as ONE joined sentence, not as independent substrings: the rule's whole
+    // payoff is the TARGET of the route. A mutant swapping `[VERIFIED]` for `[CITED]`
+    // or `[ASSUMED]` inverts the rule while leaving every separate phrase intact.
+    assert.match(
+      content,
+      /The only route from an absence to `\[VERIFIED\]` is a \*\*positive falsification attempt\*\*/,
+      'the route and the tag it reaches must be asserted together, or inverting the tag survives'
     );
     assert.ok(
       content.includes('run it against the real target'),
@@ -747,7 +751,9 @@ describe('gsd-phase-researcher absent-evidence provenance rule (#2951)', () => {
   test('rejects a failure not attributable to the incompatibility', () => {
     assert.match(
       read(),
-      /a failure attributable to something else \(a missing certificate, a wrong host\) is not a falsification/,
+      // The parenthetical examples are illustrative; a copy-edit that swaps them must
+      // not break this. Only the substantive clause is pinned.
+      /a failure attributable to something else[^.]{0,80}is not a falsification/,
       'any-failure-will-do turns the probe requirement into a formality'
     );
   });
@@ -791,6 +797,31 @@ describe('gsd-phase-researcher absent-evidence provenance rule (#2951)', () => {
     );
   });
 
+  test('distinguishes a bounding declaration from an allow-list that stops short', () => {
+    const content = read();
+    // The ldap3 class of case: classifiers present for some versions, absent for the
+    // target. Without this, the absence clause and the present-constraint carve-out
+    // give opposite verdicts on the same evidence and the rule cannot be applied.
+    assert.ok(
+      content.includes('whether the declaration bounds **every** value or only the ones it names'),
+      'the rule must give a decision procedure for present-list-vs-absent-entry, not two conflicting readings'
+    );
+    assert.match(
+      content,
+      /an enumerated allow-list that stops short of your target[\s\S]{0,400}is still a governed absence/,
+      'an allow-list missing the target version must stay a governed absence'
+    );
+    assert.ok(
+      content.includes('unless the project states the list is exhaustive'),
+      'the one condition that turns an allow-list into a real constraint must be named'
+    );
+    assert.match(
+      content,
+      /Reframing that silence as a positive finding[\s\S]{0,120}earns the same tag/,
+      'the positive-reframing evasion must be closed explicitly, not left to inference'
+    );
+  });
+
   test('does not disturb the package name provenance rule', () => {
     const content = read();
     assert.ok(
@@ -816,12 +847,19 @@ describe('gsd-phase-researcher absent-evidence provenance rule (#2951)', () => {
     );
   });
 
-  test('defines the rule once — no paraphrased restatement (META.RULE.brief-no-paraphrase)', () => {
-    const occurrences = read().split('Absent-evidence provenance rule').length - 1;
+  test('defines the rule and its core proposition once each (META.RULE.brief-no-paraphrase)', () => {
+    const content = read();
+    // Counting the heading alone would miss the drift mode this guard is named for: the
+    // same substance restated under a different heading. Pin the load-bearing sentence too.
     assert.equal(
-      occurrences,
+      content.split('Absent-evidence provenance rule').length - 1,
       1,
-      'the rule must be defined at exactly one site; a second copy is the prose-drift mode'
+      'the rule must be headed at exactly one site; a second copy is the prose-drift mode'
+    );
+    assert.equal(
+      content.split('Absence is silence about **every** value').length - 1,
+      1,
+      'the core proposition must appear once; a restatement elsewhere is the drift this guards'
     );
   });
 });
