@@ -27,6 +27,7 @@ const {
   LARGE_SCOPE_THRESHOLD,
   ruleMatchesFile,
   resolveCodeReviewDepth,
+  normalizeRelPath,
 } = require('../gsd-core/bin/lib/code-review-depth.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
@@ -105,7 +106,7 @@ describe('resolveCodeReviewDepth — resolution order', () => {
     });
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.depth, 'standard');
-    assert.strictEqual(result.source, 'config');
+    assert.strictEqual(result.source, 'default');
     assert.strictEqual(result.matchedRule, null);
   });
 
@@ -330,6 +331,37 @@ describe('resolveCodeReviewDepth — path normalization', () => {
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.depth, 'standard');
     assert.strictEqual(result.matchedRule, null);
+
+    // Discriminating case: a filesystem-root absolute path that merely
+    // *looks* like it could be repo-relative once a leading `/` is
+    // stripped. If normalizeRelPath ever unconditionally strips the
+    // leading `/`, this would false-escalate by matching rule `src/auth`.
+    const outsideRepo = resolveCodeReviewDepth({
+      flagDepth: '',
+      configDepth: '',
+      overrides: [{ paths: ['src/auth'], depth: 'deep' }],
+      files: ['/src/auth/x.ts'],
+      repoRoot: '/repo',
+    });
+    assert.strictEqual(outsideRepo.ok, true);
+    assert.strictEqual(outsideRepo.depth, 'standard');
+    assert.strictEqual(outsideRepo.matchedRule, null);
+
+    // Sibling case: the same file, but genuinely under repoRoot, must
+    // still relativize and match — proving the fix does not over-correct.
+    const insideRepo = resolveCodeReviewDepth({
+      flagDepth: '',
+      configDepth: '',
+      overrides: [{ paths: ['src/auth'], depth: 'deep' }],
+      files: ['/repo/src/auth/x.ts'],
+      repoRoot: '/repo',
+    });
+    assert.strictEqual(insideRepo.ok, true);
+    assert.strictEqual(insideRepo.source, 'rule');
+    assert.strictEqual(insideRepo.matchedRule && insideRepo.matchedRule.path, 'src/auth');
+
+    // Unit-level pin on normalizeRelPath itself.
+    assert.strictEqual(normalizeRelPath('/src/auth/x.ts', '/repo'), '/src/auth/x.ts');
   });
 });
 
@@ -346,7 +378,7 @@ describe('resolveCodeReviewDepth — totality on empty inputs', () => {
     });
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.depth, 'standard');
-    assert.ok(result.source === 'config' || result.source === 'default');
+    assert.strictEqual(result.source, 'default');
     assert.strictEqual(result.fileCount, 0);
     assert.strictEqual(result.matchedRule, null);
   });
