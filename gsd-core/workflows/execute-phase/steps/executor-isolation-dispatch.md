@@ -130,14 +130,30 @@ Run the loop below once per runnable plan in the wave, **one plan at a time** (`
 
 **Before running the bash block, substitute the plan's identifiers into it** exactly as you do for the `Agent()` prompt on the harness path: replace `{plan_number}` and `{phase_number}` with this plan's values. They are template placeholders, not shell variables. `$ORCH_ROOT` and `$EXPECTED_BASE` are real shell variables, already assigned earlier in this step; `$WAVE_WORKTREE_MANIFEST` was initialized above.
 
-First build the executor prompt. It is the **same prompt text the harness path's `Agent()` call uses**, with the harness-only framing removed — drop the `<worktree_branch_check>` build-time embed note and the `<parallel_execution>` harness block, keep `<objective>`, the execution context, and `<success_criteria>` verbatim. The checkpoint gate rule (#3370, in `per-plan-executor-routing.md`) applies here too: add no prompt text refusing or overriding auto-approval for the default `gate="blocking"` — only `blocking-human` always surfaces. Assign it to a shell variable so it can be passed as one argument:
+First build the executor prompt. It is the **same prompt text the harness path's `Agent()` call uses** — same executor identity, same execution context, same required-reading contract — with only the harness-only framing removed: drop the `<worktree_branch_check>` build-time embed note (this backend pins the base itself via `worktree create --base` and verifies it at merge) and the `<parallel_execution>` harness block (its SUMMARY-commit semantics ride inside the embedded `execute-plan.md` worktree mode). Keep `<objective>`, `<execution_context>`, `<required_reading>`, `${AGENT_SKILLS}`, and `<success_criteria>` from the harness prompt — substituting the worktree-specific `<execution_context>` framing below. The checkpoint gate rule (#3370, in `per-plan-executor-routing.md`) applies here too: add no prompt text refusing or overriding auto-approval for the default `gate="blocking"` — only `blocking-human` always surfaces.
+
+#3637: the process-spawned child has NO host subagent machinery — nothing loads the `gsd-executor` agent definition or the execute-plan workflow unless THIS prompt carries them. A short objective-only prompt forces the child to reconstruct its role from the repository (skill discovery, inference) and leaves it unaware of the gitignored-planning skip semantics, which is how executors ended up force-staging gitignored `SUMMARY.md` files to satisfy an unconditional commit criterion. Build-time embeds below are therefore MANDATORY, and the resolution check after the assignment fails closed: if any embed source cannot be read, do NOT spawn a generic process and hope — halt the wave (the fail-closed check after `dispatch-isolation` handles the worktree teardown).
+
+Assign the composed prompt to a shell variable so it can be passed as one argument:
 
 ```bash
 # Compose the executor prompt for THIS plan. Single-quoted multi-line
 # assignment (NOT a heredoc): these blocks are indented inside the workflow,
 # and a heredoc terminator must sit at column 0 — `<<-` strips only tabs, not
 # the leading spaces, so a heredoc here would never terminate. Single quotes
-# also stop the shell expanding anything in the prompt body.
+# also stop the shell expanding anything in the prompt body — the prompt MUST
+# contain no single-quote character.
+#
+# ORCHESTRATOR BUILD-TIME EMBEDS (do these BEFORE the spawn, in order):
+#   1. Inline each file listed in <execution_context> verbatim, in order.
+#      An unreadable source file is a halt condition (#3637 fail-closed),
+#      never a skip — a child without these texts is not a gsd-executor.
+#   2. Substitute this plan's {plan_number}, {phase_number}, {phase_name},
+#      {phase_dir}, and {plan_file} placeholders (same values the harness
+#      path substitutes into its Agent() prompt).
+#   3. Inline the gsd-executor persona: run
+#      `gsd_run query agent-skills gsd-executor` and splice its output where
+#      ${AGENT_SKILLS} stands — the same variable the harness prompt carries.
 EXECUTOR_PROMPT='<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
 Commit each task atomically. Create SUMMARY.md.
@@ -145,19 +161,65 @@ Do NOT update STATE.md or ROADMAP.md — the orchestrator owns those writes afte
 </objective>
 
 <execution_context>
-You are running as an executor in a git worktree GSD created for you. Your
-working directory IS that worktree. Do not cd elsewhere, and do not run any
-git command that targets the main checkout. Use normal git commits WITH hooks.
-Do NOT use --no-verify.
+You are the gsd-executor agent running in a git worktree GSD created for you.
+Your working directory IS that worktree. Do not cd elsewhere, and do not run
+any git command that targets the main checkout. Use normal git commits WITH
+hooks. Do NOT use --no-verify.
+
+ORCHESTRATOR build-time embed (NOT a child-process runtime step): the files
+below were inlined verbatim into this prompt before you were spawned. If any
+section below is missing or truncated, stop and report it — do not improvise
+the executor workflow from repository search.
+- execute-plan.md (the executor workflow you run, including its worktree-mode
+  SUMMARY commit semantics and the gitignored-planning skip contract)
+- summary.md template
+- checkpoints.md
+- tdd.md
+- worktree-path-safety.md
+
+(Inline the actual contents of each file above at compose time — this block
+is the provenance record of what was embedded and where it came from.)
+
 REQUIRED ORDER: Write SUMMARY.md, commit, then any narration.
 </execution_context>
+
+<required_reading>
+Read these files at execution start using the Read tool.
+First resolve repo root so every path is anchored:
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+- ${PROJECT_ROOT}/{phase_dir}/{plan_file} (Plan — THE plan you are executing)
+- ${PROJECT_ROOT}/.planning/PROJECT.md (Project context — core value, requirements, evolution rules)
+- ${PROJECT_ROOT}/.planning/STATE.md (State)
+- ${PROJECT_ROOT}/.planning/config.json (Config, if exists)
+- ${PROJECT_ROOT}/CLAUDE.md (Project instructions, if exists — follow project-specific guidelines and coding conventions)
+- ${PROJECT_ROOT}/.claude/skills/ or ${PROJECT_ROOT}/.agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
+</required_reading>
+
+${AGENT_SKILLS}
 
 <success_criteria>
 - [ ] All tasks executed
 - [ ] Each task committed individually
-- [ ] SUMMARY.md created AND committed in the plan directory
+- [ ] SUMMARY.md created in the plan directory and committed — OR an
+      intentional skip recorded (skipped_gitignored when .planning is
+      gitignored, skipped_commit_docs_false when commit_docs is disabled).
+      Never force-stage gitignored planning artifacts: git add -f on
+      .planning paths is forbidden. An intentional skip is a success path.
+- [ ] No modifications to shared orchestrator artifacts (the orchestrator handles all post-wave shared-file writes)
 </success_criteria>'
 [ -n "$EXECUTOR_PROMPT" ] || { echo "FATAL: executor prompt is empty for plan {plan_number}." >&2; exit 1; }
+# #3637 fail-closed embed verification: the prompt must carry the executor
+# contract, not just an objective. A prompt missing the required-reading
+# contract means the embeds failed — spawning anyway hands a generic process
+# an ambiguous role and an unconditional commit criterion.
+printf '%s' "$EXECUTOR_PROMPT" | grep -q '<required_reading>' || {
+  echo "FATAL: executor prompt for plan {plan_number} is missing the required-reading contract — the build-time embeds failed. Halting rather than spawning a generic process. See the embed sources listed in <execution_context>." >&2
+  exit 1
+}
+printf '%s' "$EXECUTOR_PROMPT" | grep -q 'skipped_gitignored' || {
+  echo "FATAL: executor prompt for plan {plan_number} is missing the gitignored-planning skip semantics — executors without them force-stage planning artifacts (#3637). Halting." >&2
+  exit 1
+}
 ```
 
 The prompt body must contain no single-quote character, since the assignment above is single-quoted; keep apostrophes out of it when editing.
