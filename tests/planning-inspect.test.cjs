@@ -238,7 +238,7 @@ const EXPECTED_TOP_LEVEL_KEYS = [
 ].sort();
 
 const EXPECTED_PHASE_ROW_KEYS = [
-  'complete', 'dir', 'phase_id', 'plan_count', 'plans',
+  'complete', 'dependencies', 'dir', 'goal', 'phase_id', 'plan_count', 'plans',
   'roadmap_acceptance', 'scope', 'summary_count', 'uat', 'verification',
 ].sort();
 
@@ -462,6 +462,28 @@ describe('planning inspect — degradation and scope', () => {
     assert.ok(row, 'REQ-01 row must be present');
     assert.deepStrictEqual(row.mappedPhases, []);
     assert.ok(payload.diagnostics.some((d) => d.code === 'requirement_unmapped' && d.subject === 'REQ-01'));
+  });
+
+  test('carriesTheRequirementUnmappedCodeOnTheRowItselfForCorrelation', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## v1 Requirements',
+      '',
+      '- [ ] **REQ-04**: Something to build',
+      '',
+    ].join('\n'));
+
+    const payload = parseInspect(tmpDir);
+    const row = payload.requirements.find((r) => r.id === 'REQ-04');
+    assert.ok(row, 'REQ-04 row must be present');
+    // Per-row diagnostics is a correlation convenience over the SAME global
+    // diagnostics array — never a second, independent answer.
+    assert.ok(row.diagnostics.includes('requirement_unmapped'));
+    assert.ok(payload.diagnostics.some((d) => d.code === 'requirement_unmapped' && d.subject === 'REQ-04'));
   });
 
   test('flagsRequirementMappedToAPhaseNotPresentOnDisk', (t) => {
@@ -768,6 +790,162 @@ describe('planning inspect — evidence kept separate, never folded', () => {
   });
 });
 
+// ─── 6b. Per-phase goal / dependency evidence (#2790) ─────────────────────────
+
+describe('planning inspect — per-phase goal and dependency evidence', () => {
+  test('reportsThePhaseHeadingProseAsGoalWithCompleteScope', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 1: Auth** - stub',
+      '',
+      '### Phase 1: Auth',
+      '',
+      'Build authentication.',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Auth')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.goal.value, 'Build authentication.');
+    assert.strictEqual(phase.goal.scope, 'complete');
+  });
+
+  test('reportsDependsOnPhaseTokensAsAStringArray', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 1: Auth** - stub',
+      '- [ ] **Phase 2: Billing** - stub',
+      '',
+      '### Phase 1: Auth',
+      '',
+      '### Phase 2: Billing',
+      '',
+      'Charge the customer.',
+      '',
+      '**Depends on:** Phase 1',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Auth')), { recursive: true });
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('2', 'Billing')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const billing = payload.phases.find((p) => p.dir === '02-billing');
+    assert.ok(billing, '02-billing phase row must be present');
+    assert.ok(billing.dependencies.value.includes('1'));
+    assert.strictEqual(billing.dependencies.scope, 'complete');
+  });
+
+  test('reportsNoDependsOnLineAsAnEmptyArrayNotADegradedScope', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    // Absent is a real answer, not a failure — same scope as a found section
+    // that simply carries no dependency line.
+    assert.deepStrictEqual(phase.dependencies.value, []);
+    assert.strictEqual(phase.dependencies.scope, 'complete');
+  });
+
+  test('excludesTheDependsOnAnnotationFromGoalEvenThoughItIsSurfacedSeparately', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 1: Auth** - stub',
+      '',
+      '### Phase 1: Auth',
+      '',
+      'Build authentication.',
+      '',
+      '**Depends on:** Phase 1',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Auth')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    // The annotation is data this payload already surfaces via
+    // `dependencies` — asserted together so it appears in exactly one place.
+    assert.strictEqual(phase.goal.value, 'Build authentication.');
+    assert.ok(!phase.goal.value.includes('Depends on'));
+    assert.ok(phase.dependencies.value.includes('1'));
+  });
+
+  test('excludesThePlansChecklistFromGoalProse', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 1: Auth** - stub',
+      '',
+      '### Phase 1: Auth',
+      '',
+      'Build authentication.',
+      '',
+      'Plans:',
+      '- [ ] 01-PLAN.md',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Auth')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.goal.value, 'Build authentication.');
+    assert.ok(!phase.goal.value.includes('Plans:'));
+    assert.ok(!phase.goal.value.includes('- [ ]'));
+  });
+
+  test('reportsNullGoalWithCompleteScopeWhenTheSectionIsPureMetadata', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 1: Auth** - stub',
+      '',
+      '### Phase 1: Auth',
+      '',
+      '**Depends on:** Phase 1',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Auth')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    // A section that is pure metadata genuinely has no goal prose — a real
+    // answer, not a failed read: `complete` still means "the section was
+    // found", never "prose was found".
+    assert.strictEqual(phase.goal.value, null);
+    assert.strictEqual(phase.goal.scope, 'complete');
+  });
+});
+
 // ─── 7. Percent withholding ───────────────────────────────────────────────────
 
 describe('planning inspect — percent withholding', () => {
@@ -929,8 +1107,16 @@ describe('planning inspect — hostile input', () => {
     const result = runInspect(tmpDir);
     assert.strictEqual(result.success, true, `expected success: ${result.error}`);
     const raw = result.output;
-    assert.ok(raw.includes('$(id)'), 'hostile value must be carried verbatim');
-    // Negative proof: nothing was actually executed via shell substitution.
+    // Positive proof: parse first (CONTRIBUTING.md "Prohibited: Raw Text
+    // Matching on Test Outputs") and assert the hostile payload survives
+    // verbatim in the structured field, not merely somewhere in the stream.
+    const payload = JSON.parse(raw);
+    const row = payload.requirements.find((r) => r.id === 'HOSTILE-01');
+    assert.ok(row, 'HOSTILE-01 row must be present');
+    assert.equal(row.text, '`$(id)`; rm -rf / && echo `whoami`');
+    // Negative proof (legitimate raw-string check — this proves the ABSENCE
+    // of shell-command output anywhere in the stream, which no amount of JSON
+    // parsing can strengthen; do not "fix" this into a parsed check).
     assert.ok(!raw.includes('uid='), 'no shell command output must leak into the payload');
   });
 

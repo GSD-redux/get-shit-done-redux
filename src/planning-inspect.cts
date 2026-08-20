@@ -72,7 +72,10 @@ import verificationMod = require('./verification.cjs');
 const { readVerificationStatus } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { phaseKeyFromDir, phaseKeyFromToken } = phaseIdMod;
+const { phaseKeyFromDir, phaseKeyFromToken, phaseMarkdownRegexSource } = phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import roadmapParserMod = require('./roadmap-parser.cjs');
+const { extractCurrentMilestone } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
 const { output } = io;
@@ -208,6 +211,14 @@ interface RequirementRow {
   complete: boolean | 'unknown';
   /** Phase tokens the Traceability table maps this requirement to. */
   mappedPhases: string[];
+  /**
+   * Correlation convenience: the CODES (never prose) of the diagnostics this
+   * module raised for THIS requirement. The global `diagnostics[]` array
+   * remains the sole authoritative record — this is a lookup shortcut so a
+   * consumer does not have to string-parse `diagnostics[].subject` (e.g.
+   * `"AUTH-02->9"`) to correlate a diagnostic back to a row.
+   */
+  diagnostics: InspectDiagnosticCode[];
   scope: Scope;
 }
 
@@ -328,25 +339,32 @@ function buildRequirements(
   const traceability = parseTraceability(reqMd);
   const checkboxes = parseCheckboxStates(reqMd);
 
-  for (const dupe of findDuplicateIds(reqMd)) {
+  const dupeIds = findDuplicateIds(reqMd);
+  for (const dupe of dupeIds) {
     diagnostics.push({
       code: INSPECT_DIAGNOSTIC.REQUIREMENT_DUPLICATE,
       subject: dupe,
       detail: 'Requirement ID appears more than once; the first occurrence is authoritative.',
     });
   }
+  const duplicateIdSet = new Set(dupeIds);
 
   const rows: RequirementRow[] = items.map((item: { id: string; text: string }) => {
     const mappedPhases = sortedUnique(traceability.get(item.id) ?? []);
     const hasCheckbox = checkboxes.has(item.id);
     const complete: boolean | 'unknown' = hasCheckbox ? (checkboxes.get(item.id) as boolean) : 'unknown';
+    const rowDiagnostics: InspectDiagnosticCode[] = [];
 
+    if (duplicateIdSet.has(item.id)) {
+      rowDiagnostics.push(INSPECT_DIAGNOSTIC.REQUIREMENT_DUPLICATE);
+    }
     if (mappedPhases.length === 0) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.REQUIREMENT_UNMAPPED,
         subject: item.id,
         detail: 'No Traceability row maps this requirement to a phase.',
       });
+      rowDiagnostics.push(INSPECT_DIAGNOSTIC.REQUIREMENT_UNMAPPED);
     }
     for (const token of mappedPhases) {
       // `phaseKeyFromDir` and `phaseKeyFromToken` are the canonical pair for
@@ -364,6 +382,7 @@ function buildRequirements(
           subject: `${item.id}->${token}`,
           detail: 'Traceability maps this requirement to a phase that is not present on disk.',
         });
+        rowDiagnostics.push(INSPECT_DIAGNOSTIC.REQUIREMENT_PHASE_UNKNOWN);
       }
     }
     if (complete === 'unknown') {
@@ -372,6 +391,7 @@ function buildRequirements(
         subject: item.id,
         detail: 'Requirement has no checkbox bullet; completion is unknown, not incomplete.',
       });
+      rowDiagnostics.push(INSPECT_DIAGNOSTIC.REQUIREMENT_COMPLETION_UNKNOWN);
     }
 
     return {
@@ -379,6 +399,7 @@ function buildRequirements(
       text: item.text && item.text.length > 0 ? item.text : null,
       complete,
       mappedPhases,
+      diagnostics: rowDiagnostics,
       scope: SCOPE.COMPLETE,
     };
   });
@@ -739,6 +760,166 @@ function buildActivePlan(statePath: string): { value: string | null; scope: Scop
   });
 }
 
+// ─── Phase ROADMAP section (goal / dependencies) ──────────────────────────────
+
+interface ScopedText {
+  value: string | null;
+  scope: Scope;
+}
+
+interface ScopedTextList {
+  value: string[];
+  scope: Scope;
+}
+
+/**
+ * The same `**Depends on:**` line `src/phase.cts`'s phase-insert path writes
+ * (`\n**Depends on:** Phase ${afterPhase}`) and `init.cts`'s own
+ * phase-listing scan reads (`init.cts:2359`) — mirrored verbatim here rather
+ * than re-derived.
+ */
+const DEPENDS_ON_LINE_RE = /\*\*Depends on(?::\*\*|\*\*:)\s*([^\n]+)/i;
+
+/**
+ * A bold-annotation line — `**Label:** …` (colon inside the bold run) or
+ * `**Label**: …` (colon immediately after it). Matches `**Depends on:**`,
+ * `**Plans**:`, `**Goal:**`, and `**Cross-cutting constraints:**` alike.
+ */
+const BOLD_ANNOTATION_LINE_RE = /^\*\*(?:[^*\n]*:[^*\n]*\*\*|[^*\n]*\*\*:)/;
+
+/** The bare `Plans:` checklist header `cmdRoadmapAnnotateDependencies` emits. */
+const PLANS_CHECKLIST_HEADER_RE = /^plans:$/i;
+
+/**
+ * The prose immediately under a `### Phase N: Name` heading, stopping at the
+ * first line that is METADATA rather than prose — issue #2790's own
+ * definition of per-phase "goal". The boundary matters because this payload
+ * already surfaces every one of those metadata lines in its own typed field
+ * (`**Depends on:**` -> `dependencies`, `**Plans**:` / `Plans:` + `- [ ]`
+ * rows -> `plans`, wave headers and `**Cross-cutting constraints:**` -> the
+ * per-plan rows) — folding them into `goal` too would both duplicate the
+ * data and hand a consumer raw Markdown to render. A sub-heading boundary is
+ * belt-and-braces: `collectSection` already bounds the body at the next
+ * heading.
+ *
+ * `null` when the section carries no such prose before hitting metadata (a
+ * real "no goal", not a failure).
+ */
+function extractGoalProse(sectionBody: string): string | null {
+  const proseLines: string[] = [];
+  for (const line of sectionBody.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\s{0,3}#{1,6}\s/.test(line)) break;
+    if (/^\s*(?:[-*+]|\d+[.)])\s/.test(line)) break;
+    if (BOLD_ANNOTATION_LINE_RE.test(trimmed)) break;
+    if (PLANS_CHECKLIST_HEADER_RE.test(trimmed)) break;
+    proseLines.push(line);
+  }
+  const text = proseLines.join('\n').trim();
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Phase tokens off a `**Depends on:**` line — value-level token extraction
+ * of ONE already-addressed line (mirrors `parseTraceability`'s Phase-cell
+ * token scan above), never a document-wide scan. `[]` when the line is
+ * absent.
+ */
+function extractDependencyTokens(sectionBody: string): string[] {
+  const m = DEPENDS_ON_LINE_RE.exec(sectionBody);
+  if (!m) return [];
+  return sortedUnique([...m[1].matchAll(/\d+(?:\.\d+)*/g)].map((t) => t[0]));
+}
+
+/**
+ * This phase's own ROADMAP.md section body — milestone-scoped via the SAME
+ * `extractCurrentMilestone` seam `planning-snapshot.cts`'s own ROADMAP
+ * consumers use (`planning-snapshot.cts:918`), never a document-wide walk.
+ * `collectSection` (ADR-2143) owns the heading walk; the predicate is built
+ * from the canonical `phaseMarkdownRegexSource` (`phase-id.cts`) anchor —
+ * the same start-of-heading anchor `roadmap-parser.cts`'s own phase-section
+ * lookups (`withPhaseSection`, `findRoadmapPhaseInContent`) use, so a
+ * sibling phase whose TITLE merely mentions this phase's number is never
+ * hijacked.
+ */
+function findPhaseRoadmapSection(cwd: string, roadmapText: string, phaseId: string): string | null {
+  const scoped = extractCurrentMilestone(roadmapText, cwd);
+  const headingRe = new RegExp(
+    `^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${phaseMarkdownRegexSource(phaseId)}(?=[\\s:(]|$)`,
+    'i',
+  );
+  const section = collectSection(scoped, (h) => headingRe.test(h.text));
+  return section ? section.body : null;
+}
+
+/**
+ * Issue #2790's Summary names "per-phase goal/dependency" as spec elements
+ * distinct from the STATUS evidence (`verification` / `roadmap_acceptance` /
+ * `uat`) phase rows already carry. Both fields fold the SAME three-way scope
+ * every other value in this module carries: `complete` when the section was
+ * found and parsed, `unscoped` when ROADMAP.md has no section for this
+ * phase, `unreadable` when ROADMAP.md itself could not be read. Never
+ * inferred — an absent `**Depends on:**` line is `[]`, not a degraded scope.
+ *
+ * `getRoadmapPhaseWithFallback` (`roadmap.cts`) and `findRoadmapPhaseInContent`
+ * (`roadmap-parser.cts`) were considered first (per this module's own
+ * "COMPOSED, NOT RE-DERIVED" rule) but both perform their OWN internal file
+ * read, bypassing this module's `readDocument` tri-state (exists/readable/
+ * text) — the exact distinction `unreadable` vs `unscoped` needs here, and
+ * the one every other section of this module gets via the same seam. Their
+ * `goal` extraction also targets an explicit `**Goal:**` bold line, not the
+ * free prose immediately under the heading the issue's own fixture expects.
+ * `collectSection` + `extractCurrentMilestone`, fed by this module's own
+ * `readDocument(paths.roadmap)` read, keeps both the read path and the
+ * "found vs missing vs unreadable" distinction singular.
+ */
+function buildPhaseGoalAndDependencies(
+  cwd: string,
+  roadmapDoc: { text: string | null; readable: boolean },
+  phaseId: string | null,
+  phaseDirLabel: string,
+  diagnostics: Diagnostic[],
+): { goal: ScopedText; dependencies: ScopedTextList } {
+  if (!roadmapDoc.readable || roadmapDoc.text === null) {
+    diagnostics.push({
+      code: INSPECT_DIAGNOSTIC.ROADMAP_UNSCOPED,
+      subject: phaseDirLabel,
+      detail: 'ROADMAP.md could not be read; phase goal and dependencies are unknown, not empty.',
+    });
+    return {
+      goal: { value: null, scope: SCOPE.UNREADABLE },
+      dependencies: { value: [], scope: SCOPE.UNREADABLE },
+    };
+  }
+  if (phaseId === null) {
+    diagnostics.push({
+      code: INSPECT_DIAGNOSTIC.ROADMAP_UNSCOPED,
+      subject: phaseDirLabel,
+      detail: 'Phase directory name carries no recognizable phase number; ROADMAP section cannot be located.',
+    });
+    return {
+      goal: { value: null, scope: SCOPE.UNSCOPED },
+      dependencies: { value: [], scope: SCOPE.UNSCOPED },
+    };
+  }
+  const sectionBody = findPhaseRoadmapSection(cwd, roadmapDoc.text, phaseId);
+  if (sectionBody === null) {
+    diagnostics.push({
+      code: INSPECT_DIAGNOSTIC.ROADMAP_UNSCOPED,
+      subject: phaseDirLabel,
+      detail: 'ROADMAP.md has no section for this phase; goal and dependencies are non-answers, not empty.',
+    });
+    return {
+      goal: { value: null, scope: SCOPE.UNSCOPED },
+      dependencies: { value: [], scope: SCOPE.UNSCOPED },
+    };
+  }
+  return {
+    goal: { value: extractGoalProse(sectionBody), scope: SCOPE.COMPLETE },
+    dependencies: { value: extractDependencyTokens(sectionBody), scope: SCOPE.COMPLETE },
+  };
+}
+
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 function buildPlanningInspect(cwd: string): Record<string, unknown> {
@@ -807,12 +988,22 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
   // `phaseKeyFromToken`.
   const knownPhaseKeys: Set<string> = new Set(windowed.map((dir) => phaseKeyFromDir(dir)));
 
+  // Read once, shared across every phase row's goal/dependencies lookup —
+  // the same `readDocument` seam every other document read in this module
+  // uses, never a second file-reading path.
+  const roadmapDoc = readDocument(paths.roadmap);
+
   const phaseRows = phaseSnapshots.map((phase) => {
     const phaseDir = path.join(paths.phases, phase.dir);
     const plans = buildPlanRows(phaseDir, diagnostics);
     const uat = buildUatRows(paths.phases, phase.dir, diagnostics);
     const verification = readVerificationStatus(phaseDir);
-    const folded = worstScope(phase.scope, plans.scope, uat.scope);
+
+    const token = /^(\d+(?:\.\d+)*)/.exec(phase.dir);
+    const phaseId = token ? token[1] : null;
+    const { goal, dependencies } = buildPhaseGoalAndDependencies(cwd, roadmapDoc, phaseId, phase.dir, diagnostics);
+
+    const folded = worstScope(phase.scope, plans.scope, uat.scope, goal.scope, dependencies.scope);
     if (folded !== SCOPE.COMPLETE) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.PHASE_SCOPE_DEGRADED,
@@ -821,11 +1012,12 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
       });
     }
 
-    const token = /^(\d+(?:\.\d+)*)/.exec(phase.dir);
     return {
       dir: phase.dir,
-      phase_id: token ? token[1] : null,
+      phase_id: phaseId,
       complete: phase.complete,
+      goal,
+      dependencies,
       // The three evidence sources are reported SIDE BY SIDE and never folded
       // into one verdict — folding them is precisely the confidently-wrong
       // composite ADR-3180 exists to remove.
