@@ -199,9 +199,9 @@ const RATCHET_BASELINE = {
   'config-schema':           52,  // CI 54.55% 2026-06-14; was 68 (timeout-inflated local)
   'active-workstream-store': 80,
   'core-utils':              75,
-  'planning-inspect':        50,  // #2790 net-new; enforced minimum floor, no CI score measured yet
-  'plan-document':           50,  // #2790 net-new; enforced minimum floor, no CI score measured yet
-  'planning-command-router': 50,  // #2790 net-new; enforced minimum floor, no CI score measured yet
+  'planning-inspect':        56,  // CI run 32392791843: 57.03% (unit shard); ratchet candidate vs TARGET 80
+  'plan-document':           75,  // CI run 32392791843: 76.58% (unit shard)
+  'planning-command-router': 94,  // CI run 32392791843: 95.65% (unit shard); already exceeds TARGET 80
 };
 
 describe('mutation-matrix ratchet: floor equality enforcement', () => {

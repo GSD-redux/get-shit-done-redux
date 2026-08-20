@@ -220,37 +220,44 @@ const COVERED = {
   // the source of truth for spawn-boundary/CLI-dispatch/read-only-proof
   // behaviour that an in-process unit file cannot exercise.
   //
-  // minScore: 50 is the registry's enforced minimum legal floor (see
-  // tests/mutation-matrix-ratchet.test.cjs — "minScore is between 50 and 100
-  // inclusive"), not a measured value. The score can only be measured by a CI
-  // mutation shard; a local Stryker run is not available in this repo's local
-  // environment (mutation shards run `node --test`, hard-blocked locally), so
-  // no local measurement is possible for these modules as of #2790. Once a
-  // CI shard against the unit file reports a real score, raise minScore (and
-  // RATCHET_BASELINE in tests/mutation-matrix-ratchet.test.cjs, in the same
-  // diff) to floor(measured CI score) - 1. A shard scoring below 50 means the
-  // module's tests need strengthening, not that the floor should be lowered —
-  // 50 cannot be lowered, it is the enforced minimum.
+  // Measured CI scores (GitHub Actions run 32392791843, all three shards
+  // PASSED — not a local run; mutation shards run `node --test`, hard-blocked
+  // in this repo's local environment):
+  //   planning-command-router 95.65% → floor 94  (already exceeds TARGET_MUTATION_SCORE (80))
+  //   plan-document            76.58% → floor 75
+  //   planning-inspect         57.03% → floor 56  (well below TARGET (80) — ratchet
+  //     candidate; comfortably clears its own floor but has real room to grow.
+  //     Raise as its tests improve, never lower it.)
+  //
+  // All three shards point at tests/planning-inspect.unit.test.cjs (in-process,
+  // spawn-free, ~0.3s dry run), not tests/planning-inspect.test.cjs — that is
+  // what made measurement possible at all. The integration file spawns a
+  // subprocess per case via runGsdTools; Stryker's command runner treats the
+  // whole `node --test <file>` invocation as one test costing whatever the
+  // slowest case costs (measured ~20s), and re-runs that entire file once per
+  // mutant, so 640 mutants x 20s could not finish inside the 15-minute shard
+  // cap. The integration suite is unaffected by this change: it keeps running
+  // in full in the normal (non-mutation) test job.
   'planning-inspect': {
     cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
     tests: [
       'tests/planning-inspect.unit.test.cjs',
     ],
-    minScore: 50,
+    minScore: 56,
   },
   'plan-document': {
     cjs: 'gsd-core/bin/lib/plan-document.cjs',
     tests: [
       'tests/planning-inspect.unit.test.cjs',
     ],
-    minScore: 50,
+    minScore: 75,
   },
   'planning-command-router': {
     cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
     tests: [
       'tests/planning-inspect.unit.test.cjs',
     ],
-    minScore: 50,
+    minScore: 94,
   },
 };
 
