@@ -274,8 +274,8 @@ describe('W007 — disk dir with no ROADMAP entry', () => {
     const snapshot = buildPlanningSnapshot(cwd);
     const diagnostics = ruleFor('W007').check(snapshot);
     assert.ok(
-      diagnostics.some((d) => d.message.includes('P0.1-2-x')),
-      `an unclaimed ordinary #1324 digit-continuation dir must still fire W007. Got: ${JSON.stringify(diagnostics)}`,
+      diagnostics.some((d) => d.message.includes('P0.1-2')),
+      `an unclaimed ordinary #1324 digit-continuation dir must still fire W007 (the message names the extracted token, not the full dir). Got: ${JSON.stringify(diagnostics)}`,
     );
   });
 
