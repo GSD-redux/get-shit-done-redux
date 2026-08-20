@@ -43,7 +43,7 @@ type Rule = healthDiagnosticMod.Rule;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('../phase-id.cjs');
-const { isSentinelPhaseId } = phaseIdMod;
+const { isSentinelPhaseDir } = phaseIdMod;
 
 // ─── C001 — gap in disk phase numbering (integer sequence) ────────────────
 // (verify.cts:1504-1519)
@@ -57,8 +57,11 @@ function checkC001(snapshot: PlanningSnapshot): Diagnostic[] {
 
   const integerPhases = snapshot.allPhaseDirNames.value
     // #3225: exclude sentinel phase ids (999.x/0.x) — never part of the
-    // sequential numbering, mirrors verify.cts:1510 verbatim.
-    .filter((p) => !p.includes('.') && !isSentinelPhaseId(p))
+    // sequential numbering, mirrors verify.cts:1510 verbatim. #3639: the
+    // dir-aware recognizer so bracket sentinel dirs (GSD.999-07-icebox,
+    // sentinel-ness in the MILESTONE portion) are excluded like their legacy
+    // twins — the convention-less id predicate never saw them.
+    .filter((p) => !p.includes('.') && !isSentinelPhaseDir(p))
     .map((p) => parseInt(p, 10))
     .filter((n) => !Number.isNaN(n))
     .sort((a, b) => a - b);
