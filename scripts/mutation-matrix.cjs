@@ -201,33 +201,36 @@ const COVERED = {
   // planning-inspect / plan-document / planning-command-router: net-new modules
   // added by #2790. Registered here so the Stryker gate stops SKIPPING them
   // (previously has_work: "false" — ~1000 LOC entirely outside mutation scoring).
-  // minScore: 1 is deliberately non-binding — it exists only to let the shard
-  // RUN and report a score without failing this PR on a number nobody has
-  // measured yet. There is no CI mutation run for these modules as of #2790,
-  // and per the LESSON above a floor must never be set from a local run
-  // (local counts timeouts as kills and inflates scores badly). Once #2790's
-  // CI shard reports a real score, raise minScore to floor(measured) - 1.
-  // Do NOT leave this at 1 — that is a placeholder, not a target.
+  // minScore: 50 is the registry's enforced minimum legal floor (see
+  // tests/mutation-matrix-ratchet.test.cjs — "minScore is between 50 and 100
+  // inclusive"), not a measured value. The score can only be measured by a CI
+  // mutation shard; the shard runs `node --test`, which is hard-blocked in
+  // this repo's local environment, so no local measurement is possible for
+  // these modules as of #2790. Once this PR's shards report a real score,
+  // raise minScore (and RATCHET_BASELINE in tests/mutation-matrix-ratchet.test.cjs,
+  // in the same diff) to floor(measured CI score) - 1. A shard scoring below 50
+  // means the module's tests need strengthening, not that the floor should be
+  // lowered — 50 cannot be lowered, it is the enforced minimum.
   'planning-inspect': {
     cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
     tests: [
       'tests/planning-inspect.test.cjs',
     ],
-    minScore: 1,
+    minScore: 50,
   },
   'plan-document': {
     cjs: 'gsd-core/bin/lib/plan-document.cjs',
     tests: [
       'tests/planning-inspect.test.cjs',
     ],
-    minScore: 1,
+    minScore: 50,
   },
   'planning-command-router': {
     cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
     tests: [
       'tests/planning-inspect.test.cjs',
     ],
-    minScore: 1,
+    minScore: 50,
   },
 };
 
