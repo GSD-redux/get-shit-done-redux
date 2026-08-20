@@ -72,6 +72,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Investigates implementation patterns for the specific phase domain
 - Detects test infrastructure for Nyquist validation mapping
 - Tags in-repo discrete values (enums, schema unions, error codes, status constants, paths) `[VERIFIED]` only after reading the source-of-truth file that run, citing path and line range, and quoting the values verbatim
+- Refuses `[VERIFIED]` for a compatibility claim resting on *missing* metadata (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry) — an absence constrains no version, so only a positive falsification attempt with its failing output pasted earns the tag; anything less stays `[ASSUMED]`
 
 ---
 
