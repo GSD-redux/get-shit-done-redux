@@ -180,8 +180,26 @@ function toPosix(value: string): string {
   return value.replace(/\\/g, '/');
 }
 
-/** Read a UTF-8 file, distinguishing absent from unreadable. */
-function readDocument(filePath: string): { text: string | null; exists: boolean; readable: boolean } {
+/**
+ * Read a UTF-8 file, distinguishing absent from unreadable.
+ *
+ * `root` is a containment boundary, not a convenience default: every
+ * document this module reads arrives as UNTRUSTED input — a clone, a PR
+ * branch, a teammate's working tree — and the assembled payload is handed
+ * to downstream tooling verbatim (see module doc). A `*-PLAN.md` (or any
+ * other document under `.planning/`) that is a SYMLINK resolving outside
+ * `root` is therefore an exfiltration path, not a convenience: reading it
+ * would let a planted symlink smuggle arbitrary readable file content into
+ * the emitted payload. Both `filePath` and `root` are resolved with
+ * `fs.realpathSync` — never a raw string prefix check on the unresolved
+ * path — so a project that legitimately symlinks its whole `.planning/`
+ * directory, or a single phase directory, elsewhere on disk keeps working;
+ * only a resolved target that ends up OUTSIDE the resolved root is
+ * rejected. An escape is reported as unreadable (same shape as any other
+ * unreadable document) so existing per-document degradation and
+ * diagnostics apply unchanged.
+ */
+function readDocument(filePath: string, root: string): { text: string | null; exists: boolean; readable: boolean } {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(filePath);
@@ -191,6 +209,25 @@ function readDocument(filePath: string): { text: string | null; exists: boolean;
   // A directory, socket, or symlink resolving to a device in a document
   // position is not a document. Reject before any open (cf. #2378/#2383).
   if (!stat.isFile()) return { text: null, exists: true, readable: false };
+
+  let realTarget: string;
+  let realRoot: string;
+  try {
+    realTarget = fs.realpathSync(filePath);
+    realRoot = fs.realpathSync(root);
+  } catch {
+    // A broken symlink, or the path vanished between the stat above and
+    // here — the same non-answer `readDocument` already gives "not exists".
+    return { text: null, exists: false, readable: false };
+  }
+  // Path-boundary-safe containment: the resolved target must equal the
+  // resolved root, or begin with the resolved root plus a path separator. A
+  // bare `startsWith(realRoot)` would wrongly accept a sibling directory
+  // like `.planning-evil/` that merely shares a string prefix.
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+    return { text: null, exists: true, readable: false };
+  }
+
   try {
     return { text: fs.readFileSync(filePath, 'utf-8'), exists: true, readable: true };
   } catch {
@@ -315,8 +352,9 @@ function buildRequirements(
   requirementsPath: string,
   knownPhaseKeys: Set<string>,
   diagnostics: Diagnostic[],
+  planningRoot: string,
 ): { rows: RequirementRow[]; scope: Scope } {
-  const doc = readDocument(requirementsPath);
+  const doc = readDocument(requirementsPath, planningRoot);
   if (!doc.exists) {
     diagnostics.push({
       code: INSPECT_DIAGNOSTIC.REQUIREMENTS_ABSENT,
@@ -603,14 +641,14 @@ function buildTaskRows(
   });
 }
 
-function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[]): { rows: PlanRow[]; scope: Scope } {
+function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[], planningRoot: string): { rows: PlanRow[]; scope: Scope } {
   const scan = planScan(phaseDir);
   const supersededSet = new Set(
     scan.allPlanFiles.filter((f: string) => !scan.planFiles.includes(f)),
   );
 
   const rows: PlanRow[] = scan.allPlanFiles.map((planFile: string) => {
-    const doc = readDocument(path.join(phaseDir, planFile));
+    const doc = readDocument(path.join(phaseDir, planFile), planningRoot);
     if (doc.text === null) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.PLAN_UNREADABLE,
@@ -638,7 +676,7 @@ function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[]): { rows: Pla
     const summaryFile = summaryForPlan(planFile, scan.summaryFiles);
     let provenance: SummaryProvenance | null = null;
     if (summaryFile !== null) {
-      const summaryDoc = readDocument(path.join(phaseDir, summaryFile));
+      const summaryDoc = readDocument(path.join(phaseDir, summaryFile), planningRoot);
       if (summaryDoc.text === null) {
         diagnostics.push({
           code: INSPECT_DIAGNOSTIC.SUMMARY_UNREADABLE,
@@ -676,6 +714,7 @@ function buildUatRows(
   phasesDir: string,
   phaseDirName: string,
   diagnostics: Diagnostic[],
+  planningRoot: string,
 ): { items: unknown[]; scope: Scope } {
   const phaseDir = path.join(phasesDir, phaseDirName);
   let entries: string[];
@@ -703,7 +742,7 @@ function buildUatRows(
   const items: unknown[] = [];
   let scope: Scope = SCOPE.COMPLETE;
   for (const file of uatFiles) {
-    const doc = readDocument(path.join(phaseDir, file));
+    const doc = readDocument(path.join(phaseDir, file), planningRoot);
     if (doc.text === null) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
@@ -748,8 +787,8 @@ function makeFraction(completed: number, total: number, scope: Scope, subject: s
  * archive section instead (#2956). A missing section is therefore reported as
  * UNSCOPED rather than silently widened to the whole body.
  */
-function buildActivePlan(statePath: string): { value: string | null; scope: Scope } {
-  const doc = readDocument(statePath);
+function buildActivePlan(statePath: string, planningRoot: string): { value: string | null; scope: Scope } {
+  const doc = readDocument(statePath, planningRoot);
   if (!doc.exists) return { value: null, scope: SCOPE.UNSCOPED };
   if (!doc.readable || doc.text === null) return { value: null, scope: SCOPE.UNREADABLE };
   const fm = extractFrontmatter(doc.text, statePath) as Record<string, unknown>;
@@ -991,12 +1030,12 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
   // Read once, shared across every phase row's goal/dependencies lookup —
   // the same `readDocument` seam every other document read in this module
   // uses, never a second file-reading path.
-  const roadmapDoc = readDocument(paths.roadmap);
+  const roadmapDoc = readDocument(paths.roadmap, paths.planning);
 
   const phaseRows = phaseSnapshots.map((phase) => {
     const phaseDir = path.join(paths.phases, phase.dir);
-    const plans = buildPlanRows(phaseDir, diagnostics);
-    const uat = buildUatRows(paths.phases, phase.dir, diagnostics);
+    const plans = buildPlanRows(phaseDir, diagnostics, paths.planning);
+    const uat = buildUatRows(paths.phases, phase.dir, diagnostics, paths.planning);
     const verification = readVerificationStatus(phaseDir);
 
     const token = /^(\d+(?:\.\d+)*)/.exec(phase.dir);
@@ -1042,7 +1081,7 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     };
   });
 
-  const requirements = buildRequirements(paths.requirements, knownPhaseKeys, diagnostics);
+  const requirements = buildRequirements(paths.requirements, knownPhaseKeys, diagnostics, paths.planning);
 
   const phaseScope = worstScope(
     snapshot.phaseDirs.scope,
@@ -1080,7 +1119,7 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     // avoid: `Status:` is a lifecycle label, `Plan:` is a position.
     active: {
       phase: { value: snapshot.currentPhaseLabel.value, scope: snapshot.currentPhaseLabel.scope },
-      plan: buildActivePlan(paths.state),
+      plan: buildActivePlan(paths.state, paths.planning),
       status: { value: snapshot.stateStatus.value, scope: snapshot.stateStatus.scope },
     },
     phases: phaseRows,

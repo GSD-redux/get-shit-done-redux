@@ -297,6 +297,28 @@ describe('planning inspect — schema contract', () => {
     assert.deepStrictEqual(sortedKeys(payload), EXPECTED_TOP_LEVEL_KEYS);
   });
 
+  test('schemaKeySetIsDecoupledFromPlanningSnapshotShape', (t) => {
+    // Row 4: the top-level key set is a FROZEN mapping this module owns, not
+    // a reflection of `PlanningSnapshot`'s own (additive, still-growing)
+    // shape. Proven by locking the map itself — EXPECTED_TOP_LEVEL_KEYS is a
+    // hand-authored constant in this file, not derived from the snapshot
+    // module — so a field added to `PlanningSnapshot` cannot silently widen
+    // what `planning.inspect` emits without this test also being edited.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    buildHealthyFixture(tmpDir);
+
+    const planningSnapshotLib = require('../gsd-core/bin/lib/planning-snapshot.cjs');
+    const snapshot = planningSnapshotLib.buildPlanningSnapshot(tmpDir);
+    // PlanningSnapshot's own key set is whatever it is (additive, churning) —
+    // asserted only to prove this test is exercising the real module, not a
+    // stub.
+    assert.ok(Object.keys(snapshot).length > 0);
+
+    const payload = parseInspect(tmpDir);
+    assert.deepStrictEqual(sortedKeys(payload), EXPECTED_TOP_LEVEL_KEYS);
+  });
+
   test('locksSchemaVersionConstantAgainstTheExportedModule', () => {
     // Loading a module's exported runtime value, not source-grepping text.
     const planningInspectLib = require('../gsd-core/bin/lib/planning-inspect.cjs');
@@ -381,6 +403,64 @@ describe('planning inspect — dispatch and usage', () => {
     // Structural "did our own error envelope leak a raw stack" proof — the
     // established repo pattern (tests/commands.test.cjs, tests/config-get-default.test.cjs).
     assert.strictEqual(/\n\s*at\s/.test(result.error), false, `stderr must not carry a stack trace: ${result.error}`);
+  });
+
+  test('rejectsEmptyAndValuelessFlagForms', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 12: `--phase ""` and `--phase` (no value at all) both land on the
+    // same "planning inspect takes no arguments" usage rejection as any other
+    // unrecognized flag — v1 takes no flags at all, so neither form is
+    // special-cased into a different failure shape.
+    const emptyValue = runInspectJsonError(tmpDir, ['--phase', '']);
+    assert.strictEqual(emptyValue.reason, 'usage');
+    const noValue = runInspectJsonError(tmpDir, ['--phase']);
+    assert.strictEqual(noValue.reason, 'usage');
+  });
+
+  test('toleratesDuplicateGlobalFlag', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    buildHealthyFixture(tmpDir);
+    // Row 13: `--raw --raw` — v1 takes no flags, so `--raw` (recognized by
+    // other query commands) is itself rejected by this command's own usage
+    // check. The row's contract is "no crash; deterministic", which this
+    // proves by running twice and asserting the two failures are identical.
+    const first = runInspect(tmpDir, ['--raw', '--raw']);
+    const second = runInspect(tmpDir, ['--raw', '--raw']);
+    assert.strictEqual(first.success, false);
+    assert.strictEqual(second.success, false);
+    assert.strictEqual(first.error, second.error);
+    assert.strictEqual(/\n\s*at\s/.test(first.error), false, `stderr must not carry a stack trace: ${first.error}`);
+  });
+
+  test('rejectsFlagShapedValueWithoutStackTrace', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 14: a value that itself looks like a flag (`--pick --weird`) must
+    // still fail as a plain usage error, never crash with a raw stack trace.
+    const result = runInspect(tmpDir, ['--pick', '--weird']);
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(/\n\s*at\s/.test(result.error), false, `stderr must not carry a stack trace: ${result.error}`);
+  });
+
+  test('emitsTypedReasonCodesUnderJsonErrors', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 15: every usage/dispatch failure in rows 7-11 must carry a TYPED
+    // `reason` under `--json-errors` — never require a caller to regex the
+    // human `message` prose.
+    const noSubcommand = runGsdTools(['query', 'planning', '--json-errors'], tmpDir);
+    assert.strictEqual(noSubcommand.success, false);
+    assert.strictEqual(JSON.parse(noSubcommand.error).reason, 'sdk_unknown_command');
+
+    const unknownSubcommand = runGsdTools(['query', 'planning', 'bogus', '--json-errors'], tmpDir);
+    assert.strictEqual(unknownSubcommand.success, false);
+    assert.strictEqual(JSON.parse(unknownSubcommand.error).reason, 'sdk_unknown_command');
+
+    assert.strictEqual(runInspectJsonError(tmpDir, ['extra']).reason, 'usage');
+    assert.strictEqual(runInspectJsonError(tmpDir, ['--nope']).reason, 'usage');
+    assert.strictEqual(runInspectJsonError(tmpDir, ['--phase', '3']).reason, 'usage');
   });
 });
 
@@ -533,6 +613,13 @@ describe('planning inspect — degradation and scope', () => {
 
     const payload = parseInspect(tmpDir);
     assert.ok(payload.diagnostics.some((d) => d.code === 'requirement_duplicate' && d.subject === 'REQ-03'));
+    // Row 30: the SECOND occurrence, specifically — the first wins (its text
+    // survives), there is exactly one row (never two), and the row itself
+    // carries the correlation diagnostic naming the collision.
+    const matching = payload.requirements.filter((r) => r.id === 'REQ-03');
+    assert.strictEqual(matching.length, 1, 'a duplicate ID must produce exactly one row, not two');
+    assert.strictEqual(matching[0].text, 'First occurrence');
+    assert.ok(matching[0].diagnostics.includes('requirement_duplicate'));
   });
 
   test('reportsUndeclaredPhaseDirAsOrphanNotAsAPhase', (t) => {
@@ -545,6 +632,303 @@ describe('planning inspect — degradation and scope', () => {
     assert.deepStrictEqual(payload.orphan_phase_dirs, ['99-stray']);
     assert.ok(!payload.phases.some((p) => p.dir === '99-stray'));
     assert.ok(payload.diagnostics.some((d) => d.code === 'orphan_phase_dir' && d.subject === '99-stray'));
+  });
+
+  test('withholdsPercentWhenRoadmapAbsent', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 20: ROADMAP.md deliberately not written (STATE.md alone is not
+    // enough to scope a milestone). getMilestoneInfo's own absent-file path
+    // reports SCOPE.UNREADABLE, not COMPLETE.
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
+
+    const payload = parseInspect(tmpDir);
+    assert.notStrictEqual(payload.milestone.scope, 'complete');
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+  });
+
+  test('doesNotInventAMilestoneVersionForFreeFormRoadmap', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '# Project Roadmap',
+      '',
+      'Some free-form notes with no version token anywhere in this document.',
+      '',
+      '### Phase 1: Foo',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Foo')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.milestone.scope, 'unscoped');
+    assert.strictEqual(payload.milestone.version, null);
+    // The absence of any version evidence must never be filled with a
+    // plausible-looking default such as "v1.0".
+    assert.notStrictEqual(payload.milestone.version, 'v1.0');
+  });
+
+  test('reportsTruncatedIdentityForProseOnlyVersionToken', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning']);
+    writeRoadmap(tmpDir, [
+      '# Project Roadmap',
+      '',
+      'We are targeting v1.4 sometime this quarter.',
+      '',
+      '### Phase 1: Foo',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Foo')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.milestone.scope, 'truncated');
+    assert.strictEqual(payload.milestone.version, 'v1.4');
+    assert.strictEqual(payload.milestone.name, null);
+  });
+
+  test('derivesNameFromTheHeadingsOwnVersionToken', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 23: STATE.md declares "v2.0"; ROADMAP's heading is "v2.0.1 —
+    // Portability" — the milestone name must derive from the heading's OWN
+    // version token ("Portability"), never the raw remainder text after a
+    // naive prefix strip (".1 — Portability").
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v2.0']);
+    writeRoadmap(tmpDir, [
+      '## v2.0.1 — Portability',
+      '',
+      '### Phase 1: Foo',
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', 'Foo')), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.milestone.name, 'Portability');
+    assert.ok(!payload.milestone.name.includes('.1'));
+  });
+
+  test('treatsWhitespaceOnlyRequirementsAsEmpty', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    writeRequirements(tmpDir, '   \n\n\t\n');
+
+    const payload = parseInspect(tmpDir);
+    assert.deepStrictEqual(payload.requirements, []);
+    assert.ok(!payload.diagnostics.some((d) => d.code === 'requirements_absent'));
+  });
+
+  test('emitsUnknownForRequirementWithNoCheckbox', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    // Row 28: a Traceability-table-only requirement — present as a table row
+    // (`parseRequirements`'s pipe-table path), with NO checkbox bullet
+    // anywhere. `text` is a real non-answer (null, not ''); `complete` is
+    // `unknown`, never inferred `false`.
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## Traceability',
+      '',
+      '| Requirement | Phase | Status |',
+      '|-------------|-------|--------|',
+      '| REQ-05 | Phase 1 | Pending |',
+      '',
+    ].join('\n'));
+
+    const payload = parseInspect(tmpDir);
+    const row = payload.requirements.find((r) => r.id === 'REQ-05');
+    assert.ok(row, 'REQ-05 row must be present from the Traceability row alone');
+    assert.strictEqual(row.text, null);
+    assert.strictEqual(row.complete, 'unknown');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'requirement_completion_unknown' && d.subject === 'REQ-05'));
+  });
+
+  test('acceptsPrefixAgnosticRequirementIds', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    // Row 31: the ID format is prefix-agnostic — AUTH-01 and INSP-04 are
+    // accepted exactly like REQ-01, sharing the SAME `[A-Z][A-Z0-9]*-...`
+    // pattern `parseRequirements` (gap-checker.cts) uses.
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## v1 Requirements',
+      '',
+      '- [x] **AUTH-01**: User can sign up',
+      '- [ ] **INSP-04**: Inspection works',
+      '',
+      '## Traceability',
+      '',
+      '| Requirement | Phase | Status |',
+      '|-------------|-------|--------|',
+      '| AUTH-01 | Phase 1 | Complete |',
+      '| INSP-04 | Phase 1 | Pending |',
+      '',
+    ].join('\n'));
+
+    const payload = parseInspect(tmpDir);
+    const ids = payload.requirements.map((r) => r.id).sort();
+    assert.deepStrictEqual(ids, ['AUTH-01', 'INSP-04']);
+    const auth = payload.requirements.find((r) => r.id === 'AUTH-01');
+    assert.strictEqual(auth.complete, true);
+    const insp = payload.requirements.find((r) => r.id === 'INSP-04');
+    assert.strictEqual(insp.complete, false);
+  });
+
+  test('doesNotTreatTableSeparatorAsARequirementRow', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## Traceability',
+      '',
+      '| Requirement | Phase | Status |',
+      '|-------------|-------|--------|',
+      '| REQ-06 | Phase 1 | Pending |',
+      '',
+    ].join('\n'));
+
+    const payload = parseInspect(tmpDir);
+    // The header row and the `|---|---|` separator row must never themselves
+    // be parsed as requirement rows — exactly one requirement, REQ-06.
+    assert.strictEqual(payload.requirements.length, 1);
+    assert.strictEqual(payload.requirements[0].id, 'REQ-06');
+  });
+});
+
+// ─── 4b. Phase completion and plan liveness (§7.4/§7.5) ───────────────────────
+
+describe('planning inspect — phase completion and plan liveness', () => {
+  test('treatsZeroPlanPhaseWithPassingVerificationAsComplete', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    // Row 34: no plans at all, but a passing VERIFICATION.md — §7.4 gates
+    // completion on verification alone; plan count is not a precondition.
+    writeVerification(phaseDir, '01', 'passed');
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.phases[0].complete, true);
+    assert.strictEqual(payload.phases[0].plan_count, 0);
+  });
+
+  test('treatsAbsentVerificationAsNotComplete', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    // Row 35: plans exist and are summarized, but no *-VERIFICATION.md was
+    // ever written — completion still requires the verification record.
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'Ship it', '</objective>', '',
+      '<tasks></tasks>',
+    ]);
+    writeSummaryDoc(phaseDir, '1-01-SUMMARY.md', [], [
+      '# Summary', '', '## Files Created/Modified',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.phases[0].complete, false);
+    assert.strictEqual(payload.phases[0].verification.status, 'missing');
+  });
+
+  test('excludesSupersededPlanFromLiveCounts', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'live one', '</objective>', '<tasks></tasks>',
+    ]);
+    writeSummaryDoc(phaseDir, '1-01-SUMMARY.md', [], [
+      '# Summary', '', '## Files Created/Modified', '- `src/a.ts` - a',
+    ]);
+    // Row 37: a plan whose frontmatter declares `status: superseded` — still
+    // LISTED in `plans`, but excluded from the live plan_count/summary_count.
+    writePlanDoc(phaseDir, '1-02-PLAN.md', ['status: superseded'], [
+      '<objective>', 'old one', '</objective>', '<tasks></tasks>',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.plan_count, 1, 'superseded plan must not inflate the live plan count');
+    const supersededRow = phase.plans.find((p) => p.id === '1-02');
+    assert.ok(supersededRow, 'the superseded plan is still listed');
+    assert.strictEqual(supersededRow.superseded, true);
+    const liveRow = phase.plans.find((p) => p.id === '1-01');
+    assert.strictEqual(liveRow.superseded, false);
+  });
+
+  test('countsProseRetiredPlanAsLive', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    // Row 38 (§7.5 GAP, deliberately characterized): a plan whose PROSE says
+    // "RETIRED" but carries no `status:` frontmatter key is still counted
+    // LIVE — the parser never compensates for a prose-only retirement claim.
+    writePlanDoc(phaseDir, '1-01-PLAN.md', [], [
+      '<objective>',
+      'RETIRED — this plan was abandoned, see prose below.',
+      '</objective>',
+      '<tasks></tasks>',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.plan_count, 1, 'a prose-only retirement claim must not remove the plan from the live count');
+    assert.strictEqual(phase.plans[0].superseded, false);
+  });
+
+  test('blockedSummaryIsNotACompletionRecord', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'Ship it', '</objective>', '',
+      '<tasks>',
+      '<task type="auto"><name>Task 1</name><files>src/a.ts</files><action>a</action><done>done</done></task>',
+      '</tasks>',
+    ]);
+    // Row 39: SUMMARY declares `status: blocked` — a failure record, not a
+    // completion record. The plan/SUMMARY filename pairing still resolves
+    // (hasSummary true, provenance still parsed), but the phase-level
+    // summary_count must NOT count it.
+    writeSummaryDoc(phaseDir, '1-01-SUMMARY.md', ['status: blocked'], [
+      '# Summary', '', '## Files Created/Modified', '- `src/a.ts` - a',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.summary_count, 0, 'a blocked SUMMARY must not count as a completion record');
+    assert.strictEqual(phase.plans[0].hasSummary, true, 'filename pairing itself is unaffected by status');
+  });
+
+  test('haltedSummaryIsStillACompletionRecord', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'Ship it', '</objective>', '',
+      '<tasks>',
+      '<task type="auto"><name>Task 1</name><files>src/a.ts</files><action>a</action><done>done</done></task>',
+      '</tasks>',
+    ]);
+    // Row 40: `status: halted` (#2830) — a DESIGNED stop still writes a
+    // completion record, unlike `status: blocked` above.
+    writeSummaryDoc(phaseDir, '1-01-SUMMARY.md', ['status: halted'], [
+      '# Summary', '', '## Files Created/Modified', '- `src/a.ts` - a',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.plan_count, 1);
+    assert.strictEqual(phase.summary_count, 1, 'a halted SUMMARY still counts as a completion record');
   });
 });
 
@@ -701,6 +1085,23 @@ describe('planning inspect — never infers task-level file provenance', () => {
 // ─── 6. Evidence kept separate ─────────────────────────────────────────────────
 
 describe('planning inspect — evidence kept separate, never folded', () => {
+  test('uatAbsenceDoesNotAffectAcceptedPhases', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 50: no UAT.md at all — `uat: []` plus a `uat_absent` diagnostic,
+    // and — the load-bearing half of the row — phase acceptance is entirely
+    // unaffected by UAT's absence (UAT never gates `accepted_phases`).
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '01', 'passed');
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.deepStrictEqual(phase.uat.unresolved, []);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_absent'));
+    assert.strictEqual(phase.complete, true);
+    assert.strictEqual(payload.progress.accepted_phases.percent, 100);
+  });
+
   test('keepsUnresolvedUatAndPassingVerificationSeparateWithNoCombinedVerdict', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
@@ -1003,6 +1404,284 @@ describe('planning inspect — percent withholding', () => {
   });
 });
 
+// ─── 7b. Per-document/per-phase fault isolation (D33/D34) and combinations ───
+
+describe('planning inspect — fault isolation and combinations', () => {
+  test('reportsTruncatedScopeForUnreadableNestedPlansDir', (t) => {
+    // Row 53: the phase directory itself is readable, but its NESTED
+    // `plans/` subdirectory is not — scanPhasePlans (plan-scan.cts) reports
+    // this as TRUNCATED, never COMPLETE-with-zero, and that folds into the
+    // phase row's own `scope`.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    const nestedDir = path.join(phaseDir, 'plans');
+    fs.mkdirSync(nestedDir, { recursive: true });
+    writeAbs(path.join(nestedDir, 'PLAN-01-x.md'), ['<objective>', 'a', '</objective>', '<tasks></tasks>'].join('\n'));
+
+    const planningInspectLib = require('../gsd-core/bin/lib/planning-inspect.cjs');
+    const originalReaddirSync = fs.readdirSync;
+    t.mock.method(fs, 'readdirSync', function mockedReaddirSync(target, ...rest) {
+      if (target === nestedDir) {
+        const err = new Error(`EACCES: permission denied, scandir '${nestedDir}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.call(this, target, ...rest);
+    });
+
+    const payload = planningInspectLib.buildPlanningInspect(tmpDir);
+    assert.strictEqual(payload.phases[0].scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded'));
+  });
+
+  test('isolatesAnUnreadablePlanFromItsSiblings', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', [], ['<objective>', 'good one', '</objective>', '<tasks></tasks>']);
+    // Row 54: a SECOND plan that cannot be read (directory-in-file-position —
+    // no chmod, root-proof). Its own row must degrade; the sibling plan's
+    // row must be entirely unaffected.
+    fs.mkdirSync(path.join(phaseDir, '1-02-PLAN.md'), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    const rows = payload.phases[0].plans;
+    const good = rows.find((p) => p.id === '1-01');
+    const bad = rows.find((p) => p.id === '1-02');
+    assert.strictEqual(good.scope, 'complete');
+    assert.strictEqual(good.objective, 'good one');
+    assert.strictEqual(bad.scope, 'unreadable');
+    assert.strictEqual(bad.objective, null);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'plan_unreadable' && d.subject === '1-02-PLAN.md'));
+  });
+
+  test('treatsDirectoryInPlanPositionAsUnreadable', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', [], ['<objective>', 'good one', '</objective>', '<tasks></tasks>']);
+    // Row 55: the SAME technique as row 54, named explicitly for the
+    // "PLAN.md is a directory" input class — a directory sitting exactly
+    // where a plan file is expected. `readDocument`'s `statSync().isFile()`
+    // guard rejects it before any `readFileSync` on THIS path, so it degrades
+    // to `unreadable` rather than crashing on EISDIR.
+    fs.mkdirSync(path.join(phaseDir, '2-01-PLAN.md'), { recursive: true });
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected exit 0 even with a directory in plan position: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    const bad = payload.phases[0].plans.find((p) => p.id === '2-01');
+    assert.ok(bad, 'the directory-shaped plan entry must still be listed as a row');
+    assert.strictEqual(bad.scope, 'unreadable');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'plan_unreadable' && d.subject === '2-01-PLAN.md'));
+  });
+
+  test('rejectsPlanSymlinkEscapingThePlanningRoot', (t) => {
+    // Row 56 — SECURITY FIX (#2790 follow-up). Previously CHARACTERIZED as
+    // leaking: `readDocument` (planning-inspect.cts) opened a document via
+    // `fs.statSync`/`fs.readFileSync`, both of which FOLLOW symlinks, so a
+    // `*-PLAN.md` that was actually a symlink pointing outside `.planning/`
+    // had its target's content surfaced into the schema-v1 payload — an
+    // exfiltration path, since these documents are UNTRUSTED input (a clone,
+    // a PR branch, a teammate's working tree) and the payload is handed to
+    // downstream tooling verbatim. `readDocument` now resolves both the
+    // document and the planning root via `fs.realpathSync` and refuses to
+    // read a target that resolves outside the root; the escaping plan must
+    // degrade exactly like any other unreadable plan, and a sibling readable
+    // plan in the SAME phase must be entirely unaffected.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const secretDir = createTempDir('gsd-2790-secret-');
+    t.after(() => cleanup(secretDir));
+    const secretFile = path.join(secretDir, 'secret.txt');
+    const sentinel = 'TOP_SECRET_OBJECTIVE_VALUE_9f3c1a';
+    fs.writeFileSync(secretFile, ['<objective>', sentinel, '</objective>', ''].join('\n'));
+
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    // A sibling, legitimately-readable plan in the SAME phase — proves the
+    // escaping symlink degrades ALONE and does not drag its sibling down.
+    writePlanDoc(phaseDir, '1-01-PLAN.md', [], ['<objective>', 'good one', '</objective>', '<tasks></tasks>']);
+    try {
+      fs.symlinkSync(secretFile, path.join(phaseDir, '1-02-PLAN.md'));
+    } catch (_symlinkErr) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected exit 0 even with an escaping symlink: ${result.error}`);
+    // Raw-string ABSENCE proof is the sanctioned exception to the no-raw-text
+    // rule: the entire point of this assertion is that the sentinel is NEVER
+    // emitted anywhere in stdout, so only a substring-absence check — not a
+    // value-level assertion — can express that.
+    assert.ok(!result.output.includes(sentinel), 'the secret sentinel must never appear anywhere in the payload');
+
+    const payload = JSON.parse(result.output);
+    const good = payload.phases[0].plans.find((p) => p.id === '1-01');
+    const escaped = payload.phases[0].plans.find((p) => p.id === '1-02');
+    assert.strictEqual(good.scope, 'complete');
+    assert.strictEqual(good.objective, 'good one');
+    assert.strictEqual(escaped.scope, 'unreadable');
+    assert.strictEqual(escaped.objective, null);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'plan_unreadable' && d.subject === '1-02-PLAN.md'));
+  });
+
+  test('stillReadsPlansWhenTheWholePlanningRootIsALegitimateSymlinkElsewhere', (t) => {
+    // Companion to `rejectsPlanSymlinkEscapingThePlanningRoot`: containment
+    // must not over-reject the case it exists to preserve — "so a legitimately
+    // symlinked `.planning/` directory ... still works" (per brief). Both
+    // `filePath` and `root` are resolved with `fs.realpathSync` before the
+    // boundary check, so a project that relocates its ENTIRE `.planning/`
+    // directory to elsewhere on disk (a synced folder, a monorepo shared
+    // location, etc.) and symlinks it back in keeps reading normally — the
+    // resolved plan target still nests under the resolved root, it just does
+    // so via the relocated location rather than the literal `cwd/.planning`
+    // path. Without this test, the fix above could silently regress into
+    // rejecting every document in such a project.
+    const bareDir = createTempDir('gsd-2790-bare-');
+    t.after(() => cleanup(bareDir));
+    const realPlanningDir = createTempDir('gsd-2790-real-planning-');
+    t.after(() => cleanup(realPlanningDir));
+    try {
+      fs.symlinkSync(realPlanningDir, path.join(bareDir, '.planning'));
+    } catch (_symlinkErr) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+
+    const phaseDir = declarePhase(bareDir, '1', 'Foo');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', [], ['<objective>', 'relocated plan', '</objective>', '<tasks></tasks>']);
+
+    const payload = parseInspect(bareDir);
+    const plan = payload.phases[0].plans.find((p) => p.id === '1-01');
+    assert.ok(plan, 'plan row must exist through the symlinked planning root');
+    assert.strictEqual(plan.scope, 'complete');
+    assert.strictEqual(plan.objective, 'relocated plan');
+  });
+
+  test('oneDocumentsFaultDoesNotDowngradeAnother', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 57: REQUIREMENTS.md is unreadable (directory-in-file-position);
+    // ROADMAP.md is clean. Requirements degrades ALONE — milestone identity
+    // and phase completion must stay unaffected.
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '01', 'passed');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), { recursive: true });
+
+    const payload = parseInspect(tmpDir);
+    assert.strictEqual(payload.milestone.scope, 'complete');
+    assert.strictEqual(payload.phases[0].complete, true);
+    assert.deepStrictEqual(payload.requirements, []);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'requirements_unreadable'));
+  });
+
+  test('foldsWorstScopeAcrossPhasesAndWithholdsPercent', (t) => {
+    // Row 58: phase A is unreadable (its own directory listing fails), phase
+    // B is clean and complete. The top-level `accepted_phases.percent` must
+    // withhold (fold via worstScope) rather than silently computing a
+    // fraction from only the phases that happened to be readable.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧', '', '### Phase 1: A', '', '### Phase 2: B', '',
+    ]);
+    const phaseADir = phaseDirOf(tmpDir, slugPhaseDirName('1', 'A'));
+    const phaseBDir = phaseDirOf(tmpDir, slugPhaseDirName('2', 'B'));
+    fs.mkdirSync(phaseADir, { recursive: true });
+    writePlanDoc(phaseBDir, '2-01-PLAN.md', [], ['<objective>', 'b', '</objective>', '<tasks></tasks>']);
+    writeSummaryDoc(phaseBDir, '2-01-SUMMARY.md', [], ['# s', '', '## Files Created/Modified']);
+    writeVerification(phaseBDir, '02', 'passed');
+
+    const planningInspectLib = require('../gsd-core/bin/lib/planning-inspect.cjs');
+    const originalReaddirSync = fs.readdirSync;
+    t.mock.method(fs, 'readdirSync', function mockedReaddirSync(target, ...rest) {
+      if (target === phaseADir) {
+        const err = new Error(`EACCES: permission denied, scandir '${phaseADir}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.call(this, target, ...rest);
+    });
+
+    const payload = planningInspectLib.buildPlanningInspect(tmpDir);
+    const a = payload.phases.find((p) => p.dir === '01-a');
+    const b = payload.phases.find((p) => p.dir === '02-b');
+    assert.strictEqual(a.scope, 'unreadable');
+    assert.strictEqual(a.complete, false);
+    assert.strictEqual(b.scope, 'complete');
+    assert.strictEqual(b.complete, true);
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+  });
+});
+
+// ─── 7c. The 50 KB @file: spill boundary (io.cjs's own `> 50000` predicate) ──
+
+const ioLib = require('../gsd-core/bin/lib/io.cjs');
+
+/**
+ * Build a JSON payload whose `serializeForOutput` byte length is EXACTLY
+ * `targetLen` — calibrated once against the real overhead of `{"padding":
+ * "..."}` at 2-space indent, then padded with ASCII (`'a'`, no JSON escaping)
+ * so one added character is exactly one added byte. Asserts the calibration
+ * landed exactly, so a future change to `serializeForOutput`'s formatting
+ * fails this helper loudly rather than silently testing the wrong boundary.
+ */
+function paddedPayloadOfSerializedLength(targetLen) {
+  const overhead = ioLib.serializeForOutput({ padding: '' }).length;
+  const padLen = Math.max(targetLen - overhead, 0);
+  const payload = { padding: 'a'.repeat(padLen) };
+  const actualLen = ioLib.serializeForOutput(payload).length;
+  assert.strictEqual(actualLen, targetLen, `padding calibration failed: expected length ${targetLen}, got ${actualLen}`);
+  return payload;
+}
+
+describe('planning inspect — the 50 KB @file: spill boundary', () => {
+  test('emitsInlineJsonJustBelowTheSpillThreshold', () => {
+    // Row 60 (limit-1): io.cjs's own predicate is `json.length > 50000` —
+    // 49999 bytes must NOT spill.
+    const payload = paddedPayloadOfSerializedLength(49999);
+    assert.strictEqual(ioLib.serializeForOutput(payload).length > 50000, false);
+  });
+
+  test('matchesIoSpillThresholdAtTheBoundary', () => {
+    // Row 61 (limit): exactly 50000 bytes — the predicate is strictly
+    // GREATER THAN, so the boundary value itself does NOT spill.
+    const payload = paddedPayloadOfSerializedLength(50000);
+    assert.strictEqual(ioLib.serializeForOutput(payload).length > 50000, false);
+  });
+
+  test('spillsOverThresholdAndResolvesBackToJsonOnStdout', (t) => {
+    // Row 62 (limit+1), part A: the exact boundary+1 byte value against the
+    // serializer's own predicate.
+    const payload = paddedPayloadOfSerializedLength(50001);
+    assert.strictEqual(ioLib.serializeForOutput(payload).length > 50000, true);
+
+    // Row 62, part B: a genuinely oversized END-TO-END fixture through the
+    // real CLI — proving `resolveAtFileOutput` (gsd-tools.cjs) transparently
+    // resolves the `@file:` spill back into full JSON on stdout, so the
+    // caller never has to know the spill happened.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    const lines = ['# Requirements', '', '## v1 Requirements', ''];
+    const padding = 'x'.repeat(400);
+    for (let i = 1; i <= 300; i += 1) {
+      lines.push(`- [ ] **REQ-${String(i).padStart(3, '0')}**: padded description ${padding}`);
+    }
+    writeRequirements(tmpDir, lines.join('\n'));
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected exit 0 for an oversized payload: ${result.error}`);
+    assert.ok(result.output.length > 50000, 'the raw fixture text alone should already exceed the spill threshold');
+    const parsedPayload = JSON.parse(result.output);
+    assert.deepStrictEqual(sortedKeys(parsedPayload), EXPECTED_TOP_LEVEL_KEYS);
+    assert.strictEqual(parsedPayload.requirements.length, 300);
+  });
+});
+
 // ─── 8. Task grammar ──────────────────────────────────────────────────────────
 
 describe('planning inspect — task grammar', () => {
@@ -1091,6 +1770,29 @@ describe('planning inspect — task grammar', () => {
     assert.strictEqual(task.name, null);
     assert.ok(payload.diagnostics.some((d) => d.code === 'task_shape_checkpoint'));
   });
+
+  test('characterizesFenceBlindMarkdownTaskFallback', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    // Row 44 (deliberately characterized, not endorsed — see
+    // plan-document.cts's own header comment): a `## Task N` heading inside a
+    // FENCED code block still counts under the markdown fallback, exactly as
+    // `cmdPhasePlanIndex` has always counted it. This plan has no `<task>`
+    // blocks at all, so the fence-blind markdown fallback is what runs.
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'ship', '</objective>', '',
+      '```markdown',
+      '## Task 1: fenced, still counted by the legacy fallback',
+      '```',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const tasks = payload.phases[0].plans[0].tasks;
+    assert.strictEqual(tasks.length, 1);
+    assert.strictEqual(tasks[0].name, 'Task 1: fenced, still counted by the legacy fallback');
+  });
 });
 
 // ─── 9. Hostile input ─────────────────────────────────────────────────────────
@@ -1174,6 +1876,137 @@ describe('planning inspect — hostile input', () => {
 
     assert.deepStrictEqual(stripCwd(crlfPayload, tmpCrlf), stripCwd(lfPayload, tmpLf));
   });
+
+  test('toleratesLoneCarriageReturnLineEndings', (t) => {
+    // Row 64: old-Mac lone `\r` line endings (no `\n` at all). No crash; the
+    // command's output is deterministic across two runs.
+    const tmpDir = createTempProject('gsd-2790-cr-');
+    t.after(() => cleanup(tmpDir));
+    buildHealthyFixture(tmpDir, '\r');
+
+    const first = runInspect(tmpDir);
+    assert.strictEqual(first.success, true, `expected success: ${first.error}`);
+    const second = runInspect(tmpDir);
+    assert.strictEqual(second.success, true, `expected success: ${second.error}`);
+    assert.strictEqual(first.output, second.output);
+  });
+
+  test('handlesNullByteAndReplacementCharInDocumentText', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    // Row 65: a NUL byte and a U+FFFD replacement character embedded in a
+    // requirement description. Both are valid UTF-8 payload bytes/codepoints
+    // — the value must be carried verbatim, never silently truncated at the
+    // NUL.
+    const nul = String.fromCharCode(0);
+    const replacementChar = '�';
+    const description = `has a${nul}nul and a ${replacementChar} replacement char inline`;
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## v1 Requirements',
+      '',
+      `- [ ] **REQ-10**: ${description}`,
+      '',
+    ].join('\n'));
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected success: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    const row = payload.requirements.find((r) => r.id === 'REQ-10');
+    assert.ok(row, 'REQ-10 row must be present');
+    assert.ok(row.text.includes(nul), 'the NUL byte must be carried verbatim, not silently dropped');
+    assert.ok(row.text.includes(replacementChar), 'U+FFFD must be carried verbatim');
+  });
+
+  test('neverResolvesTraversalShapedPhaseTokenToAPath', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    // Row 66: a `../../x`-shaped token in a traceability row's Phase cell.
+    // The phase-token extractor only pulls DIGIT tokens out of that cell
+    // (`parseTraceability`'s `\d+(?:\.\d+)*` scan) — a traversal shape simply
+    // yields no numeric token, so it is never resolved to a filesystem path.
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## v1 Requirements',
+      '',
+      '- [ ] **REQ-09**: something',
+      '',
+      '## Traceability',
+      '',
+      '| Requirement | Phase | Status |',
+      '|-------------|-------|--------|',
+      '| REQ-09 | ../../../etc | Pending |',
+      '',
+    ].join('\n'));
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected success: ${result.error}`);
+    const raw = result.output;
+    const payload = JSON.parse(raw);
+    const row = payload.requirements.find((r) => r.id === 'REQ-09');
+    assert.ok(row, 'REQ-09 row must be present');
+    assert.deepStrictEqual(row.mappedPhases, []);
+    // Negative proof: no path-resolution artifact (a resolved root path, or
+    // the traversal string itself surviving into a filesystem-shaped field)
+    // leaks anywhere in the stream.
+    assert.ok(!raw.includes('../../../etc'));
+  });
+
+  test('boundsAPathologicallyLongDocumentValue', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    declarePhase(tmpDir, '1', 'Foo');
+    // Row 70: a single requirement description ~1 MB long. The command must
+    // still complete and exit 0 — no unbounded read, no hang.
+    const longValue = 'x'.repeat(1024 * 1024);
+    writeRequirements(tmpDir, [
+      '# Requirements',
+      '',
+      '## v1 Requirements',
+      '',
+      `- [ ] **REQ-11**: ${longValue}`,
+      '',
+    ].join('\n'));
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected success for a 1MB value: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    const row = payload.requirements.find((r) => r.id === 'REQ-11');
+    assert.ok(row, 'REQ-11 row must be present');
+    assert.strictEqual(row.text.length, longValue.length);
+  });
+
+  test('preservesUnicodeAndRtlDocumentText', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Row 71: Unicode + RTL headings and names must round-trip byte-identical
+    // into the payload — no width/parse corruption.
+    const rtlName = 'المصادقة'; // Arabic: "Authentication"
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '## Phases',
+      '',
+      `- [ ] **Phase 1: ${rtlName}** - stub`,
+      '',
+      `### Phase 1: ${rtlName}`,
+      '',
+      rtlName,
+      '',
+    ]);
+    fs.mkdirSync(phaseDirOf(tmpDir, slugPhaseDirName('1', rtlName)), { recursive: true });
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected success: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.goal.value, rtlName);
+  });
 });
 
 // ─── 10. Cross-consumer parity ────────────────────────────────────────────────
@@ -1205,6 +2038,65 @@ describe('planning inspect — cross-consumer parity with phase-plan-index', () 
 
     assert.strictEqual(inspectPlan.objective, indexPlan.objective);
     assert.strictEqual(inspectPlan.tasks.length, indexPlan.task_count);
+  });
+
+  test('phasePlanIndexBehaviorUnchangedByPlanDocumentExtraction', (t) => {
+    // Row 73: `phase-plan-index`'s wave/depends_on/incomplete/runnable shape
+    // — the live regression surface named by the matrix's own risk section —
+    // exercised directly, independent of `planning.inspect`, to prove the
+    // `plan-document.cts` extraction did not change this command's output.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Regress');
+    writePlanDoc(phaseDir, '1-01-PLAN.md', ['wave: 1'], [
+      '<objective>', 'First', '</objective>', '',
+      '<tasks>',
+      '<task type="auto"><name>Task 1</name><files>src/a.ts</files><action>a</action><done>done</done></task>',
+      '</tasks>',
+    ]);
+    writeSummaryDoc(phaseDir, '1-01-SUMMARY.md', ['status: complete'], [
+      '# Summary', '', '## Files Created/Modified', '- `src/a.ts` - a',
+    ]);
+    writePlanDoc(phaseDir, '1-02-PLAN.md', ['wave: 2', 'depends_on: 1-01'], [
+      '<objective>', 'Second', '</objective>', '',
+      '<tasks>',
+      '<task type="auto"><name>Task 1</name><files>src/b.ts</files><action>b</action><done>done</done></task>',
+      '</tasks>',
+    ]);
+    // No SUMMARY for 1-02 — it stays incomplete/runnable.
+
+    const result = runGsdTools(['phase-plan-index', '1', '--raw'], tmpDir);
+    assert.strictEqual(result.success, true, `expected success: ${result.error}`);
+    const payload = JSON.parse(result.output);
+
+    const first = payload.plans.find((p) => p.id === '1-01');
+    const second = payload.plans.find((p) => p.id === '1-02');
+    assert.ok(first, '1-01 must be present');
+    assert.ok(second, '1-02 must be present');
+    assert.strictEqual(first.wave, 1);
+    assert.strictEqual(second.wave, 2);
+    assert.deepStrictEqual(second.depends_on, ['1-01']);
+    assert.deepStrictEqual(payload.incomplete, ['1-02']);
+    assert.deepStrictEqual(payload.runnable, ['1-02']);
+    assert.ok(Array.isArray(payload.waves['1']));
+    assert.ok(payload.waves['1'].includes('1-01'));
+    assert.ok(Array.isArray(payload.waves['2']));
+    assert.ok(payload.waves['2'].includes('1-02'));
+  });
+
+  test('producesDeterministicOutputAcrossRuns', (t) => {
+    // Row 75: two runs over the same fixture must produce byte-identical
+    // stdout — array ordering (task rows, plan rows, diagnostics) is
+    // deterministic, not incidentally stable.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    buildHealthyFixture(tmpDir);
+
+    const first = runInspect(tmpDir);
+    const second = runInspect(tmpDir);
+    assert.strictEqual(first.success, true, `expected success: ${first.error}`);
+    assert.strictEqual(second.success, true, `expected success: ${second.error}`);
+    assert.strictEqual(first.output, second.output);
   });
 });
 
@@ -1304,6 +2196,38 @@ const TASK_COUNT_ARB = fc.record({
 });
 
 describe('plan-document — task count parity (property)', () => {
+  test('parsesWithTheArgumentShapeProductionActuallyPasses', () => {
+    // Row 74: `planning-inspect.cjs`'s OWN call site (`buildPlanRows`) is
+    // `parsePlanDocument(doc.text)` — `planPath` OMITTED. Proven directly
+    // against that exact shape, not a hand-passed `(content, path)` pair.
+    const content = [
+      '---',
+      'wave: 2',
+      'depends_on: 1-01',
+      'files_modified: src/a.ts, src/b.ts',
+      '---',
+      '',
+      '<objective>',
+      'Ship the omitted-argument case',
+      '</objective>',
+      '',
+      '<tasks>',
+      '<task type="auto"><name>Task 1</name><files>src/a.ts</files><action>do it</action><done>done</done></task>',
+      '</tasks>',
+    ].join('\n');
+
+    const parsed = parsePlanDocument(content);
+    assert.strictEqual(parsed.objective, 'Ship the omitted-argument case');
+    assert.strictEqual(parsed.declaredWave, 2);
+    assert.deepStrictEqual(parsed.dependsOn, ['1-01']);
+    // A single scalar frontmatter value is NOT comma-split — only an actual
+    // YAML array is mapped element-wise (see parsePlanDocument's `fmFiles`
+    // handling). One frontmatter line yields one array element verbatim.
+    assert.deepStrictEqual(parsed.filesModified, ['src/a.ts, src/b.ts']);
+    assert.strictEqual(parsed.tasks.length, 1);
+    assert.strictEqual(parsed.taskCount, 1);
+  });
+
   test('propertyTaskCountMatchesLegacyFallbackRule', () => {
     fc.assert(
       fc.property(TASK_COUNT_ARB, ({ xmlCount, mdCount }) => {

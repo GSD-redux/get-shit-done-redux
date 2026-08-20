@@ -198,6 +198,37 @@ const COVERED = {
     ],
     minScore: 75,  // measured 77.52% (2026-06-14, issue #1187); floor = 77 - 2
   },
+  // planning-inspect / plan-document / planning-command-router: net-new modules
+  // added by #2790. Registered here so the Stryker gate stops SKIPPING them
+  // (previously has_work: "false" — ~1000 LOC entirely outside mutation scoring).
+  // minScore: 1 is deliberately non-binding — it exists only to let the shard
+  // RUN and report a score without failing this PR on a number nobody has
+  // measured yet. There is no CI mutation run for these modules as of #2790,
+  // and per the LESSON above a floor must never be set from a local run
+  // (local counts timeouts as kills and inflates scores badly). Once #2790's
+  // CI shard reports a real score, raise minScore to floor(measured) - 1.
+  // Do NOT leave this at 1 — that is a placeholder, not a target.
+  'planning-inspect': {
+    cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
+    tests: [
+      'tests/planning-inspect.test.cjs',
+    ],
+    minScore: 1,
+  },
+  'plan-document': {
+    cjs: 'gsd-core/bin/lib/plan-document.cjs',
+    tests: [
+      'tests/planning-inspect.test.cjs',
+    ],
+    minScore: 1,
+  },
+  'planning-command-router': {
+    cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
+    tests: [
+      'tests/planning-inspect.test.cjs',
+    ],
+    minScore: 1,
+  },
 };
 
 // ── Files that, when changed, invalidate ALL modules ─────────────────────────
