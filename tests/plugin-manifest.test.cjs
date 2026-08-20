@@ -416,7 +416,11 @@ describe('C: plugin.json schema validation', () => {
   // and the three component directories — which is the isolation the temp root
   // exists for, since nothing else from the repo root is placed where the
   // validator can read it — while letting it actually read those components.
-  const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
+  // agents/ ships in package.json `files` and IS auto-validated by the CLI —
+  // a frontmatter-less agents/*.md exits 1. It was pointless to include while
+  // the fixture symlinked (the CLI read nothing through a symlink); now that
+  // the tree is real, it is the last shipped component tree C2 could not see.
+  const COMPONENT_DIRS = ['agents', 'commands', 'hooks', 'skills'];
 
   function buildValidationPluginRoot() {
     const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-plugin-validate-'));
@@ -445,7 +449,11 @@ describe('C: plugin.json schema validation', () => {
         const src = path.join(ROOT, dir);
         fs.mkdirSync(path.join(pluginRoot, dir), { recursive: true });
         for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-          if (!shouldCopyHookEntry(entry.name)) continue;
+          // The predicate is documented as a hooks/ filter, so apply it only
+          // there. Applying it to the other trees happens to be harmless today
+          // but silently encodes a hooks-shaped exclusion into them — a future
+          // commands/dist would vanish from the validated tree with no signal.
+          if (dir === 'hooks' && !shouldCopyHookEntry(entry.name)) continue;
           fs.cpSync(path.join(src, entry.name), path.join(pluginRoot, dir, entry.name), { recursive: true });
         }
       }
@@ -560,7 +568,7 @@ describe('C: plugin.json schema validation', () => {
         }
       }
       nested.sort();
-      assert.deepEqual(
+      assert.deepStrictEqual(
         nested,
         [],
         `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.234, a component dir itself or an entry directly under skills/ is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
