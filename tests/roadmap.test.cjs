@@ -3896,170 +3896,238 @@ describe('bug #3641: bracket-convention windows are visible to validate (V005/V0
     '### [GSD.04] 02: Bar',
   ].join('\n');
 
-  test('bracket truncated window (config convention) → V005 fires, no false V004', () => {
+  test('bracket truncated window (config convention) → V005 fires, no false V004', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-truncated-');
-    try {
-      writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, { kind: 'config' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'truncated bracket window must exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V005'),
-        `truncated bracket window must produce V005; got: ${JSON.stringify(payload)}`);
-      assert.ok(!payload.warnings.some((w) => w.code === 'V004'),
-        `the document HAS bracket phase entries — V004 must not fire; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'truncated bracket window must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `truncated bracket window must produce V005; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V004'),
+    `the document HAS bracket phase entries — V004 must not fire; got: ${JSON.stringify(payload)}`);
   });
 
-  test('bracket complete window → no warnings, exit 0', () => {
+  test('bracket complete window → no warnings, exit 0', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-complete-');
-    try {
-      writeFixture3641(tmpDir, [
-        '# Roadmap',
-        '',
-        '## v3.0 In Progress 🚧',
-        '',
-        '### [GSD.03] 01: Foo',
-        '',
-        '### [GSD.03] 02: Bar',
-        '',
-        '## v4.0 Next',
-        '',
-        'Later plans.',
-      ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.ok(result.success, `complete bracket window must exit 0; got: ${result.error}`);
-      const payload = JSON.parse(result.output);
-      assert.deepStrictEqual(payload.warnings, [], `complete bracket window must have no warnings; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    '### [GSD.03] 01: Foo',
+    '',
+    '### [GSD.03] 02: Bar',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.ok(result.success, `complete bracket window must exit 0; got: ${result.error}`);
+  const payload = JSON.parse(result.output);
+  assert.deepStrictEqual(payload.warnings, [], `complete bracket window must have no warnings; got: ${JSON.stringify(payload)}`);
   });
 
-  test('bracket truncated window (frontmatter convention) → V005 fires', () => {
+  test('bracket truncated window (frontmatter convention) → V005 fires', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-fm-');
-    try {
-      const withFrontmatter = [
-        '---',
-        'phase_id_convention: bracket',
-        '---',
-        '',
-        BRACKET_TRUNCATED_ROADMAP,
-      ].join('\n');
-      writeFixture3641(tmpDir, withFrontmatter, { milestone: 'v3.0' }, { kind: 'frontmatter' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'frontmatter-convention truncated window must exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V005'),
-        `frontmatter convention must resolve for V005; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  const withFrontmatter = [
+    '---',
+    'phase_id_convention: bracket',
+    '---',
+    '',
+    BRACKET_TRUNCATED_ROADMAP,
+  ].join('\n');
+  writeFixture3641(tmpDir, withFrontmatter, { milestone: 'v3.0' }, { kind: 'frontmatter' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'frontmatter-convention truncated window must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `frontmatter convention must resolve for V005; got: ${JSON.stringify(payload)}`);
   });
 
-  test('legacy truncated window without convention → V005 still fires (parity)', () => {
+  test('legacy truncated window without convention → V005 still fires (parity)', (t) => {
     const tmpDir = createTempProject('gsd-3641-legacy-parity-');
-    try {
-      writeFixture3641(tmpDir, [
-        '# Roadmap',
-        '',
-        '## v3.0 In Progress 🚧',
-        '',
-        'Some preamble notes.',
-        '',
-        '## v4.0 Next',
-        '',
-        '### Phase 1: Foo',
-        '',
-        '### Phase 2: Bar',
-      ].join('\n'), { milestone: 'v3.0' }, null);
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'legacy truncated window must still exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V005'),
-        `legacy V005 behavior must be unchanged; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Some preamble notes.',
+    '',
+    '## v4.0 Next',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+  ].join('\n'), { milestone: 'v3.0' }, null);
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'legacy truncated window must still exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `legacy V005 behavior must be unchanged; got: ${JSON.stringify(payload)}`);
   });
 
-  test('bracket-spelling roadmap without convention → not widened (V004 only)', () => {
+  test('bracket-spelling roadmap without convention → not widened (V004 only)', (t) => {
     const tmpDir = createTempProject('gsd-3641-no-convention-');
-    try {
-      writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, null);
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'unrecognized entries must still exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V004'),
-        `a project that never opted in keeps the legacy reading (V004); got: ${JSON.stringify(payload)}`);
-      assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
-        `no convention declared — the widened grammar must not engage; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, null);
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'unrecognized entries must still exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `a project that never opted in keeps the legacy reading (V004); got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `no convention declared — the widened grammar must not engage; got: ${JSON.stringify(payload)}`);
   });
 
-  test('bracket phase-less roadmap with bracket milestone name headings → V004 only, no V005', () => {
+  test('bracket phase-less roadmap with bracket milestone name headings → V004 only, no V005', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-phaseless-');
-    try {
-      writeFixture3641(tmpDir, [
-        '# Roadmap',
-        '',
-        '## [GSD.02] Foundation',
-        '',
-        'Nothing planned yet. A bracket MILESTONE heading is a bracket plus a',
-        'name — not a phase entry (no digit-then-colon tail).',
-      ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'genuinely phase-less bracket roadmap must exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V004'),
-        `V004 owns the phase-less case under bracket too; got: ${JSON.stringify(payload)}`);
-      assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
-        `a phase-less window must never produce V005; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## [GSD.02] Foundation',
+    '',
+    'Nothing planned yet. A bracket MILESTONE heading is a bracket plus a',
+    'name — not a phase entry (no digit-then-colon tail).',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'genuinely phase-less bracket roadmap must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `V004 owns the phase-less case under bracket too; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `a phase-less window must never produce V005; got: ${JSON.stringify(payload)}`);
   });
 
-  test('fenced bracket heading example does not count as a phase entry', () => {
+  test('fenced bracket heading example does not count as a phase entry', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-fence-');
-    try {
-      writeFixture3641(tmpDir, [
-        '# Roadmap',
-        '',
-        '## v3.0 In Progress 🚧',
-        '',
-        'Documentation example of the syntax:',
-        '',
-        '```markdown',
-        '### [GSD.03] 01: Documented example',
-        '```',
-        '',
-        'No real phase headings anywhere.',
-        '',
-        '## v4.0 Next',
-        '',
-        'Later plans.',
-      ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.strictEqual(result.success, false, 'fenced-example-only roadmap must exit non-zero');
-      const payload = JSON.parse(result.output);
-      assert.ok(payload.warnings.some((w) => w.code === 'V004'),
-        `a fenced example is not a real entry; got: ${JSON.stringify(payload)}`);
-      assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
-        `fenced examples must not flip the scope axis; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Documentation example of the syntax:',
+    '',
+    '```markdown',
+    '### [GSD.03] 01: Documented example',
+    '```',
+    '',
+    'No real phase headings anywhere.',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'fenced-example-only roadmap must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `a fenced example is not a real entry; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `fenced examples must not flip the scope axis; got: ${JSON.stringify(payload)}`);
   });
 
-  test('bracket+label mixed spelling still recognized under bracket convention', () => {
+  test('bracket+label mixed spelling still recognized under bracket convention', (t) => {
     const tmpDir = createTempProject('gsd-3641-bracket-mixed-');
-    try {
-      writeFixture3641(tmpDir, [
-        '# Roadmap',
-        '',
-        '## v3.0 In Progress 🚧',
-        '',
-        '### [GSD.03] Phase 01: Foo',
-        '',
-        '## v4.0 Next',
-        '',
-        'Later plans.',
-      ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
-      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
-      assert.ok(result.success, `mixed spelling is already-recognized — must exit 0; got: ${result.error}`);
-      const payload = JSON.parse(result.output);
-      assert.deepStrictEqual(payload.warnings, [], `mixed spelling must stay recognized; got: ${JSON.stringify(payload)}`);
-    } finally { cleanup(tmpDir); }
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    '### [GSD.03] Phase 01: Foo',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.ok(result.success, `mixed spelling is already-recognized — must exit 0; got: ${result.error}`);
+  const payload = JSON.parse(result.output);
+  assert.deepStrictEqual(payload.warnings, [], `mixed spelling must stay recognized; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('colon-bearing bracket milestone heading in-window does not read as a phase entry (#3641 review HIGH)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-colon-milestone-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## [GSD.03] v3.0: Current',
+      '',
+      'No phases under the active milestone — and its own heading carries a',
+      'colon, which must NOT make the window read as having phase entries.',
+      '',
+      '## [GSD.04] v4.0: Next',
+      '',
+      '### [GSD.04] 01: Foo',
+    ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'truncated bracket window (colon-bearing milestone heading) must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+      `ADR-612 discriminator: a bracket + NAME(:version) heading is a milestone, not an entry — the window is still truncated; got: ${JSON.stringify(payload)}`);
+    assert.ok(!payload.warnings.some((w) => w.code === 'V004'), `real bracket entries exist; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('decoy bracket notes heading outside the window does not manufacture V005 (#3641 review MEDIUM)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-decoy-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## v3.0 Current 🚧',
+      '',
+      'Nothing planned yet — a genuinely phase-less milestone.',
+      '',
+      '## v4.0 Next',
+      '',
+      '### [GSD.04] Notes: follow-ups',
+      '',
+      'Prose under a later milestone, not a phase entry.',
+    ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'phase-less bracket roadmap must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+      `no real entries — V004 owns the verdict; got: ${JSON.stringify(payload)}`);
+    assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+      `a decoy colon heading must never flip the scope axis to TRUNCATED; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('milestone-scope probe agrees with validate on a truncated bracket window (#3641 review MEDIUM)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-probe-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'milestone-scope', '--raw'], tmpDir);
+    assert.ok(result.success, `probe must exit 0; got: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    assert.strictEqual(payload.scope, 'truncated',
+      `the #3262 capture/compare signal must agree with validate's V005 classifier; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('colon-less legacy phase heading alone still yields V004 (owner-entry definition pin)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-colonless-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## v3.0 Current 🚧',
+      '',
+      '### Phase 1 — Foo',
+    ].join('\n'), { milestone: 'v3.0' }, null);
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'colon-less-only roadmap must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+      `the canonical entry grammar is colon-terminated — a colon-less heading is not an entry for ANY reader; got: ${JSON.stringify(payload)}`);
   });
 
   test('hasPhaseEntries gates the widened grammar on the bracket convention (unit seam)', () => {
