@@ -199,6 +199,44 @@ function toPosix(value: string): string {
  * unreadable document) so existing per-document degradation and
  * diagnostics apply unchanged.
  */
+/**
+ * Path-boundary-safe comparison of two ALREADY-RESOLVED absolute paths — the
+ * ONE containment comparison every containment check in this module shares
+ * (`readDocument`'s file-level guard, `isPathContained` below for
+ * directories and the verification-status `fs` seam), so none of them can
+ * drift apart. `target` must equal `root`, or begin with `root` plus a path
+ * separator; a bare `startsWith(root)` would wrongly accept a sibling
+ * directory like `.planning-evil/` that merely shares a string prefix. Pure
+ * string comparison, no I/O — callers own their own `fs.realpathSync` call
+ * (and its own not-found/broken-symlink handling).
+ */
+function isWithinRoot(resolvedTarget: string, resolvedRoot: string): boolean {
+  return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path.sep);
+}
+
+/**
+ * Containment check for a path (file OR directory) that resolves its own
+ * `fs.realpathSync`, then delegates the actual boundary comparison to
+ * `isWithinRoot`. Used where the caller does not need to distinguish "target
+ * vanished / broken symlink" from "target resolved but escapes root" — both
+ * degrade the same way at every call site that uses this (an escaped or
+ * unresolvable phase directory is treated identically to an unreadable one).
+ * `readDocument` below needs that distinction for its own exists/readable
+ * tri-state, so it keeps its own inline `realpathSync` calls and calls
+ * `isWithinRoot` directly instead of this wrapper.
+ */
+function isPathContained(target: string, root: string): boolean {
+  let realTarget: string;
+  let realRoot: string;
+  try {
+    realTarget = fs.realpathSync(target);
+    realRoot = fs.realpathSync(root);
+  } catch {
+    return false;
+  }
+  return isWithinRoot(realTarget, realRoot);
+}
+
 function readDocument(filePath: string, root: string): { text: string | null; exists: boolean; readable: boolean } {
   let stat: fs.Stats;
   try {
@@ -220,11 +258,7 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
     // here — the same non-answer `readDocument` already gives "not exists".
     return { text: null, exists: false, readable: false };
   }
-  // Path-boundary-safe containment: the resolved target must equal the
-  // resolved root, or begin with the resolved root plus a path separator. A
-  // bare `startsWith(realRoot)` would wrongly accept a sibling directory
-  // like `.planning-evil/` that merely shares a string prefix.
-  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+  if (!isWithinRoot(realTarget, realRoot)) {
     return { text: null, exists: true, readable: false };
   }
 
@@ -233,6 +267,51 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
   } catch {
     return { text: null, exists: true, readable: false };
   }
+}
+
+/**
+ * Containment-enforcing `fs` seam for `readVerificationStatus`
+ * (`src/verification.cts`), passed through that function's existing
+ * `opts.fs` injection point — GAP 2 of the #2790 follow-up security review.
+ *
+ * `readVerificationStatus` is a SHARED owner consumed by many commands
+ * (init, roadmap, phase, ship, …), so it must not gain a containment
+ * parameter of its own; the boundary is enforced HERE, at this consumer's
+ * call site, instead. Each method below delegates to the real `node:fs`
+ * ONLY after the given path passes `isPathContained` against
+ * `planningRoot` — otherwise it throws. `readVerificationStatus` already
+ * treats every one of these calls' failures as its no-throw "missing"
+ * degradation (see its own try/catch around `readdirSync`/`readFileSync`,
+ * and `findStaleVerificationSummary`'s around `readdirSync`/`statSync`), so
+ * a `*-VERIFICATION.md` symlinked outside the planning root — or a phase
+ * directory that is itself such a symlink — now degrades to the ordinary
+ * 'missing' status instead of leaking frontmatter content (or the escaped
+ * directory's filenames) into the payload.
+ */
+function containmentEnforcingVerificationFs(planningRoot: string): {
+  readdirSync(dir: string): string[];
+  readFileSync(filePath: string, encoding: 'utf-8'): string;
+  statSync(filePath: string): { mtimeMs: number };
+} {
+  function assertContained(target: string): void {
+    if (!isPathContained(target, planningRoot)) {
+      throw new Error(`planning-inspect: path escapes planning root: ${toPosix(target)}`);
+    }
+  }
+  return {
+    readdirSync(dir: string): string[] {
+      assertContained(dir);
+      return fs.readdirSync(dir);
+    },
+    readFileSync(filePath: string, encoding: 'utf-8'): string {
+      assertContained(filePath);
+      return fs.readFileSync(filePath, encoding);
+    },
+    statSync(filePath: string): { mtimeMs: number } {
+      assertContained(filePath);
+      return fs.statSync(filePath);
+    },
+  };
 }
 
 function sortedUnique(values: string[]): string[] {
@@ -642,6 +721,20 @@ function buildTaskRows(
 }
 
 function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[], planningRoot: string): { rows: PlanRow[]; scope: Scope } {
+  // GAP 1 (#2790 follow-up security review): `scanPhasePlans` (`plan-scan.cjs`)
+  // does its own `readdirSync(phaseDir)`, which FOLLOWS a directory symlink —
+  // so a phase directory that is itself a symlink escaping `planningRoot`
+  // would have its EXTERNAL filenames enumerated and surfaced via `file:
+  // toPosix(planFile)` below, even though the per-file `readDocument` guard
+  // already rejects the CONTENT. Contained before any enumeration happens, so
+  // an escaped phase directory contributes zero rows and zero filenames — the
+  // same degraded shape (`scope: unreadable`, empty `rows`) `scanPhasePlans`
+  // already returns when the directory cannot be listed at all, via the same
+  // `isPathContained` comparison `readDocument` uses for files (never a
+  // second, hand-rolled boundary check).
+  if (!isPathContained(phaseDir, planningRoot)) {
+    return { rows: [], scope: SCOPE.UNREADABLE };
+  }
   const scan = planScan(phaseDir);
   const supersededSet = new Set(
     scan.allPlanFiles.filter((f: string) => !scan.planFiles.includes(f)),
@@ -717,6 +810,21 @@ function buildUatRows(
   planningRoot: string,
 ): { items: unknown[]; scope: Scope } {
   const phaseDir = path.join(phasesDir, phaseDirName);
+  // GAP 1 (#2790 follow-up security review): same rationale as
+  // `buildPlanRows` above — `readdirSync` below FOLLOWS a directory symlink,
+  // so an escaped phase directory must be rejected before enumeration, not
+  // after. Reuses the existing `UAT_UNREADABLE` diagnostic and degraded
+  // shape (the pre-existing "directory could not be listed" path below),
+  // rather than inventing a new diagnostic code for what is, from a
+  // consumer's perspective, the same non-answer.
+  if (!isPathContained(phaseDir, planningRoot)) {
+    diagnostics.push({
+      code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
+      subject: phaseDirName,
+      detail: 'Phase directory could not be listed; UAT presence is unknown.',
+    });
+    return { items: [], scope: SCOPE.UNREADABLE };
+  }
   let entries: string[];
   try {
     entries = fs.readdirSync(phaseDir);
@@ -1036,7 +1144,28 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     const phaseDir = path.join(paths.phases, phase.dir);
     const plans = buildPlanRows(phaseDir, diagnostics, paths.planning);
     const uat = buildUatRows(paths.phases, phase.dir, diagnostics, paths.planning);
-    const verification = readVerificationStatus(phaseDir);
+    // GAP 2 (#2790 follow-up security review): `readVerificationStatus`
+    // (`src/verification.cts`) is a shared owner with its own unguarded
+    // `readFileSync` — a `*-VERIFICATION.md` symlinked outside the planning
+    // root would leak an unrecognized `status:` value verbatim via its
+    // "Unexpected verification status '<value>'" `next_action` string. Fixed
+    // from THIS consumer's side via the injectable `opts.fs` seam that
+    // function already exposes, never by touching its signature — see
+    // `containmentEnforcingVerificationFs`'s doc comment. This same seam's
+    // `readdirSync(phaseDir)` guard also independently covers the
+    // escaped-phase-DIRECTORY case for this call site (GAP 1 above only
+    // gates `buildPlanRows`/`buildUatRows`, not this one).
+    //
+    // `src/plan-scan.cts`'s `isPlanSuperseded` similarly reads
+    // symlink-followed content with no containment of its own, but it is
+    // reached only via `scanPhasePlans(phaseDir)` inside `buildPlanRows`
+    // above (never touched here), leaks only a derived boolean
+    // (`superseded`) rather than document text, and GAP 1's directory
+    // containment check already covers the escaped-DIRECTORY case for it —
+    // so it needs no fix of its own.
+    const verification = readVerificationStatus(phaseDir, {
+      fs: containmentEnforcingVerificationFs(paths.planning),
+    });
 
     const token = /^(\d+(?:\.\d+)*)/.exec(phase.dir);
     const phaseId = token ? token[1] : null;

@@ -2267,3 +2267,174 @@ describe('plan-document — task count parity (property)', () => {
     );
   });
 });
+
+// ─── 9. Containment: escaped phase directories / verification files (#2790 follow-up) ─
+
+describe('planning inspect — phase-directory and verification-file containment', () => {
+  test('escapedPhaseDirectorySymlinkLeaksNoFilenamesOrContent', (t) => {
+    // GAP 1: `readdirSync` follows a directory symlink, so a phase directory
+    // that is itself a symlink escaping the planning root must contribute NO
+    // filenames and NO content. Empirically, a symlinked entry directly under
+    // `.planning/phases/` never even reaches `buildPlanRows`/`buildUatRows`
+    // in the first place: `listMilestonePhaseDirs`/`buildAllPhaseDirNamesField`
+    // (`src/phase-locator.cts` / `src/planning-snapshot.cts` — both OUT OF
+    // SCOPE for this fix, and unrelated to it) enumerate phase directories via
+    // `readdirSync(..., { withFileTypes: true }).filter((e) => e.isDirectory())`,
+    // and `Dirent#isDirectory()` reports a directory SYMLINK as `false` (it is
+    // typed from the directory entry itself, never `stat`-resolved) — so the
+    // escaped entry is excluded from BOTH the windowed `phases` array and
+    // `orphan_phase_dirs` before `planning-inspect.cts` ever sees it. The
+    // `isPathContained` guard added to `buildPlanRows`/`buildUatRows` is
+    // still correct defense-in-depth (a direct call, a future refactor of the
+    // upstream filter, or a platform where a directory reparse point reports
+    // as a directory could all reach it) — this test proves the OUTCOME the
+    // security review actually cares about: end to end, nothing about the
+    // escaped directory or its contents is ever observable, and a healthy
+    // sibling phase is entirely unaffected.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const externalDir = createTempDir('gsd-2790-external-phase-');
+    t.after(() => cleanup(externalDir));
+    const sentinelFileName = 'TOP-SECRET-FILENAME-8f21ac.md';
+    const sentinelContent = 'TOP_SECRET_PHASE_CONTENT_4d81af';
+    fs.writeFileSync(path.join(externalDir, sentinelFileName), sentinelContent);
+
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '### Phase 1: Foo',
+      '',
+      '### Phase 2: Bar',
+      '',
+    ]);
+    const phase1Dir = phaseDirOf(tmpDir, slugPhaseDirName('1', 'Foo'));
+    fs.mkdirSync(path.dirname(phase1Dir), { recursive: true });
+    try {
+      fs.symlinkSync(externalDir, phase1Dir);
+    } catch (_symlinkErr) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+    const phase2Dir = phaseDirOf(tmpDir, slugPhaseDirName('2', 'Bar'));
+    fs.mkdirSync(phase2Dir, { recursive: true });
+    writeVerification(phase2Dir, '02', 'passed');
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected exit 0 with an escaping phase directory: ${result.error}`);
+    // Raw-string ABSENCE proof — the sanctioned exception to the no-raw-text
+    // rule (see `rejectsPlanSymlinkEscapingThePlanningRoot` above).
+    assert.ok(!result.output.includes(sentinelFileName), 'the external filename must never appear anywhere in the payload');
+    assert.ok(!result.output.includes(sentinelContent), 'the external content must never appear anywhere in the payload');
+
+    const payload = JSON.parse(result.output);
+    const escaped = payload.phases.find((p) => p.dir === slugPhaseDirName('1', 'Foo'));
+    const healthy = payload.phases.find((p) => p.dir === slugPhaseDirName('2', 'Bar'));
+    // The escaped directory is invisible end to end — neither a phase row nor
+    // an orphan entry names it (see the upstream Dirent-filtering note above).
+    assert.strictEqual(escaped, undefined, 'the escaped phase directory must not surface as a phase row');
+    assert.ok(!payload.orphan_phase_dirs.includes(slugPhaseDirName('1', 'Foo')));
+    assert.ok(healthy, 'the sibling phase must be entirely unaffected by the escape');
+    assert.strictEqual(healthy.scope, 'complete');
+    assert.strictEqual(healthy.complete, true);
+  });
+
+  test('escapedVerificationFileSymlinkLeaksNoFrontmatterValue', (t) => {
+    // GAP 2: `readVerificationStatus` (src/verification.cts) is a shared
+    // owner with its own unguarded `readFileSync` — an unrecognized `status:`
+    // value is copied verbatim into `next_action`. A `*-VERIFICATION.md`
+    // symlinked outside the planning root must never surface that value.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const externalDir = createTempDir('gsd-2790-external-verification-');
+    t.after(() => cleanup(externalDir));
+    const sentinel = 'TOP_SECRET_STATUS_VALUE_c93af1';
+    const secretFile = path.join(externalDir, 'secret-status.md');
+    fs.writeFileSync(secretFile, ['---', `status: ${sentinel}`, '---', ''].join('\n'));
+
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    try {
+      fs.symlinkSync(secretFile, path.join(phaseDir, '01-VERIFICATION.md'));
+    } catch (_symlinkErr) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+
+    const result = runInspect(tmpDir);
+    assert.strictEqual(result.success, true, `expected exit 0 with an escaping verification symlink: ${result.error}`);
+    assert.ok(!result.output.includes(sentinel), 'the sentinel status value must never appear anywhere in the payload');
+
+    const payload = JSON.parse(result.output);
+    const phase = payload.phases[0];
+    // Degrades exactly like an unreadable/absent verification report already
+    // does — never like a recognized-but-unknown status carrying the raw value.
+    assert.strictEqual(phase.verification.status, 'missing');
+    assert.ok(!phase.verification.next_action.includes(sentinel), 'next_action specifically must never carry the sentinel');
+  });
+
+  test('negativeControlRelocatedPhasesDirAndPlainVerificationFileBothStillWork', (t) => {
+    // Companion to both tests above: containment must not over-reject the
+    // cases it exists to preserve. Per the Dirent-filtering note in
+    // `escapedPhaseDirectorySymlinkLeaksNoFilenamesOrContent` above, symlinking
+    // an INDIVIDUAL phase directory is never recognized as a phase by the
+    // upstream enumerator regardless of where it points — that is a pre-existing,
+    // out-of-scope limitation of `listMilestonePhaseDirs`, not a containment
+    // question. The reachable, meaningful "contained relocation" case is
+    // instead the whole `.planning/phases/` PARENT being a symlink to another
+    // directory INSIDE the planning root, with ORDINARY (non-symlink) phase
+    // subdirectories nested inside it — `readdirSync` resolves the symlinked
+    // parent path once and then lists genuinely-typed directory entries
+    // within it, so those phase rows DO reach `buildPlanRows`/`buildUatRows`/
+    // the verification `fs` seam with a `phaseDir` whose resolved realpath
+    // sits under the relocated-but-contained real target. This is the same
+    // "legitimately relocated planning tree" shape
+    // `stillReadsPlansWhenTheWholePlanningRootIsALegitimateSymlinkElsewhere`
+    // proves for the WHOLE `.planning/` root, one level down at `phases/`.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, ["gsd_state_version: '1.0'", 'status: planning', 'milestone: v1.0']);
+    writeRoadmap(tmpDir, [
+      '## v1.0 Current 🚧',
+      '',
+      '### Phase 1: Foo',
+      '',
+      '### Phase 2: Bar',
+      '',
+    ]);
+
+    const realPhasesDir = path.join(planningDirOf(tmpDir), '_actual-phases');
+    const phase1RealDir = path.join(realPhasesDir, slugPhaseDirName('1', 'Foo'));
+    fs.mkdirSync(phase1RealDir, { recursive: true });
+    writePlanDoc(phase1RealDir, '1-01-PLAN.md', [], [
+      '<objective>', 'relocated-parent plan', '</objective>', '<tasks></tasks>',
+    ]);
+    // (b) Phase 2 gets a plain, non-symlink verification report, proving the
+    // common case is unaffected by this fix.
+    const phase2RealDir = path.join(realPhasesDir, slugPhaseDirName('2', 'Bar'));
+    fs.mkdirSync(phase2RealDir, { recursive: true });
+    writeVerification(phase2RealDir, '02', 'passed');
+
+    // `createTempProject` already creates an empty `.planning/phases/` — it
+    // must be removed before a symlink can take its place.
+    fs.rmdirSync(phasesDirOf(tmpDir));
+    try {
+      fs.symlinkSync(realPhasesDir, phasesDirOf(tmpDir));
+    } catch (_symlinkErr) {
+      t.skip('symlink creation unsupported on this platform/privilege');
+      return;
+    }
+
+    const payload = parseInspect(tmpDir);
+
+    const phase1 = payload.phases.find((p) => p.dir === slugPhaseDirName('1', 'Foo'));
+    assert.ok(phase1, 'a phase reached through a relocated-but-contained phases/ parent must still be listed');
+    assert.strictEqual(phase1.scope, 'complete');
+    const plan = phase1.plans.find((p) => p.id === '1-01');
+    assert.ok(plan, 'a plan inside the relocated-but-contained directory must still be read');
+    assert.strictEqual(plan.objective, 'relocated-parent plan');
+
+    const phase2 = payload.phases.find((p) => p.dir === slugPhaseDirName('2', 'Bar'));
+    assert.ok(phase2, 'the sibling phase reached through the same relocated parent must still be listed');
+    assert.strictEqual(phase2.verification.status, 'passed', 'a normal verification file must still surface its status');
+  });
+});
