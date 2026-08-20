@@ -54,22 +54,14 @@ const TEST_ATTRIBUTION = () => 'Co-Authored-By: Test <t@example.com>';
 
 /**
  * Sandbox HOME/USERPROFILE for the duration of a test. Some runtimes (e.g.
- * codex) resolve a kind's `home` via os.homedir(); without this, an
- * in-process install would write into the developer's real home directory.
- * Mirrors tests/install-runtime-artifacts.test.cjs's sandboxHome().
+ * codex) resolve a kind's `home` via os.homedir(); without this, an in-process
+ * install would write into the developer's real home directory.
+ *
+ * #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used
+ * to live here. It now also sets the sandbox marker src/test-home-guard.cts
+ * needs to stay permissive on hosts with no readable passwd entry.
  */
-function sandboxHome(t, dir) {
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = dir;
-  process.env.USERPROFILE = dir;
-  t.after(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-  });
-}
+const { sandboxHome } = require('./helpers.cjs');
 
 // ─── E3 — the opencode-family early return (matrix row E3) ──────────────────
 

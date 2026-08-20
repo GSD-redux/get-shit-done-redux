@@ -92,7 +92,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir, sandboxHome } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const LIB_DIR = path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib');
@@ -628,6 +628,16 @@ test('agent-descriptor-parity: K1 — every registry runtime declaring an agents
   assert.ok(runtimesWithAgentsKind.length >= 7, 'sanity: expected at least the seven #2875 Part 2 runtimes to declare an agents kind');
   assert.ok(runtimesWithAgentsKind.includes('kimi-code'), 'kimi-code (found via golden fixture, not analysis) must be covered here');
   assert.ok(runtimesWithAgentsKind.includes('cline'), 'cline must be covered here');
+
+  // #3712: this loop reaches `codex`, whose global skills kind declares a `home`
+  // override (`.agents`) resolved from os.homedir() rather than from targetDir.
+  // Sandboxing targetDir alone does NOT contain it — before this line the call
+  // below pruned every gsd-* skill from the developer's REAL ~/.agents/skills
+  // (71 -> 0) while the suite still exited 0. Sandbox HOME for the whole loop so
+  // codex's skills land in <homeDir>/.agents/skills inside a temp dir we clean.
+  const homeDir = createTempDir('gsd-adp-home-');
+  t.after(() => cleanup(homeDir));
+  sandboxHome(t, homeDir);
 
   for (const runtime of runtimesWithAgentsKind) {
     const { commandsGsd, root } = buildSourceTree(SAMPLE_AGENTS);

@@ -410,3 +410,73 @@ describe('#3156: a raw installer spawn cannot write into the ambient HOME', () =
     }
   });
 });
+
+describe('#3712: a raw installer spawn cannot reach the ambient HOME\'s shared skills root', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const { cleanup } = require('./helpers.cjs');
+  const { installerEnv } = require('./helpers/install-shared.cjs');
+  const INSTALL_PATH = path.join(__dirname, '..', 'bin', 'install.js');
+
+  // #3156's canary asserts on <canaryHome>/.gsd. That is not the only ambient-HOME
+  // surface: a kind may declare a global `home` override resolved from os.homedir()
+  // — codex's skills kind (`.agents`) — and the installer PRUNES gsd-* entries under
+  // it. A 71-skill deletion there passed the .gsd-only canary unnoticed (#3712).
+  //
+  // The runtime choice is load-bearing, not incidental. The .gsd row spawns
+  // `--cursor --local`, and cursor declares no home override, so an `.agents`
+  // assertion on THAT spawn passes even with all confinement removed. Only a
+  // runtime that actually carries the override can discriminate — today that is
+  // codex at global scope, asserted below so a descriptor change fails here loudly.
+  test('installing codex globally leaves the ambient HOME\'s .agents/skills sampled inventory unchanged', () => {
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const codexGlobalSkills = (runtimes?.codex?.runtime?.artifactLayout?.global ?? [])
+      .find((e) => e.kind === 'skills' && e.home);
+    assert.ok(codexGlobalSkills,
+      'codex global skills must still declare a `home` override — without it this row '
+      + 'is non-discriminating and must be re-pointed at whichever runtime carries one');
+
+    const canaryHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3712-canary-home-'));
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3712-project-'));
+    const realHome = process.env.HOME;
+    const realUserProfile = process.env.USERPROFILE;
+
+    const skillsRoot = path.join(canaryHome, '.agents', 'skills');
+    fs.mkdirSync(skillsRoot, { recursive: true });
+    for (const name of ['gsd-plan-phase', 'gsd-dev-preferences', 'cloudflare']) {
+      fs.mkdirSync(path.join(skillsRoot, name), { recursive: true });
+      fs.writeFileSync(path.join(skillsRoot, name, 'SKILL.md'), `# ${name}\n`);
+    }
+    // A SAMPLE, not a byte-for-byte tree compare: immediate dir names plus each
+    // dir's SKILL.md. It catches the demonstrated regression (whole gsd-* dirs
+    // pruned) and would miss nested-file, mode, or metadata mutations.
+    const inventory = () => fs.readdirSync(skillsRoot).sort()
+      .map((d) => `${d}:${fs.readFileSync(path.join(skillsRoot, d, 'SKILL.md'), 'utf-8')}`)
+      .join('|');
+    const before = inventory();
+
+    try {
+      // Make the AMBIENT home the canary, exactly as on a developer machine.
+      process.env.HOME = canaryHome;
+      process.env.USERPROFILE = canaryHome;
+
+      execFileSync(process.execPath, [INSTALL_PATH, '--codex', '--global', '--no-sdk'], {
+        cwd: projectDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: installerEnv(),
+        timeout: 300_000,
+      });
+
+      assert.strictEqual(inventory(), before,
+        'the installer pruned or wrote GSD skills in the ambient HOME instead of its own sandbox');
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+      if (realUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = realUserProfile;
+      cleanup(canaryHome);
+      cleanup(projectDir);
+    }
+  });
+});

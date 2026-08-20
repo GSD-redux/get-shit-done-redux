@@ -32,6 +32,7 @@ import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
 import { ensureCommonJsMarker } from './commonjs-marker.cjs';
+import testHomeGuard = require('./test-home-guard.cjs');
 // #2874 (ADR-58 cleanup phase): the injectable fs seam for the
 // installRuntimeArtifacts call tree. `installFs()` resolves to real
 // `node:fs` unless a call is wrapped in `withInstallFs(deps.fs, ...)` —
@@ -997,7 +998,7 @@ function installRuntimeArtifacts(
   resolvedProfile: any,
   resolveAttribution: ResolveAttribution = () => undefined,
   capabilityRegistry?: any,
-  deps: { fs?: any } = {},
+  deps: { fs?: any; os?: any; env?: Record<string, string | undefined> } = {},
 ): any {
   return withInstallFs(deps.fs, (): any => {
     // A removed descriptor kind is no longer visited by the layout loop, so it
@@ -1025,6 +1026,11 @@ function installRuntimeArtifacts(
     _runLegacyInstallMigrations(runtime, configDir, scope);
 
     const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope as 'global' | 'local', capabilityRegistry);
+    // #3712: a global `home` override escapes the sandboxed configDir. Refuse to
+    // execute when a test run would land that escape in the developer's real home.
+    testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', runtime, layout?.kinds, {
+      os: deps.os, env: deps.env,
+    });
     const planResult = runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan({
       // `Layout` is structurally identical across the layout/install-plan .cjs
       // modules but nominally distinct to tsc (untyped .cjs boundary) — bridge it.
@@ -1261,6 +1267,13 @@ function installOpencodeFamilySkills(
   const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir);
   const skillsKindEntry = layout.kinds.find((k: any) => k.kind === 'skills');
   if (!skillsKindEntry) return 0;
+  // #3712: combined-family runtimes take installRuntimeArtifacts' early return
+  // BEFORE its guard runs, and this writer honors `skillsKindEntry.home` below and
+  // then prunes that destination. opencode/kilo declare no `home` today, so there
+  // is no live escape — but that makes this a bypass waiting on a descriptor
+  // change rather than a safe omission, so it is guarded at the writer instead.
+  // Scoped to the SKILLS kind alone, for the same reason as the agents writer.
+  testHomeGuard.assertTestHomeSandboxed('installOpencodeFamilySkills', runtime, [skillsKindEntry]);
   const rawDir = rawCommandsDir;
   if (!rawDir || !installFs().existsSync(rawDir)) return 0;
 
@@ -1438,6 +1451,14 @@ function installAgentsKindStandalone(
   const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as 'global' | 'local', capabilityRegistry);
   const agentsKindEntry = layout.kinds.find((k: any) => k.kind === 'agents');
   if (!agentsKindEntry) return null;
+  // #3712: this writer selects `agentsKindEntry.home` over targetDir below and then
+  // prunes that destination via _removeGsdEntries, so it is a fifth route into the
+  // developer's real home. No agents kind declares a `home` override today, so like
+  // installOpencodeFamilySkills it is guarded against a descriptor change rather
+  // than a present escape. Scoped to the AGENTS kind alone: passing the whole
+  // layout made codex's unrelated skills-kind override trip a writer that never
+  // touches it, which is a false refusal, not a tighter guard.
+  testHomeGuard.assertTestHomeSandboxed('installAgentsKindStandalone', runtime, [agentsKindEntry]);
 
   // ADR-1235 §1: same agentCtx shape createRuntimeArtifactInstallPlan builds
   // for the generic layout-driven loop (runtime-artifact-install-plan.cts) —
@@ -1816,7 +1837,12 @@ function installOpencodeFamilyArtifacts(
  * @param configDir           resolved runtime config directory
  * @param scope
  */
-function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: string): void {
+function uninstallRuntimeArtifacts(
+  runtime: string,
+  configDir: string,
+  scope: string,
+  deps: { os?: any; env?: Record<string, string | undefined> } = {},
+): void {
   // A retired descriptor kind is absent from the current uninstall plan, just
   // as it is absent from the install plan. Sweep manifest-proven output from
   // retired kinds before removing the current layout so a direct uninstall
@@ -1830,6 +1856,12 @@ function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: st
   const stagedLegacyArtifacts = _runLegacyUninstallCleanup(runtime, configDir, scope);
 
   const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope as any);
+  // #3712: uninstall resolves the SAME `kind.home` override as install and then
+  // prunes it via _removeGsdEntries below, so it is a second escape route into
+  // the developer's real home, not a read-only path. Guard it identically.
+  testHomeGuard.assertTestHomeSandboxed('uninstallRuntimeArtifacts', runtime, layout?.kinds, {
+    os: deps.os, env: deps.env,
+  });
   const plan: any = runtimeArtifactInstallPlan.createRuntimeArtifactUninstallPlan(layout);
   const kindsByName = new Map<string, any>(layout.kinds.map((kind: any) => [kind.kind as string, kind]));
   for (const item of plan.items) {

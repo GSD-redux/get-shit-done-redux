@@ -1140,13 +1140,20 @@ describe('skills-kind destination parity: installer vs surface-apply (#2911)', (
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/test-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 
@@ -1265,13 +1272,20 @@ describe('codex skills-kind destination: home override (#2911)', () => {
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/test-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 

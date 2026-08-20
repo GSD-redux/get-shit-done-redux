@@ -3182,3 +3182,289 @@ describe('install()/uninstall() degrade (never abort) on a staging-root resoluti
     });
   });
 });
+
+
+/**
+ * #3712 — an in-process run must never reach the developer's REAL home.
+ *
+ * The confinement rows above bound a write to the root they are handed. A kind
+ * may ALSO declare a global `home` override resolved from `os.homedir()` rather
+ * than from configDir (today: codex's skills kind, `home: ".agents"`, ADR-1239 /
+ * #2088). assertDestWithinConfigHome cannot see that class: it confines a
+ * destSubpath to whatever root it is given, and here the root IS the escaped home.
+ *
+ * The live defect: an in-process caller that forgot to sandbox HOME pruned the
+ * real ~/.agents/skills — 71 gsd-* dirs deleted, a foreign `cloudflare` skill
+ * surviving, suite still exit 0, because the runtime's own config home was
+ * untouched and the manifest kept reporting a healthy install.
+ *
+ * FIVE writers resolve a kind `home` and then destroy under it. The three
+ * reachable today are covered below by driving the REAL entrypoint — not the
+ * predicate — so that deleting a guard call site turns these rows red. The other
+ * two, `installOpencodeFamilySkills` and `installAgentsKindStandalone`, are
+ * guarded but not wiring-tested: no runtime declares a `home` override on those
+ * kinds, so neither path can be exercised without inventing a descriptor.
+ */
+describe('#3712 in-process home confinement', () => {
+  const { createTempDir, sandboxHome } = require('./helpers.cjs');
+  const installEngine = require('../gsd-core/bin/lib/install-engine.cjs');
+  const surface = require('../gsd-core/bin/lib/surface.cjs');
+  const runtimeArtifactLayout = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+  const testHomeGuard = require('../gsd-core/bin/lib/test-home-guard.cjs');
+
+  const escapingKinds = (home) => [{ kind: 'skills', home, destSubpath: 'skills' }];
+  const confinedKinds = [{ kind: 'skills', destSubpath: 'skills' }];
+  const fakeOs = (homedir, passwdHome) => ({
+    homedir: () => homedir,
+    userInfo: () => ({ homedir: passwdHome }),
+  });
+  const underTest = { NODE_TEST_CONTEXT: 'child-v8' };
+
+  // ── the predicate ────────────────────────────────────────────────────────
+  // Driven with REAL directories: the whole question is filesystem identity, and
+  // synthetic paths cannot exercise it. The passwd home is injected via the deps
+  // seam so no row depends on the developer's actual home.
+
+  describe('predicate', () => {
+    test('refuses a destination that lands inside the real home', (t) => {
+      const realHome = createTempDir('gsd-3712-real-');
+      t.after(() => cleanup(realHome));
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          { os: fakeOs(realHome, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+      );
+    });
+
+    test('allows a destination outside the real home — the correct-usage path', (t) => {
+      const realHome = createTempDir('gsd-3712-real2-');
+      const sandbox = createTempDir('gsd-3712-sandbox-');
+      t.after(() => { cleanup(realHome); cleanup(sandbox); });
+      assert.doesNotThrow(() => testHomeGuard.assertTestHomeSandboxed(
+        'installRuntimeArtifacts', 'codex',
+        escapingKinds(path.join(sandbox, '.agents')),
+        { os: fakeOs(sandbox, realHome), env: underTest },
+      ));
+    });
+
+    // The round-5 defect. A HOME-state check ("is HOME sandboxed right now?")
+    // returns "sandboxed" here and lets the write through, because the layout was
+    // resolved BEFORE the sandbox and its kind.home still names the real home.
+    // applySurface takes an already-resolved layout, so this is reachable, not
+    // theoretical. Asking about the DESTINATION is what closes it.
+    test('refuses a STALE layout resolved before HOME was sandboxed', (t) => {
+      const realHome = createTempDir('gsd-3712-stale-real-');
+      const sandbox = createTempDir('gsd-3712-stale-sandbox-');
+      t.after(() => { cleanup(realHome); cleanup(sandbox); });
+      // kind.home captured the REAL home; HOME is now the sandbox.
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+        'a sandboxed HOME does not make a destination resolved before the sandbox safe',
+      );
+    });
+
+    test('the message names the operation and the fix, so it is not silenced blindly', (t) => {
+      const realHome = createTempDir('gsd-3712-msg-');
+      t.after(() => cleanup(realHome));
+      let message = '';
+      try {
+        testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          { os: fakeOs(realHome, realHome), env: underTest });
+      } catch (err) { message = err.message; }
+      assert.match(message, /applySurface/, 'must name the writer that was refused');
+      assert.match(message, /sandboxHome/, 'must point at the helper that fixes it');
+      assert.match(message, /Fix the TEST, not this guard/);
+      assert.match(message, /BEFORE resolving the layout/, 'must state the ordering that matters');
+    });
+
+    test('is inert outside a test runner — real codex installs still write to $HOME/.agents', (t) => {
+      // The override exists so a REAL install lands in the user's home. Blocking
+      // that would break codex installs outright, so this row is load-bearing.
+      const realHome = createTempDir('gsd-3712-prod-');
+      t.after(() => cleanup(realHome));
+      assert.doesNotThrow(() => testHomeGuard.assertTestHomeSandboxed(
+        'installRuntimeArtifacts', 'codex',
+        escapingKinds(path.join(realHome, '.agents')),
+        { os: fakeOs(realHome, realHome), env: {} },
+      ));
+    });
+
+    test('ignores kinds with no home override — they cannot escape configDir', (t) => {
+      const realHome = createTempDir('gsd-3712-nohome-');
+      t.after(() => cleanup(realHome));
+      assert.doesNotThrow(() => testHomeGuard.assertTestHomeSandboxed(
+        'installRuntimeArtifacts', 'claude', confinedKinds,
+        { os: fakeOs(realHome, realHome), env: underTest },
+      ));
+    });
+
+    // Identity, not pathname: path.resolve() resolves neither symlinks nor case,
+    // and realpath returns a canonical pathname two routes to one directory can
+    // still disagree on. Driven with the REAL fs — an injected os cannot prove
+    // canonicalization, since that is what is under test.
+    test('a destination reached through a SYMLINKED spelling of the real home is refused', (t) => {
+      const realHome = createTempDir('gsd-3712-symreal-');
+      const linkParent = createTempDir('gsd-3712-symlink-');
+      const linkHome = path.join(linkParent, 'home-link');
+      t.after(() => { cleanup(realHome); cleanup(linkParent); });
+      fs.symlinkSync(realHome, linkHome, 'dir');
+
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(linkHome, '.agents')),
+          { os: fakeOs(linkHome, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+        'two spellings of one directory are not two directories',
+      );
+    });
+
+    test('refuses rather than guessing when the passwd home cannot be identified', () => {
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds('/nonexistent-root-3712/.agents'),
+          {
+            os: { homedir: () => '/nonexistent-root-3712', userInfo: () => { throw new Error('no passwd entry'); } },
+            env: underTest,
+          }),
+        /no identifiable passwd home/,
+      );
+    });
+
+    test('a caller that recorded THIS home still works with no passwd entry', (t) => {
+      // Keeps fail-closed from breaking passwd-less CI for callers that DID sandbox.
+      const sandbox = createTempDir('gsd-3712-marker-');
+      t.after(() => cleanup(sandbox));
+      assert.doesNotThrow(() => testHomeGuard.assertTestHomeSandboxed(
+        'installRuntimeArtifacts', 'codex',
+        escapingKinds(path.join(sandbox, '.agents')),
+        {
+          os: { homedir: () => sandbox, userInfo: () => { throw new Error('no passwd entry'); } },
+          env: { ...underTest, [testHomeGuard.SANDBOX_MARKER]: sandbox },
+        },
+      ));
+    });
+
+    test('a STALE marker naming a different home does not vouch for this call', (t) => {
+      const sandbox = createTempDir('gsd-3712-marker2-');
+      const other = createTempDir('gsd-3712-other-');
+      t.after(() => { cleanup(sandbox); cleanup(other); });
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(sandbox, '.agents')),
+          {
+            os: { homedir: () => sandbox, userInfo: () => { throw new Error('no passwd entry'); } },
+            env: { ...underTest, [testHomeGuard.SANDBOX_MARKER]: other },
+          }),
+        /no identifiable passwd home/,
+        'the marker must name the home actually in effect',
+      );
+    });
+
+    // An ambient marker must not disarm the guard on the PRIMARY path: it is only
+    // consulted when the real home cannot be identified at all.
+    test('an ambient marker does NOT disarm the guard when the real home is identifiable', (t) => {
+      const realHome = createTempDir('gsd-3712-ambient-');
+      t.after(() => cleanup(realHome));
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          {
+            os: fakeOs(realHome, realHome),
+            env: { ...underTest, [testHomeGuard.SANDBOX_MARKER]: realHome },
+          }),
+        /destination inside\s+your REAL home/,
+        'destination containment is authoritative; no marker may short-circuit it',
+      );
+    });
+
+    test('the marker name tests/helpers.cjs writes matches the one the guard reads', () => {
+      // helpers.cjs duplicates this string rather than requiring the compiled guard,
+      // to keep its documented no-built-lib-at-import-time contract. Pin the pair.
+      const { TEST_HOME_SANDBOX_MARKER } = require('./helpers.cjs');
+      assert.strictEqual(TEST_HOME_SANDBOX_MARKER, testHomeGuard.SANDBOX_MARKER,
+        'the helper and the guard must agree on the marker env var name');
+    });
+  });
+
+  // ── the wiring ───────────────────────────────────────────────────────────
+  // These call the REAL entrypoints. Deleting a guard call site makes them fail;
+  // the predicate rows above would stay green, which is why both halves exist.
+
+  describe('wiring — every writer that resolves kind.home is guarded', () => {
+    /**
+     * Sandbox the real HOME (so nothing real is ever at risk), then tell the guard
+     * — through its deps seam only — that this sandboxed home IS the passwd home.
+     * The layout then resolves its `home` override under that directory, so the
+     * destination lands inside what the guard believes is the real home: exactly
+     * "the caller forgot", reproduced against a throwaway directory.
+     */
+    function forgottenSandbox(t) {
+      const configDir = createTempDir('gsd-3712-cfg-');
+      const homeDir = createTempDir('gsd-3712-home-');
+      t.after(() => { cleanup(configDir); cleanup(homeDir); });
+      sandboxHome(t, homeDir);
+      return { configDir, homeDir, deps: { os: fakeOs(homeDir, homeDir), env: underTest } };
+    }
+
+    test('installRuntimeArtifacts refuses before it writes or prunes anything', (t) => {
+      const { configDir, homeDir, deps } = forgottenSandbox(t);
+      const profile = { name: 'full', skills: '*', agents: new Set() };
+      assert.throws(
+        () => installEngine.installRuntimeArtifacts(
+          'codex', configDir, 'global', profile, () => undefined, undefined, deps,
+        ),
+        /destination inside\s+your REAL home/,
+        'the guard must be wired into installRuntimeArtifacts, not merely exported',
+      );
+      assert.ok(!fs.existsSync(path.join(homeDir, '.agents', 'skills')),
+        'it must refuse BEFORE creating the escaped destination');
+    });
+
+    test('uninstallRuntimeArtifacts refuses — it prunes the same escaped home', (t) => {
+      const { configDir, deps } = forgottenSandbox(t);
+      assert.throws(
+        () => installEngine.uninstallRuntimeArtifacts('codex', configDir, 'global', deps),
+        /destination inside\s+your REAL home/,
+        'uninstall resolves the same kind.home and calls _removeGsdEntries on it',
+      );
+    });
+
+    test('applySurface refuses — its dest selection prefers kind.home, then syncs', (t) => {
+      const { configDir, deps } = forgottenSandbox(t);
+      const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('codex', configDir, 'global');
+      assert.throws(
+        () => surface.applySurface(configDir, layout, new Map(), undefined, undefined, undefined, deps),
+        /destination inside\s+your REAL home/,
+        'surface apply is the third writer that reaches kind.home',
+      );
+    });
+  });
+
+  // ── the property the one real fix depends on ─────────────────────────────
+
+  test('a sandboxed HOME actually contains codex\'s global skills kind', (t) => {
+    const configDir = createTempDir('gsd-3712-contain-cfg-');
+    const homeDir = createTempDir('gsd-3712-contain-home-');
+    t.after(() => { cleanup(configDir); cleanup(homeDir); });
+
+    const ambientHome = path.resolve(os.homedir());
+    sandboxHome(t, homeDir);
+
+    const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('codex', configDir, 'global');
+    const skills = layout.kinds.find((k) => k.kind === 'skills');
+    assert.ok(skills && skills.home,
+      'codex skills must still carry the global home override this guard exists for — '
+      + 'if this fails the descriptor drifted, and the guard is now testing nothing');
+
+    const dest = path.resolve(path.join(skills.home, skills.destSubpath));
+    assert.ok(dest.startsWith(path.resolve(homeDir) + path.sep),
+      `codex skills must resolve inside the sandboxed HOME, got ${dest}`);
+    assert.ok(!dest.startsWith(ambientHome + path.sep),
+      `codex skills must NOT resolve inside the ambient home ${ambientHome}, got ${dest}`);
+  });
+});

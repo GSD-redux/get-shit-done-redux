@@ -79,6 +79,7 @@ build/
 /gsd-core/bin/lib/install-effort-resolver.cjs
 /gsd-core/bin/lib/install-model-override-resolver.cjs
 /gsd-core/bin/lib/install-engine.cjs
+/gsd-core/bin/lib/test-home-guard.cjs
 /gsd-core/bin/lib/embedding-adapter.cjs
 /gsd-core/bin/lib/adapter-declarative.cjs
 /gsd-core/bin/lib/adapter-imperative.cjs

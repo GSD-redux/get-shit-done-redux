@@ -504,6 +504,7 @@
       "task-command-router.cjs",
       "teams-status.cjs",
       "template.cjs",
+      "test-home-guard.cjs",
       "text-lines.cjs",
       "token-scanner.cjs",
       "uat-predicate.cjs",

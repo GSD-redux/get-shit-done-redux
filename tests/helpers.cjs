@@ -1000,7 +1000,59 @@ function installSpawnEnv(overrides = {}) {
   return { ...process.env, ...testEnvBase(), HOME: home, USERPROFILE: home, ...overrides };
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome };
+/**
+ * #3712 — sandbox HOME/USERPROFILE for the duration of ONE test.
+ *
+ * The spawn-side helpers above (#3156) cover CHILD processes only. A test that
+ * calls the installer IN-PROCESS gets no protection from them, and a runtime kind
+ * may declare a global `home` override that resolves from `os.homedir()` rather
+ * than from the sandboxed configDir — codex's skills kind (`.agents`, ADR-1239 /
+ * #2088) is the live case. Without this, such a call writes to, and prunes
+ * `gsd-*` entries from, the developer's REAL ~/.agents/skills.
+ *
+ * Promoted here from the identical private copies in executed-plan.test.cjs and
+ * install-runtime-artifacts.test.cjs so new in-process callers have one obvious
+ * helper to reach for instead of re-deriving it (or forgetting it).
+ *
+ * Pass the test's own temp configDir as `dir` where possible: codex's skills dir
+ * then resolves to `<configDir>/.agents/skills`, keeping every artifact the call
+ * writes inside the directory the test already cleans up.
+ *
+ * @param {{ after: (fn: () => void) => void }} t - node:test context.
+ * @param {string} dir - directory to use as HOME for the duration of the test.
+ */
+// #3712: the marker NAME is a constant, duplicated here deliberately rather than
+// required from the compiled guard. helpers.cjs is imported by ~370 test files and
+// documents (see builtLib above) that it must NOT load gsd-core/bin/lib at module
+// scope — an unbuilt tree would then fail on import alone, turning a missing
+// `npm run build:lib` into a whole-suite crash. A lazy require inside sandboxHome
+// would satisfy that too, but a bare string needs no build at all. The pairing is
+// pinned by a test so the two cannot drift.
+const TEST_HOME_SANDBOX_MARKER = 'GSD_TEST_HOME_SANDBOX';
+
+function sandboxHome(t, dir) {
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  const savedMarker = process.env[TEST_HOME_SANDBOX_MARKER];
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  // Records WHICH directory this call sandboxed to. src/test-home-guard.cts fails
+  // CLOSED when it cannot read a passwd entry to compare HOME against (some CI
+  // images), and consults this only in that branch, accepting it only when it
+  // names the home actually in effect — so a stale marker cannot vouch for a
+  // later, un-sandboxed call.
+  process.env[TEST_HOME_SANDBOX_MARKER] = dir;
+  t.after(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    if (savedMarker === undefined) delete process.env[TEST_HOME_SANDBOX_MARKER];
+    else process.env[TEST_HOME_SANDBOX_MARKER] = savedMarker;
+  });
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still
