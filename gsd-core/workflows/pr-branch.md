@@ -9,7 +9,7 @@ cherry-picked history. Two modes, selected by the `planning.pr_strict` config ke
 - **strict** (`planning.pr_strict: true`) — *every* .planning/ path is filtered out,
   structural files included. This is what makes `planning.commit_docs: true` safe for a
   project that versions its planning tree locally but publishes none of it: planning state
-  keeps real git history (so `/gsd-undo` and revert paths have something to restore) and
+  keeps real git history (so `/gsd:undo` and revert paths have something to restore) and
   executor worktrees still find their PLAN.md, while the public PR carries nothing from
   `.planning/`.
 
@@ -341,10 +341,21 @@ for HASH in $INCLUDED_COMMITS; do
   if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
     echo "Conflict outside the .planning/ filter while picking $HASH:" >&2
     git diff --name-only --diff-filter=U >&2
-    git cherry-pick --abort 2>/dev/null || git cherry-pick --quit 2>/dev/null || true
-    git checkout -q "$CURRENT_BRANCH" 2>/dev/null || true
-    git branch -q -D "$PR_BRANCH" 2>/dev/null || true
-    echo "Restored $CURRENT_BRANCH and removed the partial $PR_BRANCH." >&2
+    # Order matters. `--quit` drops the sequencer state but leaves the unmerged index
+    # in place, and an unmerged index makes `git checkout` refuse — so reset first.
+    # $PR_BRANCH is disposable and every commit on it was cherry-picked, and the
+    # clean-tree precondition guarantees the user had nothing uncommitted, so a hard
+    # reset here cannot destroy anything of theirs.
+    git cherry-pick --quit 2>/dev/null || true
+    git reset -q --hard HEAD
+    if git checkout -q "$CURRENT_BRANCH"; then
+      git branch -q -D "$PR_BRANCH" 2>/dev/null || true
+      echo "Restored $CURRENT_BRANCH and removed the partial $PR_BRANCH." >&2
+    else
+      # Never claim a restore that did not happen — say exactly where they are.
+      echo "Could not return to $CURRENT_BRANCH; you are still on $PR_BRANCH." >&2
+      echo "Run: git checkout $CURRENT_BRANCH && git branch -D $PR_BRANCH" >&2
+    fi
     echo "Resolve the conflict against $TARGET, then re-run /gsd:pr-branch." >&2
     exit 1
   fi
