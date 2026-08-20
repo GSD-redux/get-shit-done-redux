@@ -74,6 +74,39 @@ test('#3637: the compose step fails closed when the embeds are missing', () => {
   );
 });
 
+test('#3637: embed PERFORMANCE is gated — an un-embedded template halts before spawn', () => {
+  // The two template-completeness greps above cannot detect skipped embeds
+  // (the placeholders live in the template itself). The performance gates
+  // catch the raw-template dispatch: the provenance parenthetical must be
+  // GONE and the persona marker must be substituted (#3637 review finding).
+  assert.match(
+    content,
+    /grep -q 'Inline the actual contents'[\s\S]{0,300}exit 1/,
+    'a prompt still carrying its compose-time placeholder means the embeds were skipped — halt',
+  );
+  assert.match(
+    content,
+    /grep -q '\\\$\{AGENT_SKILLS\}'[\s\S]{0,300}exit 1/,
+    'an un-substituted persona marker means the role definition was not spliced — halt',
+  );
+});
+
+test('#3637: the gsd-executor ROLE DEFINITION is a mandatory embed with provenance', () => {
+  // The agent-skills query alone is conditional (its block is a skills list
+  // whenever the project configures agent_skills; only unconfigured
+  // non-Claude projects get the full agent file via the #2454 fallback).
+  // The child has no host subagent machinery — the role definition itself
+  // must ride the prompt (#3637 acceptance bullets 1 and 5).
+  const body = promptBody();
+  assert.match(body, /agents\/gsd-executor\.md/, 'the role definition file must be named as an embedded source');
+  assert.match(body, /steps\s*0\/0a\/0b/, 'the per-commit HEAD/cwd-drift/path-guard discipline must be pointed at');
+});
+
+test('#3637: prior-wave summaries are required reading (parallel waves must not clobber siblings)', () => {
+  const body = promptBody();
+  assert.match(body, /prior_wave_summaries/, 'prior-wave SUMMARY files must be required reading on this parallel-wave backend');
+});
+
 test('#3637: the persona rides the prompt (${AGENT_SKILLS}), same as the harness path', () => {
   assert.match(promptBody(), /\$\{AGENT_SKILLS\}/, 'the gsd-executor persona variable must be spliced into the prompt');
 });

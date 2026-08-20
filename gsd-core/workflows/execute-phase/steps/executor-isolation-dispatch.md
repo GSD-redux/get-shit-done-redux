@@ -151,9 +151,16 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #   2. Substitute this plan's {plan_number}, {phase_number}, {phase_name},
 #      {phase_dir}, and {plan_file} placeholders (same values the harness
 #      path substitutes into its Agent() prompt).
-#   3. Inline the gsd-executor persona: run
-#      `gsd_run query agent-skills gsd-executor` and splice its output where
-#      ${AGENT_SKILLS} stands — the same variable the harness prompt carries.
+#   3. Inline the gsd-executor ROLE DEFINITION: read `agents/gsd-executor.md`
+#      (resolved against the install root the same way the harness runtime
+#      resolves subagent types) and inline it verbatim at the provenance
+#      marker below. The agent-skills query alone is NOT sufficient — its
+#      block is the skills include list whenever the project configures
+#      agent_skills for gsd-executor, and only an UNCONFIGURED non-Claude
+#      project gets the full agent file via the #2454 fallback. The child has
+#      no host subagent machinery, so the role definition must ride the prompt
+#      (#3637 acceptance: resolved agent instructions as launch-level
+#      instructions + provenance of which role definition was used).
 EXECUTOR_PROMPT='<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
 Commit each task atomically. Create SUMMARY.md.
@@ -176,6 +183,10 @@ the executor workflow from repository search.
 - checkpoints.md
 - tdd.md
 - worktree-path-safety.md
+- agents/gsd-executor.md (the ROLE DEFINITION you are executing — its steps
+  0/0a/0b per-commit HEAD/cwd-drift/path-guard discipline applies to every
+  commit you make in this worktree, and its final_commit contract is the
+  authority for the skip semantics in <success_criteria>)
 
 (Inline the actual contents of each file above at compose time — this block
 is the provenance record of what was embedded and where it came from.)
@@ -193,7 +204,16 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 - ${PROJECT_ROOT}/.planning/config.json (Config, if exists)
 - ${PROJECT_ROOT}/CLAUDE.md (Project instructions, if exists — follow project-specific guidelines and coding conventions)
 - ${PROJECT_ROOT}/.claude/skills/ or ${PROJECT_ROOT}/.agents/skills/ (Project skills, if either exists — list skills, read SKILL.md for each, follow relevant rules during implementation)
+- ${PROJECT_ROOT}/{phase_dir}/*-CONTEXT.md (User decisions from discuss-phase — honors locked choices; skip silently when none exist)
+- ${PROJECT_ROOT}/{phase_dir}/*-RESEARCH.md (Technical research — pitfalls and patterns to follow; skip silently when none exist)
+- ${PROJECT_ROOT}/{prior_wave_summaries} (SUMMARY.md files from earlier waves in this phase — what was already built; PARALLEL WAVES especially must not duplicate or clobber sibling work; substitute the empty string when this is wave 1)
 </required_reading>
+
+<mcp_tools>
+If CLAUDE.md or project instructions reference MCP tools, prefer those tools
+over Grep/Glob for code navigation when available. Check tool availability
+first — fall back to Grep/Glob if not accessible.
+</mcp_tools>
 
 ${AGENT_SKILLS}
 
@@ -208,16 +228,33 @@ ${AGENT_SKILLS}
 - [ ] No modifications to shared orchestrator artifacts (the orchestrator handles all post-wave shared-file writes)
 </success_criteria>'
 [ -n "$EXECUTOR_PROMPT" ] || { echo "FATAL: executor prompt is empty for plan {plan_number}." >&2; exit 1; }
-# #3637 fail-closed embed verification: the prompt must carry the executor
-# contract, not just an objective. A prompt missing the required-reading
-# contract means the embeds failed — spawning anyway hands a generic process
-# an ambiguous role and an unconditional commit criterion.
+# #3637 fail-closed verification. Two classes of check:
+#   (a) template completeness — the prompt must carry the required-reading
+#       contract and the skip semantics at all (catches wholesale truncation
+#       back to the objective-only prompt);
+#   (b) embed PERFORMANCE — the compose-time placeholders must actually be
+#       gone. A raw, un-embedded template still contains its own
+#       instructions-about-instructions (the provenance parenthetical and the
+#       un-substituted persona marker); those strings surviving to spawn time
+#       mean the embeds were skipped and the child would hold instructions
+#       about files it never received — the milder recurrence of #3637.
+# These run BEFORE worktree creation, so a gate exit leaves nothing to tear
+# down; the post-dispatch-isolation fail-closed check governs the worktree
+# itself once one exists.
 printf '%s' "$EXECUTOR_PROMPT" | grep -q '<required_reading>' || {
-  echo "FATAL: executor prompt for plan {plan_number} is missing the required-reading contract — the build-time embeds failed. Halting rather than spawning a generic process. See the embed sources listed in <execution_context>." >&2
+  echo "FATAL: executor prompt for plan {plan_number} is missing the required-reading contract — the template is truncated. Halting rather than spawning a generic process." >&2
   exit 1
 }
 printf '%s' "$EXECUTOR_PROMPT" | grep -q 'skipped_gitignored' || {
   echo "FATAL: executor prompt for plan {plan_number} is missing the gitignored-planning skip semantics — executors without them force-stage planning artifacts (#3637). Halting." >&2
+  exit 1
+}
+printf '%s' "$EXECUTOR_PROMPT" | grep -q 'Inline the actual contents' && {
+  echo "FATAL: executor prompt for plan {plan_number} still contains its compose-time placeholder — the build-time embeds were not performed. Halting rather than dispatching instructions-about-instructions (#3637)." >&2
+  exit 1
+}
+printf '%s' "$EXECUTOR_PROMPT" | grep -q '\${AGENT_SKILLS}' && {
+  echo "FATAL: executor prompt for plan {plan_number} still contains the un-substituted \${AGENT_SKILLS} marker — the role definition was not spliced in (#3637). Halting." >&2
   exit 1
 }
 ```

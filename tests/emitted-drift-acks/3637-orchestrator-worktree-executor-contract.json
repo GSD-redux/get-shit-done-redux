@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "executor-isolation-dispatch.md": {
-      "reason": "#3637: the orchestrator-worktree EXECUTOR_PROMPT grows from a 3-block objective-only prompt to the full executor contract — <execution_context> build-time embeds (execute-plan.md, summary template, checkpoints, tdd, worktree-path-safety) with provenance, <required_reading> naming the explicit plan path, ${AGENT_SKILLS} persona, skip-aware success criteria (skipped_gitignored is a success path; git add -f forbidden), and two fail-closed grep gates that halt before spawn when the embeds are missing. A process-spawned child has no host subagent machinery — the prompt is the only channel for executor identity; a short prompt made executors reconstruct their role by inference and force-stage gitignored SUMMARY.md files. Deliberate growth in runtime-loaded workflow text, not converter drift."
-    }
-  }
-}
