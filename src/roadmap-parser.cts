@@ -32,9 +32,10 @@ const {
   roadmapPhaseLookupSources,
   extractPhaseToken,
   isSentinelPhaseId,
-  // #3641: the single-owner bracket heading-intro grammar — see
-  // BRACKET_PHASE_ENTRY_HEADING_RE below.
+  // #3641: the single-owner heading-intro and digit-token grammar sources —
+  // see BRACKET_PHASE_ENTRY_HEADING_RE below.
   PHASE_HEADING_PREFIX_SRC,
+  PHASE_NUMBER_TOKEN_SOURCE,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -415,34 +416,40 @@ function sliceMilestoneWindow(content: string, version: string): string | null {
  * exist" — a window containing only sentinel phases still reached the
  * region and must read COMPLETE, not TRUNCATED.
  */
-// #3641: the bracket-convention phase-ENTRY heading shape — the SAME intro
-// grammar phase-id.cts owns (PHASE_HEADING_PREFIX_SRC: a `[...]` bracket
-// optionally followed by a `Phase ` label, or a bare `Phase ` label), so
-// under 'bracket' the entry set admits `### [GSD.04] 01: Name` (bracket +
-// bare token — ADR-612: the bracket IS the intro; a bare number without one
-// is not) in addition to every shape the legacy pattern already recognized.
-// Built by interpolating the single-owner export — never a re-typed grammar
-// (the phase-id drift guard bans literal re-derivations) — and mirroring the
-// composition PR #2867 threads into the probe's phase-SET scan, so the entry
-// axis and the set axis cannot disagree on what a bracket phase heading is.
+// #3641: the bracket-convention phase-ENTRY heading shape — ADR-612 Decision
+// 1's own discriminator: a phase heading is a bracket followed by a
+// DIGIT-then-colon (`### [GSD.04] 01: Name`); a bracket followed by a NAME
+// is a milestone heading and must never count. Every fragment interpolates a
+// single-owner export from phase-id.cts — the heading intro
+// (PHASE_HEADING_PREFIX_SRC: a `[...]` bracket optionally followed by a
+// `Phase ` label, or a bare `Phase ` label), the digit-bearing token
+// (PHASE_NUMBER_TOKEN_SOURCE, which also covers the dotted sub-phase form
+// `[GSD.02] 05.03:`), and the optional pre-colon tag
+// (OPTIONAL_PHASE_TAG_SOURCE) — never a re-typed grammar. Tested IN
+// ADDITION to the legacy pattern below, so bracket mode is a strict
+// superset: mid-migration legacy-labeled headings (`Phase AUTH-101:`-style
+// custom ids included) keep their existing recognition. Review finding: an
+// earlier single-alternative form with a `[\\w]` token admitted
+// `[bracket] Word:` shapes — a colon-bearing MILESTONE heading inside the
+// window read as an entry (defeating V005 outright for that spelling) and a
+// decoy `### [GSD.04] Notes:` outside the window manufactured a false V005
+// while suppressing the correct V004. The digit anchor forecloses both.
 const BRACKET_PHASE_ENTRY_HEADING_RE = new RegExp(
-  `^${PHASE_HEADING_PREFIX_SRC}[\\w][\\w.-]*(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
+  `^${PHASE_HEADING_PREFIX_SRC}${PHASE_NUMBER_TOKEN_SOURCE}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
   'i',
 );
 
 function hasPhaseEntries(markdown: string, phaseIdConvention?: string | null): boolean {
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
   // #3641: the widened grammar engages ONLY when the resolved convention is
-  // 'bracket' — a project that has not opted in compiles the same legacy
-  // pattern it always did. The widened intro is a strict SUPERSET of the
-  // legacy one, so a mid-migration bracket ROADMAP keeps its legacy-labeled
-  // headings recognized too.
-  const phaseHeadingPattern = phaseIdConvention === 'bracket'
-    ? BRACKET_PHASE_ENTRY_HEADING_RE
-    : /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  // 'bracket' — a project that has not opted in runs the legacy pattern
+  // alone, byte-identically.
+  const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  const bracketMode = phaseIdConvention === 'bracket';
   for (const h of tokenizeHeadings(markdown)) {
     if (h.level < 2 || h.level > 4) continue;
     if (phaseHeadingPattern.test(h.text)) return true;
+    if (bracketMode && BRACKET_PHASE_ENTRY_HEADING_RE.test(h.text)) return true;
   }
   // #3184 review finding: the bullet fallback must be fence-aware too, or a
   // FENCED markdown EXAMPLE of the `- [ ] **Phase N — Name**` syntax (e.g. a
