@@ -415,6 +415,39 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
 }
 
 /**
+ * Disk-side sentinel recognizer (#3639): is this on-disk PHASE DIRECTORY a
+ * sentinel (never-on-roadmap by convention)?
+ *
+ * The disk-side guards (C001 gap numbering, W007 orphan dirs) see raw
+ * directory names and do not know the repo's naming convention — and neither
+ * convention-blind route could recognize a bracket sentinel: `isSentinelPhaseId`
+ * without the convention argument reads only the legacy leading int, while
+ * `extractPhaseToken(dirName)` (convention-aware or not) strips the MILESTONE
+ * and returns the bare phase token — bracket sentinel-ness lives in the
+ * milestone portion (`GSD.999-07-icebox` is icebox because of the 999, not
+ * the 07). This helper reads the milestone directly off the dir name.
+ *
+ * The bracket branch requires the FULL bracket dir shape — code prefix, dot,
+ * milestone digits, hyphen, PHASE DIGITS — so a #1324 letter-prefixed real
+ * dir with a LETTER slug (`P0.0-foundation`) never matches it (ADR-2121
+ * indistinguishability, same gate as extractPhaseToken below). DISCLOSED
+ * RESIDUAL (#3639 review): the #1324 family also has digit continuations
+ * (`P0.0-1-foundation`, `P0.3-2` are real shapes per derivePhaseTokenSegments),
+ * and `{code}.{0|999}-{digit}...` is string-indistinguishable from a bracket
+ * sentinel dir — no convention-free discriminator exists (ADR-2121). Such a
+ * dir reads as sentinel here, which at the disk-guard call sites suppresses
+ * a warning (conservative for a linter) rather than deleting data. The
+ * digit-continuation family with NON-sentinel first decimals (`P0.3-2`)
+ * reads milestone 3 — ordinary — exactly as the convention-gated id
+ * predicate does. Everything else falls to the legacy leading-int rule.
+ */
+function isSentinelPhaseDir(dirName: string): boolean {
+  const bracketDir = dirName.match(/^[A-Z][A-Z0-9_]*\.(\d+)-\d/); // milestone digits + hyphen + phase DIGITS
+  if (bracketDir) return SENTINEL_RANGES.includes(parseInt(bracketDir[1], 10));
+  return isSentinelPhaseId(dirName);
+}
+
+/**
  * Render a regex source fragment matching a phase number against ROADMAP/STATE
  * prose regardless of zero-padding on either side.
  */
@@ -1198,6 +1231,7 @@ export = {
   toDir,
   SENTINEL_RANGES,
   isSentinelPhaseId,
+  isSentinelPhaseDir,
   phaseMarkdownRegexSource,
   phaseMarkdownRegexSourceExact,
   comparePhaseNum,

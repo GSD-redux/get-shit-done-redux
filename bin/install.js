@@ -6206,6 +6206,31 @@ const __atomicWrittenTmps = hooksSurface.__atomicWrittenTmps;
  * All writes go through atomicWriteFileSync so a mid-write failure leaves
  * the original config.toml untouched (#2760 fix 4).
  */
+/**
+ * Split TOML content into its leading TOP-LEVEL key lines and everything from
+ * the first table header onward (#3610).
+ *
+ * Top-level keys were file-scoped before a merge. The regenerated GSD block
+ * opens with a table header (`[agents]`, #2088/ADR-1239 upgrade 2), so placing
+ * that block ABOVE surviving top-level keys re-scopes them into `[agents]` —
+ * `validateCodexConfigSchema` then correctly rejects the merged file and the
+ * install aborts. Hoisting the keys above the block preserves their scope.
+ *
+ * Table headers inside multiline strings do not start the "rest" region (the
+ * record parser already excludes them via startsInMultilineString).
+ */
+function splitTopLevelKeys(content) {
+  for (const record of getTomlLineRecords(content)) {
+    if (record.tableHeader && !record.startsInMultilineString) {
+      return {
+        topLevel: content.slice(0, record.start).trim(),
+        rest: content.slice(record.start).trim(),
+      };
+    }
+  }
+  return { topLevel: content.trim(), rest: '' };
+}
+
 function mergeCodexConfig(configPath, gsdBlock) {
   // Case 1: No config.toml — create fresh
   if (!fs.existsSync(configPath)) {
@@ -6253,10 +6278,25 @@ function mergeCodexConfig(configPath, gsdBlock) {
       .replace(/^\r?\n# GSD codex_hooks ownership: (?:section|root_dotted)\r?\n/, '');
     const afterUser = stripLeakedGsdCodexSections(markerStripped).trim();
 
+    // #3610: top-level keys that survived BELOW the marker were file-scoped
+    // before this merge; the regenerated block opens with the `[agents]` table
+    // header, so they must be hoisted to FILE scope or TOML re-scopes them
+    // into a table. File scope means BEFORE the first table header of the
+    // pre-marker region too — appending them after a pre-marker table (the
+    // default real-world layout: user tables precede the marker) would merely
+    // capture them into THAT table instead of [agents], and the schema
+    // validator is blind to non-agents tables.
+    const beforeSplit = before ? splitTopLevelKeys(before) : { topLevel: '', rest: '' };
+    const { topLevel: afterTopLevel, rest: afterTables } = splitTopLevelKeys(afterUser);
+
     const parts = [];
-    if (before) parts.push(before);
+    const topParts = [];
+    if (beforeSplit.topLevel) topParts.push(beforeSplit.topLevel);
+    if (afterTopLevel) topParts.push(afterTopLevel);
+    if (topParts.length > 0) parts.push(topParts.join(eol + eol));
+    if (beforeSplit.rest) parts.push(beforeSplit.rest);
     parts.push(normalizedGsdBlock);
-    if (afterUser) parts.push(afterUser);
+    if (afterTables) parts.push(afterTables);
     atomicWriteFileSync(configPath, parts.join(eol + eol) + eol);
     return;
   }

@@ -64,3 +64,108 @@ describe('shortGsdStatus properties (#2162)', () => {
     );
   });
 });
+
+/**
+ * Property tests for STATE.md freshness marker derivation (#2734).
+ *
+ * These properties are asserted against `deriveStateFreshness`,
+ * `isValidStateHeadStamp`, `formatStateFreshness`, `formatGsdState`, and
+ * `formatGsdStateCompact` per `.gsd/phase/feat-2734-statusline-state-freshness/50-test-matrix.md`
+ * rows P1-P5. None of these symbols exist on `hooks/gsd-statusline.js` yet —
+ * this block is deliberately failing-first TDD.
+ */
+const {
+  STATE_HEAD_ADVISORY_COMMITS,
+  isValidStateHeadStamp,
+  deriveStateFreshness,
+  formatStateFreshness,
+  formatGsdState: formatGsdStateFull,
+  formatGsdStateCompact: formatGsdStateCompactFn,
+} = require('../hooks/gsd-statusline.js');
+
+describe('state-head freshness properties (#2734)', () => {
+  test('derivationIsTotalOverArbitraryStamps', () => {
+    const root = require('node:os').tmpdir();
+    fc.assert(
+      fc.property(fc.string(), (stamp) => {
+        const ir = deriveStateFreshness(root, stamp);
+        if (!ir || typeof ir !== 'object') return false;
+        const keys = Object.keys(ir).sort().join(',');
+        if (keys !== ['commit_stale', 'commits_behind', 'state_head'].sort().join(',')) return false;
+        const cb = ir.commits_behind;
+        return cb === null || (Number.isInteger(cb) && cb >= 0);
+      }),
+    );
+  });
+
+  test('fenceAcceptsOnlyHexInRange', () => {
+    fc.assert(
+      fc.property(fc.string(), (s) => {
+        const expected = /^[0-9a-f]{4,40}$/i.test(String(s).trim());
+        return isValidStateHeadStamp(s) === expected;
+      }),
+    );
+  });
+
+  test('markerVisibilityIsMonotonicInCount', () => {
+    fc.assert(
+      fc.property(fc.nat({ max: 1000000 }), (n) => {
+        const out = formatStateFreshness({ commits_behind: n });
+        const shouldShow = n >= STATE_HEAD_ADVISORY_COMMITS;
+        return shouldShow ? out !== '' : out === '';
+      }),
+    );
+  });
+
+  test('unknownNeverDegradesToFresh', () => {
+    const root = require('node:os').tmpdir();
+    fc.assert(
+      fc.property(fc.string(), (stamp) => {
+        const ir = deriveStateFreshness(root, stamp);
+        return ir.commit_stale === null;
+      }),
+    );
+  });
+
+  test('renderersAreTotalOverArbitraryIr', () => {
+    const optionalString = fc.oneof(fc.constant(undefined), fc.string());
+    const optionalCount = fc.oneof(fc.constant(undefined), fc.nat({ max: 999 }));
+
+    const hasBadSeparator = (str) => {
+      const trimmed = str.trim();
+      if (trimmed.startsWith('·') || trimmed.endsWith('·')) return true;
+      return str.includes('··') || str.includes('· ·');
+    };
+
+    fc.assert(
+      fc.property(
+        fc.record({
+          status: optionalString,
+          phaseNum: optionalCount,
+          phaseTotal: optionalCount,
+          phaseName: optionalString,
+          milestone: optionalString,
+          milestoneName: optionalString,
+          percent: fc.oneof(fc.constant(undefined), fc.nat({ max: 100 })),
+          activePhase: optionalString,
+          nextAction: optionalString,
+          nextPhases: fc.oneof(fc.constant(undefined), fc.array(fc.string(), { maxLength: 3 })),
+          completedPhases: optionalCount,
+          totalPhases: optionalCount,
+          noActiveWorkstream: fc.boolean(),
+          freshness: fc.record({
+            state_head: fc.oneof(fc.constant(null), fc.string()),
+            commits_behind: fc.oneof(fc.constant(null), fc.nat({ max: 1000000 })),
+            commit_stale: fc.oneof(fc.constant(null), fc.boolean()),
+          }),
+        }),
+        (s) => {
+          const full = formatGsdStateFull(s);
+          const compact = formatGsdStateCompactFn(s);
+          if (typeof full !== 'string' || typeof compact !== 'string') return false;
+          return !hasBadSeparator(full) && !hasBadSeparator(compact);
+        },
+      ),
+    );
+  });
+});

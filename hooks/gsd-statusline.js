@@ -169,13 +169,27 @@ function readStateFileOrNull(statePath) {
  *   - null when no .planning marker is found at all (GSD not present), or
  *     when a workstream DOES resolve but its STATE.md doesn't exist yet
  *     (negative space: mirrors flat-mode's own silent pre-STATE.md window)
+ *
+ * @param {string} dir
+ * @param {{ stateFreshness?: boolean }} [opts] — #2734, additive/default-off.
+ *   When true and the resolved state carries a truthy `.stateHead`, attaches
+ *   `state.freshness` (deriveStateFreshness) before returning — `current` at
+ *   that point is the project root the walk resolved, which is what AC-4's
+ *   repo-pinning check needs. Never derived when false or the stamp is
+ *   absent, so existing callers (default opts) spend zero extra spawns.
  */
-function readGsdState(dir) {
+function readGsdState(dir, opts = {}) {
+  const { stateFreshness = false } = opts;
   const home = os.homedir();
   let current = dir;
   for (let i = 0; i < 10; i++) {
     const flatState = readStateFileOrNull(path.join(current, '.planning', 'STATE.md'));
-    if (flatState !== null) return flatState;
+    if (flatState !== null) {
+      if (stateFreshness && flatState.stateHead) {
+        flatState.freshness = deriveStateFreshness(current, flatState.stateHead);
+      }
+      return flatState;
+    }
 
     if (listAvailableWorkstreams(current).length > 0) {
       let resolvedWs = null;
@@ -187,7 +201,11 @@ function readGsdState(dir) {
 
       if (!resolvedWs) return { noActiveWorkstream: true };
 
-      return readStateFileOrNull(planningPaths(current, resolvedWs).state);
+      const wsState = readStateFileOrNull(planningPaths(current, resolvedWs).state);
+      if (wsState !== null && stateFreshness && wsState.stateHead) {
+        wsState.freshness = deriveStateFreshness(current, wsState.stateHead);
+      }
+      return wsState;
     }
 
     const parent = path.dirname(current);
@@ -238,6 +256,10 @@ function parseStateMd(content) {
       if (key === 'active_phase') state.activePhase = (v === 'null' || v === '') ? null : v;
       // next_action: recommended command when idle (discuss-phase / plan-phase / execute-phase / verify-phase)
       if (key === 'next_action') state.nextAction = (v === 'null' || v === '') ? null : v;
+      // #2734: state_head — the commit STATE.md was written against, consumed
+      // by deriveStateFreshness() below. Mirrors active_phase/next_action's
+      // null/empty handling exactly.
+      if (key === 'state_head') state.stateHead = (v === 'null' || v === '') ? null : v;
     }
     // next_phases supports both flow array and block-list YAML forms.
     const npFlowMatch = fm.match(/^next_phases:\s*\[([^\]]*)\]/m);
@@ -371,6 +393,10 @@ function formatGsdState(s) {
     }
   }
 
+  // #2734: STATE.md freshness marker — opt-in, appended last.
+  const fresh = formatStateFreshness(s.freshness);
+  if (fresh) parts.push(fresh);
+
   return parts.join(' · ');
 }
 
@@ -476,6 +502,10 @@ function formatGsdStateCompact(s) {
     }
   }
 
+  // #2734: STATE.md freshness marker \u2014 opt-in, appended last.
+  const fresh = formatStateFreshness(s.freshness);
+  if (fresh) parts.push(fresh);
+
   return parts.join(' \u00b7 ');
 }
 
@@ -570,6 +600,146 @@ function buildGitSegment(info) {
   if (info.behind) markers.push(`\x1b[31m↓${info.behind}\x1b[0m`);
   const state = markers.length ? markers.join('') : '\x1b[32m✓\x1b[0m';
   return ` │ \x1b[2m${info.branch}\x1b[0m${state}`;
+}
+
+// --- STATE.md freshness marker (opt-in, #2734) --------------------------------
+//
+// Opt-in via `statusline.show_state_freshness: true`. Renders `state ~N
+// commits back` inside the GSD-state segment when STATE.md's `state_head`
+// stamp (#2573) is at least STATE_HEAD_ADVISORY_COMMITS commits behind HEAD.
+// Same impure-reader -> pure-IR -> pure-formatter shape as the git segment
+// above. See .gsd/phase/feat-2734-statusline-state-freshness/40-design.md.
+
+// Deliberate mirror of the fence in src/state.cts (STATE_HEAD_HASH_RE) — kept
+// hook-side rather than requiring state.cjs on the per-render path (measured
+// ~20ms; see design doc "Laws that apply"). tests/gsd-statusline.test.cjs
+// asserts behavioral parity against readStateHeadFreshness rather than
+// comparing source (local/no-source-grep forbids the latter anyway).
+const STATE_HEAD_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+// Mirror of the constant verify.cts's W024 health check thresholds on
+// (STATE_HEAD_ADVISORY_COMMITS). A test asserts equality with verify.cjs's
+// export so the two copies can't drift.
+const STATE_HEAD_ADVISORY_COMMITS = 20;
+
+// Same bound class as GIT_STATUS_TIMEOUT_MS above.
+const STATE_FRESHNESS_GIT_TIMEOUT_MS = 1500;
+
+/**
+ * Pure function: does raw pass the state_head hash fence? Must run BEFORE any
+ * value from STATE.md reaches a git argv slot.
+ */
+function isValidStateHeadStamp(raw) {
+  return typeof raw === 'string' && STATE_HEAD_HASH_RE.test(raw.trim());
+}
+
+/**
+ * Run `git rev-list --left-right --count <stamp>...HEAD` in root. Returns raw
+ * stdout, or null when git is missing, root isn't a repo, the stamp is
+ * unknown, or the call times out. Never throws. Only call with a stamp that
+ * already passed isValidStateHeadStamp/the hash fence above.
+ */
+function readStateHeadCommits(root, stamp) {
+  try {
+    return childProcess.execFileSync('git',
+      ['-C', root, 'rev-list', '--left-right', '--count', `${stamp}...HEAD`],
+      { encoding: 'utf8', timeout: STATE_FRESHNESS_GIT_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Pure function: parse `git rev-list --left-right --count A...B` output
+ * ("<left>\t<right>"). Returns { left, right } as non-negative integers, or
+ * null when text isn't a matching string (covers null, '', 'garbage', '1',
+ * 'a\tb', '\t', and any other unparseable shape).
+ */
+function parseRevListCounts(text) {
+  if (typeof text !== 'string') return null;
+  const m = text.match(/^(\d+)\s+(\d+)\s*$/);
+  if (!m) return null;
+  return { left: parseInt(m[1], 10), right: parseInt(m[2], 10) };
+}
+
+/**
+ * Impure -> pure IR: derive the freshness signal for a recorded state_head
+ * stamp. Returns { state_head, commits_behind, commit_stale } — never throws,
+ * every unresolvable input degrades to the all-null-but-state_head shape.
+ *
+ * Order (each failure returns immediately, no further work):
+ *   a. hash fence — malformed/absent stamp never reaches a spawn
+ *   b. repo pinning — root must own its own .git (mirrors projectOwnsItsRepo
+ *      in src/state.cts: a filesystem-identity check, not a --show-toplevel
+ *      string compare, which is unreliable on macOS /private/var and Windows
+ *      8.3 paths). Costs no subprocess.
+ *   c. sub_repos guard — a planning.sub_repos workspace's outer HEAD never
+ *      advances when code lands in nested children, so a "fresh" answer here
+ *      would be a confident lie. Costs no subprocess.
+ *   d. one bounded git spawn: rev-list --left-right --count answers ancestry
+ *      and distance together. left > 0 means the stamp is not an ancestor of
+ *      HEAD (reset/rebase/force-push) -> unknown, never "fresh".
+ */
+function deriveStateFreshness(root, stamp, deps = {}) {
+  const { existsSync = fs.existsSync, readConfig = readGsdConfig, readCounts = readStateHeadCommits } = deps;
+
+  const raw = typeof stamp === 'string' ? stamp.trim() : '';
+  const valid = STATE_HEAD_HASH_RE.test(raw);
+  const state_head = valid ? raw.slice(0, 7) : null;
+  const nullResult = { state_head, commits_behind: null, commit_stale: null };
+  if (!valid || !root) return nullResult;
+
+  try {
+    if (!existsSync(path.join(root, '.git'))) return nullResult;
+  } catch (e) {
+    return nullResult;
+  }
+
+  try {
+    const cfg = readConfig(root);
+    const sub = getConfigValue(cfg, 'planning.sub_repos') ?? getConfigValue(cfg, 'sub_repos');
+    if (Array.isArray(sub) && sub.length > 0) return nullResult;
+  } catch (e) {
+    return nullResult;
+  }
+
+  const counts = parseRevListCounts(readCounts(root, raw));
+  if (!counts || counts.left > 0) return nullResult;
+
+  return { state_head, commits_behind: counts.right, commit_stale: counts.right > 0 };
+}
+
+/**
+ * Pure function: format the freshness IR into the marker text, or '' below
+ * STATE_HEAD_ADVISORY_COMMITS (including when commits_behind is absent/null —
+ * the unknown case must never render, never mind alarm on it).
+ */
+function formatStateFreshness(fresh) {
+  if (!fresh || typeof fresh.commits_behind !== 'number' || fresh.commits_behind < STATE_HEAD_ADVISORY_COMMITS) return '';
+  return `state ~${fresh.commits_behind} commits back`;
+}
+
+/**
+ * Pure function: single source of truth for statusline config resolution.
+ * `runStatusline()` and `renderStatusline()` previously read this config
+ * independently, which had drifted into a live divergence between the two
+ * entry points — this collapses both onto one resolver.
+ *
+ * @param {object} cfg — parsed .planning/config.json (readGsdConfig())
+ * @returns {{ showLastCommand: boolean, position: 'end'|'front', stateFormat: 'full'|'compact', showGit: boolean, showStateFreshness: boolean }}
+ */
+function resolveStatuslineOptions(cfg) {
+  const showLastCommand = getConfigValue(cfg, 'statusline.show_last_command') === true;
+  const cfgPos = getConfigValue(cfg, 'statusline.context_position');
+  // Clamp any non-'front' value (including absent/null) to 'end' — the single
+  // source of truth for this default; composeStatusline's own coercion stays
+  // as belt-and-suspenders defense for direct callers.
+  const position = cfgPos === 'front' ? 'front' : 'end';
+  const stateFormat = getConfigValue(cfg, 'statusline.state_format') === 'compact' ? 'compact' : 'full';
+  const showGit = getConfigValue(cfg, 'statusline.show_git') === true;
+  const showStateFreshness = getConfigValue(cfg, 'statusline.show_state_freshness') === true;
+  return { showLastCommand, position, stateFormat, showGit, showStateFreshness };
 }
 
 // --- stdin ------------------------------------------------------------------
@@ -717,31 +887,34 @@ function runStatusline() {
     // Last-slash-command suffix and context_position config (#2538, #2937).
     // Reads the active session transcript for the most recent <command-name> tag.
     // Failure here must never break the statusline — wrap the entire lookup.
+    // #2734: config resolution moved to resolveStatuslineOptions() — the single
+    // source of truth shared with renderStatusline() below. The two entry
+    // points duplicated this resolution byte-for-byte; one copy is what keeps
+    // a new key from reaching only one of them.
     let lastCmdSuffix = '';
-    let position = 'end';
-    let stateFormat = 'full';
     let gitSuffix = '';
+    const options = resolveStatuslineOptions(cfg);
     try {
-      if (getConfigValue(cfg, 'statusline.show_last_command') === true) {
+      if (options.showLastCommand) {
         const transcriptPath = data.transcript_path;
         const lastCmd = readLastSlashCommand(transcriptPath);
         if (lastCmd) {
           lastCmdSuffix = ` │ \x1b[2mlast: /${lastCmd}\x1b[0m`;
         }
       }
-      const cfgPos = getConfigValue(cfg, 'statusline.context_position');
-      if (cfgPos != null) position = cfgPos;
-      if (getConfigValue(cfg, 'statusline.state_format') === 'compact') stateFormat = 'compact';
-      if (getConfigValue(cfg, 'statusline.show_git') === true) {
+      if (options.showGit) {
         gitSuffix = buildGitSegment(parseGitStatus(readGitStatus(dir)));
       }
     } catch (e) {
       // Never break the statusline on config/transcript/git errors
     }
 
+    // #2734: readGsdState is inside `if (!task)` deliberately — when a todo
+    // task is in flight the GSD-state segment is not rendered, so spending a
+    // freshness git spawn here would spend a subprocess on discarded output.
     if (!task) {
-      const state = readGsdState(dir) || {};
-      gsdStateStr = stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
+      const state = readGsdState(dir, { stateFreshness: options.showStateFreshness }) || {};
+      gsdStateStr = options.stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
     }
 
     // Output
@@ -752,7 +925,7 @@ function runStatusline() {
         ? `\x1b[2m${gsdStateStr}\x1b[0m`
         : null;
 
-    process.stdout.write(composeStatusline({ gsdUpdate, model, ctx, middle, dirname, lastCmdSuffix, gitSuffix, position }));
+    process.stdout.write(composeStatusline({ gsdUpdate, model, ctx, middle, dirname, lastCmdSuffix, gitSuffix, position: options.position }));
   } catch (e) {
     // Silent fail - don't break statusline on parse errors
   }
@@ -846,6 +1019,9 @@ module.exports = {
   shortGsdStatus, formatGsdStateCompact,
   compactModelName,
   readGitStatus, parseGitStatus, buildGitSegment,
+  STATE_HEAD_ADVISORY_COMMITS, isValidStateHeadStamp,
+  readStateHeadCommits, parseRevListCounts, deriveStateFreshness,
+  formatStateFreshness, resolveStatuslineOptions,
 };
 
 /**
@@ -857,30 +1033,31 @@ function renderStatusline(data) {
   const dir = data.workspace?.current_dir || process.cwd();
   const dirname = path.basename(dir);
 
+  // #2734: config resolution moved to resolveStatuslineOptions() — the single
+  // source of truth shared with runStatusline() above. The two entry points
+  // duplicated this resolution byte-for-byte; one copy is what keeps a new
+  // key from reaching only one of them.
   let lastCmdSuffix = '';
-  let position = 'end';
-  let stateFormat = 'full';
   let gitSuffix = '';
+  let options = { showLastCommand: false, position: 'end', stateFormat: 'full', showGit: false, showStateFreshness: false };
   try {
     const cfg = readGsdConfig(dir);
-    if (getConfigValue(cfg, 'statusline.show_last_command') === true) {
+    options = resolveStatuslineOptions(cfg);
+    if (options.showLastCommand) {
       const lastCmd = readLastSlashCommand(data.transcript_path);
       if (lastCmd) {
         lastCmdSuffix = ` │ \x1b[2mlast: /${lastCmd}\x1b[0m`;
       }
     }
-    const cfgPos = getConfigValue(cfg, 'statusline.context_position');
-    if (cfgPos != null) position = cfgPos;
-    if (getConfigValue(cfg, 'statusline.state_format') === 'compact') stateFormat = 'compact';
-    if (getConfigValue(cfg, 'statusline.show_git') === true) {
+    if (options.showGit) {
       gitSuffix = buildGitSegment(parseGitStatus(readGitStatus(dir)));
     }
   } catch (e) { /* swallow */ }
 
-  const state = readGsdState(dir) || {};
-  const gsdStateStr = stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
+  const state = readGsdState(dir, { stateFreshness: options.showStateFreshness }) || {};
+  const gsdStateStr = options.stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
   const middle = gsdStateStr ? `\x1b[2m${gsdStateStr}\x1b[0m` : null;
-  return composeStatusline({ model, ctx: '', middle, dirname, lastCmdSuffix, gitSuffix, position });
+  return composeStatusline({ model, ctx: '', middle, dirname, lastCmdSuffix, gitSuffix, position: options.position });
 }
 
 module.exports.renderStatusline = renderStatusline;

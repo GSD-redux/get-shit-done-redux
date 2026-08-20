@@ -208,6 +208,7 @@ These govern the system as it stands. Cite these.
 | [ADR-218](218-release-version-validation.md) | Harden release-workflow version validation — reject leading zeros and pre-check npm | Accepted | — |
 | [ADR-227](227-input-validation-shape-not-just-type.md) | Input validation must check semantic shape, not just type | Accepted | — |
 | [ADR-415](415-prevent-stale-base-token-reintroduction.md) | Prevent stale-base reintroduction of retired runtime tokens | Accepted | — |
+| [ADR-443](443-opus48-unified-effort-and-fast-mode-routing.md) | Unified cross-provider effort controls and fast-mode-aware routing | Accepted | — |
 | [ADR-452](452-eslint-lint-harness.md) | Adopt standard ESLint flat-config lint harness | Accepted | — |
 | [ADR-456](456-test-rigor-architecture.md) | Test-rigor architecture — deterministic scheduling, antagonistic tier, typed-surface mandate, and delete-bad-tests policy | Accepted | — |
 | [ADR-457](457-generated-cjs-single-source.md) | Generation model for `bin/lib/*.cjs` type safety | Accepted | — |
@@ -265,7 +266,6 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | ADR | Title | Status | Read first |
 |-----|-------|--------|------------|
 | [ADR-230](230-introduce-next-integration-branch.md) | Introduce `next` as a long-lived integration branch | Proposed | — |
-| [ADR-443](443-opus48-unified-effort-and-fast-mode-routing.md) | Unified cross-provider effort controls and fast-mode-aware routing | Proposed | — |
 | [ADR-612](612-bracket-phase-id-convention.md) | Bracket Phase-ID Convention | Proposed | — |
 | [ADR-660](660-release-from-next-head.md) | Release from the head of `next`; immutable release tags; `@next` dist-tag as the RC surface | Proposed | — |
 | [ADR-1143](1143-claude-orchestration-capability.md) | Claude orchestration capability — Workflow tool (ultracode) as a runtime-gated loop execution backend | Proposed | — |

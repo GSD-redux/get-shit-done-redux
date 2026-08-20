@@ -413,7 +413,7 @@ describe('C: plugin.json schema validation', () => {
   // and `--strict` promotes that warning to a non-zero exit — so a symlinked
   // fixture failed the gate on its own construction rather than on the manifest
   // under test. Copying still gives the CLI a tree containing only plugin.json
-  // and the three component directories — which is the isolation the temp root
+  // and the four component directories — which is the isolation the temp root
   // exists for, since nothing else from the repo root is placed where the
   // validator can read it — while letting it actually read those components.
   // agents/ ships in package.json `files` and IS auto-validated by the CLI —
@@ -516,7 +516,7 @@ describe('C: plugin.json schema validation', () => {
   // can see, which C2 cannot do.
   //
   // It deliberately builds the fixture for real rather than stubbing it — that is the
-  // only way it exercises the code path it guards, and it is why the ~1 MB copy now
+  // only way it exercises the code path it guards, and it is why the ~2.1 MB copy now
   // runs on every job (and twice when `claude` is present). Do not "optimize" that
   // into a stub; it would void the guard.
   test('C3: validation fixture exposes real component directories, not symlinks (#3613)', () => {
@@ -546,7 +546,7 @@ describe('C: plugin.json schema validation', () => {
       // top-level check alone — an entry directly under skills/ is enough. Rather
       // than encode that external, undocumented boundary, C3 enforces the stricter
       // invariant "no symlinks anywhere in the fixture": a superset that stays
-      // correct if the CLI tightens, for one walk over ~176 files. The trees are
+      // correct if the CLI tightens, for one walk over ~243 files. The trees are
       // symlink-free today, so this is latent, not a live break.
       //
       // Walk with an explicit stack, NOT readdirSync's `recursive: true` — that

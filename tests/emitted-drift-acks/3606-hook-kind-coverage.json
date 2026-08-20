@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "quick.md": {
+      "reason": "#3606: the execute:post consumer gains generic step dispatch (deferral to loop-hook-dispatch.md) before the code-review specialization, so refactor-trigger's ref.command step and any other registered execute:post steps actually run on /gsd:quick runs instead of being filtered out by the one-skill narrow. Deliberate growth, not converter drift."
+    }
+  }
+}

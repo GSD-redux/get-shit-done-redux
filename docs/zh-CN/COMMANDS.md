@@ -1163,7 +1163,7 @@ node gsd-tools.cjs intel api-surface              # 渲染 api-map.json → API-
 | 参数 | 必填 | 描述 |
 |----------|----------|-------------|
 | `N` | **是** | 要审查的阶段编号（例如 `2` 或 `02`） |
-| `--depth=quick\|standard\|deep` | 否 | 审查深度级别（覆盖 `workflow.code_review_depth` 配置）。`quick`：仅模式匹配（约 2 分钟）。`standard`：按文件分析，含特定语言检查（约 5-15 分钟，默认）。`deep`：跨文件分析，包括导入图和调用链（约 15-30 分钟） |
+| `--depth=quick\|standard\|deep` | 否 | 审查深度级别。同时覆盖 `workflow.code_review_depth` 和任何匹配的 `workflow.code_review_depth_overrides` 路径规则——该标志始终优先。`quick`：仅模式匹配（约 2 分钟）。`standard`：按文件分析，含特定语言检查（约 5-15 分钟，默认）。`deep`：跨文件分析，包括导入图和调用链（约 15-30 分钟） |
 | `--files file1,file2,...` | 否 | 显式逗号分隔的文件列表；完全跳过 SUMMARY/git 范围界定 |
 | `--fix` | 否 | 审查后自动修复问题 — 读取 REVIEW.md，生成修复代理，原子性地提交每个修复 |
 | `--fix --all` | 否 | 将 Info 级别的发现纳入修复范围（默认：仅 Critical + Warning） |

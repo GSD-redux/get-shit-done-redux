@@ -98,36 +98,6 @@ Exit workflow.
 Default is active through the Capability Registry schema — only skip when the registry resolves no active code-review step hook. This check runs AFTER phase validation so invalid phase errors are shown first.
 </step>
 
-<step name="resolve_depth">
-Determine review depth with priority order:
-
-1. DEPTH_OVERRIDE from --depth flag (highest priority)
-2. Config value: `gsd-tools.cjs query config-get workflow.code_review_depth 2>/dev/null`
-3. Default: "standard"
-
-```bash
-if [ -n "$DEPTH_OVERRIDE" ]; then
-  REVIEW_DEPTH="$DEPTH_OVERRIDE"
-else
-  CONFIG_DEPTH=$(gsd_run query config-get workflow.code_review_depth 2>/dev/null || echo "")
-  REVIEW_DEPTH="${CONFIG_DEPTH:-standard}"
-fi
-```
-
-**Validate depth value:**
-```bash
-case "$REVIEW_DEPTH" in
-  quick|standard|deep)
-    # Valid
-    ;;
-  *)
-    echo "Warning: Invalid depth '${REVIEW_DEPTH}'. Valid values: quick, standard, deep. Using 'standard'."
-    REVIEW_DEPTH="standard"
-    ;;
-esac
-```
-</step>
-
 <step name="compute_file_scope">
 Three-tier scoping with explicit precedence:
 
@@ -394,12 +364,122 @@ echo "File scope: ${#REVIEW_FILES[@]} files from ${TIER}"
 if [ ${#REVIEW_FILES[@]} -gt 50 ]; then
   echo "Warning: ${#REVIEW_FILES[@]} files is a large review scope."
   echo "Consider using --files to narrow scope, or --depth=quick for a faster pass."
-  if [ "$REVIEW_DEPTH" = "deep" ]; then
-    echo "Switching from deep to standard depth for large file count."
-    REVIEW_DEPTH="standard"
-  fi
 fi
 ```
+</step>
+
+<step name="resolve_depth">
+Determine review depth via the path-scoped depth resolver (`code-review-depth.cjs`). This step runs after `compute_file_scope` because rule matching needs the final `REVIEW_FILES` set.
+
+```bash
+CONFIG_DEPTH=$(gsd_run query config-get workflow.code_review_depth 2>/dev/null || echo "")
+DEPTH_OVERRIDES=$(gsd_run query config-get workflow.code_review_depth_overrides --default '[]' 2>/dev/null || echo '[]')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+
+# Files travel on stdin, never argv — a 50+-file scope with long paths approaches the
+# Windows execFileSync 32,767-char argv ceiling; stdin has no such bound.
+DEPTH_PAYLOAD=$(printf '%s\n' "${REVIEW_FILES[@]}" | FLAG_DEPTH="$DEPTH_OVERRIDE" CONFIG_DEPTH="$CONFIG_DEPTH" DEPTH_OVERRIDES="$DEPTH_OVERRIDES" REPO_ROOT="$REPO_ROOT" node -e "
+  const files = require('fs').readFileSync('/dev/stdin', 'utf-8').split('\n').filter(Boolean);
+  process.stdout.write(JSON.stringify({
+    flagDepth: process.env.FLAG_DEPTH || '',
+    configDepth: process.env.CONFIG_DEPTH || '',
+    overrides: JSON.parse(process.env.DEPTH_OVERRIDES || '[]'),
+    files,
+    repoRoot: process.env.REPO_ROOT || '',
+  }));
+")
+
+DEPTH_JSON=$(echo "$DEPTH_PAYLOAD" | node -e "
+  const { resolveCodeReviewDepth } = require('./gsd-core/bin/lib/code-review-depth.cjs');
+  const input = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf-8'));
+  process.stdout.write(JSON.stringify(resolveCodeReviewDepth(input)));
+")
+
+DEPTH_OK=$(echo "$DEPTH_JSON" | node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')).ok))")
+```
+
+The guard and the extraction it protects must run as one shell control-flow decision — a prose sentence between two fenced blocks is not a guard, since fenced blocks do not share shell state. Anything other than the literal string `true` (including an empty `DEPTH_OK`, which is what a crashed or missing resolver produces) is treated as failure, and the failure branch exits before any extraction can run:
+
+```bash
+if [ "$DEPTH_OK" = "true" ]; then
+  # Single spawn: emit all seven fields as Unit-Separator-delimited (U+001F) values,
+  # fixed order. Field '\x1f' (not '\n') is deliberate: bash's `read` treats '\n' as
+  # "IFS whitespace" and collapses runs of it, silently dropping an empty field (e.g.
+  # DEPTH_MATCHED_RULE_PATH when matchedRule is null) — '\x1f' is not IFS-whitespace,
+  # so each empty field survives as its own zero-length token. This is safe only
+  # because validateRulePath (src/code-review-depth.cts) rejects any rule path
+  # carrying an interior control character, including U+001F itself — so
+  # DEPTH_MATCHED_RULE_PATH below can never collide with the delimiter. Do not
+  # remove that validation without revisiting this split.
+  DEPTH_FIELDS=$(echo "$DEPTH_JSON" | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf-8'));
+    const r = d.matchedRule;
+    process.stdout.write([
+      d.depth,
+      d.source,
+      r ? String(r.index) : '',
+      r ? r.path : '',
+      String(!!d.invalidFlagDepth),
+      String(!!d.invalidConfigDepth),
+      String(!!d.downgraded),
+    ].join('\x1f'));
+  ")
+  IFS=$'\x1f' read -r -d '' REVIEW_DEPTH DEPTH_SOURCE DEPTH_MATCHED_RULE_INDEX DEPTH_MATCHED_RULE_PATH \
+    DEPTH_INVALID_FLAG DEPTH_INVALID_CONFIG DEPTH_DOWNGRADED <<< "$DEPTH_FIELDS" || true
+  # <<< always appends a trailing newline to its input; strip it from the last field.
+  DEPTH_DOWNGRADED="${DEPTH_DOWNGRADED%$'\n'}"
+
+  case "$DEPTH_SOURCE" in
+    flag) DEPTH_PROVENANCE="from --depth flag" ;;
+    rule) DEPTH_PROVENANCE="matched rule ${DEPTH_MATCHED_RULE_INDEX}: ${DEPTH_MATCHED_RULE_PATH}" ;;
+    config) DEPTH_PROVENANCE="from workflow.code_review_depth" ;;
+    *) DEPTH_PROVENANCE="default" ;;
+  esac
+  echo "Review depth: ${REVIEW_DEPTH} (${DEPTH_PROVENANCE})"
+
+  if [ "$DEPTH_INVALID_FLAG" = "true" ]; then
+    echo "Warning: Invalid depth '${DEPTH_OVERRIDE}'. Valid values: quick, standard, deep. Using 'standard'."
+  fi
+  if [ "$DEPTH_INVALID_CONFIG" = "true" ]; then
+    echo "Warning: Invalid depth '${CONFIG_DEPTH}'. Valid values: quick, standard, deep. Using 'standard'."
+  fi
+
+  if [ "$DEPTH_DOWNGRADED" = "true" ]; then
+    if [ -n "$DEPTH_MATCHED_RULE_INDEX" ]; then
+      echo "Switching from deep to standard depth for large file count (overrides matched rule ${DEPTH_MATCHED_RULE_INDEX}: ${DEPTH_MATCHED_RULE_PATH})."
+    else
+      echo "Switching from deep to standard depth for large file count."
+    fi
+  fi
+else
+  # DEPTH_OK is anything but the literal string "true" — including empty, which is
+  # what a crashed or missing resolver produces. workflow.code_review_depth_overrides
+  # is misconfigured. Print every collected error — never fall back to a default
+  # depth, since silently reviewing a misconfigured sensitive-path policy at
+  # `standard` is the exact hole this feature closes — then hard-stop before
+  # REVIEW_DEPTH can be read by any later step.
+  echo "$DEPTH_JSON" | node -e "
+    let parsed;
+    try {
+      parsed = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf-8'));
+    } catch {
+      parsed = {};
+    }
+    const errors = Array.isArray(parsed.errors) ? parsed.errors : [];
+    for (const err of errors) {
+      const parts = [];
+      if (err.ruleIndex !== undefined) parts.push('rule ' + err.ruleIndex);
+      if (err.path !== undefined) parts.push('path \"' + err.path + '\"');
+      if (err.value !== undefined) parts.push('depth \"' + err.value + '\"');
+      console.error('Error: workflow.code_review_depth_overrides' + (parts.length ? ' (' + parts.join(', ') + ')' : '') + ': ' + err.reason);
+    }
+  "
+  echo "Error: Fix workflow.code_review_depth_overrides and retry."
+  echo "Error: Depth resolution failed (DEPTH_OK=\"${DEPTH_OK}\"). Halting before agent spawn."
+  exit 1
+fi
+```
+This `if`/`else`/`fi` is the entire guard: when `DEPTH_OK` is not the literal string `true`, execution never reaches the `DEPTH_FIELDS`/`REVIEW_DEPTH` extraction — the `else` branch prints the errors, prints the final `Error:` line above, and `exit 1`s out of the fenced block, so `REVIEW_DEPTH` is never set. Exit workflow. Do NOT spawn agent or create REVIEW.md.
 </step>
 
 <step name="check_empty_scope">
@@ -616,7 +696,7 @@ Display inline summary to user:
 
 ───────────────────────────────────────────────────────────────
 
-  Depth:           ${REVIEW_DEPTH}
+  Depth:           ${REVIEW_DEPTH} (${DEPTH_PROVENANCE})
   Files Reviewed:  ${FILES_REVIEWED}
   
   Findings:

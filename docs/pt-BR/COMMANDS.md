@@ -1166,7 +1166,7 @@ Revisa arquivos de código-fonte alterados durante uma fase em busca de bugs, vu
 | Argumento | Obrigatório | Descrição |
 |-----------|-------------|-----------|
 | `N` | **Sim** | Número da fase cujas mudanças revisar (por exemplo, `2` ou `02`) |
-| `--depth=quick\|standard\|deep` | Não | Nível de profundidade da revisão (substitui a configuração `workflow.code_review_depth`). `quick`: somente correspondência de padrões (~2 min). `standard`: análise por arquivo com verificações específicas de linguagem (~5–15 min, padrão). `deep`: análise entre arquivos incluindo grafos de importação e cadeias de chamadas (~15–30 min) |
+| `--depth=quick\|standard\|deep` | Não | Nível de profundidade da revisão. Substitui tanto `workflow.code_review_depth` quanto qualquer regra de caminho correspondente em `workflow.code_review_depth_overrides` — a flag sempre prevalece. `quick`: somente correspondência de padrões (~2 min). `standard`: análise por arquivo com verificações específicas de linguagem (~5–15 min, padrão). `deep`: análise entre arquivos incluindo grafos de importação e cadeias de chamadas (~15–30 min) |
 | `--files file1,file2,...` | Não | Lista explícita de arquivos separados por vírgula; ignora completamente o escopo SUMMARY/git |
 | `--fix` | Não | Corrige automaticamente problemas após a revisão — lê REVIEW.md, cria agente corretor, faz commit de cada correção atomicamente |
 | `--fix --all` | Não | Inclui descobertas Info no escopo de correção (padrão: somente Critical + Warning) |
