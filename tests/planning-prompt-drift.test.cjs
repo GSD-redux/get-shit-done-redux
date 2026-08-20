@@ -340,10 +340,13 @@ test('scanRepo(repoRoot) matches the baseline exactly: zero fresh AND zero stale
 // end-to-end with zero writes into the shared source tree.
 
 describe('CLI end-to-end: --root scan-root override (#3640)', () => {
+  // The E5 fixture line, shared by every row that needs a violation present.
+  const DRIFT_FIXTURE_LINE = 'FIXTURE_COUNT=$(ls .planning/phases/zzz/*-PLAN.md 2>/dev/null | wc -l)\n';
+
   // A scan-root skeleton: the SCAN_DIR tree main() walks plus a valid empty
   // baseline, so the run exercises the real loadBaseline -> diff -> report
   // path rather than erroring on a missing baseline.
-  function makeRoot(prefix) {
+  function makeScanRoot(prefix) {
     const root = createTempDir(prefix);
     fs.mkdirSync(path.join(root, 'gsd-core', 'workflows'), { recursive: true });
     fs.mkdirSync(path.join(root, 'scripts', 'baselines'), { recursive: true });
@@ -355,24 +358,22 @@ describe('CLI end-to-end: --root scan-root override (#3640)', () => {
   }
 
   test('a fresh, unacknowledged plan-count re-derivation under --root exits 1 and names itself in stderr', (t) => {
-    const root = makeRoot('gsd-planning-prompt-drift-root-');
+    const root = makeScanRoot('gsd-planning-prompt-drift-root-');
     t.after(() => cleanup(root));
-    fs.writeFileSync(
-      path.join(root, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md'),
-      'FIXTURE_COUNT=$(ls .planning/phases/zzz/*-PLAN.md 2>/dev/null | wc -l)\n',
-    );
+    fs.writeFileSync(path.join(root, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md'), DRIFT_FIXTURE_LINE);
 
     const result = runNode([DRIFT_SCRIPT, '--root', root]);
     assert.strictEqual(result.outcome, 'exited');
     assert.strictEqual(result.exitCode, 1);
     // The reported rel path and the echoed violation text are DATA, not
-    // formatter prose — the same two anchors the E5 block asserts on.
+    // formatter prose — the same two anchors the E5 block asserted on. The
+    // exit code carries the verdict; these anchors carry the WHICH.
     assert.match(result.stderr, /gsd-core\/workflows\/zzz-e5-drift-fixture\.md/);
     assert.match(result.stderr, /FIXTURE_COUNT=/);
   });
 
   test('a clean tree under --root exits 0 (clean-fixture control for the row above)', (t) => {
-    const root = makeRoot('gsd-planning-prompt-drift-clean-');
+    const root = makeScanRoot('gsd-planning-prompt-drift-clean-');
     t.after(() => cleanup(root));
     fs.writeFileSync(path.join(root, 'gsd-core', 'workflows', 'clean.md'), 'no globs or counts here\n');
 
@@ -382,7 +383,7 @@ describe('CLI end-to-end: --root scan-root override (#3640)', () => {
   });
 
   test('an empty tree with a valid empty baseline under --root exits 0', (t) => {
-    const root = makeRoot('gsd-planning-prompt-drift-empty-');
+    const root = makeScanRoot('gsd-planning-prompt-drift-empty-');
 
     t.after(() => cleanup(root));
     const result = runNode([DRIFT_SCRIPT, '--root', root]);
@@ -401,12 +402,9 @@ describe('CLI end-to-end: --root scan-root override (#3640)', () => {
   test('a --root scan leaves the real gsd-core/workflows directory untouched', (t) => {
     const realWorkflows = path.join(REPO_ROOT, 'gsd-core', 'workflows');
     const before = fs.readdirSync(realWorkflows).sort();
-    const root = makeRoot('gsd-planning-prompt-drift-untouched-');
+    const root = makeScanRoot('gsd-planning-prompt-drift-untouched-');
     t.after(() => cleanup(root));
-    fs.writeFileSync(
-      path.join(root, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md'),
-      'FIXTURE_COUNT=$(ls .planning/phases/zzz/*-PLAN.md 2>/dev/null | wc -l)\n',
-    );
+    fs.writeFileSync(path.join(root, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md'), DRIFT_FIXTURE_LINE);
 
     const result = runNode([DRIFT_SCRIPT, '--root', root]);
     assert.strictEqual(result.outcome, 'exited');
@@ -416,12 +414,35 @@ describe('CLI end-to-end: --root scan-root override (#3640)', () => {
     assert.deepStrictEqual(fs.readdirSync(realWorkflows).sort(), before);
   });
 
-  test('--root without a value fails closed with a usage error', () => {
+  // ─── Usage errors: exit 2, the code distinct from the guard's findings
+  // exit (1) — a typed discriminator, so these rows assert the exit code
+  // alone and never parse stderr prose. ─────────────────────────────────
+
+  test('--root without a value is a usage error (exit 2)', () => {
     const result = runNode([DRIFT_SCRIPT, '--root']);
     assert.strictEqual(result.outcome, 'exited');
-    assert.strictEqual(result.exitCode, 1);
-    assert.match(result.stderr, /--root/);
-    assert.ok(!result.stderr.includes('TypeError'), 'must surface a usage error, not a raw path.resolve(undefined) throw');
+    assert.strictEqual(result.exitCode, 2);
+  });
+
+  test('--root with an empty-string value is a usage error (exit 2)', () => {
+    const result = runNode([DRIFT_SCRIPT, '--root', '']);
+    assert.strictEqual(result.outcome, 'exited');
+    assert.strictEqual(result.exitCode, 2);
+  });
+
+  test('--root with a flag-shaped value is a usage error, never a scan root (exit 2)', () => {
+    // `--root --update` must not resolve the FLAG into a cwd-relative path —
+    // composed with --update that would mkdir a stray baseline tree inside
+    // the shared source directory (#3640's own write class).
+    const result = runNode([DRIFT_SCRIPT, '--root', '--update', '--update']);
+    assert.strictEqual(result.outcome, 'exited');
+    assert.strictEqual(result.exitCode, 2);
+  });
+
+  test('--root naming an existing FILE is a usage error, not an ENOTDIR crash (exit 2)', () => {
+    const result = runNode([DRIFT_SCRIPT, '--root', path.join(REPO_ROOT, 'package.json')]);
+    assert.strictEqual(result.outcome, 'exited');
+    assert.strictEqual(result.exitCode, 2);
   });
 });
 
