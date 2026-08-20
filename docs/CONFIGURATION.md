@@ -508,6 +508,7 @@ The following combinations of `mode`, `granularity`, `model_profile`, and workfl
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | Whether `.planning/` files are committed to git |
+| `planning.pr_strict` | boolean | `false` | Filter mode for [`/gsd-pr-branch`](COMMANDS.md#gsd-pr-branch). `false` — the generated PR branch keeps structural planning state (`STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**`) and drops the transient subdirectories. `true` — every `.planning/` path is dropped, structural files included, and a commit is carried over only when it touches at least one file outside `.planning/`. Applies to the root repository's PR branch only; `planning.sub_repos` companion branches are unaffected |
 | `planning.search_gitignored` | boolean | `false` | Add `--no-ignore` to broad searches to include `.planning/` |
 | `planning.sub_repos` | array of strings | `[]` | Paths of nested sub-repos relative to the project root. When set, GSD-aware tooling scopes phase-lookup, path-resolution, and commit operations per sub-repo instead of treating the outer repo as a monorepo |
 
@@ -620,6 +621,25 @@ The prompt injection guard hook (`gsd-prompt-guard.js`) is always active and can
 ### Private Planning Setup
 
 When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artifacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md) for the full setup, including untracking files git is already tracking.
+
+#### Two ways to keep planning private, and what each costs
+
+"Private planning" is really two different questions — *is it in git at all?* and *does it reach the remote?* — and GSD answers them with two different keys.
+
+`planning.commit_docs: false` answers the first by keeping `.planning/` out of git entirely. That has a cost most projects discover late: **parallel executor worktrees stop working.** A worktree is checked out from a *commit*, so a `.planning/` directory that is untracked or ignored simply does not exist inside it, and the executor has no `PLAN.md` to read. Local-only planning and parallel execution are mutually exclusive under this setting. Untracked planning also has no git history, so `/gsd-undo` and revert paths have nothing to restore.
+
+`planning.pr_strict: true` answers the second instead, and leaves the first alone. Planning artifacts are committed normally on your working branch — so worktrees find them, and history exists — while `/gsd-pr-branch` guarantees that none of them reach the branch you publish. The guarantee is enforced by the command rather than by remembering never to push the working branch.
+
+Pick by which question you are actually asking:
+
+| You want | Setting | What you give up |
+|---|---|---|
+| Planning never enters git | `planning.commit_docs: false` | Parallel executor worktrees; planning git history |
+| Planning is versioned locally but never published | `planning.commit_docs: true` + `planning.pr_strict: true` | Nothing — but the working branch itself must not be pushed; publish the generated `-pr` branch |
+
+The two are independent keys and can be set together, but `pr_strict` is inert when `commit_docs` is `false`: with nothing committed, there is nothing for the PR-branch filter to remove.
+
+See [Publish PRs without planning artifacts](how-to/publish-prs-without-planning-artifacts.md) for the setup.
 
 ### `commit_docs` Pre-Commit Guard (opt-in)
 

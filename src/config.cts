@@ -97,6 +97,10 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
+  // #2971: /gsd-pr-branch reads this key directly; an absent key must resolve to the
+  // manifest default rather than "Key not found". Derived from the defaults manifest so
+  // the manifest stays the single source of truth.
+  'planning.pr_strict': CONFIG_DEFAULTS.pr_strict,
 };
 
 /**

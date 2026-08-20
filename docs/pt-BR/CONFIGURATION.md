@@ -352,6 +352,7 @@ As seguintes combinações de `mode`, `granularity`, `model_profile` e controles
 | Configuração | Tipo | Padrão | Descrição |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | Define se os arquivos de `.planning/` são commitados no git |
+| `planning.pr_strict` | boolean | `false` | Modo de filtro para `/gsd-pr-branch`. `false` mantém o estado estrutural de planejamento (STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/) no branch de PR; `true` remove todos os caminhos de `.planning/` |
 | `planning.search_gitignored` | boolean | `false` | Adiciona `--no-ignore` em buscas amplas para incluir `.planning/` |
 | `planning.sub_repos` | array de strings | `[]` | Caminhos de sub-repositórios aninhados relativos à raiz do projeto. Quando definido, as ferramentas com reconhecimento de GSD limitam a busca de fase, resolução de caminho e operações de commit por sub-repo em vez de tratar o repositório externo como um monorepo |
 

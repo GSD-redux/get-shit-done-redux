@@ -1696,6 +1696,10 @@ Create a clean PR branch by filtering out `.planning/` commits.
 
 **Purpose:** Reviewers see only code changes, not GSD planning artifacts.
 
+**Prerequisites:** Clean working tree — uncommitted changes are rejected before the PR branch is created.
+
+**Filter mode:** Set by [`planning.pr_strict`](CONFIGURATION.md#planning-settings). Default (`false`) keeps structural planning state — `STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**` — and drops the transient subdirectories. Strict (`true`) drops every `.planning/` path. The active mode is printed in the run header and in the verification summary.
+
 ```bash
 /gsd-pr-branch                     # Filter against main
 /gsd-pr-branch develop             # Filter against develop

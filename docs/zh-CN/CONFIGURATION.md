@@ -352,6 +352,7 @@ API 密钥字段接受字符串值（密钥本身）。也可以设置为哨兵�
 | 设置 | 类型 | 默认值 | 描述 |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | `.planning/` 文件是否提交到 git |
+| `planning.pr_strict` | boolean | `false` | `/gsd-pr-branch` 的过滤模式。`false` 会在 PR 分支中保留 STATE.md、ROADMAP.md、MILESTONES.md、PROJECT.md、REQUIREMENTS.md、milestones/ 等结构性规划状态；`true` 会删除所有 `.planning/` 路径 |
 | `planning.search_gitignored` | boolean | `false` | 向大范围搜索添加 `--no-ignore` 以包含 `.planning/` |
 | `planning.sub_repos` | string 数组 | `[]` | 相对于项目根目录的嵌套子仓库路径。设置后，GSD 感知工具按子仓库划定阶段查找、路径解析和提交操作的范围，而非将外层仓库视为 monorepo |
 

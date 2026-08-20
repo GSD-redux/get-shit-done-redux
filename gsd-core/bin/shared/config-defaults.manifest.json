@@ -61,6 +61,7 @@
   },
   "planning": {
     "commit_docs": true,
+    "pr_strict": false,
     "search_gitignored": false,
     "sub_repos": [],
     "granularity": "standard"
