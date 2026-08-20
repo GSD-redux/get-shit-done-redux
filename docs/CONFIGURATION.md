@@ -47,6 +47,7 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
     "use_worktrees": true,
     "code_review": true,
     "code_review_depth": "standard",
+    "code_review_depth_overrides": [],
     "plan_bounce": false,
     "plan_bounce_script": null,
     "plan_bounce_passes": 2,
@@ -369,6 +370,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.worktree_skip_hooks` | boolean | `false` | When `true`, executor agents in worktree mode pass `--no-verify` (skipping pre-commit hooks) and post-wave hook validation runs against the merged result instead. Opt-in escape hatch for projects whose hooks cannot run in agent worktrees. Default `false` runs hooks on every commit (#2924). |
 | `workflow.code_review` | boolean | `true` | Enable `/gsd-code-review` and `/gsd-code-review --fix` commands. When `false`, the commands exit with a configuration gate message. Added in v1.34 |
 | `workflow.code_review_depth` | string | `standard` | Default review depth for `/gsd-code-review`: `quick` (pattern-matching only), `standard` (per-file analysis), or `deep` (cross-file with import graphs). Can be overridden per-run with `--depth=`. Added in v1.34 |
+| `workflow.code_review_depth_overrides` | array | `[]` | Ordered list of `{ paths: string[], depth }` rules that escalate `/gsd-code-review` depth for specific directories, e.g. `[{ "paths": ["src/auth"], "depth": "deep" }]`. Each rule's `paths` are matched against the review's changed-file set by whole-segment directory-path prefix (`src/auth` matches `src/auth/token.ts`, never `src/authfoo/x.ts` or `docs/src/auth/x.ts`); matching is case-sensitive, following git. Glob syntax (`*`, `?`) is a configuration error, not sugar for a prefix. One matched file escalates the entire review — depth is not applied per file. Resolution order: `--depth=` flag → strongest matching rule → `workflow.code_review_depth` → `standard`; a matching rule wins even when its tier is weaker than the global default. A malformed rule (bad `depth`, glob syntax, absolute path, `..` segment, empty path, non-array `overrides`, non-object rule, malformed `paths`) is a configuration error and the review halts rather than falling back silently. The resolved depth and the matching rule are printed in the review output. Added in #2554 |
 | `workflow.plan_bounce` | boolean | `false` | Run external validation script against generated plans. When enabled, the plan-phase orchestrator pipes each PLAN.md through the script specified by `plan_bounce_script` and blocks on non-zero exit. Added in v1.36 |
 | `workflow.plan_bounce_script` | string | (none) | Path to the external script invoked for plan bounce validation. Receives the PLAN.md path as its first argument. Required when `plan_bounce` is `true`. Added in v1.36 |
 | `workflow.plan_bounce_passes` | number | `2` | Number of sequential bounce passes to run. Each pass feeds the previous pass's output back into the validator. Higher values increase rigor at the cost of latency. Added in v1.36 |

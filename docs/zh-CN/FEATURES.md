@@ -2135,6 +2135,15 @@ PreToolUse 钩子，检测 Claude 在 GSD 工作流上下文之外尝试文件�
 |---------|------|---------|-------------|
 | `workflow.code_review` | boolean | `true` | 启用代码审查命令 |
 | `workflow.code_review_depth` | string | `standard` | 默认审查深度：`quick`、`standard` 或 `deep` |
+| `workflow.code_review_depth_overrides` | array | `[]` | 按目录路径前缀匹配变更文件集合、为特定目录提升审查深度的有序 `{ paths, depth }` 规则列表（#2554）。详见下文。 |
+
+**按路径限定代码审查深度**
+
+`workflow.code_review_depth_overrides` 通过整段目录路径前缀，将规则与本次审查的变更文件集合进行匹配 —— `src/auth` 匹配 `src/auth/token.ts` 及 `src/auth` 本身，但绝不匹配 `src/authfoo/x.ts` 或 `docs/src/auth/x.ts`。匹配区分大小写，与 git 保持一致。
+
+升级是**针对整次审查，而非逐文件**的：深度是传递给审查代理的单一标量值，而非逐文件设置，因此规则集中匹配到的最强档位适用于本次审查中的每一个文件 —— 一个敏感文件不会因为与无关文件同处一次审查中而被浅层审查。
+
+v1 **仅支持目录前缀匹配，不支持 glob 语法**：本项目中不存在 glob 引擎（`minimatch`、`picomatch`、`fast-glob`），本功能也未引入。路径中包含 `*` 或 `?`（例如 `src/auth/**`）会被视为配置错误，而不是悄悄地按前缀近似处理。
 
 ---
 
