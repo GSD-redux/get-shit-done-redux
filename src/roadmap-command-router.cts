@@ -202,8 +202,11 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
           convention = undefined;
         }
         if (convention === undefined || convention === null) {
-          // Fallback: read from ROADMAP.md frontmatter
-          const fmMatch = roadmapContent.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+          // Fallback: read from ROADMAP.md frontmatter. Bounded to match
+          // cmdRoadmapMilestoneScope's copy exactly (#3641 review NEW-1: an
+          // unbounded capture here read past 4KB frontmatters the probe's
+          // bounded copy could not, diverging validate from the probe).
+          const fmMatch = roadmapContent.match(/^---\r?\n([\s\S]{0,4000}?)\r?\n---/);
           if (fmMatch) {
             const kvMatch = fmMatch[1].match(/^phase_id_convention:\s*(.*)$/m);
             if (kvMatch) {
