@@ -157,6 +157,12 @@ export default tseslint.config(
       'gsd-core/bin/lib/configuration.cjs',
       'gsd-core/bin/lib/state-document.cjs',
       'gsd-core/bin/lib/planning-snapshot.cjs',
+      // #2790: tsc-generated runtime artifacts — lint the src/*.cts sources
+      // (src/planning-inspect.cts, src/planning-command-router.cts,
+      // src/plan-document.cts), not these emitted .cjs files.
+      'gsd-core/bin/lib/planning-inspect.cjs',
+      'gsd-core/bin/lib/planning-command-router.cjs',
+      'gsd-core/bin/lib/plan-document.cjs',
       'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/text-lines.cjs',
       'gsd-core/bin/lib/token-scanner.cjs',

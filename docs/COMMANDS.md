@@ -652,6 +652,31 @@ node gsd-tools.cjs phase uat-passed 3 --raw                  # Machine-readable 
 
 ---
 
+### `planning inspect`
+
+Emit a read-only, schema-versioned JSON snapshot of the whole planning state —
+milestone identity, active phase/plan/status, per-phase verification, roadmap
+acceptance and UAT evidence (kept separate), requirement rows with mapped-phase
+traceability, plan and task rows with planned/changed file provenance, and
+independent `accepted_phases` / `completed_plans` fractions.
+
+For downstream tools that need planning state without re-parsing GSD's Markdown.
+Mutates nothing. Takes no arguments — a stray positional or unknown flag is a
+fail-loud usage error rather than a silently-ignored one.
+
+```bash
+node gsd-tools.cjs query planning inspect       # schema-v1 snapshot
+node gsd-tools.cjs query planning.inspect       # dotted canonical form, identical
+node gsd-tools.cjs query planning inspect --cwd /path/to/project
+```
+
+Check `schema_version` before reading any other field, and branch on each value's
+`scope` — `complete` with an empty value is a real answer, `unreadable` is not.
+Full field reference: [CLI Tools](CLI-TOOLS.md#planning-inspect). Integration
+walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md).
+
+---
+
 ## Navigation Commands
 
 ### `/gsd-next`
