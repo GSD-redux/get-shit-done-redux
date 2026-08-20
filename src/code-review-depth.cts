@@ -30,6 +30,7 @@ export type CodeReviewDepthReasonKey =
   | 'PATHS_MALFORMED'
   | 'INVALID_DEPTH'
   | 'GLOB_UNSUPPORTED'
+  | 'PATH_CONTROL_CHAR'
   | 'PATH_TRAVERSAL'
   | 'PATH_ABSOLUTE'
   | 'PATH_EMPTY';
@@ -40,6 +41,7 @@ export const REASON: Readonly<Record<CodeReviewDepthReasonKey, string>> = Object
   PATHS_MALFORMED: 'paths_malformed',
   INVALID_DEPTH: 'invalid_depth',
   GLOB_UNSUPPORTED: 'glob_unsupported',
+  PATH_CONTROL_CHAR: 'path_control_char',
   PATH_TRAVERSAL: 'path_traversal',
   PATH_ABSOLUTE: 'path_absolute',
   PATH_EMPTY: 'path_empty',
@@ -168,9 +170,11 @@ interface RulePathValidation {
 
 /**
  * Validate + normalize a single rule path (not yet matched against files).
- * Check order: glob syntax, `..` traversal segment, absolute (leading `/` with
- * real content, or a Windows drive letter), then empty-after-normalization
- * (covers a bare `/`, `.`, `./`, or whitespace-only path).
+ * Check order: glob syntax, interior control character (U+0000-U+001F or
+ * U+007F, surviving the leading/trailing trim), `..` traversal segment,
+ * absolute (leading `/` with real content, or a Windows drive letter), then
+ * empty-after-normalization (covers a bare `/`, `.`, `./`, or whitespace-only
+ * path).
  */
 function validateRulePath(rawPath: string): RulePathValidation {
   const trimmed = rawPath.trim();
@@ -178,6 +182,10 @@ function validateRulePath(rawPath: string): RulePathValidation {
 
   if (/[*?]/.test(slashified)) {
     return { error: 'GLOB_UNSUPPORTED' };
+  }
+
+  if (/[\x00-\x1f\x7f]/.test(slashified)) {
+    return { error: 'PATH_CONTROL_CHAR' };
   }
 
   const collapsed = slashified.replace(/\/+/g, '/');

@@ -34,7 +34,7 @@ const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 // ─── enum lock ────────────────────────────────────────────────────────────
 
 describe('REASON enum', () => {
-  test('REASON is frozen and carries exactly the eight documented keys', () => {
+  test('REASON is frozen and carries exactly the nine documented keys', () => {
     assert.strictEqual(Object.isFrozen(REASON), true);
     assert.deepEqual(
       Object.keys(REASON).sort(),
@@ -44,6 +44,7 @@ describe('REASON enum', () => {
         'NOT_AN_ARRAY',
         'PATHS_MALFORMED',
         'PATH_ABSOLUTE',
+        'PATH_CONTROL_CHAR',
         'PATH_EMPTY',
         'PATH_TRAVERSAL',
         'RULE_NOT_OBJECT',
@@ -495,6 +496,41 @@ describe('resolveCodeReviewDepth — malformed rule paths', () => {
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.depth, 'deep');
     assert.strictEqual(result.matchedRule.path, 'src/auth');
+  });
+
+  test('rejects a rule path containing an interior control character', () => {
+    // 'src/au th' below is 'src/au\tth' (tab); 'src/auth' below is
+    // 'src/au\x7fth' (DEL) — both non-printing, so they render as
+    // near-invisible in this test's source.
+    const cases = [
+      ['src/au\nth', 'embedded newline'],
+      ['src/au\rth', 'embedded carriage return'],
+      ['src/au\tth', 'embedded tab'],
+      ['src/au\x7fth', 'embedded DEL'],
+    ];
+    for (const [badPath, label] of cases) {
+      const result = resolveCodeReviewDepth({
+        flagDepth: '',
+        configDepth: '',
+        overrides: [{ paths: [badPath], depth: 'deep' }],
+        files: [],
+        repoRoot: '/repo',
+      });
+      assert.strictEqual(result.ok, false, `expected ${label} to fail`);
+      assert.strictEqual(result.errors[0].reason, REASON.PATH_CONTROL_CHAR, `expected ${label} to fail`);
+    }
+  });
+
+  test('a glob-and-control-char path still reports GLOB_UNSUPPORTED (precedence)', () => {
+    const result = resolveCodeReviewDepth({
+      flagDepth: '',
+      configDepth: '',
+      overrides: [{ paths: ['src/*\nauth'], depth: 'deep' }],
+      files: [],
+      repoRoot: '/repo',
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errors[0].reason, REASON.GLOB_UNSUPPORTED);
   });
 });
 
