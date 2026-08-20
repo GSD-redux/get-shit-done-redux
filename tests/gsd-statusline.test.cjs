@@ -2480,6 +2480,7 @@ describe('evaluateUpdateCache lineage guard', () => {
   } = require('../hooks/gsd-statusline.js');
   const { createTempGitProject, createTempProject } = require('./helpers.cjs');
   const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+  const { runHook: runHookSeam, OUTCOME } = require('./helpers/process-seam.cjs');
   const childProcess = require('node:child_process');
 
   // Deterministic IO-failure / fake-response injection (repo convention —
@@ -2537,92 +2538,88 @@ describe('evaluateUpdateCache lineage guard', () => {
     return content;
   }
 
-  function stripAnsi(s) {
-    // eslint-disable-next-line no-control-regex -- stripping ANSI SGR sequences to assert on visible text
-    return s.replace(/\x1b\[[0-9;]*m/g, '');
-  }
-
   describe('gsd-statusline.js: #2734 STATE.md freshness marker', () => {
     // ─── rows 1-7: deriveStateFreshness threshold boundary ─────────────────
 
     describe('deriveStateFreshness: advisory threshold boundary', () => {
-      test('rendersMarkerAtAdvisoryThreshold', () => {
+      test('rendersMarkerAtAdvisoryThreshold', (t) => {
         const dir = createTempGitProject('gsd-freshness-at-threshold-');
+        t.after(() => cleanup(dir));
         const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, STATE_HEAD_ADVISORY_COMMITS);
         assert.equal(ir.commit_stale, true);
         assert.equal(formatStateFreshness(ir), `state ~${STATE_HEAD_ADVISORY_COMMITS} commits back`);
-        cleanup(dir);
       });
 
-      test('omitsMarkerJustBelowThreshold', () => {
+      test('omitsMarkerJustBelowThreshold', (t) => {
         const dir = createTempGitProject('gsd-freshness-below-threshold-');
+        t.after(() => cleanup(dir));
         const n = STATE_HEAD_ADVISORY_COMMITS - 1;
         const stamp = commitN(dir, n);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, n);
         assert.equal(formatStateFreshness(ir), '');
-        cleanup(dir);
       });
 
-      test('rendersMarkerExactlyAtThreshold', () => {
+      test('rendersMarkerExactlyAtThreshold', (t) => {
         const dir = createTempGitProject('gsd-freshness-exact-threshold-');
+        t.after(() => cleanup(dir));
         const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.state_head, stamp.slice(0, 7));
         assert.equal(ir.commits_behind, STATE_HEAD_ADVISORY_COMMITS);
         assert.notEqual(formatStateFreshness(ir), '');
-        cleanup(dir);
       });
 
-      test('rendersMarkerJustAboveThreshold', () => {
+      test('rendersMarkerJustAboveThreshold', (t) => {
         const dir = createTempGitProject('gsd-freshness-above-threshold-');
+        t.after(() => cleanup(dir));
         const n = STATE_HEAD_ADVISORY_COMMITS + 1;
         const stamp = commitN(dir, n);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, n);
         assert.equal(formatStateFreshness(ir), `state ~${n} commits back`);
-        cleanup(dir);
       });
 
-      test('omitsMarkerWhenStampIsHead', () => {
+      test('omitsMarkerWhenStampIsHead', (t) => {
         const dir = createTempGitProject('gsd-freshness-stamp-is-head-');
+        t.after(() => cleanup(dir));
         const stamp = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, 0);
         assert.equal(ir.commit_stale, false);
         assert.equal(formatStateFreshness(ir), '');
-        cleanup(dir);
       });
 
-      test('omitsMarkerForCommitDocsOffByOne', () => {
+      test('omitsMarkerForCommitDocsOffByOne', (t) => {
         const dir = createTempGitProject('gsd-freshness-off-by-one-');
+        t.after(() => cleanup(dir));
         const stamp = commitN(dir, 1);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, 1);
         assert.equal(ir.commit_stale, true);
         assert.equal(formatStateFreshness(ir), '', 'a single commit_docs restamp commit must not alarm');
-        cleanup(dir);
       });
 
-      test('rendersLargeCountUncapped', () => {
+      test('rendersLargeCountUncapped', (t) => {
         const dir = createTempGitProject('gsd-freshness-large-count-');
+        t.after(() => cleanup(dir));
         const stamp = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         withSpawnSpy(() => '0\t99999\n', () => {
           const ir = deriveStateFreshness(dir, stamp);
           assert.equal(ir.commits_behind, 99999);
           assert.equal(formatStateFreshness(ir), 'state ~99999 commits back');
         });
-        cleanup(dir);
       });
     });
 
     // ─── rows 8-10: resolveStatuslineOptions flag gating ───────────────────
 
     describe('resolveStatuslineOptions: show_state_freshness gating', () => {
-      test('omitsMarkerAndSpawnsNothingWhenFlagOff', () => {
+      test('omitsMarkerAndSpawnsNothingWhenFlagOff', (t) => {
         const dir = createTempGitProject('gsd-freshness-flag-off-');
+        t.after(() => cleanup(dir));
         const stamp = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         writeStateHead(dir, stamp);
         assert.equal(resolveStatuslineOptions({}).showStateFreshness, false);
@@ -2631,7 +2628,6 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal('freshness' in state, false);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
       test('defaultsToDisabledWhenKeyAbsent', () => {
@@ -2650,8 +2646,9 @@ describe('evaluateUpdateCache lineage guard', () => {
     // ─── rows 11-14: stamp-presence guards ──────────────────────────────────
 
     describe('deriveStateFreshness wiring: stamp-absence guards', () => {
-      test('omitsMarkerWhenStampAbsent', () => {
+      test('omitsMarkerWhenStampAbsent', (t) => {
         const dir = createTempGitProject('gsd-freshness-no-stamp-');
+        t.after(() => cleanup(dir));
         const content = ['---', 'status: executing', '---', '', '# State'].join('\n');
         fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
         fs.writeFileSync(path.join(dir, '.planning', 'STATE.md'), content);
@@ -2661,11 +2658,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(state.freshness, undefined);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
-      test('treatsLiteralNullStampAsAbsent', () => {
+      test('treatsLiteralNullStampAsAbsent', (t) => {
         const dir = createTempGitProject('gsd-freshness-null-stamp-');
+        t.after(() => cleanup(dir));
         const content = writeStateHead(dir, 'null');
         assert.equal(parseStateMd(content).stateHead, null);
         withSpawnSpy(() => '0\t20\n', (calls) => {
@@ -2673,11 +2670,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(state.freshness, undefined);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
-      test('treatsEmptyStampAsAbsent', () => {
+      test('treatsEmptyStampAsAbsent', (t) => {
         const dir = createTempGitProject('gsd-freshness-empty-stamp-');
+        t.after(() => cleanup(dir));
         const content = writeStateHead(dir, '""');
         assert.equal(parseStateMd(content).stateHead, null);
         withSpawnSpy(() => '0\t20\n', (calls) => {
@@ -2685,7 +2682,6 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(state.freshness, undefined);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
       test('treatsWhitespaceStampAsAbsent', () => {
@@ -2722,19 +2718,20 @@ describe('evaluateUpdateCache lineage guard', () => {
     // ─── rows 20-22: hostile stamps — negative proof (git never invoked) ───
 
     describe('deriveStateFreshness: hostile stamps never reach git', () => {
-      test('rejectsFlagLookalikeStampBeforeSpawn', () => {
+      test('rejectsFlagLookalikeStampBeforeSpawn', (t) => {
         const dir = createTempGitProject('gsd-freshness-hostile-flag-');
+        t.after(() => cleanup(dir));
         withSpawnSpy(() => '0\t20\n', (calls) => {
           const ir = deriveStateFreshness(dir, '--upload-pack=/bin/sh');
           assert.equal(ir.state_head, null);
           assert.equal(ir.commits_behind, null);
           assert.equal(calls.length, 0, 'git must never be invoked for a flag-lookalike stamp');
         });
-        cleanup(dir);
       });
 
-      test('rejectsRevisionSyntaxStamp', () => {
+      test('rejectsRevisionSyntaxStamp', (t) => {
         const dir = createTempGitProject('gsd-freshness-hostile-revsyntax-');
+        t.after(() => cleanup(dir));
         const hostileStamps = ['HEAD', '..', '@{u}', '-'];
         withSpawnSpy(() => '0\t20\n', (calls) => {
           for (const stamp of hostileStamps) {
@@ -2744,11 +2741,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           }
           assert.equal(calls.length, 0, 'git must never be invoked for revision-syntax stamps');
         });
-        cleanup(dir);
       });
 
-      test('rejectsShellMetacharacterStamp', () => {
+      test('rejectsShellMetacharacterStamp', (t) => {
         const dir = createTempGitProject('gsd-freshness-hostile-shellmeta-');
+        t.after(() => cleanup(dir));
         const hostileStamps = ['abcd1234\nrm -rf /', 'abcd1234;rm -rf /', '`touch /tmp/pwned`', '$(touch /tmp/pwned)'];
         withSpawnSpy(() => '0\t20\n', (calls) => {
           for (const stamp of hostileStamps) {
@@ -2758,24 +2755,24 @@ describe('evaluateUpdateCache lineage guard', () => {
           }
           assert.equal(calls.length, 0, 'git must never be invoked for shell-metacharacter stamps');
         });
-        cleanup(dir);
       });
     });
 
     // ─── rows 23-30: ancestry + provenance degradation guards ──────────────
 
     describe('deriveStateFreshness: ancestry and provenance guards', () => {
-      test('omitsMarkerForUnknownStamp', () => {
+      test('omitsMarkerForUnknownStamp', (t) => {
         const dir = createTempGitProject('gsd-freshness-unknown-stamp-');
+        t.after(() => cleanup(dir));
         const ir = deriveStateFreshness(dir, 'deadbeef');
         assert.equal(ir.state_head, 'deadbee');
         assert.equal(ir.commits_behind, null);
         assert.equal(ir.commit_stale, null);
-        cleanup(dir);
       });
 
-      test('omitsMarkerWhenStampIsNotAncestor', () => {
+      test('omitsMarkerWhenStampIsNotAncestor', (t) => {
         const dir = createTempGitProject('gsd-freshness-rewind-');
+        t.after(() => cleanup(dir));
         const preSha = commitN(dir, 3);
         const advancedSha = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         gitOrThrow(['reset', '--hard', preSha], { cwd: dir });
@@ -2783,11 +2780,11 @@ describe('evaluateUpdateCache lineage guard', () => {
         assert.equal(ir.state_head, advancedSha.slice(0, 7));
         assert.equal(ir.commits_behind, null);
         assert.equal(ir.commit_stale, null);
-        cleanup(dir);
       });
 
-      test('omitsMarkerForDivergedHistory', () => {
+      test('omitsMarkerForDivergedHistory', (t) => {
         const dir = createTempGitProject('gsd-freshness-diverge-');
+        t.after(() => cleanup(dir));
         const originalBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).trim();
         gitOrThrow(['checkout', '-b', 'gsd-freshness-side'], { cwd: dir });
         commitN(dir, 2);
@@ -2797,11 +2794,11 @@ describe('evaluateUpdateCache lineage guard', () => {
         const ir = deriveStateFreshness(dir, divergedStamp);
         assert.equal(ir.commits_behind, null);
         assert.equal(ir.commit_stale, null);
-        cleanup(dir);
       });
 
-      test('omitsMarkerWhenProjectDoesNotOwnRepo', () => {
+      test('omitsMarkerWhenProjectDoesNotOwnRepo', (t) => {
         const outerDir = createTempGitProject('gsd-freshness-outer-');
+        t.after(() => cleanup(outerDir));
         const nestedDir = path.join(outerDir, 'nested-project');
         fs.mkdirSync(path.join(nestedDir, '.planning'), { recursive: true });
         withSpawnSpy(() => '0\t20\n', (calls) => {
@@ -2810,11 +2807,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(ir.commit_stale, null);
           assert.equal(calls.length, 0);
         });
-        cleanup(outerDir);
       });
 
-      test('omitsMarkerInSubReposWorkspace', () => {
+      test('omitsMarkerInSubReposWorkspace', (t) => {
         const dir = createTempGitProject('gsd-freshness-subrepos-');
+        t.after(() => cleanup(dir));
         writeConfig(dir, { planning: { sub_repos: ['child-a', 'child-b'] } });
         withSpawnSpy(() => '0\t20\n', (calls) => {
           const ir = deriveStateFreshness(dir, 'abcd1234');
@@ -2822,45 +2819,45 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(ir.commit_stale, null);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
-      test('omitsMarkerForFlatSubReposKey', () => {
+      test('omitsMarkerForFlatSubReposKey', (t) => {
         const dir = createTempGitProject('gsd-freshness-subrepos-flat-');
+        t.after(() => cleanup(dir));
         writeConfig(dir, { 'planning.sub_repos': ['child-a'] });
         withSpawnSpy(() => '0\t20\n', (calls) => {
           const ir = deriveStateFreshness(dir, 'abcd1234');
           assert.equal(ir.commits_behind, null);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
-      test('allowsMarkerWhenSubReposEmpty', () => {
+      test('allowsMarkerWhenSubReposEmpty', (t) => {
         const dir = createTempGitProject('gsd-freshness-subrepos-empty-');
+        t.after(() => cleanup(dir));
         writeConfig(dir, { planning: { sub_repos: [] } });
         const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, STATE_HEAD_ADVISORY_COMMITS);
         assert.equal(formatStateFreshness(ir), `state ~${STATE_HEAD_ADVISORY_COMMITS} commits back`);
-        cleanup(dir);
       });
 
-      test('ignoresNonArraySubRepos', () => {
+      test('ignoresNonArraySubRepos', (t) => {
         const dir = createTempGitProject('gsd-freshness-subrepos-scalar-');
+        t.after(() => cleanup(dir));
         writeConfig(dir, { planning: { sub_repos: 'child-a' } });
         const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
         const ir = deriveStateFreshness(dir, stamp);
         assert.equal(ir.commits_behind, STATE_HEAD_ADVISORY_COMMITS);
-        cleanup(dir);
       });
     });
 
     // ─── rows 31-34: IO fault injection ─────────────────────────────────────
 
     describe('deriveStateFreshness: never throws on git faults', () => {
-      test('degradesWhenGitMissing', () => {
+      test('degradesWhenGitMissing', (t) => {
         const dir = createTempGitProject('gsd-freshness-enoent-');
+        t.after(() => cleanup(dir));
         withSpawnSpy(() => {
           const err = new Error('spawnSync git ENOENT');
           err.code = 'ENOENT';
@@ -2871,11 +2868,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(ir.commits_behind, null);
           assert.equal(ir.commit_stale, null);
         });
-        cleanup(dir);
       });
 
-      test('degradesOnGitTimeout', () => {
+      test('degradesOnGitTimeout', (t) => {
         const dir = createTempGitProject('gsd-freshness-timeout-');
+        t.after(() => cleanup(dir));
         withSpawnSpy(() => {
           const err = new Error('spawnSync git ETIMEDOUT');
           err.code = 'ETIMEDOUT';
@@ -2887,11 +2884,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(ir.commits_behind, null);
           assert.equal(ir.commit_stale, null);
         });
-        cleanup(dir);
       });
 
-      test('degradesOnUnparseableRevListOutput', () => {
+      test('degradesOnUnparseableRevListOutput', (t) => {
         const dir = createTempGitProject('gsd-freshness-bad-stdout-');
+        t.after(() => cleanup(dir));
         assert.equal(parseRevListCounts(null), null);
         assert.equal(parseRevListCounts(''), null);
         assert.equal(parseRevListCounts('garbage'), null);
@@ -2904,15 +2901,14 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(ir.commits_behind, null);
           assert.equal(ir.commit_stale, null);
         });
-        cleanup(dir);
       });
 
-      test('neverThrowsFromDerivation', () => {
+      test('neverThrowsFromDerivation', (t) => {
         const dir = createTempGitProject('gsd-freshness-arbitrary-throw-');
+        t.after(() => cleanup(dir));
         withSpawnSpy(() => { throw new TypeError('arbitrary failure'); }, () => {
           assert.doesNotThrow(() => deriveStateFreshness(dir, 'abcd1234'));
         });
-        cleanup(dir);
       });
     });
 
@@ -2950,7 +2946,7 @@ describe('evaluateUpdateCache lineage guard', () => {
       test('markerCoexistsWithMilestoneComplete', () => {
         const freshness = { state_head: 'abcd123', commits_behind: 25, commit_stale: true };
         const sFull = { milestone: 'v1.9', percent: '100', freshness };
-        const expectedFull = ['v1.9', 'milestone complete', formatStateFreshness(freshness)].join(' · ');
+        const expectedFull = ['v1.9 [██████████] 100%', 'milestone complete', formatStateFreshness(freshness)].join(' · ');
         assert.equal(formatGsdState(sFull), expectedFull);
 
         const sCompact = { milestone: 'v1.9', percent: '100', freshness };
@@ -2962,22 +2958,27 @@ describe('evaluateUpdateCache lineage guard', () => {
     // ─── row 40: todo-task gate (no wasted spawn while a task is active) ───
 
     describe('runStatusline wiring: todo-task gate', () => {
-      test('skipsFreshnessWorkWhenTodoTaskActive', { skip: process.platform === 'win32' ? 'POSIX-only git shim' : false }, () => {
+      test('skipsFreshnessWorkWhenTodoTaskActive', { skip: process.platform === 'win32' ? 'POSIX-only git shim' : false }, (t) => {
         const dir = createTempGitProject('gsd-freshness-todo-gate-');
+        t.after(() => cleanup(dir));
         writeConfig(dir, { statusline: { show_state_freshness: true } });
         const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
         writeStateHead(dir, stamp);
 
-        // A `git` shim on PATH that records invocation and always fails —
-        // proves the ONLY way to detect a spawn across a real subprocess
-        // boundary (an in-process execFileSync monkeypatch can't reach a
-        // child node process's own module cache).
+        // A `git` shim on PATH that appends a line to a marker file on
+        // EVERY invocation and always fails — proves the ONLY way to
+        // detect a spawn across a real subprocess boundary (an in-process
+        // execFileSync monkeypatch can't reach a child node process's own
+        // module cache). Asserting the marker file never exists is a
+        // filesystem fact, not a text match against rendered output.
         const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-freshness-shim-'));
+        t.after(() => cleanup(shimDir));
         const marker = path.join(shimDir, 'git-was-invoked');
-        fs.writeFileSync(path.join(shimDir, 'git'), ['#!/bin/sh', `touch "${marker}"`, 'exit 1', ''].join('\n'));
+        fs.writeFileSync(path.join(shimDir, 'git'), ['#!/bin/sh', `echo invoked >> "${marker}"`, 'exit 1', ''].join('\n'));
         fs.chmodSync(path.join(shimDir, 'git'), 0o755);
 
         const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-freshness-todo-claude-'));
+        t.after(() => cleanup(claudeDir));
         const todosDir = path.join(claudeDir, 'todos');
         fs.mkdirSync(todosDir, { recursive: true });
         const session = `sess-2734-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -2992,26 +2993,14 @@ describe('evaluateUpdateCache lineage guard', () => {
           session_id: session,
           context_window: { remaining_percentage: 80, total_tokens: 1_000_000 },
         });
-        const { execFileSync } = require('node:child_process');
-        let stdout = '';
-        try {
-          stdout = execFileSync(process.execPath, [hookPath], {
-            input: payload,
-            env: { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: claudeDir },
-            encoding: 'utf8',
-            timeout: 4000,
-          });
-        } catch (e) {
-          stdout = e.stdout || '';
-        }
-        const clean = stripAnsi(stdout);
-        assert.ok(clean.includes('ACTIVE TASK 2734'), `expected task to render, got: ${clean}`);
-        assert.ok(!clean.includes('state ~'), `must not render freshness marker while a task is active, got: ${clean}`);
+        const r = runHookSeam(hookPath, [], {
+          input: payload,
+          env: { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: claudeDir },
+          timeoutMs: 5000,
+        });
+        assert.equal(r.outcome, OUTCOME.EXITED, `expected clean exit, got outcome=${r.outcome}`);
+        assert.equal(r.exitCode, 0);
         assert.equal(fs.existsSync(marker), false, 'git must never be invoked while a todo task is active');
-
-        cleanup(dir);
-        cleanup(shimDir);
-        cleanup(claudeDir);
       });
     });
 
@@ -3049,8 +3038,9 @@ describe('evaluateUpdateCache lineage guard', () => {
     // ─── rows 46-52: independence + parity ──────────────────────────────────
 
     describe('independence + parity', () => {
-      test('defaultCallShapeIsUnchanged', () => {
+      test('defaultCallShapeIsUnchanged', (t) => {
         const dir = createTempGitProject('gsd-freshness-default-shape-');
+        t.after(() => cleanup(dir));
         const stamp = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         writeStateHead(dir, stamp);
         withSpawnSpy(() => '0\t20\n', (calls) => {
@@ -3058,11 +3048,11 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal('freshness' in state, false);
           assert.equal(calls.length, 0);
         });
-        cleanup(dir);
       });
 
-      test('spendsExactlyOneSpawnPerRender', () => {
+      test('spendsExactlyOneSpawnPerRender', (t) => {
         const dir = createTempGitProject('gsd-freshness-spawn-count-');
+        t.after(() => cleanup(dir));
         const stamp = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         writeStateHead(dir, stamp);
         withSpawnSpy(() => '0\t20\n', (calls) => {
@@ -3070,7 +3060,6 @@ describe('evaluateUpdateCache lineage guard', () => {
           assert.equal(calls.length, 1, `expected exactly one git spawn, got ${calls.length}`);
           assert.equal(state.freshness.commits_behind, 20);
         });
-        cleanup(dir);
       });
 
       test('thresholdMatchesHealthConstant', () => {
@@ -3078,9 +3067,10 @@ describe('evaluateUpdateCache lineage guard', () => {
         assert.equal(STATE_HEAD_ADVISORY_COMMITS, healthConstant);
       });
 
-      test('fenceAgreesWithStateModule', () => {
+      test('fenceAgreesWithStateModule', (t) => {
         const { readStateHeadFreshness } = require('../gsd-core/bin/lib/state.cjs');
         const dir = createTempProject('gsd-freshness-fence-parity-');
+        t.after(() => cleanup(dir));
         const candidates = [
           'abcd', 'abcd1234', 'a'.repeat(40), 'a'.repeat(41), 'abc', 'zzzz', 'g1b2',
           '', '   ', 'null', '--upload-pack=x', 'HEAD', '..', '@{u}', '-',
@@ -3091,11 +3081,18 @@ describe('evaluateUpdateCache lineage guard', () => {
           const moduleAccepts = readStateHeadFreshness(dir, candidate).state_head !== null;
           assert.equal(hookAccepts, moduleAccepts, `fence mismatch for candidate ${JSON.stringify(candidate)}`);
         }
-        cleanup(dir);
       });
 
-      test('derivationAgreesWithStateModule', () => {
+      test('derivationAgreesWithStateModule', (t) => {
         const { readStateHeadFreshness } = require('../gsd-core/bin/lib/state.cjs');
+
+        // Registers cleanup for THIS fixture's directory at scheduling time
+        // (captured as a function parameter, not a reused outer `dir`
+        // binding) so a throw partway through the fixture list still tears
+        // down every directory created up to that point.
+        function registerCleanup(fixtureDir) {
+          t.after(() => cleanup(fixtureDir));
+        }
 
         function assertAgree(dir, stamp) {
           const hookIr = deriveStateFreshness(dir, stamp);
@@ -3107,72 +3104,58 @@ describe('evaluateUpdateCache lineage guard', () => {
 
         // Ancestor stamp, 5 commits behind.
         let dir = createTempGitProject('gsd-freshness-parity-ancestor-');
+        registerCleanup(dir);
         let stamp = commitN(dir, 5);
         assertAgree(dir, stamp);
-        cleanup(dir);
 
         // Rewound (non-ancestor) stamp.
         dir = createTempGitProject('gsd-freshness-parity-rewound-');
+        registerCleanup(dir);
         const preSha = commitN(dir, 3);
         const advancedSha = gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }).trim();
         gitOrThrow(['reset', '--hard', preSha], { cwd: dir });
         assertAgree(dir, advancedSha);
-        cleanup(dir);
 
         // Invalid (non-hex) stamp.
         dir = createTempGitProject('gsd-freshness-parity-invalid-');
+        registerCleanup(dir);
         assertAgree(dir, 'zzzznothex');
-        cleanup(dir);
 
         // .git-less root.
         dir = createTempProject('gsd-freshness-parity-nogit-');
+        registerCleanup(dir);
         assertAgree(dir, 'abcd1234');
-        cleanup(dir);
 
         // sub_repos workspace.
         dir = createTempGitProject('gsd-freshness-parity-subrepos-');
+        registerCleanup(dir);
         writeConfig(dir, { planning: { sub_repos: ['child-a'] } });
         assertAgree(dir, 'abcd1234');
-        cleanup(dir);
       });
 
       test('bothEntryPointsResolveOptionsIdentically', () => {
-        const dir = createTempGitProject('gsd-freshness-entrypoint-parity-');
-        writeConfig(dir, { statusline: { show_state_freshness: true, state_format: 'compact' } });
-        const stamp = commitN(dir, STATE_HEAD_ADVISORY_COMMITS);
-        writeStateHead(dir, stamp, ['milestone: v9.9']);
-
-        const viaDirect = stripAnsi(require('../hooks/gsd-statusline.js').renderStatusline({
-          model: { display_name: 'Claude' },
-          workspace: { current_dir: dir },
-          session_id: `sess-2734-direct-${Date.now()}`,
-        }));
-
-        const { execFileSync } = require('node:child_process');
-        const hookPath = path.join(__dirname, '..', 'hooks', 'gsd-statusline.js');
-        const payload = JSON.stringify({
-          model: { display_name: 'Claude' },
-          workspace: { current_dir: dir },
-          session_id: `sess-2734-spawn-${Date.now()}`,
-        });
-        let viaSpawned = '';
-        try {
-          viaSpawned = execFileSync(process.execPath, [hookPath], { input: payload, encoding: 'utf8', timeout: 4000 });
-        } catch (e) {
-          viaSpawned = e.stdout || '';
+        const cfgs = [
+          {},
+          { statusline: { show_state_freshness: true } },
+          { statusline: { state_format: 'compact', show_git: true, show_state_freshness: true } },
+          { 'statusline.show_state_freshness': true, 'statusline.context_position': 'front' },
+        ];
+        for (const cfg of cfgs) {
+          const o = resolveStatuslineOptions(cfg);
+          assert.equal(typeof o.showStateFreshness, 'boolean', `showStateFreshness type for ${JSON.stringify(cfg)}`);
+          assert.equal(typeof o.showGit, 'boolean', `showGit type for ${JSON.stringify(cfg)}`);
+          assert.ok(o.stateFormat === 'full' || o.stateFormat === 'compact', `unexpected stateFormat for ${JSON.stringify(cfg)}: ${o.stateFormat}`);
+          assert.ok(o.position === 'end' || o.position === 'front', `unexpected position for ${JSON.stringify(cfg)}: ${o.position}`);
         }
-        viaSpawned = stripAnsi(viaSpawned);
 
-        assert.ok(viaDirect.includes(`state ~${STATE_HEAD_ADVISORY_COMMITS} commits back`), `direct render missing marker: ${viaDirect}`);
-        assert.ok(viaSpawned.includes(`state ~${STATE_HEAD_ADVISORY_COMMITS} commits back`), `spawned render missing marker: ${viaSpawned}`);
-        assert.ok(viaDirect.includes('v9.9'), `direct render missing compact milestone: ${viaDirect}`);
-        assert.ok(viaSpawned.includes('v9.9'), `spawned render missing compact milestone: ${viaSpawned}`);
-
-        cleanup(dir);
+        const flat = resolveStatuslineOptions({ 'statusline.show_state_freshness': true, 'statusline.state_format': 'compact' });
+        const nested = resolveStatuslineOptions({ statusline: { show_state_freshness: true, state_format: 'compact' } });
+        assert.deepEqual(flat, nested, 'flat dotted-key and nested config forms must resolve identically');
       });
 
-      test('derivationIsNotMemoizedAcrossRenders', () => {
+      test('derivationIsNotMemoizedAcrossRenders', (t) => {
         const dir = createTempGitProject('gsd-freshness-no-memo-');
+        t.after(() => cleanup(dir));
         const stampA = commitN(dir, 5);
         writeStateHead(dir, stampA);
 
@@ -3185,8 +3168,6 @@ describe('evaluateUpdateCache lineage guard', () => {
         const second = readGsdState(dir, { stateFreshness: true });
         assert.equal(second.freshness.commits_behind, 10);
         assert.notEqual(first.freshness.commits_behind, second.freshness.commits_behind);
-
-        cleanup(dir);
       });
     });
   });
