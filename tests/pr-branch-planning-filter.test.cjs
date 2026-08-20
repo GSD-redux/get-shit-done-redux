@@ -66,6 +66,7 @@ const {
   WORKFLOW_PATH,
   parseWorkflow,
   readWorkflow,
+  extractPickLoop,
   forbiddenRegex,
   forbiddenPaths,
   structuralPaths,
@@ -329,25 +330,25 @@ describe('#2971 — pr-branch.md planning.pr_strict filter (failing-first)', () 
       return dir;
     }
 
+    function readWorkflowText() {
+      return fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    }
+
+    // Builds the exact fixture script L2 executes: fixed shell vars plus the
+    // REAL create_pr_branch cherry-pick loop extracted verbatim from
+    // pr-branch.md — not a hand-written mirror of it. NOTE: INCLUDED_COMMITS
+    // here is deliberately ALL commits `main..feature`; this layer is only
+    // proving the filter recipe (rm/checkout/conflict-halt/empty-skip), not
+    // `analyze_commits`' include/exclude classification, which L1 covers.
     function buildRecipeScript(filterPaths) {
       return [
         'set -u',
-        'for HASH in $(git rev-list --reverse main..feature); do',
-        '  git cherry-pick --no-commit "$HASH" >/dev/null 2>&1 || true',
-        `  for P in ${filterPaths.join(' ')}; do`,
-        '    git rm -r -f -q --ignore-unmatch -- "$P" >/dev/null 2>&1 || true',
-        '    git checkout HEAD -- "$P" >/dev/null 2>&1 || true',
-        '  done',
-        '  if [ -n "$(git diff --name-only --diff-filter=U)" ]; then',
-        '    echo "CONFLICT_OUTSIDE_FILTER" >&2',
-        '    exit 1',
-        '  fi',
-        '  if git diff --cached --quiet; then',
-        '    git cherry-pick --quit >/dev/null 2>&1 || true',
-        '    continue',
-        '  fi',
-        '  git commit -q -C "$HASH" || exit 1',
-        'done',
+        'CURRENT_BRANCH=feature',
+        'PR_BRANCH=prbranch',
+        'TARGET=main',
+        'INCLUDED_COMMITS=$(git rev-list --reverse main..feature)',
+        `FILTER_PATHS="${filterPaths.join(' ')}"`,
+        extractPickLoop(readWorkflowText()),
       ].join('\n');
     }
 
@@ -458,15 +459,25 @@ describe('#2971 — pr-branch.md planning.pr_strict filter (failing-first)', () 
       }
     });
 
-    test('25: NEGATIVE — a real code conflict is not swallowed by the filter', () => {
+    test('25: NEGATIVE — a real code conflict is not swallowed by the filter, and the halt path fully unwinds the partial prbranch', () => {
       const transientDirs = currentTransientDirs();
       const dir = buildFixture({ conflict: true });
       try {
         const result = runFilterLoop(dir, { strict: false, transientDirs });
         assert.notStrictEqual(result.status, 0, 'a genuine code conflict must not exit 0');
         assert.ok(
-          result.stderr.includes('CONFLICT_OUTSIDE_FILTER'),
-          `expected CONFLICT_OUTSIDE_FILTER in stderr, got: ${result.stderr}`,
+          result.stderr.includes('Conflict outside the .planning/ filter'),
+          `expected the real halt message in stderr, got: ${result.stderr}`,
+        );
+        const currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD'], dir).trim();
+        assert.strictEqual(
+          currentBranch, 'feature',
+          `expected the halt path to restore CURRENT_BRANCH (feature), got: ${currentBranch}`,
+        );
+        assert.throws(
+          () => git(['rev-parse', '--verify', 'prbranch'], dir),
+          /.*/,
+          'expected the partial prbranch to be deleted by the halt path, not left stranded mid cherry-pick',
         );
       } finally {
         teardown();
@@ -783,7 +794,7 @@ describe('#2971 — pr-branch.md planning.pr_strict filter (failing-first)', () 
       );
     });
 
-    test('45: create_pr_branch recipe carries every command shape L2 proved correct', () => {
+    test('45: create_pr_branch recipe carries every command shape L2 proved correct, in the load-bearing order', () => {
       const text = readFileNormalized(WORKFLOW_PATH);
       const required = [
         'git rm -r -f -q --ignore-unmatch --',
@@ -794,6 +805,18 @@ describe('#2971 — pr-branch.md planning.pr_strict filter (failing-first)', () 
       for (const needle of required) {
         assert.ok(text.includes(needle), `workflow is missing required recipe fragment: ${needle}`);
       }
+
+      const loop = extractPickLoop(text);
+      assert.ok(loop.length > 0, 'extractPickLoop must find exactly one canonical cherry-pick loop');
+
+      const rmIndex = loop.indexOf('git rm -r -f -q --ignore-unmatch --');
+      const checkoutIndex = loop.indexOf('git checkout HEAD --');
+      assert.ok(rmIndex >= 0 && checkoutIndex >= 0, 'both rm and checkout forms must appear inside the extracted loop');
+      assert.ok(
+        rmIndex < checkoutIndex,
+        'order is load-bearing: `git rm -r -f -q --ignore-unmatch --` must run BEFORE `git checkout HEAD --` — '
+          + 'reversing it would restore the target branch\'s file and then immediately delete it, corrupting the PR branch',
+      );
     });
 
     test('46: the old un-stage form is gone', () => {

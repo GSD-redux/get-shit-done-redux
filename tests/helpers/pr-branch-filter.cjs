@@ -6,15 +6,21 @@
  *
  * The workflow (`gsd-core/workflows/pr-branch.md`) is the single source of
  * truth for which `.planning/` subdirectories are "transient" (excluded from
- * a PR branch in non-strict mode) and for the "structural" regex that carves
- * out an exception even in that non-strict filter. Rather than hardcoding a
- * second copy of that path list / regex here — which could silently drift
- * from the shipped workflow the moment either changes — this module PARSES
- * the workflow's own `TRANSIENT_DIRS="..."` and `STRUCTURAL_RE="..."` shell
- * declarations out of its markdown text and mirrors, in JS, the same
- * derivation the workflow's shell performs on them. If the workflow's
- * declarations move, get renamed, or are duplicated, this module throws
- * rather than silently falling back to a stale/guessed value.
+ * a PR branch in non-strict mode), for the "structural" regex that carves
+ * out an exception even in that non-strict filter, AND for the
+ * `create_pr_branch` cherry-pick/filter recipe itself. Rather than hardcoding
+ * a second copy of that path list / regex / recipe here — which could
+ * silently drift from the shipped workflow the moment any of them changes —
+ * this module PARSES the workflow's own `TRANSIENT_DIRS="..."` and
+ * `STRUCTURAL_RE="..."` shell declarations, and EXTRACTS its
+ * `for HASH in $INCLUDED_COMMITS` cherry-pick loop, out of its markdown text.
+ * The path/regex parsing mirrors, in JS, the same derivation the workflow's
+ * shell performs on them; the loop extraction returns the shell body
+ * verbatim so callers execute the actual shipped recipe rather than a
+ * hand-copied mirror of it. If the workflow's declarations or recipe move,
+ * get renamed, are duplicated, or go missing, this module throws rather than
+ * silently falling back to a stale/guessed value — the workflow is the
+ * single source of truth for behavior as well as for data.
  *
  * ## Known limits
  *
@@ -77,6 +83,51 @@ const parseWorkflow = (text) => {
 
 const readWorkflow = () => parseWorkflow(fs.readFileSync(WORKFLOW_PATH, 'utf-8'));
 
+const BASH_FENCE_OPEN_RE = /^```bash\s*$/;
+const BASH_FENCE_CLOSE_RE = /^```\s*$/;
+const PICK_LOOP_MARKER = 'for HASH in $INCLUDED_COMMITS';
+
+// Scans `text` for fenced ```bash blocks and returns the verbatim body
+// (fence markers stripped, lines rejoined with '\n') of the single block
+// that contains `create_pr_branch`'s cherry-pick loop. Throws if the marker
+// is found in zero or more-than-one bash block, since the recipe must have
+// exactly one canonical form.
+const extractPickLoop = (text) => {
+  if (typeof text !== 'string') {
+    throw new Error('extractPickLoop: expected the workflow text as a string');
+  }
+
+  const lines = text.split('\n');
+  const matches = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (BASH_FENCE_OPEN_RE.test(lines[i])) {
+      const bodyLines = [];
+      let j = i + 1;
+      while (j < lines.length && !BASH_FENCE_CLOSE_RE.test(lines[j])) {
+        bodyLines.push(lines[j]);
+        j += 1;
+      }
+      const body = bodyLines.join('\n');
+      if (body.includes(PICK_LOOP_MARKER)) {
+        matches.push(body);
+      }
+      i = j + 1;
+    } else {
+      i += 1;
+    }
+  }
+
+  if (matches.length === 0) {
+    throw new Error('pr-branch.md: no create_pr_branch cherry-pick loop found (expected a bash block containing "for HASH in $INCLUDED_COMMITS")');
+  }
+  if (matches.length > 1) {
+    throw new Error(`pr-branch.md: cherry-pick loop found in ${matches.length} bash blocks — the recipe must have exactly one canonical form`);
+  }
+
+  return matches[0];
+};
+
 const normalizePaths = (input) => {
   const raw = typeof input === 'string' ? input.split('\n') : input;
   return raw.map((s) => s.replace(/\r$/, '')).filter((s) => s.length > 0);
@@ -130,6 +181,7 @@ module.exports = {
   WORKFLOW_PATH,
   parseWorkflow,
   readWorkflow,
+  extractPickLoop,
   normalizePaths,
   forbiddenRegex,
   forbiddenPaths,

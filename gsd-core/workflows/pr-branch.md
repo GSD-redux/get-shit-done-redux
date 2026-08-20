@@ -336,10 +336,16 @@ for HASH in $INCLUDED_COMMITS; do
 
   # Anything still unmerged is a REAL conflict, outside the filter. Halt — do not
   # improvise a resolution and do not continue, which would drop the rest of the queue.
+  # Unwind first: this loop runs in the user's own checkout, so exiting mid-sequence
+  # would strand them on a half-built branch with cherry-pick state still live.
   if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
     echo "Conflict outside the .planning/ filter while picking $HASH:" >&2
     git diff --name-only --diff-filter=U >&2
-    echo "Resolve it on $CURRENT_BRANCH, then re-run /gsd:pr-branch." >&2
+    git cherry-pick --abort 2>/dev/null || git cherry-pick --quit 2>/dev/null || true
+    git checkout -q "$CURRENT_BRANCH" 2>/dev/null || true
+    git branch -q -D "$PR_BRANCH" 2>/dev/null || true
+    echo "Restored $CURRENT_BRANCH and removed the partial $PR_BRANCH." >&2
+    echo "Resolve the conflict against $TARGET, then re-run /gsd:pr-branch." >&2
     exit 1
   fi
 
