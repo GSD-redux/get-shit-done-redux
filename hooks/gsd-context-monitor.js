@@ -53,6 +53,27 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // #772 wires this hook to PreCompact on some hosts. A compaction restarts the
+    // context lifecycle: usage drops back to Normal and the next climb toward
+    // WARNING/CRITICAL is a fresh cycle. Without clearing the sentinel here,
+    // `lastLevel` stays pinned at 'critical' for the remainder of the session, so
+    // the documented "severity escalation (WARNING -> CRITICAL) bypasses debounce"
+    // rule can never fire again — the agent gets the critical warning up to
+    // DEBOUNCE_CALLS tool uses late, in exactly the window where immediacy matters.
+    // `criticalRecorded` is likewise sticky, suppressing the /gsd-resume-work
+    // breadcrumb (#1974) for every later exhaustion, so the record describes the
+    // first near-miss instead of the actual crash moment.
+    // Reset and exit: PreCompact is not injection-capable, so it never emits
+    // advisory output anyway.
+    if (data.hook_event_name && data.hook_event_name.trim() === 'PreCompact') {
+      try {
+        fs.unlinkSync(path.join(os.tmpdir(), `claude-ctx-${sessionId}-warned.json`));
+      } catch (e) {
+        // No sentinel yet (or already gone) — nothing to reset.
+      }
+      process.exit(0);
+    }
+
     // Check if context warnings are disabled via config.
     // Collapsed existsSync+readFileSync into a single read guarded by try/catch
     // (ENOENT or parse error → use defaults, same as old "planningDir absent" branch).
