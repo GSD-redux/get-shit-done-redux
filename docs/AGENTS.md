@@ -372,6 +372,37 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 
 ---
 
+### gsd-dom-verifier
+
+**Role:** Observes a live DOM and reports which of a wave's stated UI acceptance criteria hold. Additive — never blocks.
+
+| Property | Value |
+|----------|-------|
+| **Spawned by** | `live-dom-uat` capability step at `execute:wave:post` |
+| **Parallelism** | One per wave |
+| **Tools** | Read, Write, Glob, Grep, `mcp__chrome-devtools__*`, `mcp__claude-in-chrome__*` |
+| **Disallowed Tools** | Edit, Bash, `mcp__playwright__*` |
+| **Model (balanced)** | Sonnet |
+| **Color** | Cyan |
+| **Produces** | `{phase}-DOM-VERIFY.md` |
+| **Gated by** | `workflow.live_dom_uat` (default `false`) |
+
+This is the **only** GSD agent carrying browser MCP tools. `gsd-executor` is deliberately not widened — for a first-party agent the static `tools:` list is the only control that exists ([ADR-1244](adr/1244-capability-ecosystem.md) D2, [ADR-857](adr/857-capability-system.md) D4). It carries no `Bash`: it does not start dev servers or shell out.
+
+**Outcome codes** (`nothing_to_report` and `could_not_look` are never conflated):
+
+| `outcome` | `reason` | Meaning |
+|---|---|---|
+| `verified` | `ok` | Criteria existed and were observed |
+| `nothing_to_report` | `no_criteria` | The wave stated no UI acceptance criteria |
+| `could_not_look` | `no_browser_mcp` | No browser MCP answered |
+| `could_not_look` | `profile_locked` | Another instance holds the browser profile |
+| `could_not_look` | `target_unreachable` | Nothing serving the target |
+
+**Reference:** [Enable live-DOM verification](how-to/enable-live-dom-verification.md) · [Explanation](explanation/live-dom-uat-capability.md)
+
+---
+
 ### gsd-codebase-mapper
 
 **Role:** Explores codebase and writes structured analysis documents.

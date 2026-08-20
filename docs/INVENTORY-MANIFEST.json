@@ -13,6 +13,7 @@
       "gsd-doc-synthesizer",
       "gsd-doc-verifier",
       "gsd-doc-writer",
+      "gsd-dom-verifier",
       "gsd-domain-researcher",
       "gsd-eval-auditor",
       "gsd-eval-planner",

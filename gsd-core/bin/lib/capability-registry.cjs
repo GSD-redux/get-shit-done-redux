@@ -2290,6 +2290,59 @@ const capabilities = {
       }
     }
   },
+  "live-dom-uat": {
+    "id": "live-dom-uat",
+    "role": "feature",
+    "version": "1.11.0",
+    "title": "Live-DOM UAT",
+    "description": "Default-off live-DOM verification (#2856). Confines browser MCP reach to one purpose-built agent (gsd-dom-verifier) that carries the browser globs in its own tools: line, registered as an additive step hook at execute:wave:post. agents/gsd-executor.md is deliberately NOT widened: for a first-party agent the static tool list is the only control that exists, no capability can grant tools to one (ADR-1244 D2), no hook kind grants tool permissions (ADR-857 D4), and there is no per-dispatch tool override. Gated by activationKey workflow.live_dom_uat (default false), so with the key off the capability resolves inactive and the hook does not render at all. NOTE on the browser profile lock: chrome-devtools-mcp holds an exclusive lock on $HOME/.cache/chrome-devtools-mcp/chrome-profile, and --isolated is a flag on the user's own MCP-server registration that GSD cannot pass. Concurrent execution waves sharing one profile will therefore collide; the step tolerates and reports that (onError: skip, never blocking) rather than pretending to coordinate a resource it does not own.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.11.0"
+    },
+    "runtimeCompat": {
+      "supported": [
+        "*"
+      ],
+      "unsupported": []
+    },
+    "skills": [],
+    "agents": [
+      "gsd-dom-verifier"
+    ],
+    "activationKey": "workflow.live_dom_uat",
+    "config": {
+      "workflow.live_dom_uat": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
+      }
+    },
+    "hooks": [],
+    "steps": [
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry `mcp__playwright__*`. The Playwright path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
+    "contributions": [],
+    "gates": []
+  },
   "llama-cpp": {
     "id": "llama-cpp",
     "role": "reviewer",
@@ -3993,6 +4046,7 @@ const byAgent = {
   "gsd-eval-planner": "ai-integration",
   "gsd-code-reviewer": "code-review",
   "gsd-code-fixer": "code-review",
+  "gsd-dom-verifier": "live-dom-uat",
   "gsd-mempalace-curator": "mempalace",
   "gsd-nyquist-auditor": "nyquist",
   "gsd-pattern-mapper": "pattern-mapper",
@@ -4328,7 +4382,27 @@ const byLoopPoint = {
     "gates": []
   },
   "execute:wave:post": {
-    "steps": [],
+    "steps": [
+      {
+        "capId": "live-dom-uat",
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry `mcp__playwright__*`. The Playwright path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
     "contributions": [
       {
         "capId": "external-job",
@@ -4603,6 +4677,7 @@ const configKeys = {
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
   "review.models.kimi-code": "kimi-code",
+  "workflow.live_dom_uat": "live-dom-uat",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
   "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
@@ -4814,6 +4889,12 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Kimi Code reviewer lane."
+  },
+  "workflow.live_dom_uat": {
+    "owner": "live-dom-uat",
+    "type": "boolean",
+    "default": false,
+    "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
   },
   "review.models.llama_cpp": {
     "owner": "llama-cpp",
@@ -7500,6 +7581,7 @@ const _requiresGraph = {
   "kilo": [],
   "kimi": [],
   "kimi-code": [],
+  "live-dom-uat": [],
   "llama-cpp": [],
   "lm-studio": [],
   "mempalace": [],

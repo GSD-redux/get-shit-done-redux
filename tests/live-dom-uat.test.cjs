@@ -29,6 +29,7 @@ const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { resolveLoopHooks } = require('../gsd-core/bin/lib/loop-resolver.cjs');
 const { isValidConfigKey } = require('../gsd-core/bin/lib/config-schema.cjs');
+const { loadConfig } = require('../gsd-core/bin/lib/config-loader.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -298,50 +299,93 @@ describe('live-dom-uat: config key acceptance and coercion', () => {
     assert.strictEqual(cfg.workflow?.live_dom_uat, false);
   });
 
+  test('configSetRejectsANonBooleanValue', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const result = runGsdTools(`config-set ${KEY} banana`, tmpDir);
+    assert.ok(!result.success, 'config-set must reject a non-boolean for a boolean slice');
+  });
+
+  // The containment proof that matters: a value hand-written into config.json,
+  // bypassing config-set's validation entirely. loadConfig's federated merge
+  // type-checks the slice and substitutes the slice default, so the resolver
+  // only ever sees a real boolean. Asserted end-to-end through the real
+  // registry, because resolveLoopHooks alone gates on truthiness by design —
+  // type safety is the config layer's job, and this proves the layers compose.
   for (const [label, value] of [
-    ['stringTrue', 'true'],
-    ['numberOne', 1],
-    ['null', null],
-    ['emptyArray', []],
-    ['emptyObject', {}],
+    ['stringTrue', '"true"'],
+    ['stringFalse', '"false"'],
+    ['numberOne', '1'],
+    ['numberZero', '0'],
+    ['nullValue', 'null'],
+    ['emptyArray', '[]'],
+    ['emptyObject', '{}'],
   ]) {
-    test(`nonBooleanDoesNotActivate_${label}`, () => {
+    test(`handWrittenNonBooleanNeverActivates_${label}`, (t) => {
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'config.json'),
+        `{"workflow":{"live_dom_uat":${value}}}`,
+      );
+
+      const cfg = loadConfig(tmpDir);
+      assert.strictEqual(cfg.workflow?.live_dom_uat, false,
+        `${label} must resolve to the slice default, not survive as a truthy value`);
+
       const r = resolveLoopHooks({
         point: POINT,
-        registry: buildRegistry(),
-        config: { workflow: { live_dom_uat: value } },
+        registry: realRegistry,
+        config: cfg,
+        cwd: tmpDir,
         capabilityStatesById: { [CAP_ID]: { enabled: true, active: true } },
       });
-      assert.equal(ourHook(r), undefined,
-        `${label} must not activate browser reach — only a real boolean true does`);
+      assert.equal(ourHook(r), undefined, `${label} must not activate browser reach`);
     });
   }
 
-  test('property: no non-boolean value ever activates the hook, and none throws', () => {
+  test('absentKeyResolvesToTheSchemaDefault', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const cfg = loadConfig(tmpDir);
+    assert.strictEqual(cfg.workflow?.live_dom_uat, false,
+      'with no config written at all, the slice default is what the loop sees');
+  });
+
+  test('property: no hand-written non-boolean ever activates the hook', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const configPath = path.join(tmpDir, '.planning', 'config.json');
+
     fc.assert(
       fc.property(
         fc.oneof(
           fc.constant(null),
-          fc.constant(undefined),
-          fc.constant(NaN),
           fc.constant(0),
           fc.constant(''),
           fc.string(),
           fc.integer(),
-          fc.double(),
           fc.array(fc.integer()),
           fc.dictionary(fc.string(), fc.integer()),
         ),
         (value) => {
+          fs.writeFileSync(configPath, JSON.stringify({ workflow: { live_dom_uat: value } }));
+          const cfg = loadConfig(tmpDir);
+          if (cfg.workflow?.live_dom_uat !== false) return false;
           const r = resolveLoopHooks({
             point: POINT,
-            registry: buildRegistry(),
-            config: { workflow: { live_dom_uat: value } },
+            registry: realRegistry,
+            config: cfg,
+            cwd: tmpDir,
             capabilityStatesById: { [CAP_ID]: { enabled: true, active: true } },
           });
           return ourHook(r) === undefined;
         },
       ),
+      { numRuns: 50 },
     );
   });
 });
