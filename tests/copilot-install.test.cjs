@@ -1450,6 +1450,7 @@ describe('E2E: Copilot full install verification', () => {
       'gsd-doc-synthesizer.agent.md',
       'gsd-doc-verifier.agent.md',
       'gsd-doc-writer.agent.md',
+      'gsd-dom-verifier.agent.md',
       'gsd-domain-researcher.agent.md',
       'gsd-eval-auditor.agent.md',
       'gsd-eval-planner.agent.md',

@@ -17,7 +17,7 @@ You carry exactly two browser MCP families: `mcp__chrome-devtools__*` and
 `mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same
 tool names — probe, then use what is there. Do not paper over differences between them.
 
-You do NOT carry `mcp__playwright__*`. The Playwright path belongs to the orchestrator's
+You do NOT carry the Playwright MCP family. That path belongs to the orchestrator's
 own verification step and is not yours.
 </browser_surface>
 

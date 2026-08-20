@@ -33,6 +33,7 @@ Full roster at `agents/gsd-*.md`. The "Primary doc" column flags whether [`docs/
 | gsd-verifier | Verifies phase goal achievement through goal-backward analysis. | `/gsd-execute-phase` | primary |
 | gsd-nyquist-auditor | Fills Nyquist validation gaps by generating tests. | `/gsd-validate-phase` | primary |
 | gsd-ui-auditor | Retroactive 6-pillar visual audit of implemented frontend code. | `/gsd-ui-review` | primary |
+| gsd-dom-verifier | Observes a live DOM and reports which of a wave's stated UI acceptance criteria hold. Additive; never blocks. | `execute:wave:post` step hook (`live-dom-uat` capability) | primary |
 | gsd-codebase-mapper | Explores codebase and writes structured analysis documents. | `/gsd-map-codebase` | primary |
 | gsd-debugger | Investigates bugs using scientific method with persistent state. | `/gsd-debug`, `/gsd-verify-work` | primary |
 | gsd-user-profiler | Scores developer behavior across 8 dimensions. | `/gsd-profile-user` | primary |
