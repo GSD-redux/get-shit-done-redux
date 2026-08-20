@@ -328,16 +328,16 @@ test('scanRepo(repoRoot) matches the baseline exactly: zero fresh AND zero stale
 
 // ─── CLI end-to-end against an ISOLATED --root tree (#3640) ─────────────────
 //
-// The E5 block below writes its fixture directly into the real, shared
-// gsd-core/workflows/ because main() hardcoded its scan root — and any
-// parallel consumer of the real tree can then observe the fixture
-// mid-lifecycle (the emitted-provenance install bakes it into all 19
-// manifests and later fails its existsSync pass once t.after() removes it;
-// the #3333 TOCTOU ENOENT crash in copyWithPathReplacement was the same
-// writer's first documented symptom). These rows drive the SAME real CLI,
-// through the same exit path, with an explicit --root override pointing at
-// an isolated temp tree — the guard's fail path is proven end-to-end with
-// zero writes into the shared source tree.
+// This block REPLACES the original E5 shape, which wrote its fixture
+// directly into the real, shared gsd-core/workflows/ because main() hardcoded
+// its scan root — and any parallel consumer of the real tree could then
+// observe the fixture mid-lifecycle (the emitted-provenance install baked it
+// into all 19 manifests and later failed its existsSync pass once t.after()
+// removed it; the #3333 TOCTOU ENOENT crash in copyWithPathReplacement was
+// the same writer's first documented symptom). These rows drive the SAME
+// real CLI, through the same exit path, with an explicit --root override
+// pointing at an isolated temp tree — the guard's fail path is proven
+// end-to-end with zero writes into the shared source tree.
 
 describe('CLI end-to-end: --root scan-root override (#3640)', () => {
   // A scan-root skeleton: the SCAN_DIR tree main() walks plus a valid empty
@@ -425,34 +425,3 @@ describe('CLI end-to-end: --root scan-root override (#3640)', () => {
   });
 });
 
-// ─── E5 (test matrix): PROVE the guard, not just its pure functions, can
-// still FAIL — an empty baseline that is green only because nothing
-// exercises the fail path is exactly the "trusted on a green baseline it
-// did not earn" failure this epic keeps recording. `main()` fixes its scan
-// root to the real repo (`path.join(__dirname, '..')`), so this drives the
-// actual CLI end-to-end against a real (temporary) file under a real
-// SCAN_DIR — not a synthetic tree passed to the pure `scanRepo` — cleaned
-// up in `t.after()` regardless of assertion outcome. ─────────────────────
-
-describe('CLI end-to-end: the guard fails on a deliberate unacknowledged fixture', () => {
-  test('a fresh, unacknowledged plan-count re-derivation exits 1 and names itself in stderr', (t) => {
-    const fixturePath = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'zzz-e5-drift-fixture.md');
-    // helpers.cleanup() refuses any path outside the OS temp root; this
-    // fixture must live under a real SCAN_DIR (gsd-core/workflows/) because
-    // main() hardcodes its scan root to the real repo — see the file header
-    // above this describe block.
-    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture lives outside the temp root helpers.cleanup() requires (see comment above)
-    t.after(() => fs.rmSync(fixturePath, { force: true }));
-    fs.writeFileSync(
-      fixturePath,
-      'FIXTURE_COUNT=$(ls .planning/phases/zzz/*-PLAN.md 2>/dev/null | wc -l)\n',
-    );
-
-    const result = runNode([DRIFT_SCRIPT]);
-    assert.strictEqual(result.outcome, 'exited');
-    assert.strictEqual(result.exitCode, 1);
-    assert.match(result.stderr, /NEW plan\/summary count re-derivation/);
-    assert.match(result.stderr, /gsd-core\/workflows\/zzz-e5-drift-fixture\.md/);
-    assert.match(result.stderr, /FIXTURE_COUNT=/);
-  });
-});

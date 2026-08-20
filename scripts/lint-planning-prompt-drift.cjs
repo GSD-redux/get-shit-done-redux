@@ -370,8 +370,32 @@ function writeBaseline(root, violations) {
   return entries;
 }
 
+/**
+ * Resolve the scan root for a CLI run. Default: this repo — exactly what
+ * `lint:ci` invokes. `--root <dir>` overrides it (#3640) so the CLI
+ * end-to-end test can prove the guard's FAIL path against an isolated temp
+ * tree instead of writing its fixture into the shared `gsd-core/workflows/`
+ * that parallel test chunks observe mid-lifecycle (the emitted-provenance
+ * manifest build copies the transient file into all 19 runtime manifests;
+ * the #3333 TOCTOU ENOENT crash was the same writer's first symptom).
+ * Fail-closed: `--root` without a value is a usage error, never a
+ * `path.resolve(undefined)` TypeError.
+ */
+function resolveScanRoot() {
+  const rootIdx = process.argv.indexOf('--root');
+  if (rootIdx === -1) return path.join(__dirname, '..');
+  const value = process.argv[rootIdx + 1];
+  if (value === undefined || value === '') {
+    process.stderr.write('planning-prompt-drift: --root requires a directory argument (usage: --root <dir>)\n');
+    process.exitCode = 1;
+    return null;
+  }
+  return path.resolve(value);
+}
+
 function main() {
-  const root = path.join(__dirname, '..');
+  const root = resolveScanRoot();
+  if (root === null) return;
   const update = process.argv.includes('--update');
   const violations = scanRepo(root);
 
