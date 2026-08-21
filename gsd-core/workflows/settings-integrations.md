@@ -26,10 +26,15 @@ log the plaintext value. The workflow follows these rules:
 - **`config-set` output is masked** for keys in the secret set
   (`brave_search`, `firecrawl`, `exa_search`) — see
   `gsd-core/bin/lib/secrets.cjs`.
-- **Agent-type and CLI slug validation.** `agent_skills.<agent-type>` and
-  `review.models.<cli>` keys are matched against `^[a-zA-Z0-9_-]+$`. Inputs
-  containing path separators (`/`, `\`, `..`), whitespace, or shell
-  metacharacters are rejected. This closes off skill-injection attacks.
+- **Agent-type and CLI slug validation.** Slug inputs for
+  `agent_skills.<agent-type>` and `review.models.<cli>` are checked against
+  `^[a-zA-Z0-9_-]+$` before any write; inputs containing path separators
+  (`/`, `\`, `..`), whitespace, or shell metacharacters are rejected. This
+  closes off skill-injection attacks. For `agent_skills` that check is the
+  gate on an open namespace (dynamic key pattern); for `review.models` it is
+  only a pre-check — the authoritative gate is the closed, registry-derived
+  settable set (see the review-models section below), because slug shape
+  alone never makes a `review.models.*` key writable.
 </security>
 
 <required_reading>
@@ -148,9 +153,23 @@ gsd_run query config-set brave_search null
 
 <step name="section_2_review_models">
 
-`review.models.<cli>` is a map that tells the code-review workflow which
-shell command to invoke for a given reviewer flavor. Supported flavors:
-`claude`, `codex`, `gemini`, `opencode`.
+`review.models.<cli>` is a closed, registry-derived map that tells the review
+workflow which model id a reviewer lane uses. It is not an open namespace: a
+`review.models.<cli>` key is settable only when that lane's capability
+declares a `modelConfigKey`, and `config-set` accepts exactly those keys
+(federated from the capability registry). No dynamic-key regex governs this
+namespace — any other slug fails with `Unknown config key`.
+
+Settable keys (the shipped registry's model-bearing lanes):
+
+`review.models.agy` (Antigravity), `review.models.claude`, `review.models.codex`,
+`review.models.gemini`, `review.models.kimi-code`, `review.models.llama_cpp`,
+`review.models.lm_studio`, `review.models.ollama`, `review.models.opencode`.
+
+Reviewer lanes `cursor`, `qwen`, and `coderabbit` declare no `modelConfigKey` —
+there is nothing to configure for them here (whether they should have a key is
+a separate, already-filed question). If the user asks for one of those, say
+exactly that and skip.
 
 ```text
 AskUserQuestion([
@@ -159,7 +178,7 @@ AskUserQuestion([
     header: "Review",
     multiSelect: false,
     options: [
-      { label: "Configure CLI", description: "Pick a reviewer flavor and set/clear its command" },
+      { label: "Configure CLI", description: "Pick a reviewer lane and set/clear its model id" },
       { label: "Done", description: "Finish this section" }
     ]
   }
@@ -171,7 +190,7 @@ If "Configure CLI" is selected, ask:
 ```text
 AskUserQuestion([
   {
-    question: "Which reviewer CLI do you want to configure?",
+    question: "Which reviewer lane do you want to configure? Other settable lanes: agy (Antigravity), kimi-code, llama_cpp, lm_studio, ollama — or type a slug",
     header: "CLI",
     multiSelect: false,
     options: [
@@ -184,7 +203,19 @@ AskUserQuestion([
 ])
 ```
 
-For the selected CLI, show the current value (or `(unset)`) and offer
+For a slug received as free text, check it against the settable set above.
+If it is not one of the nine, print:
+
+```text
+Rejected: review.models.<slug> is not settable. Only lanes whose capability
+declares a modelConfigKey can be configured here: agy, claude, codex, gemini,
+kimi-code, llama_cpp, lm_studio, ollama, opencode. (cursor, qwen, and
+coderabbit have no per-lane model key.)
+```
+
+and re-prompt.
+
+For the selected lane, show the current value (or `(unset)`) and offer
 Leave / Replace / Clear, followed by a text-input prompt for the model id
 string. Write via:
 
@@ -194,10 +225,6 @@ gsd_run query config-set review.models.<cli> "<model id>"
 
 After each update, return to the "Review model CLI mapping — what next?" question.
 Loop until the user selects "Done".
-
-The `review.models.<cli>` key is validated by the dynamic pattern
-`^review\.models\.[a-zA-Z0-9_-]+$`. Empty CLI slugs and path-containing slugs
-are rejected by `config-set` before any write.
 </step>
 
 <step name="section_3_agent_skills">
@@ -249,12 +276,22 @@ spaces, or shell metacharacters).
 
 and re-prompt.
 
-For a selected slug, prompt for the comma-separated skill list (text input).
-Show the current value if any, offer Leave / Replace / Clear. Write via:
+For a selected slug, prompt for the skill list (text input; a comma-separated
+reply is fine). Show the current value if any, offer Leave / Replace / Clear.
+
+Split the reply before writing: the resolver never splits strings, so a
+comma-joined string would be stored as ONE skill path that silently fails
+resolution at spawn time (#3651 — `references/planning-config.md`: "Paths
+cannot be comma-joined into one string; each path must be its own array
+element"). Split on commas, trim each entry, drop empty entries, and write
+the JSON array form:
 
 ```bash
-gsd_run query config-set agent_skills.<slug> "<skill-a,skill-b,skill-c>"
+gsd_run query config-set agent_skills.<slug> '["skills/alpha","skills/beta"]'
 ```
+
+A single skill may be written as one bare string or a one-element array —
+both resolve identically.
 
 After each update, return to the "Agent skills mapping — what next?" question.
 Loop until "Done".
@@ -278,12 +315,10 @@ Search Integrations
 | search_gitignored  | true | false      |
 
 Code Review CLI Routing
-| CLI         | Command                              |
+| Lane        | Model id                             |
 |-------------|--------------------------------------|
-| claude      | <value or (session model default)>   |
-| codex       | <value or (unset)>                   |
-| gemini      | <value or (unset)>                   |
-| opencode    | <value or (unset)>                   |
+| <lane>      | <value or (unset)>                   |
+| ...         | ... one row per lane the user set    |
 
 Agent Skills Injection
 | Agent Type       | Skills                    |
@@ -310,6 +345,6 @@ Quick commands:
 - [ ] User presented with three sections: Search Integrations, Review CLI Routing, Agent Skills Injection
 - [ ] API keys written plaintext only to `config.json`; never echoed, never logged, never displayed
 - [ ] Masked confirmation table uses `****<last-4>` for set keys and `(unset)` for null
-- [ ] `review.models.<cli>` and `agent_skills.<agent-type>` keys validated against `[a-zA-Z0-9_-]+` before write
+- [ ] `agent_skills.<agent-type>` slugs validated against `[a-zA-Z0-9_-]+` before write; `review.models.<cli>` slugs accepted only from the registry-derived settable set; skill lists written as JSON arrays (never comma-joined strings)
 - [ ] Config merge preserves all keys outside the three sections this workflow owns
 </success_criteria>

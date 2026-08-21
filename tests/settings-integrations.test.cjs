@@ -242,7 +242,7 @@ describe('#3651 workflow — agent_skills array-form write', () => {
       'the comma-joined string write prescription must be gone — the resolver never splits it'
     );
     assert.ok(
-      /config-set agent_skills\.<slug> '\["[^"]*"(?:,\s*"[^"]*")*\]'/.test(src),
+      /config-set agent_skills\.<slug> '\["[^"]{0,80}"(?:,\s*"[^"]{0,80}"){0,20}\]'/.test(src),
       'workflow must show the JSON array write form (config-set agent_skills.<slug> \'["…","…"]\')'
     );
     assert.ok(
