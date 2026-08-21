@@ -144,6 +144,27 @@ expected path, not an exception.
 The checker never runs the recorded command. It reads the spec as a document; executing a command
 string lifted out of one would be a code-execution path through untrusted text.
 
+### What this check is and is not
+
+Worth knowing before you rely on it, because the check is narrower than it looks:
+
+- **It makes the inventory's origin falsifiable, not verified.** Nothing re-runs the command or
+  compares the count against the installed package. A line that was simply made up passes. What
+  you gain is that a reader — or you, six months later — can re-run the recorded command and see
+  for yourself; before the field existed there was nothing to re-run.
+- **It cannot tell a stale inventory from a current one.** That is what the recorded
+  `<package>@<version>` is for: compare it against what is installed now. A spec reused after an
+  upgrade looks exactly like a fresh one apart from that string.
+- **Enforcement is applied by an agent, not by a parser.** Dimension 7 is a rule `gsd-ui-checker`
+  follows, the same as the other six dimensions. It is not a schema check that runs over your
+  spec, so treat a PASS as "the reviewer found a provenance line", not as a machine guarantee.
+- **"The checker never runs the recorded command" is an instruction, not a sandbox.** See
+  [Security model → Trade-offs and limits](../explanation/security-model.md#trade-offs-and-limits)
+  for why that distinction matters and what does back it up.
+
+None of this makes the field pointless — an unsourced inventory used to be indistinguishable from
+a sourced one, and now it is not. But it is a record you can audit, not a proof.
+
 ---
 
 ## Use sketch findings as a head start
