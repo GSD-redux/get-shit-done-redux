@@ -559,17 +559,6 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
   const ownsRoot = providedRoot === null;
   const root = providedRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), `gsd-${runtime}-${scope}-`));
   try {
-    const LOCAL_DIR_NAME = {
-      claude: '.claude', opencode: '.opencode', kilo: '.kilo',
-      codex: '.codex', copilot: '.github', antigravity: '.agents', cursor: '.cursor',
-      windsurf: '.windsurf', augment: '.augment', trae: '.trae', qwen: '.qwen',
-      codebuddy: '.codebuddy', cline: '.',
-      // #3023: pi was in RUNTIME_META but absent here, so `scope: 'local'` for pi
-      // resolved `path.join(root, undefined)` and threw — no local-scope pi install
-      // could ever be exercised. pi's local config dir is `.pi`
-      // (capabilities/pi/capability.json runtime.localConfigDir).
-      pi: '.pi',
-    };
     let configDir;
     let cwd = process.cwd();
     const args = [installScript, `--${runtime}`];
@@ -602,7 +591,23 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
     } else {
       args.push('--local');
       cwd = root;
-      configDir = runtime === 'cline' ? root : path.join(root, LOCAL_DIR_NAME[runtime]);
+      // #3031: local scope reads RUNTIME_META.localDir — the SAME table the
+      // global branch above reads — instead of a second hand-maintained map.
+      // That duplicate map was missing four runtimes (hermes, kimi, kimi-code,
+      // zcode), so `scope: 'local'` for any of them resolved
+      // `path.join(root, undefined)` and threw a bare TypeError naming neither
+      // the runtime nor the map at fault. #3023 fixed exactly this for `pi` by
+      // adding one more entry, which left the divergence itself in place; the
+      // table is now single-source so a new runtime cannot reintroduce it.
+      // `cline` keeps its ternary: its local artifacts land at the project root
+      // itself, which is a genuine exception rather than a directory name.
+      const localMeta = RUNTIME_META[runtime];
+      if (runtime !== 'cline' && (!localMeta || !localMeta.localDir)) {
+        throw new Error(
+          `runMinimalInstall: no RUNTIME_META.localDir for runtime "${runtime}" — refusing to guess a local config dir (#3031)`,
+        );
+      }
+      configDir = runtime === 'cline' ? root : path.join(root, localMeta.localDir);
     }
     args.push(...extraArgs);
     const result = runNode(args, {
