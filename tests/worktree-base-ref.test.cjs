@@ -690,7 +690,9 @@ describe('cmdWorktreeBaseCheck', () => {
     t.after(() => { fs.writeSync = original; });
     const result = cmdWorktreeBaseCheck('/repo', [], {
       readFile: () => null,
-      execGit: makeExecGitCheck({}),
+      execGit: makeExecGitCheck({
+        'rev-parse HEAD': { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', signal: null, error: null },
+      }),
       userClaudeDir: '/nonexistent-hermetic-user-dir',
       // no deps.write — the default seam under test
     });
