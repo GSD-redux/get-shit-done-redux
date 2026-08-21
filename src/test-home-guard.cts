@@ -42,7 +42,13 @@
  *   2. `os.userInfo().homedir` reads the passwd entry and ignores `$HOME`, while
  *      `os.homedir()` prefers `$HOME`. They disagree exactly when a caller
  *      redirected HOME and agree when one forgot. This is the PRIMARY signal and
- *      the only one used whenever a passwd entry is readable.
+ *      the only one used whenever a passwd entry is readable. It is asked about
+ *      the DESTINATION, not about HOME state: a destination outside the passwd
+ *      home is allowed, and one inside it is refused UNLESS it sits beneath a
+ *      HOME that was sandboxed away from the passwd home. That last exemption is
+ *      not a softening — on Windows the temp root is inside the user's home, so
+ *      without it every sandboxed run is refused (#3725). Both halves are
+ *      required; see `derivesFromSandboxedHome`.
  *   3. `SANDBOX_MARKER` — consulted ONLY when the passwd entry cannot be read.
  *
  * FAILS CLOSED. If the passwd entry is unreadable (some CI images) we cannot
@@ -157,15 +163,27 @@ function assertTestHomeSandboxed(
 
   const realHome = passwdHome === null ? { kind: 'unknown' as const } : identify(passwdHome);
   if (realHome.kind === 'ok') {
+    let effectiveHome: string | null = null;
+    try {
+      effectiveHome = osMod.homedir() || null;
+    } catch {
+      effectiveHome = null;
+    }
+
     // The question is NOT "is HOME sandboxed right now" — it is "does this
-    // destination land in the real home". Those differ: a layout resolved BEFORE
+    // destination land in the real home, other than by deriving from a sandbox
+    // beneath it". The first half alone is not enough: a layout resolved BEFORE
     // sandboxHome() captures the real `~/.agents` in `kind.home`, and applySurface
     // takes an already-resolved layout, so a HOME-state check returns "sandboxed"
-    // while the stale destination still points at the real home. Asking about the
-    // destination closes that, and subsumes the HOME comparison it replaces.
+    // while the stale destination still points at the real home.
+    //
+    // The second half is not optional either — see `derivesFromSandboxedHome`.
+    // Containment in the real home is not by itself evidence of danger on a
+    // platform whose temp root lives inside the home.
     for (const kind of overriding) {
       const dest = path.resolve(path.join(kind.home as string, kind.destSubpath ?? ''));
       if (!isInside(dest, realHome)) continue;
+      if (derivesFromSandboxedHome(dest, effectiveHome, realHome)) continue;
       throw new Error(
         `${operation}("${runtime}") was called under a test runner with a destination inside ` +
         `your REAL home. The "${kind.kind}" kind declares a global home override, so it ` +
@@ -190,6 +208,42 @@ function assertTestHomeSandboxed(
     `os.homedir() and would write to (and prune GSD entries from) whatever real home that ` +
     `is. Refusing rather than guessing.\n${fix}`,
   );
+}
+
+/**
+ * Is `dest` inside a HOME that has been sandboxed away from the passwd home?
+ *
+ * Asked only once `dest` is already known to be inside the real home, and it is
+ * what makes that fact non-fatal on Windows: there `os.tmpdir()` is
+ * `%LOCALAPPDATA%\Temp` — `%USERPROFILE%\AppData\Local\Temp` — so EVERY
+ * sandbox a test creates is a descendant of the real home. Containment in the
+ * real home is therefore true of the correctly-sandboxed case and the dangerous
+ * one alike, and cannot separate them by itself. POSIX conceals this, because
+ * `/tmp` and `/var/folders` both sit outside `$HOME`. All six Windows shards of
+ * #3725 failed on legitimately sandboxed destinations before this conjunct
+ * existed.
+ *
+ * BOTH conditions are required, and neither is sufficient:
+ *
+ *   - HOME differs from the passwd home — otherwise nothing was sandboxed and
+ *     `dest` is simply in the real home.
+ *   - `dest` is beneath that sandboxed HOME — otherwise this decays into the
+ *     "is HOME sandboxed?" check the module docblock rejects, and a layout
+ *     resolved before the sandbox walks straight through.
+ *
+ * Fails CLOSED: an unreadable or unidentifiable HOME returns false, so the
+ * caller refuses rather than exempting a destination it cannot place.
+ */
+function derivesFromSandboxedHome(
+  dest: string,
+  effectiveHome: string | null,
+  realHome: { dev: number; ino: number },
+): boolean {
+  if (effectiveHome === null) return false;
+  const eff = identify(effectiveHome);
+  if (eff.kind !== 'ok') return false;
+  if (eff.dev === realHome.dev && eff.ino === realHome.ino) return false;
+  return isInside(dest, eff);
 }
 
 /**

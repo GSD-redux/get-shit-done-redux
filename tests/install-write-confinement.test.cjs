@@ -3267,6 +3267,72 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // The round-6 defect, found by CI rather than by review: all six Windows
+    // shards of #3725 failed here, every one of them on a legitimately sandboxed
+    // destination. On Windows `os.tmpdir()` is `%LOCALAPPDATA%\Temp` —
+    // `%USERPROFILE%\AppData\Local\Temp` — so every sandbox a test creates is a
+    // DESCENDANT of the real home, and "does this land inside the real home?"
+    // answers yes for the safe case and the dangerous one alike. POSIX hides this:
+    // /tmp and /var/folders both sit outside $HOME, so the containment question
+    // happens to discriminate there and the flaw is invisible.
+    //
+    // What actually separates the two is whether the destination derives from a
+    // HOME that was sandboxed — hence the added conjunct. This must NOT decay into
+    // the "is HOME sandboxed?" check the row above rejects; the row below holds
+    // that line.
+    test('allows a sandbox nested INSIDE the real home — the Windows temp-root shape', (t) => {
+      const realHome = createTempDir('gsd-3712-nested-home-');
+      t.after(() => cleanup(realHome));
+      const sandbox = path.join(realHome, 'AppData', 'Local', 'Temp', 'gsd-sandbox-a');
+      fs.mkdirSync(sandbox, { recursive: true });
+      assert.doesNotThrow(() => testHomeGuard.assertTestHomeSandboxed(
+        'installRuntimeArtifacts', 'codex',
+        escapingKinds(path.join(sandbox, '.agents')),
+        { os: fakeOs(sandbox, realHome), env: underTest },
+      ));
+    });
+
+    // The guard against fixing the row above by weakening it to a HOME-state
+    // check. Same nested-sandbox environment, but the layout was resolved before
+    // the sandbox existed, so the destination still names the real home's
+    // `.agents`. HOME is sandboxed and the write is still fatal.
+    test('a nested sandbox does NOT excuse a STALE destination in the real home', (t) => {
+      const realHome = createTempDir('gsd-3712-nested-stale-');
+      t.after(() => cleanup(realHome));
+      const sandbox = path.join(realHome, 'AppData', 'Local', 'Temp', 'gsd-sandbox-b');
+      fs.mkdirSync(sandbox, { recursive: true });
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+        'a sandbox beneath the real home vouches only for what is beneath the sandbox',
+      );
+    });
+
+    // The exemption above is the only path in this guard that can turn a
+    // destination inside the real home into an allowed write, so its
+    // cannot-tell branches have to refuse. Mutating either of them to `true`
+    // left the whole suite green before this row existed.
+    test('refuses when HOME cannot be placed at all, rather than exempting it', (t) => {
+      const realHome = createTempDir('gsd-3712-nohome-place-');
+      t.after(() => cleanup(realHome));
+      const unplaceable = {
+        'an empty homedir': () => '',
+        'a homedir that throws': () => { throw new Error('no home'); },
+        'a homedir that does not exist': () => path.join(realHome, 'absent-sandbox'),
+      };
+      for (const [label, homedir] of Object.entries(unplaceable)) {
+        assert.throws(
+          () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+            escapingKinds(path.join(realHome, '.agents')),
+            { os: { homedir, userInfo: () => ({ homedir: realHome }) }, env: underTest }),
+          /destination inside\s+your REAL home/,
+          `${label} must refuse — an unplaceable HOME is not evidence of a sandbox`,
+        );
+      }
+    });
+
     test('the message names the operation and the fix, so it is not silenced blindly', (t) => {
       const realHome = createTempDir('gsd-3712-msg-');
       t.after(() => cleanup(realHome));
