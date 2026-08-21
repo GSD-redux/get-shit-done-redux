@@ -215,7 +215,15 @@ If your machine already uses `~/.agents/skills` and does not have `~/.config/age
 kimi --agent-file ~/.agents/agents/gsd.yaml
 ```
 
-Kimi also discovers user skills from the brand-specific `~/.kimi-code` directory. If your Kimi setup is already centered on `~/.kimi-code`, install there explicitly:
+> **If you are on Kimi Code, use `--kimi-code`, not `--kimi` with a redirected config dir.** Since 1.10.0 (#2755) Kimi Code is its own runtime with its own hooks root:
+>
+> ```bash
+> npx @opengsd/gsd-core@latest --kimi-code --global
+> ```
+>
+> `--config-dir` and `KIMI_CONFIG_DIR` select the *skills* root only. They do **not** move the native `config.toml` that carries GSD's `[[hooks]]` block — that root is chosen by the runtime (`~/.kimi` for `--kimi` via `KIMI_SHARE_DIR`, `~/.kimi-code` for `--kimi-code` via `KIMI_CODE_HOME`). Running `--kimi --config-dir ~/.kimi-code` therefore puts your skills under `~/.kimi-code` while the hooks still land in `~/.kimi` — the exact split that left orphaned hooks behind before 1.10.0. See [Migrating from `--kimi` to `--kimi-code`](../migration/kimi-to-kimi-code.md), which also covers reclaiming artifacts an older install already wrote.
+
+Kimi CLI also discovers user skills from the brand-specific `~/.kimi-code` directory. If you are genuinely on **Kimi CLI** and your setup is centered on `~/.kimi-code`, redirect its skills root explicitly:
 
 ```bash
 npx @opengsd/gsd-core@latest --kimi --global --config-dir ~/.kimi-code
