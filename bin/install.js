@@ -7895,6 +7895,41 @@ const GSD_UNINSTALL_HOOKS = [..._HOOKS_TO_COPY, 'gsd-check-update.cmd'];
  * @param {string} kimiHooksRoot - Absolute path to the Kimi hooks root.
  * @returns {number} count of removal steps performed (0 when nothing matched).
  */
+/**
+ * Whether two paths denote the SAME directory — used to stop a reclaim from
+ * deleting the very root the current install just wrote (#3031).
+ *
+ * A plain `path.resolve` comparison is not enough here, because both roots come
+ * from user-controlled env vars (`KIMI_SHARE_DIR`, `KIMI_CODE_HOME`) and two
+ * different strings routinely name one directory:
+ *   - case-insensitive filesystems (macOS, Windows): `~/Kimi` vs `~/kimi`
+ *   - symlinks / bind mounts: `~/link-to-kimi` vs the real target
+ * Getting this wrong is not cosmetic — it is the difference between skipping a
+ * reclaim and deleting a live install's own hooks.
+ *
+ * Strategy, cheapest-first: string equality after `resolve`, then identity by
+ * `dev`+`ino` (definitive when both exist and the platform reports them), then
+ * `realpath` string equality (resolves symlinks AND canonicalizes case). Any
+ * rung answering "same" wins; a path that does not exist cannot be the root we
+ * just wrote, so a failed stat simply falls through.
+ *
+ * @returns {boolean} true only when both paths are proven to be one directory.
+ */
+function isSameDirectory(a, b) {
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    // `ino` is 0 on some Windows filesystems; only trust a positive match.
+    if (sa.ino && sb.ino && sa.dev === sb.dev && sa.ino === sb.ino) return true;
+  } catch (_) { /* one side missing — fall through to realpath */ }
+  try {
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  } catch (_) {
+    return false;
+  }
+}
+
 function reclaimKimiHooksRoot(kimiHooksRoot) {
   let steps = 0;
   const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
@@ -12112,14 +12147,26 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // delete the hooks it just wrote. The flag is silently inert for kimi
       // rather than an error — `--all` passes every runtime through this branch,
       // and one opt-in flag must not fail an otherwise valid multi-runtime run.
-      if (hasReclaimKimiLegacy && runtime === 'kimi-code') {
+      //
+      // ALSO gated on kimi NOT being installed by this same invocation. The
+      // flag asserts "I only use Kimi Code"; `--all`, or an explicit `--kimi
+      // --kimi-code`, falsifies that outright. Both orderings put `kimi` BEFORE
+      // `kimi-code` (selectRuntimesFromArgs), so without this guard the run
+      // installs Kimi CLI's hooks and then deletes them moments later — the run
+      // reports success and the user is left with the very breakage the opt-in
+      // exists to prevent. Verified reproducible before this guard existed.
+      const kimiInstalledThisRun = selectedRuntimes.includes('kimi');
+      if (hasReclaimKimiLegacy && runtime === 'kimi-code' && kimiInstalledThisRun) {
+        console.log(`  ${dim}•${reset} Skipped --reclaim-kimi-legacy: this run also installs --kimi, so ${resolveKimiHooksTomlDir({ runtime: 'kimi' })} is a live Kimi CLI install`);
+      } else if (hasReclaimKimiLegacy && runtime === 'kimi-code') {
         const legacyKimiRoot = resolveKimiHooksTomlDir({ runtime: 'kimi' });
         // Both roots honor their own env override (KIMI_SHARE_DIR /
         // KIMI_CODE_HOME). A user who points both at ONE directory collapses
         // "the legacy root" onto "the root this install just wrote", and an
-        // unguarded reclaim would delete its own output. Compare RESOLVED paths,
-        // not the env vars, so every way of spelling the same directory is caught.
-        if (path.resolve(legacyKimiRoot) === path.resolve(kimiHooksRoot)) {
+        // unguarded reclaim would delete its own output. isSameDirectory compares
+        // the DIRECTORIES, not the strings — case-insensitive filesystems and
+        // symlinked aliases both name one dir with two spellings.
+        if (isSameDirectory(legacyKimiRoot, kimiHooksRoot)) {
           console.log(`  ${dim}•${reset} Skipped --reclaim-kimi-legacy: ${legacyKimiRoot} is this install's own hooks root`);
         } else {
           const reclaimed = reclaimKimiHooksRoot(legacyKimiRoot);

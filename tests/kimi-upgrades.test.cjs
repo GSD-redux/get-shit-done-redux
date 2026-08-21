@@ -623,6 +623,69 @@ describe('#3031 — opt-in reclaim of orphaned ~/.kimi GSD artifacts', () => {
       'reclaim must not delete the hooks block this very install just wrote');
   });
 
+  test('never reclaims when the same invocation also installs kimi', (t) => {
+    // The flag asserts "I only use Kimi Code". `--all` — or an explicit
+    // `--kimi --kimi-code` — falsifies that, and selectRuntimesFromArgs puts
+    // `kimi` BEFORE `kimi-code` in both, so an unguarded reclaim installs Kimi
+    // CLI's hooks and deletes them moments later in the same run, exiting 0.
+    const root = sandboxHome(t, 'gsd-3031-');
+
+    // Adding `--kimi` to a kimi-code install makes selectRuntimesFromArgs
+    // return BOTH runtimes, exactly as `--all` does.
+    runKimiInstall(root, 'kimi-code', { extraArgs: ['--kimi', RECLAIM_FLAG] });
+
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi', 'config.toml')),
+      'Kimi CLI hooks installed by this same run must survive the reclaim');
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'the kimi-code install itself must still succeed');
+  });
+
+  test('skips reclaim when the two roots differ only by a symlink alias', (t) => {
+    // The roots come from user-controlled env vars, so "same directory" and
+    // "same string" are not the same question. A resolve-only comparison
+    // returns false here and the reclaim would delete the hooks this very
+    // install just wrote.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation requires elevated privileges on Windows');
+      return;
+    }
+    const root = sandboxHome(t, 'gsd-3031-');
+    const real = path.join(root, 'realkimi');
+    const link = path.join(root, 'linkkimi');
+    fs.mkdirSync(real, { recursive: true });
+    fs.symlinkSync(real, link);
+
+    runKimiInstall(root, 'kimi-code', {
+      extraArgs: [RECLAIM_FLAG],
+      extraEnv: { KIMI_CODE_HOME: real, KIMI_SHARE_DIR: link },
+    });
+
+    assert.ok(hasGsdHooksBlock(path.join(real, 'config.toml')),
+      'a symlinked alias of the install root must not be reclaimed');
+  });
+
+  test('skips reclaim when the two roots differ only by case on a case-insensitive filesystem', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const real = path.join(root, 'casekimi');
+    const upper = path.join(root, 'CASEKIMI');
+    fs.mkdirSync(real, { recursive: true });
+
+    // Probe the ACTUAL filesystem rather than inferring from process.platform:
+    // macOS can be formatted case-sensitively and Linux can mount otherwise.
+    if (!fs.existsSync(upper)) {
+      t.skip('filesystem is case-sensitive — these are genuinely two directories');
+      return;
+    }
+
+    runKimiInstall(root, 'kimi-code', {
+      extraArgs: [RECLAIM_FLAG],
+      extraEnv: { KIMI_CODE_HOME: real, KIMI_SHARE_DIR: upper },
+    });
+
+    assert.ok(hasGsdHooksBlock(path.join(real, 'config.toml')),
+      'a case-variant alias of the install root must not be reclaimed');
+  });
+
   test('is a no-op when no legacy ~/.kimi root exists', (t) => {
     const root = sandboxHome(t, 'gsd-3031-');
 
