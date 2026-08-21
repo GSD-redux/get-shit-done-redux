@@ -7874,28 +7874,6 @@ function validateHookFields(settings) {
 const GSD_UNINSTALL_HOOKS = [..._HOOKS_TO_COPY, 'gsd-check-update.cmd'];
 
 /**
- * Remove every GSD-owned artifact from a Kimi hooks root (`~/.kimi` for kimi,
- * `~/.kimi-code` for kimi-code — resolveKimiHooksTomlDir, #2755): the managed
- * `[[hooks]]` block in the native config.toml, the hook scripts, hooks/lib/,
- * and the CommonJS marker at both its current (hooks/) and pre-#2544 (root)
- * locations.
- *
- * This root is Kimi's own native config home — SHARED space that may hold the
- * user's real config.toml, providers and their own scripts — so only exact
- * GSD-owned filenames are removed and directories are pruned only when that
- * removal leaves them empty.
- *
- * TWO callers, deliberately one implementation (#3031). `uninstall()` calls it
- * for the runtime being uninstalled; the opt-in `--reclaim-kimi-legacy` path in
- * `install()` calls it for the LEGACY `~/.kimi` root a pre-#2755 `--kimi-code`
- * install orphaned. Duplicating this sequence for the second caller would be
- * exactly the generative-divergence hazard the repo bans — the reclaim must
- * remove precisely what a real uninstall removes, forever, by construction.
- *
- * @param {string} kimiHooksRoot - Absolute path to the Kimi hooks root.
- * @returns {number} count of removal steps performed (0 when nothing matched).
- */
-/**
  * Whether two paths denote the SAME directory — used to stop a reclaim from
  * deleting the very root the current install just wrote (#3031).
  *
@@ -7930,6 +7908,28 @@ function isSameDirectory(a, b) {
   }
 }
 
+/**
+ * Remove every GSD-owned artifact from a Kimi hooks root (`~/.kimi` for kimi,
+ * `~/.kimi-code` for kimi-code — resolveKimiHooksTomlDir, #2755): the managed
+ * `[[hooks]]` block in the native config.toml, the hook scripts, hooks/lib/,
+ * and the CommonJS marker at both its current (hooks/) and pre-#2544 (root)
+ * locations.
+ *
+ * This root is Kimi's own native config home — SHARED space that may hold the
+ * user's real config.toml, providers and their own scripts — so only exact
+ * GSD-owned filenames are removed and directories are pruned only when that
+ * removal leaves them empty.
+ *
+ * TWO callers, deliberately one implementation (#3031). `uninstall()` calls it
+ * for the runtime being uninstalled; the opt-in `--reclaim-kimi-legacy` path in
+ * `install()` calls it for the LEGACY `~/.kimi` root a pre-#2755 `--kimi-code`
+ * install orphaned. Duplicating this sequence for the second caller would be
+ * exactly the generative-divergence hazard the repo bans — the reclaim must
+ * remove precisely what a real uninstall removes, forever, by construction.
+ *
+ * @param {string} kimiHooksRoot - Absolute path to the Kimi hooks root.
+ * @returns {number} count of removal steps performed (0 when nothing matched).
+ */
 function reclaimKimiHooksRoot(kimiHooksRoot) {
   let steps = 0;
   const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
