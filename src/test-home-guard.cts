@@ -135,6 +135,29 @@ type Deps = { os?: OsLike; env?: Record<string, string | undefined> };
  *   seam in scripts/live-config-guard.cjs.
  * @throws {Error} when a global `home` override cannot be shown to be sandboxed.
  */
+/**
+ * Stamped on every Error this module throws.
+ *
+ * A refusal happens BEFORE any write, so it is not a partial install and must
+ * not trigger installer rollback — `bin/install.js`'s pre-config rollback
+ * deletes and recreates every snapshotted `gsd-*` directory in the resolved
+ * skills root, which for an un-sandboxed codex install IS the real
+ * `~/.agents/skills`. Without this marker the guard's own refusal would provoke
+ * the mutation it exists to prevent. Found by review, not by CI.
+ */
+const REFUSAL_FLAG = 'gsdTestHomeGuardRefusal';
+
+function refusal(message: string): Error {
+  const err = new Error(message);
+  (err as Error & Record<string, unknown>)[REFUSAL_FLAG] = true;
+  return err;
+}
+
+/** Did `err` come from this guard refusing before any write happened? */
+function isTestHomeGuardRefusal(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && (err as Record<string, unknown>)[REFUSAL_FLAG]);
+}
+
 function assertTestHomeSandboxed(
   operation: string,
   runtime: string,
@@ -181,10 +204,13 @@ function assertTestHomeSandboxed(
     // Containment in the real home is not by itself evidence of danger on a
     // platform whose temp root lives inside the home.
     for (const kind of overriding) {
-      const dest = path.resolve(path.join(kind.home as string, kind.destSubpath ?? ''));
+      const declared = path.resolve(path.join(kind.home as string, kind.destSubpath ?? ''));
+      // Both questions are asked of the path the write will REACH, not the one
+      // it was spelled as; see resolveThroughLinks.
+      const dest = resolveThroughLinks(declared);
       if (!isInside(dest, realHome)) continue;
       if (derivesFromSandboxedHome(dest, effectiveHome, realHome)) continue;
-      throw new Error(
+      throw refusal(
         `${operation}("${runtime}") was called under a test runner with a destination inside ` +
         `your REAL home. The "${kind.kind}" kind declares a global home override, so it ` +
         `resolves from os.homedir() and NOT from the sandboxed configDir — this call would ` +
@@ -201,7 +227,7 @@ function assertTestHomeSandboxed(
   // readable passwd entry, where the alternative is refusing every such run.
   const marker = env[SANDBOX_MARKER];
   if (marker && sameDirectory(marker, osMod.homedir())) return;
-  throw new Error(
+  throw refusal(
     `${operation}("${runtime}") was called under a test runner and this environment has no ` +
     `identifiable passwd home, so GSD cannot establish where the real home is. The ` +
     `"${overriding[0]?.kind}" kind declares a global home override, which resolves from ` +
@@ -211,11 +237,45 @@ function assertTestHomeSandboxed(
 }
 
 /**
+ * The path `dest` will actually resolve to when it is written.
+ *
+ * `dest` usually does not exist yet — that is the point, it is about to be
+ * created — so `realpathSync` cannot be called on it directly. Walk up to the
+ * nearest ancestor that DOES exist, canonicalize that, and re-append the tail.
+ *
+ * Without this the sandbox exemption below is escapable: with HOME sandboxed to
+ * `$REAL/tmp-home` and `$REAL/tmp-home/.agents` a symlink (or Windows junction,
+ * or subordinate bind mount) onto the real `$REAL/.agents`, the lexical ancestor
+ * walk reaches the sandbox and the write is allowed — straight into the real
+ * home. Identity comparison alone does not close it, because each ancestor is
+ * identified in isolation and the alias sits BETWEEN dest and the sandbox.
+ * Found by review, not by CI.
+ *
+ * A cross-process swap of a checked directory between this call and the write
+ * (TOCTOU) remains out of reach here and is not claimed to be handled.
+ */
+function resolveThroughLinks(dest: string): string {
+  const tail: string[] = [];
+  let cur = path.resolve(dest);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...tail);
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(dest);
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/**
  * Is `dest` inside a HOME that has been sandboxed away from the passwd home?
  *
  * Asked only once `dest` is already known to be inside the real home, and it is
  * what makes that fact non-fatal on Windows: there `os.tmpdir()` is
- * `%LOCALAPPDATA%\Temp` — `%USERPROFILE%\AppData\Local\Temp` — so EVERY
+ * `%USERPROFILE%\AppData\Local\Temp` by default (Node honors `TEMP`/`TMP`,
+ * so this is the usual case rather than a guarantee) — so in practice every
  * sandbox a test creates is a descendant of the real home. Containment in the
  * real home is therefore true of the correctly-sandboxed case and the dangerous
  * one alike, and cannot separate them by itself. POSIX conceals this, because
@@ -266,4 +326,4 @@ function isInside(child: string, rootId: { dev: number; ino: number }): boolean 
   }
 }
 
-export = { assertTestHomeSandboxed, SANDBOX_MARKER };
+export = { assertTestHomeSandboxed, isTestHomeGuardRefusal, SANDBOX_MARKER };

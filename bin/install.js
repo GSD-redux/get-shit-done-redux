@@ -41,6 +41,7 @@ const {
 // consentRequired, hostPrecedenceRank) instead of the id being re-derived
 // and re-interpreted at each call site. See src/install-scope.cts.
 const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
+const { isTestHomeGuardRefusal } = require('../gsd-core/bin/lib/test-home-guard.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
 // conversion module's rewrite engine can consume it without importing
@@ -11521,6 +11522,13 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // agents copy, VERSION write, manifest write, etc.) triggers the Codex pre-config
     // rollback so the caller is never left in a partially-installed state.
     rollbackInstallerMigrations();
+    // #3712 — the test-home guard refuses BEFORE writing anything, so there is no
+    // partial install to undo. Rolling back anyway would delete and recreate every
+    // snapshotted gsd-* directory in the resolved skills root, which for an
+    // un-sandboxed codex install IS the real ~/.agents/skills: the guard's own
+    // refusal would provoke the mutation it exists to prevent. Every other error
+    // still rolls back. Found by review, not by CI.
+    if (isTestHomeGuardRefusal(_earlyInstallErr)) throw _earlyInstallErr;
     if (_codexPreConfigRollback) {
       _codexPreConfigRollback();
     }

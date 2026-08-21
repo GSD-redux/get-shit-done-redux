@@ -3310,6 +3310,49 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // The escape the nested-sandbox exemption opens if it trusts the SPELLING of
+    // a path instead of where it resolves. HOME is sandboxed to a directory
+    // inside the real home (legitimate on Windows), but the sandbox's `.agents`
+    // is an alias onto the real one, so a lexical ancestor walk reaches the
+    // sandbox while the write lands in `$REAL/.agents`. On Windows the alias
+    // would be a junction; the mechanism is the same.
+    test('refuses a sandbox whose .agents is an ALIAS onto the real one', (t) => {
+      const realHome = createTempDir('gsd-3712-alias-');
+      t.after(() => cleanup(realHome));
+      const realAgents = path.join(realHome, '.agents');
+      fs.mkdirSync(path.join(realAgents, 'skills'), { recursive: true });
+      const sandbox = path.join(realHome, 'AppData', 'Local', 'Temp', 'gsd-sandbox-c');
+      fs.mkdirSync(sandbox, { recursive: true });
+      fs.symlinkSync(realAgents, path.join(sandbox, '.agents'), 'dir');
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(sandbox, '.agents')),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+        'containment must be decided on where the write LANDS, not how it is spelled',
+      );
+    });
+
+    // The refusal happens before any write, so it is not a partial install.
+    // bin/install.js reads this to decide NOT to run its pre-config rollback,
+    // which would otherwise delete and recreate every snapshotted gsd-* dir in
+    // the real skills root — the exact mutation this guard exists to prevent.
+    test('a refusal is marked so callers can tell it from a partial install', (t) => {
+      const realHome = createTempDir('gsd-3712-flag-');
+      t.after(() => cleanup(realHome));
+      let caught;
+      try {
+        testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          { os: fakeOs(realHome, realHome), env: underTest });
+      } catch (err) { caught = err; }
+      assert.ok(caught, 'precondition: the guard must have refused');
+      assert.equal(testHomeGuard.isTestHomeGuardRefusal(caught), true);
+      assert.equal(testHomeGuard.isTestHomeGuardRefusal(new Error('unrelated')), false,
+        'an unrelated failure IS a partial install and must still roll back');
+      assert.equal(testHomeGuard.isTestHomeGuardRefusal(undefined), false);
+    });
+
     // The exemption above is the only path in this guard that can turn a
     // destination inside the real home into an allowed write, so its
     // cannot-tell branches have to refuse. Mutating either of them to `true`

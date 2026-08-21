@@ -468,6 +468,17 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
   if (!saved || !saved.has('dev-preferences.md')) return false;
   const target = _resolveDevPreferencesSkillTarget(targetDir, runtime, scope);
   if (!target) return false; // runtime has no skills layout at this scope (e.g. cline local)
+  // #3712 — the SIXTH writer that resolves a skills-kind `home` override.
+  // Exported and directly callable, and `_runLegacyInstallMigrations` runs it
+  // BEFORE installRuntimeArtifacts' own assertion, so a future runtime pairing a
+  // home override with this migration would write to the real home ahead of any
+  // guard. It creates rather than prunes, which is why it was missed. Scoped to
+  // the one kind it writes.
+  if (runtime) {
+    const _layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as any);
+    const _skillsKind = _layout.kinds.find((k: any) => k.kind === 'skills');
+    if (_skillsKind) testHomeGuard.assertTestHomeSandboxed('migrateLegacyDevPreferencesToSkill', runtime, [_skillsKind]);
+  }
   const { skillFile, installRoot } = target;
   const skillDir = path.dirname(skillFile);
   // Security fix: `existsSync` FOLLOWS symlinks and reports `false` for a

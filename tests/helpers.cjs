@@ -997,7 +997,20 @@ function installSpawnHome() {
 
 function installSpawnEnv(overrides = {}) {
   const home = installSpawnHome();
-  return { ...process.env, ...testEnvBase(), HOME: home, USERPROFILE: home, ...overrides };
+  // #3712 — carry the sandbox marker too, not just HOME. The guard falls back to
+  // the marker on hosts with no readable passwd entry (some CI images) and
+  // otherwise REFUSES. A spawned installer inherits NODE_TEST_CONTEXT and has a
+  // legitimately redirected HOME, so without this it is refused on exactly the
+  // environment the fallback exists to serve. The name is the same constant
+  // sandboxHome() writes; see the note there on why it is a bare string.
+  return {
+    ...process.env,
+    ...testEnvBase(),
+    HOME: home,
+    USERPROFILE: home,
+    [TEST_HOME_SANDBOX_MARKER]: home,
+    ...overrides,
+  };
 }
 
 /**
