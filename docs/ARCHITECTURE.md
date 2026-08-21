@@ -788,6 +788,22 @@ verification.
 `.planning/codebase/*.md` file; `bin/lib/drift.cjs` provides
 `readMappedCommit` and `writeMappedCommit` round-trip helpers.
 
+The baseline is written by `gsd-tools stamp-codebase-map`, a shell step in the
+map-codebase workflow, not by the mapper agent. The mapper's own freshness
+markers (`**Analysis Date:**`, `<!-- refreshed: ... -->`) are restamped
+unconditionally on an Update run, so an agent that rewrites only the dates still
+looks current to a reader; the machine-readable stamp is the one marker that
+cannot be satisfied by a date-only rewrite, which is exactly why it is not the
+agent's to write. `--files a.md,b.md` narrows the stamp to the documents a
+caller actually refreshed, as the auto-remap path does.
+
+An absent or unresolvable baseline is reported as `skipped` with reason
+`no-mapped-commit` or `unresolvable-mapped-commit`, never as drift. Diffing
+HEAD against the empty tree would report every tracked file as newly added,
+which makes a stale map indistinguishable from a fresh one. Files under
+`.planning/` are excluded from the diff: the map's own commit is a planning
+artifact, not codebase structure.
+
 ---
 
 ## Installer Architecture
