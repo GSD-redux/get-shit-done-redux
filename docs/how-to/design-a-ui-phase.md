@@ -1,6 +1,6 @@
 # How to design a UI phase
 
-**Goal:** Produce a locked UI design contract (`UI-SPEC.md`) that fixes spacing, colour, typography, and copywriting decisions before the planner writes tasks, preventing visual inconsistency caused by ad-hoc styling choices during execution.
+**Goal:** Produce a locked UI design contract (`UI-SPEC.md`) that fixes spacing, color, typography, and copywriting decisions before the planner writes tasks, preventing visual inconsistency caused by ad-hoc styling choices during execution.
 
 **Prerequisites:** `.planning/ROADMAP.md` exists. The phase must have frontend or UI work. Running `/gsd-discuss-phase N` first is strongly recommended — the UI researcher reads `CONTEXT.md` to avoid re-asking decisions you have already made.
 
@@ -13,7 +13,7 @@ Not all phases need `/gsd-ui-phase`. Use it when:
 - The phase introduces new UI surfaces (pages, flows, layouts)
 - Multiple components will be built and visual consistency matters
 - You are starting a new project's frontend and need a design system baseline
-- You are adding significant UI work to an existing project and want to lock tokens, spacing, and colour before execution
+- You are adding significant UI work to an existing project and want to lock tokens, spacing, and color before execution
 
 Skip it when:
 
@@ -34,7 +34,7 @@ If no phase number is given, GSD Core targets the current phase.
 
 The command runs in two stages:
 
-1. **`gsd-ui-researcher`** — reads `CONTEXT.md`, `RESEARCH.md`, and `REQUIREMENTS.md` for existing decisions, detects the design system state (shadcn `components.json`, Tailwind config, existing tokens), and asks only the unanswered design questions across five areas: spacing, colour, typography, copywriting, and registry safety.
+1. **`gsd-ui-researcher`** — reads `CONTEXT.md`, `RESEARCH.md`, and `REQUIREMENTS.md` for existing decisions, detects the design system state (shadcn `components.json`, Tailwind config, existing tokens), and asks only the unanswered design questions across five areas: spacing, color, typography, copywriting, and registry safety.
 2. **`gsd-ui-checker`** — validates the resulting `UI-SPEC.md` across six dimensions. If issues are found, a revision loop reruns the researcher (up to two iterations) targeting only the flagged items.
 
 **Output:** `{padded_phase}-UI-SPEC.md` in `.planning/phases/{phase-dir}/`.
@@ -48,20 +48,20 @@ The researcher locks decisions across five areas:
 | Area | Examples |
 |---|---|
 | **Spacing** | Base scale (4px or 8px), grid alignment, component padding |
-| **Colour** | Primary, accent, neutral palette; 60/30/10 rule; dark-mode considerations |
+| **Color** | Primary, accent, neutral palette; 60/30/10 rule; dark-mode considerations |
 | **Typography** | Font families, size/weight scale constraints, heading hierarchy |
 | **Copywriting** | CTA labels, empty state messages, error state copy, loading indicators |
 | **Registry safety** | shadcn component inspection protocol (see below) |
 
-The checker validates the spec against six pillars, scored 1–4 each: Copywriting, Visuals, Colour, Typography, Spacing, and Experience Design (loading / error / empty state coverage).
+The checker validates the spec against six pillars, scored 1–4 each: Copywriting, Visuals, Color, Typography, Spacing, and Experience Design (loading / error / empty state coverage).
 
 ---
 
-## shadcn initialisation
+## shadcn initialization
 
-For React, Next.js, and Vite projects, the researcher offers to initialise shadcn if no `components.json` is found. The flow:
+For React, Next.js, and Vite projects, the researcher offers to initialize shadcn if no `components.json` is found. The flow:
 
-1. Visit `ui.shadcn.com/create` and configure your preset (colours, border radius, fonts)
+1. Visit `ui.shadcn.com/create` and configure your preset (colors, border radius, fonts)
 2. Copy the preset string
 3. Run:
 
@@ -69,7 +69,7 @@ For React, Next.js, and Vite projects, the researcher offers to initialise shadc
 npx shadcn init --preset <paste>
 ```
 
-The preset string becomes a first-class GSD Core planning artefact that is reproducible across phases and milestones.
+The preset string becomes a first-class GSD Core planning artifact that is reproducible across phases and milestones.
 
 ---
 
@@ -109,13 +109,13 @@ This is the main reason to run `/gsd-sketch --wrap-up` before `/gsd-ui-phase`: i
 /gsd-ui-review 3      # audit phase 3 specifically
 ```
 
-It works on any project with frontend code — GSD project initialisation is not required.
+It works on any project with frontend code — GSD project initialization is not required.
 
 **What it checks (6 pillars, scored 1–4 each):**
 
 1. Copywriting — CTA labels, empty states, error states
 2. Visuals — focal points, visual hierarchy, icon accessibility
-3. Colour — accent usage discipline, 60/30/10 compliance
+3. Color — accent usage discipline, 60/30/10 compliance
 4. Typography — font size and weight constraint adherence
 5. Spacing — grid alignment, token consistency
 6. Experience Design — loading, error, and empty state coverage
@@ -137,7 +137,7 @@ It works on any project with frontend code — GSD project initialisation is not
 /gsd-ui-review N          ← retroactive visual audit (optional but recommended)
 ```
 
-`/gsd-ui-phase` sits between discuss and plan because the planner reads `UI-SPEC.md` as design context — tasks in `PLAN.md` reference spacing tokens, colour variables, and copywriting decisions that the spec locked.
+`/gsd-ui-phase` sits between discuss and plan because the planner reads `UI-SPEC.md` as design context — tasks in `PLAN.md` reference spacing tokens, color variables, and copywriting decisions that the spec locked.
 
 ---
 
