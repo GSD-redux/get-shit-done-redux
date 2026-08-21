@@ -399,6 +399,200 @@ describe('broken-windows: parseLedger fail-closed', () => {
 // CLI: gsd-tools windows status (acceptance: clean-ship on empty)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// #3657: fence-width tolerant read (formatter-normalized ledgers)
+// ---------------------------------------------------------------------------
+
+// The formatter itself is never spawned here: the input class is "a ledger a
+// CommonMark formatter already normalized" (Prettier narrows the written
+// 4-backtick fence to the shortest legal width — 3 — because a canonical-JSON
+// body never contains a backtick run). Narrowing a rendered ledger's fences
+// reproduces that state deterministically.
+
+describe('broken-windows: fence-width tolerant read (#3657)', () => {
+  /** Rendered ledger with its fences narrowed to `width` backticks. */
+  function renderNarrowed(ledger, width = 3) {
+    const open = '`'.repeat(width) + 'json';
+    const close = '`'.repeat(width);
+    return renderLedger(ledger)
+      .replace(/^````json$/m, open)
+      .replace(/^````$/m, close);
+  }
+
+  /** Narrow the fences of an on-disk ledger in place (the formatter's effect). */
+  function narrowLedgerOnDisk(p, width = 3) {
+    const raw = fs.readFileSync(p, 'utf8');
+    fs.writeFileSync(
+      p,
+      raw
+        .replace(/^````json$/m, '`'.repeat(width) + 'json')
+        .replace(/^````$/m, '`'.repeat(width)),
+      'utf8'
+    );
+  }
+
+  test('parseLedger accepts a formatter-narrowed 3-backtick JSON fence (#3657)', () => {
+    const ledger = appendWindow(emptyLedger(), {
+      kind: 'stub',
+      phase: '2',
+      description: 'narrowed fence entry',
+    });
+    const parsed = parseLedger(renderNarrowed(ledger));
+    assert.equal(parsed.entries.length, 1);
+    assert.equal(parsed.entries[0].description, 'narrowed fence entry');
+    assert.equal(parsed.open_count, 1);
+  });
+
+  test('windows status recovers on a formatter-normalized ledger (#3657)', (t) => {
+    const tmp = createTempDir();
+    t.after(() => cleanup(tmp));
+    const r0 = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '2', '--description', 'normalized ledger entry'],
+      tmp
+    );
+    assert.ok(r0.success, `seed append failed: ${r0.error || ''}`);
+    narrowLedgerOnDisk(path.join(tmp, '.planning', LEDGER_FILE_NAME));
+
+    const res = runGsdTools(['windows', 'status', '--raw'], tmp);
+    assert.ok(res.success, `status must recover on a normalized ledger: ${res.error || ''}`);
+    const obj = JSON.parse(res.output);
+    assert.equal(obj.ok, true);
+    assert.equal(obj.ledger.open_count, 1);
+  });
+
+  test('windows append/waive/fixed recover on a normalized ledger and re-emit the 4-fence writer form (#3657)', (t) => {
+    const tmp = createTempDir();
+    t.after(() => cleanup(tmp));
+    const ledgerPath = path.join(tmp, '.planning', LEDGER_FILE_NAME);
+    const r0 = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '2', '--description', 'first'],
+      tmp
+    );
+    assert.ok(r0.success, `seed append failed: ${r0.error || ''}`);
+    narrowLedgerOnDisk(ledgerPath);
+
+    const rAppend = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '2', '--description', 'second'],
+      tmp
+    );
+    assert.ok(rAppend.success, `append must recover on a normalized ledger: ${rAppend.error || ''}`);
+    narrowLedgerOnDisk(ledgerPath);
+
+    const rWaive = runGsdTools(['windows', 'waive', '1', 'duplicate of second'], tmp);
+    assert.ok(rWaive.success, `waive must recover on a normalized ledger: ${rWaive.error || ''}`);
+    narrowLedgerOnDisk(ledgerPath);
+
+    const rFixed = runGsdTools(['windows', 'fixed', '2'], tmp);
+    assert.ok(rFixed.success, `fixed must recover on a normalized ledger: ${rFixed.error || ''}`);
+
+    // Writer contract unchanged: after any write the ledger is back on the
+    // 4-backtick fence form renderLedger emits (#1950 review H1).
+    const after = fs.readFileSync(ledgerPath, 'utf8');
+    assert.match(after, /^````json$/m, 'rewritten ledger must re-emit the 4-backtick writer fence');
+    assert.doesNotMatch(after, /^```json$/m, 'the 3-backtick form is a formatter artifact, never written');
+
+    const status = runGsdTools(['windows', 'status', '--raw'], tmp);
+    assert.ok(status.success, `final status failed: ${status.error || ''}`);
+    assert.equal(JSON.parse(status.output).ledger.open_count, 0);
+  });
+
+  test('windows append preserves trailing prose on a normalized ledger (#2893 via #3657)', (t) => {
+    const tmp = createTempDir();
+    t.after(() => cleanup(tmp));
+    const ledgerPath = path.join(tmp, '.planning', LEDGER_FILE_NAME);
+    const r0 = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '2', '--description', 'prose carrier'],
+      tmp
+    );
+    assert.ok(r0.success, `seed append failed: ${r0.error || ''}`);
+
+    // User prose below the closing fence (#2893), then a formatter pass.
+    const withProse = fs.readFileSync(ledgerPath, 'utf8') + 'Manual notes below the ledger.\n';
+    fs.writeFileSync(ledgerPath, withProse, 'utf8');
+    narrowLedgerOnDisk(ledgerPath);
+
+    const rAppend = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '2', '--description', 'second'],
+      tmp
+    );
+    assert.ok(rAppend.success, `append on normalized ledger failed: ${rAppend.error || ''}`);
+    const after = fs.readFileSync(ledgerPath, 'utf8');
+    assert.ok(
+      after.includes('Manual notes below the ledger.'),
+      'trailing prose must survive a write to a formatter-normalized ledger'
+    );
+  });
+
+  test('renderLedger keeps the 4-backtick writer fence (#3657)', () => {
+    const out = renderLedger(emptyLedger());
+    assert.match(out, /^````json$/m, 'writer must keep the #1950 H1 4-backtick open fence');
+    assert.match(out, /^````$/m, 'writer must keep the 4-backtick close fence');
+  });
+
+  test('fence tolerance does not loosen malformed-ledger fail-closed (#3657)', () => {
+    const frontmatter = [
+      '---',
+      'schema_version: 1',
+      'open_count: 0',
+      'waived_count: 0',
+      'fixed_count: 0',
+      'total_count: 0',
+      'last_updated: 2026-07-19T00:00:00Z',
+      '---',
+    ].join('\n');
+    const noBlock = [frontmatter, '', '# Broken Windows Ledger', '', 'prose only', ''].join('\n');
+    assert.throws(() => parseLedger(noBlock), reasonIs(REASON.WINDOWS_LEDGER_MALFORMED));
+    assert.throws(() => parseLedger(noBlock), /missing JSON code block/);
+
+    const body = JSON.stringify([]);
+    const unterminated = [frontmatter, '', '```json', body, ''].join('\n');
+    assert.throws(() => parseLedger(unterminated), reasonIs(REASON.WINDOWS_LEDGER_MALFORMED));
+    assert.throws(() => parseLedger(unterminated), /not terminated/);
+  });
+
+  test('reader accepts 3+ widths and rejects a shorter closing run (#3657)', () => {
+    const ledger = appendWindow(emptyLedger(), {
+      kind: 'stub',
+      phase: '2',
+      description: 'width boundary entry',
+    });
+    const five = renderNarrowed(ledger, 5);
+    const parsedFive = parseLedger(five);
+    assert.equal(parsedFive.entries.length, 1, 'a 5-backtick fence is valid CommonMark and must parse');
+
+    // CommonMark: the closing run must be at least as long as the opening run.
+    const shortClose = renderLedger(ledger).replace(/^````$/m, '```');
+    assert.throws(
+      () => parseLedger(shortClose),
+      reasonIs(REASON.WINDOWS_LEDGER_MALFORMED),
+      'a 3-backtick line must not close a 4-backtick block'
+    );
+  });
+
+  test('3-backtick run inside a description never terminates the block (#1950 H1 under #3657 tolerance)', () => {
+    const description = 'see ```js x``` inline';
+    const ledger = appendWindow(emptyLedger(), { kind: 'stub', phase: '2', description });
+    const parsed4 = parseLedger(renderLedger(ledger));
+    assert.equal(parsed4.entries[0].description, description, '4-fence roundtrip keeps the inline run');
+    // A hand-narrowed 3-fence file: the inline ``` sits inside a JSON string on
+    // a content line, so the line-anchored close scan must skip it.
+    const parsed3 = parseLedger(renderNarrowed(ledger));
+    assert.equal(parsed3.entries[0].description, description);
+  });
+
+  test('fence tolerance is CRLF-safe (#3116 sibling)', () => {
+    const ledger = appendWindow(emptyLedger(), {
+      kind: 'stub',
+      phase: '2',
+      description: 'crlf narrowed entry',
+    });
+    const crlf = renderNarrowed(ledger).replace(/\n/g, '\r\n');
+    const parsed = parseLedger(crlf);
+    assert.equal(parsed.entries.length, 1);
+    assert.equal(parsed.entries[0].description, 'crlf narrowed entry');
+  });
+});
+
 describe('broken-windows CLI: windows status', () => {
   test('status on a project with no ledger returns open_count=0 (backward-compat baseline)', (t) => {
     const tmp = createTempDir('bw-status-empty-');
