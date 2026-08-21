@@ -282,3 +282,33 @@ describe('#1575 — surface path: no prune data-loss over pre-existing legacy ag
 });
   });
 }
+
+test('runMinimalInstall resolves local config dirs from RUNTIME_META alone (#3031)', () => {
+  // install-shared.cjs used to carry a SECOND, hand-maintained local-dir map
+  // beside RUNTIME_META. It drifted: four runtimes present in RUNTIME_META
+  // (hermes, kimi, kimi-code, zcode) were missing from it, so `scope: 'local'`
+  // for any of them resolved `path.join(root, undefined)` and threw a bare
+  // TypeError naming neither the runtime nor the map at fault. #3023 had
+  // already hit this for `pi` and fixed it by adding one more entry, which
+  // left the divergence itself intact for the next runtime to rediscover.
+  //
+  // Same anti-divergence pattern as the buildParityManifest guard above: the
+  // duplicate is gone, and this asserts it does not come back.
+  const helperSrc = fs.readFileSync(
+    path.join(ROOT, 'tests', 'helpers', 'install-shared.cjs'),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    helperSrc,
+    /const\s+LOCAL_DIR_NAME\s*=/,
+    'install-shared.cjs must not re-declare a second local-dir map beside RUNTIME_META',
+  );
+
+  // Every runtime the harness knows about must be usable at local scope.
+  const { RUNTIME_META } = require('./helpers/install-shared.cjs');
+  const missing = Object.entries(RUNTIME_META)
+    .filter(([, meta]) => !meta.localDir)
+    .map(([runtime]) => runtime);
+  assert.deepEqual(missing, [],
+    'every RUNTIME_META entry needs a localDir or local-scope installs throw on path.join(root, undefined)');
+});

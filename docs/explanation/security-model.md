@@ -337,6 +337,26 @@ research agents — but novel jailbreaks and low-signal injections may still pas
 undetected. Defence in depth means each layer makes the attack harder, not that
 any single layer makes it impossible.
 
+**What the UI-SPEC provenance rule does not eliminate:** `gsd-ui-checker`
+Dimension 7 requires a component inventory to record the command that
+enumerated it, and instructs the checker never to run that command — it is
+text from a document, not an instruction to the agent. **That barrier is
+prompt-level only.** The checker holds a `Bash` grant it genuinely needs (the
+agent-skills bootstrap shells out through `gsd_run`), and tool grants here are
+not command-scoped, so nothing structurally prevents execution of a command
+string lifted out of a UI-SPEC. No shipped instruction does so, and the spec is
+written by `gsd-ui-researcher`, which carries the `<security_context>`
+untrusted-input boundary for its web and MCP ingress — but this is defense by
+instruction, not by capability. The same shape is older and wider in Dimension 6,
+where the *researcher* is told to run `npx shadcn view {block} --registry {url}`
+with a registry URL taken from the spec; there the execution is the vetting
+gate's purpose rather than something to suppress.
+
+Note also what a provenance line is worth: it makes an inventory's origin
+**falsifiable, not verified**. A fabricated line passes the dimension. Its value
+is that the recorded command can be re-run by a reader, which was not possible
+before the field existed.
+
 **What subprocess execution does not eliminate:** `cmd.exe` expands `%VAR%`
 inside a `/c` string, and there is no escape for `%` outside a batch file. An
 argument containing `%FOO%` is therefore substituted with the environment

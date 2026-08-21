@@ -35,7 +35,7 @@
 该命令分两个阶段运行：
 
 1. **`gsd-ui-researcher`** — 读取 `CONTEXT.md`、`RESEARCH.md` 和 `REQUIREMENTS.md` 中的已有决策，检测设计系统状态（shadcn `components.json`、Tailwind 配置、现有 token），并仅针对以下五个领域中尚未回答的设计问题进行提问：间距、颜色、字体、文案和注册表安全。
-2. **`gsd-ui-checker`** — 从六个维度验证生成的 `UI-SPEC.md`。如果发现问题，修订循环会重新运行研究员（最多两次迭代），专门针对被标记的项目。
+2. **`gsd-ui-checker`** — 从七个维度验证生成的 `UI-SPEC.md`。如果发现问题，修订循环会重新运行研究员（最多两次迭代），专门针对被标记的项目。
 
 **输出：** `.planning/phases/{phase-dir}/` 中的 `{padded_phase}-UI-SPEC.md`。
 
