@@ -759,6 +759,24 @@ Historical findings already incorporated, explicitly deferred/rejected in PLAN.m
 
 **Phase requirement IDs (every ID MUST appear in a plan's `requirements` field):** {phase_req_ids}
 
+<tracked_source_paths>
+**Tracked-source paths (#3645):** Every path you write into PLAN.md —
+`files_modified`, `must_haves.artifacts`, action paths, and any path inherited
+from `{PATTERNS_PATH}` or prior-phase plans — must name git-tracked source,
+never a gitignored install/runtime mirror (e.g. `<root>/.gsd/capabilities/<id>/...`
+synced from a plugin's tracked tree; executor edits to a mirror die on the next
+capability sync). Before writing a path whose file already exists on disk,
+verify with `git ls-files -- <path>` (non-empty output = tracked; exit 1 or
+empty = not tracked). If the naively-resolved path is gitignored, resolve to
+its tracked origin — e.g. `plugins/*/.gsd/capabilities/<id>/...`, or root
+`capabilities/<id>/...` where the repo tracks capabilities at root — and write
+THAT path, noting the substitution in the plan. A path for a file that does
+not exist yet is a new file: keep the intended creation path. Re-verify paths
+inherited from prior phases or `{PATTERNS_PATH}`: fix a mirror path, never
+inherit it. For files inside a nested submodule, run the check from within
+the submodule.
+</tracked_source_paths>
+
 **Project instructions:** Read ./CLAUDE.md or ./.claude/CLAUDE.md if either exists — follow project-specific guidelines
 **Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
 
