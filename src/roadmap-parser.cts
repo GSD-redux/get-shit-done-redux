@@ -354,7 +354,7 @@ const MILESTONE_HEADING_SIGNAL_PATTERN = /v\d+\.\d+|✅|📋|🚧|\bMilestone\b/
  * template or the #3204/#1761/#3185 reports exercises that shape; it is
  * recorded here rather than hidden.
  */
-function hasMilestoneSectioning(content: string): boolean {
+function countMilestoneHeadings(content: string): number {
   const isPhaseHeading = (text: string): boolean => /^Phase\s+\S/i.test(text);
   let milestoneHeadingCount = 0;
   for (const heading of tokenizeHeadings(content)) {
@@ -362,9 +362,31 @@ function hasMilestoneSectioning(content: string): boolean {
     if (isPhaseHeading(heading.text)) continue;
     if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(heading.text)) continue;
     milestoneHeadingCount++;
-    if (milestoneHeadingCount >= 2) return true;
   }
-  return false;
+  return milestoneHeadingCount;
+}
+
+function hasMilestoneSectioning(content: string): boolean {
+  // Early-exit equivalent of countMilestoneHeadings(content) >= 2 (the walk
+  // above no longer short-circuits; a ROADMAP's heading count is small and
+  // tokenizeHeadings was already fully materialized either way).
+  return countMilestoneHeadings(content) >= 2;
+}
+
+/**
+ * #3642: the >=1 sibling of `hasMilestoneSectioning`. The >=2 predicate
+ * answers SIBLING-conflation ("could two sections' phases mix") and is
+ * unchanged; but `buildStateFrontmatter`'s unbounded branch asks a question
+ * >=2 under-answers: "is there ANY milestone section whose phases a
+ * whole-document count would attribute to a milestone that matches no
+ * heading?" With exactly ONE section and an asserted milestone absent from
+ * the ROADMAP, >=2 said "flat" and the single section's phases leaked into
+ * the asserted milestone's total_phases (silent clobber of the stored
+ * value). Same walk, same vocabulary, threshold 1 — exported for that
+ * consumer only; every other consumer keeps the >=2 semantics.
+ */
+function hasAnyMilestoneSection(content: string): boolean {
+  return countMilestoneHeadings(content) >= 1;
 }
 
 /**
@@ -1694,6 +1716,8 @@ export = {
   sliceMilestoneWindow,
   hasVersionedMilestones,
   hasMilestoneSectioning,
+  // #3642: the >=1 sibling buildStateFrontmatter's unbounded branch consumes.
+  hasAnyMilestoneSection,
   // #1956: sole owner of the #2012 decoy-avoidance scope for the
   // `drift-guard phase-status` CLI seam.
   findRoadmapProgressTable,
