@@ -103,11 +103,11 @@ Problemas? Consulte [docs/pt-BR/how-to/recover-and-troubleshoot.md](docs/pt-BR/h
 
 ## Histórico de estrelas
 
-<a href="https://star-history.com/#open-gsd/gsd-core&Date">
+<a href="https://star-history.dera.page/#open-gsd/gsd-core&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=open-gsd/gsd-core&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=open-gsd/gsd-core&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=open-gsd/gsd-core&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=open-gsd/gsd-core&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=open-gsd/gsd-core&type=Date" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=open-gsd/gsd-core&type=Date" />
  </picture>
 </a>
 
