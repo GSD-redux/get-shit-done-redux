@@ -1,6 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "execute-plan.md": "#3370: the Pattern A dispatch prompt spec gained the gate-semantics clause (gate=\"blocking\" (the default) is auto-approvable in auto-mode per the executor's own checkpoint protocol, gate=\"blocking-human\" always surfaces to a human; add no instruction overriding that protocol), closing the identically-shaped dispatch-time gap on the single-plan path named in the issue. Growth ~248 bytes (38913 -> 39161, still under the DEFAULT 40 KiB ceiling). Supersedes the spent #2652 fragment (merged into next), which also named execute-plan.md and would otherwise double-ack the same path."
+    "execute-plan.md": "#3370: the Pattern A dispatch prompt spec gained the gate-semantics clause (gate=\"blocking\" (the default) is auto-approvable in auto-mode per the executor's own checkpoint protocol, gate=\"blocking-human\" always surfaces to a human; add no instruction overriding that protocol), closing the identically-shaped dispatch-time gap on the single-plan path named in the issue. Growth ~248 bytes (38913 -> 39161, still under the DEFAULT 40 KiB ceiling). Supersedes the spent #2652 fragment (merged into next), which also named execute-plan.md and would otherwise double-ack the same path. #3659 appends --mode \"$ISOLATION\" to the #2649 pre-dispatch base-check and corrects the baseRef restore-advice to the orchestrator/harness split (+154B; the harness does not read baseRef, #48). Deliberate growth."
   }
 }

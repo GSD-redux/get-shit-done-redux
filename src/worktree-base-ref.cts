@@ -281,7 +281,20 @@ export function cmdWorktreeBaseCheck(
     execGit: deps?.execGit,
     isolationMode,
   });
-  const write = deps?.write ?? ((s: string) => process.stdout.write(s));
+  // Default emit goes through fs.writeSync(1, …), NOT process.stdout.write:
+  // the CLI's --pick capture intercepts writeSync, and command substitution
+  // is a pipe — via process.stdout.write a `$(gsd-tools … --pick x)` capture
+  // received the full JSON instead of the picked field, so the workflow
+  // auto-degrade guards never matched (#3659 review). Short-count loop per
+  // io.cjs writeAllSync's rationale (a non-blocking pipe can accept partial
+  // writes).
+  const write = deps?.write ?? ((s: string) => {
+    const buf = Buffer.from(s, 'utf8');
+    let offset = 0;
+    while (offset < buf.length) {
+      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+    }
+  });
   write(JSON.stringify(result, null, 2) + '\n');
   return result;
 }
@@ -346,7 +359,20 @@ export function cmdWorktreeSetBaseRef(
     baseRef: 'head' as const,
     file,
   };
-  const write = deps?.write ?? ((s: string) => process.stdout.write(s));
+  // Default emit goes through fs.writeSync(1, …), NOT process.stdout.write:
+  // the CLI's --pick capture intercepts writeSync, and command substitution
+  // is a pipe — via process.stdout.write a `$(gsd-tools … --pick x)` capture
+  // received the full JSON instead of the picked field, so the workflow
+  // auto-degrade guards never matched (#3659 review). Short-count loop per
+  // io.cjs writeAllSync's rationale (a non-blocking pipe can accept partial
+  // writes).
+  const write = deps?.write ?? ((s: string) => {
+    const buf = Buffer.from(s, 'utf8');
+    let offset = 0;
+    while (offset < buf.length) {
+      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+    }
+  });
   write(JSON.stringify(output, null, 2) + '\n');
   return output;
 }

@@ -673,6 +673,34 @@ describe('cmdWorktreeBaseCheck', () => {
     );
   });
 
+  test('default emit goes through fs.writeSync(1, …) — the seam --pick intercepts (#3659)', (t) => {
+    // The CLI's --pick capture patches fs.writeSync, not process.stdout.write;
+    // under $(…) command substitution the stdout.write default made --pick
+    // emit the full JSON, so the workflow auto-degrade guards never matched.
+    const fds = [];
+    const chunks = [];
+    const original = fs.writeSync;
+    fs.writeSync = (fd, buf, offset, length) => {
+      fds.push(fd);
+      const start = offset ?? 0;
+      const end = length ?? (typeof buf === 'string' ? buf.length : buf.length);
+      chunks.push(typeof buf === 'string' ? buf.slice(start, end) : buf.toString('utf8', start, end));
+      return end - start;
+    };
+    t.after(() => { fs.writeSync = original; });
+    const result = cmdWorktreeBaseCheck('/repo', [], {
+      readFile: () => null,
+      execGit: makeExecGitCheck({}),
+      userClaudeDir: '/nonexistent-hermetic-user-dir',
+      // no deps.write — the default seam under test
+    });
+    assert.ok(fds.length > 0, 'default emit must call fs.writeSync');
+    assert.ok(fds.every((fd) => fd === 1), 'every write must target fd 1 (stdout)');
+    const emitted = chunks.join('');
+    assert.ok(emitted.includes('"reason"'), 'emitted payload is the JSON result');
+    assert.strictEqual(result.reason, 'no-head');
+  });
+
   test('diverged shas → shouldDegrade true; captured JSON parses correctly', () => {
     const cwd = '/repo';
     const HEAD_SHA = 'deadbeef11223344deadbeef11223344deadbeef';
