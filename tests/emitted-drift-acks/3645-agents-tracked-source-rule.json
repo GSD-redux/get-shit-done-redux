@@ -1,8 +1,0 @@
-{
-  "$comment": "Growth ack (#2914 fragment). Reason: #3645 adds the Tracked-source rule (git ls-files verification + gitignored-mirror rejection + tracked-origin fallback) to both path-writing agents. planner.md +1242B (49274 -> 50516, XL cap 57344); pattern-mapper.md +639B (12487 -> 13126, DEFAULT cap 24576).",
-  "version": 1,
-  "paths": {
-    "planner.md": "agents/gsd-planner.md grew +1242B: Tracked-source rule section for files_modified/must_haves.artifacts/action paths + PATTERNS.md re-verification (#3645)",
-    "pattern-mapper.md": "agents/gsd-pattern-mapper.md grew +639B: Tracked-source gate on analog selection; PATTERNS.md never emits mirror paths (#3645)"
-  }
-}
