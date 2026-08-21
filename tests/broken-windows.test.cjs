@@ -431,13 +431,18 @@ describe('broken-windows: fence-width tolerant read (#3657)', () => {
     );
   }
 
+  /** Ledger with one open stub entry, built through the pure API. */
+  function ledgerWithEntry(description) {
+    const { ledger } = appendWindow(
+      emptyLedger('2026-07-19T00:00:00Z'),
+      { kind: 'stub', phase: '2', description },
+      { now: '2026-07-19T12:00:00Z' }
+    );
+    return ledger;
+  }
+
   test('parseLedger accepts a formatter-narrowed 3-backtick JSON fence (#3657)', () => {
-    const ledger = appendWindow(emptyLedger(), {
-      kind: 'stub',
-      phase: '2',
-      description: 'narrowed fence entry',
-    });
-    const parsed = parseLedger(renderNarrowed(ledger));
+    const parsed = parseLedger(renderNarrowed(ledgerWithEntry('narrowed fence entry')));
     assert.equal(parsed.entries.length, 1);
     assert.equal(parsed.entries[0].description, 'narrowed fence entry');
     assert.equal(parsed.open_count, 1);
@@ -551,11 +556,7 @@ describe('broken-windows: fence-width tolerant read (#3657)', () => {
   });
 
   test('reader accepts 3+ widths and rejects a shorter closing run (#3657)', () => {
-    const ledger = appendWindow(emptyLedger(), {
-      kind: 'stub',
-      phase: '2',
-      description: 'width boundary entry',
-    });
+    const ledger = ledgerWithEntry('width boundary entry');
     const five = renderNarrowed(ledger, 5);
     const parsedFive = parseLedger(five);
     assert.equal(parsedFive.entries.length, 1, 'a 5-backtick fence is valid CommonMark and must parse');
@@ -571,7 +572,7 @@ describe('broken-windows: fence-width tolerant read (#3657)', () => {
 
   test('3-backtick run inside a description never terminates the block (#1950 H1 under #3657 tolerance)', () => {
     const description = 'see ```js x``` inline';
-    const ledger = appendWindow(emptyLedger(), { kind: 'stub', phase: '2', description });
+    const ledger = ledgerWithEntry(description);
     const parsed4 = parseLedger(renderLedger(ledger));
     assert.equal(parsed4.entries[0].description, description, '4-fence roundtrip keeps the inline run');
     // A hand-narrowed 3-fence file: the inline ``` sits inside a JSON string on
@@ -581,12 +582,7 @@ describe('broken-windows: fence-width tolerant read (#3657)', () => {
   });
 
   test('fence tolerance is CRLF-safe (#3116 sibling)', () => {
-    const ledger = appendWindow(emptyLedger(), {
-      kind: 'stub',
-      phase: '2',
-      description: 'crlf narrowed entry',
-    });
-    const crlf = renderNarrowed(ledger).replace(/\n/g, '\r\n');
+    const crlf = renderNarrowed(ledgerWithEntry('crlf narrowed entry')).replace(/\n/g, '\r\n');
     const parsed = parseLedger(crlf);
     assert.equal(parsed.entries.length, 1);
     assert.equal(parsed.entries[0].description, 'crlf narrowed entry');
