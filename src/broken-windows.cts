@@ -519,8 +519,8 @@ function parseJsonBlock(raw: string, expectedTotal?: number): WindowEntry[] {
       span.reason === 'missing-open'
         ? 'Ledger missing JSON code block for entries.'
         : 'Ledger JSON code block not terminated.',
-);
-}
+    );
+  }
   const jsonText = raw.slice(span.span.bodyStart, span.span.bodyEnd).trim();
   let parsed: unknown;
   try {
