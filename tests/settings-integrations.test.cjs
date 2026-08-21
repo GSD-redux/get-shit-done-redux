@@ -12,6 +12,10 @@
  *   - Workflow references the four search API key fields
  *   - Workflow exposes review.models.{claude,codex,gemini,opencode} routing
  *   - Workflow exposes agent_skills.<agent-type> injection input
+ *   - #3651: workflow states the registry-derived review.models settable rule (no
+ *     dynamic-pattern claim) and enumerates exactly the registry's settable lanes
+ *   - #3651: workflow prescribes the JSON array agent_skills write form (never a
+ *     comma-joined string); behavioral pins for array/comma/single shapes
  *   - Masking convention (****last4) is documented in the workflow and the displayed
  *     confirmation pattern does not echo plaintext
  *   - config-set round-trips all integration keys through VALID_CONFIG_KEYS + dynamic patterns
@@ -106,7 +110,10 @@ describe('#2529 workflow — review.models routing', () => {
     }
   });
 
-  test('review.models.<cli> matches the dynamic pattern validator', () => {
+  test('review.models.<cli> keys validate via the federated capability registry', () => {
+    // #3651: these pass because the capability registry federates each lane's
+    // modelConfigKey into the valid-key set — NOT via a dynamicKeyPatterns regex
+    // (no such pattern exists; see the #3651 describe below).
     for (const cli of ['claude', 'codex', 'gemini', 'opencode']) {
       assert.ok(
         isValidConfigKey(`review.models.${cli}`),
@@ -133,6 +140,182 @@ describe('#2529 workflow — agent_skills injection', () => {
     assert.ok(isValidConfigKey('agent_skills.gsd-executor'));
     assert.ok(isValidConfigKey('agent_skills.gsd-planner'));
     assert.ok(isValidConfigKey('agent_skills.my_custom_agent'));
+  });
+});
+
+// ─── #3651: prescribed writes must match the real config-set contract ───────
+
+// Walk the shipped (frozen first-party) capability registry and collect the
+// reviewer-lane modelConfigKey slugs — the closed set `config-set` actually
+// accepts for review.models.* (federated via isCapabilityConfigKey).
+function collectReviewerModelConfigKeys() {
+  const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+  const keys = new Set();
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (
+      typeof node['modelConfigKey'] === 'string' &&
+      node['modelConfigKey'].startsWith('review.models.')
+    ) {
+      keys.add(node['modelConfigKey'].slice('review.models.'.length));
+    }
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(registry);
+  return keys;
+}
+
+describe('#3651 workflow — review.models settable-set rule', () => {
+  test('workflow states the registry-derived review.models rule, not a dynamic-pattern claim (#3651)', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !src.includes('^review\\.models\\.'),
+      'workflow must not claim a review.models dynamic-key pattern — dynamicKeyPatterns has no review.models entry'
+    );
+    assert.ok(
+      /modelConfigKey/.test(src),
+      'workflow must name the per-lane modelConfigKey rule'
+    );
+    assert.ok(
+      /capability registry/i.test(src),
+      'workflow must state that the settable set is derived from the capability registry'
+    );
+  });
+
+  test("workflow enumerates exactly the registry's settable review.models lanes (#3651)", () => {
+    const registryKeys = collectReviewerModelConfigKeys();
+    assert.ok(
+      registryKeys.size >= 9,
+      `expected the shipped nine-lane set from the registry, found ${registryKeys.size}`
+    );
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const mentioned = new Set(
+      [...src.matchAll(/review\.models\.([a-zA-Z0-9_-]+)/g)].map((m) => m[1])
+    );
+    for (const key of registryKeys) {
+      assert.ok(
+        mentioned.has(key),
+        `workflow must enumerate settable lane review.models.${key} (registry truth)`
+      );
+    }
+    for (const slug of mentioned) {
+      assert.ok(
+        registryKeys.has(slug),
+        `workflow mentions review.models.${slug} but the registry declares no such settable key`
+      );
+    }
+  });
+
+  test('keyless reviewer lanes have no settable review.models key (#3651)', (t) => {
+    // Lanes whose capability declares modelConfigKey: null — the workflow used
+    // to walk users into writing these keys, and config-set rejects them.
+    for (const keyless of ['cursor', 'qwen', 'coderabbit']) {
+      assert.ok(
+        !isValidConfigKey(`review.models.${keyless}`),
+        `review.models.${keyless} must not validate (lane declares no modelConfigKey)`
+      );
+    }
+    for (const settable of collectReviewerModelConfigKeys()) {
+      assert.ok(
+        isValidConfigKey(`review.models.${settable}`),
+        `review.models.${settable} must validate`
+      );
+    }
+
+    const tmp = createTempProject();
+    t.after(() => cleanup(tmp));
+    runGsdTools(['config-ensure-section'], tmp);
+    const r = runGsdTools(['config-set', 'review.models.cursor', 'cursor-model'], tmp);
+    assert.ok(
+      !r.success,
+      'config-set must reject a keyless lane — the exact error the old workflow steered users into'
+    );
+  });
+});
+
+describe('#3651 workflow — agent_skills array-form write', () => {
+  test('workflow prescribes the JSON array agent_skills write, not a comma-joined string (#3651)', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !src.includes('"<skill-a,skill-b,skill-c>"'),
+      'the comma-joined string write prescription must be gone — the resolver never splits it'
+    );
+    assert.ok(
+      /config-set agent_skills\.<slug> '\["[^"]*"(?:,\s*"[^"]*")*\]'/.test(src),
+      'workflow must show the JSON array write form (config-set agent_skills.<slug> \'["…","…"]\')'
+    );
+    assert.ok(
+      /[Ss]plit/.test(src) && /comma/i.test(src),
+      'workflow must instruct the driving agent to split comma-separated input before the write'
+    );
+  });
+
+  test('JSON array agent_skills write round-trips and resolves per-element (#3651)', (t) => {
+    const tmp = createTempProject();
+    t.after(() => cleanup(tmp));
+    runGsdTools(['config-ensure-section'], tmp);
+
+    const r = runGsdTools(
+      ['config-set', 'agent_skills.gsd-planner', '["skills/alpha","skills/beta"]'],
+      tmp
+    );
+    assert.ok(r.success, `array-form set failed: ${r.error}`);
+
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.planning', 'config.json'), 'utf-8'));
+    assert.deepStrictEqual(
+      cfg.agent_skills?.['gsd-planner'],
+      ['skills/alpha', 'skills/beta'],
+      'stored value must be the JSON array, element per skill'
+    );
+
+    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
+    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
+    const parsed = JSON.parse(diag.output);
+    assert.strictEqual(
+      parsed.skills_count,
+      2,
+      `array form must resolve as 2 skill paths, got ${parsed.skills_count}`
+    );
+  });
+
+  test('comma-joined agent_skills value resolves as ONE path — the hazard the array form avoids (#3651)', (t) => {
+    const tmp = createTempProject();
+    t.after(() => cleanup(tmp));
+    runGsdTools(['config-ensure-section'], tmp);
+
+    const r = runGsdTools(
+      ['config-set', 'agent_skills.gsd-planner', 'skills/alpha,skills/beta'],
+      tmp
+    );
+    assert.ok(r.success, `comma-string set is accepted by config-set (shape is legal): ${r.error}`);
+
+    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
+    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
+    const parsed = JSON.parse(diag.output);
+    assert.strictEqual(
+      parsed.skills_count,
+      1,
+      `a comma-joined string is ONE path (never split) — got ${parsed.skills_count}; if this changes, the workflow prescription and this pin must change together`
+    );
+  });
+
+  test('single bare-string agent_skills path keeps working (#3651)', (t) => {
+    const tmp = createTempProject();
+    t.after(() => cleanup(tmp));
+    runGsdTools(['config-ensure-section'], tmp);
+
+    const r = runGsdTools(
+      ['config-set', 'agent_skills.gsd-planner', 'skills/solo'],
+      tmp
+    );
+    assert.ok(r.success, `single-string set failed: ${r.error}`);
+
+    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
+    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
+    const parsed = JSON.parse(diag.output);
+    assert.strictEqual(parsed.configured, true, 'a single string path is a configured entry');
+    assert.strictEqual(parsed.skills_count, 1, 'one string = one skill path');
   });
 });
 
@@ -214,21 +397,24 @@ describe('#2529 config-set round-trip', () => {
     assert.strictEqual(cfg.review?.models?.codex, 'codex exec --model gpt-5');
   });
 
-  test('config-set round-trips agent_skills.<agent-type>', (t) => {
+  test('config-set round-trips agent_skills.<agent-type> (array form — the shape the workflow prescribes, #3651)', (t) => {
     const tmp = createTempProject();
     t.after(() => cleanup(tmp));
     runGsdTools(['config-ensure-section'], tmp);
 
     const r = runGsdTools(
-      ['config-set', 'agent_skills.gsd-executor', 'skill-a,skill-b'],
+      ['config-set', 'agent_skills.gsd-executor', '["skill-a","skill-b"]'],
       tmp
     );
     assert.ok(r.success, `agent_skills.gsd-executor set failed: ${r.error}`);
     const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.planning', 'config.json'), 'utf-8'));
-    // Accept either array or string — validator accepts both shapes today.
-    const v = cfg.agent_skills?.['gsd-executor'];
-    assert.ok(v === 'skill-a,skill-b' || (Array.isArray(v) && v.join(',') === 'skill-a,skill-b'),
-      `expected agent_skills.gsd-executor to contain both skills, got ${JSON.stringify(v)}`);
+    // #3651: the prescribed write form must persist as a real JSON array — the
+    // either-shape acceptance this row used to allow hid the comma-string hazard.
+    assert.deepStrictEqual(
+      cfg.agent_skills?.['gsd-executor'],
+      ['skill-a', 'skill-b'],
+      `expected the array form to persist verbatim, got ${JSON.stringify(cfg.agent_skills?.['gsd-executor'])}`
+    );
   });
 });
 
