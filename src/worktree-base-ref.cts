@@ -90,10 +90,14 @@ type ExecGitFn = typeof execGitSeam;
 // ─── Message constants (verbatim — downstream docs/tests depend on these) ─────
 
 function buildMsgDiverged(headSha: string | null, forkRef: string | null, forkSha: string | null): string {
-  return `⚠ Worktree base mismatch: HEAD (${shortSha(headSha)}) differs from ${forkRef} (${shortSha(forkSha)}). Running this phase sequentially on the main working tree. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
+  return `⚠ Worktree base mismatch: HEAD (${shortSha(headSha)}) differs from ${forkRef} (${shortSha(forkSha)}). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so ${forkRef} matches it. (worktree.baseRef:"head" applies only where GSD itself creates the worktree — the runtime harness does not read it; #48, #3659.)`;
 }
 
-const MSG_UNKNOWN = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
+const MSG_UNKNOWN = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. Parallel worktrees return once origin/HEAD resolves and matches HEAD. See #683, #3659.`;
+
+function buildMsgBaserefHeadIgnored(headSha: string | null, forkRef: string | null, forkSha: string | null): string {
+  return `⚠ Worktree base mismatch: worktree.baseRef:"head" is set, but the runtime harness does not honor it for isolated dispatch — the fork base stays ${forkRef} (${shortSha(forkSha)}) while HEAD is ${shortSha(headSha)} (#48; upstream claude-code#44965). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so ${forkRef} matches it, or on runtimes where GSD itself manages worktree creation. See #3659.`;
+}
 
 const MSG_HEAD_UNRESOLVABLE = `⚠ Cannot determine the worktree base (git rev-parse HEAD did not return a definitive answer). Running this phase sequentially on the main working tree to avoid an unverified base mismatch. Note: worktree.baseRef:"head" would silence this check without verifying the base — it skips the comparison rather than resolving it. Retry; if it persists, check for a stalled filesystem mount or a stale git index lock (.git/index.lock). See #683, #3050.`;
 
@@ -241,9 +245,22 @@ export function resolveEffectiveBaseRef(
  */
 export function cmdWorktreeBaseCheck(
   cwd: string,
-  _args: string[],
+  args: string[],
   deps?: { execGit?: ExecGitFn; readFile?: (p: string) => string | null; write?: (s: string) => void; userClaudeDir?: string | null }
 ): ReturnType<typeof evaluateWorktreeBaseDegrade> {
+  // --mode threads the dispatch isolation mode through to the evaluation
+  // (#3659): 'harness-worktree' (default) or 'orchestrator-worktree'. Invalid
+  // or missing values after --mode fail closed — a silently defaulted typo
+  // would re-open the hole the flag exists to close.
+  let isolationMode: 'harness-worktree' | 'orchestrator-worktree' = 'harness-worktree';
+  const modeIdx = args.indexOf('--mode');
+  if (modeIdx !== -1) {
+    const value = args[modeIdx + 1];
+    if (value !== 'harness-worktree' && value !== 'orchestrator-worktree') {
+      throw new Error(`worktree base-check: --mode must be harness-worktree or orchestrator-worktree, got ${JSON.stringify(value ?? null)}`);
+    }
+    isolationMode = value;
+  }
   const claudeDir = path.join(cwd, '.claude');
   const userClaudeDir = Object.prototype.hasOwnProperty.call(deps ?? {}, 'userClaudeDir')
     ? (deps as { userClaudeDir?: string | null }).userClaudeDir
@@ -257,6 +274,7 @@ export function cmdWorktreeBaseCheck(
     cwd,
     effectiveBaseRef,
     execGit: deps?.execGit,
+    isolationMode,
   });
   const write = deps?.write ?? ((s: string) => process.stdout.write(s));
   write(JSON.stringify(result, null, 2) + '\n');
@@ -340,6 +358,15 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   execGit?: ExecGitFn;
   effectiveBaseRef?: string | null;
   cwd?: string;
+  /**
+   * Who creates the isolated worktree (#3659). 'harness-worktree' (default):
+   * the runtime harness forks it and does NOT route through project-settings
+   * baseRef (#48, verified 5/5; upstream claude-code#44965) — 'head' must not
+   * suppress the comparison. 'orchestrator-worktree': GSD itself runs
+   * `git worktree add <path> <start-point>` with the orchestrator HEAD, so
+   * 'head' is honored by construction and still suppresses.
+   */
+  isolationMode?: 'harness-worktree' | 'orchestrator-worktree';
 }): {
   shouldDegrade: boolean;
   reason: string;
@@ -364,12 +391,19 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   const cwd = deps?.cwd;
   const cwdOpts = cwd ? { cwd } : {};
 
-  // a. If baseRef is explicitly 'head' the harness forks from HEAD — no mismatch possible.
-  // Claude Code's worktree.baseRef accepts only "fresh" (= origin/HEAD, the default) or "head".
-  // Therefore special-casing "head" here and otherwise comparing HEAD against origin/HEAD is
-  // complete: any non-"head" value (including "fresh" and absent/null) has fresh/origin-HEAD
-  // semantics and must be evaluated against origin/HEAD. (Reference: Claude Code worktrees docs, #683.)
-  if (deps?.effectiveBaseRef === 'head') {
+  // a. baseRef 'head' suppresses ONLY where GSD controls the fork start-point
+  // (#3659). The former unconditional suppress trusted the harness to honor the
+  // setting; #48 verified 5/5 that the Agent-isolation dispatch path never
+  // routes through project settings (upstream claude-code#44965), so in
+  // harness mode the fork base is always origin/HEAD and 'head' must fall
+  // through to the same comparison the fresh path runs. In
+  // orchestrator-worktree mode GSD itself runs `git worktree add <path>
+  // <start-point>` with the orchestrator HEAD — 'head' is honored by
+  // construction there and the suppress is correct. Any non-"head" value
+  // (including "fresh" and absent/null) has fresh/origin-HEAD semantics and is
+  // evaluated against origin/HEAD as before. (Reference: #683, #48, #3659.)
+  const headIgnoredByHarness = deps?.effectiveBaseRef === 'head';
+  if (headIgnoredByHarness && (deps?.isolationMode ?? 'harness-worktree') === 'orchestrator-worktree') {
     return { shouldDegrade: false, reason: 'baseref-head', message: null, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: null };
   }
 
@@ -444,6 +478,10 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   }
   if (forkSha === headSha) {
     return { shouldDegrade: false, reason: 'head-matches-fork', message: null, headSha, forkRef, forkSha, headAbsenceVerified: null };
+  }
+  if (headIgnoredByHarness) {
+    const message = buildMsgBaserefHeadIgnored(headSha, forkRef, forkSha);
+    return { shouldDegrade: true, reason: 'baseref-head-ignored-by-harness', message, headSha, forkRef, forkSha, headAbsenceVerified: null };
   }
   const message = buildMsgDiverged(headSha, forkRef, forkSha);
   return { shouldDegrade: true, reason: 'head-diverged-from-fork', message, headSha, forkRef, forkSha, headAbsenceVerified: null };

@@ -111,9 +111,9 @@ stays active as a backstop in both cases.
 
 ```bash
 if [ "$ISOLATION" = "harness-worktree" ]; then
-  _DIAG_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
+  _DIAG_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick shouldDegrade 2>/dev/null || true)
   if [ "$_DIAG_SHOULD_DEGRADE" = "true" ]; then
-    _DIAG_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+    _DIAG_DEGRADE_MSG=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick message 2>/dev/null || true)
     [ -n "$_DIAG_DEGRADE_MSG" ] && printf '%s\n' "$_DIAG_DEGRADE_MSG" >&2
     echo "⚠ [#2649] Worktree fork base diverged from orchestrator HEAD — auto-degrading to sequential mode for diagnosis to avoid a base-mismatch halt." >&2
     ISOLATION=none
