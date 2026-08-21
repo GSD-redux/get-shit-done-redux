@@ -39,7 +39,7 @@ describe('#3645 — agents write only git-tracked source paths', () => {
   const mapper = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-pattern-mapper.md'), 'utf8');
 
   test('planner spawn contract carries the #3645 tracked-source rule', () => {
-    const block = planPhase.split('<tracked_source_paths>')[1];
+    const block = planPhase.split('<tracked_source_paths>')[1]?.split('</tracked_source_paths>')[0];
     assert.ok(block, 'plan-phase.md must carry the <tracked_source_paths> block in the planner spawn prompt (#3645)');
     assert.ok(/files_modified/.test(block) && /must_haves/.test(block),
       'the block must govern files_modified and must_haves paths');
@@ -52,7 +52,7 @@ describe('#3645 — agents write only git-tracked source paths', () => {
   });
 
   test('planner spawn contract re-verifies inherited PATTERNS.md paths (#3645)', () => {
-    const block = planPhase.split('<tracked_source_paths>')[1];
+    const block = planPhase.split('<tracked_source_paths>')[1]?.split('</tracked_source_paths>')[0];
     assert.ok(/PATTERNS_PATH/.test(block) && /inherit/.test(block),
       'the block must cover paths inherited from {PATTERNS_PATH} and prior phases');
   });
@@ -81,15 +81,18 @@ describe('#3645 — agents write only git-tracked source paths', () => {
 
   test('growth ack recorded for the grown shipped files (#3645)', () => {
     const acksDir = path.join(__dirname, 'emitted-drift-acks');
-    const fragment = fs
-      .readdirSync(acksDir)
-      .filter((f) => f.includes('3645'))
-      .map((f) => fs.readFileSync(path.join(acksDir, f), 'utf8'))
-      .join('\n');
-    assert.ok(fragment.length > 0, 'an emitted-drift-acks fragment for #3645 must exist');
-    assert.ok(fragment.includes('"gsd-pattern-mapper.md"') && fragment.includes('"plan-phase.md"'),
-      'the #3645 fragment must acknowledge BOTH grown paths by their ack keys');
-    assert.ok(!fragment.includes('"gsd-planner.md"'),
+    const readAck = (name) => fs.readFileSync(path.join(acksDir, name), 'utf8');
+    const mine = fs.readdirSync(acksDir).find((f) => f.includes('3645'));
+    assert.ok(mine, 'an emitted-drift-acks fragment for #3645 must exist');
+    const mineSrc = readAck(mine);
+    assert.ok(mineSrc.includes('"gsd-pattern-mapper.md"'),
+      'the #3645 fragment must acknowledge the grown mapper by its ack key');
+    assert.ok(!mineSrc.includes('"gsd-planner.md"'),
       'gsd-planner.md is unchanged — no ack entry for it');
+    // plan-phase.md's growth ack lives in the 3409 fragment (two ack sources
+    // may never name the same path — the merge precedent).
+    const planPhaseAck = readAck('3409-unreachable-guard-arms.json');
+    assert.ok(planPhaseAck.includes('"plan-phase.md"') && planPhaseAck.includes('#3645 append'),
+      'the plan-phase.md growth reason must be appended to the 3409 fragment (#3645)');
   });
 });

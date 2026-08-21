@@ -766,8 +766,8 @@ from `{PATTERNS_PATH}` or prior-phase plans — must name git-tracked source,
 never a gitignored install/runtime mirror (e.g. `<root>/.gsd/capabilities/<id>/...`
 synced from a plugin's tracked tree; executor edits to a mirror die on the next
 capability sync). Before writing a path whose file already exists on disk,
-verify with `git ls-files -- <path>` (non-empty output = tracked; exit 1 or
-empty = not tracked). If the naively-resolved path is gitignored, resolve to
+verify with `git ls-files -- <path>` (non-empty output = tracked; empty
+output = not tracked). If the naively-resolved path is gitignored, resolve to
 its tracked origin — e.g. `plugins/*/.gsd/capabilities/<id>/...`, or root
 `capabilities/<id>/...` where the repo tracks capabilities at root — and write
 THAT path, noting the substitution in the plan. A path for a file that does
