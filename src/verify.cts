@@ -61,8 +61,12 @@ type HealthDiagnostic = healthDiagnosticMod.Diagnostic;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-snapshot.cjs is an export= CommonJS module
 import planningSnapshotMod = require('./planning-snapshot.cjs');
 const { buildPlanningSnapshot } = planningSnapshotMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- onboard-projection.cjs is an export= CommonJS module
+import onboardProjectionMod = require('./onboard-projection.cjs');
+const { REQUIRED_CODEBASE_MAP_FILES } = onboardProjectionMod;
+import { realClock } from './clock.cjs';
 
-const { planningDir } = planningWorkspace;
+const { planningDir, planningRoot } = planningWorkspace;
 const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
@@ -2231,6 +2235,116 @@ function cmdVerifySchemaDrift(
   );
 }
 
+/**
+ * Stamp `last_mapped_commit` (plus `last_mapped_at`) into the frontmatter of
+ * every codebase-map document that exists on disk, using the current HEAD sha.
+ *
+ * #3418: `drift.cjs` shipped a correct `writeMappedCommit` with no production
+ * caller, so no full `/gsd:map-codebase` run ever wrote the machine-readable
+ * baseline that `cmdVerifyCodebaseDrift` reads. The stamp lives in CODE rather
+ * than in a prose instruction to the mapper agent on purpose: an agent that
+ * decides its work is already done skips a prose step silently, which is the
+ * exact class of failure the stamp exists to detect.
+ *
+ * Only documents that already exist are stamped -- a `--fast` map produces four
+ * of the seven, and this must not conjure the missing three as frontmatter-only
+ * stubs that would then satisfy the seven-file completeness probe. `only`
+ * (`--files a.md,b.md`) narrows further, for a caller that refreshed a subset.
+ *
+ * Non-blocking by contract, like every other drift surface: any failure emits
+ * `skipped` with a reason and exits 0.
+ */
+function cmdStampCodebaseMap(cwd: string, raw: boolean, only?: string[]): void {
+  // Non-hoisted: load-order matters for circular dep guard
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- drift.cjs is an export= CommonJS module
+  const drift = require('./drift.cjs') as Record<string, unknown>;
+
+  const emit = (payload: unknown) => output(payload, raw);
+
+  try {
+    const codebaseDir = path.join(planningDir(cwd), 'codebase');
+    if (!fs.existsSync(codebaseDir)) {
+      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'no-codebase-dir' });
+      return;
+    }
+
+    const revProbe = execGit(['rev-parse', 'HEAD'], { cwd }) as unknown as { exitCode: number; stdout: string };
+    if (revProbe.exitCode !== 0) {
+      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'not-a-git-repo' });
+      return;
+    }
+    const commit = revProbe.stdout.trim();
+    if (!/^[0-9a-f]{7,40}$/.test(commit)) {
+      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'unreadable-head' });
+      return;
+    }
+
+    // `--files` restricts the stamp to the documents a caller actually
+    // refreshed. The execute-phase auto-remap path rewrites STRUCTURE.md and
+    // ARCHITECTURE.md only; stamping the other five at HEAD there would claim a
+    // currency they do not have. Membership is checked against the closed
+    // seven-document set, so an unknown name is a fail-loud non-answer rather
+    // than a path this function tries to resolve.
+    let candidates = REQUIRED_CODEBASE_MAP_FILES;
+    if (only && only.length > 0) {
+      const unknown = only.filter((file) => !candidates.includes(file));
+      if (unknown.length > 0) {
+        emit({
+          stamped: [],
+          commit: null,
+          stamped_at: null,
+          skipped: true,
+          reason: 'unknown-codebase-map-file: ' + unknown.join(','),
+        });
+        return;
+      }
+      candidates = candidates.filter((file) => only.includes(file));
+    }
+
+    const present = candidates.filter((file) =>
+      fs.existsSync(path.join(codebaseDir, file)),
+    );
+    if (present.length === 0) {
+      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'no-codebase-map' });
+      return;
+    }
+
+    // Host-local calendar day, matching the `**Analysis Date:**` line the mapper
+    // agent writes -- the two freshness markers must not disagree by a timezone.
+    const stampedAt = realClock.localToday();
+    const write = drift['writeMappedCommit'] as (f: string, sha: string, iso: string) => void;
+
+    const stamped: string[] = [];
+    const failed: { file: string; reason: string }[] = [];
+    for (const file of present) {
+      try {
+        write(path.join(codebaseDir, file), commit, stampedAt);
+        stamped.push(file);
+      } catch (err) {
+        // One unwritable document must not cost the stamp on the other six.
+        failed.push({ file, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    emit({
+      stamped,
+      failed,
+      commit,
+      stamped_at: stampedAt,
+      skipped: false,
+      reason: null,
+    });
+  } catch (err) {
+    emit({
+      stamped: [],
+      commit: null,
+      stamped_at: null,
+      skipped: true,
+      reason: 'exception: ' + (err instanceof Error ? err.message : String(err)),
+    });
+  }
+}
+
 function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
   // Non-hoisted: load-order matters for circular dep guard
   // eslint-disable-next-line @typescript-eslint/no-require-imports -- drift.cjs is an export= CommonJS module
@@ -2284,14 +2398,43 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
       return;
     }
 
-    const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-    let base = lastMapped;
-    if (!base) {
-      base = EMPTY_TREE;
-    } else {
-      const verify = execGit(['cat-file', '-t', base], { cwd }) as unknown as { exitCode: number; stdout: string };
-      if (verify.exitCode !== 0) base = EMPTY_TREE;
+    // #3418: an absent or unresolvable baseline means NO COMPARISON IS POSSIBLE.
+    // It is neither zero drift nor total drift, and reporting it as either is a
+    // lie the consumer cannot detect. The former fallback diffed HEAD against
+    // the empty tree, so every tracked file read as newly added and the gate
+    // reported maximum drift identically on every run -- which made a genuinely
+    // stale map indistinguishable from a fresh one, and let `spawn_mapper` fire
+    // a whole-repo remap while presenting itself as an incremental one.
+    if (!lastMapped) {
+      emit({
+        block: false,
+        skipped: true,
+        reason: 'no-mapped-commit',
+        action_required: false,
+        directive: 'none',
+        elements: [],
+        last_mapped_commit: null,
+      });
+      return;
     }
+    const baseProbe = execGit(['cat-file', '-t', lastMapped], { cwd }) as unknown as { exitCode: number; stdout: string };
+    if (baseProbe.exitCode !== 0) {
+      // A stamp git cannot resolve: history rewrite, GC, or a shallow clone.
+      // Distinct reason from 'no-mapped-commit' -- the map claims a baseline,
+      // this repository just cannot see it, which is an operator-actionable
+      // difference (re-map vs. unshallow).
+      emit({
+        block: false,
+        skipped: true,
+        reason: 'unresolvable-mapped-commit',
+        action_required: false,
+        directive: 'none',
+        elements: [],
+        last_mapped_commit: lastMapped,
+      });
+      return;
+    }
+    const base = lastMapped;
 
     const diff = execGit(['diff', '--name-status', base, 'HEAD'], { cwd }) as unknown as { exitCode: number; stdout: string };
     if (diff.exitCode !== 0) {
@@ -2305,6 +2448,16 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
       });
       return;
     }
+
+    // #3418: GSD's own planning artifacts are not codebase structure. A
+    // map-codebase run commits `.planning/codebase/*.md`, so a correctly
+    // stamped baseline would be re-poisoned by the very commit that carries
+    // the stamp -- the next gate invocation would report the map's own seven
+    // documents as seven new directories, back over the default threshold of
+    // three. Derived from planningRoot() rather than a hardcoded literal so a
+    // repoint of the planning root cannot leave this filter behind.
+    const planningPrefix = path.relative(cwd, planningRoot(cwd)).split(path.sep).join('/') + '/';
+    const isPlanningArtifact = (file: string) => file.split('\\').join('/').startsWith(planningPrefix);
 
     const added: string[] = [];
     const modified: string[] = [];
@@ -2324,6 +2477,7 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
       // ASCII common case — passes through untouched. Both capture groups are
       // decoded: R/C lines carry old AND new paths, either may be quoted.
       const file = decodeGitQuotedPath(m[3] || m[2]);
+      if (isPlanningArtifact(file)) continue;
       if (status === 'A' || status === 'R' || status === 'C') added.push(file);
       else if (status === 'M') modified.push(file);
       else if (status === 'D') deleted.push(file);
@@ -2404,5 +2558,6 @@ export = {
   cmdVerifyCodebaseDrift,
   computeContextDrift,
   cmdVerifyContextDrift,
+  cmdStampCodebaseMap,
   STATE_HEAD_ADVISORY_COMMITS,
 };

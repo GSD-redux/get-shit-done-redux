@@ -41,8 +41,9 @@ operates in **incremental-remap mode**:
 - Reject path values that contain `..`, start with `/`, or include shell
   metacharacters (`;`, `` ` ``, `$`, `&`, `|`, `<`, `>`). If all provided
   paths are invalid, fall back to a normal whole-repo run.
-- On write, each mapper stamps `last_mapped_commit: <HEAD sha>` into the YAML
-  frontmatter of every document it produces (see `bin/lib/drift.cjs:writeMappedCommit`).
+- The `last_mapped_commit` baseline is NOT the mapper's job. It is stamped
+  deterministically by the `stamp_codebase_map` step below, on every run,
+  incremental or full. See that step for why.
 
 **Explicit contract — propagate `--paths` through a single normalized
 variable.** Downstream steps (`spawn_agents`, `sequential_mapping`, and any
@@ -346,6 +347,33 @@ wc -l .planning/codebase/*.md
 - No empty documents (each should have >20 lines)
 
 If any documents missing or empty, note which agents may have failed.
+
+Continue to stamp_codebase_map.
+</step>
+
+<step name="stamp_codebase_map">
+Stamp the drift baseline into every document that was just written:
+
+```bash
+gsd_run stamp-codebase-map
+```
+
+This writes `last_mapped_commit: <HEAD sha>` and `last_mapped_at: <date>` into
+the YAML frontmatter of each `.planning/codebase/*.md` that exists. It runs on
+every mapping run, incremental (`--paths`) and full alike.
+
+**Why this is a shell step and not an instruction to the mapper.** The stamp is
+the only machine-readable freshness marker: the `verify codebase-drift` gate
+reads it to decide what to diff HEAD against. The human-readable markers the
+mapper writes (`**Analysis Date:**`, `<!-- refreshed: ... -->`) are restamped
+unconditionally on an Update run, so a mapper that decides its work is already
+done and rewrites only the dates still looks fresh to a human. Leaving the
+machine-readable stamp to the same agent reproduces exactly the failure the
+stamp exists to detect. A shell step cannot be skipped by a confident agent.
+
+The command is non-blocking: it emits `skipped` with a `reason` outside a git
+repo or when no documents exist. Report `stamped` and `commit` in the summary
+if any entry in `failed` is non-empty; otherwise continue silently.
 
 Continue to scan_for_secrets.
 </step>
