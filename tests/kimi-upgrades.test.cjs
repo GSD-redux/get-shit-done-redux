@@ -712,6 +712,42 @@ describe('#3031 — opt-in reclaim of orphaned ~/.kimi GSD artifacts', () => {
     assert.equal(read(), afterFirst, 'a second reclaim must change nothing further');
   });
 
+  test('warns instead of silently no-opping when the flag cannot apply', (t) => {
+    // The flag only ever acts inside the kimi-code GLOBAL branch. Consuming it
+    // in silence is indistinguishable from "it ran and found nothing", which
+    // for a cleanup the user explicitly asked for is the wrong answer.
+    const wrongRuntime = runMinimalInstall({
+      runtime: 'claude',
+      scope: 'global',
+      root: sandboxHome(t, 'gsd-3031-'),
+      extraArgs: [RECLAIM_FLAG],
+    });
+    assert.match(`${wrongRuntime.stdout}${wrongRuntime.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'a non-kimi-code install must say the flag did nothing');
+
+    // kimi-code declares hostBehaviors.localInstallDeferred, so install()
+    // returns before the hooks branch — the scope warning has to be raised
+    // before that early return, not inside it.
+    const localScope = runMinimalInstall({
+      runtime: 'kimi-code',
+      scope: 'local',
+      root: sandboxHome(t, 'gsd-3031-'),
+      extraArgs: [RECLAIM_FLAG],
+    });
+    assert.match(`${localScope.stdout}${localScope.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'a local install must say the flag did nothing');
+  });
+
+  test('does not warn on the happy path', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    seedLegacyKimiRoot(root);
+
+    const result = runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'the warning must not fire when the reclaim actually runs');
+  });
+
   test('property: stripping the GSD block never destroys user content', () => {
     const userText = fc.stringMatching(/^[A-Za-z0-9_= ."[\]]{1,40}$/);
 
