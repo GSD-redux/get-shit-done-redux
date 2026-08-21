@@ -409,6 +409,27 @@ Create `.planning/phases/XX-name/{padded_phase}-{plan}-SUMMARY.md` when done
 | `must_haves` | Yes | Goal-backward verification criteria |
 
 Wave numbers are pre-computed during planning. Execute-phase reads `wave` directly from frontmatter.
+Wave numbers are pre-computed during planning. Execute-phase reads `wave` directly from frontmatter.
+
+### Tracked-source rule for file paths (#3645)
+
+Every path you write — `files_modified`, `must_haves.artifacts`, and any file
+path inside a plan's actions — must name **git-tracked source**, never an
+install/runtime mirror. A path that merely exists on disk can be a gitignored
+runtime copy (e.g. `<root>/.gsd/capabilities/<id>/...` synced from a plugin's
+tracked tree); an executor editing that copy loses the work on the next
+capability sync.
+
+- Before writing any path whose file ALREADY EXISTS on disk, verify it is
+  tracked: `git ls-files --error-match <path>` (or `git ls-files -- <path>`
+  non-empty).
+- If the naively-resolved path is gitignored (not tracked), find the tracked
+  origin — e.g. `plugins/*/.gsd/capabilities/<id>/...` — and write THAT path.
+  Warn in the plan if the substitution is non-obvious.
+- A path for a file that does not exist yet is a NEW file: keep the intended
+  creation path; the rule only governs paths presented as existing source.
+- `PATTERNS.md` and prior-phase plans can carry mirror paths from before this
+  rule — re-verify every inherited path the same way; fix it, never inherit it.
 
 ## Interface Context for Executors
 
