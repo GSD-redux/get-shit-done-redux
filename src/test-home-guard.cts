@@ -62,7 +62,8 @@
  * effect. That branch is a deliberate weakening, not a closed door: with no passwd
  * entry there is nothing that could contradict a marker naming the real home, so a
  * caller that sandboxed to its own real home would be believed. The alternative is
- * refusing every run on such a host. The cost of a false refusal is a failed test naming its own fix;
+ * refusing every run on such a host. Everything else in that branch answers NO
+ * when it cannot tell — see `sameDirectory`. The cost of a false refusal is a failed test naming its own fix;
  * the cost of a false allow is silent, unrecoverable deletion of a developer's
  * skills.
  *
@@ -95,21 +96,26 @@ const SANDBOX_MARKER = 'GSD_TEST_HOME_SANDBOX';
  * `statSync` follows symlinks and reports the inode itself, so a case-variant
  * HOME, a symlinked HOME, and a bind-mounted HOME all compare equal.
  *
- * Fails CLOSED. A pair is only reported as DIFFERENT when both sides are
- * identified, or when one is definitively absent (ENOENT/ENOTDIR — a path that is
- * not there cannot be the one that is) while the other identifies. Every other
- * failure — permission, I/O, long-path, transient — is treated as "cannot tell",
- * which reports "same" so the caller refuses. Treating an arbitrary errno as
- * proof of difference is the fail-open shape this guard exists to remove.
+ * Fails CLOSED, and "closed" here means returning FALSE. The sole caller is the
+ * passwd-less marker branch, which READS a true as permission to proceed:
+ *
+ *     if (marker && sameDirectory(marker, osMod.homedir())) return;   // allows
+ *
+ * So "cannot tell" must answer NO. An earlier revision returned true for the
+ * unknown/unknown case (both stats failing with something other than
+ * ENOENT/ENOTDIR — EACCES, EPERM, EIO) on the reasoning that "cannot tell" should
+ * make the caller refuse; that reasoning was inverted with respect to this
+ * caller, and it turned an unreadable-stat environment into an unconditional
+ * bypass for anyone who set the marker to any value at all. Reported in review of
+ * #3725. Only two things now answer yes: the same resolved pathname, or two
+ * readable identities that match.
  */
 function sameDirectory(a: string, b: string): boolean {
   if (path.resolve(a) === path.resolve(b)) return true;
   const ia = identify(a);
   const ib = identify(b);
   if (ia.kind === 'ok' && ib.kind === 'ok') return ia.dev === ib.dev && ia.ino === ib.ino;
-  if (ia.kind === 'absent' && ib.kind === 'ok') return false;
-  if (ib.kind === 'absent' && ia.kind === 'ok') return false;
-  return true;
+  return false;
 }
 
 type Identity =
@@ -225,7 +231,9 @@ function assertTestHomeSandboxed(
         `${operation}("${runtime}") was called under a test runner with a destination inside ` +
         `your REAL home. The "${kind.kind}" kind declares a global home override, so it ` +
         `resolves from os.homedir() and NOT from the sandboxed configDir — this call would ` +
-        `write to (and prune GSD entries from) ${dest}.\n${fix}`,
+        `write to (and prune GSD entries from) ${dest}.\nThe real home it was ` +
+        `compared against is ${passwdHome} — if that is not your home, this ` +
+        `refusal is the bug and not the call.\n${fix}`,
       );
     }
     return;

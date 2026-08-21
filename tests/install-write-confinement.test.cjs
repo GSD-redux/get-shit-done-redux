@@ -3474,6 +3474,54 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // Review of #3725, Major 1. sameDirectory() is read by the marker branch as
+    // permission to PROCEED, so "cannot tell" has to answer no. It used to answer
+    // yes whenever neither side identified — two absent paths here, or two stats
+    // failing EACCES/EPERM/EIO on a locked-down host — which turned the passwd-less
+    // escape hatch into an unconditional bypass for any marker value at all.
+    // The absent/absent shape is the portable way to pin it; the errno shapes take
+    // the same branch.
+    test('a marker and a home that BOTH fail to identify do not vouch for each other', (t) => {
+      const root = createTempDir('gsd-3712-unident-');
+      t.after(() => cleanup(root));
+      // Two DIFFERENT paths, so the same-pathname shortcut cannot fire, and
+      // neither exists, so neither identifies.
+      const missingHome = path.join(root, 'home-never-created');
+      const missingMarker = path.join(root, 'marker-never-created');
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', 'codex',
+          escapingKinds(path.join(missingHome, '.agents')),
+          {
+            os: { homedir: () => missingHome, userInfo: () => { throw new Error('no passwd entry'); } },
+            env: { ...underTest, [testHomeGuard.SANDBOX_MARKER]: missingMarker },
+          }),
+        /no identifiable passwd home/,
+        'two unidentifiable paths are not evidence that either is a sandbox',
+      );
+    });
+
+    // Review of #3725, Major 2, raised as a question rather than a finding: on
+    // Windows Node derives st_dev/st_ino from BY_HANDLE_FILE_INFORMATION, and the
+    // uniqueness guarantees are weaker than POSIX. If dev collapsed to a per-volume
+    // constant AND ino were 0 for directories, isInside() would match its very
+    // first ancestor and report every path on the drive as inside the real home.
+    // The whole guard rests on this primitive, so assert it directly instead of
+    // reasoning about it — this row runs on every platform in the matrix, so
+    // Windows answers the question itself.
+    test('filesystem identity discriminates directories on this platform', (t) => {
+      const a = createTempDir('gsd-3712-ident-a-');
+      const b = createTempDir('gsd-3712-ident-b-');
+      t.after(() => { cleanup(a); cleanup(b); });
+      const sa = fs.statSync(a);
+      const sb = fs.statSync(b);
+      assert.ok(sa.dev !== sb.dev || sa.ino !== sb.ino,
+        `two distinct directories share an identity (dev=${sa.dev}/${sb.dev}, ino=${sa.ino}/${sb.ino}) — ` +
+        'isInside() would then match its first ancestor and refuse everything');
+      const again = fs.statSync(path.join(a, '..', path.basename(a)));
+      assert.equal(again.dev, sa.dev, 'one directory reached by two spellings must keep one dev');
+      assert.equal(again.ino, sa.ino, 'one directory reached by two spellings must keep one ino');
+    });
+
     // An ambient marker must not disarm the guard on the PRIMARY path: it is only
     // consulted when the real home cannot be identified at all.
     test('an ambient marker does NOT disarm the guard when the real home is identifiable', (t) => {
