@@ -35,7 +35,7 @@ Se nenhum número de fase for fornecido, o GSD Core usa a fase atual como alvo.
 O comando é executado em dois estágios:
 
 1. **`gsd-ui-researcher`** — lê `CONTEXT.md`, `RESEARCH.md` e `REQUIREMENTS.md` em busca de decisões existentes, detecta o estado do sistema de design (shadcn `components.json`, configuração do Tailwind, tokens existentes), e faz apenas as perguntas de design não respondidas em cinco áreas: espaçamento, cores, tipografia, textos e segurança do registro.
-2. **`gsd-ui-checker`** — valida o `UI-SPEC.md` resultante em seis dimensões. Se problemas forem encontrados, um ciclo de revisão reexecuta o pesquisador (até duas iterações) visando apenas os itens sinalizados.
+2. **`gsd-ui-checker`** — valida o `UI-SPEC.md` resultante em sete dimensões. Se problemas forem encontrados, um ciclo de revisão reexecuta o pesquisador (até duas iterações) visando apenas os itens sinalizados.
 
 **Saída:** `{padded_phase}-UI-SPEC.md` em `.planning/phases/{phase-dir}/`.
 
@@ -53,7 +53,7 @@ O pesquisador bloqueia decisões em cinco áreas:
 | **Textos** | Rótulos de CTA, mensagens de estado vazio, textos de estado de erro, indicadores de carregamento |
 | **Segurança do registro** | Protocolo de inspeção de componentes shadcn (veja abaixo) |
 
-O verificador valida a especificação em seis pilares, com pontuação de 1 a 4 cada: Textos, Visuais, Cores, Tipografia, Espaçamento e Design de Experiência (cobertura de estados de carregamento / erro / vazio).
+O verificador valida a especificação em suas sete dimensões — Textos, Visuais, Cores, Tipografia, Espaçamento, Segurança de Registro e Proveniência do Inventário — retornando PASS, FLAG ou BLOCK para cada uma. (A rubrica de 6 pilares com pontuação de 1 a 4 pertence à auditoria retroativa do `/gsd-ui-review`, não a este verificador.)
 
 ---
 

@@ -42,11 +42,34 @@ If your prior `--kimi` install wrote agent YAMLs (the `kimi-agents` artifact lay
 rm -rf ~/.config/agents/agents/gsd-*.yaml ~/.agents/agents/gsd-*.yaml 2>/dev/null || true
 ```
 
-### 3. Verify skills are discovered
+### 3. Reclaim GSD hooks a pre-1.10.0 install left in `~/.kimi`
+
+Before 1.10.0 (#2755), a `--kimi-code` install wrote its GSD `[[hooks]]` block, hook bundle and CommonJS marker into Kimi CLI's `~/.kimi/` instead of Kimi Code's own root. Upgrading fixes the destination but cannot clean up what the old bug already wrote, so those artifacts stay in `~/.kimi/` indefinitely — nothing reads them, and no uninstall path reaches them.
+
+Reclaim them by adding `--reclaim-kimi-legacy` to the re-install:
+
+```bash
+npx @opengsd/gsd-core --kimi-code --global --reclaim-kimi-legacy
+```
+
+This removes GSD's managed `[[hooks]]` block from `~/.kimi/config.toml`, plus GSD's own hook scripts, `hooks/lib/` helpers and CommonJS marker under `~/.kimi/`. Only exact GSD-owned filenames are touched: your own `config.toml` sections, your own scripts, and any `package.json` you wrote yourself are left alone, and directories are removed only when that cleanup leaves them empty.
+
+> **Do not pass this flag if you also use Kimi CLI.** GSD wraps its entries in the same `# GSD Hooks BEGIN`/`END` markers whichever product it installed for, and the command paths inside them are derived from the hooks root — so a block the old bug wrote for Kimi Code is **byte-identical** to the one a legitimate `--kimi` install writes. Nothing on disk can tell them apart, which is exactly why this cleanup is opt-in rather than automatic: on a machine with both products, the flag would remove Kimi CLI's working hooks. If you use both, leave `~/.kimi` alone — the leftovers are inert for Kimi Code and harmless for Kimi CLI. To remove them later, uninstall Kimi CLI's install properly instead: `npx @opengsd/gsd-core --kimi --global --uninstall`.
+
+The flag never acts silently. It is skipped, with a notice saying so, in each case where reclaiming would be wrong or impossible:
+
+| Situation | What happens |
+|---|---|
+| The install is not `--kimi-code`, or is `--local` | Warns that the flag was ignored — nothing in `~/.kimi` is touched. |
+| The same invocation also installs `--kimi` (including via `--all`) | Skipped: that run is creating a live Kimi CLI install in `~/.kimi`, so the flag's premise does not hold. |
+| `KIMI_SHARE_DIR` and `KIMI_CODE_HOME` name the same directory | Skipped: there is no separate legacy root, and reclaiming would delete the hooks this install just wrote. Aliases count — a symlink or a case variant on a case-insensitive filesystem is recognized as the same directory. |
+| No GSD artifacts are found in `~/.kimi` | Reports that there was nothing to reclaim. |
+
+### 4. Verify skills are discovered
 
 After re-install, launch Kimi Code and confirm the GSD skills appear in the `/skill:` menu (or whatever surface Kimi Code uses for auto-discovered Agent Skills). Each `gsd-*` skill should be present at `~/.kimi-code/skills/gsd-*/SKILL.md`.
 
-### 4. Verify agent-skills query
+### 5. Verify agent-skills query
 
 ```bash
 gsd-tools query agent-skills gsd-planner
@@ -70,4 +93,5 @@ What that does and does not buy you (#2547):
 ## Questions
 
 - **Can I keep both `--kimi` and `--kimi-code` installs?** Yes — they install to separate config dirs (`~/.kimi/` vs `~/.kimi-code/`). Run both if you genuinely use both products.
+- **I only ever used Kimi Code — why is there anything in `~/.kimi` at all?** A GSD install older than 1.10.0 put it there (#2755). See step 3 above to reclaim it.
 - **Do I need to uninstall the old `--kimi` install first?** No — `--kimi-code --global` writes to `~/.kimi-code/`, which is separate. But if you no longer use Python kimi-cli, uninstalling the old install keeps things clean: `npx @opengsd/gsd-core --kimi --global --uninstall`.

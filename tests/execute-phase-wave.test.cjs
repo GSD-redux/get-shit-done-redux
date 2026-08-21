@@ -784,9 +784,17 @@ describe('execute-phase: between-wave manifest reset (#1369, #3384)', () => {
     assert.ok(content.includes('#3384'), 'step 7c must reference #3384');
   });
 
-  test('step 7c calls worktree.set-baseref to re-assert head config', () => {
+  test('step 7c runs the mode-threaded base-check and does NOT re-assert set-baseref (#3659)', () => {
+    // The former pin required the set-baseref re-assert, whose stated mechanism
+    // (#1369: "so the Claude Code harness re-reads the live HEAD") was fiction —
+    // the harness does not read project-settings baseRef (#48, verified 5/5;
+    // upstream claude-code#44965). Rewritten per the #3659 sanction: the
+    // between-wave re-check threads --mode and never re-asserts the dead call.
     const content = fs.readFileSync(BETWEEN_WAVE_PATH, 'utf-8');
-    assert.ok(content.includes('worktree.set-baseref'), 'step 7c must call worktree.set-baseref');
+    assert.ok(content.includes('worktree.base-check --mode "$ISOLATION"'),
+      'step 7c must thread the isolation mode through the base-check');
+    assert.ok(!content.includes('worktree.set-baseref'),
+      'step 7c must not re-assert set-baseref — the harness never read it (#48/#3659)');
   });
 
   test('step 7c appears after step 7b and before step 8 in the wave loop', () => {

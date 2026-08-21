@@ -92,6 +92,17 @@ function parseRequirements(reqMd: unknown): ReqItem[] {
   // The **ID** is extracted from the bullet text caller-side — the seam provides
   // the raw text; we parse the bold-ID prefix from it here.
   const boldIdRe = new RegExp(`^\\*\\*(${ID_PATTERN})\\*\\*\\s*(.*)$`);
+  // The shipped template (gsd-core/templates/requirements.md) writes
+  // `- [ ] **AUTH-01**: User can sign up` — a single separator delimiter
+  // between the bold ID and the description. Strip AT MOST ONE leading
+  // delimiter (plus its surrounding whitespace) before the final `.trim()`,
+  // mirroring roadmap-parser.cts's `stripLeadingDelimiter` delimiter set
+  // (em dash, en dash, colon, hyphen) — that helper is not exported, and its
+  // own `+`-quantified strip removes an entire delimiter RUN, which would
+  // also eat a second, meaningful marker (`**X-01**: -- weird` must keep the
+  // `--`), so the set is mirrored here with a single-occurrence match instead
+  // of reused verbatim.
+  const ONE_LEADING_DELIMITER_RE = /^\s*[—–:-]\s*/;
   for (const bullet of iterateBullets(reqMd)) {
     if (bullet.marker !== 'checkbox-unchecked' && bullet.marker !== 'checkbox-checked') continue;
     const m = boldIdRe.exec(bullet.text);
@@ -100,7 +111,8 @@ function parseRequirements(reqMd: unknown): ReqItem[] {
     if (!idRe.test(id)) continue;
     if (!seen.has(id)) {
       seen.add(id);
-      out.push({ id, text: (m[2] || '').trim() });
+      const rawText = m[2] || '';
+      out.push({ id, text: rawText.replace(ONE_LEADING_DELIMITER_RE, '').trim() });
     }
   }
 

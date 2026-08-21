@@ -98,6 +98,15 @@
  *   validate health [--repair]         Check .planning/ integrity, optionally repair
  *   validate agents                    Check GSD agent installation status
  *
+ * Planning Snapshot:
+ *   planning inspect                   Read-only schema-v1 canonical planning snapshot
+ *                                      (milestone identity, active phase, per-phase
+ *                                      verification/roadmap-acceptance/UAT evidence kept
+ *                                      separate, requirement rows with mapped-phase
+ *                                      traceability, plan/task rows with planned+changed
+ *                                      file provenance, and independent accepted_phases /
+ *                                      completed_plans fractions). Takes no arguments.
+ *
  * Progress:
  *   progress [json|table|bar]          Render progress in various formats
  *
@@ -297,6 +306,7 @@ const { routeVerifyCommand } = require('./lib/verify-command-router.cjs');
 const { routeEvalCommand } = require('./lib/eval-command-router.cjs');
 const evalMod = require('./lib/eval.cjs');
 const { routeVerificationCommand } = require('./lib/verification-command-router.cjs');
+const { routePlanningCommand } = require('./lib/planning-command-router.cjs');
 const verification = require('./lib/verification.cjs');
 const { routeInitCommand } = require('./lib/init-command-router.cjs');
 // Stale-bake guard (#1688): warns once when model config changed since agents
@@ -3728,6 +3738,10 @@ const HOST_COMMAND_ROUTERS = {
     'skill-manifest': routeSkillManifest,
     'history-digest': routeHistoryDigest,
     'phases': routePhases,
+    // #2790: read-only schema-v1 planning snapshot. The router imports its own
+    // io/planning-inspect deps, so it needs no module injection — it receives
+    // { args, cwd, raw, error } and ignores the rest of the dispatch context.
+    'planning': routePlanningCommand,
     'assumption-delta': routeAssumptionDelta,
     'requirements': routeRequirements,
     'gap-analysis': routeGapAnalysis,
@@ -3974,7 +3988,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
   'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
-  'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
+  'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +

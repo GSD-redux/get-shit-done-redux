@@ -180,8 +180,21 @@ Windows note: the hook runs under Git Bash, same as any other git hook. GSD's ow
 matrix is Linux-only, so this specific behavior is verified on Linux/macOS plus code review, not
 by an automated Windows run.
 
+## If you need parallel executors, use the other posture instead
+
+Everything above keeps `.planning/` out of git, and that has one consequence worth knowing before
+you commit to it: **parallel executor worktrees stop working.** A worktree is checked out from a
+commit, so an untracked or ignored `.planning/` does not exist inside it and the executor has no
+`PLAN.md` to read. Untracked planning also has no git history, so `/gsd-undo` and revert paths have
+nothing to restore.
+
+If what you actually want is "planning is versioned locally, but never reaches the remote", leave
+`commit_docs` on and set `planning.pr_strict: true` instead — see
+[Publish PRs without planning artifacts](publish-prs-without-planning-artifacts.md).
+
 ## Related
 
+- [Publish PRs without planning artifacts](publish-prs-without-planning-artifacts.md)
 - [Configuration reference — `planning.commit_docs`](../CONFIGURATION.md#planning-settings)
 - [Configuration reference — auto-detection and the tracked-files caveat](../CONFIGURATION.md#auto-detection)
 - [Configuration reference — per-phase override](../CONFIGURATION.md#per-phase-override-phase_commit_docs)

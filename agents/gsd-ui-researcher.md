@@ -82,7 +82,7 @@ Your UI-SPEC.md is consumed by:
 
 | Consumer | How They Use It |
 |----------|----------------|
-| `gsd-ui-checker` | Validates against 6 design quality dimensions |
+| `gsd-ui-checker` | Validates against 7 design quality dimensions |
 | `gsd-planner` | Uses design tokens, component inventory, and copywriting in plan tasks |
 | `gsd-executor` | References as visual source of truth during implementation |
 | `gsd-ui-auditor` | Compares implemented UI against the contract retroactively |
@@ -144,6 +144,41 @@ consistency across phases. Initialize now? [Y/n]
 Read preset from `npx shadcn info` output. Pre-populate design contract with detected values. Ask user to confirm or override each value.
 
 </shadcn_gate>
+
+<component_inventory_gate>
+
+## Component Inventory — Enumerate, Never Recall
+
+If the project has a design system, the UI-SPEC's `## Component Inventory` is a factual claim
+about an installed package. Establish it with a command. **Your recall of a package's exports is
+not evidence** — and the spec binds the list downstream, so an under-listed inventory caps every
+screen in the phase.
+
+Try in order, stopping at the first that answers:
+
+```bash
+npx shadcn info 2>/dev/null                                                # shadcn projects
+node -p "Object.keys(require('<pkg>/package.json').exports || {}).length"  # exports map
+node -p "require('<pkg>/package.json').version"                            # RESOLVED version
+```
+
+A first-party CLI with a JSON mode, or an MCP tool the design system ships, beats all three. What
+matters is that the command is **recorded and re-runnable**. Take the version from the installed
+package, not the range in your dependent's `package.json` — a caret range hides staleness.
+
+Record it as the first line of the section, verbatim:
+
+```
+Enumerated by `<command>` — <N> components — <package>@<version> — <YYYY-MM-DD>.
+```
+
+If nothing can enumerate it, say so in that same slot — `Could not enumerate: <reason>.` — with a
+real reason. Either way the table is a **non-exhaustive** list of known-good components, never a
+closed allowlist: checking for a component outside it is the expected path, not an exception.
+`gsd-ui-checker` Dimension 7 reports a missing provenance line as a defect. Omit the section
+entirely when `Tool: none`.
+
+</component_inventory_gate>
 
 <design_contract_questions>
 
@@ -258,7 +293,8 @@ Catalog what already exists. Do not re-specify what the project already has.
 
 ## Step 3: shadcn Gate
 
-Run the shadcn initialization gate from `<shadcn_gate>`.
+Run the shadcn initialization gate from `<shadcn_gate>`, then the enumeration gate from
+`<component_inventory_gate>`.
 
 ## Step 4: Design Contract Questions
 
@@ -364,6 +400,8 @@ UI-SPEC research is complete when:
 - [ ] Typography declared (3-4 sizes, 2 weights max)
 - [ ] Color contract declared (60/30/10 split, accent reserved-for list)
 - [ ] Copywriting contract declared (CTA, empty, error, destructive)
+- [ ] Component inventory enumerated by a recorded, re-runnable command — never from recall
+- [ ] Provenance line present with command, count, resolved `<package>@<version>`, and date (or `Could not enumerate: <reason>` in the same slot)
 - [ ] Registry safety declared (if shadcn initialized)
 - [ ] Registry vetting gate executed for each third-party block (if any declared)
 - [ ] Safety Gate column contains timestamped evidence, not intent notes

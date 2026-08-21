@@ -49,6 +49,7 @@
     "git.milestone_branch_template",
     "git.quick_branch_template",
     "planning.commit_docs",
+    "planning.pr_strict",
     "planning.search_gitignored",
     "planning.sub_repos",
     "review.default_reviewers",

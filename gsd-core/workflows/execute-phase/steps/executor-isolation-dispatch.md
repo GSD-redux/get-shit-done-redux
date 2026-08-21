@@ -59,9 +59,9 @@ fi
 [ "$ISOLATION" != "none" ] && gsd_run query worktree.reap-orphans 2>/dev/null || true
 # Auto-degrade if HEAD diverged from the fork base (#683) — both isolation models.
 if [ "$ISOLATION" != "none" ]; then
-  _SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
+  _SHOULD_DEGRADE=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick shouldDegrade 2>/dev/null || true)
   if [ "$_SHOULD_DEGRADE" = "true" ]; then
-    _DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+    _DEGRADE_MSG=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick message 2>/dev/null || true)
     [ -n "$_DEGRADE_MSG" ] && printf '%s\n' "$_DEGRADE_MSG" >&2
     USE_WORKTREES=false
     ISOLATION=none

@@ -381,9 +381,9 @@ immediately before capturing `EXPECTED_BASE` so it reflects the most current loc
 
 ```bash
 if [ "$ISOLATION" = "harness-worktree" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
-  _QUICK_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
+  _QUICK_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick shouldDegrade 2>/dev/null || true)
   if [ "$_QUICK_SHOULD_DEGRADE" = "true" ]; then
-    _QUICK_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+    _QUICK_DEGRADE_MSG=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick message 2>/dev/null || true)
     [ -n "$_QUICK_DEGRADE_MSG" ] && printf '%s\n' "$_QUICK_DEGRADE_MSG" >&2
     echo "⚠ [#1941] Worktree fork base diverged from orchestrator HEAD — auto-degrading to sequential mode for this quick task to avoid a base-mismatch halt." >&2
     USE_WORKTREES=false
