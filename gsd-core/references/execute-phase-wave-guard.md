@@ -13,9 +13,9 @@
 
    ```bash
    if [ "$ISOLATION" = "harness-worktree" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
-     _WAVE_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
+     _WAVE_DEGRADE=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick shouldDegrade 2>/dev/null || true)
      if [ "$_WAVE_DEGRADE" = "true" ]; then
-       _WAVE_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+       _WAVE_DEGRADE_MSG=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick message 2>/dev/null || true)
        [ -n "$_WAVE_DEGRADE_MSG" ] && printf '%s\n' "$_WAVE_DEGRADE_MSG" >&2
        echo "⚠ [#1369] Worktree fork base diverged from orchestrator HEAD (wave merges advanced HEAD past origin/HEAD). Auto-degrading to sequential mode for this wave to avoid base-mismatch halts." >&2
        # Both must move together (#2652): dispatch keys on ISOLATION.
@@ -27,11 +27,13 @@
 
    If `shouldDegrade` is `true`, override `USE_WORKTREES=false` for **this wave only** —
    all plans in this wave execute sequentially on the main working tree. Later waves re-run
-   this check and may re-enable worktree isolation if `origin/HEAD` is updated (e.g. via
-   `git fetch` or `worktree.baseRef:"head"` config).
+   this check and may re-enable worktree isolation once `origin/HEAD` matches HEAD again
+   (e.g. via `git fetch` or a push that advances it).
 
-   **To avoid this degrade across all waves:** set `worktree.baseRef:"head"` in
-   `.claude/settings.local.json` (or run `gsd-tools worktree set-baseref`). This tells
-   Claude Code to fork from the live HEAD instead of `origin/HEAD`, so each wave's new
-   worktrees always start from the correct post-merge base. See #683 for the base-ref
-   configuration detail.
+   **Why `worktree.baseRef:"head"` does not avoid this degrade (#48, #3659):** the runtime
+   harness does not read project-settings `baseRef` — an isolated dispatch always forks from
+   `origin/HEAD` regardless of the setting, so the check compares against the real fork base
+   and degrades whenever HEAD has diverged. Parallel worktrees return once HEAD is
+   merged/pushed so `origin/HEAD` matches it. The setting still restores parallel execution
+   on runtimes where GSD itself creates the worktrees (orchestrator-managed isolation:
+   Codex, OpenCode, Kimi, Kimi Code). See #683 for the base-ref configuration detail.

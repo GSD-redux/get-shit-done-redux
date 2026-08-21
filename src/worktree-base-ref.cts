@@ -87,6 +87,11 @@ function parseJsonc(text: string): unknown {
 
 type ExecGitFn = typeof execGitSeam;
 
+// Who creates the isolated worktree — the two worktree-creating members of
+// host-integration.cts's DispatchIsolation vocabulary ('none' creates none and
+// never reaches this check).
+type BaseCheckIsolationMode = 'harness-worktree' | 'orchestrator-worktree';
+
 // ─── Message constants (verbatim — downstream docs/tests depend on these) ─────
 
 function buildMsgDiverged(headSha: string | null, forkRef: string | null, forkSha: string | null): string {
@@ -99,7 +104,7 @@ function buildMsgBaserefHeadIgnored(headSha: string | null, forkRef: string | nu
   return `⚠ Worktree base mismatch: worktree.baseRef:"head" is set, but the runtime harness does not honor it for isolated dispatch — the fork base stays ${forkRef} (${shortSha(forkSha)}) while HEAD is ${shortSha(headSha)} (#48; upstream claude-code#44965). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so ${forkRef} matches it, or on runtimes where GSD itself manages worktree creation. See #3659.`;
 }
 
-const MSG_HEAD_UNRESOLVABLE = `⚠ Cannot determine the worktree base (git rev-parse HEAD did not return a definitive answer). Running this phase sequentially on the main working tree to avoid an unverified base mismatch. Note: worktree.baseRef:"head" would silence this check without verifying the base — it skips the comparison rather than resolving it. Retry; if it persists, check for a stalled filesystem mount or a stale git index lock (.git/index.lock). See #683, #3050.`;
+const MSG_HEAD_UNRESOLVABLE = `⚠ Cannot determine the worktree base (git rev-parse HEAD did not return a definitive answer). Running this phase sequentially on the main working tree to avoid an unverified base mismatch. Note: worktree.baseRef:"head" silences this check only where GSD itself creates the worktree (orchestrator-managed runtimes) — in harness mode it never applied (#48, #3659). Retry; if it persists, check for a stalled filesystem mount or a stale git index lock (.git/index.lock). See #683, #3050.`;
 
 /**
  * Returns true when an execGit result indicates the subprocess was killed by
@@ -252,7 +257,7 @@ export function cmdWorktreeBaseCheck(
   // (#3659): 'harness-worktree' (default) or 'orchestrator-worktree'. Invalid
   // or missing values after --mode fail closed — a silently defaulted typo
   // would re-open the hole the flag exists to close.
-  let isolationMode: 'harness-worktree' | 'orchestrator-worktree' = 'harness-worktree';
+  let isolationMode: BaseCheckIsolationMode = 'harness-worktree';
   const modeIdx = args.indexOf('--mode');
   if (modeIdx !== -1) {
     const value = args[modeIdx + 1];
@@ -366,7 +371,7 @@ export function evaluateWorktreeBaseDegrade(deps?: {
    * `git worktree add <path> <start-point>` with the orchestrator HEAD, so
    * 'head' is honored by construction and still suppresses.
    */
-  isolationMode?: 'harness-worktree' | 'orchestrator-worktree';
+  isolationMode?: BaseCheckIsolationMode;
 }): {
   shouldDegrade: boolean;
   reason: string;

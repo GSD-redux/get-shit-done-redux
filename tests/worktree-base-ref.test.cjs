@@ -267,6 +267,16 @@ describe('evaluateWorktreeBaseDegrade', () => {
     };
   }
 
+  // #3659 rows share the diverged-HEAD stub shape — one builder keeps the
+  // four fixtures from drifting apart.
+  function makeDivergedExecGit(headSha, forkSha) {
+    const ok = (stdout) => ({ exitCode: 0, stdout, stderr: '', signal: null, error: null });
+    return makeExecGit({
+      'rev-parse HEAD': ok(headSha),
+      'rev-parse --verify --quiet origin/HEAD': ok(forkSha),
+    });
+  }
+
   test('effectiveBaseRef="head" + orchestrator mode → no degrade, reason baseref-head, execGit never called (#3659)', () => {
     let called = false;
     const result = evaluateWorktreeBaseDegrade({
@@ -290,10 +300,7 @@ describe('evaluateWorktreeBaseDegrade', () => {
     const HEAD_SHA = '11111111223344aa11111111223344aa11111111';
     const FORK_SHA = '99999999223344bb99999999223344bb99999999';
     const result = evaluateWorktreeBaseDegrade({
-      execGit: makeExecGit({
-        'rev-parse HEAD': { exitCode: 0, stdout: HEAD_SHA, stderr: '', signal: null, error: null },
-        'rev-parse --verify --quiet origin/HEAD': { exitCode: 0, stdout: FORK_SHA, stderr: '', signal: null, error: null },
-      }),
+      execGit: makeDivergedExecGit(HEAD_SHA, FORK_SHA),
       effectiveBaseRef: 'head',
     });
     assert.strictEqual(result.shouldDegrade, true,
@@ -308,10 +315,7 @@ describe('evaluateWorktreeBaseDegrade', () => {
     const HEAD_SHA = 'aaaa1111223344ccaaaa1111223344ccaaaa1111';
     const FORK_SHA = 'bbbb1111223344ddbbbb1111223344ddbbbb1111';
     const result = evaluateWorktreeBaseDegrade({
-      execGit: makeExecGit({
-        'rev-parse HEAD': { exitCode: 0, stdout: HEAD_SHA, stderr: '', signal: null, error: null },
-        'rev-parse --verify --quiet origin/HEAD': { exitCode: 0, stdout: FORK_SHA, stderr: '', signal: null, error: null },
-      }),
+      execGit: makeDivergedExecGit(HEAD_SHA, FORK_SHA),
       effectiveBaseRef: 'head',
       isolationMode: 'harness-worktree',
     });
@@ -338,10 +342,7 @@ describe('evaluateWorktreeBaseDegrade', () => {
     const HEAD_SHA = 'dddd1111223344ffdddd1111223344ffdddd1111';
     const FORK_SHA = 'eeee1111223344abeeceeee1111223344abeeceee';
     const result = evaluateWorktreeBaseDegrade({
-      execGit: makeExecGit({
-        'rev-parse HEAD': { exitCode: 0, stdout: HEAD_SHA, stderr: '', signal: null, error: null },
-        'rev-parse --verify --quiet origin/HEAD': { exitCode: 0, stdout: FORK_SHA, stderr: '', signal: null, error: null },
-      }),
+      execGit: makeDivergedExecGit(HEAD_SHA, FORK_SHA),
       effectiveBaseRef: 'head',
     });
     assert.ok(result.message !== null, 'divergence under head must carry the explanatory message');
@@ -516,8 +517,10 @@ describe('evaluateWorktreeBaseDegrade', () => {
     assert.strictEqual(result.headSha, HEAD_SHA);
     assert.strictEqual(result.forkRef, 'origin/HEAD');
     assert.strictEqual(result.forkSha, FORK_SHA);
-    // Verify message contains the short SHAs and the issue reference
-    const expectedMsg = `⚠ Worktree base mismatch: HEAD (${HEAD_SHA.slice(0, 8)}) differs from origin/HEAD (${FORK_SHA.slice(0, 8)}). Running this phase sequentially on the main working tree. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
+    // Verify message contains the short SHAs and the corrected remediation
+    // (#3659: the old text advised setting baseRef:"head", which the harness
+    // does not read).
+    const expectedMsg = `⚠ Worktree base mismatch: HEAD (${HEAD_SHA.slice(0, 8)}) differs from origin/HEAD (${FORK_SHA.slice(0, 8)}). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so origin/HEAD matches it. (worktree.baseRef:"head" applies only where GSD itself creates the worktree — the runtime harness does not read it; #48, #3659.)`;
     assert.strictEqual(result.message, expectedMsg);
   });
 
@@ -554,7 +557,7 @@ describe('evaluateWorktreeBaseDegrade', () => {
     assert.strictEqual(result.reason, 'fork-ref-unknown');
     assert.strictEqual(result.forkRef, null);
     assert.strictEqual(result.forkSha, null);
-    const expectedMsg = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
+    const expectedMsg = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. Parallel worktrees return once origin/HEAD resolves and matches HEAD. See #683, #3659.`;
     assert.strictEqual(result.message, expectedMsg);
   });
 

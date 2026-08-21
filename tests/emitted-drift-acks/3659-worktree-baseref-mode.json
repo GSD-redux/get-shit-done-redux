@@ -5,6 +5,9 @@
     "quick.md": "gsd-core/workflows/quick.md +38B net: --mode \"$ISOLATION\" on both #1941 base-check calls (#3659)",
     "diagnose-issues.md": "gsd-core/workflows/diagnose-issues.md +38B net: --mode \"$ISOLATION\" on both #2649 base-check calls (#3659)",
     "executor-isolation-dispatch.md": "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md +38B net: --mode \"$ISOLATION\" on both base-check calls (#3659)",
-    "execute-plan.md": "gsd-core/workflows/execute-plan.md prose update: the #2649 pre-dispatch base-check now threads --mode (#3659)"
+    "execute-plan.md": "gsd-core/workflows/execute-plan.md prose update: the #2649 pre-dispatch base-check threads --mode; the baseRef restore-advice corrected to the runtime split (#3659)",
+    "execute-phase.md": "gsd-core/workflows/execute-phase.md prose update: baseRef restore-advice corrected to the orchestrator/harness split (#48/#3659)",
+    "execute-phase-wave-guard.md": "gsd-core/references/execute-phase-wave-guard.md: --mode on both wave base-check calls + the 'avoid this degrade' advice rewritten (harness does not read baseRef) (#3659)",
+    "execute-phase-between-wave-reset.md": "gsd-core/references/execute-phase-between-wave-reset.md: dead set-baseref re-assert removed (harness never read it), --mode threaded, comment corrected (#3659)"
   }
 }
