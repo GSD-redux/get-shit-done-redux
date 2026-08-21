@@ -367,9 +367,9 @@ function countMilestoneHeadings(content: string): number {
 }
 
 function hasMilestoneSectioning(content: string): boolean {
-  // Early-exit equivalent of countMilestoneHeadings(content) >= 2 (the walk
-  // above no longer short-circuits; a ROADMAP's heading count is small and
-  // tokenizeHeadings was already fully materialized either way).
+  // The >=2 short-circuit the inline walk used to have is gone — a ROADMAP's
+  // heading count is small and tokenizeHeadings materializes the full token
+  // array regardless, so the shared walk pays nothing for it.
   return countMilestoneHeadings(content) >= 2;
 }
 

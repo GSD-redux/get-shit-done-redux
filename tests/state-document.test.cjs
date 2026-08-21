@@ -1073,16 +1073,19 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     );
   });
 
-  test('MAJOR: wrapper + single nested milestone keeps the roadmap count', () => {
-    // Adversarial review MAJOR (#3204 reintroduction): every ancestor in a
-    // nesting chain was counted as its own candidate section under the
-    // #3184 rewrite, so a generic wrapper heading with only ONE real
-    // milestone nested under it was misclassified as sectioned. Mirrors
-    // this repo's own bundled template shape (gsd-core/templates/roadmap.md:
-    // '## Phases' -> '### 🚧 v1.1 [Name] (In Progress)' -> '#### Phase N:').
-    // The asserted milestone ('v9.9') is deliberately unbound so the
-    // assertion exercises hasMilestoneSectioning itself, not
-    // isMilestoneBoundedInRoadmap.
+  test('MAJOR: wrapper + single nested milestone, asserted elsewhere, withholds the total (#3642)', () => {
+    // Adversarial review MAJOR (#3204 reintroduction), REWRITTEN by #3642
+    // (maintainer-confirmed bug). The row's original purpose survives: a
+    // generic wrapper ('## Phases') with ONE real milestone nested under it
+    // (bundled template shape: '### 🚧 v1.1 [Name]' -> '#### Phase N:') is
+    // NOT milestone-SECTIONED — hasMilestoneSectioning's >=2 still says
+    // false, pinned by the #3642 seam rows. But the row's old ASSERTION
+    // pinned the leak #3642 reports: with the asserted milestone ('v9.9')
+    // deliberately unbound, the roadmap count (4) — which IS the v1.1
+    // section's phases — was written as v9.9's total. Pre-#3354 that arm
+    // existed to stop a clobber to the disk count (2); the #3354/#3642
+    // withhold doctrine supersedes it: preserve the stored value (8, chosen
+    // to differ from every substitute) and warn.
     const roadmap = [
       '# Roadmap',
       '',
@@ -1099,15 +1102,15 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      buildStateMd({ milestone: 'v9.9', milestoneName: 'Unbound', totalPhases: 2 }),
+      buildStateMd({ milestone: 'v9.9', milestoneName: 'Unbound', totalPhases: 8 }),
     );
     seedPhaseDirs(tmpDir, [1, 2]);
 
     const out = recordSessionAndReadTotalPhases(tmpDir);
     assert.strictEqual(
       Number(out.progress.total_phases),
-      4,
-      `wrapper + single nested milestone must keep the roadmap-declared count (4), not clobber to the disk count of 2. Got ${out.progress && out.progress.total_phases}`,
+      8,
+      `#3642: a single real section's phases must not become an absent milestone's total; stored 8 expected. Got ${out.progress && out.progress.total_phases}`,
     );
   });
 });
