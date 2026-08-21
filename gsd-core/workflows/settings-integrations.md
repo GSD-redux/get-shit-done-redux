@@ -190,7 +190,7 @@ If "Configure CLI" is selected, ask:
 ```text
 AskUserQuestion([
   {
-    question: "Which reviewer lane do you want to configure? Other settable lanes: agy (Antigravity), kimi-code, llama_cpp, lm_studio, ollama — or type a slug",
+    question: "Which reviewer lane do you want to configure? (Common lanes below; any settable lane from the list above works — or type its slug)",
     header: "CLI",
     multiSelect: false,
     options: [
@@ -204,12 +204,11 @@ AskUserQuestion([
 ```
 
 For a slug received as free text, check it against the settable set above.
-If it is not one of the nine, print:
+If it is not one of the settable keys, print:
 
 ```text
-Rejected: review.models.<slug> is not settable. Only lanes whose capability
-declares a modelConfigKey can be configured here: agy, claude, codex, gemini,
-kimi-code, llama_cpp, lm_studio, ollama, opencode. (cursor, qwen, and
+Rejected: review.models.<slug> is not settable — only the reviewer lanes whose
+keys are enumerated above can be configured here. (cursor, qwen, and
 coderabbit have no per-lane model key.)
 ```
 

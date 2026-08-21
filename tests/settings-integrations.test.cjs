@@ -145,25 +145,25 @@ describe('#2529 workflow — agent_skills injection', () => {
 
 // ─── #3651: prescribed writes must match the real config-set contract ───────
 
-// Walk the shipped (frozen first-party) capability registry and collect the
-// reviewer-lane modelConfigKey slugs — the closed set `config-set` actually
-// accepts for review.models.* (federated via isCapabilityConfigKey).
+// The set `config-set` actually accepts for review.models.*: the frozen
+// first-party registry's configSchema — the exact map isCapabilityConfigKey
+// consults (hasOwnProperty), so this helper cannot drift from the validator.
 function collectReviewerModelConfigKeys() {
   const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
-  const keys = new Set();
-  const walk = (node) => {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach(walk); return; }
-    if (
-      typeof node['modelConfigKey'] === 'string' &&
-      node['modelConfigKey'].startsWith('review.models.')
-    ) {
-      keys.add(node['modelConfigKey'].slice('review.models.'.length));
-    }
-    for (const value of Object.values(node)) walk(value);
-  };
-  walk(registry);
-  return keys;
+  const schema = registry.configSchema || {};
+  return new Set(
+    Object.keys(schema)
+      .filter((k) => k.startsWith('review.models.'))
+      .map((k) => k.slice('review.models.'.length))
+  );
+}
+
+// Shared shape for the #3651 behavioral rows: write agent_skills for a slug,
+// then read back the resolver's structured diagnostic.
+function resolveSkillsCount(tmp, slug) {
+  const diag = runGsdTools(['agent-skills', slug, '--json'], tmp);
+  assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
+  return JSON.parse(diag.output);
 }
 
 describe('#3651 workflow — review.models settable-set rule', () => {
@@ -187,7 +187,7 @@ describe('#3651 workflow — review.models settable-set rule', () => {
     const registryKeys = collectReviewerModelConfigKeys();
     assert.ok(
       registryKeys.size >= 9,
-      `expected the shipped nine-lane set from the registry, found ${registryKeys.size}`
+      `expected the shipped model-bearing lane set from the registry, found ${registryKeys.size}`
     );
     const src = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
     const mentioned = new Set(
@@ -269,9 +269,7 @@ describe('#3651 workflow — agent_skills array-form write', () => {
       'stored value must be the JSON array, element per skill'
     );
 
-    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
-    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
-    const parsed = JSON.parse(diag.output);
+    const parsed = resolveSkillsCount(tmp, 'gsd-planner');
     assert.strictEqual(
       parsed.skills_count,
       2,
@@ -290,9 +288,7 @@ describe('#3651 workflow — agent_skills array-form write', () => {
     );
     assert.ok(r.success, `comma-string set is accepted by config-set (shape is legal): ${r.error}`);
 
-    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
-    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
-    const parsed = JSON.parse(diag.output);
+    const parsed = resolveSkillsCount(tmp, 'gsd-planner');
     assert.strictEqual(
       parsed.skills_count,
       1,
@@ -311,9 +307,7 @@ describe('#3651 workflow — agent_skills array-form write', () => {
     );
     assert.ok(r.success, `single-string set failed: ${r.error}`);
 
-    const diag = runGsdTools(['agent-skills', 'gsd-planner', '--json'], tmp);
-    assert.ok(diag.success, `agent-skills failed: ${diag.error}`);
-    const parsed = JSON.parse(diag.output);
+    const parsed = resolveSkillsCount(tmp, 'gsd-planner');
     assert.strictEqual(parsed.configured, true, 'a single string path is a configured entry');
     assert.strictEqual(parsed.skills_count, 1, 'one string = one skill path');
   });
