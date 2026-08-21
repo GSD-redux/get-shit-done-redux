@@ -1001,11 +1001,12 @@ node gsd-tools.cjs worktree base-check
 node gsd-tools.cjs worktree set-baseref
 ```
 
-**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. Possible `reason` values:
+**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. `--mode` declares who creates the isolated worktree (#3659): `harness-worktree` (the default — the runtime harness forks it and does **not** read project-settings `baseRef`, #48) or `orchestrator-worktree` (GSD itself runs `git worktree add` with an explicit start-point and honors `"head"`); invalid values fail closed with an error. Possible `reason` values:
 
 | `reason` | `shouldDegrade` | Meaning |
 |---|---|---|
-| `baseref-head` | `false` | `worktree.baseRef:"head"` is set; no mismatch possible |
+| `baseref-head` | `false` | `worktree.baseRef:"head"` is set and `--mode orchestrator-worktree` declares GSD-managed worktrees — the fork base is the orchestrator HEAD by construction |
+| `baseref-head-ignored-by-harness` | `true` | `worktree.baseRef:"head"` is set but HEAD differs from `origin/HEAD` in harness (default) mode — the harness does not read the setting (#48), so the run degrades to sequential (#3659) |
 | `head-matches-fork` | `false` | HEAD and `origin/HEAD` are the same commit |
 | `head-diverged-from-fork` | `true` | Branch is ahead of or diverged from `origin/HEAD` |
 | `fork-ref-unknown` | `true` | `origin/HEAD` could not be resolved |
