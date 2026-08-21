@@ -410,25 +410,21 @@ describe('broken-windows: parseLedger fail-closed', () => {
 // reproduces that state deterministically.
 
 describe('broken-windows: fence-width tolerant read (#3657)', () => {
+  /** Narrow a rendered ledger text's fences to `width` backticks. */
+  function narrowFences(raw, width = 3) {
+    return raw
+      .replace(/^````json$/m, '`'.repeat(width) + 'json')
+      .replace(/^````$/m, '`'.repeat(width));
+  }
+
   /** Rendered ledger with its fences narrowed to `width` backticks. */
   function renderNarrowed(ledger, width = 3) {
-    const open = '`'.repeat(width) + 'json';
-    const close = '`'.repeat(width);
-    return renderLedger(ledger)
-      .replace(/^````json$/m, open)
-      .replace(/^````$/m, close);
+    return narrowFences(renderLedger(ledger), width);
   }
 
   /** Narrow the fences of an on-disk ledger in place (the formatter's effect). */
   function narrowLedgerOnDisk(p, width = 3) {
-    const raw = fs.readFileSync(p, 'utf8');
-    fs.writeFileSync(
-      p,
-      raw
-        .replace(/^````json$/m, '`'.repeat(width) + 'json')
-        .replace(/^````$/m, '`'.repeat(width)),
-      'utf8'
-    );
+    fs.writeFileSync(p, narrowFences(fs.readFileSync(p, 'utf8'), width), 'utf8');
   }
 
   /** Ledger with one open stub entry, built through the pure API. */
@@ -586,6 +582,36 @@ describe('broken-windows: fence-width tolerant read (#3657)', () => {
     const parsed = parseLedger(crlf);
     assert.equal(parsed.entries.length, 1);
     assert.equal(parsed.entries[0].description, 'crlf narrowed entry');
+  });
+
+  test('a json fence planted in a description never hijacks or bricks the ledger (#3657 security)', () => {
+    // renderTable renders descriptions into the prose ABOVE the JSON block,
+    // and append validation rejects only 4+ backtick runs (#1950 H1) — so a
+    // hostile or accidental description can plant a second json fence above
+    // the real one. The reader must resolve to the REAL block: renderLedger
+    // always emits it as the final fenced section, and the counts cross-check
+    // pins it. Both the smuggled-entries variant and the empty-array (brick)
+    // variant must fail to influence the parse.
+    const plantedBodies = [
+      '[{"id":99,"kind":"stub","phase":"9","file":"","line":null,"description":"SMUGGLED","status":"open","reason":"","recorded_at":"t","resolved_at":null}]',
+      '[]',
+    ];
+    for (const body of plantedBodies) {
+      const hostile = `see old snapshot:\n\`\`\`json\n${body}\n\`\`\`\nend`;
+      const ledger = ledgerWithEntry(hostile);
+      const rendered = renderLedger(ledger);
+
+      const parsed = parseLedger(rendered);
+      assert.equal(parsed.entries.length, 1, `planted fence must not replace the entries: ${body.slice(0, 12)}`);
+      assert.equal(parsed.entries[0].id, 1);
+      assert.notEqual(parsed.entries[0].description, 'SMUGGLED');
+      assert.ok(parsed.entries[0].description.includes('see old snapshot'));
+
+      // Same file after a formatter narrows every fence to three backticks.
+      const parsedNarrowed = parseLedger(narrowFences(rendered));
+      assert.equal(parsedNarrowed.entries[0].id, 1, 'narrowed planted ledger still resolves the real block');
+      assert.notEqual(parsedNarrowed.entries[0].description, 'SMUGGLED');
+    }
   });
 });
 
