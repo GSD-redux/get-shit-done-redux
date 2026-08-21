@@ -35,7 +35,7 @@ If no phase number is given, GSD Core targets the current phase.
 The command runs in two stages:
 
 1. **`gsd-ui-researcher`** — reads `CONTEXT.md`, `RESEARCH.md`, and `REQUIREMENTS.md` for existing decisions, detects the design system state (shadcn `components.json`, Tailwind config, existing tokens), and asks only the unanswered design questions across five areas: spacing, color, typography, copywriting, and registry safety.
-2. **`gsd-ui-checker`** — validates the resulting `UI-SPEC.md` across six dimensions. If issues are found, a revision loop reruns the researcher (up to two iterations) targeting only the flagged items.
+2. **`gsd-ui-checker`** — validates the resulting `UI-SPEC.md` across seven dimensions. If issues are found, a revision loop reruns the researcher (up to two iterations) targeting only the flagged items.
 
 **Output:** `{padded_phase}-UI-SPEC.md` in `.planning/phases/{phase-dir}/`.
 
@@ -52,8 +52,9 @@ The researcher locks decisions across five areas:
 | **Typography** | Font families, size/weight scale constraints, heading hierarchy |
 | **Copywriting** | CTA labels, empty state messages, error state copy, loading indicators |
 | **Registry safety** | shadcn component inspection protocol (see below) |
+| **Component inventory** | What the design system actually provides, plus the command that enumerated it (see below) |
 
-The checker validates the spec against six pillars, scored 1–4 each: Copywriting, Visuals, Color, Typography, Spacing, and Experience Design (loading / error / empty state coverage).
+The checker validates the spec against its seven dimensions — Copywriting, Visuals, Color, Typography, Spacing, Registry Safety, and Inventory Provenance — returning PASS, FLAG or BLOCK for each. (The scored 1–4 six-pillar rubric belongs to `/gsd-ui-review`'s retroactive audit, not to this checker.)
 
 ---
 
@@ -83,6 +84,65 @@ npx shadcn diff <component>   # compare against the official registry
 ```
 
 The checker will flag the spec as BLOCKED if registry safety is not addressed. Disable the gate via `/gsd-settings` if your project does not use shadcn or you have an alternative vetting process.
+
+---
+
+## Record where the component inventory came from
+
+If your project has a design system, the UI-SPEC lists the components it provides — and the
+planner and executor read that list as the design surface they are allowed to build from. A list
+written from the model's recall looks identical to one enumerated from the installed package, so
+`gsd-ui-checker` Dimension 7 requires the spec to say which it was.
+
+The section carries one provenance line, directly above its table:
+
+```text
+Enumerated by `npx shadcn info --json` — 153 components — @acme/design-system@4.2.1 — 2026-08-21.
+```
+
+Four things are required, and each is there for a reason:
+
+| Part | Why it is required |
+|---|---|
+| The command | The only re-runnable part. A reader can check the claim without re-deriving it. |
+| The count | Makes an under-listed inventory visible at a glance — "13 components" against a package reporting 153 is a difference you can see. |
+| `<package>@<version>` | The **resolved installed** version, so a spec reused after an upgrade is visibly stale. A caret range from `package.json` does not do this. |
+| The date | Bounds how old the claim is. |
+
+Use whatever the design system provides — a first-party CLI with a JSON mode, an MCP tool, or the
+installed package's own metadata:
+
+```bash
+npx shadcn info                                                             # shadcn projects
+node -p "Object.keys(require('@acme/design-system/package.json').exports).length"
+node -p "require('@acme/design-system/package.json').version"               # resolved version
+```
+
+If nothing can enumerate it, record that in the same slot instead, with a real reason:
+
+```text
+Could not enumerate: package ships no exports map and no CLI.
+```
+
+### What the checker does with it
+
+| What the spec carries | Dimension 7 | What it means for the executor |
+|---|---|---|
+| Command, count, version, date | **PASS** | Sourced list. |
+| Command and count, no version or date | **FLAG** | Accepted, but staleness is invisible. Add the missing part. |
+| A complete line, but below the table instead of above it | **FLAG** | Accepted. Move it up — a caveat has to be read before the list it qualifies. |
+| `Could not enumerate: <reason>` | **FLAG** | Honest and accepted. The list is explicitly non-exhaustive. |
+| An inventory with no provenance line | **BLOCK** | Enumerate and re-run `/gsd-ui-phase`. |
+| A count with no command, or a bare `Could not enumerate:` | **BLOCK** | Nothing falsifiable was recorded. |
+| No inventory section at all | **PASS** | Not applicable — including every spec written before this dimension existed, and any project with `Tool: none`. Nothing to enumerate is not a defect. |
+
+**A missing provenance line never blocks the executor.** The checker reports it against the spec
+and downgrades the list to a **non-exhaustive set of known-good components** — so nothing stops
+you using a component the spec simply failed to mention. Reaching for one outside the table is the
+expected path, not an exception.
+
+The checker never runs the recorded command. It reads the spec as a document; executing a command
+string lifted out of one would be a code-execution path through untrusted text.
 
 ---
 

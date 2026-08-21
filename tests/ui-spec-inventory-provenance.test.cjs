@@ -18,9 +18,23 @@
  *      quote it byte-identically or the checker keys on a shape the template never emits.
  *
  * The units under test are the shipped markdown documents themselves: their text IS
- * what the runtime loads (CONTRIBUTING.md — `source-text-is-the-product`). Assertions
- * are on parsed, typed records (`{ n, label }`, token sets, violation objects), never
- * on raw substrings of rendered text (CONTRIBUTING.md — "Prohibited: Raw Text Matching").
+ * what the runtime loads (CONTRIBUTING.md — `source-text-is-the-product`). Structure is
+ * asserted on parsed, typed records (`{ n, label }`, token sets, violation objects)
+ * rather than on raw substrings, per CONTRIBUTING.md's "Prohibited: Raw Text Matching".
+ *
+ * Three assertions are a deliberate exception: Dimension 7's allowlist-downgrade
+ * wording, its not-applicable PASS clause, and the template's non-exhaustive clause are
+ * CONTRACT PROSE — the sentence itself is the deliverable an agent reads at runtime, so
+ * there is no typed IR to assert on instead. That is the `source-text-is-the-product`
+ * category, not an escape from the rule.
+ *
+ * They carry NO `allow-test-rule` marker, deliberately and against first instinct.
+ * `no-source-grep` only inspects reads of `.cjs`/`.cts`/`.js`/`.mjs`/`.mts`/`.ts` paths,
+ * never `.md` ones, so a marker here suppresses nothing: it lands in the gate's
+ * "unverified" bucket, which is ceilinged. Measured on 2026-08-21 — adding three markers
+ * took that count 280 -> 281 and FAILED `scripts/lint-allow-test-rule-refs.cjs`. Raising
+ * the ceiling for markers that suppress nothing is the "just bump the baseline" weakening
+ * the ratchet exists to prevent, so the honest answer is no marker and this note.
  *
  * See https://github.com/open-gsd/gsd-core/issues/2845
  */
@@ -46,6 +60,10 @@ const SURFACE = Object.freeze({
   HOWTO_JA: 'docs/ja-JP/how-to/design-a-ui-phase.md',
   FEATURES_ZH: 'docs/zh-CN/FEATURES.md',
   HOWTO_ZH: 'docs/zh-CN/how-to/design-a-ui-phase.md',
+  FEATURES_KO: 'docs/ko-KR/FEATURES.md',
+  HOWTO_KO: 'docs/ko-KR/how-to/design-a-ui-phase.md',
+  HOWTO_PT: 'docs/pt-BR/how-to/design-a-ui-phase.md',
+  PROBE_REFERENCE: 'gsd-core/references/ui-consideration-probe.md',
 });
 
 function readShipped(rel) {
@@ -59,34 +77,35 @@ const lf = (text) => String(text == null ? '' : text).replace(/\r\n/g, '\n');
 
 // ─── Parsers → typed IR ───────────────────────────────────────────────────────
 
-/** `## Dimension <N>: <Label>` — the canonical roster. */
-function parseDimensionHeadings(text) {
+/** Line-oriented scan yielding `{ n, label }` for every line matching `re`.
+ *  `skipFenced` drops lines inside ``` blocks — a `## Dimension 8:` shown as an
+ *  EXAMPLE inside a fence is documentation, not a roster entry. The verdict block
+ *  is itself fenced, so its parser must NOT skip fences. */
+function matchLines(text, re, { skipFenced = false } = {}) {
   const out = [];
+  let inFence = false;
   for (const line of lf(text).split('\n')) {
-    const m = /^##\s+Dimension\s+(\d+):\s*(\S.*?)\s*$/.exec(line);
-    if (m) out.push({ n: Number(m[1]), label: m[2] });
+    if (skipFenced && /^\s*```/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = re.exec(line);
+    if (m) out.push({ n: Number(m[1]), label: m[2].trim() });
   }
   return out;
 }
 
-/** `Dimension <N> — <Label>: {PASS / FLAG / BLOCK}` — the verdict block. */
+/** `## Dimension <N>: <Label>` — the canonical roster. */
+function parseDimensionHeadings(text) {
+  return matchLines(text, /^##\s+Dimension\s+(\d+):\s*(\S.*?)\s*$/, { skipFenced: true });
+}
+
+/** `Dimension <N> — <Label>: {PASS / FLAG / BLOCK}` — the verdict block (itself fenced). */
 function parseVerdictBlock(text) {
-  const out = [];
-  for (const line of lf(text).split('\n')) {
-    const m = /^Dimension\s+(\d+)\s*[—-]\s*(\S.*?):\s*\{/.exec(line);
-    if (m) out.push({ n: Number(m[1]), label: m[2].trim() });
-  }
-  return out;
+  return matchLines(text, /^Dimension\s+(\d+)\s*[—-]\s*(\S.*?):\s*\{/);
 }
 
 /** `- [ ] Dimension <N> <Label>: PASS` — the template's Checker Sign-Off. */
 function parseSignOff(text) {
-  const out = [];
-  for (const line of lf(text).split('\n')) {
-    const m = /^-\s+\[\s*\]\s+Dimension\s+(\d+)\s+(\S.*?):\s*PASS\s*$/.exec(line);
-    if (m) out.push({ n: Number(m[1]), label: m[2].trim() });
-  }
-  return out;
+  return matchLines(text, /^-\s+\[\s*\]\s+Dimension\s+(\d+)\s+(\S.*?):\s*PASS\s*$/);
 }
 
 /** `| <N> <Label> | {PASS/FLAG} | … |` — the structured-return dimension tables.
@@ -113,7 +132,9 @@ function parseNumberedDimensionList(text) {
 
 const WORD_NUMERAL = Object.freeze({
   five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  seis: 6, sete: 7, oito: 8,
   五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  여섯: 6, 일곱: 7, 여덟: 8,
 });
 
 /** Every numeric "N dimensions" claim in `text`, in any of the three shipped languages.
@@ -126,8 +147,8 @@ function parseDeclaredCounts(text) {
 
   // "6 dimensions", "6 design quality dimensions", "6 Validation Dimensions"
   scan(/(\d+)\s+(?:[A-Za-z][A-Za-z-]*\s+){0,3}?[Dd]imensions?\b/g, (m) => push(Number(m[1])));
-  // "six dimensions"
-  scan(/\b(five|six|seven|eight|nine|ten)\s+dimensions\b/gi,
+  // "six dimensions", "six quality dimensions"
+  scan(/\b(five|six|seven|eight|nine|ten)\s+(?:[A-Za-z][A-Za-z-]*\s+){0,3}?dimensions\b/gi,
     (m) => push(WORD_NUMERAL[m[1].toLowerCase()]));
   // "Dimensions: 6/6 passed"
   scan(/Dimensions:\s*(\d+)\/(\d+)/g, (m) => { push(Number(m[1])); push(Number(m[2])); });
@@ -137,6 +158,14 @@ function parseDeclaredCounts(text) {
   scan(/(\d+)\s*个[^\s：:，,。]{0,6}?维度/g, (m) => push(Number(m[1])));
   // zh: "六个维度"
   scan(/([五六七八九十])\s*个[^\s：:，,。]{0,6}?维度/g, (m) => push(WORD_NUMERAL[m[1]]));
+  // ko: "7개 차원", "7가지 유효성 검사 차원"
+  scan(/(\d+)\s*(?:개|가지)\s*[^\n]{0,12}?차원/g, (m) => push(Number(m[1])));
+  // ko: "일곱 가지 차원"
+  scan(/(여섯|일곱|여덟)\s*가지\s*[^\n]{0,12}?차원/g, (m) => push(WORD_NUMERAL[m[1]]));
+  // pt: "7 dimensões"
+  scan(/(\d+)\s+dimens(?:ão|ões)/g, (m) => push(Number(m[1])));
+  // pt: "sete dimensões"
+  scan(/\b(seis|sete|oito)\s+dimens(?:ão|ões)\b/gi, (m) => push(WORD_NUMERAL[m[1].toLowerCase()]));
 
   return found;
 }
@@ -295,11 +324,16 @@ describe('#2845 — gsd-ui-checker dimension roster', () => {
 });
 
 describe('#2845 — cross-surface dimension-count parity (12 surfaces)', () => {
+  // Every surface that states a UI-checker dimension count, in any shipped language.
+  // ko-KR, pt-BR and the probe reference were MISSED on the first pass of #2845 and
+  // shipped stale — a guard that omits a surface is exactly as blind as no guard.
   const COUNT_SURFACES = [
-    SURFACE.CHECKER, SURFACE.RESEARCHER, SURFACE.WORKFLOW,
+    SURFACE.CHECKER, SURFACE.RESEARCHER, SURFACE.WORKFLOW, SURFACE.PROBE_REFERENCE,
     SURFACE.FEATURES, SURFACE.HOWTO,
     SURFACE.FEATURES_JA, SURFACE.HOWTO_JA,
     SURFACE.FEATURES_ZH, SURFACE.HOWTO_ZH,
+    SURFACE.FEATURES_KO, SURFACE.HOWTO_KO,
+    SURFACE.HOWTO_PT,
   ];
 
   test('no shipped surface still declares a stale dimension count', () => {
@@ -316,7 +350,7 @@ describe('#2845 — cross-surface dimension-count parity (12 surfaces)', () => {
   });
 
   test('each FEATURES.md locale numbers its validation-dimension list 1..7', () => {
-    for (const rel of [SURFACE.FEATURES, SURFACE.FEATURES_JA, SURFACE.FEATURES_ZH]) {
+    for (const rel of [SURFACE.FEATURES, SURFACE.FEATURES_JA, SURFACE.FEATURES_ZH, SURFACE.FEATURES_KO]) {
       const list = parseNumberedDimensionList(featuresRegion(rel));
       assert.deepEqual(list.map((d) => d.n), [1, 2, 3, 4, 5, 6, 7], `${rel} dimension list`);
     }
@@ -561,6 +595,7 @@ describe('#2845 — property: roster parity under formatting noise', () => {
     crlf: fc.boolean(),
     trailingSpaces: fc.boolean(),
     interleave: fc.boolean(),
+    decoy: fc.boolean(),
     blankLines: fc.integer({ min: 0, max: 3 }),
   });
 
@@ -572,6 +607,15 @@ describe('#2845 — property: roster parity under formatting noise', () => {
       parts.push(`## Dimension ${d.n}: ${d.label}${pad}`);
       parts.push('**Question:** does it hold?');
       if (noise.interleave) { parts.push('### Notes'); parts.push('prose'); }
+    }
+    // A heading-shaped line inside a fence is an EXAMPLE, never a roster entry. The
+    // round-trip assertion only holds if the parser skips it, so this decoy is what
+    // stops the property from being a writer-seeded tautology: a fence-blind parser
+    // reports roster.length + 1 and the property fails.
+    if (noise.decoy) {
+      parts.push('```');
+      parts.push(`## Dimension ${roster.length + 1}: Decoy`);
+      parts.push('```');
     }
     const body = parts.join(gap);
     return noise.crlf ? body.replace(/\n/g, '\r\n') : body;

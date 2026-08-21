@@ -94,6 +94,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Offers shadcn initialization for React/Next.js/Vite projects
 - Asks only unanswered design contract questions
 - Enforces registry safety gate for third-party components
+- **Enumerates the component inventory rather than recalling it (#2845):** the UI-SPEC's `## Component Inventory` carries a provenance line — the command that enumerated it, the count it returned, the resolved `<package>@<version>`, and the date — or, when nothing can enumerate it, a `Could not enumerate: <reason>` record in the same slot
 
 ---
 
@@ -295,7 +296,20 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 | **Color** | Cyan |
 | **Produces** | BLOCK/FLAG/PASS verdict |
 
+**Verification Dimensions** — labels match the agent's own `## Dimension <N>` headings:
+
+| # | Dimension |
+|---|---|
+| 1 | Copywriting |
+| 2 | Visuals |
+| 3 | Color |
+| 4 | Typography |
+| 5 | Spacing |
+| 6 | Registry Safety |
+| 7 | Inventory Provenance |
+
 **Key behaviors:**
+- **Inventory provenance (#2845):** a UI-SPEC whose component inventory carries no provenance line is reported as a defect, and the inventory is downgraded from a closed allowlist to a **non-exhaustive list of known-good components** — so an executor is never blocked from something the spec merely failed to mention. A spec with no inventory at all PASSes, which is what keeps every UI-SPEC written before the dimension existed validating unchanged. The checker never executes the recorded command; it reads the spec as a document.
 - **Adversarial stance / "The Auditor" (#1578):** applies explicit BLOCK/FLAG/PASS tiers and an anti-capitulation rule that resists author-framing pressure while still allowing self-correction when the prior dimension application was mistaken. Persona effects are strongest on Sonnet-class reasoning and unvalidated on budget/Haiku-class routing; the criteria and evidence remain authoritative.
 
 ---
