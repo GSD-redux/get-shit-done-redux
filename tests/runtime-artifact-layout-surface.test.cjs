@@ -16,7 +16,7 @@ const { writeSurface, readSurface, resolveSurface, listSurface, applySurface } =
 const { loadSkillsManifest, writeActiveProfile, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
 const { CLUSTERS, allClusteredSkills } = require('../gsd-core/bin/lib/clusters.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, sandboxHome } = require('./helpers.cjs');
 
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 
@@ -1386,6 +1386,14 @@ describe('installOpencodeFamilySkills destination parity (#2911 sibling coverage
       const configDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-${runtime}-`));
       const fakeHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-home-${runtime}-`));
       t.after(() => { cleanup(configDir); cleanup(fakeHomeOverride); });
+      // #3712 — this row drives a skills-kind `home` override on purpose, which is
+      // exactly what the test-home guard exists to police, so it has to declare the
+      // sandbox rather than rely on the destination happening to sit outside the
+      // real home. On POSIX it does (os.tmpdir() is /tmp or /var/folders); on
+      // Windows os.tmpdir() is under %USERPROFILE%, so without this the guard
+      // correctly refuses and the row fails on Windows only. HOME is the override
+      // itself, which is the home this call actually writes under.
+      sandboxHome(t, fakeHomeOverride);
 
       const originalResolve = runtimeArtifactLayoutModule.resolveRuntimeArtifactLayout;
       // Capture the real destSubpath before patching so the assertion below
