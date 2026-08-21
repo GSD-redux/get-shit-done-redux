@@ -11522,12 +11522,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // agents copy, VERSION write, manifest write, etc.) triggers the Codex pre-config
     // rollback so the caller is never left in a partially-installed state.
     rollbackInstallerMigrations();
-    // #3712 — the test-home guard refuses BEFORE writing anything, so there is no
-    // partial install to undo. Rolling back anyway would delete and recreate every
+    // #3712 — the test-home guard refuses before any LAYOUT-DRIVEN write, so no
+    // gsd-* directory in the skills root has been touched and there is nothing
+    // there to undo. (Legacy install migrations DO run first; that is why the
+    // rollbackInstallerMigrations() calls above still execute, and why the one
+    // migration that can reach a `home` override carries its own assertion.)
+    // Running the codex rollback anyway would delete and recreate every
     // snapshotted gsd-* directory in the resolved skills root, which for an
     // un-sandboxed codex install IS the real ~/.agents/skills: the guard's own
-    // refusal would provoke the mutation it exists to prevent. Every other error
-    // still rolls back. Found by review, not by CI.
+    // refusal would provoke the mutation it exists to prevent. This is the only
+    // _codexPreConfigRollback() call site, and applySurface/uninstall cannot
+    // reach it. Every other error still rolls back. Found by review, not by CI.
     if (isTestHomeGuardRefusal(_earlyInstallErr)) throw _earlyInstallErr;
     if (_codexPreConfigRollback) {
       _codexPreConfigRollback();

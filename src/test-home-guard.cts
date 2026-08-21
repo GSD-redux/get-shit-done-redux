@@ -18,8 +18,8 @@
  * because the runtime's own config home is untouched, so the manifest keeps
  * reporting a healthy install.
  *
- * This lives in its own module because FIVE writers resolve a kind `home` and then
- * destroy what is under it. Three are reachable today —
+ * This lives in its own module because SIX writers resolve a kind `home` and then
+ * write or destroy what is under it. Four are reachable today —
  * `installRuntimeArtifacts` and `uninstallRuntimeArtifacts` (install-engine.cts)
  * and `applySurface` (surface.cts); guarding only the install path, as the first
  * cut of this fix did, left the other two as live bypasses. Two more are
@@ -28,6 +28,11 @@
  * combined-family early return and honors `skillsKindEntry.home` (no
  * combined-family runtime declares one), and `installAgentsKindStandalone`, which
  * honors `agentsKindEntry.home` and prunes it (no agents kind declares one).
+ * The sixth is `migrateLegacyDevPreferencesToSkill`, which resolves the skills
+ * kind's `home` and writes `SKILL.md` under it. It CREATES rather than prunes,
+ * which is why the first pass of this fix missed it, and it runs from
+ * `_runLegacyInstallMigrations` — i.e. BEFORE `installRuntimeArtifacts`' own
+ * assertion — so it carries its own call.
  *
  * DETECTION — three signals, in order:
  *
@@ -51,9 +56,13 @@
  *      required; see `derivesFromSandboxedHome`.
  *   3. `SANDBOX_MARKER` — consulted ONLY when the passwd entry cannot be read.
  *
- * FAILS CLOSED. If the passwd entry is unreadable (some CI images) we cannot
- * establish that HOME is sandboxed, so a home-override kind is refused rather
- * than allowed. The cost of a false refusal is a failed test naming its own fix;
+ * FAILS CLOSED, with one named exception. If the passwd entry is unreadable
+ * (some CI images) we cannot establish that HOME is sandboxed, so a home-override
+ * kind is refused rather than allowed — UNLESS the marker below names the home in
+ * effect. That branch is a deliberate weakening, not a closed door: with no passwd
+ * entry there is nothing that could contradict a marker naming the real home, so a
+ * caller that sandboxed to its own real home would be believed. The alternative is
+ * refusing every run on such a host. The cost of a false refusal is a failed test naming its own fix;
  * the cost of a false allow is silent, unrecoverable deletion of a developer's
  * skills.
  *
@@ -138,8 +147,10 @@ type Deps = { os?: OsLike; env?: Record<string, string | undefined> };
 /**
  * Stamped on every Error this module throws.
  *
- * A refusal happens BEFORE any write, so it is not a partial install and must
- * not trigger installer rollback — `bin/install.js`'s pre-config rollback
+ * A refusal happens before any LAYOUT-DRIVEN write — legacy install migrations
+ * run first and are rolled back on their own path — so it is not a partial
+ * codex-skills install and must not trigger that rollback. `bin/install.js`'s
+ * pre-config rollback
  * deletes and recreates every snapshotted `gsd-*` directory in the resolved
  * skills root, which for an un-sandboxed codex install IS the real
  * `~/.agents/skills`. Without this marker the guard's own refusal would provoke
@@ -244,15 +255,24 @@ function assertTestHomeSandboxed(
  * nearest ancestor that DOES exist, canonicalize that, and re-append the tail.
  *
  * Without this the sandbox exemption below is escapable: with HOME sandboxed to
- * `$REAL/tmp-home` and `$REAL/tmp-home/.agents` a symlink (or Windows junction,
- * or subordinate bind mount) onto the real `$REAL/.agents`, the lexical ancestor
+ * `$REAL/tmp-home` and `$REAL/tmp-home/.agents` a symlink (or Windows junction)
+ * onto the real `$REAL/.agents`, the lexical ancestor
  * walk reaches the sandbox and the write is allowed — straight into the real
  * home. Identity comparison alone does not close it, because each ancestor is
  * identified in isolation and the alias sits BETWEEN dest and the sandbox.
  * Found by review, not by CI.
  *
- * A cross-process swap of a checked directory between this call and the write
- * (TOCTOU) remains out of reach here and is not claimed to be handled.
+ * KNOWN LIMITATION — a subordinate BIND MOUNT of the real `~/.agents` at
+ * `<sandbox>/.agents` is NOT closed by this. A bind mount is not a link:
+ * `realpathSync` keeps the mount-point spelling, so the canonical destination
+ * still reads as "beneath the sandbox" while the write reaches the real
+ * directory. `sameDirectory` above already records that realpath cannot unify
+ * bind-mounted spellings; this inherits that limit. Closing it needs mount-table
+ * introspection, which is not portable, and the setup — deliberately mounting the
+ * one directory this guard protects into a sandbox inside the home — is not a
+ * shape any caller here produces. A cross-process swap of a checked directory
+ * between this call and the write (TOCTOU) is likewise out of reach and not
+ * claimed.
  */
 function resolveThroughLinks(dest: string): string {
   const tail: string[] = [];
