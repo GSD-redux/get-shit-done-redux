@@ -56,7 +56,14 @@ This removes GSD's managed `[[hooks]]` block from `~/.kimi/config.toml`, plus GS
 
 > **Do not pass this flag if you also use Kimi CLI.** GSD wraps its entries in the same `# GSD Hooks BEGIN`/`END` markers whichever product it installed for, and the command paths inside them are derived from the hooks root — so a block the old bug wrote for Kimi Code is **byte-identical** to the one a legitimate `--kimi` install writes. Nothing on disk can tell them apart, which is exactly why this cleanup is opt-in rather than automatic: on a machine with both products, the flag would remove Kimi CLI's working hooks. If you use both, leave `~/.kimi` alone — the leftovers are inert for Kimi Code and harmless for Kimi CLI. To remove them later, uninstall Kimi CLI's install properly instead: `npx @opengsd/gsd-core --kimi --global --uninstall`.
 
-The flag is ignored unless the install is `--kimi-code`, and is skipped with a notice if `KIMI_SHARE_DIR` and `KIMI_CODE_HOME` point at the same directory (there is no separate legacy root to reclaim in that case).
+The flag never acts silently. It is skipped, with a notice saying so, in each case where reclaiming would be wrong or impossible:
+
+| Situation | What happens |
+|---|---|
+| The install is not `--kimi-code`, or is `--local` | Warns that the flag was ignored — nothing in `~/.kimi` is touched. |
+| The same invocation also installs `--kimi` (including via `--all`) | Skipped: that run is creating a live Kimi CLI install in `~/.kimi`, so the flag's premise does not hold. |
+| `KIMI_SHARE_DIR` and `KIMI_CODE_HOME` name the same directory | Skipped: there is no separate legacy root, and reclaiming would delete the hooks this install just wrote. Aliases count — a symlink or a case variant on a case-insensitive filesystem is recognized as the same directory. |
+| No GSD artifacts are found in `~/.kimi` | Reports that there was nothing to reclaim. |
 
 ### 4. Verify skills are discovered
 
