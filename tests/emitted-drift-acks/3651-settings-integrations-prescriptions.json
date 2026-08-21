@@ -1,7 +1,7 @@
 {
-  "$comment": "Growth ack (#2914 fragment). Reason: #3651 corrects the two broken prescriptions in settings-integrations.md — the review.models section states the registry-derived settable rule (per-lane modelConfigKey, nine lanes enumerated once as full review.models.* keys, keyless lanes cursor/qwen/coderabbit named) instead of a nonexistent dynamic-key pattern claim, and the agent_skills section prescribes the JSON array write form plus the split-on-commas instruction. settings-integrations.md 16257 -> 18171 LF bytes (+1914, DEFAULT cap 40960). Pinned by the #3651 rows in tests/settings-integrations.test.cjs (workflow text must match the registry's settable set).",
+  "$comment": "Growth ack (#2914 fragment). Reason: #3651 corrects the two broken prescriptions in settings-integrations.md — the review.models section states the registry-derived settable rule (per-lane modelConfigKey, nine lanes enumerated once as full review.models.* keys, keyless lanes cursor/qwen/coderabbit named) instead of a nonexistent dynamic-key pattern claim, and the agent_skills section prescribes the JSON array write form plus the split-on-commas instruction (quote-bearing entries rejected). settings-integrations.md 16257 -> 18309 LF bytes (+2052, DEFAULT cap 40960). Pinned by the #3651 rows in tests/settings-integrations.test.cjs (workflow text must match the registry's settable set).",
   "version": 1,
   "paths": {
-    "settings-integrations.md": "gsd-core/workflows/settings-integrations.md +1914B: registry-derived review.models settable rule + agent_skills JSON-array prescription (#3651)"
+    "settings-integrations.md": "gsd-core/workflows/settings-integrations.md +2052B: registry-derived review.models settable rule + agent_skills JSON-array prescription (#3651)"
   }
 }

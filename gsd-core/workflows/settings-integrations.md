@@ -26,15 +26,15 @@ log the plaintext value. The workflow follows these rules:
 - **`config-set` output is masked** for keys in the secret set
   (`brave_search`, `firecrawl`, `exa_search`) — see
   `gsd-core/bin/lib/secrets.cjs`.
-- **Agent-type and CLI slug validation.** Slug inputs for
-  `agent_skills.<agent-type>` and `review.models.<cli>` are checked against
-  `^[a-zA-Z0-9_-]+$` before any write; inputs containing path separators
-  (`/`, `\`, `..`), whitespace, or shell metacharacters are rejected. This
-  closes off skill-injection attacks. For `agent_skills` that check is the
-  gate on an open namespace (dynamic key pattern); for `review.models` it is
-  only a pre-check — the authoritative gate is the closed, registry-derived
-  settable set (see the review-models section below), because slug shape
-  alone never makes a `review.models.*` key writable.
+- **Agent-type and CLI slug validation.** `agent_skills.<agent-type>` slug
+  inputs are checked against `^[a-zA-Z0-9_-]+$` before any write; inputs
+  containing path separators (`/`, `\`, `..`), whitespace, or shell
+  metacharacters are rejected. This closes off skill-injection attacks on
+  that open namespace (dynamic key pattern). For `review.models.<cli>` no
+  slug-shape check is needed or performed: the gate is membership in the
+  closed, registry-derived settable set (see the review-models section
+  below), which subsumes slug shape — slug shape alone never makes a
+  `review.models.*` key writable.
 </security>
 
 <required_reading>
@@ -167,9 +167,9 @@ Settable keys (the shipped registry's model-bearing lanes):
 `review.models.lm_studio`, `review.models.ollama`, `review.models.opencode`.
 
 Reviewer lanes `cursor`, `qwen`, and `coderabbit` declare no `modelConfigKey` —
-there is nothing to configure for them here (whether they should have a key is
-a separate, already-filed question). If the user asks for one of those, say
-exactly that and skip.
+there is nothing to configure for them here (whether they should have a
+per-lane model key is a separate question, out of scope for this workflow).
+If the user asks for one of those, say exactly that and skip.
 
 ```text
 AskUserQuestion([
@@ -280,10 +280,11 @@ reply is fine). Show the current value if any, offer Leave / Replace / Clear.
 
 Split the reply before writing: the resolver never splits strings, so a
 comma-joined string would be stored as ONE skill path that silently fails
-resolution at spawn time (#3651 — `references/planning-config.md`: "Paths
-cannot be comma-joined into one string; each path must be its own array
-element"). Split on commas, trim each entry, drop empty entries, and write
-the JSON array form:
+resolution at spawn time (#3651 — `gsd-core/references/planning-config.md`:
+"Paths cannot be comma-joined into one string; each path must be its own
+array element"). Split on commas, trim each entry, drop empty entries, reject
+any entry containing a quote character (`'` or `"` — it cannot be written
+safely through the single-quoted form), and write the JSON array form:
 
 ```bash
 gsd_run query config-set agent_skills.<slug> '["skills/alpha","skills/beta"]'

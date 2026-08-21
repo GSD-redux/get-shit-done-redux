@@ -18,7 +18,8 @@
  *     comma-joined string); behavioral pins for array/comma/single shapes
  *   - Masking convention (****last4) is documented in the workflow and the displayed
  *     confirmation pattern does not echo plaintext
- *   - config-set round-trips all integration keys through VALID_CONFIG_KEYS + dynamic patterns
+ *   - config-set round-trips all integration keys through VALID_CONFIG_KEYS,
+ *     dynamic patterns, and the federated capability registry
  *   - Config merge preserves unrelated keys
  *   - /gsd:settings confirmation output mentions /gsd:settings-integrations
  *   - Negative: invalid agent-type name (path traversal / special char) is rejected
@@ -310,6 +311,29 @@ describe('#3651 workflow — agent_skills array-form write', () => {
     const parsed = resolveSkillsCount(tmp, 'gsd-planner');
     assert.strictEqual(parsed.configured, true, 'a single string path is a configured entry');
     assert.strictEqual(parsed.skills_count, 1, 'one string = one skill path');
+  });
+
+  test('one-element array agent_skills write resolves identically to the bare string (#3651)', (t) => {
+    const tmp = createTempProject();
+    t.after(() => cleanup(tmp));
+    runGsdTools(['config-ensure-section'], tmp);
+
+    const r = runGsdTools(
+      ['config-set', 'agent_skills.gsd-planner', '["skills/solo"]'],
+      tmp
+    );
+    assert.ok(r.success, `one-element-array set failed: ${r.error}`);
+
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.planning', 'config.json'), 'utf-8'));
+    assert.deepStrictEqual(
+      cfg.agent_skills?.['gsd-planner'],
+      ['skills/solo'],
+      'one-element array must persist verbatim'
+    );
+
+    const parsed = resolveSkillsCount(tmp, 'gsd-planner');
+    assert.strictEqual(parsed.configured, true);
+    assert.strictEqual(parsed.skills_count, 1, 'one-element array = one skill path, same as the bare string');
   });
 });
 
