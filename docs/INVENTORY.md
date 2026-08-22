@@ -529,7 +529,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `frontmatter.cjs` | YAML frontmatter CRUD operations |
 | `gap-checker.cjs` | Post-planning gap analysis (#2493): unified REQUIREMENTS.md + CONTEXT.md decisions vs PLAN.md coverage report (`gsd-tools gap-analysis`) |
 | `gate-predicate-evaluator.cjs` | Evaluates capability gate predicates — `command-exit-zero` and `artifact-frontmatter` (#2008) |
-| `git-base-branch.cjs` | Single base-branch resolver (`gsd_run query git.base-branch`) with full precedence ladder: config override → origin/HEAD symref → `git remote show origin` → local branch presence → "main". Eliminates per-workflow duplicated bash detection (#1146) |
+| `git-base-branch.cjs` | Single base-branch resolver (`gsd_run query git.base-branch`) with full precedence ladder: effective-config override (`git.base_branch`, resolved through `config-loader.cjs`) → origin/HEAD symref → `git remote show origin` → local branch presence → "main". Eliminates per-workflow duplicated bash detection (#1146). Also hosts the protected-branch predicate `--is-protected <branch>` (#3552), which extends the resolved base branch with the optional `git.protected_branches` list, matches by exact name, fails closed when the base branch is unverified, and reads config with `persist: false` so the query never rewrites `.planning/config.json` |
 | `graphify.cjs` | Knowledge-graph build/query/status/diff for `/gsd-graphify` |
 | `graphify-command-router.cjs` | ADR-959 capability command router for `gsd-tools graphify` — dispatches build/query/status/diff subcommands; first real capability command cutover (phase 4d-impl-2) |
 | `gsd2-import.cjs` | External-plan ingest for `/gsd-import --from-gsd2` |

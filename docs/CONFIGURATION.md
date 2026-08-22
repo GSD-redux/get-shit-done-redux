@@ -2098,6 +2098,14 @@ Two different rules apply, and the difference is deliberate ([#3532](https://git
 - **`effort` is the exception**: the install-time effort channel always merges
   `~/.gsd/defaults.json` with the project config (that is how `effort sync` works), so a
   global `effort` block keeps working in projects and does not trigger the warning.
+- **The whole `git.*` namespace is project-scoped and never resolves from the global file**,
+  in either directory shape — not `git.base_branch`, not `git.protected_branches`, not
+  `git.branching_strategy` or the branch templates. Branch policy is a property of the
+  repository, not of the machine, so it is read only from that project's
+  `.planning/config.json`. A `git` block in `~/.gsd/defaults.json` still seeds new projects
+  (`/gsd-new-project` copies globals into the new `config.json`), but it never takes effect
+  at runtime on its own. It is outside the shadowed-key warning above, which covers the
+  model-resolution set only.
 
 ---
 
