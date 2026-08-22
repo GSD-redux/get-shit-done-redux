@@ -412,7 +412,7 @@ describe('C: plugin.json schema validation', () => {
   // and `--strict` promotes that warning to a non-zero exit — so a symlinked
   // fixture failed the gate on its own construction rather than on the manifest
   // under test. Copying still gives the CLI a tree containing only plugin.json
-  // and the four component directories — which is the isolation the temp root
+  // and the three component directories — which is the isolation the temp root
   // exists for, since nothing else from the repo root is placed where the
   // validator can read it — while letting it actually read those components.
   // Exactly the three directories #3613 names — the ones the pre-fix code
@@ -422,8 +422,8 @@ describe('C: plugin.json schema validation', () => {
   // ask for, on the largest of the trees, and because C2 never runs in CI it
   // would be red only on contributor machines with `claude` installed — the
   // same worst-of-both-states #3613 exists to remove. agents/ coverage is worth
-  // having; it needs its own issue, where "should CI provision the CLI" can be
-  // answered for it.
+  // having and is tracked as #3751, where "should CI provision the CLI" — the
+  // decision it actually turns on — can be answered for it.
   const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
 
   /**
@@ -601,7 +601,9 @@ describe('C: plugin.json schema validation', () => {
       //     symlink two levels in, an inert file (a stray *.md) . 0
       //     symlink two levels in that IS the component file
       //       (skills/<name>/SKILL.md) .......................... 1
-      //     symlink inside commands/ or hooks/ .................. 0
+      //     symlink inside commands/ (a dir, or a component *.md) . 0
+      //     stray symlinked dir or *.js inside hooks/ ........... 0
+      //     symlinked hooks/hooks.json .......................... 1
       //
       // So the boundary is not depth at all — it is whether the symlink is a file
       // the CLI actually reads as a component ("1 component here was not read —
@@ -634,7 +636,7 @@ describe('C: plugin.json schema validation', () => {
       assert.deepStrictEqual(
         nested,
         [],
-        `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.239, a component dir itself, an entry directly under skills/, or a symlinked SKILL.md at any depth is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
+        `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.239, a component dir itself, an entry directly under skills/, a symlinked SKILL.md at any depth, or a symlinked hooks/hooks.json is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
       );
     } finally {
       cleanup(pluginRoot);
