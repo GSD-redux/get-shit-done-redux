@@ -273,6 +273,28 @@ describe('plan-document — frontmatter scheduling metadata', () => {
   });
 });
 
+describe('plan-document — frontmatter filesDeleted', () => {
+  test('no frontmatter at all defaults filesDeleted to []', () => {
+    const parsed = parsePlanDocument('plain body, no frontmatter');
+    assert.deepStrictEqual(parsed.filesDeleted, []);
+  });
+
+  test('scalar files_deleted (underscore key) is wrapped into a one-element array', () => {
+    const parsed = parsePlanDocument(frontmatterDoc(['files_deleted: src/gone.ts'], ['body']));
+    assert.deepStrictEqual(parsed.filesDeleted, ['src/gone.ts']);
+  });
+
+  test('array files-deleted (hyphen key) is mapped element-wise', () => {
+    const parsed = parsePlanDocument(frontmatterDoc(['files-deleted: [a.ts, b.ts]'], ['body']));
+    assert.deepStrictEqual(parsed.filesDeleted, ['a.ts', 'b.ts']);
+  });
+
+  test('empty files_deleted list yields []', () => {
+    const parsed = parsePlanDocument(frontmatterDoc(['files_deleted: []'], ['body']));
+    assert.deepStrictEqual(parsed.filesDeleted, []);
+  });
+});
+
 describe('plan-document — planIdFromFile / TASK_KIND', () => {
   test('strips the -PLAN.md suffix from a root-form plan file', () => {
     assert.strictEqual(planIdFromFile('1-01-PLAN.md'), '1-01');
