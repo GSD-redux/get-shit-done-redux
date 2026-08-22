@@ -35,6 +35,8 @@ files_modified:
   - src/components/PostFeed.tsx
   - src/components/PostCard.tsx
   - src/app/feed/page.tsx
+files_deleted:
+  - src/components/LegacyFeed.tsx
 autonomous: true
 requirements: ["FEED-01", "FEED-03"]
 user_setup: []
@@ -69,6 +71,7 @@ must_haves:
 | `wave` | Sim | inteiro | Onda de execução. Planos na onda 1 são executados em paralelo (sem dependências). Planos na onda 2 ou superior aguardam a conclusão de todos os planos da onda anterior. Pré-calculado durante o planejamento pelo `gsd-planner`. |
 | `depends_on` | Sim | array de IDs de planos | Planos dos quais este plano depende. Array vazio = onda 1. Exemplo: `["03-01"]` significa que este plano é executado após o Plano 01 da Fase 3. |
 | `files_modified` | Sim | array de caminhos | Todos os arquivos que este plano cria ou modifica. Usado pelo verificador de planos para detectar conflitos de arquivos na mesma onda e pelo execute-phase para rastreamento de merge. |
+| `files_deleted` | Não | array de caminhos | Todos os arquivos que este plano **remove** deliberadamente. A verificação de limpeza pós-onda bloqueia o merge de qualquer branch de executor cujo diff apague um arquivo — uma proteção contra exclusão em massa acidental — e este campo é o opt-in que nomeia as exceções. A correspondência é exata por caminho após a normalização de separadores: um caminho declarado é mesclado, um não declarado continua bloqueando a entrada daquele plano (e apenas ela). Não há globs nem prefixos de diretório, então uma declaração nunca autoriza mais do que lista literalmente. Omita o campo e o bloqueio incondicional original da proteção permanece em vigor, e é por isso que a ausência é sempre o padrão seguro (#3003). |
 | `autonomous` | Sim | booleano | `true` quando todas as tarefas são do tipo `auto`. `false` quando o plano contém alguma tarefa `checkpoint:*` que requer interação humana. |
 | `requirements` | Sim | array de IDs | IDs de requisitos do ROADMAP.md que este plano atende. Todo ID de requisito de fase deve aparecer no campo `requirements` de pelo menos um plano. Arrays vazios são um BLOQUEADOR. |
 | `user_setup` | Não | array de objetos | Etapas de configuração de serviços externos que o Claude não pode automatizar (criação de conta, recuperação de segredos, configuração de painel). Quando presente, o execute-phase gera um checklist `USER-SETUP.md` para o desenvolvedor. |

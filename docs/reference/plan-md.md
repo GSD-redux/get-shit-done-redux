@@ -35,6 +35,8 @@ files_modified:
   - src/components/PostFeed.tsx
   - src/components/PostCard.tsx
   - src/app/feed/page.tsx
+files_deleted:
+  - src/components/LegacyFeed.tsx
 autonomous: true
 requirements: ["FEED-01", "FEED-03"]
 user_setup: []
@@ -69,6 +71,7 @@ must_haves:
 | `wave` | Yes | integer | Execution wave. Plans in wave 1 run in parallel (no dependencies). Plans in wave 2+ wait for all plans in the previous wave to complete. Pre-computed at plan time by `gsd-planner`. |
 | `depends_on` | Yes | array of plan IDs | Plans this plan must wait for. Empty array = wave 1. Example: `["03-01"]` means this plan runs after Plan 01 in Phase 3. |
 | `files_modified` | Yes | array of paths | Every file this plan creates or modifies. Used by the plan-checker to detect same-wave file conflicts and by execute-phase for merge tracking. |
+| `files_deleted` | No | array of paths | Every file this plan deliberately **removes**. The post-wave cleanup gauntlet blocks the merge of any executor branch whose diff deletes a file — a net against a mass-deletion accident — and this field is the opt-in that names the exceptions. Matching is exact per path after separator normalization: a declared path merges, an undeclared one still blocks that plan's entry (and only that entry). There are no globs and no directory prefixes, so a declaration can never authorize more than it literally lists. Omit the field and the guard's original unconditional block stays in force, which is why absence is always the safe default (#3003). |
 | `autonomous` | Yes | boolean | `true` when all tasks are type `auto`. `false` when the plan contains any `checkpoint:*` task that requires human interaction. |
 | `requirements` | Yes | array of IDs | Requirement IDs from ROADMAP.md that this plan addresses. Every phase requirement ID must appear in at least one plan's `requirements` field. Empty arrays are a BLOCKER. |
 | `user_setup` | No | array of objects | External-service setup steps that Claude cannot automate (account creation, secret retrieval, dashboard configuration). When present, execute-phase generates a `USER-SETUP.md` checklist for the developer. |
