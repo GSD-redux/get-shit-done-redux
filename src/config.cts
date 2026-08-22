@@ -1200,13 +1200,29 @@ function cmdMigrateConfig(cwd: string, raw: boolean): void {
   const report = migrateOnDisk(cwd, ws || undefined);
 
   if (raw) {
-    if (!report.migrated) {
+    // #3760: a refused migration is NOT an already-canonical config. Reporting
+    // "no legacy keys found" when a legacy key was found and declined would send
+    // the user away believing there is nothing to fix — and the thing to fix is
+    // the one thing only they can fix, by hand.
+    const declined = (report.skipped as Array<{ from: string; to: string; section: string; sectionType: string }>);
+    const declinedLines = declined.map(
+      s => `  ${s.from} → ${s.to}  SKIPPED: '${s.section}' holds a ${s.sectionType}, not an object`,
+    );
+    if (!report.migrated && declined.length === 0) {
       const msg = 'No legacy keys found — config is already canonical.';
       output(msg, true, msg);
+    } else if (!report.migrated) {
+      const lines = [
+        'Not migrated — every legacy key found was left in place:',
+        ...declinedLines,
+        'Fix the section by hand, then re-run. Nothing was written.',
+      ].join('\n');
+      output(lines, true, lines);
     } else {
       const lines = [
         `Migrated: ${String(report.wrote)}`,
         ...(report.normalizations as Array<{ from: string; to: string }>).map(n => `  ${n.from} → ${n.to}`),
+        ...declinedLines,
       ].join('\n');
       output(lines, true, lines);
     }

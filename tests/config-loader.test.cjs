@@ -1498,7 +1498,9 @@ describe('regressions — #3760 loader never expands or persists a non-object se
     assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
 
     assert.equal(readRawConfig(), before, 'the config file must not be rewritten with an expanded section');
-    assert.equal(config.git, 'main', 'the resolved config must carry the value the user wrote');
+    // The loader projects `git.branching_strategy` to a flat top-level key, so the
+    // legacy value the migration declined to move is still what resolution sees.
+    assert.equal(config.branching_strategy, 'none', 'the legacy value must still resolve');
   });
 
   test('loadConfig leaves a string planning section untouched on disk', () => {
@@ -1512,11 +1514,12 @@ describe('regressions — #3760 loader never expands or persists a non-object se
   });
 
   test('loadConfig does not discard the config when multiRepo meets a string planning section', () => {
-    // multiRepo DOES normalize, so this file legitimately gets rewritten. The
-    // pre-fix loader threw a TypeError assigning sub_repos onto the string and
-    // the catch discarded everything.
+    // Pre-fix the loader threw a TypeError assigning sub_repos onto the string,
+    // and the enclosing catch discarded the user's entire config. It also
+    // consumed `multiRepo` and wrote the file back with no diagnostic at all.
     fs.mkdirSync(path.join(tmpDir, 'sub', '.git'), { recursive: true });
     writeConfig(tmpDir, { planning: 'docs', multiRepo: true, model_profile: 'balanced' });
+    const before = readRawConfig();
 
     let config;
     assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
@@ -1526,9 +1529,20 @@ describe('regressions — #3760 loader never expands or persists a non-object se
       'an unrelated user setting must survive — a swallowed TypeError would have reverted it to the default',
     );
     assert.equal(
-      JSON.parse(readRawConfig()).planning, 'docs',
-      'the string planning section must not be spread into character keys on the way to disk',
+      readRawConfig(), before,
+      'nothing migrated, so the file must be byte-identical — planning intact AND multiRepo still present',
     );
+  });
+
+  test('multiRepo still migrates normally when the planning section is usable', () => {
+    // Negative space: refusing on a bad section must not break the good path.
+    fs.mkdirSync(path.join(tmpDir, 'sub', '.git'), { recursive: true });
+    writeConfig(tmpDir, { multiRepo: true });
+
+    assert.doesNotThrow(() => { loadConfig(tmpDir); });
+
+    assert.deepEqual(JSON.parse(readRawConfig()).planning.sub_repos, ['sub']);
+    assert.equal(JSON.parse(readRawConfig()).multiRepo, undefined, 'the marker is consumed once honored');
   });
 
   test('loadConfigResolved reports a usable resolution and writes no expanded section', () => {
@@ -1548,8 +1562,13 @@ describe('regressions — #3760 loader never expands or persists a non-object se
     writeConfig(tmpDir, { git: { remote: 'origin' }, branching_strategy: 'none' });
 
     const config = loadConfig(tmpDir);
-    assert.equal(config.git.branching_strategy, 'none', 'a well-formed section must still receive the hoisted key');
-    assert.equal(config.git.remote, 'origin', 'existing section keys must be preserved');
-    assert.equal(JSON.parse(readRawConfig()).branching_strategy, undefined, 'the stale top-level key is consumed');
+    // Assert on the FILE for the section shape (the loader flattens `git.*` into
+    // top-level keys, so the resolved object has no `git` to inspect) and on the
+    // resolved value for the projection.
+    const onDisk = JSON.parse(readRawConfig());
+    assert.equal(onDisk.git.branching_strategy, 'none', 'a well-formed section must still receive the hoisted key');
+    assert.equal(onDisk.git.remote, 'origin', 'existing section keys must be preserved');
+    assert.equal(onDisk.branching_strategy, undefined, 'the stale top-level key is consumed');
+    assert.equal(config.branching_strategy, 'none', 'the hoisted value still resolves');
   });
 });

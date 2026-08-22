@@ -154,8 +154,23 @@ interface SkippedNormalization {
   reason: 'non_object_section';
   /** The legacy value, preserved. */
   value: unknown;
-  /** The offending section value, preserved. Never written back anywhere. */
-  sectionValue: unknown;
+  /**
+   * What the section holds, as a type name — `'string' | 'number' | 'boolean' |
+   * 'array'` — NOT the value itself.
+   *
+   * The type is the whole diagnostic ("this is a string where an object belongs"),
+   * and the value is still sitting untouched in the file, so echoing it buys
+   * nothing. It would cost something: `cmdMigrateConfig` prints this report
+   * verbatim on `gsd-tools migrate-config --json`, and config values are treated
+   * as potentially secret-bearing elsewhere in this module (`maskSecret` on the
+   * `config set/unset` output path).
+   */
+  sectionType: string;
+}
+
+/** Type name for a report — `'array'` for arrays, otherwise `typeof`. */
+function describeSectionType(value: unknown): string {
+  return Array.isArray(value) ? 'array' : typeof value;
 }
 
 interface NormalizeLegacyKeysResult {
@@ -227,7 +242,7 @@ function hoistLegacyKey(
       section,
       reason: 'non_object_section',
       value: result[legacyKey],
-      sectionValue: raw,
+      sectionType: describeSectionType(raw),
     });
     return;
   }
@@ -256,8 +271,30 @@ function normalizeLegacyKeys(parsed: Record<string, unknown>): NormalizeLegacyKe
   }
   // 3. multiRepo: true → marker (filesystem detection deferred to migrateOnDisk / caller)
   if (result['multiRepo'] === true) {
-    delete result['multiRepo'];
-    normalizations.push({ from: 'multiRepo', to: 'planning.sub_repos', value: true, requiresFilesystem: true });
+    // #3760: refuse here too, for the same reason as blocks 1 and 2 — and it must be
+    // decided HERE, not in the caller. The caller is the one that runs filesystem
+    // detection, but whether `planning` can receive the result is knowable from the
+    // parsed config alone. Deciding it later meant `multiRepo` had already been
+    // deleted and a Normalization already pushed: the config was written, the
+    // sub_repos injection silently no-opped against the non-object section, and the
+    // user's `multiRepo: true` was consumed with nothing to show for it and no
+    // diagnostic. Refusing here keeps the marker, keeps the config clean of a
+    // migration that did not happen, and gives all three callers the same report.
+    const planning = result['planning'];
+    if (planning !== null && planning !== undefined && !isConfigSection(planning)) {
+      skipped.push({
+        from: 'multiRepo',
+        to: 'planning.sub_repos',
+        section: 'planning',
+        reason: 'non_object_section',
+        value: true,
+        sectionType: describeSectionType(planning),
+      });
+    }
+    else {
+      delete result['multiRepo'];
+      normalizations.push({ from: 'multiRepo', to: 'planning.sub_repos', value: true, requiresFilesystem: true });
+    }
   }
   // 4. top-level depth → granularity
   if (Object.prototype.hasOwnProperty.call(result, 'depth') && !Object.prototype.hasOwnProperty.call(result, 'granularity')) {
@@ -305,26 +342,12 @@ function migrateOnDisk(cwd: string, workstream?: string): MigrateOnDiskResult {
     if (norm.requiresFilesystem) {
       const detected = detectSubRepos(cwd);
       if (detected.length > 0) {
+        // #3760: `requiresFilesystem` is pushed by block 3 only when `planning` was
+        // absent or an object, and nothing between there and here changes it — so
+        // `isConfigSection` picks between merge and create, and never has to discard.
         const planning = result['planning'];
-        const planningAbsent = planning === null || planning === undefined;
-        if (!planningAbsent && !isConfigSection(planning)) {
-          // #3760: the same refusal as the hoist blocks. Spreading a string
-          // `planning` here would index-expand it and — because multiRepo has
-          // already pushed a normalization — that expansion WOULD be written.
-          skipped.push({
-            from: 'multiRepo',
-            to: 'planning.sub_repos',
-            section: 'planning',
-            reason: 'non_object_section',
-            value: detected,
-            sectionValue: planning,
-          });
-        }
-        else {
-          // `planning` is already narrowed by the isConfigSection guard above.
-          const existing = planningAbsent ? {} : planning;
-          result['planning'] = { ...existing, sub_repos: detected, commit_docs: false };
-        }
+        const existing = isConfigSection(planning) ? planning : {};
+        result['planning'] = { ...existing, sub_repos: detected, commit_docs: false };
       }
     }
   }

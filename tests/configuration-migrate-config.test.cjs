@@ -283,8 +283,15 @@ test('mergeDefaults clones defaults without JSON serialization fragility (#321)'
         section: 'git',
         reason: 'non_object_section',
         value: 'none',
-        sectionValue: 'main',
+        sectionType: 'string',
       });
+      // The offending section VALUE is deliberately absent from the report: it is
+      // still in the file untouched, and this report is printed verbatim by
+      // `migrate-config --json`.
+      __assert3760.ok(
+        !Object.prototype.hasOwnProperty.call(skipped[0], 'sectionValue'),
+        'the report must name the section TYPE, never echo its value',
+      );
     });
 
     __t3760('block 2 — a string planning section is preserved, never expanded into character keys', () => {
@@ -463,23 +470,59 @@ test('mergeDefaults clones defaults without JSON serialization fragility (#321)'
       }
     });
 
-    __t3760('the multiRepo branch never expands a non-object planning section', () => {
-      // multiRepo fires block 3, which DOES report a normalization, so the file
-      // legitimately gets written. What must not happen is `planning` — a string —
-      // being spread while sub_repos is injected into it.
-      const dir = track(__project3760(JSON.stringify({ planning: 'docs', multiRepo: true }, null, 2)));
+    __t3760('the multiRepo marker is KEPT, not consumed, when planning cannot receive it', () => {
+      // multiRepo's entire meaning is "detect sub-repos and write them into
+      // planning.sub_repos". If planning cannot receive them, consuming the marker
+      // destroys the user's intent and leaves nothing to show for it. The refusal
+      // is decided in normalizeLegacyKeys block 3, where it is still knowable —
+      // not in the caller, by which point the marker is already gone.
+      const text = JSON.stringify({ planning: 'docs', multiRepo: true }, null, 2);
+      const dir = track(__project3760(text));
       // A real sub-repo, so detectSubRepos() returns a non-empty list.
       __fs3760.mkdirSync(__path3760.join(dir, 'sub', '.git'), { recursive: true });
       try {
         let result;
         __emissionsDuring3760(() => { result = __migrate3760(dir); });
-        const after = JSON.parse(__readConfig3760(dir));
+        __assert3760.strictEqual(result.migrated, false, 'nothing migrated, so nothing written');
         __assert3760.strictEqual(
-          after.planning, 'docs',
-          'the string planning section must survive the multiRepo sub_repos injection',
+          __readConfig3760(dir), text,
+          'the file must be byte-identical: planning intact AND multiRepo still present',
         );
-        __assert3760.strictEqual(after.multiRepo, undefined, 'multiRepo is still consumed');
-        __assert3760.ok(result.skipped.length >= 1, 'the refused injection must be reported');
+        __assert3760.strictEqual(result.skipped.length, 1, 'the refusal must be reported');
+        __assert3760.strictEqual(result.skipped[0].from, 'multiRepo');
+        __assert3760.strictEqual(result.skipped[0].sectionType, 'string');
+      } finally {
+        for (const d of dirs) __cleanup3760(d);
+      }
+    });
+
+    __t3760('multiRepo still migrates normally when planning is a usable section', () => {
+      // Negative space: the block-3 guard must not break the ordinary path.
+      const dir = track(__project3760(JSON.stringify({ planning: { commit_docs: true }, multiRepo: true }, null, 2)));
+      __fs3760.mkdirSync(__path3760.join(dir, 'sub', '.git'), { recursive: true });
+      try {
+        let result;
+        __emissionsDuring3760(() => { result = __migrate3760(dir); });
+        const after = JSON.parse(__readConfig3760(dir));
+        __assert3760.strictEqual(result.migrated, true);
+        __assert3760.deepStrictEqual(after.planning.sub_repos, ['sub']);
+        __assert3760.strictEqual(after.multiRepo, undefined, 'the marker is consumed once it has been honored');
+        __assert3760.deepStrictEqual(result.skipped, []);
+      } finally {
+        for (const d of dirs) __cleanup3760(d);
+      }
+    });
+
+    __t3760('multiRepo still migrates normally when planning is absent', () => {
+      const dir = track(__project3760(JSON.stringify({ multiRepo: true }, null, 2)));
+      __fs3760.mkdirSync(__path3760.join(dir, 'sub', '.git'), { recursive: true });
+      try {
+        let result;
+        __emissionsDuring3760(() => { result = __migrate3760(dir); });
+        const after = JSON.parse(__readConfig3760(dir));
+        __assert3760.strictEqual(result.migrated, true);
+        __assert3760.deepStrictEqual(after.planning.sub_repos, ['sub']);
+        __assert3760.deepStrictEqual(result.skipped, []);
       } finally {
         for (const d of dirs) __cleanup3760(d);
       }
@@ -499,6 +542,66 @@ test('mergeDefaults clones defaults without JSON serialization fragility (#321)'
 
     __t3760('the reason is the typed enum entry, not ad-hoc prose', () => {
       __assert3760.strictEqual(__REASON3760.CONFIG_SECTION_NOT_OBJECT, 'config_section_not_object');
+    });
+  });
+
+  // ── the CLI must not call a refused migration "already canonical" ────────
+
+  __d3760('regressions — #3760 migrate-config reports a refusal', () => {
+    let dirs;
+    __be3760(() => { dirs = []; });
+
+    __t3760('--json carries the skipped entry and no section value', () => {
+      const dir = __project3760(JSON.stringify({ git: 'main', branching_strategy: 'none' }, null, 2));
+      dirs.push(dir);
+      try {
+        const res = runMigrateConfig(dir);
+        __assert3760.strictEqual(res.status, 0, 'a refusal is a reported result, not a fault');
+        const parsed = JSON.parse(res.stdout);
+        __assert3760.strictEqual(parsed.migrated, false);
+        __assert3760.strictEqual(parsed.skipped.length, 1);
+        __assert3760.strictEqual(parsed.skipped[0].sectionType, 'string');
+        __assert3760.ok(
+          !Object.prototype.hasOwnProperty.call(parsed.skipped[0], 'sectionValue'),
+          'the JSON surface must not echo the section value',
+        );
+      } finally {
+        for (const d of dirs) __cleanup3760(d);
+      }
+    });
+
+    __t3760('--raw does NOT claim the config is already canonical', () => {
+      // The refusal is the one thing only the user can fix. Telling them there
+      // is nothing to fix is worse than saying nothing.
+      const dir = __project3760(JSON.stringify({ git: 'main', branching_strategy: 'none' }, null, 2));
+      dirs.push(dir);
+      try {
+        const res = runMigrateConfig(dir, ['--raw']);
+        __assert3760.strictEqual(res.status, 0);
+        __assert3760.ok(
+          !res.stdout.includes('already canonical'),
+          `a declined migration must not be reported as already-canonical; got: ${res.stdout}`,
+        );
+        __assert3760.ok(
+          res.stdout.includes('branching_strategy'),
+          'the declined key must be named so the user knows what to fix',
+        );
+      } finally {
+        for (const d of dirs) __cleanup3760(d);
+      }
+    });
+
+    __t3760('--raw still reports an already-canonical config as canonical', () => {
+      // Negative space: the new branch must not swallow the ordinary no-op message.
+      const dir = __project3760(JSON.stringify({ git: { branching_strategy: 'none' } }, null, 2));
+      dirs.push(dir);
+      try {
+        const res = runMigrateConfig(dir, ['--raw']);
+        __assert3760.strictEqual(res.status, 0);
+        __assert3760.ok(res.stdout.includes('already canonical'), `got: ${res.stdout}`);
+      } finally {
+        for (const d of dirs) __cleanup3760(d);
+      }
     });
   });
 }

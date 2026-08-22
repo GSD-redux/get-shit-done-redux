@@ -696,16 +696,18 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
           if (norm.requiresFilesystem && !(rootNormalized as ParsedConfig).planning?.['sub_repos']) {
             const detected = getDetectedSubRepos();
             if (detected.length > 0) {
-              // #3760: `if (!planning)` treated a non-empty STRING as an already-present
-              // section, and the next line then assigned onto a primitive — a strict-mode
-              // TypeError that the enclosing catch swallowed, discarding the whole config.
-              // A present non-object is refused; only genuine absence creates the section.
-              const existing = (rootNormalized as ParsedConfig).planning;
-              if (existing === null || existing === undefined) (rootNormalized as ParsedConfig).planning = {};
-              if (isConfigSection((rootNormalized as ParsedConfig).planning)) {
-                (rootNormalized as ParsedConfig).planning!['sub_repos'] = detected;
-                (rootNormalized as ParsedConfig).planning!['commit_docs'] = false;
+              // #3760: `if (!planning) planning = {}` treated a non-empty STRING as an
+              // already-present section, and the next line then assigned onto a
+              // primitive — a strict-mode TypeError the enclosing catch swallowed,
+              // discarding the user's whole config. `requiresFilesystem` now only
+              // reaches here when the section is absent or an object (configuration.cts
+              // block 3 refuses otherwise and reports it via `skipped`), so this
+              // narrowing chooses between merge and create and never discards.
+              if (!isConfigSection((rootNormalized as ParsedConfig).planning)) {
+                (rootNormalized as ParsedConfig).planning = {};
               }
+              (rootNormalized as ParsedConfig).planning!['sub_repos'] = detected;
+              (rootNormalized as ParsedConfig).planning!['commit_docs'] = false;
             }
           }
         }
@@ -750,11 +752,9 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
             const detected = getDetectedSubRepos();
             if (detected.length > 0) {
               // #3760 — see the identical guard on the root-config path above.
-              if (fileData.planning === null || fileData.planning === undefined) fileData.planning = {};
-              if (isConfigSection(fileData.planning)) {
-                fileData.planning['sub_repos'] = detected;
-                fileData.planning['commit_docs'] = false;
-              }
+              if (!isConfigSection(fileData.planning)) fileData.planning = {};
+              fileData.planning['sub_repos'] = detected;
+              fileData.planning['commit_docs'] = false;
             }
           }
         }
@@ -768,13 +768,11 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
         const sorted = [...currentSubRepos].sort();
         if (JSON.stringify(sorted) !== JSON.stringify(detected)) {
           // #3760 — reachable only when `planning` already yielded a non-empty
-          // sub_repos array, so it is an object here; the guard is belt-and-braces
-          // against a future path that reaches this line with a primitive.
-          if (fileData.planning === null || fileData.planning === undefined) fileData.planning = {};
-          if (isConfigSection(fileData.planning)) {
-            fileData.planning['sub_repos'] = detected;
-            configDirty = true;
-          }
+          // sub_repos array, so it is an object here; the narrowing keeps the
+          // assignment total rather than relying on that from three frames away.
+          if (!isConfigSection(fileData.planning)) fileData.planning = {};
+          fileData.planning['sub_repos'] = detected;
+          configDirty = true;
         }
       }
     }
