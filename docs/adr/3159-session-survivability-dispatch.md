@@ -53,15 +53,19 @@ Reported against a real run (#3159): 7 plans across 6 waves; wave 2 was the only
 
 The reported failure is at one site. It is not the only site, and a fix scoped to it would leave the same defect standing elsewhere. Auditing every `run_in_background` in shipped content on `next` at `2f86278b`:
 
+Counts below are **`Agent()` parameter sites**, not prose mentions — the two differ by roughly a factor of two in these files, and the distinction is the difference between a real dispatch and a sentence describing one.
+
 | Site | Backgrounds | Gated by |
 |---|---|---|
-| `manager.md` (×2), `autonomous.md` (×2 dispatches, ×3 resolutions) | a whole plan/execute stage | **`dispatch-should-flatten`** — the typed predicate |
-| `execute-phase.md:682` | wave executors (2+ plans) | **nothing** — `run_in_background: true` is unconditional |
-| `docs-update.md` (6 sites) | parallel doc writers | **nothing** — unconditional |
-| `plan-phase/steps/stall-detection-helpers.md` | the planner, for stall detection | **nothing** — unconditional |
-| `debug.md` (×2) | — | pinned `false` deliberately (#2196), with a recorded reason |
+| `manager.md` (2 resolutions → 2 dispatches), `autonomous.md` (2 → 2) | a whole plan/execute stage | **`dispatch-should-flatten`** — the typed predicate |
+| `execute-phase.md:682` | wave executors (2+ plans) | **nothing** — the `run_in_background: true` mandate is unconditional prose |
+| `docs-update.md` (9) | parallel doc writers, two waves | **nothing** — unconditional |
+| `plan-phase.md` (3), `plan-phase/steps/chunked-planning-mode.md` (2) | planners and plan chunks | **nothing** — unconditional |
+| `debug.md` (2) | — | pinned `false` deliberately (#2196), with a recorded reason |
 
-Only the first row consults an owner. The rest each independently assert an answer to the same question. The reported repro landed on `execute-phase.md:682`; `docs-update.md` and the stall helper background into the identical dying session and orphan their own work by the identical mechanism.
+Only the first row consults an owner. **Fourteen `Agent()` dispatch sites across three files, plus `execute-phase.md`'s prose mandate, each independently assert an answer to the same question.** The reported repro landed on `execute-phase.md:682`; `docs-update.md` and `plan-phase.md` background into the identical dying session and orphan their own work by the identical mechanism.
+
+(`plan-phase/steps/stall-detection-helpers.md` mentions `run_in_background=true` three times but carries no dispatch of its own — it documents the pattern its caller uses. It is named here only so a reader auditing the same way does not count it twice.)
 
 A config key wired into `execute-phase.md` alone would close the reported instance and leave the class open — and would do it by adding a *fourth* independent notion of "should we background," disagreeing with the typed one. [ADR-3180](3180-planning-semantic-model-single-owner.md) names that shape precisely: a derivation with more than one owner is fixed on one copy and missed on the siblings.
 
@@ -92,7 +96,7 @@ Consequence, and the reason for this choice: every current consumer (`manager.md
 
 ### D4 — The unowned sites come under that owner
 
-`execute-phase.md`'s wave dispatch, `docs-update.md`'s writer waves, and `plan-phase`'s stall-detection helper stop asserting `run_in_background: true` unconditionally and consult the owner instead. `debug.md` is untouched — its `false` is deliberate and already reasoned.
+`execute-phase.md`'s wave dispatch, `docs-update.md`'s writer waves, and `plan-phase.md` (with its `chunked-planning-mode` step) stop asserting `run_in_background: true` unconditionally and consult the owner instead. `debug.md` is untouched — its `false` is deliberate and already reasoned.
 
 **The `.git/config.lock` rationale is preserved, not traded away.** The existing instruction — dispatch one `Agent()` per message, never all in one message, because simultaneous `git worktree add` calls race on `.git/config.lock` — is orthogonal to the background flag and stays exactly as written. Serialized foreground dispatch is *strictly more* serialized than serialized background dispatch, so the race the rule exists to prevent cannot be reintroduced by this change.
 
@@ -118,9 +122,9 @@ The key is registered on every seam a config key must reach: the schema manifest
 
 **Positive.** A host that knows its own launch model can state it, and gets the path already proven safe. The fix reaches every backgrounding site through one predicate instead of one site through a new branch. Three unowned assertions of a safety-relevant decision collapse onto the owner that already exists for it. The default is unchanged, so no currently-supported runtime is affected.
 
-**Negative.** Declaring `false` costs wave parallelism — that is the trade, and it is real: a phase with multi-plan waves runs strictly slower. GSD acquires a config axis that can be set wrongly in a direction it cannot detect (see Known limits). Bringing three sites under the predicate means three workflow files must read a query they do not read today, which is added surface in high-churn files.
+**Negative.** Declaring `false` costs wave parallelism — that is the trade, and it is real: a phase with multi-plan waves runs strictly slower. GSD acquires a config axis that can be set wrongly in a direction it cannot detect (see Known limits). Bringing the unowned sites under the predicate means four workflow files must read a query they do not read today, which is added surface in high-churn files.
 
-**Expected breakage on landing.** Editing shipped `gsd-core/workflows/*.md` moves emitted-artifact hashes, so the differential attribution check (`tests/emitted-attribution.test.cjs`, [ADR-2719](2719-emitted-artifact-attribution.md)) will fire — correctly. Any ripple not attributable to the diff needs a per-PR fragment under `tests/emitted-drift-acks/`. Growth in those files is separately reported against the size-budget ratchet ([ADR-1610](1610-workflow-agent-size-budget-ratchet.md)); the phases below are expected to keep the added prose minimal for that reason, and `execute-phase.md` is already near its tier.
+**Expected breakage on landing.** Editing shipped `gsd-core/workflows/*.md` moves emitted-artifact hashes, so the differential attribution check (`tests/emitted-attribution.test.cjs`, [ADR-2719](2719-emitted-artifact-attribution.md)) will fire — correctly. Any ripple not attributable to the diff needs a per-PR fragment under `tests/emitted-drift-acks/`. Growth in those files is separately reported against the size-budget ratchet ([ADR-1610](1610-workflow-agent-size-budget-ratchet.md)), and **`execute-phase.md` has little room**: it is XL-tier against a 96 KiB hard cap and measures 92,356 bytes on `next` at `2f86278b` — under 6 KB of headroom for a file that is also the most-edited in the tree. Phase 2 should reach the predicate through the shortest possible addition there (a resolution plus a conditional), and may need to land the explanatory prose in a `steps/` fragment rather than inline.
 
 **Verification standard.** Phase 3's regression must prove the predicate flips on the *session* input with the *host* input held constant, and vice versa — a test that only exercises the default path passes identically before and after the change it exists to prove.
 
@@ -156,7 +160,7 @@ Each phase is one sub-issue and one PR, per the corpus convention.
 |---|---|---|
 | 0 | this ADR | ADR + `node scripts/gen-adr-index.cjs --write` |
 | 1 | D1, D2, D5, D6, D7 | the second conjunct in `shouldFlattenDispatch`; the key registered across manifest / `SCHEMA_DEFAULTS` / `docs/CONFIGURATION.md`; provenance on `dispatch-should-flatten --json`; a behavioral `config-set`/`config-get` test; changeset fragment (`Added`) |
-| 2 | D3, D4 | `execute-phase.md`, `docs-update.md`, and `plan-phase/steps/stall-detection-helpers.md` consult the owner; emitted-drift-ack fragment if the attribution check requires one |
+| 2 | D3, D4 | `execute-phase.md`, `docs-update.md`, `plan-phase.md` and its `chunked-planning-mode` step consult the owner; emitted-drift-ack fragment if the attribution check requires one |
 | 3 | verification | regression proving both conjuncts move the verdict independently, and that a declared non-surviving session takes the inline path at every site from Phase 2 |
 
 Phase 1 ships a real but unreached capability — the key resolves and the predicate honors it, while the three unconditional sites still ignore it until Phase 2. That ordering is deliberate (the config surface is reviewable on its own), and it is the reason **this ADR must not be read as describing the tree until Phase 2 merges**.
