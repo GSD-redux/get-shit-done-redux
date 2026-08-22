@@ -10,6 +10,10 @@ Run this for **each plan in the current wave** before its `Agent()` dispatch. Th
 # plan_json is the JSON object for this plan from PLAN_INDEX.plans[]
 # files_modified is an array of strings (repo-relative paths or globs)
 PLAN_FILES=$(jq -r '.files_modified // [] | join(" ")' <<<"$plan_json")
+# #3003: files_deleted is the paths the plan declared it will REMOVE. Separate from
+# files_modified on purpose — it authorizes the cleanup-wave deletions guard, and a
+# deletion authorization must never be inferred from a general scope declaration.
+PLAN_DELETIONS=$(jq -r '.files_deleted // [] | join(" ")' <<<"$plan_json")
 plan_id=$(jq -r '.id' <<<"$plan_json")
 ```
 
@@ -113,3 +117,5 @@ fi
 ```
 
 **`PLAN_FILES` is reused after dispatch (#2596):** pass it as `--files "$PLAN_FILES"` on the step-3 `worktree.record-agent` call (and on `worktree.create` in the orchestrator-worktree path) so the post-wave cleanup gauntlet can compare each plan branch's actual committed diff against the scope the plan declared, and report any path outside it. That check is advisory — it warns, it never blocks the merge — and omitting the flag simply skips it for that plan.
+
+**`PLAN_DELETIONS` is reused the same way (#3003):** pass it as `--deletions "$PLAN_DELETIONS"` on the same `worktree.record-agent` / `worktree.create` calls. Unlike `--files`, this one is **not** advisory — it is what lets the post-wave deletions guard merge a branch whose plan declared a file removal. Matching is exact per path: a declared path merges, anything else still blocks that entry (and only that entry). Omitting the flag keeps the guard's original behavior of blocking on any deletion at all, so a plan that declares nothing loses nothing.

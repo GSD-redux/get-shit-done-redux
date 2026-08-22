@@ -19,6 +19,9 @@ type: execute
 wave: N                     # Execution wave (1, 2, 3...). Pre-computed at plan time.
 depends_on: []              # Plan IDs this plan requires (e.g., ["01-01"]).
 files_modified: []          # Files this plan modifies.
+files_deleted: []           # OPTIONAL. Files this plan REMOVES. Declaring a path here is what
+                            # lets worktree cleanup-wave merge the branch that deletes it; an
+                            # undeclared deletion still blocks. Exact paths, not globs or dirs.
 autonomous: true            # false if plan has checkpoints requiring user interaction
 requirements: []            # REQUIRED — Requirement IDs from ROADMAP this plan addresses. MUST NOT be empty.
 user_setup: []              # Human-required setup Claude cannot automate (see below)

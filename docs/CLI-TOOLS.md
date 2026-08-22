@@ -1045,6 +1045,25 @@ node gsd-tools.cjs worktree record-agent \
 
 `--files` is optional (#2596). When supplied it records the plan's declared `files_modified` — the same whitespace-separated `PLAN_FILES` list the per-plan worktree gate already builds — as an extra `files_modified` array on the entry, and `cleanup-wave` then reports any path the branch committed outside it. A blank or omitted `--files` writes no field at all, leaving the 4-field on-disk shape untouched, and the scope check is simply skipped for that entry: an unrecorded scope means *unknown*, never *declares nothing*. Values are compared against a diff, never opened as paths and never passed to a shell.
 
+`--deletions` is optional (#3003). When supplied it records the plan's declared `files_deleted` — built by the per-plan worktree gate exactly like `PLAN_FILES`, from the plan's own frontmatter — as a `declared_deletions` array on the entry. It is the opt-in the deletions guard reads (see below). A blank or omitted `--deletions` writes no field, leaving the on-disk shape untouched and the guard's original unconditional block in force. Like `--files`, values are compared against a diff and never opened or passed to a shell.
+
+**Intentional deletions (gate, #3003)**
+
+`cleanup-wave` blocks the merge of any executor branch whose diff deletes a file — a net against a mass-deletion accident. A plan whose scope legitimately includes removing a file declares those paths in its `files_deleted` frontmatter, which reaches the entry as `declared_deletions`; the guard then blocks only the deletions **not** in that list.
+
+| Branch deletes | Entry declares | Result |
+|---|---|---|
+| nothing | — | merges |
+| `tests/a.ts` | *(no field)* | **blocked** — unchanged pre-#3003 behavior |
+| `tests/a.ts` | `["tests/a.ts"]` | merges |
+| `tests/a.ts`, `src/b.ts` | `["tests/a.ts"]` | **blocked**, and the block detail names only `src/b.ts` |
+| `tests/a.ts` | `["tests"]` | **blocked** — a directory does not authorize its children |
+| `tests/a.ts` | `["*.ts"]` | **blocked** — globs are literal paths here, matching nothing |
+
+Matching is **exact after normalization**: backslashes become forward slashes, a leading `./` and any trailing `/` are stripped, on both sides. It is deliberately neither a prefix nor a glob match — either would let one declaration authorize a whole set of deletions, which is the accident the guard exists to catch. A declared path that was not in fact deleted is inert. A blocked entry still isolates: the rest of the wave proceeds (#2852). If the deletion check itself fails the entry blocks on `deletion_check_failed` and is never filtered — a broken check is not an authorization.
+
+A declared deletion is also treated as in-scope by the advisory below, so authorizing a removal does not then warn that the removed path was out of the declared scope.
+
 **Scope conformance at merge (advisory, #2596)**
 
 When a manifest entry carries a declared `files_modified`, `cleanup-wave` compares the branch's actual committed diff (`HEAD...<branch>`) against it and appends one entry to the result's `warnings` array for every path outside the declared scope, with `code: "scope_out_of_declared"` and the offending `path`. If the diff itself cannot be computed the entry gets a single `code: "scope_check_unavailable"` warning instead, so an unknown result is never mistaken for a clean one. Warnings are also aggregated on the top-level `warnings` array, each tagged with its `branch`.
