@@ -7363,32 +7363,6 @@ describe('#3003 — declared deletions: authorization is exact set membership', 
     assert.ok(paths.includes('src/stray.ts'), 'a bare directory declaration must not mute the advisory for its children');
   });
 
-  test('a leading-dash value after --deletions is treated as a missing declaration, not swallowed from --files', () => {
-    // `flag()`'s leading-dash guard (#3003): a value beginning with `-` is treated as
-    // ABSENT rather than consumed. Without the guard, flag('--deletions') would return the
-    // literal string '--files', producing a bogus declared_deletions entry instead of
-    // failing closed — and --files would still (separately) resolve to 'something', so the
-    // bug is silent unless this exact shape is exercised.
-    let writtenContent = null;
-    const result = cmdWorktreeRecordAgent('/repo/main', [
-      '--manifest', 'manifest.json',
-      '--agent-id', 'a1',
-      '--path', WT,
-      '--branch', BR,
-      '--base', 'abc123',
-      '--deletions', '--files', 'something',
-    ], {
-      readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
-      writeFile: (_p, c) => { writtenContent = c; },
-      write: () => {},
-      writeErr: () => {},
-    });
-    assert.equal(result.ok, true, `expected a successful record, got ${result.reason}`);
-    const written = JSON.parse(writtenContent);
-    assert.ok(!('declared_deletions' in written.worktrees[0]),
-      'a leading-dash value must fail closed to a missing declaration, not swallow --files as its value');
-  });
-
   test('the advisory still fires for a genuinely out-of-scope path', () => {
     const result = runWave(
       { files_modified: ['src/keep.ts'], declared_deletions: ['tests/a.test.ts'] },

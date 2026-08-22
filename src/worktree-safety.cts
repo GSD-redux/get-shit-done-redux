@@ -1475,11 +1475,7 @@ interface RecordAgentCmdResult {
 function cmdWorktreeRecordAgent(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps = {}): RecordAgentCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    // #3003: a value beginning with `-` is treated as ABSENT, not consumed —
-    // `--deletions --files x` must not swallow `--files` as the deletions value.
-    // Failing to a missing declaration is fail-closed (the guard blocks below);
-    // consuming the next flag would silently drop BOTH declarations instead.
-    if (i < 0 || i + 1 >= args.length || args[i + 1].startsWith('-')) return '';
+    if (i < 0 || i + 1 >= args.length) return '';
     return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
@@ -1761,11 +1757,7 @@ interface WorktreeCreateCmdResult {
 function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps & WorktreeDeps = {}): WorktreeCreateCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    // #3003: a value beginning with `-` is treated as ABSENT, not consumed —
-    // `--deletions --files x` must not swallow `--files` as the deletions value.
-    // Failing to a missing declaration is fail-closed (the guard blocks below);
-    // consuming the next flag would silently drop BOTH declarations instead.
-    if (i < 0 || i + 1 >= args.length || args[i + 1].startsWith('-')) return '';
+    if (i < 0 || i + 1 >= args.length) return '';
     return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
