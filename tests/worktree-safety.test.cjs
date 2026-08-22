@@ -7131,3 +7131,247 @@ describe('#2596 --files on the record-agent and create verbs', () => {
     }
   });
 });
+
+
+// ══ #3003 — declared deletions for the cleanup-wave guard ═══════════════════════════════
+//
+// The deletions guard blocked ANY deletion in an executor branch, unconditionally. A plan
+// whose stated scope includes removing a file (folding a test into a sibling suite) could
+// not be merged by the tool meant to merge it, forcing a manual --no-ff outside the tool —
+// strictly less safe than what the guard protects against.
+//
+// #3003's pinned decision: an optional `declared_deletions` PATH LIST on the manifest entry.
+// A path list, not a boolean, precisely so an unexpected deletion riding along with a
+// declared one still blocks. These tests exist mostly to hold that line — the rows that
+// matter are the OVER-AUTHORIZATION set, because every way of loosening the matcher
+// (prefix, glob, startsWith) silently rebuilds the boolean opt-in that was rejected.
+//
+// Matching is EXACT after normalization. No globs, no prefixes. That is deliberate
+// Greenspun-avoidance: `declaredScopePrefix` already exists for the ADVISORY and returns
+// null ("matches everything") for a glob-leading pattern — correct there, because a false
+// alarm costs more than a miss for an advisory. For a GATE that same rule would let
+// `["*.ts"]` disarm the guard completely.
+//
+// See https://github.com/open-gsd/gsd-core/issues/3003
+
+describe('#3003 — declared deletions: authorization is exact set membership', () => {
+  const REPO = '/repo/main';
+  const WT = '/repo/.claude/worktrees/agent-a1';
+  const BR = 'worktree-agent-a1';
+
+  /** A wave-cleanup git double whose deletion list and per-key overrides are injectable. */
+  function makeDeletionGit({ deletions = '', deletionExit = 0, changed = null } = {}) {
+    return (args) => {
+      const key = args.join(' ');
+      const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '', signal: null, error: null, timedOut: false });
+      if (key === `-C ${WT} rev-parse --abbrev-ref HEAD`) return ok(BR);
+      if (key === `merge-base HEAD ${BR}`) return ok('abc123');
+      if (key === `diff --diff-filter=D --name-only HEAD...${BR}`) {
+        return deletionExit === 0
+          ? ok(deletions)
+          : { exitCode: deletionExit, stdout: '', stderr: 'fatal: bad revision', signal: null, error: null, timedOut: false };
+      }
+      if (key === `diff --name-only HEAD...${BR}`) return ok(changed === null ? deletions : changed);
+      if (key === `-C ${WT} status --porcelain --untracked-files=all`) return ok('');
+      return ok();
+    };
+  }
+
+  function runWave(entry, gitOpts) {
+    return executeWorktreeWaveCleanupPlan(
+      {
+        ok: true,
+        repoRoot: REPO,
+        action: 'cleanup_wave',
+        discovery: 'manifest',
+        entries: [{ agent_id: 'a1', worktree_path: WT, branch: BR, expected_base: 'abc123', ...entry }],
+      },
+      { execGit: makeDeletionGit(gitOpts) },
+    );
+  }
+
+  const firstEntry = (result) => result.entries[0];
+  const blockedOnDeletions = (result) => firstEntry(result).reason === 'branch_contains_deletions';
+
+  // ── backward compatibility: these must pass BEFORE the change too ──────────────────────
+
+  test('no deletions proceeds', () => {
+    const result = runWave({}, { deletions: '' });
+    assert.notEqual(firstEntry(result).reason, 'branch_contains_deletions');
+  });
+
+  test('absent declaration keeps the unconditional block', () => {
+    const result = runWave({}, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(blockedOnDeletions(result), 'an entry with no declaration must block exactly as before');
+  });
+
+  // ── the feature ────────────────────────────────────────────────────────────────────────
+
+  test('a fully declared deletion merges', () => {
+    const result = runWave(
+      { declared_deletions: ['tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+  });
+
+  test('an undeclared deletion still blocks, and names only the residue', () => {
+    const result = runWave(
+      { declared_deletions: ['tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\nsrc/billing.ts\n' },
+    );
+    assert.ok(blockedOnDeletions(result));
+    const detail = firstEntry(result).stderr;
+    assert.match(detail, /src\/billing\.ts/, 'the undeclared path must be named');
+    assert.doesNotMatch(detail, /tests\/a\.test\.ts/,
+      'a declared path must NOT appear in the block detail — it would misdirect the operator');
+  });
+
+  test('an over-declaration is inert', () => {
+    const result = runWave(
+      { declared_deletions: ['tests/a.test.ts', 'never/deleted.ts'] },
+      { deletions: 'tests/a.test.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result));
+  });
+
+  test('an empty declaration is not an authorization', () => {
+    const result = runWave({ declared_deletions: [] }, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(blockedOnDeletions(result));
+  });
+
+  test('a broken deletion check is never an authorization', () => {
+    const result = runWave(
+      { declared_deletions: ['tests/a.test.ts'] },
+      { deletions: '', deletionExit: 128 },
+    );
+    assert.equal(firstEntry(result).reason, 'deletion_check_failed',
+      'a failed check must block on its own reason, never be filtered into a pass');
+  });
+
+  // ── the over-authorization set: each of these BLOCKS, and each would PASS under a
+  //    prefix / glob / startsWith matcher. This is the line the design exists to hold. ────
+
+  test('a directory declaration does not authorize its children', () => {
+    const result = runWave({ declared_deletions: ['tests'] }, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(blockedOnDeletions(result),
+      'prefix matching would authorize a mass deletion — the exact accident the guard catches');
+  });
+
+  test('a glob declaration authorizes nothing', () => {
+    const result = runWave({ declared_deletions: ['*.ts'] }, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(blockedOnDeletions(result),
+      'a glob-leading declaration must not disarm the guard (declaredScopePrefix returns null here)');
+  });
+
+  test('a declaration is not a string prefix of another path', () => {
+    const result = runWave({ declared_deletions: ['tests/a.ts'] }, { deletions: 'tests/ab.ts\n' });
+    assert.ok(blockedOnDeletions(result), 'startsWith would leak tests/a.ts -> tests/ab.ts');
+  });
+
+  // ── normalization: both sides meet in the same shape ───────────────────────────────────
+
+  test('a backslash declaration normalizes on any OS', () => {
+    const result = runWave({ declared_deletions: ['tests\\a.test.ts'] }, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(!blockedOnDeletions(result));
+  });
+
+  test('leading ./ and trailing slash normalize', () => {
+    const result = runWave({ declared_deletions: ['./tests/a.test.ts'] }, { deletions: 'tests/a.test.ts\n' });
+    assert.ok(!blockedOnDeletions(result));
+  });
+
+  test('a duplicated declaration is inert', () => {
+    const result = runWave(
+      { declared_deletions: ['tests/a.test.ts', 'tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result));
+  });
+
+  test('non-string and blank declarations are dropped', () => {
+    const result = runWave(
+      { declared_deletions: [null, 0, '', '   ', [], 'tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), 'junk elements drop; the one real path still authorizes');
+  });
+
+  test('a non-array declaration is treated as absent', () => {
+    for (const bogus of ['tests/a.test.ts', {}, 0, true]) {
+      const result = runWave({ declared_deletions: bogus }, { deletions: 'tests/a.test.ts\n' });
+      assert.ok(blockedOnDeletions(result), `non-array ${JSON.stringify(bogus)} must not authorize`);
+    }
+  });
+
+  // ── the advisory interaction the design nearly missed ──────────────────────────────────
+
+  test('a declared deletion is in scope for the advisory', () => {
+    // `git diff --name-only` includes deleted paths, and the #2596 advisory compares that
+    // against files_modified ALONE. Without unioning the declaration in, authorizing a
+    // deletion produces a SCOPE_OUT_OF_DECLARED warning for the very path just authorized.
+    const result = runWave(
+      { files_modified: ['src/keep.ts'], declared_deletions: ['tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\n', changed: 'src/keep.ts\ntests/a.test.ts\n' },
+    );
+    const paths = firstEntry(result).warnings.map((w) => w.path);
+    assert.ok(!paths.includes('tests/a.test.ts'),
+      'a declared deletion must not be reported out-of-scope');
+  });
+
+  test('the advisory still fires for a genuinely out-of-scope path', () => {
+    const result = runWave(
+      { files_modified: ['src/keep.ts'], declared_deletions: ['tests/a.test.ts'] },
+      { deletions: 'tests/a.test.ts\n', changed: 'src/keep.ts\ntests/a.test.ts\nsrc/rogue.ts\n' },
+    );
+    const paths = firstEntry(result).warnings.map((w) => w.path);
+    assert.ok(paths.includes('src/rogue.ts'), 'the advisory must not be blunted by this change');
+  });
+
+  // ── #2852 regression: a block isolates, it does not abort the wave ─────────────────────
+
+  test('a blocked entry does not abort the rest of the wave', () => {
+    const second = { agent_id: 'a2', worktree_path: '/repo/.claude/worktrees/agent-a2', branch: 'worktree-agent-a2', expected_base: 'abc123' };
+    const result = executeWorktreeWaveCleanupPlan(
+      {
+        ok: true,
+        repoRoot: REPO,
+        action: 'cleanup_wave',
+        discovery: 'manifest',
+        entries: [
+          { agent_id: 'a1', worktree_path: WT, branch: BR, expected_base: 'abc123', declared_deletions: ['tests/a.test.ts'] },
+          second,
+        ],
+      },
+      { execGit: makeDeletionGit({ deletions: 'tests/a.test.ts\nsrc/billing.ts\n' }) },
+    );
+    assert.equal(result.entries[0].reason, 'branch_contains_deletions');
+    assert.equal(result.entries.length, 2, 'the second entry must still have been processed');
+    assert.deepEqual(result.pending, [], 'nothing may be left pending — that would be an aborted wave');
+  });
+
+  // ── property: authorization is exactly set membership ──────────────────────────────────
+
+  test('property: a deletion merges iff its normalized path is in the declared set', () => {
+    const PATHS = ['a.ts', 'src/b.ts', 'tests/c.test.ts', 'deep/nested/d.ts', 'e.md'];
+    fc.assert(
+      fc.property(
+        fc.subarray(PATHS, { minLength: 1 }),
+        fc.subarray(PATHS, { minLength: 1 }),
+        (deleted, declared) => {
+          const result = runWave(
+            { declared_deletions: declared },
+            { deletions: `${deleted.join('\n')}\n` },
+          );
+          const everyDeletionDeclared = deleted.every((p) => declared.includes(p));
+          assert.equal(
+            !blockedOnDeletions(result),
+            everyDeletionDeclared,
+            `deleted=${JSON.stringify(deleted)} declared=${JSON.stringify(declared)}`,
+          );
+        },
+      ),
+      { seed: 3003, numRuns: 200 },
+    );
+  });
+});
