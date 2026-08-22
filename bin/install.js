@@ -812,6 +812,17 @@ const hasSkillsRoot = args.includes('--skills-root');
 const hasPortableHooks = args.includes('--portable-hooks') || process.env.GSD_PORTABLE_HOOKS === '1';
 const hasMinimal = args.includes('--minimal') || args.includes('--core-only');
 const hasDryRun = args.includes('--dry-run');
+// #3031: opt-in reclaim of the GSD artifacts a PRE-#2755 `--kimi-code` install
+// orphaned in Kimi CLI's `~/.kimi`. Opt-in and not automatic because the stale
+// block is BYTE-IDENTICAL to a legitimate Kimi CLI one — both runtimes render
+// the same bytes for the same root, since the command paths derive from the
+// hooks root and not from the runtime — so no inspection can tell "litter GSD
+// wrote for kimi-code" from "Kimi CLI's working hooks". Cleaning unasked would
+// break #2755's own acceptance criterion ("Uninstalling GSD hooks for one
+// runtime does not touch or remove the other runtime's hooks") for anyone with
+// both products installed. The user, who knows which products they run, is the
+// only party that can decide — so they ask for it explicitly.
+const hasReclaimKimiLegacy = args.includes('--reclaim-kimi-legacy');
 // --profile=<name> or --profile=<n1>,<n2> (composable); mutually exclusive with --minimal
 const _profileArgRaw = (() => {
   for (const arg of args) {
@@ -909,6 +920,21 @@ function disambiguateKimiVariant(runtimes) {
     });
   }
   return notices;
+}
+
+// #3031: `--reclaim-kimi-legacy` only ever acts inside the kimi-code GLOBAL
+// install branch. Say so when it cannot act, rather than exiting 0 having
+// silently done nothing: the user asked for a cleanup, and silence is
+// indistinguishable from "it ran and found nothing". Not a hard error — it
+// stays composable with `--all`, where it is legitimately inert for the other
+// seventeen runtimes.
+if (hasReclaimKimiLegacy && !selectedRuntimes.includes('kimi-code')) {
+  console.error(`${yellow}⚠ --reclaim-kimi-legacy ignored${reset} — it applies only to a --kimi-code install; nothing in ~/.kimi was touched.`);
+} else if (hasReclaimKimiLegacy && hasLocal) {
+  // Scope, checked HERE rather than inside install(): kimi-code declares
+  // hostBehaviors.localInstallDeferred, so install() returns early long before
+  // the kimi-hooks-toml branch — a warning placed there would be unreachable.
+  console.error(`${yellow}⚠ --reclaim-kimi-legacy ignored${reset} — the legacy root is a global location; re-run with --global to reclaim it.`);
 }
 
 if (selectedRuntimes.includes('kimi') || selectedRuntimes.includes('kimi-code')) {
@@ -1105,7 +1131,7 @@ if (hasUninstall) {
 
 // Show help if requested
 if (hasHelp) {
-  console.log(`  ${yellow}Usage:${reset} npx ${pkg.name} [options]\n\n  ${yellow}Options:${reset}\n    ${cyan}-g, --global${reset}              Install globally (to config directory)\n    ${cyan}-l, --local${reset}               Install locally (to current directory)\n    ${cyan}--claude${reset}                  Install for Claude Code only\n    ${cyan}--opencode${reset}                Install for OpenCode only\n    ${cyan}--kilo${reset}                    Install for Kilo only\n    ${cyan}--codex${reset}                   Install for Codex only\n    ${cyan}--kimi${reset}                    Install for Kimi CLI only\n    ${cyan}--copilot${reset}                 Install for Copilot only\n    ${cyan}--antigravity${reset}             Install for Antigravity only\n    ${cyan}--cursor${reset}                  Install for Cursor only\n    ${cyan}--windsurf${reset}                Install for Windsurf only\n    ${cyan}--augment${reset}                 Install for Augment only\n    ${cyan}--trae${reset}                    Install for Trae only\n    ${cyan}--qwen${reset}                    Install for Qwen Code only\n    ${cyan}--hermes${reset}                  Install for Hermes Agent only\n    ${cyan}--cline${reset}                   Install for Cline only\n    ${cyan}--codebuddy${reset}              Install for CodeBuddy only\n    ${cyan}--zcode${reset}                  Install for ZCode only\n    ${cyan}--pi${reset}                      Install for Pi only\n    ${cyan}--gemini${reset}                  Install for Gemini CLI only\n    ${cyan}--all${reset}                     Install for all runtimes\n    ${cyan}-u, --uninstall${reset}           Uninstall GSD (remove all GSD files)\n    ${cyan}-c, --config-dir <path>${reset}   Specify custom config directory\n    ${cyan}-h, --help${reset}                Show this help message\n    ${cyan}--force-statusline${reset}        Replace existing statusline config\n    ${cyan}--portable-hooks${reset}          Emit \$HOME-relative hook paths in settings.json\n                              (for WSL/Docker bind-mount setups; also GSD_PORTABLE_HOOKS=1)\n    ${cyan}--profile=<name>${reset}         Install a named skill profile. Profiles:\n                              core     — ${PROFILES.core.length} main-loop skills incl. phase (~130 desc tokens)\n                              standard — ${PROFILES.standard.length} skills incl. phase, review, config (~700)\n                              full     — all skills (default)\n                              Composable: --profile=core,audit installs union of closures.\n                              Profile is persisted and respected by \`gsd update\`.\n    ${cyan}--minimal${reset}                 Alias for --profile=core (back-compat).\n                              Cuts cold-start overhead from ~12k tokens to ~700.\n                              Alias: --core-only.\n\n  ${yellow}Examples:${reset}\n    ${dim}# Interactive install (prompts for runtime and location)${reset}\n    npx ${pkg.name}\n\n    ${dim}# Install for Claude Code globally${reset}\n    npx ${pkg.name} --claude --global\n\n    ${dim}# Install for Kilo globally${reset}\n    npx ${pkg.name} --kilo --global\n\n    ${dim}# Install for Codex globally${reset}\n    npx ${pkg.name} --codex --global\n\n    ${dim}# Install for Kimi CLI globally${reset}\n    npx ${pkg.name} --kimi --global\n\n    ${dim}# Install for Kimi CLI under ~/.kimi-code${reset}\n    npx ${pkg.name} --kimi --global --config-dir ~/.kimi-code\n\n    ${dim}# Install for Copilot globally${reset}\n    npx ${pkg.name} --copilot --global\n\n    ${dim}# Install for Copilot locally${reset}\n    npx ${pkg.name} --copilot --local\n\n    ${dim}# Install for Antigravity globally${reset}\n    npx ${pkg.name} --antigravity --global\n\n    ${dim}# Install for Antigravity locally${reset}\n    npx ${pkg.name} --antigravity --local\n\n    ${dim}# Install for Cursor globally${reset}\n    npx ${pkg.name} --cursor --global\n\n    ${dim}# Install for Cursor locally${reset}\n    npx ${pkg.name} --cursor --local\n\n    ${dim}# Install for Windsurf globally${reset}\n    npx ${pkg.name} --windsurf --global\n\n    ${dim}# Install for Windsurf locally${reset}\n    npx ${pkg.name} --windsurf --local\n\n    ${dim}# Install for Augment globally${reset}\n    npx ${pkg.name} --augment --global\n\n    ${dim}# Install for Augment locally${reset}\n    npx ${pkg.name} --augment --local\n\n    ${dim}# Install for Trae globally${reset}\n    npx ${pkg.name} --trae --global\n\n    ${dim}# Install for Trae locally${reset}\n    npx ${pkg.name} --trae --local\n\n    ${dim}# Install for Hermes Agent globally${reset}\n    npx ${pkg.name} --hermes --global\n\n    ${dim}# Install for Hermes Agent locally${reset}\n    npx ${pkg.name} --hermes --local\n\n    ${dim}# Install for Cline globally${reset}\n    npx ${pkg.name} --cline --global\n\n    ${dim}# Install for Cline locally${reset}\n    npx ${pkg.name} --cline --local\n\n    ${dim}# Install for CodeBuddy globally${reset}\n    npx ${pkg.name} --codebuddy --global\n\n    ${dim}# Install for CodeBuddy locally${reset}\n    npx ${pkg.name} --codebuddy --local\n\n    ${dim}# Install for all runtimes globally${reset}\n    npx ${pkg.name} --all --global\n\n    ${dim}# Install to custom config directory${reset}\n    npx ${pkg.name} --kilo --global --config-dir ~/.kilo-work\n\n    ${dim}# Install to current project only${reset}\n    npx ${pkg.name} --claude --local\n\n    ${dim}# Uninstall GSD from Cursor globally${reset}\n    npx ${pkg.name} --cursor --global --uninstall\n\n  ${yellow}Notes:${reset}\n    The --config-dir option is useful when you have multiple configurations.\n    It takes priority over CLAUDE_CONFIG_DIR / OPENCODE_CONFIG_DIR / KILO_CONFIG_DIR / CODEX_HOME / KIMI_CONFIG_DIR / COPILOT_CONFIG_DIR / COPILOT_HOME / ANTIGRAVITY_CONFIG_DIR / CURSOR_CONFIG_DIR / WINDSURF_CONFIG_DIR / AUGMENT_CONFIG_DIR / TRAE_CONFIG_DIR / QWEN_CONFIG_DIR / HERMES_HOME / CLINE_CONFIG_DIR / CODEBUDDY_CONFIG_DIR environment variables.\n    Kimi CLI defaults to the first existing generic skills root: ${cyan}~/.config/agents/skills${reset}, then ${cyan}~/.agents/skills${reset}; if neither exists, GSD creates ${cyan}~/.config/agents${reset}.\n    Use ${cyan}--config-dir ~/.kimi-code${reset} or ${cyan}KIMI_CONFIG_DIR=~/.kimi-code${reset} for brand-specific Kimi installs.\n`);
+  console.log(`  ${yellow}Usage:${reset} npx ${pkg.name} [options]\n\n  ${yellow}Options:${reset}\n    ${cyan}-g, --global${reset}              Install globally (to config directory)\n    ${cyan}-l, --local${reset}               Install locally (to current directory)\n    ${cyan}--claude${reset}                  Install for Claude Code only\n    ${cyan}--opencode${reset}                Install for OpenCode only\n    ${cyan}--kilo${reset}                    Install for Kilo only\n    ${cyan}--codex${reset}                   Install for Codex only\n    ${cyan}--kimi${reset}                    Install for Kimi CLI only\n    ${cyan}--kimi-code${reset}               Install for Kimi Code only\n    ${cyan}--copilot${reset}                 Install for Copilot only\n    ${cyan}--antigravity${reset}             Install for Antigravity only\n    ${cyan}--cursor${reset}                  Install for Cursor only\n    ${cyan}--windsurf${reset}                Install for Windsurf only\n    ${cyan}--augment${reset}                 Install for Augment only\n    ${cyan}--trae${reset}                    Install for Trae only\n    ${cyan}--qwen${reset}                    Install for Qwen Code only\n    ${cyan}--hermes${reset}                  Install for Hermes Agent only\n    ${cyan}--cline${reset}                   Install for Cline only\n    ${cyan}--codebuddy${reset}              Install for CodeBuddy only\n    ${cyan}--zcode${reset}                  Install for ZCode only\n    ${cyan}--pi${reset}                      Install for Pi only\n    ${cyan}--gemini${reset}                  Install for Gemini CLI only\n    ${cyan}--all${reset}                     Install for all runtimes\n    ${cyan}-u, --uninstall${reset}           Uninstall GSD (remove all GSD files)\n    ${cyan}-c, --config-dir <path>${reset}   Specify custom config directory\n    ${cyan}-h, --help${reset}                Show this help message\n    ${cyan}--force-statusline${reset}        Replace existing statusline config\n    ${cyan}--portable-hooks${reset}          Emit \$HOME-relative hook paths in settings.json\n                              (for WSL/Docker bind-mount setups; also GSD_PORTABLE_HOOKS=1)\n    ${cyan}--reclaim-kimi-legacy${reset}     With --kimi-code: also remove the GSD hooks a\n                              pre-1.10.0 --kimi-code install orphaned in ~/.kimi.\n                              Opt-in — those artifacts are indistinguishable from\n                              Kimi CLI's own, so skip it if you use Kimi CLI too.\n    ${cyan}--profile=<name>${reset}         Install a named skill profile. Profiles:\n                              core     — ${PROFILES.core.length} main-loop skills incl. phase (~130 desc tokens)\n                              standard — ${PROFILES.standard.length} skills incl. phase, review, config (~700)\n                              full     — all skills (default)\n                              Composable: --profile=core,audit installs union of closures.\n                              Profile is persisted and respected by \`gsd update\`.\n    ${cyan}--minimal${reset}                 Alias for --profile=core (back-compat).\n                              Cuts cold-start overhead from ~12k tokens to ~700.\n                              Alias: --core-only.\n\n  ${yellow}Examples:${reset}\n    ${dim}# Interactive install (prompts for runtime and location)${reset}\n    npx ${pkg.name}\n\n    ${dim}# Install for Claude Code globally${reset}\n    npx ${pkg.name} --claude --global\n\n    ${dim}# Install for Kilo globally${reset}\n    npx ${pkg.name} --kilo --global\n\n    ${dim}# Install for Codex globally${reset}\n    npx ${pkg.name} --codex --global\n\n    ${dim}# Install for Kimi CLI globally${reset}\n    npx ${pkg.name} --kimi --global\n\n    ${dim}# Install for Kimi Code globally (its own ~/.kimi-code root)${reset}\n    npx ${pkg.name} --kimi-code --global\n\n    ${dim}# Kimi Code, also reclaiming hooks a pre-1.10.0 install left in ~/.kimi${reset}\n    npx ${pkg.name} --kimi-code --global --reclaim-kimi-legacy\n\n    ${dim}# Install for Copilot globally${reset}\n    npx ${pkg.name} --copilot --global\n\n    ${dim}# Install for Copilot locally${reset}\n    npx ${pkg.name} --copilot --local\n\n    ${dim}# Install for Antigravity globally${reset}\n    npx ${pkg.name} --antigravity --global\n\n    ${dim}# Install for Antigravity locally${reset}\n    npx ${pkg.name} --antigravity --local\n\n    ${dim}# Install for Cursor globally${reset}\n    npx ${pkg.name} --cursor --global\n\n    ${dim}# Install for Cursor locally${reset}\n    npx ${pkg.name} --cursor --local\n\n    ${dim}# Install for Windsurf globally${reset}\n    npx ${pkg.name} --windsurf --global\n\n    ${dim}# Install for Windsurf locally${reset}\n    npx ${pkg.name} --windsurf --local\n\n    ${dim}# Install for Augment globally${reset}\n    npx ${pkg.name} --augment --global\n\n    ${dim}# Install for Augment locally${reset}\n    npx ${pkg.name} --augment --local\n\n    ${dim}# Install for Trae globally${reset}\n    npx ${pkg.name} --trae --global\n\n    ${dim}# Install for Trae locally${reset}\n    npx ${pkg.name} --trae --local\n\n    ${dim}# Install for Hermes Agent globally${reset}\n    npx ${pkg.name} --hermes --global\n\n    ${dim}# Install for Hermes Agent locally${reset}\n    npx ${pkg.name} --hermes --local\n\n    ${dim}# Install for Cline globally${reset}\n    npx ${pkg.name} --cline --global\n\n    ${dim}# Install for Cline locally${reset}\n    npx ${pkg.name} --cline --local\n\n    ${dim}# Install for CodeBuddy globally${reset}\n    npx ${pkg.name} --codebuddy --global\n\n    ${dim}# Install for CodeBuddy locally${reset}\n    npx ${pkg.name} --codebuddy --local\n\n    ${dim}# Install for all runtimes globally${reset}\n    npx ${pkg.name} --all --global\n\n    ${dim}# Install to custom config directory${reset}\n    npx ${pkg.name} --kilo --global --config-dir ~/.kilo-work\n\n    ${dim}# Install to current project only${reset}\n    npx ${pkg.name} --claude --local\n\n    ${dim}# Uninstall GSD from Cursor globally${reset}\n    npx ${pkg.name} --cursor --global --uninstall\n\n  ${yellow}Notes:${reset}\n    The --config-dir option is useful when you have multiple configurations.\n    It takes priority over CLAUDE_CONFIG_DIR / OPENCODE_CONFIG_DIR / KILO_CONFIG_DIR / CODEX_HOME / KIMI_CONFIG_DIR / COPILOT_CONFIG_DIR / COPILOT_HOME / ANTIGRAVITY_CONFIG_DIR / CURSOR_CONFIG_DIR / WINDSURF_CONFIG_DIR / AUGMENT_CONFIG_DIR / TRAE_CONFIG_DIR / QWEN_CONFIG_DIR / HERMES_HOME / CLINE_CONFIG_DIR / CODEBUDDY_CONFIG_DIR environment variables.\n    Kimi CLI defaults to the first existing generic skills root: ${cyan}~/.config/agents/skills${reset}, then ${cyan}~/.agents/skills${reset}; if neither exists, GSD creates ${cyan}~/.config/agents${reset}.\n    Kimi CLI and Kimi Code are separate products with separate hook roots: use ${cyan}--kimi${reset} (${cyan}~/.kimi${reset}, ${cyan}KIMI_SHARE_DIR${reset}) or ${cyan}--kimi-code${reset} (${cyan}~/.kimi-code${reset}, ${cyan}KIMI_CODE_HOME${reset}).\n`);
   process.exit(0);
 }
 
@@ -7863,6 +7889,133 @@ function validateHookFields(settings) {
 const GSD_UNINSTALL_HOOKS = [..._HOOKS_TO_COPY, 'gsd-check-update.cmd'];
 
 /**
+ * Whether two paths denote the SAME directory — used to stop a reclaim from
+ * deleting the very root the current install just wrote (#3031).
+ *
+ * A plain `path.resolve` comparison is not enough here, because both roots come
+ * from user-controlled env vars (`KIMI_SHARE_DIR`, `KIMI_CODE_HOME`) and two
+ * different strings routinely name one directory:
+ *   - case-insensitive filesystems (macOS, Windows): `~/Kimi` vs `~/kimi`
+ *   - symlinks / bind mounts: `~/link-to-kimi` vs the real target
+ * Getting this wrong is not cosmetic — it is the difference between skipping a
+ * reclaim and deleting a live install's own hooks.
+ *
+ * Strategy, cheapest-first: string equality after `resolve`, then identity by
+ * `dev`+`ino` (definitive when both exist and the platform reports them), then
+ * `realpath` string equality (resolves symlinks AND canonicalizes case). Any
+ * rung answering "same" wins; a path that does not exist cannot be the root we
+ * just wrote, so a failed stat simply falls through.
+ *
+ * @returns {boolean} true only when both paths are proven to be one directory.
+ */
+function isSameDirectory(a, b) {
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    // `ino` is 0 on some Windows filesystems; only trust a positive match.
+    if (sa.ino && sb.ino && sa.dev === sb.dev && sa.ino === sb.ino) return true;
+  } catch (_) { /* one side missing — fall through to realpath */ }
+  try {
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Remove every GSD-owned artifact from a Kimi hooks root (`~/.kimi` for kimi,
+ * `~/.kimi-code` for kimi-code — resolveKimiHooksTomlDir, #2755): the managed
+ * `[[hooks]]` block in the native config.toml, the hook scripts, hooks/lib/,
+ * and the CommonJS marker at both its current (hooks/) and pre-#2544 (root)
+ * locations.
+ *
+ * This root is Kimi's own native config home — SHARED space that may hold the
+ * user's real config.toml, providers and their own scripts — so only exact
+ * GSD-owned filenames are removed and directories are pruned only when that
+ * removal leaves them empty.
+ *
+ * TWO callers, deliberately one implementation (#3031). `uninstall()` calls it
+ * for the runtime being uninstalled; the opt-in `--reclaim-kimi-legacy` path in
+ * `install()` calls it for the LEGACY `~/.kimi` root a pre-#2755 `--kimi-code`
+ * install orphaned. Duplicating this sequence for the second caller would be
+ * exactly the generative-divergence hazard the repo bans — the reclaim must
+ * remove precisely what a real uninstall removes, forever, by construction.
+ *
+ * @param {string} kimiHooksRoot - Absolute path to the Kimi hooks root.
+ * @returns {number} count of removal steps performed (0 when nothing matched).
+ */
+function reclaimKimiHooksRoot(kimiHooksRoot) {
+  let steps = 0;
+  const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
+  const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
+  if (kimiHooksCleanup.changed) {
+    steps++;
+    console.log(`  ${green}✓${reset} Removed GSD hooks from ${kimiHooksTomlPath}`);
+  }
+
+  // Kimi's shared hook scripts + CommonJS package.json marker are installed
+  // into this SAME ~/.kimi root (installSharedHooksBundle, install()'s
+  // kimi-hooks-toml branch) rather than under targetDir — mirror steps "4.
+  // Remove GSD hooks" / "5. Remove GSD package.json" below, but scoped to
+  // kimiHooksRoot. ~/.kimi is Kimi's own native config home (shared space —
+  // may hold the user's real config.toml/providers), so only the exact
+  // GSD-owned filenames are removed, and directories are pruned only if left
+  // empty by that removal.
+  const kimiHooksDir = path.join(kimiHooksRoot, 'hooks');
+  if (fs.existsSync(kimiHooksDir)) {
+    let kimiHookCount = 0;
+    for (const hook of GSD_UNINSTALL_HOOKS) {
+      const hookPath = path.join(kimiHooksDir, hook);
+      if (fs.existsSync(hookPath)) {
+        fs.unlinkSync(hookPath);
+        kimiHookCount++;
+      }
+    }
+    if (kimiHookCount > 0) {
+      steps++;
+      console.log(`  ${green}✓${reset} Removed ${kimiHookCount} GSD hooks from ${kimiHooksDir}`);
+    }
+
+    const kimiHooksLibDir = path.join(kimiHooksDir, 'lib');
+    if (fs.existsSync(kimiHooksLibDir)) {
+      let removedKimiLibFiles = 0;
+      for (const file of GSD_HOOK_LIB_FILES) {
+        try {
+          fs.unlinkSync(path.join(kimiHooksLibDir, file));
+          removedKimiLibFiles++;
+        } catch (_) { /* best-effort */ }
+      }
+      try { fs.rmdirSync(kimiHooksLibDir); } catch (_) { /* not empty or other error — leave it */ }
+      if (removedKimiLibFiles > 0) {
+        steps++;
+        console.log(`  ${green}✓${reset} Removed ${removedKimiLibFiles} hooks/lib/ helper(s) from ${kimiHooksLibDir}`);
+      }
+    }
+
+    // #2544: the marker now lives inside kimi's hooks/ dir — remove it
+    // before the emptiness check below, or the dir would never prune.
+    if (removeCommonJsMarker(kimiHooksDir)) {
+      steps++;
+      console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksDir}`);
+    }
+
+    try {
+      if (fs.readdirSync(kimiHooksDir).length === 0) fs.rmdirSync(kimiHooksDir);
+    } catch (_) { /* not empty — leave it */ }
+  }
+
+  // Retire the pre-#2544 marker at kimi's root (~/.kimi), where the bundle
+  // used to write it. Exact content match — a user's own package.json in
+  // kimi's native config home is never touched.
+  if (removeCommonJsMarker(kimiHooksRoot)) {
+    steps++;
+    console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
+  }
+  return steps;
+}
+
+/**
  * Uninstall GSD from the specified directory for a specific runtime
  * Removes only GSD-specific files/directories, preserves user content
  * @param {boolean} isGlobal - Whether to uninstall from global or local
@@ -8059,72 +8212,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // cleanup can't be driven by anything under targetDir the way every other
   // hook surface above is.
   if (resolveInstallPlan(runtime).hooksSurface === 'kimi-hooks-toml') {
-    const kimiHooksRoot = resolveKimiHooksTomlDir({ runtime });
-    const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
-    const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
-    if (kimiHooksCleanup.changed) {
-      removedCount++;
-      console.log(`  ${green}✓${reset} Removed GSD hooks from ${kimiHooksTomlPath}`);
-    }
-
-    // Kimi's shared hook scripts + CommonJS package.json marker are installed
-    // into this SAME ~/.kimi root (installSharedHooksBundle, install()'s
-    // kimi-hooks-toml branch) rather than under targetDir — mirror steps "4.
-    // Remove GSD hooks" / "5. Remove GSD package.json" below, but scoped to
-    // kimiHooksRoot. ~/.kimi is Kimi's own native config home (shared space —
-    // may hold the user's real config.toml/providers), so only the exact
-    // GSD-owned filenames are removed, and directories are pruned only if left
-    // empty by that removal.
-    const kimiHooksDir = path.join(kimiHooksRoot, 'hooks');
-    if (fs.existsSync(kimiHooksDir)) {
-      let kimiHookCount = 0;
-      for (const hook of GSD_UNINSTALL_HOOKS) {
-        const hookPath = path.join(kimiHooksDir, hook);
-        if (fs.existsSync(hookPath)) {
-          fs.unlinkSync(hookPath);
-          kimiHookCount++;
-        }
-      }
-      if (kimiHookCount > 0) {
-        removedCount++;
-        console.log(`  ${green}✓${reset} Removed ${kimiHookCount} GSD hooks from ${kimiHooksDir}`);
-      }
-
-      const kimiHooksLibDir = path.join(kimiHooksDir, 'lib');
-      if (fs.existsSync(kimiHooksLibDir)) {
-        let removedKimiLibFiles = 0;
-        for (const file of GSD_HOOK_LIB_FILES) {
-          try {
-            fs.unlinkSync(path.join(kimiHooksLibDir, file));
-            removedKimiLibFiles++;
-          } catch (_) { /* best-effort */ }
-        }
-        try { fs.rmdirSync(kimiHooksLibDir); } catch (_) { /* not empty or other error — leave it */ }
-        if (removedKimiLibFiles > 0) {
-          removedCount++;
-          console.log(`  ${green}✓${reset} Removed ${removedKimiLibFiles} hooks/lib/ helper(s) from ${kimiHooksLibDir}`);
-        }
-      }
-
-      // #2544: the marker now lives inside kimi's hooks/ dir — remove it
-      // before the emptiness check below, or the dir would never prune.
-      if (removeCommonJsMarker(kimiHooksDir)) {
-        removedCount++;
-        console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksDir}`);
-      }
-
-      try {
-        if (fs.readdirSync(kimiHooksDir).length === 0) fs.rmdirSync(kimiHooksDir);
-      } catch (_) { /* not empty — leave it */ }
-    }
-
-    // Retire the pre-#2544 marker at kimi's root (~/.kimi), where the bundle
-    // used to write it. Exact content match — a user's own package.json in
-    // kimi's native config home is never touched.
-    if (removeCommonJsMarker(kimiHooksRoot)) {
-      removedCount++;
-      console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
-    }
+    removedCount += reclaimKimiHooksRoot(resolveKimiHooksTomlDir({ runtime }));
   }
 
   // 1b. Non-layout Copilot side-effect: copilot-instructions.md cleanup
@@ -12063,6 +12151,44 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const kimiHooksResult = writeKimiHooksToml(kimiHooksTomlPath, kimiHooksRoot, { hookOpts: kimiHookOpts });
       if (kimiHooksResult.changed) {
         console.log(`  ${green}✓${reset} Configured ${kimiHooksResult.entryCount} GSD hook(s) in ${kimiHooksTomlPath}`);
+      }
+
+      // #3031: opt-in reclaim of the pre-#2755 legacy root. Runs LAST in this
+      // branch so the kimi-code install above is already complete and durable —
+      // a reclaim can only ever remove, never leave the install half-written.
+      //
+      // Gated on `runtime === 'kimi-code'`: a `--kimi` install resolves this
+      // very same `~/.kimi` as its own hooks root, so reclaiming there would
+      // delete the hooks it just wrote. The flag is silently inert for kimi
+      // rather than an error — `--all` passes every runtime through this branch,
+      // and one opt-in flag must not fail an otherwise valid multi-runtime run.
+      //
+      // ALSO gated on kimi NOT being installed by this same invocation. The
+      // flag asserts "I only use Kimi Code"; `--all`, or an explicit `--kimi
+      // --kimi-code`, falsifies that outright. Both orderings put `kimi` BEFORE
+      // `kimi-code` (selectRuntimesFromArgs), so without this guard the run
+      // installs Kimi CLI's hooks and then deletes them moments later — the run
+      // reports success and the user is left with the very breakage the opt-in
+      // exists to prevent. Verified reproducible before this guard existed.
+      const kimiInstalledThisRun = selectedRuntimes.includes('kimi');
+      if (hasReclaimKimiLegacy && runtime === 'kimi-code' && kimiInstalledThisRun) {
+        console.log(`  ${dim}•${reset} Skipped --reclaim-kimi-legacy: this run also installs --kimi, so ${resolveKimiHooksTomlDir({ runtime: 'kimi' })} is a live Kimi CLI install`);
+      } else if (hasReclaimKimiLegacy && runtime === 'kimi-code') {
+        const legacyKimiRoot = resolveKimiHooksTomlDir({ runtime: 'kimi' });
+        // Both roots honor their own env override (KIMI_SHARE_DIR /
+        // KIMI_CODE_HOME). A user who points both at ONE directory collapses
+        // "the legacy root" onto "the root this install just wrote", and an
+        // unguarded reclaim would delete its own output. isSameDirectory compares
+        // the DIRECTORIES, not the strings — case-insensitive filesystems and
+        // symlinked aliases both name one dir with two spellings.
+        if (isSameDirectory(legacyKimiRoot, kimiHooksRoot)) {
+          console.log(`  ${dim}•${reset} Skipped --reclaim-kimi-legacy: ${legacyKimiRoot} is this install's own hooks root`);
+        } else {
+          const reclaimed = reclaimKimiHooksRoot(legacyKimiRoot);
+          console.log(reclaimed > 0
+            ? `  ${green}✓${reset} Reclaimed ${reclaimed} orphaned GSD artifact group(s) from ${legacyKimiRoot} (pre-#2755)`
+            : `  ${dim}•${reset} No orphaned GSD artifacts found in ${legacyKimiRoot}`);
+        }
       }
     }
 

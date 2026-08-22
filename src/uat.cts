@@ -81,6 +81,19 @@ interface CurrentTest {
 
 // ─── cmdAuditUat ─────────────────────────────────────────────────────────────
 
+/**
+ * Select the UAT documents belonging to ONE phase directory.
+ *
+ * Extracted (#2790) so `cmdAuditUat` and the read-only `planning.inspect` query
+ * cannot drift on which files count as this phase's UAT. `scopeToPhase` has no
+ * unfiltered fallback on purpose: a phase whose own UAT file is genuinely absent
+ * scopes to empty and contributes nothing, rather than picking up a stray
+ * cross-phase file (#3511).
+ */
+function selectPhaseUatFiles(files: string[], phaseDirName: string): string[] {
+  return scopeToPhase(files.filter((f) => f.includes('-UAT') && f.endsWith('.md')), phaseDirName);
+}
+
 function cmdAuditUat(cwd: string, raw: boolean): void {
   const phasesDir = path.join(planningDir(cwd), 'phases');
   const hasActivePhases = fs.existsSync(phasesDir);
@@ -139,7 +152,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // under this phase's audit-uat entry. A phase whose own UAT file is
     // genuinely absent scopes to empty and contributes nothing — correct, and
     // the reason scopeToPhase has no unfiltered fallback.
-    for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
+    for (const file of selectPhaseUatFiles(files, dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
@@ -1657,6 +1670,8 @@ export = {
   cmdAuditUat,
   cmdRenderCheckpoint,
   parseCurrentTest,
+  parseUatItems,
+  selectPhaseUatFiles,
   buildCheckpoint,
   CHECKPOINT_FRAMES,
   CHECKPOINT_LANGUAGE_ALIASES,
