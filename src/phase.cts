@@ -593,6 +593,7 @@ interface RawPlan {
   autonomous: boolean;
   objective: string | null;
   filesModified: string[];
+  filesDeleted: string[];
   taskCount: number;
   hasSummary: boolean;
   /** #2830: true iff this plan's own SUMMARY declares `status: halted` (a designed stop). */
@@ -826,6 +827,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous: planDoc.autonomous,
       objective: planDoc.objective,
       filesModified: planDoc.filesModified,
+      filesDeleted: planDoc.filesDeleted,
       agentHint: planDoc.agentHint,
       taskCount: planDoc.taskCount,
       hasSummary,
@@ -929,6 +931,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
+      files_deleted: rawPlan.filesDeleted,
       agent_hint: rawPlan.agentHint,
       task_count: rawPlan.taskCount,
       has_summary: rawPlan.hasSummary,

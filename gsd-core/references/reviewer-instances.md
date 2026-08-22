@@ -106,3 +106,34 @@ with an argv array and `shell: false`.
 - **Shared-adapter caveat:** when ≥2 invoked instances share the same base `cli`, print a
   one-line caveat immediately after the frontmatter (before the first section), e.g.:
   `> Note: opencode-deepseek and opencode-mimo share the opencode adapter; their consensus is cross-model, not cross-tool.`
+
+---
+
+## Interaction with the convergence loop (#2398)
+
+Running 2+ instances changes how `/gsd:plan-review-convergence` counts HIGHs. Its **consensus gate**
+(`plan-review-convergence.md`, step 5a, immediately before the counting rules) engages only when two
+or more reviewers actually ran in a cycle — which is precisely the configuration this file enables.
+
+Under that gate, a HIGH raised by exactly one instance is treated by what the claim asserts:
+
+- an **existence-class** claim (a symbol, file, flag, commit or ID exists / is absent / says X)
+  counts toward `current_high` only if source-grounding confirms it or another reviewer raised the
+  same concern;
+- a **judgment-class** claim (a design or correctness property) counts unless that instance's own
+  section opens with an evidence-quality discount marker — `[reviewed-without-source-citations]`
+  (#3194) or `[reviewed-without-repo-access]` (#2176).
+
+Judgment-class findings are deliberately exempt from the corroboration requirement: instances catch
+materially different classes of issue, so demanding two of them independently raise the same
+architectural concern would suppress the findings this feature exists to surface.
+
+A suppressed HIGH is still reported, tagged `(single-reviewer, unconfirmed)`. If every instance that
+ran carries a discount marker the gate disengages entirely, so a cycle in which nothing was verified
+can never be counted as converged.
+
+**Practical consequence for this file's use case:** instances of uneven reliability are safe to
+configure. A weak instance that returns no `file:line` evidence gets stamped, and its lone
+judgment-class HIGHs stop forcing replan cycles — while any instance that does produce grounded
+evidence keeps full blocking weight, alone, on exactly the architectural findings it was added to
+catch.
