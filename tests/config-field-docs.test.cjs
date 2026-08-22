@@ -194,6 +194,12 @@ describe('config-field-docs', () => {
         `${name} must name both advisory warning boundaries`);
       assert.match(reference, /does not\s+change\s+`git\.branching_strategy: "none"`/i,
         `${name} must preserve branching_strategy none behavior`);
+      assert.match(reference, /exact branch name/i,
+        `${name} must state that matching is by exact name`);
+      assert.match(reference, /no glob or prefix/i,
+        `${name} must say globs and prefixes are unsupported, so git-flow layouts enumerate`);
+      assert.match(reference, /remaining names\s+still apply/i,
+        `${name} must state that an invalid entry drops only itself`);
     }
   });
 

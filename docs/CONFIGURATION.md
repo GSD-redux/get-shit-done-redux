@@ -1098,6 +1098,11 @@ A match produces an advisory warning at execute-phase and ship and does not chan
 `git.branching_strategy: "none"`: GSD still continues on the current branch and ship still offers
 to create a feature branch.
 
+Matching is by exact branch name — there is no glob or prefix support, so a git-flow
+layout must name each `release/*` or `hotfix/*` branch it wants protected. An entry that
+is not a non-empty string is ignored with a warning naming it, and the remaining names
+still apply.
+
 ```json
 {
   "git": {
