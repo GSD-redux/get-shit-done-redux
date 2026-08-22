@@ -511,8 +511,20 @@ export function cmdGitBaseBranch(
   deps?: BaseBranchDeps
 ): string {
   if (args[0] === '--is-protected') {
-    const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);
     const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
+    // `git branch --show-current` prints nothing on a detached HEAD, so the
+    // call sites legitimately pass an explicit empty string: no protected
+    // branch is named '', the answer is false, and that is not a fault worth
+    // reporting. The flag with NO argument is a different thing — a caller bug
+    // that `args[1] ?? ''` used to collapse into the detached-HEAD case. Same
+    // answer, but said out loud so the two can be told apart.
+    if (args.length < 2) {
+      writeDiagnostic(
+        `⚠ git-base-branch: --is-protected was called without a branch argument; ` +
+        `answering false. Pass the branch to test, e.g. --is-protected "$CURRENT_BRANCH".\n`
+      );
+    }
+    const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);
     if (status.rejectedProtectedBranches.length > 0) {
       writeDiagnostic(
         `⚠ git-base-branch: ignoring ${status.rejectedProtectedBranches.length} unusable ` +
