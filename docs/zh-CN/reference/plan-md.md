@@ -35,8 +35,6 @@ files_modified:
   - src/components/PostFeed.tsx
   - src/components/PostCard.tsx
   - src/app/feed/page.tsx
-files_deleted:
-  - src/components/LegacyFeed.tsx
 autonomous: true
 requirements: ["FEED-01", "FEED-03"]
 user_setup: []
@@ -71,7 +69,6 @@ must_haves:
 | `wave` | 是 | integer | 执行波次。波次 1 中的计划并行运行（无依赖关系）。波次 2 及以上的计划等待上一波次的所有计划完成后才开始。由 `gsd-planner` 在规划时预先计算。 |
 | `depends_on` | 是 | array of plan IDs | 该计划必须等待的前置计划。空数组表示波次 1。示例：`["03-01"]` 表示该计划在第 3 阶段计划 01 完成后运行。 |
 | `files_modified` | 是 | array of paths | 该计划创建或修改的所有文件。被计划检查器用于检测同波次文件冲突，也被 execute-phase 用于合并跟踪。 |
-| `files_deleted` | 否 | array of paths | 该计划有意**删除**的所有文件。波次后的清理检查会阻止任何差异中包含文件删除的执行器分支合并——这是防止大规模误删的安全网——而此字段正是声明例外的显式选项。匹配是在分隔符规范化之后按路径精确比对：已声明的路径可以合并，未声明的删除仍会阻止该计划的条目（且仅阻止该条目）。不支持通配符，也不支持目录前缀，因此一次声明永远不会授权超出其字面列举的范围。省略该字段则保护机制原有的无条件阻止继续生效，因此省略始终是安全的默认行为（#3003）。 |
 | `autonomous` | 是 | boolean | 当所有任务类型均为 `auto` 时为 `true`。当计划包含任何需要人工交互的 `checkpoint:*` 任务时为 `false`。 |
 | `requirements` | 是 | array of IDs | 该计划所对应的 ROADMAP.md 中的需求 ID。每个阶段需求 ID 必须出现在至少一个计划的 `requirements` 字段中。空数组是阻断项（BLOCKER）。 |
 | `user_setup` | 否 | array of objects | Claude 无法自动化的外部服务设置步骤（账户创建、密钥获取、控制台配置）。存在时，execute-phase 会为开发者生成 `USER-SETUP.md` 检查清单。 |

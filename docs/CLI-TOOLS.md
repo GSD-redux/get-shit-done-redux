@@ -1062,7 +1062,9 @@ node gsd-tools.cjs worktree record-agent \
 
 Matching is **exact after normalization**: backslashes become forward slashes, a leading `./` and any trailing `/` are stripped, on both sides. It is deliberately neither a prefix nor a glob match — either would let one declaration authorize a whole set of deletions, which is the accident the guard exists to catch. A declared path that was not in fact deleted is inert. A blocked entry still isolates: the rest of the wave proceeds (#2852). If the deletion check itself fails the entry blocks on `deletion_check_failed` and is never filtered — a broken check is not an authorization.
 
-A declared deletion is also treated as in-scope by the advisory below, so authorizing a removal does not then warn that the removed path was out of the declared scope.
+A declared deletion is also treated as in-scope by the advisory below, so authorizing a removal does not then warn that the removed path was out of the declared scope. That is done by **subtracting** declared deletions from the advisory's findings, not by adding them to the declared scope it matches against — the advisory reads its scope list with prefix-and-glob semantics, so adding them would quietly give `declared_deletions` a second, wider matching rule than the table above, and `["*.md"]` would go from inert to silencing the advisory entirely. One field, one matching rule, on every surface. Subtraction also means the advisory's activation is unchanged: it still runs only when `files_modified` is recorded, so a plan that declares deletions alone stays as silent as it was before #3003.
+
+Two limits worth knowing, both shared with `--files` and both failing closed. A declared path containing a **space** cannot be expressed, because the flag value is whitespace-separated — such a path splits into fragments, matches nothing, and the entry blocks. And a value beginning with `-` is treated as a missing declaration rather than consumed, so a malformed `--deletions --files x` drops the declaration and blocks instead of silently swallowing the next flag.
 
 **Scope conformance at merge (advisory, #2596)**
 

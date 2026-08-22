@@ -7308,15 +7308,85 @@ describe('#3003 — declared deletions: authorization is exact set membership', 
 
   test('a declared deletion is in scope for the advisory', () => {
     // `git diff --name-only` includes deleted paths, and the #2596 advisory compares that
-    // against files_modified ALONE. Without unioning the declaration in, authorizing a
+    // against files_modified ALONE. Without subtracting the declaration out, authorizing a
     // deletion produces a SCOPE_OUT_OF_DECLARED warning for the very path just authorized.
     const result = runWave(
       { files_modified: ['src/keep.ts'], declared_deletions: ['tests/a.test.ts'] },
       { deletions: 'tests/a.test.ts\n', changed: 'src/keep.ts\ntests/a.test.ts\n' },
     );
+    // The merge assertion is load-bearing: without it a revert blocks the entry, warnings
+    // come back empty, and the path-absence assertion below passes for the wrong reason.
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
     const paths = firstEntry(result).warnings.map((w) => w.path);
     assert.ok(!paths.includes('tests/a.test.ts'),
       'a declared deletion must not be reported out-of-scope');
+  });
+
+  test('the advisory does not activate on declarations alone', () => {
+    // Before this fix, gating unioned files_modified + declared_deletions into the scope
+    // list, so a plan that declared ONLY a deletion (no files_modified) still produced a
+    // non-empty scope list, and every modified path warned as out-of-declared-scope on a
+    // plan that had declared no modification scope at all. Gating on files_modified alone
+    // keeps the advisory as silent as it was pre-#2596 when nothing was declared modified.
+    const result = runWave(
+      { declared_deletions: ['src/gone.ts'] },
+      { deletions: 'src/gone.ts\n', changed: 'src/gone.ts\nsrc/other.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+    assert.deepEqual(firstEntry(result).warnings, [], 'no files_modified means no advisory scope at all');
+  });
+
+  test('a glob in declared_deletions does not mute the advisory', () => {
+    // `declaredScopePrefix` returns null for a glob-leading pattern, meaning "matches
+    // everything" — correct for the advisory's OWN matcher, but under the old UNION this
+    // silenced the advisory entirely for a modified path that has nothing to do with the
+    // glob. Exact-match subtraction gives declared_deletions one rule on every surface.
+    const result = runWave(
+      { files_modified: ['src/kept.ts'], declared_deletions: ['*.md'] },
+      { deletions: '', changed: 'src/kept.ts\nsrc/stray.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+    const paths = firstEntry(result).warnings.map((w) => w.path);
+    assert.ok(paths.includes('src/stray.ts'), 'a glob declaration must not disarm the advisory');
+  });
+
+  test('a bare directory in declared_deletions does not mute the advisory for its children', () => {
+    // Same trap as the glob case: a directory-shaped declared_deletions entry authorizes
+    // nothing at the gate (exact match only), but under the old UNION it would have widened
+    // the advisory's own prefix matching to cover everything under that directory.
+    const result = runWave(
+      { files_modified: ['src/kept.ts'], declared_deletions: ['src'] },
+      { deletions: '', changed: 'src/kept.ts\nsrc/stray.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+    const paths = firstEntry(result).warnings.map((w) => w.path);
+    assert.ok(paths.includes('src/stray.ts'), 'a bare directory declaration must not mute the advisory for its children');
+  });
+
+  test('a leading-dash value after --deletions is treated as a missing declaration, not swallowed from --files', () => {
+    // `flag()`'s leading-dash guard (#3003): a value beginning with `-` is treated as
+    // ABSENT rather than consumed. Without the guard, flag('--deletions') would return the
+    // literal string '--files', producing a bogus declared_deletions entry instead of
+    // failing closed — and --files would still (separately) resolve to 'something', so the
+    // bug is silent unless this exact shape is exercised.
+    let writtenContent = null;
+    const result = cmdWorktreeRecordAgent('/repo/main', [
+      '--manifest', 'manifest.json',
+      '--agent-id', 'a1',
+      '--path', WT,
+      '--branch', BR,
+      '--base', 'abc123',
+      '--deletions', '--files', 'something',
+    ], {
+      readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+      writeFile: (_p, c) => { writtenContent = c; },
+      write: () => {},
+      writeErr: () => {},
+    });
+    assert.equal(result.ok, true, `expected a successful record, got ${result.reason}`);
+    const written = JSON.parse(writtenContent);
+    assert.ok(!('declared_deletions' in written.worktrees[0]),
+      'a leading-dash value must fail closed to a missing declaration, not swallow --files as its value');
   });
 
   test('the advisory still fires for a genuinely out-of-scope path', () => {

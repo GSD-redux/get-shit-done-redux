@@ -22,11 +22,23 @@ Then run the per-plan gate:
 ```bash
 USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"
 
+# #3003: this gate asks "does the plan touch a submodule at all", and REMOVING a file
+# inside one is as much a touch as modifying it. Both declared channels feed the
+# intersection: before files_deleted existed a deleted path had to appear in
+# files_modified to be planned at all, so the gate saw it. Now that plan-md.md tells
+# authors a deleted path needs no files_modified entry, reading files_modified alone
+# would let a deletion-only submodule plan keep worktree isolation on — exactly the
+# case #2772 disabled it for. Note this is the OPPOSITE posture from the cleanup-wave
+# deletions guard: there the two channels are kept apart because a deletion
+# AUTHORIZATION must never be inferred; here they are merged because a safety fallback
+# must never MISS a touch.
+PLAN_SCOPE_PATHS=$(printf '%s %s' "$PLAN_FILES" "$PLAN_DELETIONS" | tr -s ' ' | sed 's/^ //; s/ $//')
+
 if [ -n "$SUBMODULE_PATHS" ] && [ "$USE_WORKTREES_FOR_PLAN" != "false" ]; then
-  if [ -z "$PLAN_FILES" ]; then
+  if [ -z "$PLAN_SCOPE_PATHS" ]; then
     # Fallback: planned paths are unknown/unparseable — fall back to the safe
     # behavior (disable worktree isolation for this plan) and log why.
-    echo "[worktree] Plan ${plan_id}: files_modified missing/unparseable — disabling worktree isolation as a safety fallback (submodule project)"
+    echo "[worktree] Plan ${plan_id}: files_modified and files_deleted both missing/unparseable — disabling worktree isolation as a safety fallback (submodule project)"
     USE_WORKTREES_FOR_PLAN=false
   else
     # Compute intersection with glob-safe normalization. Both sides are
@@ -41,7 +53,7 @@ if [ -n "$SUBMODULE_PATHS" ] && [ "$USE_WORKTREES_FOR_PLAN" != "false" ]; then
       sm="${sm_raw#./}"
       sm="${sm%/}"
       [ -z "$sm" ] && continue
-      for pf_raw in $PLAN_FILES; do
+      for pf_raw in $PLAN_SCOPE_PATHS; do
         # Normalize planned path the same way
         pf="${pf_raw#./}"
         pf="${pf%/}"

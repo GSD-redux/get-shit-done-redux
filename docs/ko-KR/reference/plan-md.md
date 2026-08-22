@@ -35,8 +35,6 @@ files_modified:
   - src/components/PostFeed.tsx
   - src/components/PostCard.tsx
   - src/app/feed/page.tsx
-files_deleted:
-  - src/components/LegacyFeed.tsx
 autonomous: true
 requirements: ["FEED-01", "FEED-03"]
 user_setup: []
@@ -71,7 +69,6 @@ must_haves:
 | `wave` | 예 | integer | 실행 웨이브. 웨이브 1의 플랜은 병렬로 실행됩니다(의존성 없음). 웨이브 2 이상의 플랜은 이전 웨이브의 모든 플랜이 완료될 때까지 기다립니다. `gsd-planner`가 플래닝 시점에 미리 계산합니다. |
 | `depends_on` | 예 | 플랜 ID 배열 | 이 플랜이 기다려야 하는 플랜. 빈 배열 = 웨이브 1. 예: `["03-01"]`은 이 플랜이 Phase 3의 Plan 01 이후에 실행됨을 의미합니다. |
 | `files_modified` | 예 | 경로 배열 | 이 플랜이 생성하거나 수정하는 모든 파일. 플랜 체커가 동일 웨이브 파일 충돌을 감지하고 execute-phase가 머지 추적에 사용합니다. |
-| `files_deleted` | 아니오 | 경로 배열 | 이 플랜이 의도적으로 **삭제**하는 모든 파일. 웨이브 이후 정리 검사는 diff에 파일 삭제가 포함된 실행자 브랜치의 머지를 일괄 차단합니다(대량 삭제 사고에 대한 안전망). 이 필드는 그 예외를 명시하는 옵트인입니다. 매칭은 구분자 정규화 후 경로 완전 일치입니다. 선언된 경로는 머지되고, 선언되지 않은 삭제는 여전히 해당 플랜의 엔트리만 차단합니다. 글로브도 디렉터리 접두사도 없으므로 선언이 문자 그대로 나열한 것보다 더 많은 권한을 갖는 일은 결코 없습니다. 필드를 생략하면 가드의 원래 무조건 차단이 그대로 유지되므로, 생략이 언제나 안전한 기본값입니다 (#3003). |
 | `autonomous` | 예 | boolean | 모든 태스크가 `auto` 타입일 때 `true`. 플랜에 인간 상호작용이 필요한 `checkpoint:*` 태스크가 포함된 경우 `false`. |
 | `requirements` | 예 | ID 배열 | 이 플랜이 처리하는 ROADMAP.md의 요구사항 ID. 모든 페이즈 요구사항 ID는 적어도 하나의 플랜의 `requirements` 필드에 나타나야 합니다. 빈 배열은 BLOCKER입니다. |
 | `user_setup` | 아니오 | 객체 배열 | Claude가 자동화할 수 없는 외부 서비스 설정 단계(계정 생성, 시크릿 검색, 대시보드 구성). 있는 경우, execute-phase가 개발자를 위한 `USER-SETUP.md` 체크리스트를 생성합니다. |

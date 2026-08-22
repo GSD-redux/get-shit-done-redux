@@ -999,7 +999,11 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       continue; // #2852: isolate
     }
 
-    const deletions = execGit(['diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
+    // #3003: `-c core.quotepath=false` so a non-ASCII path arrives raw rather than
+    // C-escaped and double-quoted. Without it a declared deletion of `tests/é.ts`
+    // could never match its declaration, and the entry would block forever with no
+    // diagnostic pointing at the encoding.
+    const deletions = execGit(['-c', 'core.quotepath=false', 'diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
     if (!gitResultOk(deletions)) {
       blockEntry(result, 'deletion_check_failed', deletions?.stderr || '');
       continue; // #2852: isolate
@@ -1031,19 +1035,33 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     // call blockEntry and does NOT touch `ok` — the merge proceeds. Promotion
     // to a hard gate is a separate, disclosed change.
     // #3003: a declared deletion is in scope by construction — `git diff --name-only`
-    // includes deleted paths, so without unioning the declaration in, authorizing a
+    // includes deleted paths, so without accounting for the declaration, authorizing a
     // deletion would immediately warn that the same path is out of declared scope.
-    const declaredScope = [
-      ...(Array.isArray(entry.files_modified) ? entry.files_modified : []),
-      ...(Array.isArray(entry.declared_deletions) ? entry.declared_deletions : []),
-    ];
-    if (declaredScope.length > 0) {
-      const scopeDiff = execGit(['diff', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
+    //
+    // It is SUBTRACTED from the findings rather than UNIONED into the declared scope,
+    // and the difference is not cosmetic. `planWaveScopeConformance` reads its scope
+    // list with prefix-and-glob semantics, so unioning would silently hand
+    // `declared_deletions` a second, WIDER matching rule than the gate gives it:
+    // `["*.md"]` (inert at the gate) would yield a null prefix meaning "matches
+    // everything" and mute the advisory entirely, and `["src"]` would mute all of
+    // `src/`. One field with two matching rules is a trap. Subtracting keeps the
+    // field exact-match-only on every surface it touches.
+    //
+    // Gating stays on `files_modified` alone for the same reason: a plan that declares
+    // only deletions has still declared no modification scope, so the advisory stays
+    // exactly as silent as it was before this change instead of warning on every
+    // modified path.
+    const declaredFiles = Array.isArray(entry.files_modified) ? entry.files_modified : [];
+    if (declaredFiles.length > 0) {
+      const scopeDiff = execGit(['-c', 'core.quotepath=false', 'diff', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
       const scopeWarnings: WaveCleanupWarning[] = !gitResultOk(scopeDiff)
         // A broken advisory must never become a gate: record that conformance
         // is unknown rather than blocking (or, worse, silently passing).
         ? [{ code: WAVE_CLEANUP_WARNING.SCOPE_CHECK_UNAVAILABLE, branch: entry.branch, path: null }]
-        : planWaveScopeConformance((scopeDiff.stdout || '').split('\n'), declaredScope, entry.branch);
+        : planWaveScopeConformance((scopeDiff.stdout || '').split('\n'), declaredFiles, entry.branch)
+          // A path-less warning (SCOPE_CHECK_UNAVAILABLE) is never subtracted.
+          .filter((w) => w.path === null
+            || partitionDeclaredDeletions([w.path], entry.declared_deletions).length > 0);
       result.warnings.push(...scopeWarnings);
       allWarnings.push(...scopeWarnings);
     }
@@ -1399,7 +1417,12 @@ interface RecordAgentCmdResult {
 function cmdWorktreeRecordAgent(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps = {}): RecordAgentCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+    // #3003: a value beginning with `-` is treated as ABSENT, not consumed —
+    // `--deletions --files x` must not swallow `--files` as the deletions value.
+    // Failing to a missing declaration is fail-closed (the guard blocks below);
+    // consuming the next flag would silently drop BOTH declarations instead.
+    if (i < 0 || i + 1 >= args.length || args[i + 1].startsWith('-')) return '';
+    return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s: string) => process.stderr.write(s));
@@ -1680,7 +1703,12 @@ interface WorktreeCreateCmdResult {
 function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps & WorktreeDeps = {}): WorktreeCreateCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+    // #3003: a value beginning with `-` is treated as ABSENT, not consumed —
+    // `--deletions --files x` must not swallow `--files` as the deletions value.
+    // Failing to a missing declaration is fail-closed (the guard blocks below);
+    // consuming the next flag would silently drop BOTH declarations instead.
+    if (i < 0 || i + 1 >= args.length || args[i + 1].startsWith('-')) return '';
+    return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s: string) => process.stderr.write(s));

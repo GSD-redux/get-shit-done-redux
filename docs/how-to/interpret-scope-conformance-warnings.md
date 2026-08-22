@@ -8,7 +8,7 @@
 
 ## What you will see
 
-When `/gsd-execute-phase` runs plans in isolated worktrees, each plan branch is merged back into the phase branch by the `worktree.cleanup-wave` gauntlet. If the wave manifest recorded the plan's declared scope (`files_modified`, passed as `--files` to `worktree record-agent` / `worktree create`, plus any `files_deleted` passed as `--deletions`), the gauntlet compares the branch's actual committed diff (`HEAD...<branch>`) against that declared scope and reports any committed path that falls outside it.
+When `/gsd-execute-phase` runs plans in isolated worktrees, each plan branch is merged back into the phase branch by the `worktree.cleanup-wave` gauntlet. If the wave manifest recorded the plan's declared scope (`files_modified`, passed as `--files` to `worktree record-agent` / `worktree create`), the gauntlet compares the branch's actual committed diff (`HEAD...<branch>`) against that declared scope and reports any committed path that falls outside it.
 
 A realistic `cleanup-wave` result with one such warning:
 
@@ -83,7 +83,7 @@ Absence of `scope_out_of_declared` / `scope_check_unavailable` warnings is not p
 ## Known limits
 
 - **Glob matching is literal-prefix only.** `src/**/*.ts` matches anything under `src/`, including `src/a/b.json` — the check does not parse glob syntax past the literal prefix.
-- **Renames are not detected specially.** A rename appears in the diff as an add plus a delete. Whether it reaches the scope-conformance check depends on the deletions guard, which runs first. That guard blocks an entry on any deletion the plan did not declare in `files_deleted` (#3003), so a rename whose delete side is undeclared never gets this far. Declare the old path in `files_deleted` and the entry survives the guard — at which point both halves of the rename are ordinary paths this check compares against the declared scope, and the old path needs no separate `files_modified` entry because `declared_deletions` is unioned into that comparison.
+- **Renames are not detected specially, and mostly are not gated at all.** Git's rename detection runs by default, so a *pure* rename (content unchanged, similarity 100%) is reported as a single `R` entry and appears in **no** `--diff-filter=D` output. The deletions guard therefore never fires on it — before or after #3003 — and the rename lands here at the advisory, where the new path is compared against the declared scope like any other. Only a rename that also edits the file enough to fall below git's similarity threshold decomposes into a separate add and delete; that delete is a real deletion, and the guard blocks the entry unless the old path is declared in `files_deleted`. Declaring it is the fix in that case. The old path needs no `files_modified` entry either way: a declared deletion is subtracted from this check's findings, so it never shows up as out-of-scope.
 - **`/gsd-quick` worktrees have no plan-declared scope.** They are never checked, for the same reason as the "no `--files` recorded" case above.
 
 ---
