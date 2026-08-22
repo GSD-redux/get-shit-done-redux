@@ -2741,9 +2741,13 @@ describe('#443 resolve-execution CLI command', () => {
     assert.ok('profile' in output, 'should have profile field');
   });
 
-  // #3007: corrected — Codex gained 'max' (per-model supported_reasoning_levels),
-  // so 'max' now renders through unchanged instead of clamping to 'xhigh'.
-  test('codex runtime -> effort_param=model_reasoning_effort, max passes through, fast_mode_supported=false', () => {
+  // NOTE: effort.default: 'max' never reaches the renderer for gsd-planner here —
+  // gsd-planner is a heavy/opus-tier agent, and its routing-tier default outranks
+  // effort.default in resolution precedence, so the resolved level is 'xhigh' before
+  // the renderer ever sees 'max'. effort_clamped=false and effort_requested='xhigh'
+  // prove this is precedence, not the #3007 clamp — do not "correct" this back to
+  // expecting 'max'.
+  test('codex runtime -> effort_param=model_reasoning_effort, tier default outranks effort.default, fast_mode_supported=false', () => {
     writeConfig(tmpDir, {
       runtime: 'codex',
       effort: { default: 'max' },
@@ -2752,7 +2756,30 @@ describe('#443 resolve-execution CLI command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.effort_param, 'model_reasoning_effort');
+    assert.strictEqual(output.effort_rendered, 'xhigh');
+    assert.strictEqual(output.effort_clamped, false);
+    assert.strictEqual(output.effort_requested, 'xhigh');
+    // fast_mode_supported: codex does not support fast mode via subagent
+    assert.strictEqual(output.fast_mode_supported, false);
+  });
+
+  // #3007: Codex gained 'max' (per-model supported_reasoning_levels), so 'max' now
+  // renders through unchanged instead of clamping to 'xhigh'. agent_overrides is used
+  // here (not effort.default) because it outranks the routing-tier default, which is
+  // what actually lets 'max' reach the renderer end-to-end.
+  test('codex runtime -> max survives to the wire via agent_overrides, fast_mode_supported=false', () => {
+    writeConfig(tmpDir, {
+      runtime: 'codex',
+      effort: { default: 'max', agent_overrides: { 'gsd-planner': 'max' } },
+    });
+    const result = runGsdTools(['resolve-execution', 'gsd-planner'], tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.effort_param, 'model_reasoning_effort');
+    assert.strictEqual(output.effort, 'max');
     assert.strictEqual(output.effort_rendered, 'max');
+    assert.strictEqual(output.effort_requested, 'max');
+    assert.strictEqual(output.effort_clamped, false);
     // fast_mode_supported: codex does not support fast mode via subagent
     assert.strictEqual(output.fast_mode_supported, false);
   });
