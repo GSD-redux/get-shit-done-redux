@@ -467,6 +467,20 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   // ones are operative. Verified: fenced, balanced-commented, and
   // after-unclosed-comment candidates are all correctly excluded.
   function operativeLineIndexes(md, candidateRe) {
+    // Guard the CLASS, not just the one caller that got it wrong (review round
+    // 9). This helper REPLACES the candidate line. Deleting an ordinary content
+    // line is harmless, but deleting a fence DELIMITER leaves its partner behind
+    // to become an opener, inverting fence parity for the entire remainder of the
+    // document — `computeSkippedLineFlags` is a strict FORWARD state machine, so
+    // every marker after the deletion then lands alternately inside and outside a
+    // phantom fence. Ask about a fence delimiter's position with
+    // `isOperativePosition` instead, which INSERTS and therefore perturbs nothing.
+    for (const delimiter of ['```', '```xml', '```bash', '~~~', '````']) {
+      assert.ok(!candidateRe.test(delimiter),
+        `operativeLineIndexes: the candidate regex ${candidateRe} matches the fence delimiter `
+        + `${JSON.stringify(delimiter)}. Replacing a delimiter inverts fence parity for the rest of the `
+        + 'document and misclassifies LIVE fences downstream. Use isOperativePosition(md, idx).');
+    }
     const lines = md.split(/\r?\n/);
     const injected = new Set();
     const instrumented = lines
@@ -512,11 +526,43 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   }
 
   // Operative-aware line predicate, for selections that cannot go through the
-  // instrumentation path (an END anchor, or a fence opener). Reuses the same
-  // scanner so fenced / commented / after-unclosed-comment lines are excluded
-  // consistently with `operativeLineIndexes`, rather than testing raw text.
+  // instrumentation path (an END anchor). Reuses the same scanner so fenced /
+  // commented / after-unclosed-comment lines are excluded consistently with
+  // `operativeLineIndexes`, rather than testing raw text. NOT usable for a fence
+  // delimiter — see the guard above and `isOperativePosition` below.
   function operativeLineSet(md, lineRe) {
     return new Set(operativeLineIndexes(md, lineRe));
+  }
+
+  // Is the line at `idx` in live prose — outside every fence and comment?
+  //
+  // Answers for a candidate that IS a fence delimiter, which `operativeLineIndexes`
+  // structurally cannot: substituting a delimiter is destructive either way (delete
+  // it and parity inverts; keep it and the marker is fenced and never parses).
+  // INSERT the marker on its own line immediately before the candidate instead.
+  // Insertion preserves every delimiter in the document, and because the skip-state
+  // machine runs strictly FORWARD, a line inserted at `idx` observes exactly the
+  // fence/comment state the candidate at `idx` observes — with nothing but the
+  // marker between them. So marker-operative IS the candidate's position-liveness.
+  function isOperativePosition(md, idx) {
+    const lines = md.split(/\r?\n/);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) return false;
+    // Same CommonMark rule as operativeLineIndexes: only 0-3 LITERAL SPACES is
+    // ordinary block indentation, so an indented candidate's position cannot be
+    // probed with an unindented marker without promoting it.
+    const indent = (lines[idx].match(/^[ \t]*/) || [''])[0];
+    if (!/^ {0,3}$/.test(indent)) return false;
+    // Position-liveness is not content-liveness: a same-line `<!-- ... -->`
+    // wrapper comments the candidate's CONTENT while leaving the position outside
+    // every span, so the probe alone would answer "live" for `<!-- ```xml -->`.
+    // Reject a line that is entirely comment here rather than relying on each
+    // caller's own shape test to happen to exclude it.
+    if (lines[idx].replace(/<!--[\s\S]*?-->/g, '').replace(/<!--[\s\S]*$/, '').trim() === '') return false;
+    const probed = lines.slice(0, idx)
+      .concat(indent + '- `GSDTEST.POSITION=' + idx + '`', lines.slice(idx))
+      .join('\n');
+    return parsePredicates(probed).predicates.some(
+      (p) => p.id === 'GSDTEST.POSITION' && Number(p.value) === idx && p.line - 1 === idx);
   }
 
   function soleOperativeIndex(name, md, candidateRe, what) {
@@ -567,6 +613,49 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     assert.deepStrictEqual(operativeLineIndexes(md, /^ANCHOR /), [0],
       'only the live ANCHOR line may be treated as operative — fenced, balanced-commented, and '
       + 'after-unclosed-comment copies must all be excluded');
+  });
+
+  // Review round 9. The round-8 fence-awareness fix reached for the replacement
+  // helper to ask about a fence DELIMITER, which it cannot answer soundly. Both
+  // halves are pinned: the unsound route now throws, and the sound one is right.
+  test('fence-delimiter liveness: the replacement helper refuses, the insertion probe answers', () => {
+    // Two live top-level ```xml fences. The FIRST one's deletion is what inverts
+    // parity for the second — the exact misclassification found on the real
+    // agents/gsd-planner.md, reduced to its smallest reproducing shape.
+    const md = [
+      'prose',            // 0
+      '```xml',           // 1  live opener
+      '<a/>',             // 2
+      '```',              // 3
+      'more prose',       // 4
+      '```xml',           // 5  live opener — reported NON-operative by the old route
+      '<b/>',             // 6
+      '```',              // 7
+      '<!--',             // 8
+      '```xml',           // 9  commented opener
+      '-->',              // 10
+      '<!-- ```xml -->',  // 11 same-line-commented opener
+    ].join('\n');
+    const FENCE = /^\s*```xml(?:\s.*)?$/;
+
+    assert.throws(() => operativeLineIndexes(md, FENCE), /matches the fence delimiter/,
+      'a candidate regex matching a fence delimiter must be refused outright, not answered wrongly — '
+      + 'this helper REPLACES the candidate, so removing one delimiter inverts parity downstream');
+
+    assert.deepStrictEqual(
+      [1, 5, 9, 11].map((i) => isOperativePosition(md, i)),
+      [true, true, false, false],
+      'both live openers must read operative (the second is the one the deletion route lost), and '
+      + 'neither the block-commented nor the same-line-commented opener may');
+
+    // Non-vacuity: the probe must not simply answer "true" for every position it
+    // is handed, and must stay correct as content shifts above it.
+    assert.strictEqual(isOperativePosition(md, 2), false, 'a line INSIDE a fence is not operative');
+    assert.strictEqual(isOperativePosition(md, 0), true, 'plain prose is operative');
+    const shifted = ['extra', '', ...md.split('\n')].join('\n');
+    assert.deepStrictEqual([3, 7].map((i) => isOperativePosition(shifted, i)), [true, true],
+      'both openers must still read operative after unrelated lines are inserted above them — the '
+      + 'defect this replaces was a parity coincidence that a shift like this flipped');
   });
 
   const OPERATIVE = [
@@ -635,8 +724,15 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
       break;
     }
     assert.notStrictEqual(openIdx, -1, 'the tracer task shape marker must be followed by content');
+    // Shape off the RAW line, liveness off the position. The round-8 fix asked
+    // `operativeLineSet` — which deletes the opener it is asking about, inverting
+    // fence parity downstream: on the head planner it reported the live "Task-level
+    // TDD" fence at 0-based 233 as NON-operative, and the assertion only passed
+    // because 0-based 262 happened to land in a surviving parity slot. One extra
+    // live ```xml example anywhere earlier in the file flipped it to a false
+    // FAILURE blaming a decoy that does not exist (review round 9).
     assert.ok(
-      operativeLineSet(PLANNER, /^\s*```xml(?:\s.*)?$/).has(openIdx),
+      /^\s*```xml(?:\s.*)?$/.test(lines[openIdx]) && isOperativePosition(PLANNER, openIdx),
       'the first non-blank line after the tracer task shape marker must be a LIVE ```xml fence opener — '
       + 'a commented-out or non-adjacent decoy template must not be selectable',
     );
