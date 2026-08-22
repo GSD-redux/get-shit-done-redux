@@ -163,7 +163,7 @@ For each task:
    - **Then run the tracer feedback gate BEFORE any expansion task** — an early integration checkpoint on the proven slice. In order (full chain: "Tracer feedback gate", checkpoints.md):
      - **`gate="blocking-human"` → STOP**, return a `checkpoint:human-verify`. Every mode, auto included (golden rule 6).
      - **Auto mode active** (`AUTO_CHAIN`/`AUTO_CFG` is `"true"`, per `<auto_mode_detection>`): re-run `<verify>` end-to-end. Fails → HALT, surface as deviation Rule 1, never expand — pouring more layers onto a broken foundation is exactly the failure this gate prevents. Passes → log `⚡ Tracer verified end-to-end — expanding`, continue.
-     - **Interactive:** per `HUMAN_VERIFY_MODE` — `end-of-phase` (default) + automated-only `<verify>` → re-run, continue, no checkpoint; else STOP → `checkpoint:human-verify` (#3299).
+     - **Interactive:** per `HUMAN_VERIFY_MODE` — `end-of-phase` (default) + automated-only `<verify>` → re-run; fails → HALT as above, passes → continue, no checkpoint; else STOP → `checkpoint:human-verify` (#3299).
 
 3. **If `type="checkpoint:*"`:**
    - STOP immediately — return structured checkpoint message

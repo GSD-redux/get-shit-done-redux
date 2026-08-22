@@ -322,40 +322,6 @@ describe('#1945 glossary + docs', () => {
     assert.match(COMMANDS_DOC, /\| `--no-tracer` \|/, 'COMMANDS.md flag table must include --no-tracer');
   });
 
-  // Asserting only that the row EXISTS is what let the canonical schema table
-  // drift out of sync with shipped behavior after #3299 without CI noticing —
-  // CONTEXT.md names this file the canonical reference for the task-type
-  // contract, so a wrong row here is the authoritative wrong answer. Assert the
-  // row's CONTENT against the behavior actually shipped.
-  // Keyword presence in this row is not enough: peer review defeated an earlier
-  // revision by APPENDING "Nevertheless, interactive runs always present a
-  // checkpoint:human-verify." — every required keyword still matched, so the
-  // canonical schema reference could contradict itself with CI green. Pin the
-  // Autonomy cell EXACTLY. This is deliberately brittle: it is the canonical
-  // contract, so a wording change here must be a conscious edit in both places.
-  test('docs/reference/plan-md.md tracer row Autonomy cell matches shipped behavior exactly', () => {
-    const row = (PLAN_MD_REF.split(/\r?\n/).find((l) => l.startsWith('| `tracer` |')) || '');
-    assert.ok(row, 'plan-md.md Task types table must include a tracer row');
-    const cells = row.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-    assert.strictEqual(cells.length, 3, `tracer row must have 3 cells, got ${cells.length}`);
-    const autonomy = cells[2].replace(/\s+/g, ' ').trim();
-    const EXPECTED = 'Fully autonomous; after committing, the executor runs the tracer\'s `<verify>` '
-      + 'as an early integration gate. A tracer carrying `gate="blocking-human"` STOPs for a human '
-      + 'in every mode, auto included. Otherwise autonomous runs halt on failure before expansion, '
-      + 'and interactive runs honor `workflow.human_verify_mode` (#3299): under the `end-of-phase` '
-      + 'default a `<verify>` carrying only `<automated>` is re-run and, on success, expansion '
-      + 'continues with **no** checkpoint (failure still halts); under `mid-flight`, or when the '
-      + 'tracer carries `<human-check>`, a `checkpoint:human-verify` is '
-      + 'presented. Full precedence chain: `gsd-core/references/checkpoints.md` → "Tracer feedback gate".';
-    assert.strictEqual(
-      autonomy,
-      EXPECTED,
-      'plan-md.md tracer Autonomy cell drifted from the shipped gate contract. This table is the '
-      + 'canonical schema reference (per CONTEXT.md) — if the behavior genuinely changed, update '
-      + 'the cell AND this expected string together; do not relax the assertion.',
-    );
-  });
-
   test('docs/how-to and docs/AGENTS reflect tracer-first + the executor gate', () => {
     assert.match(HOWTO, /tracer/i, 'how-to must mention tracer-first');
     assert.match(HOWTO, /--no-tracer/, 'how-to must mention the --no-tracer opt-out');
@@ -606,7 +572,7 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   const OPERATIVE = [
     ['agents/gsd-executor.md', () => regionFrom(EXECUTOR,
       soleOperativeIndex('agents/gsd-executor.md', EXECUTOR, EXEC_ANCHOR, 'tracer task branch'),
-      /^\s*3\.\s+\*\*If\s/), "2. **If `type=\"tracer\"`:** (production-quality, never a throwaway) - Execute and commit exactly like `type=\"auto\"`. - **Then run the tracer feedback gate BEFORE any expansion task** \u2014 an early integration checkpoint on the proven slice. In order (full chain: \"Tracer feedback gate\", checkpoints.md): - **`gate=\"blocking-human\"` \u2192 STOP**, return a `checkpoint:human-verify`. Every mode, auto included (golden rule 6). - **Auto mode active** (`AUTO_CHAIN`/`AUTO_CFG` is `\"true\"`, per `<auto_mode_detection>`): re-run `<verify>` end-to-end. Fails \u2192 HALT, surface as deviation Rule 1, never expand \u2014 pouring more layers onto a broken foundation is exactly the failure this gate prevents. Passes \u2192 log `\u26a1 Tracer verified end-to-end \u2014 expanding`, continue. - **Interactive:** per `HUMAN_VERIFY_MODE` \u2014 `end-of-phase` (default) + automated-only `<verify>` \u2192 re-run, continue, no checkpoint; else STOP \u2192 `checkpoint:human-verify` (#3299)."],
+      /^\s*3\.\s+\*\*If\s/), "2. **If `type=\"tracer\"`:** (production-quality, never a throwaway) - Execute and commit exactly like `type=\"auto\"`. - **Then run the tracer feedback gate BEFORE any expansion task** \u2014 an early integration checkpoint on the proven slice. In order (full chain: \"Tracer feedback gate\", checkpoints.md): - **`gate=\"blocking-human\"` \u2192 STOP**, return a `checkpoint:human-verify`. Every mode, auto included (golden rule 6). - **Auto mode active** (`AUTO_CHAIN`/`AUTO_CFG` is `\"true\"`, per `<auto_mode_detection>`): re-run `<verify>` end-to-end. Fails \u2192 HALT, surface as deviation Rule 1, never expand \u2014 pouring more layers onto a broken foundation is exactly the failure this gate prevents. Passes \u2192 log `\u26a1 Tracer verified end-to-end \u2014 expanding`, continue. - **Interactive:** per `HUMAN_VERIFY_MODE` \u2014 `end-of-phase` (default) + automated-only `<verify>` \u2192 re-run; fails \u2192 HALT as above, passes \u2192 continue, no checkpoint; else STOP \u2192 `checkpoint:human-verify` (#3299)."],
     ['gsd-core/workflows/execute-plan.md', () => {
       const i = soleOperativeIndex('gsd-core/workflows/execute-plan.md', EXECUTE_PLAN, EP_ANCHOR, 'tracer dispatch line');
       return EXECUTE_PLAN.split(/\r?\n/)[i].replace(/\s+/g, ' ').trim();
@@ -630,6 +596,20 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
       + 'added around the table (an "ignore row 3, always wait" line below it previously passed).');
   });
 
+  // Asserting only that the row EXISTS is what let the canonical schema table
+  // drift out of sync with shipped behavior after #3299 without CI noticing —
+  // CONTEXT.md names this file the canonical reference for the task-type
+  // contract, so a wrong row here is the authoritative wrong answer. Keyword
+  // presence is not enough either: peer review defeated an earlier revision by
+  // APPENDING "Nevertheless, interactive runs always present a
+  // checkpoint:human-verify." — every required keyword still matched, so the
+  // reference could contradict itself with CI green. Hence the EXACT pin, which
+  // is deliberately brittle: a wording change must be a conscious edit in both
+  // places. Selection routes through soleOperativeIndex rather than a raw
+  // startsWith find — an earlier duplicate of this test used the raw form, which
+  // this suite records at :477 as a defeated round-1 shape, and it was removed in
+  // review of #3390 rather than left as a second hand-maintained copy of the
+  // same canonical string.
   test('docs/reference/plan-md.md tracer row Autonomy cell matches shipped behavior exactly', () => {
     const i = soleOperativeIndex('plan-md.md', PLAN_MD_REF, ROW_ANCHOR, 'tracer table row');
     const cells = PLAN_MD_REF.split(/\r?\n/)[i].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
