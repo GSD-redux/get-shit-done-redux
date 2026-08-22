@@ -25,7 +25,6 @@ const identity = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'package-iden
 const pkg = require(path.join(ROOT, 'package.json'));
 const { MANAGED_HOOKS } = require(path.join(ROOT, 'hooks', 'managed-hooks-registry.cjs'));
 const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
-const { shouldCopyHookEntry } = require('./helpers/cold-runtime-lib-fixture.cjs');
 
 const PLUGIN_JSON_PATH = path.join(ROOT, '.claude-plugin', 'plugin.json');
 const HOOKS_JSON_PATH  = path.join(ROOT, 'hooks', 'hooks.json');
@@ -416,11 +415,51 @@ describe('C: plugin.json schema validation', () => {
   // and the four component directories — which is the isolation the temp root
   // exists for, since nothing else from the repo root is placed where the
   // validator can read it — while letting it actually read those components.
-  // agents/ ships in package.json `files` and IS auto-validated by the CLI —
-  // a frontmatter-less agents/*.md exits 1. It was pointless to include while
-  // the fixture symlinked (the CLI read nothing through a symlink); now that
-  // the tree is real, it is the last shipped component tree C2 could not see.
-  const COMPONENT_DIRS = ['agents', 'commands', 'hooks', 'skills'];
+  // Exactly the three directories #3613 names — the ones the pre-fix code
+  // symlinked. An earlier revision also copied agents/, on the (correct)
+  // observation that the CLI auto-validates it and a frontmatter-less
+  // agents/*.md exits 1. Dropped in review: it is a NEW gate the issue does not
+  // ask for, on the largest of the trees, and because C2 never runs in CI it
+  // would be red only on contributor machines with `claude` installed — the
+  // same worst-of-both-states #3613 exists to remove. agents/ coverage is worth
+  // having; it needs its own issue, where "should CI provision the CLI" can be
+  // answered for it.
+  const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
+
+  /**
+   * One entry that must survive the copy into each component tree, so C3 catches
+   * a partial copy rather than only a wholly empty one. `commands/gsd` and
+   * `skills/` are what `.claude-plugin/plugin.json` declares; `hooks/hooks.json`
+   * is the manifest the runtime loads and the one entry hooks/ cannot be useful
+   * without.
+   */
+  const EXPECTED_ENTRY = {
+    commands: 'gsd',
+    hooks: 'hooks.json',
+    skills: 'gsd-add-tests',
+  };
+
+  /**
+   * Should this top-level `hooks/` entry be copied into the validation fixture?
+   *
+   * By NAME, before anything stats it. `scripts/build-hooks.js` writes
+   * atomically through a per-PID `hooks/.dist-staging-<pid>` and removes it when
+   * done, and nine test files invoke that script from their before() hooks — so
+   * a walk can enumerate a staging directory and then lstat it after the owning
+   * process deleted it (ENOENT). A filter applied AFTER the stat does not close
+   * that. `dist` is excluded for an independent reason: a real marketplace
+   * install contains neither dist nor a transient staging dir.
+   *
+   * Deliberately local rather than reusing cold-runtime-lib-fixture.cjs's
+   * identical predicate. That one is documented as scoped to the cold-tree
+   * fixture and had exactly one caller; making it two, across fixtures with
+   * different requirements and nothing asserting they stay compatible, is how a
+   * later cold-tree change silently alters what this fixture validates.
+   * Raised in review of #3627.
+   */
+  function shouldCopyHookEntry(name) {
+    return name !== 'dist' && !name.startsWith('.dist-staging');
+  }
 
   function buildValidationPluginRoot() {
     const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-plugin-validate-'));
@@ -438,14 +477,8 @@ describe('C: plugin.json schema validation', () => {
         // removes it when done, and nine test files invoke that script from
         // their before() hooks — so a recursive walk can enumerate a staging
         // directory and then lstat it after the owning process deleted it
-        // (ENOENT). #3656 fixed this same shape in the cold-tree fixture; this
-        // reuses its predicate rather than re-deriving the rule, and a filter
-        // applied AFTER the stat would not close it.
-        //
-        // shouldCopyHookEntry also excludes hooks/dist, which is right for this
-        // fixture independently: a real marketplace install contains neither
-        // dist nor a transient staging dir — the same reasoning that keeps the
-        // repo-root CLAUDE.md out of the validated tree.
+        // (ENOENT). #3656 fixed this same shape in the cold-tree fixture; the
+        // rule is the same one, stated locally above rather than imported.
         const src = path.join(ROOT, dir);
         fs.mkdirSync(path.join(pluginRoot, dir), { recursive: true });
         for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -516,9 +549,10 @@ describe('C: plugin.json schema validation', () => {
   // can see, which C2 cannot do.
   //
   // It deliberately builds the fixture for real rather than stubbing it — that is the
-  // only way it exercises the code path it guards, and it is why the ~2.1 MB copy now
+  // only way it exercises the code path it guards, and it is why the ~1.06 MB copy (commands 340K, hooks 380K excluding dist, skills 336K — 176 files) now
   // runs on every job (and twice when `claude` is present). Do not "optimize" that
-  // into a stub; it would void the guard.
+  // into a stub; it would void the guard — and the emptiness assertions in C3 are
+  // what make that statement enforceable rather than advisory.
   test('C3: validation fixture exposes real component directories, not symlinks (#3613)', () => {
     const pluginRoot = buildValidationPluginRoot();
     try {
@@ -531,23 +565,52 @@ describe('C: plugin.json schema validation', () => {
           `${dir}/ is a symlink in the C2 validation fixture. \`claude plugin validate\` reads component directories without following symlinks and warns on each one, and --strict turns that warning into a failing exit (#3613). Copy the directory with fs.cpSync instead of symlinking it.`
         );
         assert.ok(stat.isDirectory(), `${dir}/ must be a real directory in the C2 validation fixture`);
+        // Raised in review: without this, C3 goes green on a fixture that
+        // validates nothing. buildValidationPluginRoot() mkdir's every component
+        // dir BEFORE the entry loop, so if the copy ever stops happening — a
+        // broadened filter, a mis-scoped `if (dir === ...)`, a wrong src, an
+        // early continue — the result is real, empty directories, and all three
+        // structural assertions above still pass (an empty tree contains no
+        // symlinks). C2 would catch it, but C2 does not run in CI; C3 is the only
+        // CI-visible guard on this fixture, so it has to see it.
+        const contents = fs.readdirSync(target);
+        assert.ok(
+          contents.length > 0,
+          `${dir}/ is EMPTY in the C2 validation fixture. The directory was created but nothing was copied into it — C3's symlink assertions pass vacuously on an empty tree, and \`claude plugin validate\` reports "Path not found" for the manifest's declared components.`
+        );
+        // A known entry per tree, so a PARTIAL copy is caught too, not just a
+        // wholly empty one. These are the paths plugin.json declares (commands,
+        // skills) and the hooks manifest the runtime loads.
+        assert.ok(
+          fs.existsSync(path.join(target, EXPECTED_ENTRY[dir])),
+          `${dir}/${EXPECTED_ENTRY[dir]} is missing from the C2 validation fixture — the copy is partial, so the validated tree is not the shipped one.`
+        );
       }
 
       // Depth-N, not just depth-1. fs.cpSync defaults to dereference:false, so any
-      // symlink inside a component directory is copied AS a symlink. Measured against
-      // claude CLI 2.1.234 (exit code of `plugin validate --strict`):
+      // symlink inside a component directory is copied AS a symlink.
       //
-      //     component dir is itself a symlink ............ 1
-      //     symlink one level inside skills/ (file or dir) 1
-      //     symlink two levels inside skills/ ............ 0
-      //     symlink inside commands/ or hooks/ ........... 0
+      // An earlier revision of this comment carried a table indexed by DEPTH and
+      // claimed a symlink two levels inside skills/ exits 0. That row was wrong,
+      // and the mistake was measuring an inert file. Re-measured on CLI 2.1.239
+      // (exit code of `plugin validate --strict`), reproducing the review's
+      // 2.1.237 result:
       //
-      // So the depth that bites is narrower than "anywhere", but wider than the
-      // top-level check alone — an entry directly under skills/ is enough. Rather
-      // than encode that external, undocumented boundary, C3 enforces the stricter
-      // invariant "no symlinks anywhere in the fixture": a superset that stays
-      // correct if the CLI tightens, for one walk over ~243 files. The trees are
-      // symlink-free today, so this is latent, not a live break.
+      //     component dir is itself a symlink ................... 1
+      //     symlink one level inside skills/ (file or dir) ...... 1
+      //     symlink two levels in, an inert file (a stray *.md) . 0
+      //     symlink two levels in that IS the component file
+      //       (skills/<name>/SKILL.md) .......................... 1
+      //     symlink inside commands/ or hooks/ .................. 0
+      //
+      // So the boundary is not depth at all — it is whether the symlink is a file
+      // the CLI actually reads as a component ("1 component here was not read —
+      // the path is not a regular file"). That is an external, undocumented
+      // boundary that has already moved once between CLI versions, so C3 does not
+      // encode it: it enforces the stricter invariant "no symlinks anywhere in the
+      // fixture", a superset that stays correct as the CLI tightens, for one walk
+      // over ~176 files. The trees are symlink-free today, so this is latent, not
+      // a live break.
       //
       // Walk with an explicit stack, NOT readdirSync's `recursive: true` — that
       // option follows directory symlinks (verified on Node 24: a symlinked dir
@@ -571,7 +634,7 @@ describe('C: plugin.json schema validation', () => {
       assert.deepStrictEqual(
         nested,
         [],
-        `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.234, a component dir itself or an entry directly under skills/ is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
+        `The C2 validation fixture contains symlink(s): ${nested.join(', ')}. The fixture must be symlink-free throughout: \`claude plugin validate\` reads component directories without following symlinks and warns on ones it finds, and --strict turns that warning into a failing exit (#3613). Measured on CLI 2.1.239, a component dir itself, an entry directly under skills/, or a symlinked SKILL.md at any depth is enough to fail; this assertion is deliberately stricter than that boundary so it stays correct if the CLI tightens. Copy with fs.cpSync instead of symlinking.`
       );
     } finally {
       cleanup(pluginRoot);
